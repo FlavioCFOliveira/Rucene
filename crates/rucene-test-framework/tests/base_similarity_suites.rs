@@ -1,21 +1,21 @@
 //! The `BaseSimilarityTestCase` suites (rmp #356): the inherited cases run,
 //! under the ported runner and `LuceneTestCase`'s rule chain, on the
 //! similarities Lucene's own subclasses bind
-//! (`lucene/core/src/test/org/apache/lucene/search/similarities/`):
-//! `TestBooleanSimilarity`, `TestClassicSimilarity`,
+//! (`lucene/core/src/test/org/apache/lucene/search/similarities/`) when
+//! those subclasses declare no test method of their own:
 //! `TestIndependenceChiSquared`, `TestLMJelinekMercerSimilarity`,
 //! `TestIndependenceStandardized`, `TestIndependenceSaturated`,
-//! `TestRawTFSimilarity` (with its `setUp()`/`tearDown()` overrides, which
-//! run around the inherited cases too), `TestIndriDirichletSimilarity`,
-//! `TestBM25Similarity`, `TestLMDirichletSimilarity`, and the abstract
-//! `AxiomaticTestCase`, `DistributionTestCase` and `BasicModelTestCase`
-//! through their concrete subclasses, as Lucene runs them
-//! (`TestAxiomaticF1EXP` … `TestAxiomaticF3LOG`, `TestDistributionLL`,
+//! `TestIndriDirichletSimilarity`, `TestLMDirichletSimilarity`, and the
+//! abstract `AxiomaticTestCase`, `DistributionTestCase` and
+//! `BasicModelTestCase` through their concrete subclasses, as Lucene runs
+//! them (`TestAxiomaticF1EXP` … `TestAxiomaticF3LOG`, `TestDistributionLL`,
 //! `TestDistributionSPL`, `TestBasicModelG`, `TestBasicModelIF`,
 //! `TestBasicModelIn`, `TestBasicModelIne`).
 //!
-//! The classes' own extra test methods belong to the core-test port
-//! (sprint 7) and are not declared here.
+//! `TestBM25Similarity`, `TestBooleanSimilarity`, `TestClassicSimilarity`
+//! and `TestRawTFSimilarity` declare test methods of their own: each is
+//! bound once, with them, in `core_search_tests.rs` (rmp #389).
+//! `TestBM25Similarity.getSimilarity` stays here for the draw oracle.
 //!
 //! `RUCENE_SUITE_SEEDS=<n>` runs each suite on the first `n` seeds of
 //! `suite_seeds::SEEDS`; `test_similarity_suite_draws_match_lucene`
@@ -24,28 +24,20 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use randomizedtesting::jdk::random::Random;
-use randomizedtesting::jdk::reflect::{modifier, Class, Constructor, Method};
-use rucene::document::{Document, Store};
+use randomizedtesting::jdk::reflect::{modifier, Class, Constructor};
 use rucene::error::Result;
-use rucene::index::directory_reader::{self, DirectoryReader};
-use rucene::index::index_writer::IndexWriter;
-use rucene::index::IndexReader;
 use rucene::search::similarities::{
     AfterEffect, AfterEffectB, AfterEffectL, AxiomaticF1EXP, AxiomaticF1LOG, AxiomaticF2EXP,
     AxiomaticF2LOG, AxiomaticF3EXP, AxiomaticF3LOG, BM25Similarity, BasicModel, BasicModelG,
-    BasicModelIF, BasicModelIn, BasicModelIne, BooleanSimilarity, ClassicSimilarity, DFISimilarity,
-    DFRSimilarity, Distribution, DistributionLL, DistributionSPL, IBSimilarity,
-    IndependenceChiSquared, IndependenceSaturated, IndependenceStandardized,
-    IndriDirichletSimilarity, LMDirichletSimilarity, LMJelinekMercerSimilarity, Lambda, LambdaDF,
-    LambdaTTF, NoNormalization, Normalization, NormalizationH1, NormalizationH2, NormalizationH3,
-    NormalizationZ, RawTFSimilarity, Similarity,
+    BasicModelIF, BasicModelIn, BasicModelIne, DFISimilarity, DFRSimilarity, Distribution,
+    DistributionLL, DistributionSPL, IBSimilarity, IndependenceChiSquared, IndependenceSaturated,
+    IndependenceStandardized, IndriDirichletSimilarity, LMDirichletSimilarity,
+    LMJelinekMercerSimilarity, Lambda, LambdaDF, LambdaTTF, NoNormalization, Normalization,
+    NormalizationH1, NormalizationH2, NormalizationH3, NormalizationZ, Similarity,
 };
 use rucene_test_framework::search::similarities::base_similarity_test_case::{
     self, BaseSimilarityTestCase, SimilarityTestInstance,
 };
-use rucene_test_framework::util::java_exceptions::rethrow_java;
-use rucene_test_framework::util::lucene_test_case::TestDirectory;
-use rucene_test_framework::util::LuceneTestCase;
 
 mod draw_hooks;
 mod suite_draws;
@@ -64,16 +56,6 @@ impl BaseSimilarityTestCase for SimilarityBinding {
     fn get_similarity(&self, random: &dyn Random) -> Result<Arc<dyn Similarity>> {
         (self.make)(random)
     }
-}
-
-/// `TestBooleanSimilarity.getSimilarity`.
-fn boolean_similarity(_random: &dyn Random) -> Result<Arc<dyn Similarity>> {
-    Ok(Arc::new(BooleanSimilarity::new()))
-}
-
-/// `TestClassicSimilarity.getSimilarity`.
-fn classic_similarity(_random: &dyn Random) -> Result<Arc<dyn Similarity>> {
-    Ok(Arc::new(ClassicSimilarity::new()))
 }
 
 /// `TestIndependenceChiSquared.getSimilarity`.
@@ -109,11 +91,6 @@ fn lm_jelinek_mercer(random: &dyn Random) -> Result<Arc<dyn Similarity>> {
         _ => random.next_float(),
     };
     Ok(Arc::new(LMJelinekMercerSimilarity::with_lambda(lambda)?))
-}
-
-/// `TestRawTFSimilarity.getSimilarity`.
-fn raw_tf(_random: &dyn Random) -> Result<Arc<dyn Similarity>> {
-    Ok(Arc::new(RawTFSimilarity::new()))
 }
 
 /// `mu` as `TestIndriDirichletSimilarity` and `TestLMDirichletSimilarity`
@@ -341,103 +318,6 @@ fn base() -> Arc<Class> {
 }
 
 // -----------------------------------------------------------------------------
-// TestRawTFSimilarity: its setUp()/tearDown() overrides
-// -----------------------------------------------------------------------------
-
-/// `directory`, `indexReader` (and the searcher, which only the class's own
-/// tests use) of the running `TestRawTFSimilarity` instance.
-static RAW_TF_STATE: Mutex<Option<(Arc<dyn DirectoryReader>, TestDirectory)>> = Mutex::new(None);
-
-/// `TestRawTFSimilarity.setUp()`.
-fn raw_tf_set_up() -> Result<()> {
-    LuceneTestCase::super_set_up();
-    let directory = LuceneTestCase::new_directory();
-    {
-        let index_writer = IndexWriter::new(
-            directory.as_directory(),
-            LuceneTestCase::new_index_writer_config(),
-        )?;
-        let result = (|| -> Result<()> {
-            let mut document1 = Document::new();
-            let mut document2 = Document::new();
-            let mut document3 = Document::new();
-            document1.add(Box::new(LuceneTestCase::new_text_field(
-                "test",
-                "one",
-                Store::YES,
-            )));
-            document2.add(Box::new(LuceneTestCase::new_text_field(
-                "test",
-                "two two",
-                Store::YES,
-            )));
-            document3.add(Box::new(LuceneTestCase::new_text_field(
-                "test",
-                "three three three",
-                Store::YES,
-            )));
-            index_writer.add_document(&document1)?;
-            index_writer.add_document(&document2)?;
-            index_writer.add_document(&document3)?;
-            index_writer.commit()?;
-            Ok(())
-        })();
-        result.and(index_writer.close())?;
-    }
-    let index_reader = directory_reader::open(directory.as_directory())?;
-    let mut index_searcher = LuceneTestCase::new_searcher(Arc::clone(&index_reader));
-    index_searcher.set_similarity(Arc::new(RawTFSimilarity::new()));
-    drop(index_searcher);
-    *RAW_TF_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some((index_reader, directory));
-    Ok(())
-}
-
-/// `TestRawTFSimilarity.tearDown()`: `IOUtils.close(indexReader,
-/// directory)`, then `super.tearDown()`.
-fn raw_tf_tear_down() -> Result<()> {
-    let state = RAW_TF_STATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
-    if let Some((reader, mut directory)) = state {
-        let closed_reader = (Arc::clone(&reader) as Arc<dyn IndexReader>).close();
-        drop(reader);
-        let closed_directory = directory.close();
-        closed_reader.and(closed_directory)?;
-    }
-    LuceneTestCase::super_tear_down();
-    Ok(())
-}
-
-/// `setUp()`/`tearDown()` of `TestRawTFSimilarity`.
-fn raw_tf_hooks(builder: randomizedtesting::jdk::reflect::ClassBuilder) -> Arc<Class> {
-    builder
-        .method(Method::new("setUp").throws(&["java.lang.Exception"]).body(
-            |_inst: &mut SimilarityTestInstance| {
-                raw_tf_set_up().unwrap_or_else(|e| rethrow_java(e))
-            },
-        ))
-        .method(
-            Method::new("tearDown")
-                .throws(&["java.lang.Exception"])
-                .body(|_inst: &mut SimilarityTestInstance| {
-                    raw_tf_tear_down().unwrap_or_else(|e| rethrow_java(e))
-                }),
-        )
-        .build()
-}
-
-fn raw_tf_class() -> Arc<Class> {
-    raw_tf_hooks(
-        Class::builder("org.apache.lucene.search.similarities.TestRawTFSimilarity")
-            .extends(&base())
-            .constructor(Constructor::no_args(|| {
-                SimilarityTestInstance::new(SimilarityBinding { make: raw_tf })
-            })),
-    )
-}
-
-// -----------------------------------------------------------------------------
 // The seeded-draw oracle: TestSimilaritySuiteDraws
 // -----------------------------------------------------------------------------
 
@@ -475,14 +355,11 @@ macro_rules! similarity_suites {
 }
 
 similarity_suites! {
-    test_boolean_similarity => "TestBooleanSimilarity", base(), boolean_similarity;
-    test_classic_similarity => "TestClassicSimilarity", base(), classic_similarity;
     test_independence_chi_squared => "TestIndependenceChiSquared", base(), independence_chi_squared;
     test_lm_jelinek_mercer_similarity => "TestLMJelinekMercerSimilarity", base(), lm_jelinek_mercer;
     test_independence_standardized => "TestIndependenceStandardized", base(), independence_standardized;
     test_independence_saturated => "TestIndependenceSaturated", base(), independence_saturated;
     test_indri_dirichlet_similarity => "TestIndriDirichletSimilarity", base(), indri_dirichlet;
-    test_bm25_similarity => "TestBM25Similarity", base(), bm25;
     test_lm_dirichlet_similarity => "TestLMDirichletSimilarity", base(), lm_dirichlet;
     test_axiomatic_f1exp => "TestAxiomaticF1EXP", AXIOMATIC_TEST_CASE, |r| axiomatic(r, |s, _q, k| Ok(Arc::new(AxiomaticF1EXP::with_s_and_k(s, k)?)));
     test_axiomatic_f1log => "TestAxiomaticF1LOG", AXIOMATIC_TEST_CASE, |r| axiomatic(r, |s, _q, _k| Ok(Arc::new(AxiomaticF1LOG::with_s(s)?)));
@@ -496,12 +373,6 @@ similarity_suites! {
     test_basic_model_if => "TestBasicModelIF", BASIC_MODEL_TEST_CASE, |r| basic_model(r, || Box::new(BasicModelIF::new()));
     test_basic_model_in => "TestBasicModelIn", BASIC_MODEL_TEST_CASE, |r| basic_model(r, || Box::new(BasicModelIn::new()));
     test_basic_model_ine => "TestBasicModelIne", BASIC_MODEL_TEST_CASE, |r| basic_model(r, || Box::new(BasicModelIne::new()));
-}
-
-#[test]
-fn test_raw_tf_similarity() {
-    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    run_suite(raw_tf_class);
 }
 
 #[test]

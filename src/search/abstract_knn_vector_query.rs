@@ -692,7 +692,7 @@ fn get_leaf_results(
             Some(scorer) => Ok(into_scorer_iterator(scorer).into_doc_id_set_iterator()),
         }
     };
-    let mut accept_docs = from_iterator_supplier(supplier, live_docs, max_doc)?;
+    let mut accept_docs = from_iterator_supplier(Some(supplier), live_docs, max_doc)?;
     let cost = accept_docs.cost()?;
     let query_timeout = time_limiting_knn_collector_manager
         .get_query_timeout()

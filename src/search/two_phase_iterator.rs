@@ -189,6 +189,10 @@ impl<T: TwoPhaseIterator + ?Sized> TwoPhaseIteratorAsDocIdSetIterator<T> {
 }
 
 impl<T: TwoPhaseIterator + ?Sized> DocIdSetIterator for TwoPhaseIteratorAsDocIdSetIterator<T> {
+    fn wraps_two_phase_iterator(&self) -> bool {
+        true
+    }
+
     fn doc_id(&self) -> i32 {
         self.two_phase.approximation_ref().doc_id()
     }

@@ -3727,10 +3727,10 @@ mod tests {
         // `expectedVisitedNodes(3, 64) == 12` the graph search is expected to
         // touch, so the search stays on the graph path.
         let mut filtered = crate::search::from_iterator_supplier(
-            || {
+            Some(|| {
                 Ok(Box::new(crate::search::range(10, ACCEPT_DOCS_SIZE)?)
                     as Box<dyn crate::search::DocIdSetIterator>)
-            },
+            }),
             None,
             ACCEPT_DOCS_SIZE,
         )?;
@@ -3803,10 +3803,10 @@ mod tests {
         // this port used to, keeps the search on the graph and visits a
         // different number of nodes.
         let mut filtered = crate::search::from_iterator_supplier(
-            || {
+            Some(|| {
                 Ok(Box::new(crate::search::range(10, 20)?)
                     as Box<dyn crate::search::DocIdSetIterator>)
-            },
+            }),
             None,
             ACCEPT_DOCS_SIZE,
         )?;

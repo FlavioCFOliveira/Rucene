@@ -725,7 +725,7 @@ fn sparse_search(reader: &Arc<dyn DirectoryReader>, filter: Option<(i32, i32)>) 
         None => Box::new(from_live_docs(leaf.get_live_docs(), leaf.max_doc()).unwrap()),
         Some((lo, hi)) => Box::new(
             from_iterator_supplier(
-                move || Ok(Box::new(range(lo, hi)?) as Box<dyn DocIdSetIterator>),
+                Some(move || Ok(Box::new(range(lo, hi)?) as Box<dyn DocIdSetIterator>)),
                 leaf.get_live_docs(),
                 leaf.max_doc(),
             )
@@ -900,7 +900,7 @@ fn readers_built_per_search(doc_count: i32) -> (u64, u64, usize) {
 
     let before_search = monotonic_reader_constructions();
     let mut accept_docs = from_iterator_supplier(
-        move || Ok(Box::new(range(lo, hi)?) as Box<dyn DocIdSetIterator>),
+        Some(move || Ok(Box::new(range(lo, hi)?) as Box<dyn DocIdSetIterator>)),
         None,
         max_doc,
     )

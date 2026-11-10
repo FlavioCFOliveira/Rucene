@@ -449,7 +449,7 @@ impl Weight for VectorSimilarityWeight {
                 Some(scorer) => Ok(into_scorer_iterator(scorer).into_doc_id_set_iterator()),
             }
         };
-        let mut accept_docs = from_iterator_supplier(supplier, live_docs, max_doc)?;
+        let mut accept_docs = from_iterator_supplier(Some(supplier), live_docs, max_doc)?;
         let cardinality = accept_docs.cost()?;
         if cardinality == 0 {
             // There are no live matching docs.

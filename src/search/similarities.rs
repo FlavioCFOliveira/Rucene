@@ -123,9 +123,14 @@ pub use per_field_similarity_wrapper::{
     per_field_compute_norm, per_field_scorer, PerFieldSimilarityWrapper,
 };
 pub use raw_tf_similarity::RawTFSimilarity;
-pub use similarity_base::{fill_basic_stats, log2, similarity_base_scorer, SimilarityBase};
+pub use similarity_base::{
+    basic_sim_scorer, fill_basic_stats, log2, similarity_base_scorer, BasicSimScorer,
+    SimilarityBase,
+};
 pub use statistics::{CollectionStatistics, TermStatistics};
-pub use tfidf_similarity::{tfidf_scorer, ClassicSimilarity, TFIDFSimilarity};
+pub use tfidf_similarity::{
+    new_tfidf_scorer, tfidf_scorer, ClassicSimilarity, TFIDFScorer, TFIDFSimilarity,
+};
 
 // ---------------------------------------------------------------------------
 // Similarity

@@ -196,8 +196,11 @@ pub struct NumericComparator {
     sortable_bytes_to_long: fn(&[u8]) -> i64,
     top_value_set: bool,
     single_sort: bool,
-    hits_threshold_reached: bool,
-    queue_full: bool,
+    /// `protected boolean hitsThresholdReached`, visible to the package's
+    /// tests in Java.
+    pub hits_threshold_reached: bool,
+    /// `protected boolean queueFull`, visible to the package's tests in Java.
+    pub queue_full: bool,
     pruning: Pruning,
     doc_values_source: Option<NumericDocValuesSource>,
 }

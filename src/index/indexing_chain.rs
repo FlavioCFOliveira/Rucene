@@ -280,6 +280,34 @@ impl FieldInvertState {
         }
     }
 
+    /// Creates the state of a field with the given statistics.
+    ///
+    /// Equivalent to the nine-argument `FieldInvertState(int, String,
+    /// IndexOptions, int, int, int, int, int, int)` constructor
+    /// (`FieldInvertState.java:63-80`), which tests use to feed
+    /// `Similarity.computeNorm` directly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_statistics(
+        index_created_version_major: i32,
+        name: String,
+        index_options: IndexOptions,
+        position: i32,
+        length: i32,
+        num_overlap: i32,
+        offset: i32,
+        max_term_frequency: i32,
+        unique_term_count: i32,
+    ) -> Self {
+        let mut state = Self::new(index_created_version_major, name, index_options);
+        state.position = position;
+        state.length = length;
+        state.num_overlap = num_overlap;
+        state.offset = offset;
+        state.max_term_frequency = max_term_frequency;
+        state.unique_term_count = unique_term_count;
+        state
+    }
+
     /// Re-initialises every statistic for a new document.
     ///
     /// Equivalent to `FieldInvertState.reset()`. `position` starts at `-1` so

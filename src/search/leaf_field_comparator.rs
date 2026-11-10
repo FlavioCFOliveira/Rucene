@@ -43,6 +43,19 @@ use crate::search::scorable::Scorable;
 /// once before collection, exactly where Java calls it, so a comparator that
 /// reacts to the scorer at that point behaves identically.
 pub trait LeafFieldComparator {
+    /// This leaf comparator as [`Any`], for the `instanceof` tests and casts
+    /// Java code makes on a `LeafFieldComparator`
+    /// (`TestTermOrdValComparatorAdaptiveSkipping` casts to
+    /// `TermOrdValComparator.TermOrdValLeafComparator`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through [`Any`], which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Sets the bottom slot, that is the "weakest" (sorted last) entry in the
     /// queue.
     ///

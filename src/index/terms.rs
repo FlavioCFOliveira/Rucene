@@ -269,6 +269,18 @@ pub trait TermsEnum: std::fmt::Display {
     /// Returns the attribute source attached to this enum.
     fn attributes(&mut self) -> &mut AttributeSource;
 
+    /// This enum as [`Any`], for the `instanceof` and `assertSame` tests Java
+    /// code makes on a `TermsEnum` (`TestAutomatonQuery` checks
+    /// `instanceof SingleTermsEnum` and `TermsEnum.EMPTY`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through [`Any`], which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
     /// Attempts to seek to the exact term, returning `true` if found.
     ///
     /// Default implementation uses `seek_ceil`.
@@ -384,6 +396,13 @@ pub trait FilteredTermsEnumFilter: Send {
     /// Decides whether a term is accepted, rejected, or ends the iteration.
     fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus>;
 
+    /// This filter as [`Any`]: in Java the filter and the enum are one
+    /// object (a `FilteredTermsEnum` subclass), so `instanceof
+    /// SingleTermsEnum` tests the filter. See [`TermsEnum::as_any`].
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
     /// Returns the next candidate term to seek to, or `None` if iteration
     /// should end. The default implementation returns the initial seek term
     /// once and then `None`.
@@ -470,7 +489,18 @@ impl std::fmt::Display for FilteredTermsEnum {
     }
 }
 
+impl FilteredTermsEnum {
+    /// The filter, which in Java is this object itself.
+    pub fn filter(&self) -> &dyn FilteredTermsEnumFilter {
+        &*self.filter
+    }
+}
+
 impl TermsEnum for FilteredTermsEnum {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn attributes(&mut self) -> &mut AttributeSource {
         self.tenum.attributes()
     }
@@ -613,6 +643,10 @@ impl SingleTermsEnum {
 }
 
 impl FilteredTermsEnumFilter for SingleTermsEnum {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus> {
         if term == &self.single_ref {
             Ok(AcceptStatus::Yes)
@@ -1406,6 +1440,10 @@ impl std::fmt::Display for EmptyTermsEnum {
 }
 
 impl TermsEnum for EmptyTermsEnum {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
     }

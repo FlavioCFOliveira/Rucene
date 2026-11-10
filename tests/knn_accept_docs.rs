@@ -187,7 +187,7 @@ fn a_caller_filter_is_honoured_by_a_knn_search() {
     // nodes an unfiltered graph search is expected to visit, so the search
     // stays on the graph path.
     let mut accept_docs = from_iterator_supplier(
-        || Ok(Box::new(range(500, DOC_COUNT)?) as Box<dyn DocIdSetIterator>),
+        Some(|| Ok(Box::new(range(500, DOC_COUNT)?) as Box<dyn DocIdSetIterator>)),
         None,
         leaf.max_doc(),
     )

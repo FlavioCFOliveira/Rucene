@@ -319,6 +319,10 @@ pub enum SortFieldKind {
         /// The name the sort field is serialised under, which a subclass of
         /// `BinarySortField` may replace.
         provider_name: String,
+        /// The override of the protected
+        /// `BinarySortField.getSortKeyDocValues(LeafReader)` a subclass
+        /// declares, or `None` for `BinarySortField` itself.
+        sort_key: Option<crate::search::binary_sort_field::SortKeySource>,
     },
     /// `org.apache.lucene.document.FeatureSortField`: the value of one feature
     /// of a `FeatureField`, decoded from the term frequency.

@@ -33,7 +33,7 @@ pub struct LongComparator {
     /// The value of the bottom slot of the queue.
     ///
     /// Equivalent to the `protected Long bottom` field.
-    bottom: i64,
+    pub bottom: i64,
     /// The value substituted for documents that have none.
     ///
     /// Equivalent to the `protected final T missingValue` field of
@@ -42,6 +42,12 @@ pub struct LongComparator {
 }
 
 impl LongComparator {
+    /// The `NumericComparator` state this comparator extends in Java, whose
+    /// protected fields the package's tests set.
+    pub fn numeric_comparator_mut(&mut self) -> &mut NumericComparator {
+        &mut self.base
+    }
+
     /// Creates a comparator over `num_hits` slots for `field`.
     ///
     /// Equivalent to

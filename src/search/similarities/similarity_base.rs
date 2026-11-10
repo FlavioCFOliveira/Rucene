@@ -242,9 +242,12 @@ where
 {
     let mut weights: Vec<Box<dyn SimScorer + 'a>> = Vec::with_capacity(term_stats.len());
     for term in term_stats {
-        let mut stats = sim.new_stats(collection_stats.field(), f64::from(boost));
-        sim.fill_basic_stats(&mut stats, collection_stats, term);
-        weights.push(Box::new(BasicSimScorer { base: sim, stats }));
+        weights.push(Box::new(basic_sim_scorer(
+            sim,
+            boost,
+            collection_stats,
+            term,
+        )));
     }
     if weights.len() == 1 {
         if let Some(single) = weights.pop() {
@@ -260,9 +263,36 @@ where
 /// (`SimilarityBase.java:174-190`), which Java declares as a non-static inner
 /// class so that it can reach `SimilarityBase.this`; the borrow here plays the
 /// same role.
-struct BasicSimScorer<'a, S: SimilarityBase + ?Sized> {
+pub struct BasicSimScorer<'a, S: SimilarityBase + ?Sized> {
     base: &'a S,
     stats: S::Stats,
+}
+
+impl<S: SimilarityBase + ?Sized> BasicSimScorer<'_, S> {
+    /// `stats`, package-private in Java (`SimilarityBase.java:175`).
+    pub fn stats(&self) -> &S::Stats {
+        &self.stats
+    }
+}
+
+/// The `BasicSimScorer` [`similarity_base_scorer`] builds for one term.
+///
+/// Java tests in `org.apache.lucene.search.similarities` cast the result of
+/// a one-term `SimilarityBase.scorer` call to `BasicSimScorer` to read its
+/// `stats`; a non-`'static` `dyn SimScorer` cannot be downcast, so this
+/// returns the same scorer unboxed (`SimilarityBase.java:68-71`).
+pub fn basic_sim_scorer<'a, S>(
+    sim: &'a S,
+    boost: f32,
+    collection_stats: &CollectionStatistics,
+    term_stats: &TermStatistics,
+) -> BasicSimScorer<'a, S>
+where
+    S: SimilarityBase + ?Sized,
+{
+    let mut stats = sim.new_stats(collection_stats.field(), f64::from(boost));
+    sim.fill_basic_stats(&mut stats, collection_stats, term_stats);
+    BasicSimScorer { base: sim, stats }
 }
 
 impl<S: SimilarityBase + ?Sized> SimScorer for BasicSimScorer<'_, S> {

@@ -109,6 +109,13 @@ impl ConstantScoreBulkScorer {
         iterator: Box<dyn DocIdSetIterator>,
     ) -> Result<Self> {
         Self::check_score_mode(score_mode)?;
+        // `twoPhase == null && TwoPhaseIterator.unwrap(iterator) != null`
+        // (`ConstantScoreBulkScorer.java:54-56`).
+        if iterator.wraps_two_phase_iterator() {
+            return Err(LuceneError::IllegalArgument(
+                "Iterator must not wrap a TwoPhaseIterator".to_string(),
+            ));
+        }
         let cost = iterator.cost();
         Ok(Self {
             scorer: ConstantScoreScorer::from_iterator(score, score_mode, iterator),

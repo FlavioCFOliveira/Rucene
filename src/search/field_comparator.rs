@@ -470,6 +470,16 @@ impl<C: SlotComparator> SharedFieldComparator<C> {
             shared: Arc::new(Mutex::new(comparator)),
         }
     }
+
+    /// Runs `body` on the concrete comparator.
+    ///
+    /// Java tests in a comparator's package cast the `FieldComparator` a
+    /// `SortField` returns to its concrete class and set its protected fields
+    /// (`TestNumericComparator` sets `queueFull`, `hitsThresholdReached` and
+    /// `bottom`); this is the access the shared slot state allows.
+    pub fn with_comparator<R>(&self, body: impl FnOnce(&mut C) -> R) -> R {
+        body(&mut lock_slots(&self.shared))
+    }
 }
 
 impl<C: SlotComparator> Debug for SharedFieldComparator<C> {
@@ -526,7 +536,19 @@ pub struct SharedLeafComparator<C: SlotComparator> {
     leaf: C::Leaf,
 }
 
+impl<C: SlotComparator> SharedLeafComparator<C> {
+    /// The leaf comparator's own fields, which in Java are the fields of the
+    /// concrete leaf comparator class.
+    pub fn leaf(&self) -> &C::Leaf {
+        &self.leaf
+    }
+}
+
 impl<C: SlotComparator> LeafFieldComparator for SharedLeafComparator<C> {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn set_bottom(&mut self, slot: i32) -> Result<()> {
         lock_slots(&self.shared).set_bottom(&mut self.leaf, slot)
     }

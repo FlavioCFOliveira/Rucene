@@ -5,8 +5,9 @@
 //! `TestComplexExplanations`) are bound once, with their test methods, in
 //! `core_search_explanations_tests.rs`:
 //!
-//! * `TestSloppyPhraseQuery2`, `TestSimpleSearchEquivalence`,
-//!   `TestApproximationSearchEquivalence` over `SearchEquivalenceTestBase`;
+//! * `TestSloppyPhraseQuery2`, `TestSimpleSearchEquivalence` over
+//!   `SearchEquivalenceTestBase` (`TestApproximationSearchEquivalence` is
+//!   bound once, with its test methods, in `core_search_tests.rs`);
 //! * `TestMatchesIterator` over `MatchesTestBase` (its `getDocuments()`).
 //!
 //! These base classes declare no test method: they are helpers and class
@@ -75,12 +76,6 @@ fn test_sloppy_phrase_query2() {
 fn test_simple_search_equivalence() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     run_suite(|| equivalence_class("org.apache.lucene.search.TestSimpleSearchEquivalence"));
-}
-
-#[test]
-fn test_approximation_search_equivalence() {
-    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    run_suite(|| equivalence_class("org.apache.lucene.search.TestApproximationSearchEquivalence"));
 }
 
 #[test]

@@ -321,6 +321,21 @@ pub struct TermOrdValLeafState {
     dense: bool,
 }
 
+impl TermOrdValLeafState {
+    /// Whether the adaptive skip iterator gave up.
+    ///
+    /// Equivalent to the package-private, test-only
+    /// `TermOrdValLeafComparator.isSkippingDisabled()`
+    /// (`TermOrdValComparator.java:489-494`): index-based competitive
+    /// iterators are never disabled.
+    pub fn is_skipping_disabled(&self) -> bool {
+        matches!(
+            self.competitive_state.as_ref().map(|c| &c.kind),
+            Some(CompetitiveStateKind::Skipper { state, .. }) if state.get() == SkipState::Disabled
+        )
+    }
+}
+
 /// Sorts by the field's natural term sort order, using ordinals.
 ///
 /// Equivalent to `org.apache.lucene.search.comparators.TermOrdValComparator`.

@@ -121,7 +121,11 @@ impl<C: Collector> MultiCollector<C> {
     }
 }
 
-impl<C: Collector> Collector for MultiCollector<C> {
+impl<C: Collector + 'static> Collector for MultiCollector<C> {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn score_mode(&self) -> ScoreMode {
         let mut score_mode: Option<ScoreMode> = None;
         for collector in &self.collectors {

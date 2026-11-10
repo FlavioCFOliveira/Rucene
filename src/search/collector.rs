@@ -38,6 +38,18 @@ use crate::search::weight::Weight;
 ///
 /// Equivalent to `org.apache.lucene.search.Collector`.
 pub trait Collector {
+    /// This collector as [`Any`](std::any::Any), for the `instanceof` tests
+    /// and casts Java code makes on a `Collector` (`TestCollectorManager`
+    /// casts to `MultiCollector` and to its own collector class).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Creates a new [`LeafCollector`] to collect the given context.
     ///
     /// Equivalent to `Collector.getLeafCollector(LeafReaderContext)`.
