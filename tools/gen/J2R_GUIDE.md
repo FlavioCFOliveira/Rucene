@@ -136,10 +136,10 @@ that establishes it.
   type, default to Lucene's behaviour; example `IndexSearcherOverrides`
   (`crates/rucene-test-framework/tests/core_search/test_boolean_query.rs:1104-1109`, calling
   `searcher.super_count`). Wrappers for `FilterX` subclasses.
-* **Fields changed after `doc.add`.** Rucene's `Document` gives no mutable
-  access: rebuild the document for each `addDocument` from a copy of the field
-  (`crates/rucene-test-framework/tests/core_search/support.rs:139`, `copy_field`), with no extra random
-  draws.
+* **Fields changed after `doc.add`.** Change the document's own field, as
+  Java does: `Document::get_field_mut` (with `IndexableField::as_any_mut`)
+  and the field's setters; a `FieldType` is shared (`Arc`) and its setters
+  take `&self`. Never rebuild the document from copies.
 * **UTF-16.** Java `char[]` and `CharSequence` units are `u16`
   (`CharArraySet`, `CharArrayMap`, `CharReader`, `CharacterBuffer`).
 
