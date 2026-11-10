@@ -196,7 +196,16 @@ impl ScalarEncoding {
         if self == Self::DibitQueryNibble {
             let query_discretized = (dimensions * 4 + 7) / 8 * 8 / 4;
             let doc_discretized = (dimensions + 7) / 8 * 8;
-            return query_discretized.max(doc_discretized);
+            let max_discretized = query_discretized.max(doc_discretized);
+            debug_assert!(
+                f64::from(max_discretized) % (8.0 / 4.0) == 0.0,
+                "bad discretized={max_discretized} for dim={dimensions}"
+            );
+            debug_assert!(
+                f64::from(max_discretized) % (8.0 / 2.0) == 0.0,
+                "bad discretized={max_discretized} for dim={dimensions}"
+            );
+            return max_discretized;
         }
         if !self.is_asymmetric() {
             let total_bits = dimensions * bits_per_dim;
@@ -204,7 +213,16 @@ impl ScalarEncoding {
         }
         let query_discretized = (dimensions * query_bits_per_dim + 7) / 8 * 8 / query_bits_per_dim;
         let doc_discretized = (dimensions * bits_per_dim + 7) / 8 * 8 / bits_per_dim;
-        query_discretized.max(doc_discretized)
+        let max_discretized = query_discretized.max(doc_discretized);
+        debug_assert!(
+            f64::from(max_discretized) % (8.0 / f64::from(query_bits_per_dim)) == 0.0,
+            "bad discretized={max_discretized} for dim={dimensions}"
+        );
+        debug_assert!(
+            f64::from(max_discretized) % (8.0 / f64::from(bits_per_dim)) == 0.0,
+            "bad discretized={max_discretized} for dim={dimensions}"
+        );
+        max_discretized
     }
 
     /// Returns how many bytes a packed document vector of `dimensions`

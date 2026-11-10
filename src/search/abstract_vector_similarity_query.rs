@@ -590,9 +590,11 @@ fn from_accept_docs(
         ConjunctionUtils::intersect_iterators(vec![Box::new(vector_iterator), accept_docs])?
             .into_doc_id_set_iterator();
     let cost = conjunction.cost();
+    let vector_iterator = scorer.iterator();
     let iterator = ThresholdFilteredIterator {
         inner: conjunction,
         doc: -1,
+        vector_iterator,
         scorer,
         boost,
         threshold,
@@ -668,6 +670,9 @@ impl DocIdSetIterator for ScoreDocIterator {
 struct ThresholdFilteredIterator {
     inner: Box<dyn DocIdSetIterator>,
     doc: i32,
+    /// Java's `vectorIterator`, the scorer's iterator the conjunction drives;
+    /// read only by `match`'s assertion.
+    vector_iterator: crate::search::vector_scorer::SharedVectorScorerIterator,
     scorer: SharedVectorScorer,
     boost: f32,
     threshold: f32,
@@ -676,6 +681,8 @@ struct ThresholdFilteredIterator {
 
 impl ThresholdFilteredIterator {
     fn matches(&mut self) -> Result<bool> {
+        // Advance the scorer
+        debug_assert!(self.doc == self.vector_iterator.doc_id());
         // Compute the dot product.
         let score = self.scorer.score()?;
         self.cached_score.set(score * self.boost);

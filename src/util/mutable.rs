@@ -477,11 +477,13 @@ impl MutableValue for MutableValueFloat {
     }
 
     fn equals_same_type(&self, other: &dyn MutableValue) -> bool {
+        debug_assert!(self.exists || 0.0f32 == self.value);
         let b: &MutableValueFloat = downcast(other, "MutableValueFloat");
         self.value == b.value && self.exists == b.exists
     }
 
     fn compare_same_type(&self, other: &dyn MutableValue) -> i32 {
+        debug_assert!(self.exists || 0.0f32 == self.value);
         let b: &MutableValueFloat = downcast(other, "MutableValueFloat");
         let c = java_compare_f32(self.value, b.value);
         if c != 0 {
@@ -498,6 +500,7 @@ impl MutableValue for MutableValueFloat {
     }
 
     fn to_object(&self) -> Option<MutableValueObject> {
+        debug_assert!(self.exists || 0.0f32 == self.value);
         if self.exists {
             Some(MutableValueObject::Float(self.value))
         } else {
@@ -506,6 +509,7 @@ impl MutableValue for MutableValueFloat {
     }
 
     fn hash_code(&self) -> i32 {
+        debug_assert!(self.exists || 0.0f32 == self.value);
         self.value.to_bits() as i32
     }
 }

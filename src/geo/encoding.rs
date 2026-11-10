@@ -161,7 +161,9 @@ impl GeoEncodingUtils {
     ///
     /// Equivalent to `GeoEncodingUtils.decodeLatitude(int)`.
     pub fn decode_latitude(encoded: i32) -> f64 {
-        f64::from(encoded) * Self::lat_decode()
+        let result = f64::from(encoded) * Self::lat_decode();
+        debug_assert!((GeoUtils::MIN_LAT_INCL..GeoUtils::MAX_LAT_INCL).contains(&result));
+        result
     }
 
     /// Decodes a latitude from its sortable-bytes form.
@@ -173,7 +175,9 @@ impl GeoEncodingUtils {
     ///
     /// Equivalent to `GeoEncodingUtils.decodeLongitude(int)`.
     pub fn decode_longitude(encoded: i32) -> f64 {
-        f64::from(encoded) * Self::lon_decode()
+        let result = f64::from(encoded) * Self::lon_decode();
+        debug_assert!((GeoUtils::MIN_LON_INCL..GeoUtils::MAX_LON_INCL).contains(&result));
+        result
     }
 
     /// Decodes a longitude from its sortable-bytes form.
@@ -436,7 +440,11 @@ impl XYEncodingUtils {
     ///
     /// Equivalent to `XYEncodingUtils.decode(int)`.
     pub fn decode(encoded: i32) -> f32 {
-        NumericUtils::sortable_int_to_float(encoded)
+        let result = NumericUtils::sortable_int_to_float(encoded);
+        debug_assert!(
+            f64::from(result) >= Self::MIN_VAL_INCL && f64::from(result) <= Self::MAX_VAL_INCL
+        );
+        result
     }
 
     /// Decodes a coordinate from its sortable-bytes form.
@@ -525,7 +533,9 @@ impl GeoUtils {
 
         // not found: this is because a user can supply an arbitrary radius, one that we will never
         // calculate exactly via our haversin method.
-        f64::from_bits(lo as u64)
+        let ceil = f64::from_bits(lo as u64);
+        debug_assert!(SloppyMath::haversin_meters_from_sort_key(ceil) > radius);
+        ceil
     }
 
     /// Computes the relation between the provided box and a distance query.
@@ -747,6 +757,7 @@ impl Grid {
             // Wrap.
             lon2 = lon2.wrapping_add(1i32.wrapping_shl(32 - self.lon_shift));
         }
+        debug_assert!(i64::from(lon2 as u32) >= i64::from(self.lon_base));
         debug_assert!(lon2.wrapping_sub(self.lon_base) >= 0);
         if lon2.wrapping_sub(self.lon_base) >= self.max_lon_delta {
             return None;

@@ -252,6 +252,7 @@ impl SimpleTextBKDWriter {
                     Arc::clone(&self.temp_dir),
                     &self.temp_file_name_prefix,
                     "spill",
+                    0,
                 )?;
                 self.temp_input = Some(writer.name().to_string());
                 self.point_writer = Some(Box::new(writer));

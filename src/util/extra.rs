@@ -171,11 +171,7 @@ impl LongBitSet {
             num_bits,
             num_words,
         };
-        if !set.verify_ghost_bits_clear() {
-            return Err(LuceneError::IllegalArgument(
-                "ghost bits past numBits are not clear".to_string(),
-            ));
-        }
+        debug_assert!(set.verify_ghost_bits_clear());
         Ok(set)
     }
 
@@ -218,7 +214,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get(&self, index: i64) -> bool {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         ((self.bits[word_num] as u64) & (bitmask as u64)) != 0
@@ -230,7 +230,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn set(&mut self, index: i64) {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index} numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         self.bits[word_num] |= bitmask;
@@ -242,7 +246,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_set(&mut self, index: i64) -> bool {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         let val = (self.bits[word_num] as u64 & bitmask as u64) != 0;
@@ -256,7 +264,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn clear(&mut self, index: i64) {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         self.bits[word_num] &= !bitmask;
@@ -268,7 +280,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_clear(&mut self, index: i64) -> bool {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         let val = (self.bits[word_num] as u64 & bitmask as u64) != 0;
@@ -282,7 +298,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn next_set_bit(&self, index: i64) -> i64 {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let mut i = (index >> 6) as usize;
         let word = (self.bits[i] as u64) >> (index & 0x3f);
         if word != 0 {
@@ -305,7 +325,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn prev_set_bit(&self, index: i64) -> i64 {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index} numBits={}",
+            self.num_bits
+        );
         let i = (index >> 6) as usize;
         let sub_index = (index & 0x3f) as i32;
         let word = (self.bits[i] as u64) << (63 - sub_index);
@@ -329,7 +353,12 @@ impl LongBitSet {
     ///
     /// Panics if `other` has more words than `self`.
     pub fn or(&mut self, other: &LongBitSet) {
-        assert!(other.num_words <= self.num_words);
+        assert!(
+            other.num_words <= self.num_words,
+            "numWords={}, other.numWords={}",
+            self.num_words,
+            other.num_words
+        );
         let pos = self.num_words.min(other.num_words) as usize;
         for i in 0..pos {
             self.bits[i] |= other.bits[i];
@@ -342,7 +371,12 @@ impl LongBitSet {
     ///
     /// Panics if `other` has more words than `self`.
     pub fn xor(&mut self, other: &LongBitSet) {
-        assert!(other.num_words <= self.num_words);
+        assert!(
+            other.num_words <= self.num_words,
+            "numWords={}, other.numWords={}",
+            self.num_words,
+            other.num_words
+        );
         let pos = self.num_words.min(other.num_words) as usize;
         for i in 0..pos {
             self.bits[i] ^= other.bits[i];
@@ -423,7 +457,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn flip(&mut self, index: i64) {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index} numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         self.bits[word_num] ^= bitmask;
@@ -435,8 +473,16 @@ impl LongBitSet {
     ///
     /// Panics if the range is out of bounds or reversed.
     pub fn set_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(start_index >= 0 && start_index < self.num_bits);
-        assert!(end_index >= 0 && end_index <= self.num_bits);
+        assert!(
+            start_index >= 0 && start_index < self.num_bits,
+            "startIndex={start_index}, numBits={}",
+            self.num_bits
+        );
+        assert!(
+            end_index >= 0 && end_index <= self.num_bits,
+            "endIndex={end_index}, numBits={}",
+            self.num_bits
+        );
         if end_index <= start_index {
             return;
         }
@@ -461,8 +507,16 @@ impl LongBitSet {
     ///
     /// Panics if the range is out of bounds or reversed.
     pub fn clear_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(start_index >= 0 && start_index < self.num_bits);
-        assert!(end_index >= 0 && end_index <= self.num_bits);
+        assert!(
+            start_index >= 0 && start_index < self.num_bits,
+            "startIndex={start_index}, numBits={}",
+            self.num_bits
+        );
+        assert!(
+            end_index >= 0 && end_index <= self.num_bits,
+            "endIndex={end_index}, numBits={}",
+            self.num_bits
+        );
         if end_index <= start_index {
             return;
         }

@@ -152,6 +152,7 @@ pub fn default_fill<M: PackedIntsMutable + ?Sized>(
     to_index: i32,
     val: i64,
 ) {
+    debug_assert!(val <= PackedInts::max_value(mutable.bits_per_value()));
     debug_assert!(from_index <= to_index);
     for i in from_index..to_index {
         mutable.set(i, val);

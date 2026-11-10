@@ -573,6 +573,7 @@ impl TermOrdValComparator {
             return Ok(());
         }
         debug_assert!(min_ord >= 0);
+        debug_assert!(max_ord < leaf.terms_index.get_value_count()?);
         self.competitive_state_update(leaf, min_ord, max_ord)
     }
 
@@ -669,6 +670,10 @@ impl TermOrdValComparator {
                     let mut shared = shared.borrow_mut();
                     if (size as usize) < shared.postings.len() {
                         // One or more ordinals were removed.
+                        debug_assert!(shared
+                            .postings
+                            .front()
+                            .is_none_or(|entry| entry.borrow().ord <= min_ord));
                         while shared
                             .postings
                             .front()
@@ -676,6 +681,10 @@ impl TermOrdValComparator {
                         {
                             shared.postings.pop_front();
                         }
+                        debug_assert!(shared
+                            .postings
+                            .back()
+                            .is_none_or(|entry| entry.borrow().ord >= max_ord));
                         while shared
                             .postings
                             .back()
@@ -726,11 +735,14 @@ fn init_postings(
         })));
         for ord in min_ord + 1..=max_ord {
             let next = terms_enum.next()?;
-            if next.is_none() {
+            let Some(next) = next else {
                 return Err(LuceneError::illegal_state(format!(
                     "Terms have more than {ord} unique terms while doc values have exactly {ord} terms"
                 )));
-            }
+            };
+            // `docValuesTerms.seekExact(next) && docValuesTerms.ord() == ord`:
+            // the doc values hold `next` at exactly this ordinal.
+            debug_assert!(terms_index.lookup_term(&next)? == ord);
             postings.push_back(Rc::new(RefCell::new(PostingsEnumAndOrd {
                 postings: terms_enum.postings(None, POSTINGS_ENUM_NONE)?,
                 ord,

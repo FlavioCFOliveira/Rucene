@@ -407,11 +407,10 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
             self.notify_refresh_listeners_before()?;
             let new_ref = self.source.refresh_if_needed(&reference)?;
             if let Some(new_ref) = new_ref {
-                if Arc::ptr_eq(&new_ref, &reference) {
-                    return Err(LuceneError::illegal_state(
-                        "refresh_if_needed should return None if refresh wasn't needed".to_string(),
-                    ));
-                }
+                debug_assert!(
+                    !Arc::ptr_eq(&new_ref, &reference),
+                    "refreshIfNeeded should return null if refresh wasn't needed"
+                );
                 match self.swap_reference(Some(Arc::clone(&new_ref))) {
                     Ok(()) => {
                         refreshed = true;

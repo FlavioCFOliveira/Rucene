@@ -1278,6 +1278,10 @@ impl<'a> BinaryColumnAdapter<'a> {
     ///
     /// Equivalent to `BinaryColumnAdapter.decodedString()`.
     fn decoded_string(&self) -> Option<String> {
+        debug_assert!(
+            matches!(self.source, BinarySource::Bytes(_)),
+            "decodedString() unreachable in token-stream mode"
+        );
         let BinarySource::Bytes(cursor) = &self.source else {
             // Java asserts this is unreachable in token-stream mode.
             return None;
@@ -1396,6 +1400,10 @@ impl IndexableField for BinaryColumnAdapter<'_> {
         let Some(stored_type) = self.stored_type else {
             return Ok(None);
         };
+        debug_assert!(
+            matches!(self.source, BinarySource::Bytes(_)),
+            "storedValue() unreachable in token-stream mode"
+        );
         let BinarySource::Bytes(cursor) = &self.source else {
             // Java asserts this is unreachable in token-stream mode.
             return Ok(None);

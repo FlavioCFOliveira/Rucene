@@ -4,7 +4,7 @@
 //! using one interval for the whole field, which keeps far more of the ranking
 //! at the same bit width.
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::index::VectorSimilarityFunction;
 
 /// Intervals that minimise mean squared error for a unit-variance Gaussian, one
@@ -236,16 +236,16 @@ impl OptimizedScalarQuantizer {
         bits: u8,
         centroid: &[f32],
     ) -> Result<QuantizationResult> {
-        if bits == 0 || bits > 8 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bits must be in [1, 8], got {bits}"
-            )));
-        }
-        if vector.len() > destination.len() || vector.len() != centroid.len() {
-            return Err(LuceneError::IllegalArgument(
-                "vector, destination and centroid lengths are inconsistent".to_string(),
-            ));
-        }
+        debug_assert!(
+            self.similarity_function != VectorSimilarityFunction::COSINE
+                || crate::util::vector_util::is_unit_vector(vector)
+        );
+        debug_assert!(
+            self.similarity_function != VectorSimilarityFunction::COSINE
+                || crate::util::vector_util::is_unit_vector(centroid)
+        );
+        debug_assert!(vector.len() <= destination.len());
+        debug_assert!(bits > 0 && bits <= 8);
 
         let points = 1i32 << bits;
         let mut vec_mean = 0.0f64;
@@ -324,11 +324,15 @@ impl OptimizedScalarQuantizer {
         bits: &[u8],
         centroid: &[f32],
     ) -> Result<Vec<QuantizationResult>> {
-        if bits.len() != destinations.len() {
-            return Err(LuceneError::IllegalArgument(
-                "bits and destinations must have the same length".to_string(),
-            ));
-        }
+        debug_assert!(
+            self.similarity_function != VectorSimilarityFunction::COSINE
+                || crate::util::vector_util::is_unit_vector(vector)
+        );
+        debug_assert!(
+            self.similarity_function != VectorSimilarityFunction::COSINE
+                || crate::util::vector_util::is_unit_vector(centroid)
+        );
+        debug_assert!(bits.len() == destinations.len());
         // The residual is shared across the widths, so it is computed once and
         // the vector is restored for each pass.
         let original = vector.to_vec();

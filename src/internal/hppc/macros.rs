@@ -3986,7 +3986,9 @@ macro_rules! define_max_sized_array_list {
             pub fn with_expected_elements(max_size: i32, expected_elements: i32) -> Self {
                 debug_assert!(
                     expected_elements <= max_size,
-                    "expectedElements must be <= maxSize"
+                    "expectedElements ({}) must be <= maxSize ({})",
+                    expected_elements,
+                    max_size
                 );
                 Self {
                     list: $base::with_expected_elements(expected_elements),

@@ -848,6 +848,8 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
             self.add_node(node_in)?
         };
 
+        debug_assert!(node != -2);
+
         let bytes_pos_end = self.num_bytes_written;
         if bytes_pos_end != bytes_pos_start {
             // The FST added a new node.

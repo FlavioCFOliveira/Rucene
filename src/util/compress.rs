@@ -183,7 +183,11 @@ impl OffsetTable {
 
     fn set(&mut self, index: usize, value: usize) {
         match self {
-            OffsetTable::U16(v) => v[index] = value as u16,
+            OffsetTable::U16(v) => {
+                // `Table16.set` (`LZ4.java:243-246`).
+                debug_assert!(value < 1 << 16);
+                v[index] = value as u16;
+            }
             OffsetTable::U32(v) => v[index] = value as u32,
         }
     }
@@ -260,8 +264,10 @@ impl Lz4HashTable for FastCompressionHashTable {
         let table_size = 1usize << self.hash_log;
         if self.table.size() < table_size || self.table.bits_per_value() < bits_per_offset {
             self.table = if bits_per_offset > 16 {
+                debug_assert!(bits_per_offset == 32);
                 OffsetTable::U32(vec![0; table_size])
             } else {
+                debug_assert!(bits_per_offset == 16);
                 OffsetTable::U16(vec![0; table_size])
             };
         }

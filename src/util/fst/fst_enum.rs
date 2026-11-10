@@ -4,7 +4,8 @@ use crate::error::Result;
 use crate::util::ArrayUtil;
 
 use super::fst::{
-    Arc, BitTable, BytesReader, ARCS_FOR_BINARY_SEARCH, ARCS_FOR_DIRECT_ADDRESSING, END_LABEL, FST,
+    Arc, BitTable, BytesReader, ARCS_FOR_BINARY_SEARCH, ARCS_FOR_CONTINUOUS,
+    ARCS_FOR_DIRECT_ADDRESSING, END_LABEL, FST,
 };
 use super::outputs::Outputs;
 use super::util::binary_search;
@@ -234,6 +235,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
                 } else if node_flags == ARCS_FOR_BINARY_SEARCH {
                     self.do_seek_ceil_array_packed(target, target_label, &mut *input)?
                 } else {
+                    debug_assert!(node_flags == ARCS_FOR_CONTINUOUS);
                     self.do_seek_ceil_array_continuous(target, target_label, &mut *input)?
                 }
             } else {
@@ -262,10 +264,12 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         }
         if target_index < 0 {
             fst.read_arc_by_continuous(&mut self.arcs[upto], input, 0)?;
+            debug_assert!(self.arcs[upto].label() > target_label);
             self.push_first(target)?;
             return Ok(false);
         }
         fst.read_arc_by_continuous(&mut self.arcs[upto], input, target_index)?;
+        debug_assert!(self.arcs[upto].label() == target_label);
         self.accumulate_output();
         if target_label == END_LABEL {
             return Ok(false);
@@ -300,6 +304,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
             target_index = -1;
         } else if BitTable::is_bit_set(target_index, &self.arcs[upto], input)? {
             fst.read_arc_by_direct_addressing(&mut self.arcs[upto], input, target_index)?;
+            debug_assert!(self.arcs[upto].label() == target_label);
             self.accumulate_output();
             if target_label == END_LABEL {
                 return Ok(false);
@@ -314,8 +319,9 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         }
         // Not found: return the next arc, the ceiling.
         let ceil_index = BitTable::next_bit_set(target_index, &self.arcs[upto], input)?;
-        debug_assert_ne!(ceil_index, -1);
+        debug_assert!(ceil_index != -1);
         fst.read_arc_by_direct_addressing(&mut self.arcs[upto], input, ceil_index)?;
+        debug_assert!(self.arcs[upto].label() > target_label);
         self.push_first(target)?;
         Ok(false)
     }
@@ -335,6 +341,12 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         if idx >= 0 {
             // Match.
             fst.read_arc_by_index(&mut self.arcs[upto], input, idx)?;
+            debug_assert!(self.arcs[upto].arc_idx() == idx);
+            debug_assert!(
+                self.arcs[upto].label() == target_label,
+                "arc.label={} vs targetLabel={target_label} mid={idx}",
+                self.arcs[upto].label()
+            );
             self.accumulate_output();
             if target_label == END_LABEL {
                 return Ok(false);
@@ -358,6 +370,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         } else {
             // Ceiling: the arc with the least higher label.
             fst.read_arc_by_index(&mut self.arcs[upto], input, idx)?;
+            debug_assert!(self.arcs[upto].label() > target_label);
             self.push_first(target)?;
             Ok(false)
         }
@@ -432,6 +445,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
                 } else if node_flags == ARCS_FOR_BINARY_SEARCH {
                     self.do_seek_floor_array_packed(target, target_label, &mut *input)?
                 } else {
+                    debug_assert!(node_flags == ARCS_FOR_CONTINUOUS);
                     self.do_seek_floor_continuous(target, target_label, &mut *input)?
                 }
             } else {
@@ -460,11 +474,14 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         } else if target_index >= self.arcs[upto].num_arcs() {
             // After the last arc.
             fst.read_last_arc_by_continuous(&mut self.arcs[upto], input)?;
+            debug_assert!(self.arcs[upto].label() < target_label);
+            debug_assert!(self.arcs[upto].is_last());
             self.push_last(target)?;
             return Ok(false);
         }
         // Within the label range.
         fst.read_arc_by_continuous(&mut self.arcs[upto], input, target_index)?;
+        debug_assert!(self.arcs[upto].label() == target_label);
         self.accumulate_output();
         if target_label == END_LABEL {
             return Ok(false);
@@ -497,12 +514,15 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         } else if target_index >= self.arcs[upto].num_arcs() {
             // After the last arc.
             fst.read_last_arc_by_direct_addressing(&mut self.arcs[upto], input)?;
+            debug_assert!(self.arcs[upto].label() < target_label);
+            debug_assert!(self.arcs[upto].is_last());
             self.push_last(target)?;
             return Ok(false);
         }
         // Within the label range.
         if BitTable::is_bit_set(target_index, &self.arcs[upto], input)? {
             fst.read_arc_by_direct_addressing(&mut self.arcs[upto], input, target_index)?;
+            debug_assert!(self.arcs[upto].label() == target_label);
             self.accumulate_output();
             if target_label == END_LABEL {
                 return Ok(false);
@@ -517,8 +537,13 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         }
         // Scan backwards to find a floor arc.
         let floor_index = BitTable::previous_bit_set(target_index, &self.arcs[upto], input)?;
-        debug_assert_ne!(floor_index, -1);
+        debug_assert!(floor_index != -1);
         fst.read_arc_by_direct_addressing(&mut self.arcs[upto], input, floor_index)?;
+        debug_assert!(self.arcs[upto].label() < target_label);
+        debug_assert!(
+            self.arcs[upto].is_last()
+                || fst.read_next_arc_label(&self.arcs[upto], input)? > target_label
+        );
         self.push_last(target)?;
         Ok(false)
     }
@@ -575,6 +600,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
                         } else if node_flags == ARCS_FOR_DIRECT_ADDRESSING {
                             self.find_next_floor_arc_direct_addressing(target_label, input)?;
                         } else {
+                            debug_assert!(node_flags == ARCS_FOR_CONTINUOUS);
                             self.find_next_floor_arc_continuous(target_label, input)?;
                         }
                     } else {
@@ -585,6 +611,11 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
                         }
                     }
                 }
+                debug_assert!(self.arcs[upto].label() < target_label);
+                debug_assert!(
+                    self.arcs[upto].is_last()
+                        || fst.read_next_arc_label(&self.arcs[upto], input)? >= target_label
+                );
                 self.push_last(target)?;
                 return Ok(false);
             }
@@ -609,6 +640,9 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         let fst_handle = self.fst.clone();
         let fst = fst_handle.get();
         let upto = self.upto;
+        debug_assert!(self.arcs[upto].node_flags() == ARCS_FOR_DIRECT_ADDRESSING);
+        debug_assert!(self.arcs[upto].label() != END_LABEL);
+        debug_assert!(self.arcs[upto].label() == self.arcs[upto].first_label());
         if self.arcs[upto].num_arcs() > 1 {
             let target_index = target_label - self.arcs[upto].first_label();
             debug_assert!(target_index >= 0);
@@ -639,6 +673,9 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         let fst_handle = self.fst.clone();
         let fst = fst_handle.get();
         let upto = self.upto;
+        debug_assert!(self.arcs[upto].node_flags() == ARCS_FOR_CONTINUOUS);
+        debug_assert!(self.arcs[upto].label() != END_LABEL);
+        debug_assert!(self.arcs[upto].label() == self.arcs[upto].first_label());
         if self.arcs[upto].num_arcs() > 1 {
             let target_index = target_label - self.arcs[upto].first_label();
             debug_assert!(target_index >= 0);
@@ -664,9 +701,12 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         let fst_handle = self.fst.clone();
         let fst = fst_handle.get();
         let upto = self.upto;
+        debug_assert!(self.arcs[upto].node_flags() == ARCS_FOR_BINARY_SEARCH);
+        debug_assert!(self.arcs[upto].label() != END_LABEL);
+        debug_assert!(self.arcs[upto].arc_idx() == 0);
         if self.arcs[upto].num_arcs() > 1 {
             let idx = binary_search(fst, &self.arcs[upto], target_label)?;
-            debug_assert_ne!(idx, -1);
+            debug_assert!(idx != -1);
             if idx > 1 {
                 fst.read_arc_by_index(&mut self.arcs[upto], input, idx - 1)?;
             } else if idx < -2 {
@@ -692,6 +732,12 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         if idx >= 0 {
             // Match: recurse.
             fst.read_arc_by_index(&mut self.arcs[upto], input, idx)?;
+            debug_assert!(self.arcs[upto].arc_idx() == idx);
+            debug_assert!(
+                self.arcs[upto].label() == target_label,
+                "arc.label={} vs targetLabel={target_label} mid={idx}",
+                self.arcs[upto].label()
+            );
             self.accumulate_output();
             if target_label == END_LABEL {
                 return Ok(false);
@@ -709,6 +755,15 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         } else {
             // There is a floor arc; idx is -1 - (floor + 1).
             fst.read_arc_by_index(&mut self.arcs[upto], input, -2 - idx)?;
+            debug_assert!(
+                self.arcs[upto].is_last()
+                    || fst.read_next_arc_label(&self.arcs[upto], input)? > target_label
+            );
+            debug_assert!(
+                self.arcs[upto].label() < target_label,
+                "arc.label={} vs targetLabel={target_label}",
+                self.arcs[upto].label()
+            );
             self.push_last(target)?;
             Ok(false)
         }

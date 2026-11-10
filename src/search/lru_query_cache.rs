@@ -577,6 +577,8 @@ impl CacheState {
         key: &Arc<dyn Query>,
         reader_key: usize,
     ) -> Option<CacheAndCount> {
+        debug_assert!(!is_boost_query(key.as_ref()));
+        debug_assert!(!is_constant_score_query(key.as_ref()));
         let Some(leaf_cache) = cache.get(&reader_key) else {
             self.on_miss(reader_key, key);
             return None;
@@ -593,6 +595,9 @@ impl CacheState {
             self.on_miss(reader_key, key);
             return None;
         };
+        // `LeafCache.get(Query)` (`LRUQueryCache.java:727-731`).
+        debug_assert!(!is_boost_query(singleton.as_ref()));
+        debug_assert!(!is_constant_score_query(singleton.as_ref()));
         let cached = leaf_cache
             .cache
             .get(&QueryKey::new(Arc::clone(&singleton)))
@@ -612,6 +617,8 @@ impl CacheState {
         cached: CacheAndCount,
         cache_helper: &dyn CacheHelper,
     ) {
+        debug_assert!(!is_boost_query(query.as_ref()));
+        debug_assert!(!is_constant_score_query(query.as_ref()));
         // Under the write lock, so that the query map and the leaf caches stay
         // in sync.
         let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
@@ -630,7 +637,8 @@ impl CacheState {
         };
         let key = cache_key_identity(cache_helper);
         if !cache.contains_key(&key) {
-            cache.insert(key, LeafCache::new());
+            let previous = cache.insert(key, LeafCache::new());
+            debug_assert!(previous.is_none());
             self.ram_bytes_used
                 .fetch_add(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
             // We just created a new leaf cache, so we need to register a close
@@ -643,6 +651,9 @@ impl CacheState {
         let leaf_cache = cache
             .get_mut(&key)
             .expect("INVARIANT: the leaf cache was just inserted if it was missing");
+        // `LeafCache.putIfAbsent(Query, CacheAndCount)` (`LRUQueryCache.java:733-741`).
+        debug_assert!(!is_boost_query(query.as_ref()));
+        debug_assert!(!is_constant_score_query(query.as_ref()));
         let query_key = QueryKey::new(query);
         if !leaf_cache.cache.contains_key(&query_key) {
             let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ram_bytes_used();
@@ -676,6 +687,10 @@ impl CacheState {
     /// Equivalent to the private `LRUQueryCache.onEviction(Query)`.
     fn on_eviction(&self, cache: &mut HashMap<usize, LeafCache>, singleton: &Arc<dyn Query>) {
         self.on_query_eviction(singleton, query_ram_bytes_used(singleton.as_ref()));
+        // `LeafCache.remove(Query)` (`LRUQueryCache.java:743-751`), for every
+        // leaf.
+        debug_assert!(!is_boost_query(singleton.as_ref()));
+        debug_assert!(!is_constant_score_query(singleton.as_ref()));
         let key = QueryKey::new(Arc::clone(singleton));
         for (core_key, leaf_cache) in cache.iter_mut() {
             if let Some(removed) = leaf_cache.cache.remove(&key) {
@@ -685,6 +700,22 @@ impl CacheState {
             }
         }
     }
+}
+
+/// `query instanceof BoostQuery`, which Lucene's cache asserts is false: a
+/// cached query is always the unwrapped one.
+fn is_boost_query(query: &dyn Query) -> bool {
+    query
+        .as_any()
+        .is::<crate::search::boost_query::BoostQuery>()
+}
+
+/// `query instanceof ConstantScoreQuery`, which Lucene's cache asserts is
+/// false.
+fn is_constant_score_query(query: &dyn Query) -> bool {
+    query
+        .as_any()
+        .is::<crate::search::constant_score_query::ConstantScoreQuery>()
 }
 
 /// The listener that drops a leaf's entries when its reader core closes.
@@ -714,6 +745,7 @@ fn clear_core_cache_key(state: &Arc<CacheState>, core_key: usize) {
         if num_entries > 0 {
             state.on_doc_id_set_eviction(core_key, num_entries as i32, leaf_cache.ram_bytes_used);
         } else {
+            debug_assert!(num_entries == 0);
             debug_assert_eq!(leaf_cache.ram_bytes_used, 0);
         }
     }

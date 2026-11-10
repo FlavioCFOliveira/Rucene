@@ -284,6 +284,7 @@ impl crate::index::index_sorter::SortFieldProvider for Provider {
         sort_field: &crate::search::SortField,
         output: &mut dyn crate::store::DataOutput,
     ) -> Result<()> {
+        debug_assert!(matches!(sort_field.kind(), SortFieldKind::SortedSet { .. }));
         SortedSetSortField::from_sort_field(sort_field.clone())?.serialize(output)
     }
 }

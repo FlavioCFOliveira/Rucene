@@ -411,13 +411,13 @@ fn get_random_point_writer(
             usize::try_from(num_points).expect("Math.toIntExact"),
         )?))
     } else {
-        // `new OfflinePointWriter(config, dir, "test", "data", numPoints)`:
-        // the port's writer takes no expected count.
+        // `new OfflinePointWriter(config, dir, "test", "data", numPoints)`.
         Ok(Box::new(OfflinePointWriter::new(
             config.clone(),
             dir.as_directory(),
             "test",
             "data",
+            num_points as u64,
         )?))
     }
 }

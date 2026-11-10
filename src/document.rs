@@ -3253,6 +3253,7 @@ impl IndexableField for IntPoint {
     fn numeric_value(&self) -> Option<NumericValue> {
         if self.field_type.point_dimension_count() == 1 {
             if let Some(bytes) = self.binary_value() {
+                debug_assert!(bytes.length == std::mem::size_of::<i32>());
                 let value = Self::decode_dimension(bytes.slice(), 0);
                 return Some(NumericValue::Int(value));
             }
@@ -3511,6 +3512,7 @@ impl IndexableField for LongPoint {
     fn numeric_value(&self) -> Option<NumericValue> {
         if self.field_type.point_dimension_count() == 1 {
             if let Some(bytes) = self.binary_value() {
+                debug_assert!(bytes.length == std::mem::size_of::<i64>());
                 let value = Self::decode_dimension(bytes.slice(), 0);
                 return Some(NumericValue::Long(value));
             }
@@ -3852,6 +3854,7 @@ impl IndexableField for FloatPoint {
     fn numeric_value(&self) -> Option<NumericValue> {
         if self.field_type.point_dimension_count() == 1 {
             if let Some(bytes) = self.binary_value() {
+                debug_assert!(bytes.length == std::mem::size_of::<f32>());
                 let value = Self::decode_dimension(bytes.slice(), 0);
                 return Some(NumericValue::Float(value));
             }
@@ -4121,6 +4124,7 @@ impl IndexableField for DoublePoint {
     fn numeric_value(&self) -> Option<NumericValue> {
         if self.field_type.point_dimension_count() == 1 {
             if let Some(bytes) = self.binary_value() {
+                debug_assert!(bytes.length == std::mem::size_of::<f64>());
                 let value = Self::decode_dimension(bytes.slice(), 0);
                 return Some(NumericValue::Double(value));
             }
@@ -8446,6 +8450,7 @@ impl crate::search::DimensionFormatter for IntPointFormatter {
 
 impl crate::search::PointFormatter for IntPointFormatter {
     fn format(&self, value: &[u8]) -> String {
+        debug_assert!(value.len() == std::mem::size_of::<i32>());
         IntPoint::decode_dimension(value, 0).to_string()
     }
 
@@ -8470,6 +8475,7 @@ impl crate::search::DimensionFormatter for LongPointFormatter {
 
 impl crate::search::PointFormatter for LongPointFormatter {
     fn format(&self, value: &[u8]) -> String {
+        debug_assert!(value.len() == std::mem::size_of::<i64>());
         LongPoint::decode_dimension(value, 0).to_string()
     }
 
@@ -8494,6 +8500,7 @@ impl crate::search::DimensionFormatter for FloatPointFormatter {
 
 impl crate::search::PointFormatter for FloatPointFormatter {
     fn format(&self, value: &[u8]) -> String {
+        debug_assert!(value.len() == std::mem::size_of::<f32>());
         FloatPoint::decode_dimension(value, 0).to_string()
     }
 
@@ -8518,6 +8525,7 @@ impl crate::search::DimensionFormatter for DoublePointFormatter {
 
 impl crate::search::PointFormatter for DoublePointFormatter {
     fn format(&self, value: &[u8]) -> String {
+        debug_assert!(value.len() == std::mem::size_of::<f64>());
         DoublePoint::decode_dimension(value, 0).to_string()
     }
 

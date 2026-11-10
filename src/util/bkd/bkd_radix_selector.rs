@@ -678,6 +678,7 @@ impl BKDRadixSelector {
                 self.temp_dir.clone(),
                 &self.temp_file_name_prefix,
                 &format!("delta{}", iteration),
+                delta as u64,
             )?))
         }
     }
@@ -719,6 +720,7 @@ impl BKDRadixSelector {
                 self.temp_dir.clone(),
                 &self.temp_file_name_prefix,
                 desc,
+                count as u64,
             )?))
         }
     }

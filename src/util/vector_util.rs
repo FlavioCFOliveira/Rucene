@@ -117,7 +117,9 @@ fn check_same_dimensions<T, U>(a: &[T], b: &[U]) -> Result<()> {
 /// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
 pub fn dot_product_f32(a: &[f32], b: &[f32]) -> Result<f32> {
     check_same_dimensions(a, b)?;
-    Ok(dot_product_f32_unchecked(a, b))
+    let r = dot_product_f32_unchecked(a, b);
+    debug_assert!(r.is_finite(), "not finite: {r} from <{a:?},{b:?}>");
+    Ok(r)
 }
 
 /// [`dot_product_f32`] without the dimension check.
@@ -202,7 +204,9 @@ pub fn cosine_f32(a: &[f32], b: &[f32]) -> Result<f32> {
         i += 1;
     }
 
-    Ok((f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32)
+    let r = (f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32;
+    debug_assert!(r.is_finite());
+    Ok(r)
 }
 
 /// Returns the sum of squared differences of two float vectors.
@@ -249,6 +253,7 @@ pub fn square_distance_f32(a: &[f32], b: &[f32]) -> Result<f32> {
         res = fma(diff, diff, res);
         i += 1;
     }
+    debug_assert!(res.is_finite());
     Ok(res)
 }
 
@@ -1061,7 +1066,15 @@ mod tests {
 
     #[test]
     fn cosine_of_a_zero_vector_is_nan_like_java() {
-        assert!(cosine_f32(&[0.0, 0.0], &[1.0, 1.0]).unwrap().is_nan());
+        // `VectorUtil.cosine(float[], float[])` asserts a finite result
+        // (`VectorUtil.java:89`): under `-ea`, as in a debug build, the zero
+        // vector fails that assertion; without it the result is NaN.
+        if cfg!(debug_assertions) {
+            let zero = std::panic::catch_unwind(|| cosine_f32(&[0.0, 0.0], &[1.0, 1.0]));
+            assert!(zero.is_err());
+        } else {
+            assert!(cosine_f32(&[0.0, 0.0], &[1.0, 1.0]).unwrap().is_nan());
+        }
         assert!(cosine_bytes(&[0, 0], &[1, 1]).unwrap().is_nan());
     }
 

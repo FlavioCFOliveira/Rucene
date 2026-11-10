@@ -521,6 +521,27 @@ impl BitTable {
         input.set_position(arc.bit_table_start);
         BitTableUtil::previous_bit_set(bit_index, input)
     }
+
+    /// Asserts the bit table of the provided arc is valid.
+    ///
+    /// Equivalent to `FST.Arc.BitTable.assertIsValid` (`FST.java:395-405`),
+    /// which Lucene calls only from assertions; like it, the checks move the
+    /// reader's position.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised by the reader.
+    pub fn assert_is_valid<T>(arc: &Arc<T>, input: &mut dyn BytesReader) -> Result<bool> {
+        debug_assert!(arc.bytes_per_arc > 0);
+        debug_assert!(arc.node_flags() == ARCS_FOR_DIRECT_ADDRESSING);
+        // First bit must be set.
+        debug_assert!(Self::is_bit_set(0, arc, input)?);
+        // Last bit must be set.
+        debug_assert!(Self::is_bit_set(arc.num_arcs() - 1, arc, input)?);
+        // No bit set after the last arc.
+        debug_assert!(Self::next_bit_set(arc.num_arcs() - 1, arc, input)? == -1);
+        Ok(true)
+    }
 }
 
 /// Metadata of a serialized FST.
@@ -1218,8 +1239,10 @@ impl<O: Outputs> FST<O> {
                 ARCS_FOR_DIRECT_ADDRESSING => {
                     // Direct addressing node: the label is not stored but
                     // inferred from the first label and the arc index.
+                    debug_assert!(BitTable::assert_is_valid(arc, input)?);
+                    debug_assert!(BitTable::is_bit_set(arc.arc_idx, arc, input)?);
                     let next_index = BitTable::next_bit_set(arc.arc_idx, arc, input)?;
-                    debug_assert_ne!(next_index, -1);
+                    debug_assert!(next_index != -1);
                     return Ok(arc.first_label + next_index);
                 }
                 ARCS_FOR_CONTINUOUS => {
@@ -1295,7 +1318,9 @@ impl<O: Outputs> FST<O> {
         input: &mut dyn BytesReader,
         range_index: i32,
     ) -> Result<()> {
+        debug_assert!(BitTable::assert_is_valid(arc, input)?);
         debug_assert!(range_index >= 0 && range_index < arc.num_arcs);
+        debug_assert!(BitTable::is_bit_set(range_index, arc, input)?);
         let presence_index = BitTable::count_bits_up_to(range_index, arc, input)?;
         self.read_arc_by_direct_addressing_with_presence(arc, input, range_index, presence_index)
     }
@@ -1330,6 +1355,7 @@ impl<O: Outputs> FST<O> {
         arc: &mut Arc<O::Output>,
         input: &mut dyn BytesReader,
     ) -> Result<()> {
+        debug_assert!(BitTable::assert_is_valid(arc, input)?);
         let presence_index = BitTable::count_bits(arc, input)? - 1;
         let range_index = arc.num_arcs - 1;
         self.read_arc_by_direct_addressing_with_presence(arc, input, range_index, presence_index)
@@ -1374,6 +1400,8 @@ impl<O: Outputs> FST<O> {
                 arc.flags = input.read_byte()?;
             }
             ARCS_FOR_DIRECT_ADDRESSING => {
+                debug_assert!(BitTable::assert_is_valid(arc, input)?);
+                debug_assert!(arc.arc_idx == -1 || BitTable::is_bit_set(arc.arc_idx, arc, input)?);
                 let next_index = BitTable::next_bit_set(arc.arc_idx, arc, input)?;
                 let presence_index = arc.presence_index + 1;
                 return self.read_arc_by_direct_addressing_with_presence(

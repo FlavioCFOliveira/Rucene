@@ -97,7 +97,12 @@ impl Outputs for CharSequenceOutputs {
         } else if inc.length == output.length {
             self.no_output()
         } else {
-            debug_assert!(inc.length < output.length);
+            debug_assert!(
+                inc.length < output.length,
+                "inc.length={} vs output.length={}",
+                inc.length,
+                output.length
+            );
             CharsRef::from_chars(output.chars()[inc.length..].to_vec())
         }
     }

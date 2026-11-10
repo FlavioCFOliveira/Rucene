@@ -202,6 +202,7 @@ impl MatchesIterator for TermsEnumDisjunctionMatchesIterator {
         if self.it.is_none() {
             self.init()?;
         }
+        debug_assert!(self.it.is_some());
         match self.it.as_mut() {
             // `fromSubIterators` cannot answer `null` here: the list always
             // holds the first matching term.

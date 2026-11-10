@@ -56,10 +56,12 @@ impl<O1: Outputs, O2: Outputs> PairOutputs<O1, O2> {
     ///
     /// Equivalent to `PairOutputs.newPair`.
     pub fn new_pair(&self, a: O1::Output, b: O2::Output) -> Pair<O1::Output, O2::Output> {
-        Pair {
+        let p = Pair {
             output1: a,
             output2: b,
-        }
+        };
+        debug_assert!(self.valid(&p));
+        p
     }
 
     /// Returns whether `pair` is a well-formed output of this pair.
@@ -160,6 +162,7 @@ impl<O1: Outputs, O2: Outputs> Outputs for PairOutputs<O1, O2> {
     }
 
     fn output_to_string(&self, output: &Self::Output) -> String {
+        debug_assert!(self.valid(output));
         format!(
             "<pair:{},{}>",
             self.outputs1.output_to_string(&output.output1),

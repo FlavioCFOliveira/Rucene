@@ -279,6 +279,11 @@ impl<B: AsRef<[Vec<u8>]>> BytesReader for BlockReverseBytesReader<B> {
             }
         }
         self.next_read = (pos as usize & self.block_mask) as i64;
+        debug_assert!(
+            self.position() == pos,
+            "pos={pos} getPos()={}",
+            self.position()
+        );
     }
 
     fn as_data_input(&mut self) -> &mut dyn DataInput {

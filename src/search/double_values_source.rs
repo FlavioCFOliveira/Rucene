@@ -293,6 +293,7 @@ impl DoubleValuesSource for ScoresValuesSource {
         _ctx: &LeafReaderContext,
         scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
+        debug_assert!(scores.is_some());
         scores.ok_or_else(|| {
             LuceneError::illegal_state("DoubleValuesSource.SCORES requires scores".to_string())
         })

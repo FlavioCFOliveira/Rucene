@@ -151,12 +151,22 @@ impl FieldExistsQuery {
         reader: &dyn LeafReader,
     ) -> Result<i32> {
         Ok(match encoding {
-            VectorEncoding::FLOAT32 => reader
-                .get_float_vector_values(field)?
-                .map_or(0, |values| values.size()),
-            VectorEncoding::BYTE => reader
-                .get_byte_vector_values(field)?
-                .map_or(0, |values| values.size()),
+            VectorEncoding::FLOAT32 => {
+                let float_vector_values = reader.get_float_vector_values(field)?;
+                debug_assert!(
+                    float_vector_values.is_some(),
+                    "unexpected null float vector values"
+                );
+                float_vector_values.map_or(0, |values| values.size())
+            }
+            VectorEncoding::BYTE => {
+                let byte_vector_values = reader.get_byte_vector_values(field)?;
+                debug_assert!(
+                    byte_vector_values.is_some(),
+                    "unexpected null byte vector values"
+                );
+                byte_vector_values.map_or(0, |values| values.size())
+            }
         })
     }
 }

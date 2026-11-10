@@ -148,6 +148,26 @@ struct TopTermsCollector {
     visited_terms: HashMap<Vec<u8>, ScoreTerm>,
     top_reader_context: Option<Arc<dyn IndexReaderContext>>,
     reader_ord: usize,
+    /// Java's `lastTerm`, kept "for assert" by `compareToLastTerm`.
+    last_term: Option<BytesRef>,
+}
+
+impl TopTermsCollector {
+    /// Equivalent to the assertion helper `compareToLastTerm(BytesRef)` of
+    /// Java's anonymous collector (`TopTermsRewrite.java:93-104`): `None`
+    /// resets the last term, and each term of a segment must sort after the
+    /// previous one.
+    fn compare_to_last_term(&mut self, t: Option<&BytesRef>) -> bool {
+        match (self.last_term.as_mut(), t) {
+            (None, Some(t)) => self.last_term = Some(BytesRef::deep_copy_of(t)),
+            (_, None) => self.last_term = None,
+            (Some(last_term), Some(t)) => {
+                debug_assert!(last_term.slice() < t.slice(), "lastTerm={last_term} t={t}");
+                *last_term = BytesRef::deep_copy_of(t);
+            }
+        }
+        true
+    }
 }
 
 impl TermCollector for TopTermsCollector {
@@ -166,12 +186,16 @@ impl TermCollector for TopTermsCollector {
     }
 
     fn set_next_enum(&mut self, terms_enum: &mut dyn TermsEnum) -> Result<()> {
+        debug_assert!(self.compare_to_last_term(None));
         add_boost_attribute(terms_enum.attributes());
         Ok(())
     }
 
     fn collect(&mut self, bytes: &BytesRef, terms_enum: &mut dyn TermsEnum) -> Result<bool> {
         let boost = boost_of(terms_enum.attributes());
+
+        // make sure within a single seg we always collect terms in order
+        debug_assert!(self.compare_to_last_term(Some(bytes)));
 
         // Ignore uncompetitive hits.
         if self.queue.len() == self.max_size {
@@ -213,6 +237,7 @@ impl TermCollector for TopTermsCollector {
             .as_ref()
             .expect("INVARIANT: set_reader_context runs before collect");
         let mut term_state = TermStates::new(top)?;
+        debug_assert!(term_state.doc_freq()? == 0);
         term_state.register(state, self.reader_ord, doc_freq, total_term_freq);
         let bytes = BytesRef::deep_copy_of(bytes);
         let index = self.entries.len();
@@ -290,6 +315,7 @@ where
         visited_terms: HashMap::new(),
         top_reader_context: None,
         reader_ord: 0,
+        last_term: None,
     };
     collect_terms(index_searcher, rewrite, query, &mut collector)?;
 

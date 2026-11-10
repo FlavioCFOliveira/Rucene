@@ -507,6 +507,7 @@ impl BytesRefBuilder {
 
     /// Replaces the content with a copy of the provided bytes.
     pub fn copy_bytes(&mut self, b: &[u8], off: usize, len: usize) {
+        debug_assert!(self.inner.offset == 0);
         self.inner.offset = 0;
         self.inner.length = len;
         self.grow_no_copy(len);
@@ -2401,8 +2402,9 @@ impl IOUtils {
             fn post_visit_directory(
                 &mut self,
                 dir: &nio::Path,
-                _impossible: Option<io::Error>,
+                impossible: Option<io::Error>,
             ) -> io::Result<nio::FileVisitResult> {
+                debug_assert!(impossible.is_none());
                 if let Err(e) = nio::Files::delete(dir) {
                     self.put(dir, e);
                 }
@@ -3696,7 +3698,10 @@ impl InfoStream for NoOutputInfoStream {
     }
 
     fn message(&self, _component: &str, _message: &str) {
-        // No-op: `message()` should never be called when `is_enabled` is false.
+        debug_assert!(
+            false,
+            "message() should not be called when isEnabled returns false"
+        );
     }
 
     fn is_enabled(&self, _component: &str) -> bool {
@@ -4115,7 +4120,11 @@ impl FixedBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn set(&mut self, index: usize) {
-        assert!(index < self.num_bits, "index {} out of bounds", index);
+        assert!(
+            index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
         self.or_word(word, mask);
@@ -4127,7 +4136,11 @@ impl FixedBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn clear(&mut self, index: usize) {
-        assert!(index < self.num_bits, "index {} out of bounds", index);
+        assert!(
+            index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
         self.and_word(word, !mask);
@@ -4179,12 +4192,19 @@ impl FixedBitSet {
     ///
     /// Equivalent to `FixedBitSet.set(long, long)`.
     ///
-    /// # Panics
-    ///
-    /// Panics if `from > to` or `to` exceeds the bit-set length.
+    /// Java only asserts the bounds (`FixedBitSet.java:776-780`) and does
+    /// nothing for an empty or reversed range; so does this port.
     pub fn set_range(&mut self, from: usize, to: usize) {
-        assert!(from <= to, "from {from} > to {to}");
-        assert!(to <= self.num_bits, "to {to} out of bounds");
+        debug_assert!(
+            from < self.num_bits,
+            "startIndex={from}, numBits={}",
+            self.num_bits
+        );
+        debug_assert!(
+            to <= self.num_bits,
+            "endIndex={to}, numBits={}",
+            self.num_bits
+        );
         if to <= from {
             return;
         }
@@ -4704,7 +4724,11 @@ impl FixedBitSet {
 
     /// Equivalent to the private `FixedBitSet.xor(long[], int)`.
     fn xor_bits(&mut self, other_bits: &[AtomicU64], other_num_words: usize) {
-        debug_assert!(other_num_words <= self.num_words);
+        debug_assert!(
+            other_num_words <= self.num_words,
+            "numWords={}, other.numWords={other_num_words}",
+            self.num_words
+        );
         let mut pos = self.num_words.min(other_num_words);
         while pos > 0 {
             pos -= 1;
@@ -4888,7 +4912,11 @@ impl FixedBitSet {
     ///
     /// Equivalent to `FixedBitSet.flip(int)`.
     pub fn flip(&mut self, index: usize) {
-        debug_assert!(index < self.num_bits);
+        debug_assert!(
+            index < self.num_bits,
+            "index={index} numBits={}",
+            self.num_bits
+        );
         let word_num = index >> 6;
         let bitmask = 1u64 << (index & 63);
         self.xor_word(word_num, bitmask);
@@ -4898,8 +4926,16 @@ impl FixedBitSet {
     ///
     /// Equivalent to `FixedBitSet.clear(int, int)`.
     pub fn clear_range(&mut self, start_index: usize, end_index: usize) {
-        debug_assert!(start_index < self.num_bits);
-        debug_assert!(end_index <= self.num_bits);
+        debug_assert!(
+            start_index < self.num_bits,
+            "startIndex={start_index}, numBits={}",
+            self.num_bits
+        );
+        debug_assert!(
+            end_index <= self.num_bits,
+            "endIndex={end_index}, numBits={}",
+            self.num_bits
+        );
         if end_index <= start_index {
             return;
         }

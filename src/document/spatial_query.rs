@@ -860,7 +860,9 @@ impl SpatialQuery {
     /// Propagates whatever the point tree raises.
     pub fn cost(&self, values: &dyn PointValues, visitor: &dyn SpatialVisitor) -> Result<i64> {
         let mut estimate = self.get_estimate_visitor(visitor);
-        values.estimate_doc_count(&mut estimate)
+        let cost = values.estimate_doc_count(&mut estimate)?;
+        debug_assert!(cost >= 0);
+        Ok(cost)
     }
 
     /// Builds the [`Component2D`] a query relates its candidates against.

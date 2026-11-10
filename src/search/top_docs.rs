@@ -133,6 +133,7 @@ struct ScoreMergeSortQueue<'a> {
 impl<'a> PriorityQueueComparator<ShardRef> for ScoreMergeSortQueue<'a> {
     /// Returns `true` if `first` is less than `second`.
     fn less_than(&self, first: &ShardRef, second: &ShardRef) -> bool {
+        debug_assert!(!std::ptr::eq(first, second));
         let first_score_doc = &self.shard_hits[first.shard_index][first.hit_index];
         let second_score_doc = &self.shard_hits[second.shard_index][second.hit_index];
         if first_score_doc.score < second_score_doc.score {
@@ -164,6 +165,7 @@ struct MergeSortQueue<'a> {
 impl PriorityQueueComparator<ShardRef> for MergeSortQueue<'_> {
     /// Returns `true` if `first` is less than `second`.
     fn less_than(&self, first: &ShardRef, second: &ShardRef) -> bool {
+        debug_assert!(!std::ptr::eq(first, second));
         let first_fd = &self.shard_hits[first.shard_index][first.hit_index];
         let second_fd = &self.shard_hits[second.shard_index][second.hit_index];
 
@@ -306,6 +308,7 @@ impl TopDocs {
             let num_iter_on_hits = avail_hit_count.min(requested_result_window);
             let mut hit_upto = 0usize;
             while hit_upto < num_iter_on_hits {
+                debug_assert!(queue.size() > 0);
                 let mut shard_ref = *queue.top().ok_or_else(|| {
                     LuceneError::illegal_state("merge queue is empty".to_string())
                 })?;
@@ -455,6 +458,7 @@ impl TopDocs {
             let num_iter_on_hits = avail_hit_count.min(requested_result_window);
             let mut hit_upto = 0usize;
             while hit_upto < num_iter_on_hits {
+                debug_assert!(queue.size() > 0);
                 let mut shard_ref = *queue.top().ok_or_else(|| {
                     LuceneError::illegal_state("merge queue is empty".to_string())
                 })?;

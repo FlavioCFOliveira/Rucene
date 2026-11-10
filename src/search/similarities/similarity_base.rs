@@ -111,6 +111,9 @@ pub fn fill_basic_stats(
     collection_stats: &CollectionStatistics,
     term_stats: &TermStatistics,
 ) {
+    // TODO: validate this for real, somewhere else
+    debug_assert!(term_stats.total_term_freq() <= collection_stats.sum_total_term_freq());
+    debug_assert!(term_stats.doc_freq() <= collection_stats.sum_doc_freq());
     stats.set_number_of_documents(collection_stats.doc_count());
     stats.set_number_of_field_tokens(collection_stats.sum_total_term_freq());
     stats.set_avg_field_length(

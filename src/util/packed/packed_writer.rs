@@ -58,6 +58,9 @@ impl<'a> PackedWriter<'a> {
         bits_per_value: i32,
         mem: i32,
     ) -> Result<Self> {
+        // `PackedInts.Writer(DataOutput, int, int)` (`PackedInts.java:607-613`).
+        debug_assert!(bits_per_value <= 64);
+        debug_assert!(value_count >= 0 || value_count == -1);
         let encoder = bulk_operation_of(format, bits_per_value)?;
         let iterations = encoder.compute_iterations(value_count, mem).max(0) as usize;
         Ok(Self {
@@ -105,11 +108,7 @@ impl PackedIntsWriter for PackedWriter<'_> {
 
     fn add(&mut self, v: i64) -> Result<()> {
         debug_assert!(PackedInts::unsigned_bits_required(v) <= self.bits_per_value);
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "PackedWriter is already finished".to_string(),
-            ));
-        }
+        debug_assert!(!self.finished);
         if self.value_count != -1 && self.written >= self.value_count {
             return Err(end_of_stream("Writing past end of stream"));
         }
@@ -136,11 +135,7 @@ impl PackedIntsWriter for PackedWriter<'_> {
     }
 
     fn finish(&mut self) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "PackedWriter is already finished".to_string(),
-            ));
-        }
+        debug_assert!(!self.finished);
         if self.value_count != -1 {
             while self.written < self.value_count {
                 self.add(0)?;

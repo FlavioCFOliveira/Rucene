@@ -799,10 +799,11 @@ impl RadixSelector {
     fn assert_histogram(&self, common_prefix_length: usize) -> bool {
         let number_of_unique_bytes = self.histogram.iter().filter(|&&freq| freq > 0).count();
         if number_of_unique_bytes == 1 {
-            common_prefix_length >= 1
+            debug_assert!(common_prefix_length >= 1);
         } else {
-            common_prefix_length == 0
+            debug_assert!(common_prefix_length == 0);
         }
+        true
     }
 
     /// Reads the prefix of the first element, up to the scratch buffer's

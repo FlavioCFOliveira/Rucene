@@ -1675,6 +1675,7 @@ impl PointFormatter for InetAddressPointFormatter {
     /// `PointInSetQuery` subclass in `InetAddressPoint.newSetQuery`, which
     /// prints `decode(value).getHostAddress()`.
     fn format(&self, value: &[u8]) -> String {
+        debug_assert!(value.len() == InetAddressPoint::BYTES);
         inet_address_host_address(value)
     }
 

@@ -267,7 +267,7 @@ impl SparseFixedBitSet {
         debug_assert!(start < self.length);
         debug_assert!(
             upper_bound > start && upper_bound <= self.length,
-            "upper_bound={upper_bound}, start={start}, length={}",
+            "upperBound={upper_bound}, start={start}, length={}",
             self.length
         );
         let i4096 = start >> 12;
@@ -389,11 +389,13 @@ impl SparseFixedBitSet {
     pub fn set_range(&mut self, start_index: usize, end_index: usize) {
         assert!(
             start_index < self.length,
-            "startIndex={start_index} out of bounds"
+            "startIndex={start_index}, length={}",
+            self.length
         );
         assert!(
             end_index <= self.length,
-            "endIndex={end_index} out of bounds"
+            "endIndex={end_index}, length={}",
+            self.length
         );
         if end_index <= start_index {
             return;
@@ -669,6 +671,8 @@ impl SparseFixedBitSet {
         let mut new_o = 0usize;
         while remaining != 0 {
             let bit_index = remaining.trailing_zeros() as usize;
+            // `newO` is the number of bits set in `newIndex` below `bitIndex`.
+            debug_assert!(new_o == (new_index & ((1u64 << bit_index) - 1)).count_ones() as usize);
             new_bits[new_o] = Self::long_bits(current_index, current_bits, bit_index)
                 | Self::long_bits(index_word, words, bit_index);
             new_o += 1;
@@ -1480,6 +1484,7 @@ impl RoaringDocIdSetBuilder {
     }
 
     fn flush(&mut self) {
+        debug_assert!(self.current_block_cardinality <= ROARING_BLOCK_SIZE);
         if self.current_block < 0 || self.current_block_cardinality == 0 {
             self.reset_current_block();
             return;
@@ -1555,6 +1560,7 @@ impl RoaringDocIdSetBuilder {
     }
 
     fn append_doc_in_current_block(&mut self, doc_id: usize, block: usize) {
+        debug_assert!(doc_id as i64 >= i64::from(self.first_doc_id));
         let offset = doc_id - (block << 16);
         if self.current_block_cardinality < ROARING_MAX_ARRAY_LENGTH {
             self.buffer.push(offset as u16);
@@ -1580,6 +1586,8 @@ impl RoaringDocIdSetBuilder {
         to_doc_exclusive: usize,
         block: usize,
     ) {
+        debug_assert!(from_doc as i64 >= i64::from(self.first_doc_id));
+        debug_assert!(from_doc < to_doc_exclusive);
         let offset = block << 16;
         let span = to_doc_exclusive - from_doc;
         if self.current_block_cardinality + span <= ROARING_MAX_ARRAY_LENGTH {
@@ -1943,6 +1951,8 @@ impl DenseLiveDocsBuilder {
             self.max_doc - self.live_docs.cardinality(),
             "deletedCount does not match maxDoc - liveDocs.cardinality()"
         );
+        // The private `DenseLiveDocs` constructor (`DenseLiveDocs.java:115-116`).
+        debug_assert!(self.live_docs.length() >= self.max_doc);
         DenseLiveDocs {
             live_docs: Arc::new(self.live_docs),
             max_doc: self.max_doc,
@@ -2090,6 +2100,8 @@ impl SparseLiveDocsBuilder {
             self.deleted_docs.cardinality(),
             "deletedCount does not match deletedDocs.cardinality()"
         );
+        // The private `SparseLiveDocs` constructor (`SparseLiveDocs.java:114-115`).
+        debug_assert!(self.deleted_docs.length() >= self.max_doc);
         SparseLiveDocs {
             deleted_docs: Arc::new(self.deleted_docs),
             max_doc: self.max_doc,

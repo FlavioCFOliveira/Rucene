@@ -1008,6 +1008,10 @@ impl Query for BooleanQuery {
     }
 
     fn query_hash(&self) -> u64 {
-        self.compute_hash_code()
+        // Java caches the code and asserts it is not zero
+        // (`BooleanQuery.java:745-752`); the port recomputes it every call.
+        let hash_code = self.compute_hash_code();
+        debug_assert!(hash_code != 0);
+        hash_code
     }
 }

@@ -282,8 +282,17 @@ impl TermWeight {
     /// Equivalent to the private
     /// `TermWeight.getTermsEnum(LeafReaderContext)`.
     fn get_terms_enum(&self, context: &LeafReaderContext) -> Result<Option<Box<dyn TermsEnum>>> {
+        debug_assert!(self.term_states.is_some());
         let Some(state) = self.term_state(context)? else {
             // The term is not present in that reader.
+            debug_assert!(
+                crate::search::phrase_query::PhraseQuery::term_not_in_reader(
+                    &context.leaf_reader(),
+                    self.term()
+                )?,
+                "no termstate found but term exists in reader term={}",
+                self.term()
+            );
             return Ok(None);
         };
         Self::seek(&context.leaf_reader(), self.term(), &*state)

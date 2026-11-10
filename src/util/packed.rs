@@ -282,23 +282,19 @@ impl Format {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
-    /// or `bits_per_value` is outside `[0, 64]`, the range Lucene asserts.
+    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative.
+    /// The width is only asserted, as in Lucene's base `byteCount`.
     pub fn byte_count(&self, version: i32, value_count: i32, bits_per_value: i32) -> Result<i64> {
         if value_count < 0 {
             return Err(LuceneError::IllegalArgument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
-        if !(0..=64).contains(&bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bitsPerValue must be in [0, 64], got {bits_per_value}"
-            )));
-        }
         match self {
             Format::Packed => Ok(((value_count as i64) * (bits_per_value as i64) + 7) / 8),
-            // assume long-aligned
             Format::PackedSingleBlock => {
+                debug_assert!((0..=64).contains(&bits_per_value), "{bits_per_value}");
+                // assume long-aligned
                 Ok(8 * i64::from(self.long_count(version, value_count, bits_per_value)?))
             }
         }
@@ -317,7 +313,9 @@ impl Format {
     pub fn long_count(&self, version: i32, value_count: i32, bits_per_value: i32) -> Result<i32> {
         match self {
             Format::Packed => {
+                debug_assert!((0..=64).contains(&bits_per_value), "{bits_per_value}");
                 let byte_count = self.byte_count(version, value_count, bits_per_value)?;
+                debug_assert!(byte_count < 8 * i64::from(i32::MAX));
                 Ok(((byte_count + 7) >> 3) as i32)
             }
             Format::PackedSingleBlock => {
@@ -428,10 +426,9 @@ impl<'a> DirectWriter<'a> {
 
         let memory_budget_in_bits = 8 * PackedInts::DEFAULT_BUFFER_SIZE;
         let mut buffer_size = memory_budget_in_bits / (64 + bits_per_value as usize);
+        debug_assert!(buffer_size > 0);
+        // Round to the next multiple of 64
         buffer_size = buffer_size.div_ceil(64) * 64;
-        if buffer_size == 0 {
-            buffer_size = 64;
-        }
 
         let next_values = vec![0i64; buffer_size];
         let next_blocks = vec![0u8; buffer_size * (bits_per_value as usize) / 8 + 7];
@@ -502,29 +499,25 @@ impl<'a> DirectWriter<'a> {
         } else {
             0
         };
-        ((padding_bits + 7) / 8) as usize
+        debug_assert!(padding_bits >= 0);
+        let padding_bytes = (padding_bits + 7) / 8;
+        debug_assert!(padding_bytes <= 3);
+        padding_bytes as usize
     }
 
     pub fn add(&mut self, value: i64) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "DirectWriter is already finished".to_string(),
-            ));
-        }
+        debug_assert!(
+            self.bits_per_value == 64
+                || (value >= 0 && value <= PackedInts::max_value(self.bits_per_value)),
+            "{}",
+            self.bits_per_value
+        );
+        debug_assert!(!self.finished);
         if self.count >= self.num_values {
             return Err(LuceneError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "writing past end of stream",
             )));
-        }
-        if self.bits_per_value < 64 {
-            let max = PackedInts::max_value(self.bits_per_value);
-            if value < 0 || value > max {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "value {value} out of range for bitsPerValue {} (max {max})",
-                    self.bits_per_value
-                )));
-            }
         }
 
         self.next_values[self.off] = value;
@@ -600,17 +593,13 @@ impl<'a> DirectWriter<'a> {
     }
 
     pub fn finish(&mut self) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "DirectWriter is already finished".to_string(),
-            ));
-        }
         if self.count != self.num_values {
             return Err(LuceneError::illegal_state(format!(
                 "wrong number of values added: expected {}, got {}",
                 self.num_values, self.count
             )));
         }
+        debug_assert!(!self.finished);
 
         self.flush()?;
 
@@ -2006,6 +1995,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
     pub fn next_batch(&mut self, count: usize) -> Result<&[i64]> {
         #[cfg(test)]
         trace_block_packed(|| format!("next_batch({count})"));
+        debug_assert!(count > 0);
         if self.ord == self.value_count {
             return Err(LuceneError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -2036,11 +2026,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
     pub fn skip(&mut self, mut count: i64) -> Result<()> {
         #[cfg(test)]
         trace_block_packed(|| format!("skip({count})"));
-        if count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "count must be non-negative, got {count}"
-            )));
-        }
+        debug_assert!(count >= 0);
         if self.ord + count > self.value_count || self.ord + count < 0 {
             return Err(LuceneError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -2081,6 +2067,8 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
             return Ok(());
         }
 
+        // 3. skip last values
+        debug_assert!(count < self.block_size as i64);
         self.refill()?;
         self.ord += count;
         self.off += count as usize;
@@ -2116,6 +2104,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
             let encoded = read_block_packed_v_long(self.input)?.wrapping_add(1);
             BitUtil::zig_zag_decode_long(encoded)
         };
+        debug_assert!(min_equals_0 || min_value != 0);
 
         if bits_per_value == 0 {
             let value_count =

@@ -988,6 +988,8 @@ impl DeltaPackedLongValuesBuilder {
         self.state.pending = None;
         let values = take_pages(&mut self.state);
         let mins = self.mins[..self.state.values_off].to_vec();
+        // `DeltaPackedLongValues(...)` (`DeltaPackedLongValues.java:33`).
+        debug_assert!(values.len() == mins.len());
         let ram_bytes_used = DELTA_PACKED_LONG_VALUES_BASE_RAM_BYTES_USED
             + RamUsageEstimator::shallow_size_of(&values)
             + values.iter().map(|page| page.ram_bytes_used()).sum::<i64>()
@@ -1079,6 +1081,8 @@ impl MonotonicLongValuesBuilder {
         let values = take_pages(&mut self.state);
         let mins = self.mins[..self.state.values_off].to_vec();
         let averages = self.averages[..self.state.values_off].to_vec();
+        // `MonotonicLongValues(...)` (`MonotonicLongValues.java:41`).
+        debug_assert!(values.len() == averages.len());
         let ram_bytes_used = MONOTONIC_LONG_VALUES_BASE_RAM_BYTES_USED
             + RamUsageEstimator::shallow_size_of(&values)
             + values.iter().map(|page| page.ram_bytes_used()).sum::<i64>()

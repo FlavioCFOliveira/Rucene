@@ -369,6 +369,7 @@ impl WANDCore {
                     // block. We need to move to the next block in order to not
                     // miss any potential hits between `target` and
                     // `head.top().doc`.
+                    debug_assert!(self.wrappers[head_top].doc >= target);
                     self.update_max_scores(target)?;
                     break;
                 }
@@ -376,6 +377,11 @@ impl WANDCore {
             }
         }
 
+        debug_assert!(self
+            .head
+            .top()
+            .is_none_or(|head_top| self.wrappers[head_top].doc <= self.up_to));
+        debug_assert!(self.up_to >= target);
         Ok(())
     }
 
@@ -660,6 +666,7 @@ impl TwoPhaseIterator for WANDCore {
     }
 
     fn matches(&mut self) -> Result<bool> {
+        debug_assert!(self.lead.is_empty());
         self.move_to_next_candidate()?;
 
         let mut scaled_lead_score = 0i64;
@@ -682,6 +689,9 @@ impl TwoPhaseIterator for WANDCore {
             let prev_lead_len = self.lead.len();
             self.advance_tail()?;
             if self.score_mode == ScoreMode::TOP_SCORES && self.lead.len() != prev_lead_len {
+                // Java's `prevLead == lead.next`: exactly one clause joined the
+                // lead.
+                debug_assert!(self.lead.len() == prev_lead_len + 1);
                 scaled_lead_score = scale_max_score(
                     MathUtil::sum_upper_bound(self.lead_score, FLOAT_MANTISSA_BITS) as f32,
                     self.scaling_factor,

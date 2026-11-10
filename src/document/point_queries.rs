@@ -1047,7 +1047,9 @@ impl XYPointInGeometryQuery {
         };
         let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
         let mut visitor = Self::get_intersect_visitor(&mut result, self.tree.as_ref());
-        values.estimate_doc_count(&mut visitor)
+        let cost = values.estimate_doc_count(&mut visitor)?;
+        debug_assert!(cost >= 0);
+        Ok(cost)
     }
 
     /// Prints this query, omitting `field` when it is the default one.
@@ -1563,7 +1565,9 @@ impl LatLonPointDistanceQuery {
             bounds: self.bounds.clone(),
             result: &mut result,
         };
-        values.estimate_doc_count(&mut visitor)
+        let cost = values.estimate_doc_count(&mut visitor)?;
+        debug_assert!(cost >= 0);
+        Ok(cost)
     }
 
     /// Prints this query, omitting `field` when it is the default one.

@@ -955,7 +955,10 @@ impl SortField {
                     self.reverse,
                     pruning,
                 ))),
-                SortFieldType::Custom => match self.comparator_source.as_ref() {
+                SortFieldType::Custom => match {
+                    debug_assert!(self.comparator_source.is_some());
+                    self.comparator_source.as_ref()
+                } {
                     Some(source) => source.new_comparator(field, num_hits, pruning, self.reverse)?,
                     None => {
                         return Err(LuceneError::illegal_state(

@@ -504,6 +504,7 @@ impl LongDistanceScorer {
             // `min_score` did not decrease enough to require an update.
             return previous_max_distance;
         }
+        debug_assert!(self.score_distance(previous_max_distance) < min_score);
         let mut min = 0i64;
         let mut max = previous_max_distance;
         // Invariant: score(min) >= min_score && score(max) < min_score.
@@ -515,6 +516,8 @@ impl LongDistanceScorer {
                 max = mid;
             }
         }
+        debug_assert!(self.score_distance(min) >= min_score);
+        debug_assert!(min == i64::MAX || self.score_distance(min + 1) < min_score);
         min
     }
 
@@ -951,6 +954,7 @@ impl LatLonPointDistanceScorer {
             // `min_score` did not decrease enough to require an update.
             return previous_max_distance;
         }
+        debug_assert!(self.score_distance(previous_max_distance) < min_score);
         let mut min = 0.0f64;
         let mut max = previous_max_distance;
         // Invariant: score(min) >= min_score && score(max) < min_score.
@@ -962,6 +966,8 @@ impl LatLonPointDistanceScorer {
                 max = mid;
             }
         }
+        debug_assert!(self.score_distance(min) >= min_score);
+        debug_assert!(min == f64::MAX || self.score_distance(min + 1.0) < min_score);
         min
     }
 }

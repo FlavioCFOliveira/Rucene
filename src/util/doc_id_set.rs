@@ -203,7 +203,8 @@ impl IntArrayDocIdSet {
         }
         debug_assert!(
             Self::assert_array_sorted(&docs, length),
-            "IntArrayDocIdSet need docs to be sorted"
+            "IntArrayDocIdSet need docs to be sorted{:?}",
+            &docs[..length]
         );
         Ok(Self {
             docs: Arc::new(docs),
@@ -876,9 +877,7 @@ impl BulkAdder<'_> {
 /// only evaluates inside an `assert`.
 fn no_dups(a: &[i32], len: usize) -> bool {
     for i in 1..len {
-        if a[i - 1] >= a[i] {
-            return false;
-        }
+        debug_assert!(a[i - 1] < a[i]);
     }
     true
 }

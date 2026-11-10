@@ -769,6 +769,7 @@ fn packed_encode_longs_to_byte_blocks(
     let mut block_off = blocks_offset;
 
     for i in 0..(byte_value_count * iterations) {
+        debug_assert!(PackedInts::unsigned_bits_required(values[values_offset + i]) <= bpv as i32);
         let v = (values[values_offset + i] as u64) & mask;
         if bpv < bits_left {
             // just buffer
@@ -836,6 +837,12 @@ fn packed_encode_ints_to_byte_blocks(
     let mut block_off = blocks_offset;
 
     for i in 0..(byte_value_count * iterations) {
+        // `PackedInts.bitsRequired(v & 0xFFFFFFFFL)`: the operand is never
+        // negative, so it is `unsignedBitsRequired`.
+        debug_assert!(
+            PackedInts::unsigned_bits_required(i64::from(values[values_offset + i] as u32))
+                <= bpv as i32
+        );
         let v = values[values_offset + i] as u32;
         if bpv < bits_left {
             // just buffer
@@ -890,16 +897,15 @@ impl BulkOperationPacked {
     ///
     /// Equivalent to `new BulkOperationPacked(int)`.
     ///
+    /// Lucene's constructor only asserts the width is in `[1, 64]`; so does
+    /// this one, and [`new_const`](Self::new_const) then refuses an
+    /// out-of-range width with a panic.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `bits_per_value` is
-    /// outside `[1, 64]`, the range Lucene asserts.
+    /// Never; the `Result` is kept for the callers' signature.
     pub fn new(bits_per_value: usize) -> Result<Self> {
-        if !(1..=64).contains(&bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bitsPerValue must be in [1, 64], got {bits_per_value}"
-            )));
-        }
+        debug_assert!(bits_per_value > 0 && bits_per_value <= 64);
         Ok(Self::new_const(bits_per_value))
     }
 
@@ -919,6 +925,10 @@ impl BulkOperationPacked {
         );
         let (byte_block_count, byte_value_count) = byte_counts_of(bits_per_value);
         let mask = mask_of(bits_per_value);
+        debug_assert!(
+            long_value_count_of(bits_per_value) * bits_per_value
+                == 64 * long_block_count_of(bits_per_value)
+        );
         Self {
             bits_per_value,
             long_block_count: long_block_count_of(bits_per_value),
@@ -1774,6 +1784,7 @@ pub fn bulk_operation_of(format: Format, bits_per_value: i32) -> Result<SharedBu
                      got {bits_per_value}"
                 )));
             }
+            debug_assert!(PACKED_SINGLE_BLOCK_BULK_OPS[bits_per_value as usize - 1].is_some());
             PACKED_SINGLE_BLOCK_BULK_OPS[bits_per_value as usize - 1]
                 .as_deref()
                 .ok_or_else(|| {

@@ -90,7 +90,7 @@ pub trait DocIdSetIterator {
         if doc == -1 {
             doc = self.next_doc()?;
         }
-        debug_assert!(offset <= doc);
+        debug_assert!(offset <= doc, "offset={offset} docID()={doc} upTo={up_to}");
         while doc < up_to {
             bit_set.set((doc - offset) as usize);
             doc = self.next_doc()?;

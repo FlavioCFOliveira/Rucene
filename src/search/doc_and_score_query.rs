@@ -92,20 +92,19 @@ impl DocAndScoreQuery {
     /// `searcher.getTopReaderContext()` are the same object in Java, so the
     /// leaves and the identity are the same values either way.
     ///
+    /// `top_k` must hold at least one hit, which Java only asserts; an empty
+    /// one panics on the first hit, as Java's `ArrayIndexOutOfBoundsException`.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `top_k` holds no hits,
-    /// which Java asserts rather than checks.
+    /// Propagates the errors of building the query.
     pub fn create_doc_and_score_query(
         searcher: &IndexSearcher,
         mut top_k: TopDocs,
     ) -> Result<Arc<dyn Query>> {
         let len = top_k.score_docs.len();
-        if len == 0 {
-            return Err(LuceneError::IllegalArgument(
-                "createDocAndScoreQuery requires at least one hit".to_string(),
-            ));
-        }
+
+        debug_assert!(len > 0);
         let max_score = top_k.score_docs[0].score;
 
         top_k.score_docs.sort_by_key(|hit| hit.doc);

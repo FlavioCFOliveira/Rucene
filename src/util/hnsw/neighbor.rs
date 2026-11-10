@@ -510,7 +510,7 @@ impl NeighborArray {
     ) -> Result<usize> {
         let unchecked_indexes = self
             .sort(scorer)?
-            .expect("we will always have something unchecked");
+            .expect("We will always have something unchecked");
         let size = self.size.load(Ordering::Relaxed);
         let mut unchecked_cursor = unchecked_indexes.len().saturating_sub(1) as i32;
         for i in (1..size).rev() {

@@ -241,7 +241,11 @@ impl BytesRefArray {
     ) -> BytesRefArrayIterator<'_> {
         let size = self.size();
         let indices = sort_state.map(|s| s.indices);
-        debug_assert!(indices.as_ref().is_none_or(|i| i.len() == size));
+        debug_assert!(
+            indices.as_ref().is_none_or(|i| i.len() == size),
+            "{} != {size}",
+            indices.as_ref().map_or(0, |i| i.len())
+        );
         BytesRefArrayIterator {
             array: self,
             indices,

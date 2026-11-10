@@ -424,6 +424,7 @@ impl<V> CharArrayMap<V> {
 
     /// Doubles the table size and rehashes existing entries.
     fn rehash(&mut self) {
+        debug_assert!(self.keys.len() == self.values.len());
         let new_size = self.keys.len() * 2;
         let old_keys = std::mem::take(&mut self.keys);
         let mut old_values = std::mem::take(&mut self.values);

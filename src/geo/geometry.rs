@@ -129,22 +129,29 @@ pub struct Rectangle {
 impl Rectangle {
     /// Creates the box. A box whose minimum longitude exceeds its maximum
     /// crosses the dateline, which Lucene allows.
+    ///
+    /// Lucene only asserts `maxLat >= minLat` (`Rectangle.java:94`); the port
+    /// keeps that as a `debug_assert!` and raises no error of its own for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a coordinate is out of
+    /// range, as `GeoUtils.checkLatitude` / `checkLongitude` throw.
     pub fn new(min_lat: f64, max_lat: f64, min_lon: f64, max_lon: f64) -> Result<Self> {
         GeoUtils::check_latitude(min_lat)?;
         GeoUtils::check_latitude(max_lat)?;
         GeoUtils::check_longitude(min_lon)?;
         GeoUtils::check_longitude(max_lon)?;
-        if min_lat > max_lat {
-            return Err(LuceneError::IllegalArgument(format!(
-                "minLat must be lower than maxLat, got {min_lat} > {max_lat}"
-            )));
-        }
-        Ok(Self {
+        let rectangle = Self {
             min_lat,
             max_lat,
             min_lon,
             max_lon,
-        })
+        };
+        debug_assert!(max_lat >= min_lat);
+
+        // NOTE: cannot assert maxLon >= minLon since this rect could cross the dateline
+        Ok(rectangle)
     }
 
     /// Returns the smallest latitude.
@@ -1313,6 +1320,7 @@ impl Rectangle {
         };
 
         let mut l2 = (l1.cos() / r.cos()).acos();
+        debug_assert!(!l2.is_nan());
 
         // now adjust back to range [-pi/2, pi/2], ie latitude in radians
         l2 = if center_lat >= 0.0 {

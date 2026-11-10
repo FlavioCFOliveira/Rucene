@@ -109,12 +109,12 @@ impl Distribution for DistributionSPL {
     /// Scores a document.
     ///
     /// Equivalent to `DistributionSPL.score` (`DistributionSPL.java:33-58`).
-    /// Java asserts `lambda != 1`, which the [`Lambda`](super::Lambda)
-    /// implementations guarantee by nudging a lambda of exactly `1` off the
-    /// singularity; the assertion is disabled in production and is not
-    /// reproduced, because a NaN score is a better outcome than a panic if a
-    /// custom lambda ever breaks the invariant.
+    /// Java asserts `lambda != 1` (`DistributionSPL.java:36`), which the
+    /// [`Lambda`](super::Lambda) implementations guarantee by nudging a
+    /// lambda of exactly `1` off the singularity; so does this port, in debug
+    /// builds.
     fn score(&self, stats: &BasicStats, tfn: f64, lambda: f64) -> f64 {
+        debug_assert!(lambda != 1.0);
         let _ = stats;
         // tfn / (tfn + 1) rewritten as 1 - 1 / (tfn + 1), which is guaranteed
         // to be non-decreasing as tfn increases.

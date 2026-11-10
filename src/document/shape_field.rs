@@ -247,6 +247,7 @@ impl ShapeField {
         mut c_x: i32,
         mut ca: bool,
     ) -> Result<()> {
+        debug_assert!(bytes.len() == 7 * BYTES);
         if bytes.len() != 7 * BYTES {
             return Err(LuceneError::IllegalArgument(format!(
                 "bytes must be {} long, got {}",
@@ -467,6 +468,17 @@ impl ShapeField {
                 ))
             }
         }
+        // Points of the decoded triangle must be co-planar or CCW oriented
+        debug_assert!(
+            crate::geo::GeoUtils::orient(
+                f64::from(t.a_x),
+                f64::from(t.a_y),
+                f64::from(t.b_x),
+                f64::from(t.b_y),
+                f64::from(t.c_x),
+                f64::from(t.c_y)
+            ) >= 0
+        );
         // Java's `decodeTriangle` finishes with `resolveTriangleType(triangle)`,
         // which both classifies the triangle and normalises a degenerate one.
         t.resolve_triangle_type();

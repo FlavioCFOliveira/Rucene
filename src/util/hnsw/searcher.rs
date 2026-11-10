@@ -228,6 +228,7 @@ impl HnswGraphSearcher {
                     friend_ord = graph.next_neighbor()?;
                     friend_ord != NO_MORE_DOCS
                 } {
+                    debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                     if self.visited.get_and_set(friend_ord as usize) {
                         continue;
                     }
@@ -315,6 +316,7 @@ impl HnswGraphSearcher {
                 friend_ord = graph.next_neighbor()?;
                 friend_ord != NO_MORE_DOCS
             } {
+                debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                 if self.visited.get_and_set(friend_ord as usize) {
                     continue;
                 }
@@ -500,6 +502,7 @@ impl OnHeapSearcher {
                     friend_ord = self.graph_next_neighbor();
                     friend_ord != NO_MORE_DOCS
                 } {
+                    debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                     if self.visited.get_and_set(friend_ord as usize) {
                         continue;
                     }
@@ -586,6 +589,7 @@ impl OnHeapSearcher {
                 friend_ord = self.graph_next_neighbor();
                 friend_ord != NO_MORE_DOCS
             } {
+                debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                 if self.visited.get_and_set(friend_ord as usize) {
                     continue;
                 }

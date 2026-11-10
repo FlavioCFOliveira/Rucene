@@ -640,7 +640,8 @@ fn util_bkd(m: &Measured) {
     assert_eq!(heap.to_string(), m.get("HeapPointWriter.toString/empty10"));
 
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let offline = OfflinePointWriter::new(config, dir, "prefix", "desc").expect("offline writer");
+    let offline =
+        OfflinePointWriter::new(config, dir, "prefix", "desc", 0).expect("offline writer");
     assert_eq!(
         offline.to_string(),
         m.get("OfflinePointWriter.toString/fresh"),

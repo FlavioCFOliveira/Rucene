@@ -522,6 +522,10 @@ impl BytesRefHash {
     ///
     /// Panics if `term_id` was never returned by [`Self::add`].
     pub fn byte_start(&self, term_id: i32) -> i32 {
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "bytesStart is null - not initialized"
+        );
         // `assert bytesID >= 0 && bytesID < count : bytesID`
         // (`BytesRefHash.java:500`).
         debug_assert!(term_id >= 0 && term_id < self.count, "{term_id}");
@@ -575,6 +579,10 @@ impl BytesRefHash {
             !self.keyed_by_pool_offset,
             "a pool-offset-keyed table must be fed through add_by_pool_offset"
         );
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "Bytesstart is null - not initialized"
+        );
         let hashcode = hash_bytes(bytes);
         let hash_pos = self.find_hash(pool, bytes, hashcode);
         let entry = self.ids[hash_pos];
@@ -585,6 +593,7 @@ impl BytesRefHash {
         let text_start = pool.add_bytes_ref(bytes)?;
         let term_id = self.count;
         self.push_start(text_start);
+        debug_assert!(self.ids[hash_pos] == -1);
         self.ids[hash_pos] = term_id | (hashcode & self.high_mask);
         self.count += 1;
         if self.count as usize == self.hash_half_size {
@@ -610,6 +619,10 @@ impl BytesRefHash {
             self.keyed_by_pool_offset,
             "a bytes-keyed table must be fed through add"
         );
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "Bytesstart is null - not initialized"
+        );
         let mut code = text_start;
         let mut hash_pos = (code & self.hash_mask) as usize;
         let mut entry = self.ids[hash_pos];
@@ -624,6 +637,7 @@ impl BytesRefHash {
 
         let term_id = self.count;
         self.push_start(text_start);
+        debug_assert!(self.ids[hash_pos] == -1);
         // Unlike the bytes-keyed path the slot holds the bare term id: the
         // probe compares `bytes_start[id]` with the offset, so there are no
         // high bits to shortcut it with (`BytesRefHash.java`, the `hashOnData
@@ -725,6 +739,10 @@ impl BytesRefHash {
     /// Panics when `bytes_id` is not a term id this table handed out, which is
     /// what Java's two assertions check.
     pub fn get<'p>(&self, pool: &'p ByteBlockPool, bytes_id: i32) -> &'p [u8] {
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "bytesStart is null - not initialized"
+        );
         let bytes_start = self.starts();
         assert!(
             bytes_id >= 0 && (bytes_id as usize) < bytes_start.len(),
@@ -910,6 +928,10 @@ impl BytesRefHash {
     /// Equivalent to `BytesRefHash.compact()`, which [`sort`](Self::sort) runs
     /// first so it can use the freed tail of the array as scratch space.
     pub fn compact(&mut self) -> &mut [i32] {
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "bytesStart is null - not initialized"
+        );
         // The id is the sequence number the bytes were added to the pool with.
         for i in 0..self.count as usize {
             self.ids[i] = i as i32;
@@ -932,6 +954,11 @@ impl BytesRefHash {
     /// Returns the slot `bytes` hashes to: either the slot holding it, or the
     /// first empty slot on its probe sequence.
     fn find_hash(&self, pool: &ByteBlockPool, bytes: &[u8], hashcode: i32) -> usize {
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "bytesStart is null - not initialized"
+        );
+        debug_assert!(hashcode == hash_bytes(bytes));
         let high_bits = hashcode & self.high_mask;
         let mut code = hashcode;
         let mut hash_pos = (code & self.hash_mask) as usize;

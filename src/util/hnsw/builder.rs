@@ -916,6 +916,7 @@ impl HnswGraphBuilder {
                 continue;
             }
             let c_score = candidates.score(i as i32);
+            debug_assert!(c_node <= hnsw.max_node_id());
             scorer.set_scoring_ordinal(c_node)?;
             if Self::diversity_check(scorer, bulk_score_nodes, bulk_scores, c_score, neighbors)? {
                 mask[i] = true;

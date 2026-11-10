@@ -299,6 +299,7 @@ impl Automaton {
     /// Panics if `source` or `dest` is out of bounds, or if all the transitions of
     /// `source` had already been added (Lucene throws `IllegalStateException`).
     pub fn add_transition_range(&mut self, source: i32, dest: i32, min: i32, max: i32) {
+        debug_assert!(self.transitions.len() % 3 == 0);
         let bounds = self.get_num_states();
         assert!(
             source >= 0 && source < bounds,

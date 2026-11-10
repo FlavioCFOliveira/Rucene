@@ -227,6 +227,7 @@ impl FieldValueHitQueue {
     /// `OneComparatorFieldValueHitQueue` and
     /// `MultiComparatorsFieldValueHitQueue`.
     fn less_than(&self, hit_a: &Entry, hit_b: &Entry) -> bool {
+        debug_assert!(!std::ptr::eq(hit_a, hit_b));
         debug_assert!(hit_a.slot != hit_b.slot);
         if self.one_comparator {
             let c = self.reverse_mul[0] * self.comparators[0].compare(hit_a.slot, hit_b.slot);

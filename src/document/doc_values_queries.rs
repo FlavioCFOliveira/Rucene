@@ -84,6 +84,7 @@ impl DocValuesLongHashSet {
         let table_size = 1usize
             << PackedInts::bits_required(wanted)
                 .expect("INVARIANT: a length times 3/2 is never negative");
+        debug_assert!(table_size as i64 >= values.len() as i64 * 3 / 2);
         let mut set = Self {
             table: vec![MISSING; table_size],
             mask: table_size - 1,
@@ -92,6 +93,7 @@ impl DocValuesLongHashSet {
             min_value: i64::MAX,
             max_value: i64::MIN,
         };
+        let mut previous_value = i64::MIN; // for assert
         for &value in values {
             if value == MISSING {
                 if !set.has_missing_value {
@@ -101,6 +103,11 @@ impl DocValuesLongHashSet {
             } else if set.add(value) {
                 set.size += 1;
             }
+            debug_assert!(
+                value >= previous_value,
+                "values must be provided in sorted order"
+            );
+            previous_value = value;
         }
         if !values.is_empty() {
             set.min_value = values[0];
@@ -121,6 +128,7 @@ impl DocValuesLongHashSet {
     /// Calling this on a table with no free slot would never return — which is
     /// why the sizing must stay faithful to Lucene's.
     fn add(&mut self, value: i64) -> bool {
+        debug_assert!(value != MISSING);
         let mut slot = (hash_long(value) as usize) & self.mask;
         loop {
             if self.table[slot] == MISSING {

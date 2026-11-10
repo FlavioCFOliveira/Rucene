@@ -631,6 +631,7 @@ pub trait DataOutput {
     /// Returns `LuceneError::IllegalArgument` when `num_bytes` is negative, and
     /// propagates whatever reading or writing raises.
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
         if num_bytes < 0 {
             return Err(LuceneError::IllegalArgument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
@@ -791,7 +792,7 @@ pub trait IndexInput: DataInput + Send + Sync {
     /// adapter.
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
         let slice = self.slice("randomaccess", offset, length)?;
-        Ok(Box::new(RandomAccessInputAdapter::new(slice)))
+        Ok(Box::new(RandomAccessInputAdapter::new(slice, length)))
     }
 
     /// Returns this input as a [`MemorySegmentAccessInput`] when it is one,
@@ -846,11 +847,14 @@ pub trait IndexInput: DataInput + Send + Sync {
 /// slice does not already support random access.
 struct RandomAccessInputAdapter {
     input: Box<dyn IndexInput>,
+    /// The `length` argument of `randomAccessSlice`, which Java's anonymous
+    /// class captures only to assert it against the slice's length.
+    length: i64,
 }
 
 impl RandomAccessInputAdapter {
-    fn new(input: Box<dyn IndexInput>) -> Self {
-        Self { input }
+    fn new(input: Box<dyn IndexInput>, length: i64) -> Self {
+        Self { input, length }
     }
 }
 
@@ -905,6 +909,7 @@ impl IndexInput for RandomAccessInputAdapter {
     }
 
     fn length(&self) -> i64 {
+        debug_assert!(self.length == self.input.length());
         self.input.length()
     }
 
@@ -2971,11 +2976,12 @@ impl<R: Read> DataInput for InputStreamDataInput<R> {
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
-        io::copy(
+        let skipped = io::copy(
             &mut self.input.by_ref().take(num_bytes as u64),
             &mut io::sink(),
         )
         .map_err(LuceneError::from)?;
+        debug_assert!(skipped as i64 <= num_bytes);
         Ok(())
     }
 }
@@ -4560,6 +4566,7 @@ impl Lock for NativeFSLock {
         if self.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
+        debug_assert!(channel.is_some());
         let released = self.lock.close();
         let closed = match channel.take() {
             Some(channel) => channel.close(),
@@ -7975,10 +7982,11 @@ impl ByteBuffersDataOutput {
 
         let required_size = 1usize << self.block_bits;
         self.current = self.allocate(required_size);
+        debug_assert!(self.current.capacity() == required_size);
     }
 
     fn rewrite_to_block_size(&mut self, target_bits: usize) {
-        assert!(target_bits <= self.max_bits);
+        debug_assert!(target_bits <= self.max_bits);
         // `new ByteBuffersDataOutput(targetBlockBits, targetBlockBits,
         // blockAllocate, NO_REUSE)`.
         let mut cloned =
@@ -8001,6 +8009,7 @@ impl ByteBuffersDataOutput {
             self.completed.clear();
             self.current.clear();
         }
+        debug_assert!(self.completed.is_empty());
         self.block_bits = target_bits;
         self.completed = cloned.completed;
         self.current = cloned.current;
@@ -8147,6 +8156,7 @@ impl DataOutput for ByteBuffersDataOutput {
     }
 
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
         if num_bytes < 0 {
             return Err(LuceneError::IllegalArgument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
@@ -10249,8 +10259,14 @@ fn read_channel_at(
                 "failed to fill whole buffer",
             ));
         }
+        debug_assert!(
+            i > 0,
+            "FileChannel.read with non zero-length bb.remaining() must always read at least \
+             one byte (FileChannel is in blocking mode, see spec of ReadableByteChannel)"
+        );
         done += i as usize;
     }
+    debug_assert!(done == buf.len());
     Ok(())
 }
 
@@ -11076,6 +11092,9 @@ mod tests {
     }
 
     #[test]
+    // `DataOutput.copyBytes` asserts `numBytes >= 0`: a debug build, like Java
+    // under `-ea`, stops there.
+    #[cfg_attr(debug_assertions, should_panic(expected = "numBytes=-1"))]
     fn copy_bytes_rejects_negative() {
         let mut out = VecDataOutput::new();
         let input_src = Vec::new();
@@ -11536,6 +11555,9 @@ mod tests {
     }
 
     #[test]
+    // `DataOutput.copyBytes` asserts `numBytes >= 0`: a debug build, like Java
+    // under `-ea`, stops there.
+    #[cfg_attr(debug_assertions, should_panic(expected = "numBytes=-1"))]
     fn byte_buffers_copy_bytes_rejects_negative() {
         let mut out = ByteBuffersDataOutput::new();
         let mut input = ByteBuffersDataInput::new(vec![Vec::new()]).unwrap();

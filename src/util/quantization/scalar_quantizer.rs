@@ -45,16 +45,8 @@ impl ScalarQuantizer {
                 "Scalar quantizer does not support infinite or NaN values".to_string(),
             ));
         }
-        if max_quantile < min_quantile {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxQuantile {max_quantile} must be >= minQuantile {min_quantile}"
-            )));
-        }
-        if bits == 0 || bits > 8 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bits must be in [1, 8], got {bits}"
-            )));
-        }
+        debug_assert!(max_quantile >= min_quantile);
+        debug_assert!(bits > 0 && bits <= 8);
         let divisor = ((1u32 << bits) - 1) as f32;
         Ok(Self {
             alpha: (max_quantile - min_quantile) / divisor,
@@ -77,13 +69,11 @@ impl ScalarQuantizer {
         dest: &mut [u8],
         similarity_function: VectorSimilarityFunction,
     ) -> Result<f32> {
-        if src.len() != dest.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "vector lengths differ: {} vs {}",
-                src.len(),
-                dest.len()
-            )));
-        }
+        debug_assert!(src.len() == dest.len());
+        debug_assert!(
+            similarity_function != VectorSimilarityFunction::COSINE
+                || vector_util::is_unit_vector(src)
+        );
         let correction = vector_util::min_max_scalar_quantize(
             src,
             dest,
@@ -128,13 +118,7 @@ impl ScalarQuantizer {
     ///
     /// Equivalent to `ScalarQuantizer.deQuantize`.
     pub fn de_quantize(&self, src: &[u8], dest: &mut [f32]) -> Result<()> {
-        if src.len() != dest.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "vector lengths differ: {} vs {}",
-                src.len(),
-                dest.len()
-            )));
-        }
+        debug_assert!(src.len() == dest.len());
         for (i, &q) in src.iter().enumerate() {
             dest[i] = self.alpha * f32::from(q) + self.min_quantile;
         }

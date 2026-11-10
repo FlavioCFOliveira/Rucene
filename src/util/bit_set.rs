@@ -290,9 +290,18 @@ fn next_set_bit_in_range_words(
     start: i32,
     upper_bound: i32,
 ) -> i32 {
-    debug_assert!(start >= 0 && (start as usize) < num_bits);
-    debug_assert!(start < upper_bound);
-    debug_assert!(upper_bound as usize <= num_bits);
+    debug_assert!(
+        start >= 0 && (start as usize) < num_bits,
+        "index={start}, numBits={num_bits}"
+    );
+    debug_assert!(
+        start < upper_bound,
+        "index={start}, upperBound={upper_bound}"
+    );
+    debug_assert!(
+        upper_bound as usize <= num_bits,
+        "upperBound={upper_bound}, numBits={num_bits}"
+    );
     let mut i = (start >> 6) as usize;
     // Java's `>>` on a long shifts by `start & 63`.
     let word = bits[i].load(Relaxed) >> (start & 63);
@@ -326,9 +335,18 @@ fn next_clear_bit_in_range_words(
     start: i32,
     upper_bound: i32,
 ) -> i32 {
-    debug_assert!(start >= 0 && (start as usize) < num_bits);
-    debug_assert!(start < upper_bound);
-    debug_assert!(upper_bound as usize <= num_bits);
+    debug_assert!(
+        start >= 0 && (start as usize) < num_bits,
+        "index={start}, numBits={num_bits}"
+    );
+    debug_assert!(
+        start < upper_bound,
+        "index={start}, upperBound={upper_bound}"
+    );
+    debug_assert!(
+        upper_bound as usize <= num_bits,
+        "upperBound={upper_bound}, numBits={num_bits}"
+    );
     let mut i = (start >> 6) as usize;
     let word = !(bits[i].load(Relaxed) >> (start & 63));
 

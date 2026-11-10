@@ -185,8 +185,9 @@ impl TokenStreamToAutomaton {
     ///
     /// Propagates the stream's errors, and returns
     /// [`LuceneError::IllegalState`] when the first token has a position
-    /// increment of zero, where Java's `assert pos > -1 || posInc > 0` fails
-    /// and its `posData.leaving` then dereferences `null`.
+    /// increment of zero: Java's `assert pos > -1 || posInc > 0` (kept as a
+    /// `debug_assert!`) fails first, and without assertions its
+    /// `posData.leaving` then dereferences `null`.
     pub fn to_automaton(&self, input: &mut dyn TokenStream) -> Result<Automaton> {
         let mut builder = AutomatonBuilder::new();
         builder.create_state();
@@ -222,6 +223,7 @@ impl TokenStreamToAutomaton {
             if !self.preserve_position_increments && pos_inc > 1 {
                 pos_inc = 1;
             }
+            debug_assert!(pos > -1 || pos_inc > 0);
             if pos == -1 && pos_inc <= 0 {
                 return Err(LuceneError::illegal_state(
                     "the first token must have a positive position increment".to_string(),
@@ -232,6 +234,7 @@ impl TokenStreamToAutomaton {
                 // New node:
                 pos += pos_inc;
 
+                debug_assert!(positions.get(pos).leaving == -1);
                 let arriving = positions.get(pos).arriving;
                 if arriving == -1 {
                     // No token ever arrived to this position

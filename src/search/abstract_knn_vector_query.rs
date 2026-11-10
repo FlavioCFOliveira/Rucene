@@ -564,6 +564,8 @@ pub fn knn_vector_query_rewrite(
             &filter_weight,
             &knn_collector_manager_phase2,
         );
+        debug_assert!(leaf_reader_contexts.len() == tasks.len());
+        debug_assert!(per_leaf_results.len() == searcher.get_leaf_contexts().len());
         top_k = run_search_tasks(
             &query,
             tasks,
@@ -788,14 +790,13 @@ impl KnnCollectorManager for ReentrantKnnCollectorManager {
             Some(field_info) => self.query.create_vector_scorer(ctx, field_info)?,
             None => None,
         };
-        let Some(scorer) = scorer else {
-            // Should not happen: we only come here when there are results. It
-            // is safe to return no seeds.
-            return Ok(delegate_collector);
-        };
-        if seed_top_docs.total_hits.value() == 0 {
+        if seed_top_docs.total_hits.value() == 0 || scorer.is_none() {
+            // shouldn't happen - we only come here when there are results
+            debug_assert!(false);
+            // on the other hand, it should be safe to return no results?
             return Ok(delegate_collector);
         }
+        let scorer = scorer.expect("INVARIANT: checked just above");
         let Some(seed_docs) = crate::search::seeded_knn_vector_query::mapped_seed_ordinals(
             scorer,
             seed_top_docs,
@@ -804,6 +805,7 @@ impl KnnCollectorManager for ReentrantKnnCollectorManager {
         else {
             // The vector iterator is not indexed, so the seed docs cannot be
             // mapped onto vector ordinals; continuing would loop forever.
+            debug_assert!(false);
             return Ok(delegate_collector);
         };
         let strategy = KnnSearchStrategy::Seeded(crate::search::knn::Seeded::new(

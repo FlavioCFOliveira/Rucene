@@ -151,35 +151,24 @@ impl OnHeapHnswGraph {
         }
     }
 
-    /// Returns the slot of `node` at `level`, or the error Java's assertions
-    /// in `getNeighbors` stand for.
+    /// Returns the slot of `node` at `level`.
+    ///
+    /// Java's `getNeighbors` only asserts the node and the level
+    /// (`OnHeapHnswGraph.java:96-101`); without assertions an absent slot is
+    /// its `ArrayIndexOutOfBoundsException` or `NullPointerException`, here a
+    /// panic.
     fn level_slot(&self, level: i32, node: i32) -> Result<&NeighborArray> {
         let node_usize = node as usize;
-        if node < 0 || node_usize >= self.graph.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "node {} out of bounds (graph length {})",
-                node,
-                self.graph.len()
-            )));
-        }
-        let levels = self.graph[node_usize]
-            .get()
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("node {} has no levels", node)))?;
-        let level_usize = level as usize;
-        if level < 0 || level_usize >= levels.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "level {} out of bounds for node {} (has {} levels)",
-                level,
-                node,
-                levels.len()
-            )));
-        }
-        levels[level_usize].get().ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
-                "node {} has no neighbor array at level {}",
-                node, level
-            ))
-        })
+        debug_assert!(node_usize < self.graph.len());
+        let levels = self.graph[node_usize].get().expect("graph[node] is null");
+        debug_assert!(
+            (level as usize) < levels.len(),
+            "level={level}, node has only {} levels",
+            levels.len()
+        );
+        let slot = levels[level as usize].get();
+        debug_assert!(slot.is_some(), "node={node}, level={level}");
+        Ok(slot.expect("graph[node][level] is null"))
     }
 
     /// Returns the `NeighborArray` for `node` at `level`.
@@ -192,8 +181,8 @@ impl OnHeapHnswGraph {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the node or the level is
-    /// out of range or not yet added, where Java's assertions fail.
+    /// Never; the node and the level are asserted, as in Java, and an absent
+    /// slot panics.
     pub fn get_neighbors(&self, level: i32, node: i32) -> Result<&NeighborArray> {
         self.level_slot(level, node)
     }
@@ -237,6 +226,12 @@ impl OnHeapHnswGraph {
             self.graph.resize_with(new_len, OnceLock::new);
         }
 
+        debug_assert!(
+            self.graph[node_usize]
+                .get()
+                .is_none_or(|levels| levels.len() >= level as usize),
+            "node must be inserted from the top level: "
+        );
         let array = self.new_neighbor_array(level);
         let target_len = (level + 1) as usize;
         let slot = &mut self.graph[node_usize];
