@@ -31,6 +31,13 @@ impl JavaHashCode for i32 {
     }
 }
 
+impl JavaHashCode for i64 {
+    /// `Long.hashCode(value)`: `(int) (value ^ (value >>> 32))`.
+    fn java_hash_code(&self) -> i32 {
+        (*self ^ ((*self as u64) >> 32) as i64) as i32
+    }
+}
+
 impl JavaHashCode for BytesRef {
     /// `BytesRef.hashCode()`.
     fn java_hash_code(&self) -> i32 {

@@ -218,7 +218,23 @@ pub struct Line {
 
 impl Line {
     /// Creates the line from parallel coordinate arrays.
-    pub fn new(lats: Vec<f64>, lons: Vec<f64>) -> Result<Self> {
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`lats must not be null`, `lons must not be null`).
+    pub fn new(
+        lats: impl Into<Option<Vec<f64>>>,
+        lons: impl Into<Option<Vec<f64>>>,
+    ) -> Result<Self> {
+        let Some(lats) = lats.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "lats must not be null".to_string(),
+            ));
+        };
+        let Some(lons) = lons.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "lons must not be null".to_string(),
+            ));
+        };
         if lats.len() != lons.len() {
             return Err(LuceneError::IllegalArgument(
                 "lats and lons must be equal length".to_string(),
@@ -345,7 +361,24 @@ pub struct Polygon {
 impl Polygon {
     /// Creates the polygon. The ring must be closed — the first and last
     /// vertices equal — as Lucene requires.
-    pub fn new(lats: Vec<f64>, lons: Vec<f64>, holes: Vec<Polygon>) -> Result<Self> {
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`polyLats must not be null`, `polyLons must not be null`).
+    pub fn new(
+        lats: impl Into<Option<Vec<f64>>>,
+        lons: impl Into<Option<Vec<f64>>>,
+        holes: Vec<Polygon>,
+    ) -> Result<Self> {
+        let Some(lats) = lats.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "polyLats must not be null".to_string(),
+            ));
+        };
+        let Some(lons) = lons.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "polyLons must not be null".to_string(),
+            ));
+        };
         if lats.len() != lons.len() {
             return Err(LuceneError::IllegalArgument(
                 "lats and lons must be equal length".to_string(),
@@ -769,7 +802,20 @@ pub struct XYLine {
 
 impl XYLine {
     /// Creates the line from parallel coordinate arrays.
-    pub fn new(xs: Vec<f32>, ys: Vec<f32>) -> Result<Self> {
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`x must not be null`, `y must not be null`).
+    pub fn new(xs: impl Into<Option<Vec<f32>>>, ys: impl Into<Option<Vec<f32>>>) -> Result<Self> {
+        let Some(xs) = xs.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "x must not be null".to_string(),
+            ));
+        };
+        let Some(ys) = ys.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "y must not be null".to_string(),
+            ));
+        };
         if xs.len() != ys.len() {
             return Err(LuceneError::IllegalArgument(
                 "xs and ys must be equal length".to_string(),
@@ -886,7 +932,24 @@ pub struct XYPolygon {
 
 impl XYPolygon {
     /// Creates the polygon. The ring must close itself.
-    pub fn new(xs: Vec<f32>, ys: Vec<f32>, holes: Vec<XYPolygon>) -> Result<Self> {
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`x must not be null`, `y must not be null`).
+    pub fn new(
+        xs: impl Into<Option<Vec<f32>>>,
+        ys: impl Into<Option<Vec<f32>>>,
+        holes: Vec<XYPolygon>,
+    ) -> Result<Self> {
+        let Some(xs) = xs.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "x must not be null".to_string(),
+            ));
+        };
+        let Some(ys) = ys.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "y must not be null".to_string(),
+            ));
+        };
         if xs.len() != ys.len() {
             return Err(LuceneError::IllegalArgument(
                 "xs and ys must be equal length".to_string(),

@@ -1220,16 +1220,16 @@ impl Version {
     ///
     /// # Errors
     ///
-    /// Java throws `java.text.ParseException`, which has no counterpart in
-    /// [`LuceneError`]; this port reports [`LuceneError::IllegalArgument`] with
-    /// Java's messages, and keeps the `NumberFormatException` or
-    /// `IllegalArgumentException` Java attaches with `initCause` as the
-    /// [`source`](std::error::Error::source).
+    /// Java's `java.text.ParseException` ([`PARSE_EXCEPTION`]), as a
+    /// [`LuceneError::Unchecked`] of that class with Java's message; the
+    /// `NumberFormatException` or `IllegalArgumentException` Java attaches
+    /// with `initCause` is its [`source`](std::error::Error::source).
     pub fn parse(version: &str) -> Result<Self, LuceneError> {
         let not_in_form = || {
-            LuceneError::IllegalArgument(format!(
-                "Version is not in form major.minor.bugfix(.prerelease) (got: {version})"
-            ))
+            parse_exception(
+                format!("Version is not in form major.minor.bugfix(.prerelease) (got: {version})"),
+                None,
+            )
         };
         let mut tokens = StrictStringTokenizer::new(version, '.');
         if !tokens.has_more_tokens() {
@@ -1247,9 +1247,12 @@ impl Version {
             if tokens.has_more_tokens() {
                 prerelease = parse_version_component(&tokens.next_token()?, "prerelease", version)?;
                 if prerelease == 0 {
-                    return Err(LuceneError::IllegalArgument(format!(
-                        "Invalid value {prerelease} for prerelease; should be 1 or 2 (got: {version})"
-                    )));
+                    return Err(parse_exception(
+                        format!(
+                            "Invalid value {prerelease} for prerelease; should be 1 or 2 (got: {version})"
+                        ),
+                        None,
+                    ));
                 }
                 if tokens.has_more_tokens() {
                     // Too many tokens!
@@ -1258,12 +1261,12 @@ impl Version {
             }
         }
         Self::from_ints(major, minor, bugfix, prerelease).map_err(|iae| {
-            LuceneError::illegal_argument_with_cause(
+            parse_exception(
                 format!(
                     "failed to parse version string \"{version}\": {}",
                     java_message(&iae)
                 ),
-                std::sync::Arc::new(iae),
+                Some(iae),
             )
         })
     }
@@ -1280,9 +1283,8 @@ impl Version {
     ///
     /// When [`parse`](Self::parse) fails, Java throws a new `ParseException`
     /// `failed to parse lenient version string "<input>": <reason>` whose cause
-    /// is the first; this port reports it as [`LuceneError::IllegalArgument`]
-    /// with that message and the first error as its source (see
-    /// [`parse`](Self::parse) for the exception mapping).
+    /// is the first; this port raises the same [`PARSE_EXCEPTION`] kind with
+    /// that message and the first error as its source.
     pub fn parse_leniently(version: &str) -> Result<Self, LuceneError> {
         let version_orig = version;
         let version = version.to_uppercase();
@@ -1291,12 +1293,12 @@ impl Version {
             _ => {
                 let version = Self::lenient_rewrite(&version);
                 Self::parse(&version).map_err(|pe| {
-                    LuceneError::illegal_argument_with_cause(
+                    parse_exception(
                         format!(
                             "failed to parse lenient version string \"{version_orig}\": {}",
                             java_message(&pe)
                         ),
-                        std::sync::Arc::new(pe),
+                        Some(pe),
                     )
                 })
             }
@@ -1369,7 +1371,29 @@ fn java_message(error: &LuceneError) -> String {
     match error {
         LuceneError::IllegalArgument(message) => message.clone(),
         LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
+        LuceneError::Unchecked {
+            message: Some(message),
+            ..
+        } => message.clone(),
         other => other.to_string(),
+    }
+}
+
+/// The binary name of `java.text.ParseException`, which `Version.parse` and
+/// `Version.parseLeniently` throw.
+pub const PARSE_EXCEPTION: &str = "java.text.ParseException";
+
+/// The binary name of `java.lang.NumberFormatException`, which
+/// `Integer.parseInt` throws.
+const NUMBER_FORMAT_EXCEPTION: &str = "java.lang.NumberFormatException";
+
+/// `new ParseException(message, 0)`, with `initCause(cause)` when `cause` is
+/// given.
+fn parse_exception(message: String, cause: Option<LuceneError>) -> LuceneError {
+    LuceneError::Unchecked {
+        class: PARSE_EXCEPTION,
+        message: Some(message),
+        cause: cause.map(std::sync::Arc::new),
     }
 }
 
@@ -1379,11 +1403,12 @@ fn java_message(error: &LuceneError) -> String {
 /// "<token>"`) as its cause.
 fn parse_version_component(token: &str, name: &str, version: &str) -> Result<i32, LuceneError> {
     java_parse_int(token).ok_or_else(|| {
-        LuceneError::illegal_argument_with_cause(
+        parse_exception(
             format!("Failed to parse {name} version from \"{token}\" (got: {version})"),
-            std::sync::Arc::new(LuceneError::IllegalArgument(format!(
-                "For input string: \"{token}\""
-            ))),
+            Some(LuceneError::unchecked(
+                NUMBER_FORMAT_EXCEPTION,
+                format!("For input string: \"{token}\""),
+            )),
         )
     })
 }
@@ -1515,14 +1540,22 @@ mod tests {
             "9.1.0"
         );
         match Version::parse("+.1.0") {
-            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+            Err(LuceneError::Unchecked {
+                class: PARSE_EXCEPTION,
+                message: Some(message),
+                cause: Some(cause),
+            }) => {
                 assert_eq!(
                     message,
                     "Failed to parse major version from \"+\" (got: +.1.0)"
                 );
                 assert!(matches!(
                     cause.as_ref(),
-                    LuceneError::IllegalArgument(m) if m == "For input string: \"+\""
+                    LuceneError::Unchecked {
+                        class: NUMBER_FORMAT_EXCEPTION,
+                        message: Some(m),
+                        ..
+                    } if m == "For input string: \"+\""
                 ));
             }
             other => panic!("expected the major-version failure, got {other:?}"),
@@ -1764,9 +1797,10 @@ mod tests {
             ),
         ] {
             let error = Version::parse_leniently(input).unwrap_err();
-            let LuceneError::IllegalArgumentWithCause {
-                message,
-                cause: source,
+            let LuceneError::Unchecked {
+                class: PARSE_EXCEPTION,
+                message: Some(message),
+                cause: Some(source),
             } = &error
             else {
                 panic!("{error:?}");
@@ -1790,12 +1824,12 @@ mod tests {
             (
                 "256.0.0",
                 "failed to parse version string \"256.0.0\": Illegal major version: 256",
-                Some("Illegal major version: 256"),
+                Some("illegal argument: Illegal major version: 256"),
             ),
             (
                 "-1.0.0",
                 "failed to parse version string \"-1.0.0\": Illegal major version: -1",
-                Some("Illegal major version: -1"),
+                Some("illegal argument: Illegal major version: -1"),
             ),
             (
                 "10",
@@ -1810,17 +1844,13 @@ mod tests {
             (
                 "",
                 "Failed to parse major version from \"\" (got: )",
-                Some("For input string: \"\""),
+                Some("java.lang.NumberFormatException: For input string: \"\""),
             ),
         ] {
             let error = Version::parse(input).unwrap_err();
             assert_eq!(java_message(&error), message, "{input}");
             let source = std::error::Error::source(&error).map(|e| e.to_string());
-            assert_eq!(
-                source,
-                cause.map(|c| format!("illegal argument: {c}")),
-                "{input}"
-            );
+            assert_eq!(source, cause.map(str::to_string), "{input}");
         }
     }
 

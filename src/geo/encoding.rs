@@ -585,8 +585,9 @@ impl GeoUtils {
     /// Returns whether all points of `[min_lon, max_lon]` are within 90 degrees
     /// of `lon`.
     ///
-    /// Equivalent to the package-private `GeoUtils.within90LonDegrees`.
-    pub(crate) fn within_90_lon_degrees(lon: f64, min_lon: f64, max_lon: f64) -> bool {
+    /// Equivalent to the package-private `GeoUtils.within90LonDegrees`; `pub`
+    /// because Rust has no package-private visibility and the `geo` tests call it.
+    pub fn within_90_lon_degrees(lon: f64, min_lon: f64, max_lon: f64) -> bool {
         let mut lon = lon;
         if max_lon <= lon - 180.0 {
             lon -= 360.0;

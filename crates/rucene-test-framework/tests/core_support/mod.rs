@@ -300,3 +300,20 @@ pub mod hamcrest {
         }
     }
 }
+
+/// `java.lang.IllegalArgumentException`.
+pub const IAE: &str = "java.lang.IllegalArgumentException";
+
+/// `expectThrows(IllegalArgumentException.class, runnable).getMessage()`
+/// (`""` for a `null` message, which no `contains` check matches).
+pub fn iae_message<T>(runnable: impl FnOnce() -> Result<T>) -> String {
+    rucene_test_framework::util::java_exceptions::expect_throws(IAE, runnable)
+        .message()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `assertTrue(message.contains(part))`.
+pub fn assert_contains(message: &str, part: &str) {
+    Assert::assert_true_msg(message, message.contains(part))
+}

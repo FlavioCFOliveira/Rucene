@@ -6,10 +6,7 @@
 //! drops the test's handles; `System.runFinalization()` and `System.gc()`
 //! have nothing left to do.
 //!
-//! Rucene's map has no `null` key (a declared divergence of
-//! `WeakIdentityMap`); the `null`-key steps of `testSimpleHashMap` are marked
-//! `PENDING(member)` below and Java's size assertions are kept as Java states
-//! them.
+//! A `null` key is `None`, as Rucene's map takes it.
 //!
 //! Rucene's map is not concurrent (`newConcurrentHashMap` builds the same
 //! structure; its documentation says to wrap it in a lock), so
@@ -28,7 +25,8 @@ use rucene_test_framework::util::lucene_test_case::TEST_NIGHTLY;
 use rucene_test_framework::util::LuceneTestCase;
 
 use crate::core_support::{
-    assert_equals, assert_equals_msg, class, expect_throws_panic, random, test,
+    assert_equals, assert_equals_msg, assert_not_null, assert_null, class, expect_throws_panic,
+    random, test,
 };
 
 /// `TestWeakIdentityMap`.
@@ -48,7 +46,7 @@ fn new_key() -> Arc<String> {
 }
 
 /// `map.get(key)` as Java's `String` result (`null` is `None`).
-fn get(map: &mut WeakIdentityMap<String, String>, key: &Arc<String>) -> Option<String> {
+fn get(map: &mut WeakIdentityMap<String, String>, key: Option<&Arc<String>>) -> Option<String> {
     map.get(key).cloned()
 }
 
@@ -74,51 +72,54 @@ fn test_simple_hash_map() -> Result<()> {
         assert_equals(k2, k3);
 
         // try null key & check its iterator also return null:
-        // PENDING(member): `WeakIdentityMap.put(null, "null")` and a
-        // `keyIterator()` returning that `null` key: Rucene's map has no null
-        // key (its declared divergence from the `NULL` sentinel of
-        // `WeakIdentityMap.java`).
-
+        map.put(None, "null".to_string());
+        {
+            let mut it = map.key_iterator().peekable();
+            Assert::assert_true(it.peek().is_some());
+            assert_null(&it.next().expect("hasNext() was true"));
+            Assert::assert_false(it.peek().is_some());
+            Assert::assert_false(it.peek().is_some());
+        }
         // 2 more keys:
-        map.put(k1, "bar1".to_string());
-        map.put(k2, "bar2".to_string());
+        map.put(Some(k1), "bar1".to_string());
+        map.put(Some(k2), "bar2".to_string());
 
         assert_equals(&3, &map.size());
 
-        assert_equals(&Some("bar1".to_string()), &get(&mut map, k1));
-        assert_equals(&Some("bar2".to_string()), &get(&mut map, k2));
-        assert_equals(&None, &get(&mut map, k3));
-        // PENDING(member): assertEquals("null", map.get(null)).
+        assert_equals(&Some("bar1".to_string()), &get(&mut map, Some(k1)));
+        assert_equals(&Some("bar2".to_string()), &get(&mut map, Some(k2)));
+        assert_equals(&None, &get(&mut map, Some(k3)));
+        assert_equals(&Some("null".to_string()), &get(&mut map, None));
 
-        Assert::assert_true(map.contains_key(k1));
-        Assert::assert_true(map.contains_key(k2));
-        Assert::assert_false(map.contains_key(k3));
-        // PENDING(member): assertTrue(map.containsKey(null)).
+        Assert::assert_true(map.contains_key(Some(k1)));
+        Assert::assert_true(map.contains_key(Some(k2)));
+        Assert::assert_false(map.contains_key(Some(k3)));
+        Assert::assert_true(map.contains_key(None));
 
         // repeat and check that we have no double entries
-        map.put(k1, "bar1".to_string());
-        map.put(k2, "bar2".to_string());
-        // PENDING(member): map.put(null, "null").
+        map.put(Some(k1), "bar1".to_string());
+        map.put(Some(k2), "bar2".to_string());
+        map.put(None, "null".to_string());
 
         assert_equals(&3, &map.size());
 
-        assert_equals(&Some("bar1".to_string()), &get(&mut map, k1));
-        assert_equals(&Some("bar2".to_string()), &get(&mut map, k2));
-        assert_equals(&None, &get(&mut map, k3));
-        // PENDING(member): assertEquals("null", map.get(null)).
+        assert_equals(&Some("bar1".to_string()), &get(&mut map, Some(k1)));
+        assert_equals(&Some("bar2".to_string()), &get(&mut map, Some(k2)));
+        assert_equals(&None, &get(&mut map, Some(k3)));
+        assert_equals(&Some("null".to_string()), &get(&mut map, None));
 
-        Assert::assert_true(map.contains_key(k1));
-        Assert::assert_true(map.contains_key(k2));
-        Assert::assert_false(map.contains_key(k3));
-        // PENDING(member): assertTrue(map.containsKey(null)).
+        Assert::assert_true(map.contains_key(Some(k1)));
+        Assert::assert_true(map.contains_key(Some(k2)));
+        Assert::assert_false(map.contains_key(Some(k3)));
+        Assert::assert_true(map.contains_key(None));
 
-        // PENDING(member): map.remove(null).
+        map.remove(None);
         assert_equals(&2, &map.size());
-        map.remove(k1);
+        map.remove(Some(k1));
         assert_equals(&1, &map.size());
-        map.put(k1, "bar1".to_string());
-        map.put(k2, "bar2".to_string());
-        map.put(k3, "bar3".to_string());
+        map.put(Some(k1), "bar1".to_string());
+        map.put(Some(k2), "bar2".to_string());
+        map.put(Some(k3), "bar3".to_string());
         assert_equals(&3, &map.size());
 
         let mut c = 0;
@@ -127,10 +128,11 @@ fn test_simple_hash_map() -> Result<()> {
         while it.peek().is_some() {
             Assert::assert_true(it.peek().is_some()); // try again, should return same result!
             let k = it.next().expect("peeked key");
-            Assert::assert_true(Arc::ptr_eq(&k, k1) || Arc::ptr_eq(&k, k2) || Arc::ptr_eq(&k, k3));
-            keys_assigned += if Arc::ptr_eq(&k, k1) {
+            let same = |key: &Arc<String>| k.as_ref().is_some_and(|k| Arc::ptr_eq(k, key));
+            Assert::assert_true(same(k1) || same(k2) || same(k3));
+            keys_assigned += if same(k1) {
                 1
-            } else if Arc::ptr_eq(&k, k2) {
+            } else if same(k2) {
                 2
             } else {
                 4
@@ -174,7 +176,7 @@ fn test_simple_hash_map() -> Result<()> {
         if Thread::try_sleep(100).is_ok() {
             let mut c = 0;
             for k in map.key_iterator() {
-                let _ = k; // assertNotNull(it.next())
+                assert_not_null(&k);
                 c += 1;
             }
             new_size = map.size();
@@ -209,8 +211,8 @@ fn test_simple_hash_map() -> Result<()> {
 
     let key1 = new_key();
     let key2 = new_key();
-    map.put(&key1, "bar1".to_string());
-    map.put(&key2, "bar2".to_string());
+    map.put(Some(&key1), "bar1".to_string());
+    map.put(Some(&key2), "bar2".to_string());
     assert_equals(&2, &map.size());
 
     map.clear();
@@ -267,18 +269,18 @@ fn test_concurrent_hash_map() -> Result<()> {
                     match rnd.next_int_bound(5) {
                         0 => {
                             let k = key_at(&keys, j);
-                            lock(&map).put(&k, j as i32);
+                            lock(&map).put(Some(&k), j as i32);
                         }
                         1 => {
                             let k = key_at(&keys, j);
-                            let v = lock(&map).get(&k).copied();
+                            let v = lock(&map).get(Some(&k)).copied();
                             if let Some(v) = v {
                                 assert_equals(&(j as i32), &v);
                             }
                         }
                         2 => {
                             let k = key_at(&keys, j);
-                            lock(&map).remove(&k);
+                            lock(&map).remove(Some(&k));
                         }
                         3 => {
                             *keys[j].lock().unwrap_or_else(|e| e.into_inner()) =
@@ -287,7 +289,7 @@ fn test_concurrent_hash_map() -> Result<()> {
                         4 => {
                             let mut m = lock(&map);
                             for k in m.key_iterator() {
-                                let _ = k; // assertNotNull(it.next())
+                                assert_not_null(&k);
                             }
                         }
                         _ => Assert::fail("Should not get here."),
@@ -325,7 +327,7 @@ fn test_concurrent_hash_map() -> Result<()> {
             {
                 let mut m = lock(&map);
                 for k in m.key_iterator() {
-                    let _ = k; // assertNotNull(it.next())
+                    assert_not_null(&k);
                     c += 1;
                 }
             }

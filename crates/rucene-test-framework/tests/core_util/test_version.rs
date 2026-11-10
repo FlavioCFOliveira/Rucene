@@ -5,10 +5,8 @@
 //! `Version.java` (10.5.0), in declaration order, with their names and
 //! whether each carries `@Deprecated`.
 //!
-//! Java's `Version.parse` and `parseLeniently` throw `java.text.ParseException`;
-//! Rucene reports `LuceneError::IllegalArgument` with Java's messages (see
-//! [`Version::parse`]), so `expectThrows(ParseException.class, …)` expects
-//! that class here.
+//! Java's `Version.parse` and `parseLeniently` throw `java.text.ParseException`,
+//! which Rucene raises as that exception kind (see [`Version::parse`]).
 
 use std::sync::Arc;
 
@@ -22,8 +20,8 @@ use rucene_test_framework::util::LuceneTestCase;
 
 use crate::core_support::{assert_equals, assert_equals_msg, class, random, test};
 
-/// The Rucene class standing for Java's `java.text.ParseException`.
-const PARSE_EXCEPTION: &str = "java.lang.IllegalArgumentException";
+/// `java.text.ParseException`.
+const PARSE_EXCEPTION: &str = rucene::util::extra::PARSE_EXCEPTION;
 
 /// The static `Version` fields of `Version.java`: `(name, value,
 /// @Deprecated)`.
@@ -67,6 +65,11 @@ const VERSION_FIELDS: &[(&str, Version, bool)] = &[
 
 /// `TestVersion`.
 pub fn class_def() -> Arc<Class> {
+    // `ParseException extends Exception`.
+    randomizedtesting::jdk::exception::register_class(
+        PARSE_EXCEPTION,
+        randomizedtesting::jdk::exception::EXCEPTION,
+    );
     class(
         "org.apache.lucene.util.TestVersion",
         vec![

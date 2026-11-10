@@ -104,8 +104,9 @@ impl Default for Counter {
 ///
 /// Port of `org.apache.lucene.util.SetOnce`, which Lucene 10.5.0 marks
 /// `@lucene.experimental`. Java's nested `AlreadySetException` extends
-/// `IllegalStateException`; the Rust equivalent is
-/// [`LuceneError::IllegalState`] carrying the same message.
+/// `IllegalStateException`; the Rust equivalent is a
+/// [`LuceneError::Unchecked`] of class [`ALREADY_SET_EXCEPTION`] carrying the
+/// same message.
 #[derive(Debug)]
 pub struct SetOnce<T> {
     cell: OnceLock<T>,
@@ -113,6 +114,15 @@ pub struct SetOnce<T> {
 
 /// The message Java's `SetOnce.AlreadySetException` carries.
 pub const ALREADY_SET_MESSAGE: &str = "The object cannot be set twice!";
+
+/// The binary name of `SetOnce.AlreadySetException`, a subclass of
+/// `java.lang.IllegalStateException`.
+pub const ALREADY_SET_EXCEPTION: &str = "org.apache.lucene.util.SetOnce$AlreadySetException";
+
+/// `new SetOnce.AlreadySetException()`.
+pub fn already_set_exception() -> LuceneError {
+    LuceneError::unchecked(ALREADY_SET_EXCEPTION, ALREADY_SET_MESSAGE)
+}
 
 impl<T> SetOnce<T> {
     /// Creates an unset instance.
@@ -134,11 +144,11 @@ impl<T> SetOnce<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the value was already set,
-    /// which is Java's `AlreadySetException`.
+    /// Returns Java's `AlreadySetException` ([`already_set_exception`]) when
+    /// the value was already set.
     pub fn set(&self, obj: T) -> Result<()> {
         if !self.try_set(obj) {
-            return Err(LuceneError::illegal_state(ALREADY_SET_MESSAGE.to_string()));
+            return Err(already_set_exception());
         }
         Ok(())
     }
@@ -736,22 +746,35 @@ pub fn wait_interruptibly<'a, T>(
 /// is `System.identityHashCode` plus reference equality; Rust's is the address
 /// the [`Weak`] points at, which stays readable after the value is dropped
 /// because the map keeps the weak handle alive.
+///
+/// A `null` key refers to Java's static `NULL` sentinel, which is strongly
+/// reachable and therefore never cleared: `weak` is `None` and `hash` is
+/// `System.identityHashCode(null)`, `0`.
 #[derive(Debug)]
 struct IdentityWeakReference<K> {
-    weak: Weak<K>,
+    weak: Option<Weak<K>>,
     hash: usize,
 }
 
 impl<K> IdentityWeakReference<K> {
-    fn new(key: &Arc<K>) -> Self {
-        Self {
-            weak: Arc::downgrade(key),
-            hash: Arc::as_ptr(key) as *const () as usize,
+    fn new(key: Option<&Arc<K>>) -> Self {
+        match key {
+            Some(key) => Self {
+                weak: Some(Arc::downgrade(key)),
+                hash: Arc::as_ptr(key) as *const () as usize,
+            },
+            None => Self {
+                weak: None,
+                hash: 0,
+            },
         }
     }
 
     fn is_alive(&self) -> bool {
-        self.weak.strong_count() > 0
+        match &self.weak {
+            Some(weak) => weak.strong_count() > 0,
+            None => true,
+        }
     }
 }
 
@@ -763,7 +786,7 @@ impl<K> Hash for IdentityWeakReference<K> {
 
 impl<K> PartialEq for IdentityWeakReference<K> {
     fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash
+        self.hash == other.hash && self.weak.is_some() == other.weak.is_some()
     }
 }
 
@@ -771,13 +794,12 @@ impl<K> Eq for IdentityWeakReference<K> {}
 
 /// A hash map keyed by weak references compared by identity.
 ///
-/// Port of `org.apache.lucene.util.WeakIdentityMap`.
+/// Port of `org.apache.lucene.util.WeakIdentityMap`. A `null` key is `None`:
+/// Java stores it under its internal `NULL` sentinel, which is never
+/// reclaimed, and [`WeakIdentityMap::key_iterator`] returns it as `null`.
 ///
 /// **Divergences from Lucene 10.5.0.**
 ///
-/// * Java's keys are raw objects and the map supports a `null` key through an
-///   internal sentinel. Rust keys are [`Arc<K>`] handles, which cannot be null,
-///   so the sentinel has nothing to stand for and is gone.
 /// * Java clears entries through a `ReferenceQueue` fed by the garbage
 ///   collector, so `reap()` is O(collected). Rust has no reference queue:
 ///   [`WeakIdentityMap::reap`] scans the map for keys whose strong count has
@@ -831,8 +853,8 @@ impl<K, V> WeakIdentityMap<K, V> {
         self.reap();
     }
 
-    /// Returns whether `key` is present.
-    pub fn contains_key(&mut self, key: &Arc<K>) -> bool {
+    /// Returns whether `key` (`None` for `null`) is present.
+    pub fn contains_key(&mut self, key: Option<&Arc<K>>) -> bool {
         if self.reap_on_read {
             self.reap();
         }
@@ -840,16 +862,17 @@ impl<K, V> WeakIdentityMap<K, V> {
             .contains_key(&IdentityWeakReference::new(key))
     }
 
-    /// Returns the value stored for `key`.
-    pub fn get(&mut self, key: &Arc<K>) -> Option<&V> {
+    /// Returns the value stored for `key` (`None` for `null`).
+    pub fn get(&mut self, key: Option<&Arc<K>>) -> Option<&V> {
         if self.reap_on_read {
             self.reap();
         }
         self.backing_store.get(&IdentityWeakReference::new(key))
     }
 
-    /// Stores `value` under `key`, returning the previous value.
-    pub fn put(&mut self, key: &Arc<K>, value: V) -> Option<V> {
+    /// Stores `value` under `key` (`None` for `null`), returning the previous
+    /// value.
+    pub fn put(&mut self, key: Option<&Arc<K>>, value: V) -> Option<V> {
         self.reap();
         self.backing_store
             .insert(IdentityWeakReference::new(key), value)
@@ -860,8 +883,8 @@ impl<K, V> WeakIdentityMap<K, V> {
         self.size() == 0
     }
 
-    /// Removes `key`, returning the value it held.
-    pub fn remove(&mut self, key: &Arc<K>) -> Option<V> {
+    /// Removes `key` (`None` for `null`), returning the value it held.
+    pub fn remove(&mut self, key: Option<&Arc<K>>) -> Option<V> {
         self.reap();
         self.backing_store.remove(&IdentityWeakReference::new(key))
     }
@@ -877,14 +900,20 @@ impl<K, V> WeakIdentityMap<K, V> {
         self.backing_store.len()
     }
 
-    /// Iterates over the live keys, dropping the entries whose key is gone.
+    /// Iterates over the live keys, skipping the entries whose key is gone;
+    /// the `null` key is returned as `None`.
     ///
     /// Equivalent to `WeakIdentityMap.keyIterator()`; Java holds a strong
     /// reference to the current key while it is exposed, which upgrading the
     /// [`Weak`] to an [`Arc`] does here.
-    pub fn key_iterator(&mut self) -> impl Iterator<Item = Arc<K>> + '_ {
+    pub fn key_iterator(&mut self) -> impl Iterator<Item = Option<Arc<K>>> + '_ {
         self.reap();
-        self.backing_store.keys().filter_map(|k| k.weak.upgrade())
+        self.backing_store.keys().filter_map(|k| match &k.weak {
+            // `if (k == NULL) k = null;`
+            None => Some(None),
+            // A cleared reference is skipped.
+            Some(weak) => weak.upgrade().map(Some),
+        })
     }
 
     /// Iterates over the values.

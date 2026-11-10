@@ -84,6 +84,8 @@ mod test_offline_sorter;
 mod test_paged_bytes;
 #[path = "core_util/test_priority_queue.rs"]
 mod test_priority_queue;
+#[path = "core_util/test_query_builder.rs"]
+mod test_query_builder;
 #[path = "core_util/test_radix_selector.rs"]
 mod test_radix_selector;
 #[path = "core_util/test_ram_usage_estimator.rs"]
@@ -355,6 +357,11 @@ fn test_tim_sorter() {
 #[test]
 fn test_priority_queue() {
     run(test_priority_queue::class_def);
+}
+
+#[test]
+fn test_query_builder() {
+    run(test_query_builder::class_def);
 }
 
 #[test]

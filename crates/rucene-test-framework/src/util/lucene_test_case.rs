@@ -172,6 +172,28 @@ pub const AWAITS_FIX: AnnotationType = AnnotationType {
     inherited: true,
 };
 
+/// An `@AwaitsFix(bugUrl)` annotation value.
+#[derive(Debug, Clone, Default)]
+pub struct AwaitsFix {
+    /// `bugUrl()`: point to JIRA entry.
+    pub bug_url: String,
+}
+
+impl JavaAnnotation for AwaitsFix {
+    fn annotation_type(&self) -> &'static AnnotationType {
+        &AWAITS_FIX
+    }
+    fn to_java_string(&self) -> String {
+        format!(
+            "@org.apache.lucene.tests.util.LuceneTestCase.AwaitsFix(bugUrl={})",
+            quote_member(&self.bug_url)
+        )
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// `@SuppressFileSystems` (`LuceneTestCase.SuppressFileSystems`, `@Inherited`):
 /// the mock filesystems a suite does not want, by simple name, or `*` for all.
 /// Ported under the cycle rule: `TestRuleTemporaryFilesCleanup` reads it.

@@ -150,6 +150,41 @@ impl PartialEq for Rectangle2D {
 
 impl Eq for Rectangle2D {}
 
+impl Rectangle2D {
+    /// The concrete component `Rectangle2D.create(XYRectangle)` builds, for
+    /// callers that compare it with `equals` and `hashCode`.
+    ///
+    /// Java's `create` returns the `Rectangle2D` itself (typed as
+    /// `Component2D`); [`create_from_xy_rectangle`](Self::create_from_xy_rectangle)
+    /// erases it behind `Arc<dyn Component2D>`, which has no `equals`.
+    pub fn from_xy_rectangle(rectangle: &XYRectangle) -> Rectangle2D {
+        Rectangle2D::new(
+            f64::from(rectangle.min_x()),
+            f64::from(rectangle.max_x()),
+            f64::from(rectangle.min_y()),
+            f64::from(rectangle.max_y()),
+        )
+    }
+
+    /// Equivalent to `Rectangle2D.hashCode()`:
+    /// `Objects.hash(minX, maxX, minY, maxY)`.
+    pub fn hash_code(&self) -> i32 {
+        let mut result: i32 = 1;
+        for v in [self.min_x, self.max_x, self.min_y, self.max_y] {
+            // Double.hashCode(v): (int) (bits ^ (bits >>> 32)), with
+            // Double.doubleToLongBits canonicalizing NaN.
+            let bits = if v.is_nan() {
+                0x7ff8_0000_0000_0000u64
+            } else {
+                v.to_bits()
+            };
+            let h = (bits ^ (bits >> 32)) as i32;
+            result = result.wrapping_mul(31).wrapping_add(h);
+        }
+        result
+    }
+}
+
 impl Hash for Rectangle2D {
     /// Equivalent to `Rectangle2D.hashCode()`, which hashes the four bounds.
     fn hash<H: Hasher>(&self, state: &mut H) {

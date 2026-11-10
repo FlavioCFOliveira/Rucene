@@ -14,13 +14,16 @@ use rucene_test_framework::util::java_exceptions::expect_throws;
 
 use crate::core_support::{assert_equals, assert_equals_msg, assert_null, class, random, test};
 
-/// `SetOnce.AlreadySetException`: Rucene raises it as
-/// `LuceneError::IllegalState` (its Java superclass), so the port expects
-/// `IllegalStateException`.
-const ALREADY_SET: &str = "java.lang.IllegalStateException";
+/// `SetOnce.AlreadySetException`.
+const ALREADY_SET: &str = rucene::util::concurrent::ALREADY_SET_EXCEPTION;
 
 /// `TestSetOnce`.
 pub fn class_def() -> Arc<Class> {
+    // `AlreadySetException extends IllegalStateException`.
+    randomizedtesting::jdk::exception::register_class(
+        ALREADY_SET,
+        randomizedtesting::jdk::exception::ILLEGAL_STATE_EXCEPTION,
+    );
     class(
         "org.apache.lucene.util.TestSetOnce",
         vec![

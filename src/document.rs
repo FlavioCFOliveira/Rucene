@@ -1629,6 +1629,17 @@ impl Document {
             .collect()
     }
 
+    /// Returns the string value of the first field with the given name that
+    /// has one, or `None` (Java's `null`).
+    ///
+    /// Equivalent to `Document.get(String)`.
+    pub fn get(&self, name: &str) -> Option<String> {
+        self.fields
+            .iter()
+            .filter(|f| f.name() == name)
+            .find_map(|f| f.string_value())
+    }
+
     /// Returns the first binary value for the given name, if any.
     pub fn get_binary_value(&self, name: &str) -> Option<BytesRef> {
         self.fields
@@ -2330,6 +2341,60 @@ impl KeywordField {
             binary_value: Some(binary_value),
             stored_value,
         })
+    }
+
+    /// Changes the string value of this field, its indexed bytes and its
+    /// stored value.
+    ///
+    /// Equivalent to `KeywordField.setStringValue(String)`, which calls
+    /// `Field.setStringValue` (the value must be a `String`), then sets
+    /// `binaryValue = new BytesRef(value)` and the stored value.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` when the field does not hold a string.
+    pub fn set_string_value(&mut self, value: String) -> Result<()> {
+        // super.setStringValue(value)
+        match &self.fields_data {
+            FieldData::String(_) => self.fields_data = FieldData::String(value.clone()),
+            _ => {
+                return Err(LuceneError::IllegalArgument(
+                    "cannot change value type to String".to_string(),
+                ))
+            }
+        }
+        self.binary_value = Some(BytesRef::from_char_sequence(&value));
+        if let Some(stored_value) = &mut self.stored_value {
+            stored_value.set_string_value(value)?;
+        }
+        Ok(())
+    }
+
+    /// Changes the binary value of this field, its indexed bytes and its
+    /// stored value.
+    ///
+    /// Equivalent to `KeywordField.setBytesValue(BytesRef)`, which calls
+    /// `Field.setBytesValue` (the value must be a `BytesRef`), then sets
+    /// `binaryValue = value` and the stored value.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` when the field does not hold bytes.
+    pub fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
+        // super.setBytesValue(value)
+        match &self.fields_data {
+            FieldData::Bytes(_) => self.fields_data = FieldData::Bytes(value.clone()),
+            _ => {
+                return Err(LuceneError::IllegalArgument(
+                    "cannot change value type to BytesRef".to_string(),
+                ))
+            }
+        }
+        self.binary_value = Some(value.clone());
+        if let Some(stored_value) = &mut self.stored_value {
+            stored_value.set_binary_value(value)?;
+        }
+        Ok(())
     }
 
     /// Query stub: exact match on a binary value.
@@ -5294,7 +5359,20 @@ impl Resolution {
     }
 }
 
+/// `java.util.Date`: an instant with millisecond precision, as
+/// [`DateTools`] takes and returns it.
+pub type Date = chrono::DateTime<chrono::Utc>;
+
 impl DateTools {
+    /// Rounds a date to the given resolution in GMT.
+    ///
+    /// Equivalent to `DateTools.round(Date, Resolution)`:
+    /// `new Date(round(date.getTime(), resolution))`.
+    pub fn round_date(date: Date, resolution: Resolution) -> Date {
+        let millis = Self::round(date.timestamp_millis(), resolution);
+        Date::from_timestamp_millis(millis).expect("a rounded date stays in range")
+    }
+
     /// Rounds a timestamp to the given resolution in GMT.
     pub fn round(time: i64, resolution: Resolution) -> i64 {
         let dt = chrono::Utc
