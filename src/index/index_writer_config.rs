@@ -538,8 +538,11 @@ impl LiveIndexWriterConfig {
     }
 
     /// Returns the flush policy.
-    #[allow(dead_code)]
-    pub(crate) fn flush_policy(&self) -> Arc<dyn FlushPolicy> {
+    ///
+    /// Equivalent to the package-private
+    /// `LiveIndexWriterConfig.getFlushPolicy()`; `pub` for the tests that read
+    /// it (`TestFlushByRamOrCountsPolicy`).
+    pub fn flush_policy(&self) -> Arc<dyn FlushPolicy> {
         Arc::clone(&self.flush_policy)
     }
 
@@ -885,12 +888,10 @@ impl IndexWriterConfig {
 
     /// Sets the flush policy.
     ///
-    /// Package-private equivalent; exposed as `pub(crate)`.
-    #[allow(dead_code)]
-    pub(crate) fn set_flush_policy(
-        &mut self,
-        flush_policy: Arc<dyn FlushPolicy>,
-    ) -> Result<&mut Self> {
+    /// Equivalent to the package-private
+    /// `IndexWriterConfig.setFlushPolicy(FlushPolicy)`; `pub` for the tests
+    /// that set it (`TestFlushByRamOrCountsPolicy`).
+    pub fn set_flush_policy(&mut self, flush_policy: Arc<dyn FlushPolicy>) -> Result<&mut Self> {
         self.live.flush_policy = flush_policy;
         Ok(self)
     }

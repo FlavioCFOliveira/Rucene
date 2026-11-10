@@ -412,6 +412,48 @@ pub struct IndexWriter {
     /// Rust has no subclassing, so the override is chosen at construction
     /// ([`new_with_test_points`](Self::new_with_test_points)).
     enable_test_points: bool,
+    /// The overrides of a Java subclass, installed with
+    /// [`set_overrides`](Self::set_overrides); see [`IndexWriterOverrides`].
+    overrides: OnceLock<Arc<dyn IndexWriterOverrides>>,
+}
+
+/// The protected methods a Java subclass of `IndexWriter` overrides:
+/// `merge(OneMerge)`, `doBeforeFlush()` and `doAfterFlush()`.
+///
+/// **Divergence from Lucene 10.5.0.** Java tests extend `IndexWriter`
+/// (`TestForceMergeForever.MyIndexWriter`, `TestIndexWriter.MockIndexWriter`)
+/// and override these methods, reaching the inherited body with `super.…`.
+/// Rust has no subclassing: an implementation of this trait, installed with
+/// [`IndexWriter::set_overrides`], receives the writer in place of `this`, and
+/// each provided method is the inherited body, which an implementation
+/// reaches through the `super_…` methods of [`IndexWriter`].
+pub trait IndexWriterOverrides: Send + Sync {
+    /// `IndexWriter.merge(MergePolicy.OneMerge)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexWriter::super_merge`].
+    fn merge(&self, writer: &IndexWriter, merge: OneMerge) -> Result<()> {
+        writer.super_merge(merge)
+    }
+
+    /// `IndexWriter.doBeforeFlush()`.
+    ///
+    /// # Errors
+    ///
+    /// What the override raises; the inherited body raises nothing.
+    fn do_before_flush(&self, _writer: &IndexWriter) -> Result<()> {
+        Ok(())
+    }
+
+    /// `IndexWriter.doAfterFlush()`.
+    ///
+    /// # Errors
+    ///
+    /// What the override raises; the inherited body raises nothing.
+    fn do_after_flush(&self, _writer: &IndexWriter) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for IndexWriter {
@@ -1156,6 +1198,7 @@ impl IndexWriter {
             write_doc_values_lock: Mutex::new(()),
             pending_seq_no: AtomicI64::new(0),
             self_ref: OnceLock::new(),
+            overrides: OnceLock::new(),
             enable_test_points,
         };
         let writer = Arc::new(writer);
@@ -5906,6 +5949,19 @@ impl IndexWriter {
     /// Propagates the merge's failure, after recording it as a tragic event,
     /// unless it is an abort the writer itself requested.
     pub fn merge(&self, merge: OneMerge) -> Result<()> {
+        match self.overrides.get() {
+            Some(overrides) => overrides.merge(self, merge),
+            None => self.super_merge(merge),
+        }
+    }
+
+    /// The body of `IndexWriter.merge(MergePolicy.OneMerge)`, which an
+    /// [`IndexWriterOverrides::merge`] reaches as `super.merge(merge)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`merge`](Self::merge).
+    pub fn super_merge(&self, merge: OneMerge) -> Result<()> {
         let mut merge = merge;
         let merge_policy = self.config.merge_policy();
 
@@ -6846,7 +6902,10 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.doBeforeFlush()`, whose body is empty and
     /// which exists so a subclass can hook the flush.
     pub fn do_before_flush(&self) -> Result<()> {
-        Ok(())
+        match self.overrides.get() {
+            Some(overrides) => overrides.do_before_flush(self),
+            None => Ok(()),
+        }
     }
 
     /// Called after every flush.
@@ -6854,7 +6913,19 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.doAfterFlush()`, whose body is empty and
     /// which exists so a subclass can hook the flush.
     pub fn do_after_flush(&self) -> Result<()> {
-        Ok(())
+        match self.overrides.get() {
+            Some(overrides) => overrides.do_after_flush(self),
+            None => Ok(()),
+        }
+    }
+
+    /// Installs the overrides of a Java subclass of `IndexWriter`; see
+    /// [`IndexWriterOverrides`]. The first installation wins.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, where the subclass is
+    /// the override.
+    pub fn set_overrides(&self, overrides: Arc<dyn IndexWriterOverrides>) {
+        let _ = self.overrides.set(overrides);
     }
 
     /// Called when a merge has succeeded.

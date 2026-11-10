@@ -336,3 +336,242 @@ pub fn copy_field(field: &rucene::document::Field) -> Result<rucene::document::F
         rucene::document::FieldType::new_from(field.field_type()),
     )
 }
+
+/// Forwards the named `LeafReader` members of a `FilterLeafReader` subclass
+/// to its base, the core `FilterLeafReader` held in the named field: a copy
+/// of `rucene_test_framework::index`'s crate-private `forward_leaf_reader!`
+/// (mode `filter`), for the index tests' own subclasses.
+#[macro_export]
+macro_rules! forward_leaf_reader {
+    ($mode:ident $inner:ident; $($m:ident),* $(,)?) => {
+        $( $crate::forward_leaf_reader!(@ $mode $inner $m); )*
+    };
+    (@ $mode:ident $inner:ident core) => {
+        fn core(&self) -> &rucene::index::index_reader::IndexReaderCore {
+            rucene::index::LeafReader::core(&self.$inner)
+        }
+    };
+    (@ $mode:ident $inner:ident filter_leaf_reader_delegate) => {
+        /// `this instanceof FilterLeafReader`: the delegate `getDelegate()`
+        /// returns.
+        fn filter_leaf_reader_delegate(
+            &self,
+        ) -> Option<&std::sync::Arc<dyn rucene::index::LeafReader>> {
+            rucene::index::LeafReader::filter_leaf_reader_delegate(&self.$inner)
+        }
+    };
+    (@ $mode:ident $inner:ident do_close) => {
+        /// The base class's `doClose()`: `in.close()` for a
+        /// `FilterLeafReader`, `in.doClose()` for a `FilterCodecReader`.
+        fn do_close(&self) -> rucene::error::Result<()> {
+            rucene::index::LeafReader::do_close(&self.$inner)
+        }
+    };
+    (@ $mode:ident $inner:ident term_vectors) => {
+        fn term_vectors(
+            &self,
+        ) -> rucene::error::Result<Box<dyn rucene::index::leaf_reader::TermVectors>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).term_vectors()
+        }
+    };
+    (@ $mode:ident $inner:ident num_docs) => {
+        fn num_docs(&self) -> i32 {
+            (&self.$inner as &dyn rucene::index::LeafReader).num_docs()
+        }
+    };
+    (@ $mode:ident $inner:ident max_doc) => {
+        fn max_doc(&self) -> i32 {
+            (&self.$inner as &dyn rucene::index::LeafReader).max_doc()
+        }
+    };
+    (@ $mode:ident $inner:ident stored_fields) => {
+        fn stored_fields(
+            &self,
+        ) -> rucene::error::Result<Box<dyn rucene::index::index_reader::StoredFields>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).stored_fields()
+        }
+    };
+    (@ $mode:ident $inner:ident get_reader_cache_helper) => {
+        fn get_reader_cache_helper(
+            &self,
+        ) -> Option<Box<dyn rucene::index::index_reader::CacheHelper>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_reader_cache_helper()
+        }
+    };
+    (@ $mode:ident $inner:ident get_core_cache_helper) => {
+        fn get_core_cache_helper(
+            &self,
+        ) -> Option<Box<dyn rucene::index::index_reader::CacheHelper>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_core_cache_helper()
+        }
+    };
+    (@ $mode:ident $inner:ident terms) => {
+        fn terms(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::Terms>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).terms(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_numeric_doc_values) => {
+        fn get_numeric_doc_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::NumericDocValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_numeric_doc_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_binary_doc_values) => {
+        fn get_binary_doc_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::BinaryDocValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_binary_doc_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_sorted_doc_values) => {
+        fn get_sorted_doc_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::SortedDocValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_sorted_doc_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_sorted_numeric_doc_values) => {
+        fn get_sorted_numeric_doc_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::SortedNumericDocValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_sorted_numeric_doc_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_sorted_set_doc_values) => {
+        fn get_sorted_set_doc_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::SortedSetDocValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_sorted_set_doc_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_norm_values) => {
+        fn get_norm_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::NumericDocValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_norm_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_doc_values_skipper) => {
+        fn get_doc_values_skipper(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::DocValuesSkipper>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_doc_values_skipper(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_float_vector_values) => {
+        fn get_float_vector_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::FloatVectorValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_float_vector_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident get_byte_vector_values) => {
+        fn get_byte_vector_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::ByteVectorValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_byte_vector_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident search_nearest_vectors) => {
+        fn search_nearest_vectors(
+            &self,
+            field: &str,
+            target: &[f32],
+            collector: &mut dyn rucene::search::knn::KnnCollector,
+            accept_docs: &mut dyn rucene::search::AcceptDocs,
+        ) -> rucene::error::Result<()> {
+            self.$inner
+                .search_nearest_vectors(field, target, collector, accept_docs)
+        }
+    };
+    (@ $mode:ident $inner:ident search_nearest_vectors_byte) => {
+        fn search_nearest_vectors_byte(
+            &self,
+            field: &str,
+            target: &[u8],
+            collector: &mut dyn rucene::search::knn::KnnCollector,
+            accept_docs: &mut dyn rucene::search::AcceptDocs,
+        ) -> rucene::error::Result<()> {
+            self.$inner
+                .search_nearest_vectors_byte(field, target, collector, accept_docs)
+        }
+    };
+    (@ $mode:ident $inner:ident get_field_infos) => {
+        fn get_field_infos(&self) -> rucene::index::FieldInfos {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_field_infos()
+        }
+    };
+    (@ $mode:ident $inner:ident get_live_docs) => {
+        fn get_live_docs(&self) -> Option<Box<dyn rucene::util::Bits>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_live_docs()
+        }
+    };
+    (@ $mode:ident $inner:ident get_point_values) => {
+        fn get_point_values(
+            &self,
+            field: &str,
+        ) -> rucene::error::Result<Option<Box<dyn rucene::index::PointValues>>> {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_point_values(field)
+        }
+    };
+    (@ $mode:ident $inner:ident check_integrity) => {
+        fn check_integrity(&self) -> rucene::error::Result<()> {
+            (&self.$inner as &dyn rucene::index::LeafReader).check_integrity()
+        }
+    };
+    (@ $mode:ident $inner:ident get_meta_data) => {
+        fn get_meta_data(&self) -> rucene::index::LeafMetaData {
+            (&self.$inner as &dyn rucene::index::LeafReader).get_meta_data()
+        }
+    };
+}
+
+/// `TestIndexWriter.addDoc(writer)` (`TestIndexWriter.java:203-207`), which
+/// other index tests call.
+pub fn add_doc(writer: &rucene::index::index_writer::IndexWriter) -> Result<()> {
+    let mut doc = rucene::document::Document::new();
+    doc.add(Box::new(LuceneTestCase::new_text_field(
+        "content",
+        "aaa",
+        rucene::document::Store::NO,
+    )));
+    writer.add_document(&doc)?;
+    Ok(())
+}
+
+/// `TestIndexWriter.addDocWithIndex(writer, index)`
+/// (`TestIndexWriter.java:209-214`), over `storedTextType`, a copy of
+/// `TextField.TYPE_NOT_STORED` (`TestIndexWriter.java:125`).
+pub fn add_doc_with_index(
+    writer: &rucene::index::index_writer::IndexWriter,
+    index: i32,
+) -> Result<()> {
+    let stored_text_type =
+        rucene::document::FieldType::new_from(rucene::document::TextField::type_not_stored());
+    let mut doc = rucene::document::Document::new();
+    doc.add(Box::new(LuceneTestCase::new_field(
+        "content",
+        &format!("aaa {index}"),
+        &stored_text_type,
+    )));
+    doc.add(Box::new(LuceneTestCase::new_field(
+        "id",
+        &index.to_string(),
+        &stored_text_type,
+    )));
+    writer.add_document(&doc)?;
+    Ok(())
+}

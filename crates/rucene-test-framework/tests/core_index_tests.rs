@@ -126,6 +126,66 @@ mod test_documents_writer_delete_queue;
 mod test_documents_writer_per_thread_pool;
 #[path = "core_index/test_documents_writer_stall_control.rs"]
 mod test_documents_writer_stall_control;
+#[path = "core_index/test_dueling_codecs.rs"]
+mod test_dueling_codecs;
+#[path = "core_index/test_dueling_codecs_at_night.rs"]
+mod test_dueling_codecs_at_night;
+#[path = "core_index/test_exceed_max_term_length.rs"]
+mod test_exceed_max_term_length;
+#[path = "core_index/test_exitable_directory_reader.rs"]
+mod test_exitable_directory_reader;
+#[path = "core_index/test_field_infos.rs"]
+mod test_field_infos;
+#[path = "core_index/test_field_invert_state.rs"]
+mod test_field_invert_state;
+#[path = "core_index/test_field_updates_buffer.rs"]
+mod test_field_updates_buffer;
+#[path = "core_index/test_fields_reader.rs"]
+mod test_fields_reader;
+#[path = "core_index/test_filter_codec_reader.rs"]
+mod test_filter_codec_reader;
+#[path = "core_index/test_filter_directory_reader.rs"]
+mod test_filter_directory_reader;
+#[path = "core_index/test_filter_index_input.rs"]
+mod test_filter_index_input;
+#[path = "core_index/test_filter_leaf_reader.rs"]
+mod test_filter_leaf_reader;
+#[path = "core_index/test_filter_merge_policy.rs"]
+mod test_filter_merge_policy;
+#[path = "core_index/test_flex.rs"]
+mod test_flex;
+#[path = "core_index/test_flush_by_ram_or_counts_policy.rs"]
+mod test_flush_by_ram_or_counts_policy;
+#[path = "core_index/test_for_too_much_cloning.rs"]
+mod test_for_too_much_cloning;
+#[path = "core_index/test_force_merge_forever.rs"]
+mod test_force_merge_forever;
+#[path = "core_index/test_frozen_buffered_updates.rs"]
+mod test_frozen_buffered_updates;
+#[path = "core_index/test_index_commit.rs"]
+mod test_index_commit;
+#[path = "core_index/test_index_file_deleter.rs"]
+mod test_index_file_deleter;
+#[path = "core_index/test_index_input.rs"]
+mod test_index_input;
+#[path = "core_index/test_index_many_documents.rs"]
+mod test_index_many_documents;
+#[path = "core_index/test_index_options.rs"]
+mod test_index_options;
+#[path = "core_index/test_index_reader_close.rs"]
+mod test_index_reader_close;
+#[path = "core_index/test_index_too_many_docs.rs"]
+mod test_index_too_many_docs;
+#[path = "core_index/test_index_writer_commit.rs"]
+mod test_index_writer_commit;
+#[path = "core_index/test_index_writer_config.rs"]
+mod test_index_writer_config;
+#[path = "core_index/test_index_writer_exceptions2.rs"]
+mod test_index_writer_exceptions2;
+#[path = "core_index/test_indexable_field.rs"]
+mod test_indexable_field;
+#[path = "core_index/test_indexing_sequence_numbers.rs"]
+mod test_indexing_sequence_numbers;
 use core_support::run;
 
 #[test]
@@ -421,4 +481,154 @@ fn test_doc_values() {
 #[test]
 fn test_doc_values_indexing() {
     run(test_doc_values_indexing::class_def);
+}
+
+#[test]
+fn test_dueling_codecs() {
+    run(test_dueling_codecs::class_def);
+}
+
+#[test]
+fn test_dueling_codecs_at_night() {
+    run(test_dueling_codecs_at_night::class_def);
+}
+
+#[test]
+fn test_exceed_max_term_length() {
+    run(test_exceed_max_term_length::class_def);
+}
+
+#[test]
+fn test_field_invert_state() {
+    run(test_field_invert_state::class_def);
+}
+
+#[test]
+fn test_exitable_directory_reader() {
+    run(test_exitable_directory_reader::class_def);
+}
+
+#[test]
+fn test_field_infos() {
+    run(test_field_infos::class_def);
+}
+
+#[test]
+fn test_fields_reader() {
+    run(test_fields_reader::class_def);
+}
+
+#[test]
+fn test_field_updates_buffer() {
+    run(test_field_updates_buffer::class_def);
+}
+
+#[test]
+fn test_index_input() {
+    run(test_index_input::class_def);
+}
+
+#[test]
+fn test_filter_index_input() {
+    run(test_filter_index_input::class_def);
+}
+
+#[test]
+fn test_filter_merge_policy() {
+    run(test_filter_merge_policy::class_def);
+}
+
+#[test]
+fn test_filter_codec_reader() {
+    run(test_filter_codec_reader::class_def);
+}
+
+#[test]
+fn test_filter_directory_reader() {
+    run(test_filter_directory_reader::class_def);
+}
+
+#[test]
+fn test_filter_leaf_reader() {
+    run(test_filter_leaf_reader::class_def);
+}
+
+#[test]
+fn test_flex() {
+    run(test_flex::class_def);
+}
+
+#[test]
+fn test_force_merge_forever() {
+    run(test_force_merge_forever::class_def);
+}
+
+#[test]
+fn test_index_many_documents() {
+    run(test_index_many_documents::class_def);
+}
+
+#[test]
+fn test_for_too_much_cloning() {
+    run(test_for_too_much_cloning::class_def);
+}
+
+#[test]
+fn test_frozen_buffered_updates() {
+    run(test_frozen_buffered_updates::class_def);
+}
+
+#[test]
+fn test_index_commit() {
+    run(test_index_commit::class_def);
+}
+
+#[test]
+fn test_index_reader_close() {
+    run(test_index_reader_close::class_def);
+}
+
+#[test]
+fn test_index_options() {
+    run(test_index_options::class_def);
+}
+
+#[test]
+fn test_flush_by_ram_or_counts_policy() {
+    run(test_flush_by_ram_or_counts_policy::class_def);
+}
+
+#[test]
+fn test_indexable_field() {
+    run(test_indexable_field::class_def);
+}
+
+#[test]
+fn test_index_file_deleter() {
+    run(test_index_file_deleter::class_def);
+}
+
+#[test]
+fn test_indexing_sequence_numbers() {
+    run(test_indexing_sequence_numbers::class_def);
+}
+
+#[test]
+fn test_index_too_many_docs() {
+    run(test_index_too_many_docs::class_def);
+}
+
+#[test]
+fn test_index_writer_config() {
+    run(test_index_writer_config::class_def);
+}
+
+#[test]
+fn test_index_writer_exceptions2() {
+    run(test_index_writer_exceptions2::class_def);
+}
+
+#[test]
+fn test_index_writer_commit() {
+    run(test_index_writer_commit::class_def);
 }

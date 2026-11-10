@@ -1536,7 +1536,10 @@ impl FrozenBufferedUpdates {
 /// borrow across the next call, so [`next_term`](Self::next_term) reports
 /// whether the term exists and the postings are read back through
 /// [`docs`](Self::docs); the reuse is the same.
-struct TermDocsIterator<'a> {
+///
+/// Package-private in Java (`static final class`); `pub` here for the tests
+/// that use it (`TestFrozenBufferedUpdates`).
+pub struct TermDocsIterator<'a> {
     reader: &'a dyn LeafReader,
     field: Option<String>,
     terms_enum: Option<Box<dyn TermsEnum>>,
@@ -1549,7 +1552,7 @@ impl<'a> TermDocsIterator<'a> {
     /// Creates an iterator over `reader`'s term dictionary.
     ///
     /// Equivalent to `TermDocsIterator(LeafReader, boolean)`.
-    fn new(reader: &'a dyn LeafReader, sorted_terms: bool) -> Self {
+    pub fn new(reader: &'a dyn LeafReader, sorted_terms: bool) -> Self {
         Self {
             reader,
             field: None,
@@ -1591,7 +1594,7 @@ impl<'a> TermDocsIterator<'a> {
     /// # Errors
     ///
     /// Propagates whatever reading the term dictionary raises.
-    fn next_term(&mut self, field: &str, term: &BytesRef) -> Result<bool> {
+    pub fn next_term(&mut self, field: &str, term: &BytesRef) -> Result<bool> {
         self.set_field(field)?;
         let Some(terms_enum) = self.terms_enum.as_mut() else {
             return Ok(false);
@@ -1648,7 +1651,7 @@ impl<'a> TermDocsIterator<'a> {
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalState`] when no term is positioned.
-    fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
+    pub fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
         match self.postings_enum.as_mut() {
             Some(postings) => Ok(postings.as_mut()),
             None => Err(LuceneError::illegal_state(
@@ -3138,6 +3141,15 @@ impl FlushControlHandle<'_> {
     /// Returns the info stream of the enclosing writer.
     pub fn info_stream(&self) -> &dyn InfoStream {
         self.control.info_stream()
+    }
+
+    /// Returns a snapshot of every currently active DWPT.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.allActiveWriters()`, which
+    /// takes no lock, so a policy may call it from `onChange`
+    /// (`TestFlushByRamOrCountsPolicy.findPending`).
+    pub fn all_active_writers(&self) -> Vec<Arc<DocumentsWriterPerThread>> {
+        self.control.all_active_writers()
     }
 }
 
