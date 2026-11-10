@@ -8,6 +8,8 @@
 //! the binary doc-values stream, and they build the queries that read them
 //! back.
 
+use std::sync::Arc;
+
 use crate::document::shape_doc_values::{LatLonShapeDocValues, XYShapeDocValues};
 use crate::document::shape_field::{
     DecodedTriangle, QueryRelation, ShapeField, Triangle, TriangleType, BYTES,
@@ -1049,4 +1051,84 @@ fn decode_indexable_fields(indexable_fields: &[Triangle]) -> Result<Vec<DecodedT
         tessellation.push(ShapeField::decode_triangle(packed)?);
     }
     Ok(tessellation)
+}
+
+// -----------------------------------------------------------------------------
+// Plans as queries
+// -----------------------------------------------------------------------------
+
+/// Builds Java's `new ConstantScoreQuery(builder.build())` over `clauses`, each
+/// added with `BooleanClause.Occur.MUST`.
+fn constant_score_conjunction(
+    clauses: Vec<Arc<dyn crate::search::Query>>,
+) -> Result<Arc<dyn crate::search::Query>> {
+    let mut builder = crate::search::BooleanQueryBuilder::new();
+    for clause in clauses {
+        builder.add(clause, crate::search::Occur::MUST)?;
+    }
+    let conjunction: Arc<dyn crate::search::Query> = Arc::new(builder.build());
+    Ok(Arc::new(crate::search::ConstantScoreQuery::new(
+        conjunction,
+    )))
+}
+
+impl LatLonShapeQueryPlan {
+    /// Returns the `Query` this plan stands for: the `Query` the
+    /// `LatLonShape` factory returns in Lucene 10.5.0.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of adding a clause to the conjunction.
+    pub fn into_query(self) -> Result<Arc<dyn crate::search::Query>> {
+        Ok(match self {
+            Self::BoundingBox(query) => Arc::new(*query),
+            Self::Shape(query) => Arc::new(*query),
+            Self::Conjunction(clauses) => constant_score_conjunction(
+                clauses
+                    .into_iter()
+                    .map(Self::into_query)
+                    .collect::<Result<Vec<_>>>()?,
+            )?,
+        })
+    }
+}
+
+impl XYShapeQueryPlan {
+    /// Returns the `Query` this plan stands for: the `Query` the `XYShape`
+    /// factory returns in Lucene 10.5.0.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of adding a clause to the conjunction.
+    pub fn into_query(self) -> Result<Arc<dyn crate::search::Query>> {
+        Ok(match self {
+            Self::Shape(query) => Arc::new(*query),
+            Self::Conjunction(clauses) => constant_score_conjunction(
+                clauses
+                    .into_iter()
+                    .map(Self::into_query)
+                    .collect::<Result<Vec<_>>>()?,
+            )?,
+        })
+    }
+}
+
+impl LatLonShapeDocValuesBoxPlan {
+    /// Returns the `Query` this plan stands for: the `Query`
+    /// `LatLonShape.newSlowDocValuesBoxQuery` returns in Lucene 10.5.0.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of adding a clause to the conjunction.
+    pub fn into_query(self) -> Result<Arc<dyn crate::search::Query>> {
+        Ok(match self {
+            Self::DocValues(query) => Arc::new(*query),
+            Self::Conjunction(clauses) => constant_score_conjunction(
+                clauses
+                    .into_iter()
+                    .map(LatLonShapeQueryPlan::into_query)
+                    .collect::<Result<Vec<_>>>()?,
+            )?,
+        })
+    }
 }

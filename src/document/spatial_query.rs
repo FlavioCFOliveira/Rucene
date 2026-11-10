@@ -3231,6 +3231,133 @@ where
     )))
 }
 
+// -----------------------------------------------------------------------------
+// Executing the shape queries
+// -----------------------------------------------------------------------------
+//
+// Java's `LatLonShapeQuery`, `LatLonShapeBoundingBoxQuery`, `XYShapeQuery` and
+// the shape doc-values queries are `Query` subclasses: `SpatialQuery` supplies
+// the `ConstantScoreWeight` of the first three, and `ShapeDocValuesQuery`
+// (`ShapeDocValuesQuery.java`) a `ConstantScoreWeight` over a two-phase
+// iterator of the last two. Rust has no implementation inheritance, so each
+// states how it iterates through [`SpatialMatcher`] and the weight is built
+// once by [`spatial_create_weight`].
+//
+// **Divergence from Lucene 10.5.0.** The doc-values queries run through the
+// same constant-score weight as the point-tree queries: their iterator is the
+// doc-values match iterator [`BaseShapeDocValuesQuery::matching_docs`] builds,
+// not a `TwoPhaseIterator` over all documents, and their cost is the
+// segment's `maxDoc` (Java's `DocIdSetIterator.all(maxDoc)` cost). Which
+// documents match, and their constant score, are unchanged.
+
+/// Implements [`SpatialMatcher`] and [`Query`] for a shape query whose shared
+/// state is at `self.$sq` and whose geometries are at `self.$geoms`.
+macro_rules! impl_shape_query_exec {
+    ($ty:ident, [$($sq:ident).+], $geoms:ident, |$this:ident, $reader:ident| $cost:block) => {
+        impl SpatialMatcher for $ty {
+            fn spatial_field(&self) -> &str {
+                self.$($sq).+.get_field()
+            }
+
+            fn spatial_matching_docs(
+                &self,
+                reader: &dyn LeafReader,
+            ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+                self.matching_docs(reader)
+            }
+
+            fn spatial_cost(&self, $reader: &dyn LeafReader) -> Result<i64> {
+                let $this = self;
+                $cost
+            }
+        }
+
+        impl Query for $ty {
+            fn to_query_string(&self, field: &str) -> String {
+                $ty::to_query_string(self, field)
+            }
+
+            /// Equivalent to the inherited `SpatialQuery.visit(QueryVisitor)`.
+            fn visit(&self, visitor: &mut dyn QueryVisitor) {
+                self.$($sq).+.visit(visitor, self);
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+
+            fn create_weight(
+                &self,
+                _searcher: &crate::search::IndexSearcher,
+                score_mode: crate::search::ScoreMode,
+                boost: f32,
+            ) -> Result<Arc<dyn crate::search::Weight>> {
+                let matcher = Arc::new(self.clone());
+                let query: Arc<dyn Query> = Arc::new(self.clone());
+                spatial_create_weight(matcher, query, score_mode, boost)
+            }
+
+            /// Equivalent to `SpatialQuery.equals(Object)`: same class, field,
+            /// relation and geometries.
+            fn query_eq(&self, other: &dyn Query) -> bool {
+                other.as_any().downcast_ref::<Self>().is_some_and(|other| {
+                    self.$($sq).+ == other.$($sq).+ && self.$geoms == other.$geoms
+                })
+            }
+
+            /// Equivalent to `SpatialQuery.hashCode()` over the field, the
+            /// relation and the geometries.
+            fn query_hash(&self) -> u64 {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                stringify!($ty).hash(&mut hasher);
+                self.$($sq).+.get_field().hash(&mut hasher);
+                format!("{:?}", self.$($sq).+.get_query_relation()).hash(&mut hasher);
+                format!("{:?}", self.$geoms).hash(&mut hasher);
+                hasher.finish()
+            }
+        }
+    };
+}
+
+/// The cost of a point-tree shape query: the estimate of its visitor's walk,
+/// or `0` when the segment has no points for the field.
+fn shape_tree_cost(
+    query: &SpatialQuery,
+    reader: &dyn LeafReader,
+    visitor: &dyn SpatialVisitor,
+) -> Result<i64> {
+    let Some(values) = reader.get_point_values(query.get_field())? else {
+        return Ok(0);
+    };
+    query.cost(values.as_ref(), visitor)
+}
+
+impl_shape_query_exec!(LatLonShapeQuery, [query], geometries, |q, reader| {
+    shape_tree_cost(&q.query, reader, &q.visitor)
+});
+impl_shape_query_exec!(
+    LatLonShapeBoundingBoxQuery,
+    [query],
+    rectangle,
+    |q, reader| { shape_tree_cost(&q.query, reader, &q.visitor) }
+);
+impl_shape_query_exec!(XYShapeQuery, [query], geometries, |q, reader| {
+    shape_tree_cost(&q.query, reader, &q.visitor)
+});
+impl_shape_query_exec!(
+    LatLonShapeDocValuesQuery,
+    [base.query],
+    geometries,
+    |_q, reader| { Ok(i64::from(reader.max_doc())) }
+);
+impl_shape_query_exec!(
+    XYShapeDocValuesQuery,
+    [base.query],
+    geometries,
+    |_q, reader| { Ok(i64::from(reader.max_doc())) }
+);
+
 #[cfg(test)]
 mod visit_tests {
     use super::*;

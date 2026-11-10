@@ -7,7 +7,19 @@
 
 #[path = "core_document/base_shape_encoding_test_case.rs"]
 mod base_shape_encoding_test_case;
+#[path = "core_document/base_spatial_test_case.rs"]
+mod base_spatial_test_case;
 mod core_support;
+#[path = "core_document/shared_field.rs"]
+mod shared_field;
+#[path = "core_document/spatial_shape_queries.rs"]
+mod spatial_shape_queries;
+#[path = "core_document/test_lat_lon_shape.rs"]
+mod test_lat_lon_shape;
+#[path = "core_document/test_shape_doc_values.rs"]
+mod test_shape_doc_values;
+#[path = "core_document/test_xy_shape.rs"]
+mod test_xy_shape;
 #[path = "core_document/column"]
 mod column {
     pub mod column_batch_test_util;
@@ -245,4 +257,129 @@ fn test_lat_lon_shape_encoding() {
 #[test]
 fn test_xy_shape_encoding() {
     run(test_xy_shape_encoding::class_def);
+}
+
+#[test]
+fn test_lat_lon_point_shape_queries() {
+    run(spatial_shape_queries::test_lat_lon_point_shape_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_line_shape_queries() {
+    run(spatial_shape_queries::test_lat_lon_line_shape_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_polygon_shape_queries() {
+    run(spatial_shape_queries::test_lat_lon_polygon_shape_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_multi_point_shape_queries() {
+    run(spatial_shape_queries::test_lat_lon_multi_point_shape_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_multi_line_shape_queries() {
+    run(spatial_shape_queries::test_lat_lon_multi_line_shape_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_multi_polygon_shape_queries() {
+    run(spatial_shape_queries::test_lat_lon_multi_polygon_shape_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_point_point_queries() {
+    run(spatial_shape_queries::test_lat_lon_point_point_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_multi_point_point_queries() {
+    run(spatial_shape_queries::test_lat_lon_multi_point_point_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_doc_values_point_point_queries() {
+    run(spatial_shape_queries::test_lat_lon_doc_values_point_point_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_doc_values_multi_point_point_queries() {
+    run(spatial_shape_queries::test_lat_lon_doc_values_multi_point_point_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_line_shape_dv_queries() {
+    run(spatial_shape_queries::test_lat_lon_line_shape_dv_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_point_shape_dv_queries() {
+    run(spatial_shape_queries::test_lat_lon_point_shape_dv_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_polygon_shape_dv_queries() {
+    run(spatial_shape_queries::test_lat_lon_polygon_shape_dv_queries::class_def);
+}
+
+#[test]
+fn test_xy_point_shape_queries() {
+    run(spatial_shape_queries::test_xy_point_shape_queries::class_def);
+}
+
+#[test]
+fn test_xy_line_shape_queries() {
+    run(spatial_shape_queries::test_xy_line_shape_queries::class_def);
+}
+
+#[test]
+fn test_xy_polygon_shape_queries() {
+    run(spatial_shape_queries::test_xy_polygon_shape_queries::class_def);
+}
+
+#[test]
+fn test_xy_multi_point_shape_queries() {
+    run(spatial_shape_queries::test_xy_multi_point_shape_queries::class_def);
+}
+
+#[test]
+fn test_xy_multi_line_shape_queries() {
+    run(spatial_shape_queries::test_xy_multi_line_shape_queries::class_def);
+}
+
+#[test]
+fn test_xy_multi_polygon_shape_queries() {
+    run(spatial_shape_queries::test_xy_multi_polygon_shape_queries::class_def);
+}
+
+#[test]
+fn test_xy_line_shape_dv_queries() {
+    run(spatial_shape_queries::test_xy_line_shape_dv_queries::class_def);
+}
+
+#[test]
+fn test_xy_point_shape_dv_queries() {
+    run(spatial_shape_queries::test_xy_point_shape_dv_queries::class_def);
+}
+
+#[test]
+fn test_xy_polygon_shape_dv_queries() {
+    run(spatial_shape_queries::test_xy_polygon_shape_dv_queries::class_def);
+}
+
+#[test]
+fn test_lat_lon_shape() {
+    run(test_lat_lon_shape::class_def);
+}
+
+#[test]
+fn test_xy_shape() {
+    run(test_xy_shape::class_def);
+}
+
+#[test]
+fn test_shape_doc_values() {
+    run(test_shape_doc_values::class_def);
 }
