@@ -336,7 +336,7 @@ fn create(
 
 /// `TestUtil.alwaysKnnVectorsFormat(format)` as an `IndexWriterConfig` codec.
 fn hnsw_config(format: Lucene99HnswVectorsFormat) -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_codec(TestUtil::always_knn_vectors_format(Arc::new(format)))?;
     Ok(iwc)
 }
@@ -371,7 +371,7 @@ fn test_random_read_write_and_merge<C: HnswCase>(this: &mut Fixture<C>) -> Resul
 
     let mut dir = LuceneTestCase::new_directory();
     let outcome = (|| -> Result<()> {
-        let mut iwc = hnsw_config(Lucene99HnswVectorsFormat::with_max_conn_beam_width(
+        let iwc = hnsw_config(Lucene99HnswVectorsFormat::with_max_conn_beam_width(
             m, beam_width,
         ))?;
         // set a random merge policy
@@ -461,7 +461,7 @@ fn test_graph_merge_with_deletes<C: HnswCase>(this: &mut Fixture<C>) -> Result<(
 
     let mut dir = LuceneTestCase::new_directory();
     let outcome = (|| -> Result<()> {
-        let mut iwc = hnsw_config(
+        let iwc = hnsw_config(
             Lucene99HnswVectorsFormat::with_max_conn_beam_width_threshold(m, beam_width, 0),
         )?;
         // set a random merge policy
@@ -645,7 +645,7 @@ fn test_sorted_and_unsorted_indices_return_same_results<C: HnswCase>(
     let iwc = hnsw_config(Lucene99HnswVectorsFormat::with_max_conn_beam_width(
         m, beam_width,
     ))?;
-    let mut iwc2 = hnsw_config(Lucene99HnswVectorsFormat::with_max_conn_beam_width(
+    let iwc2 = hnsw_config(Lucene99HnswVectorsFormat::with_max_conn_beam_width(
         m, beam_width,
     ))?;
     iwc2.set_index_sort(Sort::new_fields(vec![SortField::new(

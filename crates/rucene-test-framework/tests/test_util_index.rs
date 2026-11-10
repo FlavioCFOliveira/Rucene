@@ -48,7 +48,7 @@ fn line_docs_index(seed: i64) -> (Arc<dyn Directory>, String) {
     let format = TestUtil::get_postings_format_with_ords(&random);
     let format_name = format.name().to_string();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_codec(TestUtil::always_postings_format(format))
         .unwrap();
@@ -312,7 +312,7 @@ fn reduce_open_files_is_lucenes() {
             "serial" => Arc::new(SerialMergeScheduler::new()),
             other => panic!("{other}"),
         };
-        let mut c = Iwc::new();
+        let c = Iwc::new();
         c.set_merge_policy(Some(mp)).unwrap();
         c.set_merge_scheduler(Some(ms)).unwrap();
         let w = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), c).unwrap();
@@ -502,7 +502,7 @@ fn add_indexes_slowly_is_lucenes() {
         .map(|d| directory_reader::open(Arc::clone(d)).unwrap())
         .collect();
     let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut c = Iwc::new();
+    let c = Iwc::new();
     c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let w = IndexWriter::new(Arc::clone(&target), c).unwrap();
@@ -1077,7 +1077,7 @@ fn sync_concurrent_merges_on_any_scheduler() {
 fn check_index_reports_a_corrupt_terms_index_or_dictionary() {
     for extension in [".tip", ".tim"] {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = Iwc::new();
+        let config = Iwc::new();
         config.set_use_compound_file(false).unwrap();
         config
             .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))

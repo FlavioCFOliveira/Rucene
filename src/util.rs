@@ -10,6 +10,7 @@
 
 pub mod accountables;
 pub mod annotations;
+pub mod atomic_ref_cell;
 pub mod attribute;
 pub mod automaton;
 pub mod bit_set;

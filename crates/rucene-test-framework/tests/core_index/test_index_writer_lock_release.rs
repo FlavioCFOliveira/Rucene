@@ -34,7 +34,7 @@ fn is_file_not_found(e: &LuceneError) -> bool {
 /// `new IndexWriter(dir, new IndexWriterConfig(new MockAnalyzer(random()))
 /// .setOpenMode(OpenMode.APPEND))`.
 fn open_append(dir: &Arc<dyn rucene::store::Directory>) -> Result<Arc<IndexWriter>> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_open_mode(OpenMode::APPEND)?;
     IndexWriter::new(Arc::clone(dir), iwc)
 }

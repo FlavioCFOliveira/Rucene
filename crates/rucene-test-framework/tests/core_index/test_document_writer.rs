@@ -1,7 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestDocumentWriter.java`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
@@ -218,7 +217,7 @@ impl Analyzer for GapAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        Ok(tokenizer_components(Rc::new(RefCell::new(
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             MockTokenizer::new(Arc::clone(&WHITESPACE), false)?,
         ))))
     }
@@ -360,7 +359,7 @@ impl Analyzer for SynonymAnalyzer {
         let term_att = Att::add(tokenizer.attribute_source_mut(), char_term_id())?;
         let payload_att = Att::add(tokenizer.attribute_source_mut(), payload_id())?;
         let pos_incr_att = Att::add(tokenizer.attribute_source_mut(), pos_inc_id())?;
-        let tokenizer = Rc::new(RefCell::new(tokenizer));
+        let tokenizer = Arc::new(AtomicRefCell::new(tokenizer));
         let filter = TokenFilter::new(
             shared(&tokenizer),
             SynonymFilter {
@@ -458,7 +457,7 @@ fn test_pre_analyzed_field(inst: &Instance) -> Result<()> {
     let mut source =
         AttributeSource::new_with_factory(rucene::analysis::default_token_attribute_factory());
     let term_att = Att::add(&mut source, char_term_id())?;
-    let stream: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(PreAnalyzed {
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(PreAnalyzed {
         source,
         tokens: ["term1", "term2", "term3", "term2"],
         index: 0,
@@ -567,7 +566,7 @@ fn do_test_ram_usage(
     field_supplier: impl Fn(&str) -> Result<Box<dyn IndexableField>>,
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_max_buffered_docs(10)?;
     iwc.set_ram_buffer_size_mb(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH as f64)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -746,7 +745,7 @@ fn frozen(f: impl FnOnce(&mut FieldType) -> Result<()>) -> Result<FieldType> {
 
 /// `new IndexWriter(dir, newIndexWriterConfig().setOpenMode(OpenMode.CREATE))`.
 fn create_writer(inst: &Instance) -> Result<Arc<IndexWriter>> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_open_mode(OpenMode::CREATE)?;
     IndexWriter::new(inst.dir(), iwc)
 }

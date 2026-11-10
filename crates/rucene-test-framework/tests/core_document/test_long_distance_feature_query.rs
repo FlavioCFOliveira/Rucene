@@ -65,7 +65,7 @@ fn test_equals_and_hashcode() -> Result<()> {
 /// `new RandomIndexWriter(random(), dir,
 /// newIndexWriterConfig().setMergePolicy(newLogMergePolicy(random().nextBoolean())))`.
 fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
     )))?;
@@ -269,7 +269,7 @@ fn test_multi_valued() -> Result<()> {
 /// Port of `testRandom`.
 fn test_random() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
     )))?;

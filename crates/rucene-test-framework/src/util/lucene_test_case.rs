@@ -2807,7 +2807,7 @@ impl LuceneTestCase {
         use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, SerialMergeScheduler};
         const INVARIANT: &str = "INVARIANT: the drawn value is in the setter's range";
 
-        let mut c = rucene::index::index_writer_config::IndexWriterConfig::with_analyzer(a);
+        let c = rucene::index::index_writer_config::IndexWriterConfig::with_analyzer(a);
         c.set_similarity(Some(Self::class_env_similarity()))
             .expect(INVARIANT);
         if *VERBOSE {
@@ -3731,7 +3731,7 @@ impl LuceneTestCase {
         analyzer: Option<Arc<dyn rucene::analysis::Analyzer>>,
     ) -> rucene::index::index_writer_config::IndexWriterConfig {
         use rucene::index::index_deletion_policy::{NoDeletionPolicy, SnapshotDeletionPolicy};
-        let mut c = Self::new_index_writer_config_analyzer(analyzer);
+        let c = Self::new_index_writer_config_analyzer(analyzer);
         c.set_index_deletion_policy(Some(Arc::new(SnapshotDeletionPolicy::new(Some(
             NoDeletionPolicy::instance(),
         )))))

@@ -119,7 +119,7 @@ fn reversing_policy() -> Arc<dyn MergePolicy> {
 fn rust_merge() -> Arc<dyn Directory> {
     let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut initial = IndexWriterConfig::new();
+    let initial = IndexWriterConfig::new();
     initial
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -140,7 +140,7 @@ fn rust_merge() -> Arc<dyn Directory> {
         SIZES.len()
     );
 
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_merge_policy(Some(reversing_policy())).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.force_merge(1).unwrap();
@@ -413,7 +413,7 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
 
     // Two committed segments, then a forced merge: `mergeMiddle`.
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut initial = IndexWriterConfig::new();
+    let initial = IndexWriterConfig::new();
     initial
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -427,7 +427,7 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
     writer.close().unwrap();
 
     let reorderer = recording_reorderer(&seen);
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
             Arc::new(TieredMergePolicy::new()),
@@ -454,7 +454,7 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
         .map(|leaf| SlowCodecReaderWrapper::wrap(leaf.leaf_reader()).unwrap())
         .collect();
     let dest: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(ReorderingReadersPolicy {
             reorderer: recording_reorderer(&seen),

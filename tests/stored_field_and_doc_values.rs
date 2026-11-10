@@ -135,7 +135,7 @@ fn write(root: &Path) {
             ));
             std::fs::create_dir_all(&path).unwrap();
             let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&path).unwrap());
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             if sorted {
                 config.set_index_sort(sort(kind)).unwrap();
             }
@@ -236,7 +236,7 @@ fn add(out: &mut String, w: &IndexWriter, label: &str, fields: Vec<Box<dyn Index
 
 fn memory_writer(sort: Option<rucene::search::Sort>) -> Arc<IndexWriter> {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if let Some(sort) = sort {
         config.set_index_sort(sort).unwrap();
     }

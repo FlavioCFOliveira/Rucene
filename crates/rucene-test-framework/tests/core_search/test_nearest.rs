@@ -208,7 +208,7 @@ fn test_nearest_neighbor_random() -> Result<()> {
     let mut lats = vec![0f64; num_points as usize];
     let mut lons = vec![0f64; num_points as usize];
 
-    let mut iwc = get_index_writer_config();
+    let iwc = get_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
@@ -318,7 +318,7 @@ fn test_nearest_neighbor_random() -> Result<()> {
 }
 
 fn get_index_writer_config() -> IndexWriterConfig {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     crate::core_support::unchecked(iwc.set_codec(TestUtil::get_default_codec()).map(|_| ()));
     iwc
 }

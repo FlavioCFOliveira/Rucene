@@ -160,7 +160,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `new IndexWriterConfig().setCodec(new Lucene104Codec())`.
 fn lucene104_config() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_codec(Arc::new(Lucene104Codec::new()))?;
     Ok(iwc)
 }

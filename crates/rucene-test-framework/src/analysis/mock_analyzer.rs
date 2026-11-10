@@ -17,9 +17,8 @@
 
 //! Port of `org.apache.lucene.tests.analysis.MockAnalyzer`.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -253,14 +252,15 @@ impl Analyzer for MockAnalyzer {
             self.max_token_length.load(Ordering::Relaxed),
         )?;
         tokenizer.set_enable_checks(self.enable_checks.load(Ordering::Relaxed));
-        let tokenizer = Rc::new(RefCell::new(tokenizer));
+        let tokenizer = Arc::new(AtomicRefCell::new(tokenizer));
         let filt = MockTokenFilter::with_custom_term_freq(
             shared(&tokenizer),
             Arc::clone(&self.filter),
             self.custom_term_freq.clone(),
         )?;
         let sink = self.maybe_payload(Box::new(filt), field_name)?;
-        let sink: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(BoxedStream(sink)));
+        let sink: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(BoxedStream(sink)));
         Ok(components(tokenizer, sink))
     }
 
@@ -293,7 +293,7 @@ impl Analyzer for MockAnalyzer {
     }
 }
 
-/// A boxed stream as a sized [`TokenStream`], to share it behind an `Rc`.
+/// A boxed stream as a sized [`TokenStream`], to share it behind an `Arc`.
 #[derive(Debug)]
 pub struct BoxedStream(pub Box<dyn TokenStream>);
 

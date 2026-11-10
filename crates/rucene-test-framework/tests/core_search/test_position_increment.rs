@@ -2,8 +2,7 @@
 //!
 //! Term position unit test.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -113,7 +112,7 @@ impl Analyzer for FixedAnalyzer {
                 offset_att,
             },
         );
-        Ok(tokenizer_components(Rc::new(RefCell::new(t))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(t))))
     }
 }
 

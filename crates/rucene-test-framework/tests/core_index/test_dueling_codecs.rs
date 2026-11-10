@@ -137,13 +137,13 @@ fn set_up(inst: &mut DuelingCodecsInstance) -> Result<()> {
 
     // but these can be different
     // TODO: this turns this into a really big test of Multi*, is that what we want?
-    let mut left_config =
+    let left_config =
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(left_analyzer)));
     left_config.set_codec(Arc::clone(&left_codec))?;
     // preserve docids
     left_config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
 
-    let mut right_config =
+    let right_config =
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(right_analyzer)));
     right_config.set_codec(Arc::clone(&right_codec))?;
     // preserve docids

@@ -218,7 +218,7 @@ fn add_all(doc: &mut Document, fields: Vec<Box<dyn IndexableField>>) {
 
 /// `new IndexWriterConfig().setCodec(TestUtil.getDefaultCodec())`.
 fn default_codec_config() -> Result<IndexWriterConfig> {
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     // Make sure to use the default codec, otherwise some random points formats
     // that have large values for maxPointsPerLeaf might not enable skipping
     // with only 10k docs
@@ -1463,7 +1463,7 @@ fn prunes_on_segment_entry(
     fields_builder: FieldsBuilder,
 ) -> Result<()> {
     let dir = LuceneTestCase::new_directory();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(codec)?;
     config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
@@ -1570,7 +1570,7 @@ fn test_string_sort_optimization_with_missing_values_based_dv_skipper() -> Resul
 /// `private void testStringSortOptimizationWithMissingValues(BiFunction<...> fieldsBuilder)`.
 fn string_sort_optimization_with_missing_values(fields_builder: StringFieldBuilder) -> Result<()> {
     let dir = LuceneTestCase::new_directory();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
     // Larger number of documents as some of them are missing values and we still want
@@ -1620,7 +1620,7 @@ fn string_sort_optimization_field_missing_in_segment(
 ) -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     // Use NoMergePolicy to ensure we have deterministic segment geometry
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
 

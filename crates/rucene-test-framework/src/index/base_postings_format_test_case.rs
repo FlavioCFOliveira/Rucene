@@ -45,6 +45,7 @@
 //!   random draws of the seek pass; the port keeps the keys in the order
 //!   JDK 25's `ConcurrentHashMap` iterates them ([`ConcurrentHashMapKeys`]).
 
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -401,8 +402,8 @@ impl Analyzer for MockTokenizerAnalyzer {
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::whitespace_lower_case()?;
-        Ok(tokenizer_components(std::rc::Rc::new(
-            std::cell::RefCell::new(tokenizer),
+        Ok(tokenizer_components(std::sync::Arc::new(
+            rucene::util::atomic_ref_cell::AtomicRefCell::new(tokenizer),
         )))
     }
 }
@@ -577,7 +578,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testJustEmptyField()`.
     fn test_just_empty_field(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         let iw = RandomIndexWriter::new_with_config(
             &*LuceneTestCase::random(),
@@ -615,7 +616,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testEmptyFieldAndEmptyTerm()`.
     fn test_empty_field_and_empty_term(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         let iw = RandomIndexWriter::new_with_config(
             &*LuceneTestCase::random(),
@@ -650,7 +651,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testDidntWantFreqsButAskedAnyway()`.
     fn test_didnt_want_freqs_but_asked_anyway(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         )));
         iwc.set_codec(self.get_codec())?;
@@ -688,7 +689,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testAskForPositionsWhenNotThere()`.
     fn test_ask_for_positions_when_not_there(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         )));
         iwc.set_codec(self.get_codec())?;
@@ -727,7 +728,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     // TODO: can this be improved?
     fn test_ghosts(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iw = RandomIndexWriter::new_with_config(
@@ -771,7 +772,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_disorder(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
 
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_tiered_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -820,7 +821,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_binary_search_term_leaf(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
 
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_tiered_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -894,7 +895,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_level2_ghosts(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
 
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
         iwc.set_codec(self.get_codec())?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -966,7 +967,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             1,
             rucene::index::index_writer::MAX_TERM_LENGTH as i32,
         ));
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
 
         // Must be concurrent because thread(s) can be merging
         // while up to one thread flushes, and each of those
@@ -1260,8 +1261,8 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = IndexWriterConfig::with_analyzer(None);
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
-        let stream: Rc<RefCell<dyn rucene::analysis::TokenStream>> =
-            Rc::new(RefCell::new(CannedTokenStream::new(payload_tokens())));
+        let stream: Arc<AtomicRefCell<dyn rucene::analysis::TokenStream>> =
+            Arc::new(AtomicRefCell::new(CannedTokenStream::new(payload_tokens())));
         doc.add(Box::new(TextField::new_with_token_stream("foo", stream)?));
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
@@ -1300,8 +1301,8 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut doc = Document::new();
         let ft = FieldType::new_from(TextField::type_not_stored());
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
-        let stream: Rc<RefCell<dyn rucene::analysis::TokenStream>> =
-            Rc::new(RefCell::new(CannedTokenStream::new(payload_tokens())));
+        let stream: Arc<AtomicRefCell<dyn rucene::analysis::TokenStream>> =
+            Arc::new(AtomicRefCell::new(CannedTokenStream::new(payload_tokens())));
         doc.add(Box::new(Field::new_with_token_stream("foo", stream, ft)?));
         iw.add_document(&doc)?;
         let reader = directory_reader::open_with_writer(&*iw)?;
@@ -1379,7 +1380,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         w1.add_document(&doc)?;
 
         let mut dir2 = LuceneTestCase::new_directory();
-        let mut config2 = LuceneTestCase::new_index_writer_config();
+        let config2 = LuceneTestCase::new_index_writer_config();
         config2.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let w2 = IndexWriter::new(dir2.as_directory(), config2)?;
         w2.add_document(&doc)?;
@@ -1431,7 +1432,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_doc_id_run_end(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
         for _ in 0..100 {
-            let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
+            let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
             iwc.set_open_mode(OpenMode::CREATE)?;
             iwc.set_codec(self.get_codec())?;
             // Prevent randomization from slowing down indexing too much
@@ -1498,9 +1499,6 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         }
     }
 }
-
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// The body `testPostingsEnumPositions`, `Offsets`, `Payloads` and `All`
 /// share after indexing their one document: the `FREQS` sugar enum, its

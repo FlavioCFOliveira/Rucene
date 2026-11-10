@@ -788,7 +788,7 @@ fn assert_random_consistency<C: KnnVectorCase>(multi_threaded: bool) -> Result<(
     let r = random();
     let mut d = C::new_directory_for_test()?;
     // To ensure consistency between seeded runs, remove some randomness
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     iwc.set_max_buffered_docs(num_docs)?;
@@ -908,7 +908,7 @@ fn test_random<C: KnnVectorCase>() -> Result<()> {
 
 /// `new IndexWriterConfig().setCodec(TestUtil.getDefaultCodec())`.
 fn default_codec_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_codec(TestUtil::get_default_codec())?;
     Ok(iwc)
 }
@@ -1955,10 +1955,9 @@ fn test_same_field_different_formats<C: KnnVectorCase>() -> Result<()> {
     let mut directory = C::new_directory_for_test()?;
     let result = (|| -> Result<()> {
         let mock_analyzer = Arc::new(MockAnalyzer::new(&*random()));
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(
-            &mock_analyzer,
-        )
-            as Arc<dyn rucene::analysis::Analyzer>));
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(
+            Arc::clone(&mock_analyzer) as Arc<dyn rucene::analysis::Analyzer>,
+        ));
         let format1: Arc<dyn KnnVectorsFormat> =
             LuceneTestCase::random_vector_format(VectorEncoding::FLOAT32);
         let format2: Arc<dyn KnnVectorsFormat> =
@@ -1982,7 +1981,7 @@ fn test_same_field_different_formats<C: KnnVectorCase>() -> Result<()> {
             r?;
         }
 
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(
             mock_analyzer as Arc<dyn rucene::analysis::Analyzer>,
         ));
         iwc.set_codec(TestUtil::always_knn_vectors_format(format2))?;

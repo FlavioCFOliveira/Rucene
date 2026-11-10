@@ -86,7 +86,7 @@ fn term_scorer_set_up(f: &mut TermScorerTest) -> Result<()> {
     let directory = LuceneTestCase::new_directory();
 
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     config.set_similarity(Some(Arc::new(ClassicSimilarity::new())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;

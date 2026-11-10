@@ -741,7 +741,7 @@ fn test_ram_bytes_used_agrees_with_ram_usage_tester() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     // serial merges so that segments do not get closed while we are measuring
     // ram usage with RamUsageTester
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
 
@@ -1894,7 +1894,7 @@ impl QueryCachingPolicy for FrequencyCountingPolicy {
 fn test_on_use_with_random_first_segment_skipping() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         let index_writer =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
@@ -2146,7 +2146,7 @@ fn test_evict_empty_segment_cache() -> Result<()> {
 /// Port of `TestLRUQueryCache.testMinSegmentSizePredicate`.
 fn test_min_segment_size_predicate() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let new_segment = |num_docs: i32| {
@@ -2372,7 +2372,7 @@ impl LeafReader for NoCacheHelperLeafReader {
 /// Port of `TestLRUQueryCache.testReaderNotSuitedForCaching`.
 fn test_reader_not_suited_for_caching() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
@@ -2756,7 +2756,7 @@ impl Query for NoCacheQuery {
 /// Port of `TestLRUQueryCache.testQueryNotSuitedForCaching`.
 fn test_query_not_suited_for_caching() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
@@ -2881,7 +2881,7 @@ impl Query for DummyQuery2 {
 /// Port of `TestLRUQueryCache.testPropagatesScorerSupplier`.
 fn test_propagates_scorer_supplier() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
@@ -3033,7 +3033,7 @@ fn asserting_caching_searcher(
 /// Port of `TestLRUQueryCache.testDocValuesUpdatesDontBreakCache`.
 fn test_doc_values_updates_dont_break_cache() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
@@ -3100,7 +3100,7 @@ fn test_doc_values_updates_dont_break_cache() -> Result<()> {
 /// Port of `TestLRUQueryCache.testQueryCacheSoftUpdate`.
 fn test_query_cache_soft_update() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_soft_deletes_field(Some("soft_delete".to_string()));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let query_cache = lru(10, 1000 * 1000, |_| true, f32::INFINITY)?;
@@ -3154,7 +3154,7 @@ fn test_query_cache_soft_update() -> Result<()> {
 /// Port of `TestLRUQueryCache.testBulkScorerLocking`.
 fn test_bulk_scorer_locking() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     // the test framework sometimes sets crazy low values, prevent this since
     // we are indexing many docs
@@ -3421,7 +3421,7 @@ fn test_cache_has_fast_count() -> Result<()> {
     )?);
 
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let words_doc = |words: &str, f: Option<&str>| -> Result<Document> {

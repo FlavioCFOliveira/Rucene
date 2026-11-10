@@ -1,7 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/search/TestReqOptSumScorer.java`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -87,7 +86,7 @@ fn npe<T>() -> T {
 /// `private void doTestBasics(Occur reqOccur)`.
 fn do_test_basics(req_occur: Occur) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     // retain doc id order
     iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
@@ -164,8 +163,9 @@ fn do_test_basics(req_occur: Occur) -> Result<()> {
 
 /// `new Field("foo", new TermFreqTokenStream(term, termFreq), ft)`.
 fn term_freq_field(term: &str, term_freq: i32, ft: &FieldType) -> Result<Field> {
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(TermFreqTokenStream::new(term, term_freq)?));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
+        TermFreqTokenStream::new(term, term_freq)?,
+    ));
     Field::new_with_token_stream("foo", stream, ft.clone())
 }
 
@@ -177,7 +177,7 @@ fn assert_equals_float(expected: f32, actual: f32) {
 /// Port of `TestReqOptSumScorer.testMaxBlock`.
 fn test_max_block() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let ft = FieldType::new();
@@ -231,7 +231,7 @@ fn test_max_block() -> Result<()> {
 /// Port of `TestReqOptSumScorer.testMaxScoreSegment`.
 fn test_max_score_segment() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let all_values: [&[&str]; 8] = [

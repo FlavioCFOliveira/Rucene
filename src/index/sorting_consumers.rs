@@ -745,7 +745,7 @@ mod sorted_flush_close_tests {
         let tracking = Arc::new(CloseTrackingDirectory::default());
         let log = Arc::clone(&tracking.log);
         let dir: Arc<dyn Directory> = tracking;
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_index_sort(
                 Sort::new_fields(vec![SortField::new(

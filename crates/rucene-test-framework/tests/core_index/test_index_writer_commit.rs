@@ -8,9 +8,8 @@
 //! * The `Field f` whose value `testCommitThreadSafety` changes before each
 //!   `addDocument` is rebuilt for each document (guide section 6).
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -81,7 +80,7 @@ fn mock_iwc() -> IndexWriterConfig {
 
 /// `mock_iwc()` with `setMaxBufferedDocs(max)`.
 fn iwc_max_buffered(max: i32) -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_max_buffered_docs(max)?;
     Ok(iwc)
 }
@@ -177,7 +176,7 @@ fn test_commit_on_close_abort() -> Result<()> {
     );
     reader.close()?;
 
-    let mut iwc = iwc_max_buffered(10)?;
+    let iwc = iwc_max_buffered(10)?;
     iwc.set_open_mode(OpenMode::APPEND)?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     for _ in 0..17 {
@@ -205,7 +204,7 @@ fn test_commit_on_close_abort() -> Result<()> {
     );
     reader.close()?;
 
-    let mut iwc = iwc_max_buffered(10)?;
+    let iwc = iwc_max_buffered(10)?;
     iwc.set_open_mode(OpenMode::APPEND)?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
 
@@ -257,7 +256,7 @@ impl Analyzer for DiskUsageAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let tokenizer = Rc::new(RefCell::new(MockTokenizer::whitespace_lower_case()?));
+        let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
         match self.payload_length {
             None => Ok(tokenizer_components(tokenizer)),
             Some(length) => {
@@ -291,7 +290,7 @@ fn test_commit_on_close_disk_usage() -> Result<()> {
         })
     };
 
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
     iwc.set_max_buffered_docs(10)?;
     iwc.set_reader_pooling(false);
     iwc.set_merge_policy(Some(Arc::new(
@@ -307,7 +306,7 @@ fn test_commit_on_close_disk_usage() -> Result<()> {
 
     mock.set_track_disk_usage(true);
     let start_disk_usage = mock.get_max_used_size_in_bytes();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
     iwc.set_open_mode(OpenMode::APPEND)?;
     iwc.set_max_buffered_docs(10)?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
@@ -354,7 +353,7 @@ fn test_commit_on_close_disk_usage() -> Result<()> {
 fn test_commit_on_close_force_merge() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let mut iwc = iwc_max_buffered(10)?;
+    let iwc = iwc_max_buffered(10)?;
     iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(10)?,
     )))?;
@@ -364,7 +363,7 @@ fn test_commit_on_close_force_merge() -> Result<()> {
     }
     writer.close()?;
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     writer.force_merge(1)?;
@@ -397,7 +396,7 @@ fn test_commit_on_close_force_merge() -> Result<()> {
     if verbose() {
         println!("TEST: do real full merge");
     }
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     writer.force_merge(1)?;
@@ -428,7 +427,7 @@ fn test_commit_thread_safety() -> Result<()> {
     let max_iterations = 10;
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = Arc::new(RandomIndexWriter::new_with_config(
         &*random(),
@@ -506,7 +505,7 @@ fn test_force_commit() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
-    let mut iwc = iwc_max_buffered(2)?;
+    let iwc = iwc_max_buffered(2)?;
     iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(5)?,
     )))?;
@@ -560,7 +559,7 @@ fn test_future_commit() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     let doc = Document::new();
@@ -580,7 +579,7 @@ fn test_future_commit() -> Result<()> {
 
     assert_not_null(&commit);
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;
     iwc.set_index_commit(commit);
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
@@ -624,7 +623,7 @@ fn test_prepare_commit() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
-    let mut iwc = iwc_max_buffered(2)?;
+    let iwc = iwc_max_buffered(2)?;
     iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(5)?,
     )))?;
@@ -684,7 +683,7 @@ fn test_prepare_commit_rollback() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
-    let mut iwc = iwc_max_buffered(2)?;
+    let iwc = iwc_max_buffered(2)?;
     iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(5)?,
     )))?;

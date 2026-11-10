@@ -115,7 +115,7 @@ fn id_doc(i: i32) -> Document {
 fn a_retention_policy_keeps_a_fully_soft_deleted_segment_it_still_matches() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
         .set_merge_policy(Some(Arc::new(SoftDeletesRetentionMergePolicy::new(
@@ -177,7 +177,7 @@ fn commits(case: &str, config: IndexWriterConfig, count: i32) -> String {
 
 /// `WriterMergeTriggersFixture`'s `commit-merge` configuration.
 fn commit_merge_config(max_full_flush_merge_wait_millis: Option<i64>) -> IndexWriterConfig {
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
     config.set_merge_policy(Some(Arc::new(policy))).unwrap();
@@ -207,7 +207,7 @@ fn a_commit_asks_for_merges_once_it_is_done_as_lucene_does() {
 #[test]
 fn a_commit_waits_for_point_in_time_merges_as_lucene_does() {
     ensure_codec();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
@@ -217,7 +217,7 @@ fn a_commit_waits_for_point_in_time_merges_as_lucene_does() {
 
 /// `WriterMergeTriggersFixture.blocksConfig()`.
 fn blocks_config() -> IndexWriterConfig {
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_parent_field(Some("_parent".to_string()));
     config
         .set_index_sort(
@@ -257,7 +257,7 @@ fn a_sorted_merge_keeps_document_blocks_together_as_lucene_does() {
         std::fs::copy(entry.path(), rust_dir.join(entry.file_name())).unwrap();
     }
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&rust_dir).unwrap());
-    let mut config = blocks_config();
+    let config = blocks_config();
     config.set_open_mode(OpenMode::APPEND).unwrap();
     config
         .set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))
@@ -308,7 +308,7 @@ fn a_forced_merge_cascades_under_the_concurrent_scheduler_as_lucene_does() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         ensure_codec();
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         let policy = LogMergePolicy::by_doc_count();
         policy.set_merge_factor(2).unwrap();
         config.set_merge_policy(Some(Arc::new(policy))).unwrap();
@@ -325,7 +325,7 @@ fn a_forced_merge_cascades_under_the_concurrent_scheduler_as_lucene_does() {
 fn forced_merge_cascade(config: IndexWriterConfig) -> String {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut initial = IndexWriterConfig::new();
+    let initial = IndexWriterConfig::new();
     initial
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -353,7 +353,7 @@ fn forced_merge_cascade(config: IndexWriterConfig) -> String {
 fn flush_counters_move_as_lucene_does() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -392,7 +392,7 @@ fn flush_counters_move_as_lucene_does() {
 fn applied_deletes_publish_and_count_a_flush_as_lucene_does() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_ram_buffer_size_mb(0.01).unwrap();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
@@ -436,7 +436,7 @@ fn segments_flushed_by_add_document_are_published_and_merged_as_lucene_does() {
     let mut lines = Vec::new();
     for case in ["none", "logdoc2"] {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_max_buffered_docs(2).unwrap();
         config
             .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
@@ -480,7 +480,7 @@ fn log_merge(case: &str, merge_factor: i32, sizes: &[i32]) -> String {
 fn log_merge_with(case: &str, policy: LogMergePolicy, sizes: &[i32]) -> String {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut initial = IndexWriterConfig::new();
+    let initial = IndexWriterConfig::new();
     initial
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -495,7 +495,7 @@ fn log_merge_with(case: &str, policy: LogMergePolicy, sizes: &[i32]) -> String {
     }
     writer.commit().unwrap();
     writer.close().unwrap();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
@@ -565,7 +565,7 @@ fn concurrent_merges_on_get_reader_each_keep_their_own_segment() {
     ensure_codec();
     for _ in 0..20 {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut initial = IndexWriterConfig::new();
+        let initial = IndexWriterConfig::new();
         initial
             .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
             .unwrap();
@@ -665,7 +665,7 @@ fn an_aborted_merge_stops_at_the_next_check_as_lucene_does() {
             aborted: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
             rollback_thread: std::sync::Mutex::new(None),
         });
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();

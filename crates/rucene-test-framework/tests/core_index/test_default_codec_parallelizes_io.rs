@@ -60,7 +60,7 @@ fn before_class() -> Result<()> {
     let bb_dir = Arc::new(ByteBuffersDirectory::new());
     {
         let docs = LineFileDocs::with_default_file(&*random())?;
-        let mut iwc = IndexWriterConfig::new();
+        let iwc = IndexWriterConfig::new();
         iwc.set_use_compound_file(false)?;
         iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
         iwc.set_codec(TestUtil::get_default_codec())?;

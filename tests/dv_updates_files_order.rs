@@ -106,7 +106,7 @@ fn segments_n_lists_doc_values_update_files_in_lucenes_order() {
     let rust_tmp = tempfile::tempdir().unwrap();
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(rust_tmp.path()).unwrap());
     {
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
             .unwrap();

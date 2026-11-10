@@ -503,7 +503,7 @@ fn two_segments(
 ) -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if let Some(codec) = codec {
         config.set_codec(codec).unwrap();
     }
@@ -1007,7 +1007,7 @@ fn force_merge_graph(
 ) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if let Some(codec) = codec {
         config.set_codec(codec).unwrap();
     }
@@ -1158,7 +1158,7 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let merging = Arc::new(AtomicBool::new(false));
         let config = || {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config
                 .set_codec(Arc::new(SwitchingCodec::new(
                     "Lucene104ScalarQuantizedVectorsFormat",
@@ -1268,7 +1268,7 @@ fn the_quantized_merge_reports_each_fields_vector_count() {
         messages: std::sync::Mutex::new(Vec::new()),
     });
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(Arc::new(QuantizedCodec::new())).unwrap();
     config
         .set_info_stream(Arc::clone(&stream) as Arc<dyn rucene::util::InfoStream>)
@@ -1310,7 +1310,7 @@ fn segments_that_do_not_share_their_vector_fields_merge() {
     ] {
         ensure_codec();
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         if let Some(codec) = codec.clone() {
             config.set_codec(codec).unwrap();
         }
@@ -1465,7 +1465,7 @@ fn sort_reversing_the_documents() -> Sort {
 fn flush_vectors(format: &str, sorted: bool) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_codec(Arc::new(SwitchingCodec::new(
             format,

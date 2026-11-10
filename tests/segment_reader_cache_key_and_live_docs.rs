@@ -33,7 +33,7 @@ fn leaf_with_one_deletion() -> (Arc<dyn IndexReader>, Arc<dyn LeafReader>) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     // no merge may rewrite the segment without its deleted document
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();

@@ -1,8 +1,7 @@
 //! Port of `org.apache.lucene.analysis.TestGraphTokenFilter`
 //! (`extends BaseTokenStreamTestCase`).
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::{Class, Constructor};
@@ -32,7 +31,7 @@ fn test_filter(input: Box<dyn TokenStream>) -> Result<GraphTokenFilter> {
 fn test_graph_token_stream() -> Result<()> {
     // `TestGraphTokenizers.GraphTokenizer tok = new GraphTokenizer()`: shared
     // by the filter and the test, which drives it.
-    let tok = Rc::new(RefCell::new(new_graph_tokenizer()?));
+    let tok = Arc::new(AtomicRefCell::new(new_graph_tokenizer()?));
     let mut graph = test_filter(shared(&tok))?;
 
     let term_att = Att::add(graph.attribute_source_mut(), char_term_id())?;

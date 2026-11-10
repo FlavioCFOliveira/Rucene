@@ -8,10 +8,9 @@ use crate::analysis::{SharedTokenStream, TokenStream};
 use crate::document::{StoredValue, StoredValueType};
 use crate::error::{LuceneError, Result};
 use crate::index::{DocValuesType, IndexOptions, IndexableField, IndexableFieldType};
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::byte_block_pool::BYTE_BLOCK_SIZE;
 use crate::util::{BytesRef, NumericUtils};
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 
 /// Whether every document of a batch has a value for a column.
@@ -131,7 +130,7 @@ pub trait ColumnValues {
 /// Walks the `(document, long)` pairs of a sparse numeric column.
 ///
 /// Equivalent to `org.apache.lucene.document.column.LongTupleCursor`.
-pub trait LongTupleCursor {
+pub trait LongTupleCursor: Send + Sync {
     /// Advances to the next document with a value, or returns
     /// [`NO_MORE_DOCS`](crate::search::NO_MORE_DOCS).
     fn next_doc(&mut self) -> Result<i32>;
@@ -143,7 +142,7 @@ pub trait LongTupleCursor {
 /// Walks the `(document, value)` pairs of a sparse column of objects.
 ///
 /// Equivalent to `org.apache.lucene.document.column.ObjectTupleCursor`.
-pub trait ObjectTupleCursor<T> {
+pub trait ObjectTupleCursor<T>: Send + Sync {
     /// Advances to the next document with a value.
     fn next_doc(&mut self) -> Result<i32>;
 
@@ -154,7 +153,7 @@ pub trait ObjectTupleCursor<T> {
 /// Walks the `(document, ordinal)` pairs of a sparse dictionary column.
 ///
 /// Equivalent to `org.apache.lucene.document.column.OrdinalsTupleCursor`.
-pub trait OrdinalsTupleCursor {
+pub trait OrdinalsTupleCursor: Send + Sync {
     /// Advances to the next document with a value.
     fn next_doc(&mut self) -> Result<i32>;
 
@@ -361,7 +360,7 @@ pub trait VectorColumn<T>: ColumnValues {
 /// reference, which `BinaryColumnAdapter.tokenStream` hands straight to the
 /// inverter. `IndexableField::token_stream` returns an owned
 /// `Box<dyn TokenStream>` in this port, so the cursor yields the shared handle
-/// `Rc<RefCell<dyn TokenStream>>` that [`Field`](crate::document::Field)
+/// `Arc<AtomicRefCell<dyn TokenStream>>` that [`Field`](crate::document::Field)
 /// already uses for a pre-analysed value; the inverter still drives the very
 /// stream the caller supplied, through
 /// [`SharedTokenStream`](crate::analysis::SharedTokenStream).
@@ -374,7 +373,7 @@ pub trait TokenStreamColumn: ColumnValues {
 ///
 /// Java's `ObjectTupleCursor<TokenStream>` yields the stream itself; see the
 /// divergence note on [`TokenStreamColumn`].
-pub type SharedTokenStreamHandle = Rc<RefCell<dyn TokenStream>>;
+pub type SharedTokenStreamHandle = Arc<AtomicRefCell<dyn TokenStream>>;
 
 // -----------------------------------------------------------------------------
 // Validation
@@ -1174,8 +1173,8 @@ pub struct BinaryColumnAdapter<'a> {
     ///
     /// Java's `cachedString` is a plain field mutated from `stringValue()`;
     /// that accessor takes `&self` here, so the cache lives behind a
-    /// [`RefCell`].
-    cached_string: RefCell<Option<String>>,
+    /// [`AtomicRefCell`].
+    cached_string: AtomicRefCell<Option<String>>,
 }
 
 impl std::fmt::Debug for BinaryColumnAdapter<'_> {
@@ -1219,7 +1218,7 @@ impl<'a> BinaryColumnAdapter<'a> {
             stored_type,
             tokenized,
             indexed,
-            cached_string: RefCell::new(None),
+            cached_string: AtomicRefCell::new(None),
         })
     }
 
@@ -1270,7 +1269,7 @@ impl<'a> BinaryColumnAdapter<'a> {
             stored_type: None,
             tokenized: true,
             indexed: true,
-            cached_string: RefCell::new(None),
+            cached_string: AtomicRefCell::new(None),
         }
     }
 
@@ -1349,7 +1348,7 @@ impl IndexableField for BinaryColumnAdapter<'_> {
             // Caller-supplied token stream: hand it straight to the inverter,
             // bypassing the analyzer.
             BinarySource::TokenStream(cursor) => {
-                Ok(Box::new(SharedTokenStream::new(Rc::clone(cursor.value()))))
+                Ok(Box::new(SharedTokenStream::new(Arc::clone(cursor.value()))))
             }
             BinarySource::Bytes(_) if self.tokenized => {
                 let value = self.decoded_string().unwrap_or_default();

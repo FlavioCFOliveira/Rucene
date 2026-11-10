@@ -268,7 +268,7 @@ fn assert_serializes(sf: SortField) -> Result<()> {
 }
 
 fn index_sorted_iwc(sort: Sort) -> Result<IndexWriterConfig> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_index_sort(sort)?;
     Ok(iwc)
 }
@@ -318,7 +318,7 @@ fn test_all_missing() -> Result<()> {
         } else {
             None
         };
-        let mut iwc = index_sorted_iwc(sort_of(vec![bsf_missing("dv", reverse, missing)?])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![bsf_missing("dv", reverse, missing)?])?)?;
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 10, 30))?;
         let num_docs = LuceneTestCase::at_least(50);
         with_writer(dir, iwc, |w| {
@@ -410,7 +410,7 @@ fn test_empty_byte_values() -> Result<()> {
     };
     let missing_last = missing_value == MissingValue::StringLast;
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![bsf_missing(
+        let iwc = index_sorted_iwc(sort_of(vec![bsf_missing(
             "dv",
             reverse,
             Some(missing_value),
@@ -443,7 +443,7 @@ fn test_empty_byte_values() -> Result<()> {
 fn test_nested_blocks() -> Result<()> {
     let reverse = random().next_boolean();
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![bsf("sort", reverse)?])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![bsf("sort", reverse)?])?)?;
         iwc.set_parent_field(Some("parent".to_string()));
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let num_blocks = LuceneTestCase::at_least(80);
@@ -542,7 +542,7 @@ fn compare_to(a: &BytesRef, b: &BytesRef) -> i32 {
 fn test_deletes() -> Result<()> {
     let reverse = random().next_boolean();
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![bsf("dv", reverse)?])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![bsf("dv", reverse)?])?)?;
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 50))?;
         let num_docs = LuceneTestCase::at_least(200);
         with_writer(dir, iwc, |w| {
@@ -574,7 +574,7 @@ fn test_multiple_sort_fields() -> Result<()> {
             } else {
                 sort_of(vec![numeric, binary])?
             };
-            let mut iwc = index_sorted_iwc(sort)?;
+            let iwc = index_sorted_iwc(sort)?;
             iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 50))?;
             let num_docs = LuceneTestCase::at_least(200);
             with_writer(dir, iwc, |w| {
@@ -632,7 +632,7 @@ fn test_multiple_sort_fields() -> Result<()> {
 /// two-level index sort.
 fn test_multiple_binary_fields() -> Result<()> {
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![bsf("a", false)?, bsf("b", false)?])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![bsf("a", false)?, bsf("b", false)?])?)?;
         iwc.set_max_buffered_docs(25)?;
         iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // keep the flush-sorted segments separate
         let num_docs = 300;
@@ -690,7 +690,7 @@ fn test_mix_custom_and_default_sort_fields() -> Result<()> {
             bsf("b", false)?,                    // default binary
             SortField::new_reverse(Some("n".into()), SortFieldType::Long, false)?, // numeric
         ])?;
-        let mut iwc = index_sorted_iwc(sort.clone())?;
+        let iwc = index_sorted_iwc(sort.clone())?;
         iwc.set_max_buffered_docs(25)?;
         if random().next_boolean() {
             iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
@@ -890,7 +890,7 @@ fn test_search_sort() -> Result<()> {
 fn test_first_value_sort_key_index_sort() -> Result<()> {
     let reverse = random().next_boolean();
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![first_value_sort_field("dv", reverse)?])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![first_value_sort_field("dv", reverse)?])?)?;
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 50))?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let num_docs = LuceneTestCase::at_least(200);
@@ -963,7 +963,7 @@ fn test_min_value_sort_key() -> Result<()> {
     let reverse = random().next_boolean();
     let merge = random().next_boolean();
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![min_value_sort_field("dv", reverse)?])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![min_value_sort_field("dv", reverse)?])?)?;
         iwc.set_max_buffered_docs(25)?; // force frequent flushes
         if merge {
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -1053,7 +1053,7 @@ fn test_custom_comparator() -> Result<()> {
 
     with_dir(|dir| {
         let num_docs = LuceneTestCase::at_least(100);
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
@@ -1135,7 +1135,7 @@ fn test_random() -> Result<()> {
         pool.push(random_bytes(0, 12));
     }
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![bsf_missing("dv", reverse, missing_value)?])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![bsf_missing("dv", reverse, missing_value)?])?)?;
         if random().next_boolean() {
             iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 80))?;
         }
@@ -1174,7 +1174,7 @@ fn test_random() -> Result<()> {
 }
 
 fn index_random(dir: &TestDirectory, sort: Sort, num_docs: i32) -> Result<()> {
-    let mut iwc = index_sorted_iwc(sort)?;
+    let iwc = index_sorted_iwc(sort)?;
     iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 50))?;
     with_writer(dir, iwc, |w| {
         for _ in 0..num_docs {
@@ -1281,7 +1281,7 @@ fn assert_index_sorted(multi_segment: bool, reverse: bool, missing: bool) -> Res
     let missing_last = missing_value == Some(MissingValue::StringLast);
 
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![bsf_missing("dv", reverse, missing_value)?])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![bsf_missing("dv", reverse, missing_value)?])?)?;
         if multi_segment {
             iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 50))?;
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -1343,7 +1343,7 @@ fn index_and_read_stored_order(
 ) -> Result<Vec<i32>> {
     let mut order = Vec::new();
     with_dir(|dir| {
-        let mut iwc = index_sorted_iwc(sort_of(vec![sort_field])?)?;
+        let iwc = index_sorted_iwc(sort_of(vec![sort_field])?)?;
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 20, 60))?;
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         with_writer(dir, iwc, |w| {

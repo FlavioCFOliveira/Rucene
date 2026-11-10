@@ -99,7 +99,7 @@ fn sorted_writer(
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
     sort: Sort,
 ) -> Result<RandomIndexWriter> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_index_sort(sort)?;
     RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)
 }
@@ -109,7 +109,7 @@ fn test_same_hits_as_point_range_query() -> Result<()> {
     for _iter in 0..iters {
         let mut dir = LuceneTestCase::new_directory();
 
-        let mut iwc = mock_iwc();
+        let iwc = mock_iwc();
         let reverse = random().next_boolean();
         let enable_missing_value = random().next_boolean();
         let mut missing_value = None;
@@ -179,7 +179,7 @@ fn test_same_hits_as_point_range_query_int_sort() -> Result<()> {
     for _iter in 0..iters {
         let mut dir = LuceneTestCase::new_directory();
 
-        let mut iwc = mock_iwc();
+        let iwc = mock_iwc();
         let reverse = random().next_boolean();
         let enable_missing_value = random().next_boolean();
         let mut missing_value = None;
@@ -480,7 +480,7 @@ fn index_sort_doc_values_with_single_value(reverse: bool) -> Result<()> {
 fn test_index_sort_missing_values() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     let sort_field = SortedNumericSortField::with_missing_value(
         "field",
         SortFieldType::Long,
@@ -709,7 +709,7 @@ fn test_compare_count() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _iter in 0..iters {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = mock_iwc();
+        let iwc = mock_iwc();
         let enable_missing_value = random().next_boolean();
         let mut missing_value = None;
         if enable_missing_value {
@@ -792,7 +792,7 @@ fn assert_same_count(
 
 fn test_count_boundary() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     let use_lower = random().next_boolean();
     let lower_value: i64 = 1;
     let upper_value: i64 = 100;

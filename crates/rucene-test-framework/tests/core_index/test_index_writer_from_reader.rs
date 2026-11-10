@@ -58,7 +58,7 @@ fn index_commit(r: &Arc<dyn DirectoryReader>) -> Result<Arc<dyn IndexCommit>> {
 
 /// `newIndexWriterConfig()` with `setIndexCommit(r.getIndexCommit())`.
 fn iwc_from(r: &Arc<dyn DirectoryReader>) -> Result<IndexWriterConfig> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_index_commit(Some(index_commit(r)?));
     Ok(iwc)
 }
@@ -422,7 +422,7 @@ fn test_invalid_open_mode() -> Result<()> {
     assert_equals(&1, &r.max_doc());
     w.close()?;
 
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_open_mode(OpenMode::CREATE)?;
     iwc.set_index_commit(Some(index_commit(&r)?));
     let expected = expect_throws(IAE, || IndexWriter::new(Arc::clone(&d), iwc));
@@ -452,7 +452,7 @@ fn test_on_closed_reader() -> Result<()> {
     r.close()?;
     w.close()?;
 
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_index_commit(Some(commit));
     expect_throws("org.apache.lucene.store.AlreadyClosedException", || {
         IndexWriter::new(Arc::clone(&d), iwc)
@@ -557,7 +557,7 @@ impl IndexDeletionPolicy for KeepAllCommits {
 fn test_after_commit_then_index_keep_commits() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
 
     // Keep all commits:
     iwc.set_index_deletion_policy(Some(Arc::new(KeepAllCommits)))?;

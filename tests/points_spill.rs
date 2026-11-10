@@ -381,7 +381,7 @@ fn merge_points(max_mb: f64, value: fn(i32) -> [i32; 2]) -> MergeOutcome {
             },
         ),
     );
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(codec).unwrap();
     // Loose files, so the merged points files can be read one by one.
     config.set_use_compound_file(false).unwrap();

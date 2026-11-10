@@ -300,7 +300,7 @@ fn test_total_hits(_f: &mut TopFieldCollectorTest) -> Result<()> {
         Some("foo".to_string()),
         SortFieldType::Long,
     )?])?;
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     config.set_index_sort(sort.clone())?;
     config.set_max_buffered_docs(7)?;
@@ -428,7 +428,7 @@ fn add_empty_docs(w: &IndexWriter, n: usize) -> Result<()> {
 
 /// `new IndexWriter(dir, newIndexWriterConfig().setMergePolicy(NoMergePolicy.INSTANCE))`.
 fn no_merge_writer(dir: &TestDirectory) -> Result<Arc<IndexWriter>> {
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     IndexWriter::new(dir.as_directory(), config)
 }

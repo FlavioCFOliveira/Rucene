@@ -2,8 +2,7 @@
 //! test indexes ~82M docs with 52 positions each, so you get > Integer.MAX_VALUE
 //! positions.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -47,7 +46,8 @@ fn test_() -> Result<()> {
     let mut doc = Document::new();
     let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_omit_norms(true)?;
-    let stream: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(MyTokenStream::new()?));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(MyTokenStream::new()?));
     let field = Field::new_with_token_stream("field", stream, ft)?;
     doc.add(Box::new(field));
 

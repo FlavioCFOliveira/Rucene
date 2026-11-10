@@ -1007,7 +1007,7 @@ fn test_approximate<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>)
     let filter = IntField::new_set_query(f.id_field(), &get_filtered(f, num_filtered))?;
 
     let mut index_store = get_index_store(f, &vectors)?;
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_codec(hnsw_codec())?;
     let w = IndexWriter::new(index_store.as_directory(), iwc)?;
     // Force merge because smaller segments have few filtered docs and often fall back to exact
@@ -1188,7 +1188,7 @@ pub fn get_index_store<C: VectorSimilarityCase>(
     vectors: &[C::V],
 ) -> Result<rucene_test_framework::util::lucene_test_case::TestDirectory> {
     let dir = LuceneTestCase::new_directory();
-    let mut iwc: IndexWriterConfig = LuceneTestCase::new_index_writer_config();
+    let iwc: IndexWriterConfig = LuceneTestCase::new_index_writer_config();
     iwc.set_codec(hnsw_codec())?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let result = (|| -> Result<()> {

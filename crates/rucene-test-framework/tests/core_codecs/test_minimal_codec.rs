@@ -53,7 +53,7 @@ fn test_minimal_compound_codec() -> Result<()> {
 fn run_minimal_codec_test(use_compound_file: bool) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
-        let mut writer_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        let writer_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*random()),
         )));
         writer_config.set_codec(if use_compound_file {

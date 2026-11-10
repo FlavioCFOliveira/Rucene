@@ -18,7 +18,7 @@ use crate::util::{AttributeSource, BytesRef};
 /// The attribute interface `I` of `source`, which the caller added.
 fn interface<I: crate::util::attribute::AttributeInterface + ?Sized>(
     source: &AttributeSource,
-) -> std::cell::Ref<'_, I> {
+) -> crate::util::atomic_ref_cell::AtomicRef<'_, I> {
     source
         .get_attribute_interface::<I>()
         .expect("INVARIANT: the attribute was added before the stream was read")
@@ -27,7 +27,7 @@ fn interface<I: crate::util::attribute::AttributeInterface + ?Sized>(
 /// The attribute interface `I` of `source`, mutably; see [`interface`].
 fn interface_mut<I: crate::util::attribute::AttributeInterface + ?Sized>(
     source: &AttributeSource,
-) -> std::cell::RefMut<'_, I> {
+) -> crate::util::atomic_ref_cell::AtomicRefMut<'_, I> {
     source
         .get_attribute_interface_mut::<I>()
         .expect("INVARIANT: the attribute was added before the stream was read")

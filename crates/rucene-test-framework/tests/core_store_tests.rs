@@ -2545,8 +2545,7 @@ fn lock_factory_test_directory_no_locking() -> Result<()> {
     // Create a 2nd IndexWriter.  This is normally not allowed but it should run through since
     // we're not using any locks:
     let writer2;
-    let mut config =
-        IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     config.set_open_mode(OpenMode::APPEND)?;
     match IndexWriter::new(dir.as_directory(), config) {
         Ok(w) => writer2 = Some(w),

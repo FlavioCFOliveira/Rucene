@@ -710,7 +710,7 @@ impl Random for Recording {
 /// error, as Java's does when an operation throws (the writer is then closed
 /// by try-with-resources, its errors suppressed).
 fn try_write_corpus(path: &Path, codec: Arc<dyn Codec>) -> Result<()> {
-    let mut config = new_config(codec);
+    let config = new_config(codec);
     let policy = TieredMergePolicy::new();
     policy.set_no_cfs_ratio(0.0)?;
     config.set_merge_policy(Some(Arc::new(policy)))?;
@@ -1502,7 +1502,7 @@ fn java_root_cause(e: &LuceneError) -> (String, String) {
 /// `TestCodecsOracle.writeRamOnly(Directory, Codec, boolean, boolean)`.
 fn write_ram_only(path: &Path, codec: Arc<dyn Codec>, freqs: bool, merge: bool) -> Result<()> {
     use rucene::document::{Document, Field, Store, StringField};
-    let mut config = new_config(codec);
+    let config = new_config(codec);
     let policy = TieredMergePolicy::new();
     policy.set_no_cfs_ratio(0.0)?;
     config.set_merge_policy(Some(Arc::new(policy)))?;
@@ -1778,7 +1778,7 @@ fn ram_only_matches_lucene() {
                 }
                 "edge" => {
                     // As `writeEdge`, which fails at its first flush.
-                    let mut config = new_config(codec);
+                    let config = new_config(codec);
                     config.set_use_compound_file(false)?;
                     config.set_soft_deletes_field(Some("e_soft".to_string()));
                     config.set_index_sort(Sort::new_fields(vec![SortField::new(

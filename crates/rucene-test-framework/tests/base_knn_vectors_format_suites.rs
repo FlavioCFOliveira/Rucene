@@ -1301,9 +1301,9 @@ fn nearest_hits(reader: &dyn LeafReader, field: &str) -> Result<usize> {
 /// Port of `TestPerFieldKnnVectorsFormat.testMissingFieldReturnsNoResults`.
 fn test_missing_field_returns_no_results() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*LuceneTestCase::random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*LuceneTestCase::random(),
+    ))));
     let for_field: KnnVectorsFormatForField =
         Arc::new(|_field: &str| TestUtil::get_default_knn_vectors_format());
     iwc.set_codec(Arc::new(AssertingCodec::with_formats_for_field(
@@ -1338,9 +1338,9 @@ fn test_missing_field_returns_no_results() -> Result<()> {
 fn test_two_fields_two_formats() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     // we don't use RandomIndexWriter because it might add more values than we expect !!!!1
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*LuceneTestCase::random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*LuceneTestCase::random(),
+    ))));
     let format1 = Arc::new(WriteRecordingKnnVectorsFormat::new(
         TestUtil::get_default_knn_vectors_format(),
     ));
@@ -1399,7 +1399,7 @@ fn test_two_fields_two_formats() -> Result<()> {
 /// Port of `TestPerFieldKnnVectorsFormat.testMergeUsesNewFormat`.
 fn test_merge_uses_new_format() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut initial_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let initial_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*LuceneTestCase::random()),
     )));
     initial_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
@@ -1427,7 +1427,7 @@ fn test_merge_uses_new_format() -> Result<()> {
         iw.close()?;
     }
 
-    let mut new_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let new_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*LuceneTestCase::random()),
     )));
     let format1 = Arc::new(WriteRecordingKnnVectorsFormat::new(
@@ -1457,9 +1457,9 @@ fn test_merge_uses_new_format() -> Result<()> {
 /// Port of `TestPerFieldKnnVectorsFormat.testMaxDimensionsPerFieldFormat`.
 fn test_max_dimensions_per_field_format() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*LuceneTestCase::random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*LuceneTestCase::random(),
+    ))));
     let format1: Arc<dyn KnnVectorsFormat> = Arc::new(KnnVectorsFormatMaxDims32::new(Arc::new(
         Lucene99HnswVectorsFormat::with_max_conn_beam_width(16, 100),
     )));

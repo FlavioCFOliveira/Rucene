@@ -105,9 +105,9 @@ impl LookaheadPosition for Position {
 /// Each hook receives the whole filter, so that it can call the
 /// "protected" members (`peekToken`, `nextToken`, `insertToken`, the
 /// `positions` buffer) as a Java subclass does.
-pub trait LookaheadLogic: Debug + Sized {
+pub trait LookaheadLogic: Debug + Sized + Send + Sync {
     /// The position type, Java's `T`.
-    type Pos: LookaheadPosition;
+    type Pos: LookaheadPosition + Send + Sync;
 
     /// `incrementToken()`.
     ///

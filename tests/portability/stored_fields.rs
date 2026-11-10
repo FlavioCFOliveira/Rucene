@@ -744,7 +744,7 @@ fn write_with_rucene(
     let codec = mode.codec();
     let analyzer: Arc<dyn rucene::analysis::Analyzer> =
         Arc::new(rucene::analysis::StandardAnalyzer::new());
-    let mut live = LiveIndexWriterConfig::new(Some(analyzer));
+    let live = LiveIndexWriterConfig::new(Some(analyzer));
     live.set_codec(Arc::clone(&codec));
     let live = Arc::new(live);
 

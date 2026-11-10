@@ -1,7 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestCustomTermFreq.java`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use randomizedtesting::jdk::exception::Throwable;
@@ -135,8 +134,8 @@ fn canned_field(
     term_freqs: &[i32],
     field_type: &FieldType,
 ) -> Result<Field> {
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(CannedTermFreqs::new(terms, term_freqs)?));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(CannedTermFreqs::new(terms, term_freqs)?));
     Field::new_with_token_stream(name, stream, field_type.clone())
 }
 
@@ -688,7 +687,7 @@ impl Similarity for NeverForgetsSimilarity {
 /// Port of `TestCustomTermFreq.testFieldInvertState`.
 fn test_field_invert_state() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_similarity(Some(Arc::clone(&*INSTANCE) as Arc<dyn Similarity>))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 

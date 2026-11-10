@@ -100,7 +100,7 @@ fn run_test(directory: Arc<dyn Directory>) -> Result<()> {
     let index_iterations = if *TEST_NIGHTLY { 10 } else { 1 };
     let search_iterations = if *TEST_NIGHTLY { 10 } else { 1 };
 
-    let mut conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     conf.set_max_buffered_docs(7)?;
     conf.merge_policy()
         .as_any()

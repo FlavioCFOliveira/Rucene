@@ -70,7 +70,7 @@ fn init_index(
     initial_commit: bool,
     commit_on_close: bool,
 ) -> Result<Arc<IndexWriter>> {
-    let mut iwc =
+    let iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))));
     iwc.set_max_buffered_docs(10)?;
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;

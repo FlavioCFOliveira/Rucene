@@ -432,7 +432,7 @@ impl VectorSimilarityFunction {
 /// Equivalent to `org.apache.lucene.index.IndexableFieldType`.
 /// [`Display`](std::fmt::Display) is a supertrait because `Field.toString()`
 /// renders `type.toString()` on whatever `IndexableFieldType` the field holds.
-pub trait IndexableFieldType: std::fmt::Display {
+pub trait IndexableFieldType: std::fmt::Display + Send + Sync {
     /// True if the field's value should be stored.
     fn stored(&self) -> bool;
 
@@ -515,7 +515,7 @@ pub trait IndexableFieldType: std::fmt::Display {
 /// calling `field.toString()`, which every implementation inherits from
 /// `Object` and almost all of them get from `Field.toString()`. Without it a
 /// `Document` could not be rendered at all.
-pub trait IndexableField: std::fmt::Display {
+pub trait IndexableField: std::fmt::Display + Send + Sync {
     /// Field name.
     fn name(&self) -> &str;
 

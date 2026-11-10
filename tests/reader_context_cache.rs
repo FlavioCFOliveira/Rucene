@@ -42,7 +42,7 @@ impl QueryTimeout for NeverTimesOut {
 fn directory_reader() -> Arc<dyn DirectoryReader> {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("no merges");

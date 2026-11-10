@@ -391,7 +391,7 @@ fn test_large_vertex_polygon() -> Result<()> {
     } else {
         TestUtil::next_int(&*random(), 20000, 50000)
     };
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let mbd = iwc.max_buffered_docs();
     if mbd != -1 && mbd < num_vertices / 100 {

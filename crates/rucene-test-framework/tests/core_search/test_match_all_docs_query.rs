@@ -48,7 +48,7 @@ fn writer(
     f: &MatchAllDocs,
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
 ) -> Result<Arc<IndexWriter>> {
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(
         f.analyzer.as_ref().expect("setUp ran"),
     )));
     iwc.set_max_buffered_docs(2)?;

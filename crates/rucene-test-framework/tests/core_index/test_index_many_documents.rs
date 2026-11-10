@@ -27,7 +27,7 @@ pub fn class_def() -> Arc<Class> {
 /// Port of `TestIndexManyDocuments.test`.
 fn test_() -> Result<()> {
     let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 100, 2000))?;
     let max_buffered_docs = iwc.max_buffered_docs();
 

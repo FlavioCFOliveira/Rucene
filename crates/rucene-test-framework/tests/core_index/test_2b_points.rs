@@ -48,7 +48,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// The `IndexWriterConfig` both tests build.
 fn config() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_codec(get_codec())?;
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     iwc.set_ram_buffer_size_mb(256.0)?;

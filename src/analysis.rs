@@ -23,11 +23,10 @@ pub mod stop_filter;
 pub mod tokenattributes;
 pub mod wordlist_loader;
 
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use std::any::Any;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -82,7 +81,7 @@ use crate::util::BytesRef;
 /// Java's `Reader`, it hands out UTF-16 code units (`u16`, Java's `char`), so a
 /// supplementary character is read as its two surrogates and may be split
 /// across two reads, and a lone surrogate passes through unchanged.
-pub trait CharReader: Debug {
+pub trait CharReader: Debug + Send + Sync {
     /// Reads UTF-16 code units into `buf`, returning the number read.
     ///
     /// Equivalent to `Reader.read(char[], int, int)` over the window `buf`.
@@ -249,7 +248,7 @@ where
 /// not have, and the property it defends is already guaranteed here — Rust has
 /// no implementation inheritance, so an implementor's `increment_token` cannot
 /// be overridden by anything.
-pub trait TokenStream: Debug {
+pub trait TokenStream: Debug + Send + Sync {
     /// Advances to the next token and updates the attributes.
     ///
     /// Returns `true` while tokens remain; `false` at end-of-stream.
@@ -414,7 +413,7 @@ impl CharReader for IllegalStateReader {
 // -----------------------------------------------------------------------------
 
 /// User-supplied tokenization logic for a [`Tokenizer`].
-pub trait TokenizerLogic: Debug {
+pub trait TokenizerLogic: Debug + Send + Sync {
     /// Produces the next token, updating `source`.
     fn increment_token(
         &mut self,
@@ -674,7 +673,7 @@ impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
 // -----------------------------------------------------------------------------
 
 /// User-supplied filtering logic for a [`TokenFilter`].
-pub trait TokenFilterLogic: Debug {
+pub trait TokenFilterLogic: Debug + Send + Sync {
     /// Produces the next filtered token.
     fn increment_token(
         &mut self,
@@ -775,13 +774,13 @@ impl<T: TokenFilterLogic> Unwrappable<dyn TokenStream> for TokenFilter<T> {
 /// and the input of a [`TokenFilter`] chain without giving up ownership.
 #[derive(Debug)]
 pub struct SharedTokenStream {
-    inner: Rc<RefCell<dyn TokenStream>>,
+    inner: Arc<AtomicRefCell<dyn TokenStream>>,
     source: AttributeSource,
 }
 
 impl SharedTokenStream {
     /// Wraps `inner` in a stream that shares its attributes.
-    pub fn new(inner: Rc<RefCell<dyn TokenStream>>) -> Self {
+    pub fn new(inner: Arc<AtomicRefCell<dyn TokenStream>>) -> Self {
         let source = AttributeSource::new_from(inner.borrow().attribute_source());
         Self { inner, source }
     }
@@ -1023,16 +1022,16 @@ impl TokenStream for BinaryTokenStream {
 ///
 /// Equivalent to `Analyzer.TokenStreamComponents`.
 pub struct TokenStreamComponents {
-    source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()>>,
-    sink: Rc<RefCell<dyn TokenStream>>,
+    source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()> + Send + Sync>,
+    sink: Arc<AtomicRefCell<dyn TokenStream>>,
     reusable_string_reader: Option<ReusableStringReader>,
 }
 
 impl TokenStreamComponents {
     /// Creates components from a source function and a sink stream.
     pub fn new(
-        source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()>>,
-        sink: Rc<RefCell<dyn TokenStream>>,
+        source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()> + Send + Sync>,
+        sink: Arc<AtomicRefCell<dyn TokenStream>>,
     ) -> Self {
         Self {
             source,
@@ -1046,10 +1045,10 @@ impl TokenStreamComponents {
     /// Equivalent to the constructor `TokenStreamComponents(Tokenizer)`,
     /// `this(tokenizer::setReader, tokenizer)`.
     pub fn from_tokenizer<T: TokenizerLogic + 'static>(
-        tokenizer: Rc<RefCell<Tokenizer<T>>>,
+        tokenizer: Arc<AtomicRefCell<Tokenizer<T>>>,
     ) -> Self {
-        let sink: Rc<RefCell<dyn TokenStream>> = tokenizer.clone();
-        let tokenizer_for_source = Rc::clone(&tokenizer);
+        let sink: Arc<AtomicRefCell<dyn TokenStream>> = tokenizer.clone();
+        let tokenizer_for_source = Arc::clone(&tokenizer);
         let source = Box::new(move |reader: Box<dyn CharReader>| {
             tokenizer_for_source.borrow_mut().set_reader(reader)
         });
@@ -1062,12 +1061,12 @@ impl TokenStreamComponents {
     }
 
     /// Returns a shared handle to the sink token stream.
-    pub fn token_stream(&self) -> Rc<RefCell<dyn TokenStream>> {
-        Rc::clone(&self.sink)
+    pub fn token_stream(&self) -> Arc<AtomicRefCell<dyn TokenStream>> {
+        Arc::clone(&self.sink)
     }
 
     /// Replaces the sink stream while keeping the source and reusable reader.
-    pub fn with_sink(self, sink: Rc<RefCell<dyn TokenStream>>) -> Self {
+    pub fn with_sink(self, sink: Arc<AtomicRefCell<dyn TokenStream>>) -> Self {
         Self {
             source: self.source,
             sink,
@@ -1145,14 +1144,14 @@ pub trait ReuseStrategy: Debug + Send + Sync {
         &self,
         state: &AnalyzerState,
         field_name: &str,
-    ) -> Option<Rc<RefCell<TokenStreamComponents>>>;
+    ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>>;
 
     /// Stores `components` as the reusable components for `field_name`.
     fn set_reusable_components(
         &self,
         state: &AnalyzerState,
         field_name: &str,
-        components: Rc<RefCell<TokenStreamComponents>>,
+        components: Arc<AtomicRefCell<TokenStreamComponents>>,
     );
 }
 
@@ -1167,11 +1166,11 @@ impl ReuseStrategy for GlobalReuseStrategy {
         &self,
         state: &AnalyzerState,
         _field_name: &str,
-    ) -> Option<Rc<RefCell<TokenStreamComponents>>> {
+    ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
         let stored = state.stored_value().get();
         let borrow = stored.borrow();
         borrow.as_ref().and_then(|any| {
-            any.downcast_ref::<Rc<RefCell<TokenStreamComponents>>>()
+            any.downcast_ref::<Arc<AtomicRefCell<TokenStreamComponents>>>()
                 .cloned()
         })
     }
@@ -1180,7 +1179,7 @@ impl ReuseStrategy for GlobalReuseStrategy {
         &self,
         state: &AnalyzerState,
         _field_name: &str,
-        components: Rc<RefCell<TokenStreamComponents>>,
+        components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         state.stored_value().set(Some(Box::new(components)));
     }
@@ -1197,11 +1196,11 @@ impl ReuseStrategy for PerFieldReuseStrategy {
         &self,
         state: &AnalyzerState,
         field_name: &str,
-    ) -> Option<Rc<RefCell<TokenStreamComponents>>> {
+    ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
         let stored = state.stored_value().get();
         let borrow = stored.borrow();
         borrow.as_ref().and_then(|any| {
-            any.downcast_ref::<HashMap<String, Rc<RefCell<TokenStreamComponents>>>>()
+            any.downcast_ref::<HashMap<String, Arc<AtomicRefCell<TokenStreamComponents>>>>()
                 .and_then(|map| map.get(field_name).cloned())
         })
     }
@@ -1210,19 +1209,19 @@ impl ReuseStrategy for PerFieldReuseStrategy {
         &self,
         state: &AnalyzerState,
         field_name: &str,
-        components: Rc<RefCell<TokenStreamComponents>>,
+        components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         let stored = state.stored_value().get();
         let mut borrow = stored.borrow_mut();
         if borrow.is_none() {
             *borrow = Some(Box::new(HashMap::<
                 String,
-                Rc<RefCell<TokenStreamComponents>>,
+                Arc<AtomicRefCell<TokenStreamComponents>>,
             >::new()));
         }
         if let Some(any) = borrow.as_mut() {
             if let Some(map) =
-                any.downcast_mut::<HashMap<String, Rc<RefCell<TokenStreamComponents>>>>()
+                any.downcast_mut::<HashMap<String, Arc<AtomicRefCell<TokenStreamComponents>>>>()
             {
                 map.insert(field_name.to_string(), components);
             }
@@ -1325,7 +1324,7 @@ pub trait Analyzer: Debug + Send + Sync {
         &self,
         field_name: &str,
         reader: Box<dyn CharReader>,
-    ) -> Result<Rc<RefCell<dyn TokenStream>>> {
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         if self.analyzer_state().is_closed() {
             return Err(LuceneError::already_closed(
                 "this Analyzer is closed".to_string(),
@@ -1339,10 +1338,10 @@ pub trait Analyzer: Debug + Send + Sync {
         let components = match components {
             Some(c) => c,
             None => {
-                let c = Rc::new(RefCell::new(self.create_components(field_name)?));
+                let c = Arc::new(AtomicRefCell::new(self.create_components(field_name)?));
                 self.analyzer_state()
                     .reuse_strategy()
-                    .set_reusable_components(self.analyzer_state(), field_name, Rc::clone(&c));
+                    .set_reusable_components(self.analyzer_state(), field_name, Arc::clone(&c));
                 c
             }
         };
@@ -1361,7 +1360,7 @@ pub trait Analyzer: Debug + Send + Sync {
         &self,
         field_name: &str,
         text: &str,
-    ) -> Result<Rc<RefCell<dyn TokenStream>>> {
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         if self.analyzer_state().is_closed() {
             return Err(LuceneError::already_closed(
                 "this Analyzer is closed".to_string(),
@@ -1377,10 +1376,10 @@ pub trait Analyzer: Debug + Send + Sync {
         let components = match components {
             Some(c) => c,
             None => {
-                let c = Rc::new(RefCell::new(self.create_components(field_name)?));
+                let c = Arc::new(AtomicRefCell::new(self.create_components(field_name)?));
                 self.analyzer_state()
                     .reuse_strategy()
-                    .set_reusable_components(self.analyzer_state(), field_name, Rc::clone(&c));
+                    .set_reusable_components(self.analyzer_state(), field_name, Arc::clone(&c));
                 c
             }
         };
@@ -1728,7 +1727,7 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         &self,
         field_name: &str,
         reader: Box<dyn CharReader>,
-    ) -> Result<Rc<RefCell<dyn TokenStream>>> {
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         self.logic
             .get_wrapped_analyzer(field_name)
             .token_stream(field_name, reader)
@@ -1738,7 +1737,7 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         &self,
         field_name: &str,
         text: &str,
-    ) -> Result<Rc<RefCell<dyn TokenStream>>> {
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         self.logic
             .get_wrapped_analyzer(field_name)
             .token_stream_from_str(field_name, text)
@@ -2336,12 +2335,14 @@ mod tests {
         }
 
         fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-            let tokenizer = Rc::new(RefCell::new(Tokenizer::new(WhitespaceTokenizer::default())));
+            let tokenizer = Arc::new(AtomicRefCell::new(Tokenizer::new(
+                WhitespaceTokenizer::default(),
+            )));
             Ok(TokenStreamComponents::from_tokenizer(tokenizer))
         }
     }
 
-    fn collect_terms(stream: Rc<RefCell<dyn TokenStream>>) -> Result<Vec<String>> {
+    fn collect_terms(stream: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<Vec<String>> {
         let mut terms = Vec::new();
         let mut stream = stream.borrow_mut();
         stream.reset()?;
@@ -2391,7 +2392,7 @@ mod tests {
             .get_reusable_components(analyzer.analyzer_state(), "field");
         assert!(components1.is_some());
         assert!(components2.is_some());
-        assert!(Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             components1.as_ref().unwrap(),
             components2.as_ref().unwrap()
         ));
@@ -2421,7 +2422,9 @@ mod tests {
         }
 
         fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-            let tokenizer = Rc::new(RefCell::new(Tokenizer::new(WhitespaceTokenizer::default())));
+            let tokenizer = Arc::new(AtomicRefCell::new(Tokenizer::new(
+                WhitespaceTokenizer::default(),
+            )));
             Ok(TokenStreamComponents::from_tokenizer(tokenizer))
         }
     }
@@ -2441,7 +2444,7 @@ mod tests {
             .get_reusable_components(analyzer.analyzer_state(), "body");
         assert!(title_components.is_some());
         assert!(body_components.is_some());
-        assert!(!Rc::ptr_eq(
+        assert!(!Arc::ptr_eq(
             title_components.as_ref().unwrap(),
             body_components.as_ref().unwrap()
         ));
@@ -2468,7 +2471,8 @@ mod tests {
                 let sink = components.token_stream();
                 let shared = SharedTokenStream::new(sink);
                 let filter = TokenFilter::new(Box::new(shared), UpperCaseFilter);
-                let new_sink: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(filter));
+                let new_sink: Arc<AtomicRefCell<dyn TokenStream>> =
+                    Arc::new(AtomicRefCell::new(filter));
                 components.with_sink(new_sink)
             }
         }

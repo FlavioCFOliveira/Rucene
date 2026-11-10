@@ -41,7 +41,7 @@ pub fn class_def() -> Arc<Class> {
 /// `newIndexWriterConfig().setMergePolicy(newLogMergePolicy(random().nextBoolean()))`
 /// and `new RandomIndexWriter(random(), dir, config)`.
 fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
     )))?;

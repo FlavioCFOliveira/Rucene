@@ -15,9 +15,8 @@ pub use standard_tokenizer_impl::{
     NUMERIC_TYPE, SOUTH_EAST_ASIAN_TYPE, WORD_TYPE, YYEOF, YYINITIAL,
 };
 
-use std::cell::RefCell;
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use std::path::Path;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
@@ -225,7 +224,7 @@ pub type StandardTokenizer = Tokenizer<StandardTokenizerLogic>;
 /// [`new_standard_tokenizer_with_factory`] added.
 fn interface_mut<I: crate::util::attribute::AttributeInterface + ?Sized>(
     source: &AttributeSource,
-) -> Result<std::cell::RefMut<'_, I>> {
+) -> Result<crate::util::atomic_ref_cell::AtomicRefMut<'_, I>> {
     source.get_attribute_interface_mut::<I>().ok_or_else(|| {
         LuceneError::illegal_state(format!(
             "the StandardTokenizer's source lacks {}",
@@ -447,13 +446,13 @@ impl Analyzer for StandardAnalyzer {
     /// `src.setMaxTokenLength(StandardAnalyzer.this.maxTokenLength)` lambda
     /// does.
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let tokenizer = Rc::new(RefCell::new(new_standard_tokenizer()));
+        let tokenizer = Arc::new(AtomicRefCell::new(new_standard_tokenizer()));
         let max_token_length = Arc::clone(&self.max_token_length);
         tokenizer
             .borrow_mut()
             .logic_mut()
             .set_max_token_length(max_token_length.load(Ordering::Relaxed))?;
-        let tokenizer_for_source = Rc::clone(&tokenizer);
+        let tokenizer_for_source = Arc::clone(&tokenizer);
         let source = Box::new(move |reader: Box<dyn CharReader>| {
             let mut tokenizer = tokenizer_for_source.borrow_mut();
             tokenizer
@@ -464,7 +463,7 @@ impl Analyzer for StandardAnalyzer {
         let shared = SharedTokenStream::new(tokenizer);
         let lower = new_lower_case_filter(Box::new(shared))?;
         let stop = new_stop_filter(Box::new(lower), self.base.stopwords().clone())?;
-        let sink: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(stop));
+        let sink: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(stop));
         Ok(TokenStreamComponents::new(source, sink))
     }
 

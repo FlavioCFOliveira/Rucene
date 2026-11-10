@@ -1,8 +1,7 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/search/TestTermRangeQuery.java`.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -98,7 +97,7 @@ impl TermRangeQueryTest {
         values: &[&str],
         analyzer: Arc<dyn Analyzer>,
     ) -> Result<()> {
-        let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+        let config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         config.set_open_mode(OpenMode::CREATE)?;
         let writer = IndexWriter::new(self.dir().as_directory(), config)?;
         for value in values {
@@ -116,7 +115,7 @@ impl TermRangeQueryTest {
             Arc::clone(&WHITESPACE),
             false,
         ));
-        let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+        let config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         config.set_open_mode(OpenMode::APPEND)?;
         let writer = IndexWriter::new(self.dir().as_directory(), config)?;
         self.insert_doc(&writer, content)?;
@@ -467,7 +466,7 @@ impl Analyzer for SingleCharAnalyzer {
                 term_att,
             },
         );
-        Ok(tokenizer_components(Rc::new(RefCell::new(t))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(t))))
     }
 }
 

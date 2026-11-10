@@ -3,8 +3,7 @@
 //! Test adding to the info stream when there's an exception thrown during
 //! field analysis.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::Class;
@@ -97,7 +96,7 @@ impl Analyzer for ThrowingAnalyzer {
     }
 
     fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
-        let tokenizer = Rc::new(RefCell::new(MockTokenizer::whitespace_lower_case()?));
+        let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
         if field_name == "distinctiveFieldName" {
             let tosser = TokenFilter::new(shared(&tokenizer), Tosser);
             Ok(components(tokenizer, sink(tosser)))
@@ -135,7 +134,7 @@ impl ByteArrayOutputStream {
 /// `new IndexWriterConfig(new ThrowingAnalyzer())` logging to a
 /// `PrintStreamInfoStream` over `infoBytes`.
 fn throwing_config(info_bytes: &ByteArrayOutputStream) -> Result<IndexWriterConfig> {
-    let mut c = IndexWriterConfig::with_analyzer(Some(Arc::new(ThrowingAnalyzer::new())));
+    let c = IndexWriterConfig::with_analyzer(Some(Arc::new(ThrowingAnalyzer::new())));
     let print_stream_info_stream = PrintStreamInfoStream::new(Box::new(info_bytes.clone()));
     c.set_info_stream(Arc::new(print_stream_info_stream))?;
     Ok(c)

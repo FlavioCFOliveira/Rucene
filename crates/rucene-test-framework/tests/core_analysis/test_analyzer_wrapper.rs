@@ -1,7 +1,6 @@
 //! Port of `org.apache.lucene.analysis.TestAnalyzerWrapper`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -35,8 +34,8 @@ impl Analyzer for SourceRecordingAnalyzer {
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let source_called = Arc::clone(&self.source_called);
-        let sink: Rc<RefCell<dyn TokenStream>> =
-            Rc::new(RefCell::new(CannedTokenStream::new(Vec::new())));
+        let sink: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(CannedTokenStream::new(Vec::new())));
         Ok(TokenStreamComponents::new(
             Box::new(move |_r| {
                 source_called.store(true, Ordering::SeqCst);
@@ -68,7 +67,7 @@ impl AnalyzerWrapperLogic for LowerCasingWrapper {
         let filter =
             new_lower_case_filter(Box::new(SharedTokenStream::new(components.token_stream())))
                 .expect("new LowerCaseFilter(...)");
-        components.with_sink(Rc::new(RefCell::new(filter)))
+        components.with_sink(Arc::new(AtomicRefCell::new(filter)))
     }
 }
 

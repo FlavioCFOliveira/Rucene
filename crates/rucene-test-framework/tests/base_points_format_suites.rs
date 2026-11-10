@@ -261,7 +261,7 @@ fn multi_valued_doc_count(doc_count: i64, num_docs: i32, point_count: i64, size:
 /// Port of `TestLucene90PointsFormat.testEstimatePointCount`.
 fn test_estimate_point_count(max_points_in_leaf_node: i32) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     // Avoid mockRandomMP since it may cause non-optimal merges that make the
     // number of points per leaf hard to predict
     while iwc

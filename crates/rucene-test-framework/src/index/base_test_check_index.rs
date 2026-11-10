@@ -81,7 +81,7 @@ fn error_string(error: &Option<LuceneError>) -> Option<String> {
 /// The errors of indexing and of `CheckIndex`.
 pub fn test_deleted_docs(dir: Arc<dyn Directory>) -> Result<()> {
     let random = LuceneTestCase::random();
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*random),
     )));
     config.set_max_buffered_docs(2)?;

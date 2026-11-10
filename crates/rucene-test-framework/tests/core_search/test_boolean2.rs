@@ -128,7 +128,7 @@ fn before_class() -> Result<()> {
         LuceneTestCase::new_directory()
     };
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_codec(TestUtil::get_default_codec())?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
@@ -171,7 +171,7 @@ fn before_class() -> Result<()> {
         }
     }
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_codec(TestUtil::get_default_codec())?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     {
@@ -197,7 +197,7 @@ fn before_class() -> Result<()> {
         }
         let mut copy = copy_of(&dir2)?;
 
-        let mut iwc = mock_iwc();
+        let iwc = mock_iwc();
         iwc.set_codec(TestUtil::get_default_codec())?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir2.as_directory(), iwc)?;
         w.add_indexes_dirs(&[copy.as_directory()])?;
@@ -210,7 +210,7 @@ fn before_class() -> Result<()> {
         }
     }
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;
     iwc.set_codec(TestUtil::get_default_codec())?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir2.as_directory(), iwc)?;

@@ -2,8 +2,7 @@
 //! (`extends BaseTokenStreamTestCase`), with its `GraphTokenizer`, which
 //! `TestGraphTokenFilter` also uses.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::java_assert;
@@ -268,16 +267,16 @@ fn analyzer(
 
 /// `new MockTokenizer(MockTokenizer.WHITESPACE, false)`, shared by the
 /// components and the chain.
-fn whitespace_tokenizer() -> Result<Rc<RefCell<MockTokenizer>>> {
-    Ok(Rc::new(RefCell::new(MockTokenizer::new(
+fn whitespace_tokenizer() -> Result<Arc<AtomicRefCell<MockTokenizer>>> {
+    Ok(Arc::new(AtomicRefCell::new(MockTokenizer::new(
         Arc::clone(&WHITESPACE),
         false,
     )?)))
 }
 
 /// `new TokenStreamComponents(t, sink)`.
-fn sink_of<T: TokenStream + 'static>(stream: T) -> Rc<RefCell<dyn TokenStream>> {
-    Rc::new(RefCell::new(stream))
+fn sink_of<T: TokenStream + 'static>(stream: T) -> Arc<AtomicRefCell<dyn TokenStream>> {
+    Arc::new(AtomicRefCell::new(stream))
 }
 
 fn test_mock_graph_token_filter_basic() -> Result<()> {
@@ -313,7 +312,7 @@ fn test_mock_graph_token_filter_on_graph_input() -> Result<()> {
         // Make new analyzer each time, because MGTF has fixed
         // seed:
         let a = analyzer("org.apache.lucene.analysis.TestGraphTokenizers$2", || {
-            let t = Rc::new(RefCell::new(new_graph_tokenizer()?));
+            let t = Arc::new(AtomicRefCell::new(new_graph_tokenizer()?));
             let t2 = MockGraphTokenFilter::new(&*random(), shared(&t))?;
             Ok(components(t, sink_of(t2)))
         });

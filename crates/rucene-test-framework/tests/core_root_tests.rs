@@ -299,7 +299,7 @@ fn external_codecs_test_per_field_codec() -> Result<()> {
 
     let mut dir = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir, false); // we use a custom codec provider
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*random()),
     )));
     config.set_codec(Arc::new(custom_per_field_codec()))?;
@@ -527,9 +527,9 @@ fn merge_scheduler_external_test_subclass_concurrent_merge_scheduler() -> Result
     doc.add(Box::new(id_field));
 
     let merge_scheduler = my_merge_scheduler();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     iwc.set_merge_scheduler(Some(Arc::clone(&merge_scheduler) as Arc<dyn MergeScheduler>))?;
     iwc.set_max_buffered_docs(2)?;
     iwc.set_ram_buffer_size_mb(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH as f64)?;
@@ -620,7 +620,7 @@ impl MergeScheduler for ReportingMergeScheduler {
 /// something. Therefore, don't use any random API !"
 fn merge_scheduler_external_test_custom_merge_scheduler() -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::new());
-    let mut conf = IndexWriterConfig::with_analyzer(None);
+    let conf = IndexWriterConfig::with_analyzer(None);
     conf.set_merge_scheduler(Some(Arc::new(ReportingMergeScheduler {
         executor: Arc::new(SameThreadExecutorService::new()),
     })))?;

@@ -100,7 +100,7 @@ fn before_class() -> Result<()> {
     ];
 
     let small = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::with_automaton(&*random(), Arc::clone(&WHITESPACE), false),
     )));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;

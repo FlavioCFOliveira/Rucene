@@ -20,7 +20,6 @@
 use std::any::{Any, TypeId};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
@@ -2178,7 +2177,7 @@ impl BaseTokenStreamTestCase {
                     // currently allow it, so, we must call
                     // a.tokenStream inside the try since we may
                     // hit the exc on init:
-                    let mut current = Rc::clone(&ts);
+                    let mut current = Arc::clone(&ts);
                     let attempt: Result<()> = (|| {
                         current = a.token_stream("dummy", reader)?;
                         let mut ts = current.borrow_mut();

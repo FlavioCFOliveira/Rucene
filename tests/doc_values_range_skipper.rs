@@ -38,7 +38,7 @@ fn tag(i: i32) -> String {
 fn searcher(sort: Option<Sort>) -> IndexSearcher {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if let Some(sort) = sort {
         config.set_index_sort(sort).expect("index sort");
     }

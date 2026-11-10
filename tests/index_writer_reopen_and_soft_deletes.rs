@@ -77,7 +77,7 @@ fn a_reopened_writer_updates_doc_values_of_an_existing_field() {
     writer.commit().unwrap();
     writer.close().unwrap();
 
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::APPEND).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     // The field numbers come from the index, so the update finds the field.
@@ -98,7 +98,7 @@ fn a_reopened_writer_updates_doc_values_of_an_existing_field() {
 fn soft_update_document_commits_and_leaves_one_live_document() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     // No merge, so the soft-deleted version cannot be merged away before the
     // reader looks for it.
@@ -147,7 +147,7 @@ fn soft_update_document_commits_and_leaves_one_live_document() {
 fn a_flushed_segment_of_self_soft_deleted_documents_is_dropped() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
@@ -312,7 +312,7 @@ fn num_deletes_to_merge_excludes_the_soft_deletes_the_retention_query_keeps() {
             Arc::new(NoMergePolicy::new()),
         ),
     );
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
         .set_merge_policy(Some(Arc::new(AskingPolicy {

@@ -1,8 +1,7 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/document/column/TestColumnBatchTokenStreamColumn.java`:
 //! tests for `TokenStreamColumn` batch indexing.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -77,7 +76,7 @@ fn canned(terms: &[&str]) -> SharedTokenStreamHandle {
     } else {
         tokens[terms.len() - 1].end_offset()
     };
-    Rc::new(RefCell::new(CannedTokenStream::with_final(
+    Arc::new(AtomicRefCell::new(CannedTokenStream::with_final(
         0,
         final_offset,
         tokens,

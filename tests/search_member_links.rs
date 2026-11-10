@@ -50,7 +50,7 @@ fn ensure_codec() {
 fn index(docs: Vec<Document>) -> Arc<dyn DirectoryReader> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("no merges");

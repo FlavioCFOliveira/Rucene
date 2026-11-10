@@ -500,7 +500,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         // ratio do not use RIW which will change things up!
         let mp = LuceneTestCase::new_tiered_merge_policy();
         mp.set_no_cfs_ratio(0.0)?;
-        let mut cfg = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
+        let cfg = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
         ))));
         cfg.set_use_compound_file(false)?;
@@ -527,7 +527,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         self.apply_created_version_major(&*dir2.as_directory())?;
         let mp = LuceneTestCase::new_tiered_merge_policy();
         mp.set_no_cfs_ratio(0.0)?;
-        let mut cfg = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
+        let cfg = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
         ))));
         cfg.set_use_compound_file(false)?;
@@ -804,7 +804,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
 
         let new_conf =
             |analyzer: &Arc<dyn rucene::analysis::Analyzer>| -> Result<IndexWriterConfig> {
-                let mut conf =
+                let conf =
                     LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(analyzer)));
                 // just for now, try to keep this test reproducible
                 conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;

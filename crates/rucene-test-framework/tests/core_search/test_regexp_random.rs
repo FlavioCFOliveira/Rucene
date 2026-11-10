@@ -47,7 +47,7 @@ pub fn class_def() -> Arc<Class> {
 
 fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     let dir = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*random()),
     )));
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;

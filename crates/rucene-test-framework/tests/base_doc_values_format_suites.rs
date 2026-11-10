@@ -285,7 +285,7 @@ fn test_two_fields_two_formats() -> Result<()> {
 
     let mut directory = LuceneTestCase::new_directory();
     // we don't use RandomIndexWriter because it might add more docvalues than we expect !!!!1
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     let fast = TestUtil::get_default_doc_values_format();
     let slow = rucene::codecs::doc_values::doc_values_for_name("Asserting").unwrap_or_else(|| {
         Throwable::new(
@@ -386,7 +386,7 @@ fn test_merge_called_on_two_formats() -> Result<()> {
         TestUtil::get_default_doc_values_format(),
     ));
 
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     let (f1, f2) = (
         Arc::clone(&dvf1) as Arc<dyn DocValuesFormat>,
         Arc::clone(&dvf2) as Arc<dyn DocValuesFormat>,
@@ -446,7 +446,7 @@ fn test_doc_values_merge_with_indexed_fields() -> Result<()> {
         TestUtil::get_default_doc_values_format(),
     ));
 
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     let format = Arc::clone(&doc_values_format) as Arc<dyn DocValuesFormat>;
     iwc.set_codec(asserting_codec_with_doc_values(Arc::new(
         move |_field: &str| Arc::clone(&format),

@@ -122,7 +122,7 @@ fn rucene_files(shared: bool) -> Vec<String> {
             Arc::new(Lucene99HnswVectorsFormat::new()) as Arc<dyn KnnVectorsFormat>
         }
     });
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))

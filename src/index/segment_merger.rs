@@ -585,7 +585,7 @@ mod tests {
     fn segments_sorted_by_id(segments: usize) -> (Arc<dyn Directory>, Vec<SegmentCommitInfo>) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_sort(id_sort()).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..segments {

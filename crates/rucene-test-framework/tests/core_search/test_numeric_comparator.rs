@@ -49,7 +49,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `new IndexWriterConfig().setMergePolicy(newLogMergePolicy())`.
 fn iwc() -> Result<IndexWriterConfig> {
-    let mut c = IndexWriterConfig::new();
+    let c = IndexWriterConfig::new();
     c.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     Ok(c)
 }

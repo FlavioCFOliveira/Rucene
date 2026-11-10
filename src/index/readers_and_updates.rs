@@ -4801,7 +4801,7 @@ mod needs_refresh_tests {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
         // No merge may fold the deleted document away before the reader sees it.
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(Arc::new(
                 crate::index::merge_policy::NoMergePolicy::new(),

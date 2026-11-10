@@ -9,8 +9,7 @@
 //!   10.5.0: its four methods over a core analyzer (see
 //!   [`test_collation_binding`]).
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::Throwable;
@@ -235,7 +234,9 @@ impl Analyzer for BinaryKeyAnalyzer {
             text: String::new(),
         });
         Att::add(tokenizer.attribute_source_mut(), offset_id())?;
-        Ok(tokenizer_components(Rc::new(RefCell::new(tokenizer))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
+            tokenizer,
+        ))))
     }
 }
 

@@ -85,7 +85,7 @@ fn doc(i: usize) -> Document {
 fn write(path: &Path) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(path).unwrap());
-    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
+    let config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
     config.set_open_mode(OpenMode::CREATE).unwrap();
     let w = IndexWriter::new(dir, config).unwrap();
     for i in 0..DOCS {

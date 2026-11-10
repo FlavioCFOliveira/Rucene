@@ -580,7 +580,7 @@ fn current_thread_name() -> String {
 ///
 /// `private static void verifyLongs(long[] values, int[] ids)`.
 fn verify_longs(values: Arc<Vec<i64>>, ids: Option<Vec<i32>>) -> Result<()> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
 
     // Else we can get O(N^2) merging:
     let mbd = iwc.max_buffered_docs();
@@ -885,7 +885,7 @@ fn verify_binary(
     ids: Arc<Vec<i32>>,
     num_bytes_per_dim: i32,
 ) -> Result<()> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
 
     let num_dims = doc_values[0].len();
     let bytes_per_dim = doc_values[0][0].len();
@@ -1195,7 +1195,7 @@ fn random_value() -> i64 {
 
 /// `newIndexWriterConfig()` with `setCodec(getCodec())`.
 fn codec_config() -> Result<rucene::index::index_writer_config::IndexWriterConfig> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_codec(get_codec())?;
     Ok(iwc)
 }

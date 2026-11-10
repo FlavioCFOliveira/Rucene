@@ -7,8 +7,7 @@
 //! methods of the same name on it. This is the class's only binding (it was
 //! bound in `base_test_check_index_suites.rs` with the four wrappers alone).
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
@@ -143,7 +142,7 @@ fn token_with_payload(text: &str, start: i32, end: i32, payload: &str) -> Token 
 fn test_check_index_all_valid() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let live_doc_count = 1 + random().next_int_bound(10);
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_index_sort(Sort::new_fields(vec![SortField::new_reverse(
         Some("sort_field".to_string()),
         SortFieldType::Int,
@@ -209,8 +208,10 @@ fn test_check_index_all_valid() -> Result<()> {
             ft.set_store_term_vectors(true)?;
             ft.set_store_term_vector_positions(true)?;
             ft.set_store_term_vector_payloads(true)?;
-            let stream: Rc<RefCell<dyn TokenStream>> =
-                Rc::new(RefCell::new(CannedTokenStream::new(vec![token1, token2])));
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+                Arc::new(AtomicRefCell::new(CannedTokenStream::new(vec![
+                    token1, token2,
+                ])));
             doc.add(Box::new(Field::new_with_token_stream(
                 "termvector",
                 stream,
@@ -409,7 +410,7 @@ fn test_prior_broken_commit_point() -> Result<()> {
     // disable this normally useful test infra feature since this test intentionally leaves broken
     // indices:
     set_check_index_on_close(&dir, false);
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?
         .set_index_deletion_policy(Some(Arc::new(DeleteNothingIndexDeletionPolicy)))?;
     {

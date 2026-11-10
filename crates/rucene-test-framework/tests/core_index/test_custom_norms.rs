@@ -39,7 +39,7 @@ fn test_float_norms() -> Result<()> {
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 2, MAX_TERM_LENGTH as i32));
 
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
+    let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     let provider: Arc<dyn Similarity> = Arc::new(MySimProvider::new());
     config.set_similarity(Some(provider))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;

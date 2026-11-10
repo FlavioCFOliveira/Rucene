@@ -130,8 +130,7 @@ fn id_fields(doc: &mut Document, id: &str) -> Result<()> {
 fn before_class() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
-    let mut iw_config =
-        LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
+    let iw_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
     iw_config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_config)?;
 

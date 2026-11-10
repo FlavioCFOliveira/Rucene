@@ -318,7 +318,7 @@ fn run_rucene_case(out_dir: &Path, case: &str) {
     }
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(out_dir).expect("open directory"));
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("set merge policy");

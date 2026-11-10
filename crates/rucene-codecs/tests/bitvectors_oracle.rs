@@ -172,7 +172,7 @@ fn bitvectors_refuses_float_fields() {
 fn bitvectors_graph_of_a_large_segment_matches_lucenes() {
     use rucene::document::{Document, KnnByteVectorField};
     let tmp = TempDir::new("bitvectors-graph");
-    let mut config = new_config(per_field_knn_codec(Arc::new(HnswBitVectorsFormat::new())));
+    let config = new_config(per_field_knn_codec(Arc::new(HnswBitVectorsFormat::new())));
     config.set_use_compound_file(false).unwrap();
     config
         .set_merge_policy(Some(Arc::new(

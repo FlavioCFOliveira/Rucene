@@ -250,7 +250,7 @@ impl ReindexingReader {
             monitor: Mutex::new(()),
         });
 
-        let mut iwc = hooks.get_index_writer_config()?;
+        let iwc = hooks.get_index_writer_config()?;
         let inner = iwc.merge_policy();
         iwc.set_merge_policy(Some(Arc::new(ReindexingMergePolicy {
             filter: FilterMergePolicy::new(inner),
@@ -1089,7 +1089,7 @@ fn get_schema_gen(info: &SegmentInfo) -> i64 {
 /// `.01` MB: "We write tiny docs, so we need tiny floor to avoid O(N^2)
 /// merging".
 fn tiny_floor_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     let tmp = TieredMergePolicy::new();
     // We write tiny docs, so we need tiny floor to avoid O(N^2) merging:
     tmp.set_floor_segment_mb(0.01)?;
@@ -1110,7 +1110,7 @@ fn open_mock_fs_directory(path: &Path) -> Result<TestDirectory> {
 /// `newIndexWriterConfig()` with a `LogByteSizeMergePolicy`: "The order of
 /// our docIDs must precisely match incoming reader".
 fn reindex_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     // The order of our docIDs must precisely match incoming reader:
     iwc.set_merge_policy(Some(Arc::new(LogMergePolicy::by_byte_size())))?;
     Ok(iwc)
@@ -1301,7 +1301,7 @@ struct SameDvFieldReindexer {
 
 impl ReindexingHooks for SameDvFieldReindexer {
     fn get_index_writer_config(&self) -> Result<IndexWriterConfig> {
-        let mut iwc = tiny_floor_iwc()?;
+        let iwc = tiny_floor_iwc()?;
         if *TEST_NIGHTLY {
             // during nightly tests, we might use too many files if we aren't careful
             iwc.set_use_compound_file(true)?;

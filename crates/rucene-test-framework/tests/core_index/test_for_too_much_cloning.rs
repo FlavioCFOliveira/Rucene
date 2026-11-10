@@ -37,9 +37,9 @@ fn test_() -> Result<()> {
     let tmp = TieredMergePolicy::new();
     tmp.set_max_merge_at_once(2)?;
     let segments_merged = Arc::new(AtomicI32::new(0));
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     // to reduce flakiness on merge clone count
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     iwc.set_max_buffered_docs(2)?;

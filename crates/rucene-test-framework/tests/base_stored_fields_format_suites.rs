@@ -139,7 +139,7 @@ fn test_skip_redundant_prefetches() -> Result<()> {
         Arc::clone(&counter),
     ));
     {
-        let mut iwc = IndexWriterConfig::new();
+        let iwc = IndexWriterConfig::new();
         iwc.set_codec(codec)?;
         let w = IndexWriter::new(Arc::clone(&dir), iwc)?;
         for _ in 0..100 {
@@ -218,7 +218,7 @@ fn high_compression_class() -> Arc<Class> {
 fn test_mixed_compressions() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     for _ in 0..10 {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_codec(Arc::new(Lucene104Codec::with_mode(Some(
             *RandomPicks::random_from(
                 &*LuceneTestCase::random(),
@@ -566,7 +566,7 @@ fn with_compressing_fields_reader<T>(
 /// Port of `TestCompressingStoredFieldsFormat.testChunkCleanup`.
 fn test_chunk_cleanup() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*LuceneTestCase::random()),
     )));
     iw_conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;

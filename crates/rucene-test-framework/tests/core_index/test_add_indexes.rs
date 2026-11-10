@@ -239,7 +239,7 @@ fn cause_is_merge_aborted(e: &LuceneError) -> bool {
 }
 
 /// `private IndexWriter newWriter(Directory dir, IndexWriterConfig conf)`.
-fn new_writer(dir: &Arc<dyn Directory>, mut conf: IndexWriterConfig) -> Result<Arc<IndexWriter>> {
+fn new_writer(dir: &Arc<dyn Directory>, conf: IndexWriterConfig) -> Result<Arc<IndexWriter>> {
     conf.set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))?;
     IndexWriter::new(Arc::clone(dir), conf)
 }
@@ -353,7 +353,7 @@ fn set_up_dirs_with_id(
     aux: &Arc<dyn Directory>,
     with_id: bool,
 ) -> Result<()> {
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(1000)?;
     let mut writer = new_writer(dir, c)?;
@@ -367,7 +367,7 @@ fn set_up_dirs_with_id(
     assert_equals(&1, &writer.get_segment_count()?);
     writer.close()?;
 
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(1000)?
         .set_merge_policy(Some(Arc::new(
@@ -382,7 +382,7 @@ fn set_up_dirs_with_id(
             add_docs(&writer, 10)?;
         }
         writer.close()?;
-        let mut c = new_iwc();
+        let c = new_iwc();
         c.set_open_mode(OpenMode::APPEND)?
             .set_max_buffered_docs(1000)?
             .set_merge_policy(Some(Arc::new(
@@ -397,7 +397,7 @@ fn set_up_dirs_with_id(
 
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setOpenMode(mode)`.
 fn iwc_mode(mode: OpenMode) -> Result<IndexWriterConfig> {
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(mode)?;
     Ok(c)
 }
@@ -405,7 +405,7 @@ fn iwc_mode(mode: OpenMode) -> Result<IndexWriterConfig> {
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setOpenMode(APPEND)
 /// .setMaxBufferedDocs(maxBufferedDocs).setMergePolicy(newLogMergePolicy(4))`.
 fn iwc_append_buffered(max_buffered_docs: i32) -> Result<IndexWriterConfig> {
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::APPEND)?
         .set_max_buffered_docs(max_buffered_docs)?
         .set_merge_policy(Some(Arc::new(
@@ -606,7 +606,7 @@ impl AddIndexesWithReadersSetup {
 
     fn new(ms: Arc<dyn MergeScheduler>, mp: Arc<dyn MergePolicy>) -> Result<Self> {
         let dir = mock_byte_buffers_dir();
-        let mut c = plain_iwc();
+        let c = plain_iwc();
         c.set_max_buffered_docs(2)?;
         let writer = IndexWriter::new(d(&dir), c)?;
         for _ in 0..Self::ADDED_DOCS_PER_READER {
@@ -615,7 +615,7 @@ impl AddIndexesWithReadersSetup {
         writer.close()?;
 
         let dest_dir = LuceneTestCase::new_directory();
-        let mut iwc = plain_iwc();
+        let iwc = plain_iwc();
         iwc.set_merge_policy(Some(mp))?;
         iwc.set_merge_scheduler(Some(ms))?;
         let dest_writer = IndexWriter::new(d(&dest_dir), iwc)?;
@@ -787,7 +787,7 @@ impl RunAddIndexesThreads {
 
     fn new(variant: Variant, num_copy: usize) -> Result<Self> {
         let dir = mock_byte_buffers_dir();
-        let mut c = plain_iwc();
+        let c = plain_iwc();
         c.set_max_buffered_docs(2)?;
         let writer = IndexWriter::new(d(&dir), c)?;
         for _ in 0..Self::NUM_INIT_DOCS {
@@ -797,7 +797,7 @@ impl RunAddIndexesThreads {
 
         let dir2 = LuceneTestCase::new_directory();
         let mp: Arc<dyn MergePolicy> = Arc::new(concurrent_add_indexes_merge_policy());
-        let mut iwc = plain_iwc();
+        let iwc = plain_iwc();
         iwc.set_merge_policy(Some(mp))?;
         let writer2 = IndexWriter::new(d(&dir2), iwc)?;
         writer2.commit()?;
@@ -1082,7 +1082,7 @@ fn test_simple_case() -> Result<()> {
     writer.close()?;
     TestUtil::check_index(d(&dir))?;
 
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
     writer = new_writer(&d(&aux), c)?;
@@ -1304,7 +1304,7 @@ fn test_add_self() -> Result<()> {
     assert_equals(&100, &writer.get_doc_stats()?.max_doc);
     writer.close()?;
 
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(1000)?
         .set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
@@ -1312,7 +1312,7 @@ fn test_add_self() -> Result<()> {
     // add 140 documents in separate files
     add_docs(&writer, 40)?;
     writer.close()?;
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(1000)?
         .set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
@@ -1416,7 +1416,7 @@ fn test_merge_after_copy() -> Result<()> {
 
     set_up_dirs_with_id(&d(&dir), &d(&aux), true)?;
 
-    let mut dont_merge_config = plain_iwc();
+    let dont_merge_config = plain_iwc();
     dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(d(&aux), dont_merge_config)?;
     for i in 0..20 {
@@ -1452,7 +1452,7 @@ fn test_more_merges() -> Result<()> {
 
     set_up_dirs_with_id(&d(&dir), &d(&aux), true)?;
 
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_max_buffered_docs(100)?
         .set_merge_policy(Some(Arc::new(
@@ -1464,7 +1464,7 @@ fn test_more_merges() -> Result<()> {
     assert_equals(&3, &writer.get_segment_count()?);
     writer.close()?;
 
-    let mut dont_merge_config = plain_iwc();
+    let dont_merge_config = plain_iwc();
     dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(d(&aux), dont_merge_config)?;
     for i in 0..27 {
@@ -1475,7 +1475,7 @@ fn test_more_merges() -> Result<()> {
     assert_equals(&3, &reader.num_docs());
     reader.close()?;
 
-    let mut dont_merge_config = plain_iwc();
+    let dont_merge_config = plain_iwc();
     dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(d(&aux2), dont_merge_config)?;
     for i in 0..8 {
@@ -1503,7 +1503,7 @@ fn test_hang_on_close() -> Result<()> {
     let lmp = LogMergePolicy::by_byte_size();
     lmp.set_no_cfs_ratio(0.0)?;
     lmp.set_merge_factor(100)?;
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_max_buffered_docs(5)?
         .set_merge_policy(Some(Arc::new(lmp)))?;
     let writer = IndexWriter::new(d(&dir), c)?;
@@ -1542,7 +1542,7 @@ fn test_hang_on_close() -> Result<()> {
     lmp.set_min_merge_mb(0.0001);
     lmp.set_no_cfs_ratio(0.0)?;
     lmp.set_merge_factor(4)?;
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?
         .set_merge_policy(Some(Arc::new(lmp)))?;
     let writer = IndexWriter::new(d(&dir2), c)?;
@@ -1659,7 +1659,7 @@ fn test_add_indexes_with_empty_merge_spec() -> Result<()> {
 /// Port of `TestAddIndexes.testAddIndexesWithEmptyReaders`.
 fn test_add_indexes_with_empty_readers() -> Result<()> {
     let mut dest_dir = LuceneTestCase::new_directory();
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_merge_policy(Some(Arc::new(concurrent_add_indexes_merge_policy())))?;
     let ms = Arc::new(CountingSerialMergeScheduler::new());
     iwc.set_merge_scheduler(Some(Arc::clone(&ms) as Arc<dyn MergeScheduler>))?;
@@ -1718,7 +1718,7 @@ fn test_add_indexes_hitting_max_docs_limit() -> Result<()> {
 
     // create destination writer
     let mut dest_dir = LuceneTestCase::new_directory();
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_merge_policy(Some(Arc::new(concurrent_add_indexes_merge_policy())))?;
     let ms = Arc::new(CountingSerialMergeScheduler::new());
     iwc.set_merge_scheduler(Some(Arc::clone(&ms) as Arc<dyn MergeScheduler>))?;
@@ -1944,7 +1944,7 @@ fn test_simple_case_custom_codec() -> Result<()> {
     let mut aux2 = LuceneTestCase::new_directory();
     let codec: Arc<dyn Codec> = Arc::new(custom_per_field_codec());
 
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_codec(Arc::clone(&codec))?;
     let mut writer = new_writer(&d(&dir), c)?;
@@ -1955,7 +1955,7 @@ fn test_simple_case_custom_codec() -> Result<()> {
     writer.close()?;
     TestUtil::check_index(d(&dir))?;
 
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_codec(Arc::clone(&codec))?
         .set_max_buffered_docs(10)?
@@ -1967,7 +1967,7 @@ fn test_simple_case_custom_codec() -> Result<()> {
     writer.commit()?;
     writer.close()?;
 
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::CREATE)?
         .set_codec(Arc::clone(&codec))?;
     writer = new_writer(&d(&aux2), c)?;
@@ -1978,7 +1978,7 @@ fn test_simple_case_custom_codec() -> Result<()> {
     writer.close()?;
 
     // test doc count before segments are merged
-    let mut c = new_iwc();
+    let c = new_iwc();
     c.set_open_mode(OpenMode::APPEND)?
         .set_codec(Arc::clone(&codec))?;
     writer = new_writer(&d(&dir), c)?;
@@ -2014,7 +2014,7 @@ fn test_non_cfs_leftovers() -> Result<()> {
     ];
 
     let mut dir = mock_byte_buffers_dir();
-    let mut conf = plain_iwc();
+    let conf = plain_iwc();
     conf.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(true)))?;
     let lmp = conf.merge_policy();
     // Force creation of CFS:
@@ -2043,7 +2043,7 @@ fn test_add_index_missing_codec() -> Result<()> {
     // of the unregistered codec:
     set_check_index_on_close(&to_add, false);
     {
-        let mut conf = new_iwc();
+        let conf = new_iwc();
         conf.set_codec(Arc::new(un_registered_codec()))?;
         let w = IndexWriter::new(d(&to_add), conf)?;
         let mut doc = Document::new();
@@ -2060,7 +2060,7 @@ fn test_add_index_missing_codec() -> Result<()> {
 
     {
         let mut dir = LuceneTestCase::new_directory();
-        let mut conf = new_iwc();
+        let conf = new_iwc();
         conf.set_codec(TestUtil::always_postings_format(Arc::new(
             DirectPostingsFormat::new(),
         )))?;
@@ -2218,7 +2218,7 @@ fn sort_foo(field_type: SortFieldType) -> Result<Sort> {
 /// `<int: "foo">`, burned into the index.
 fn int_sorted_index() -> Result<TestDirectory> {
     let dir1 = LuceneTestCase::new_directory();
-    let mut iwc1 = new_iwc();
+    let iwc1 = new_iwc();
     iwc1.set_index_sort(sort_foo(SortFieldType::Int)?)?;
     let w1 = RandomIndexWriter::new_with_config(&*random(), d(&dir1), iwc1)?;
     w1.add_document(&Document::new())?;
@@ -2234,7 +2234,7 @@ fn int_sorted_index() -> Result<TestDirectory> {
 /// The writer both `testIllegalIndexSortChange*` methods add to: sorted by
 /// `<string: "foo">`.
 fn string_sorted_writer(dir2: &TestDirectory) -> Result<RandomIndexWriter> {
-    let mut iwc2 = new_iwc();
+    let iwc2 = new_iwc();
     iwc2.set_index_sort(sort_foo(SortFieldType::String)?)?;
     RandomIndexWriter::new_with_config(&*random(), d(dir2), iwc2)
 }
@@ -2312,7 +2312,7 @@ fn reopen_twice(dir2: &TestDirectory) -> Result<()> {
     if verbose() {
         println!("\nTEST: now open w3");
     }
-    let mut iwc3 = new_iwc();
+    let iwc3 = new_iwc();
     if verbose() {
         iwc3.set_info_stream_print_stream(Box::new(std::io::stdout()))?;
     }
@@ -2364,7 +2364,7 @@ fn test_add_indexes_dv_update_new_segment_name() -> Result<()> {
 /// Port of `TestAddIndexes.testAddIndicesWithSoftDeletes`.
 fn test_add_indices_with_soft_deletes() -> Result<()> {
     let mut dir1 = LuceneTestCase::new_directory();
-    let mut iwc1 = new_iwc();
+    let iwc1 = new_iwc();
     iwc1.set_soft_deletes_field(Some("soft_delete".to_string()));
     let writer = IndexWriter::new(d(&dir1), iwc1)?;
     for _ in 0..30 {
@@ -2394,7 +2394,7 @@ fn test_add_indices_with_soft_deletes() -> Result<()> {
     let num_docs = reader.num_docs();
     let max_doc = reader.max_doc();
     assert_equals(&num_docs, &max_doc);
-    let mut iwc1 = new_iwc();
+    let iwc1 = new_iwc();
     iwc1.set_soft_deletes_field(Some("soft_delete".to_string()));
     let writer = IndexWriter::new(d(&dir2), iwc1)?;
     let readers = codec_leaves(&reader)?;
@@ -2415,7 +2415,7 @@ fn test_add_indices_with_soft_deletes() -> Result<()> {
     writer.close()?;
 
     let mut dir3 = LuceneTestCase::new_directory();
-    let mut iwc1 = new_iwc();
+    let iwc1 = new_iwc();
     iwc1.set_soft_deletes_field(Some("soft_delete".to_string()));
     let writer = IndexWriter::new(d(&dir3), iwc1)?;
     // Resize as some fully deleted sub-readers might be dropped in the wrappedReader
@@ -2566,7 +2566,7 @@ fn test_set_diagnostics() -> Result<()> {
 
     let mut target_dir = LuceneTestCase::new_directory();
     {
-        let mut c = LuceneTestCase::new_index_writer_config();
+        let c = LuceneTestCase::new_index_writer_config();
         c.set_merge_policy(Some(Arc::new(my_merge_policy)))?;
         let w = IndexWriter::new(d(&target_dir), c)?;
         w.add_indexes_codec_readers(&[codec_reader])?;
@@ -2597,7 +2597,7 @@ fn test_set_diagnostics() -> Result<()> {
 
 /// The parent index of the `testIllegalParentDocChange` method.
 fn parent_field_index(dir1: &TestDirectory) -> Result<()> {
-    let mut iwc1 = new_iwc();
+    let iwc1 = new_iwc();
     iwc1.set_parent_field(Some("foobar".to_string()));
     let w1 = RandomIndexWriter::new_with_config(&*random(), d(dir1), iwc1)?;
     w1.add_documents(&[Document::new(), Document::new(), Document::new()])?;
@@ -2615,7 +2615,7 @@ fn test_illegal_parent_doc_change() -> Result<()> {
     parent_field_index(&dir1)?;
 
     let mut dir2 = LuceneTestCase::new_directory();
-    let mut iwc2 = new_iwc();
+    let iwc2 = new_iwc();
     iwc2.set_parent_field(Some("foo".to_string()));
     let w2 = RandomIndexWriter::new_with_config(&*random(), d(&dir2), iwc2)?;
 
@@ -2642,7 +2642,7 @@ fn test_illegal_parent_doc_change() -> Result<()> {
     );
 
     let mut dir3 = LuceneTestCase::new_directory();
-    let mut iwc3 = new_iwc();
+    let iwc3 = new_iwc();
     iwc3.set_parent_field(Some("foobar".to_string()));
     let w3 = RandomIndexWriter::new_with_config(&*random(), d(&dir3), iwc3)?;
 
@@ -2672,7 +2672,7 @@ fn test_illegal_non_parent_field() -> Result<()> {
     w1.close()?;
 
     let mut dir2 = LuceneTestCase::new_directory();
-    let mut iwc2 = new_iwc();
+    let iwc2 = new_iwc();
     iwc2.set_parent_field(Some("foo".to_string()));
     let w2 = RandomIndexWriter::new_with_config(&*random(), d(&dir2), iwc2)?;
 

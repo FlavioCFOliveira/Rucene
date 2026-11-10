@@ -4755,7 +4755,7 @@ impl IndexUpgrader {
         info_stream: Option<Arc<dyn InfoStream>>,
         delete_prior_commits: bool,
     ) -> Result<Self> {
-        let mut upgrader = Self::with_config(dir, IndexWriterConfig::new(), delete_prior_commits);
+        let upgrader = Self::with_config(dir, IndexWriterConfig::new(), delete_prior_commits);
         if let Some(info_stream) = info_stream {
             upgrader.iwc.set_info_stream(info_stream)?;
         }
@@ -4786,7 +4786,7 @@ impl IndexUpgrader {
     /// Returns [`LuceneError::IndexNotFound`] when `dir` holds no index, and
     /// [`LuceneError::IllegalArgument`] when the index holds more than one
     /// commit and the upgrader was told not to delete prior commits.
-    pub fn upgrade(mut self) -> Result<()> {
+    pub fn upgrade(self) -> Result<()> {
         if !crate::index::directory_reader::index_exists(self.dir.as_ref())? {
             return Err(LuceneError::IndexNotFound(
                 "no segments file found in the directory".to_string(),
@@ -6338,7 +6338,7 @@ mod segment_check_pool_tests {
     fn index_with_segments(segments: usize) -> Arc<dyn Directory> {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
             .unwrap();

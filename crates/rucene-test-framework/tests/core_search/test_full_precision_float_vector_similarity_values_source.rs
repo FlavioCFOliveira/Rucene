@@ -110,7 +110,7 @@ fn index_segments(
     id: &mut i32,
     vectors: &mut Vec<Vec<f32>>,
 ) -> Result<()> {
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_codec(TestUtil::always_knn_vectors_format(get_knn_format(bits)?))?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
     for _ in 0..num_segments {

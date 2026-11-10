@@ -54,7 +54,7 @@ fn doc(value: &str, price: i64) -> Document {
 }
 
 fn no_merges() -> IndexWriterConfig {
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -120,7 +120,7 @@ fn a_segment_emptied_over_two_commits_is_dropped_with_both_deletes() {
 fn without_reader_pooling_a_resolved_delete_is_written_when_released() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = no_merges();
+    let config = no_merges();
     config.set_reader_pooling(false);
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
@@ -152,7 +152,7 @@ fn without_reader_pooling_a_resolved_delete_is_written_when_released() {
 fn write_reader_pool_drops_a_segment_its_writes_emptied() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = no_merges();
+    let config = no_merges();
     config.set_soft_deletes_field(Some("soft".to_string()));
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
@@ -188,7 +188,7 @@ fn write_reader_pool_drops_a_segment_its_writes_emptied() {
 fn doc_values_gen_after_write_some(ram_buffer_size_mb: f64) -> i64 {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = no_merges();
+    let config = no_merges();
     config.set_ram_buffer_size_mb(ram_buffer_size_mb).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
@@ -324,7 +324,7 @@ fn updates_carried_over_by_a_merge_keep_the_value_of_the_highest_generation() {
             *ran.lock().unwrap() = true;
         })
     };
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(HookPolicy {
             inner: TieredMergePolicy::new(),

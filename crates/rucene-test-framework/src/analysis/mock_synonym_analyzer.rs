@@ -17,11 +17,10 @@
 
 //! Port of `org.apache.lucene.tests.analysis.MockSynonymAnalyzer`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use rucene::analysis::{Analyzer, AnalyzerState, GlobalReuseStrategy, TokenStreamComponents};
 use rucene::error::Result;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
+use std::sync::Arc;
 
 use super::mock_synonym_filter::MockSynonymFilter;
 use super::mock_tokenizer::MockTokenizer;
@@ -60,7 +59,7 @@ impl Analyzer for MockSynonymAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let tokenizer = Rc::new(RefCell::new(MockTokenizer::whitespace_lower_case()?));
+        let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
         let filter = MockSynonymFilter::new(shared(&tokenizer))?;
         Ok(components(tokenizer, sink(filter)))
     }

@@ -235,7 +235,7 @@ fn plain_iwc() -> IndexWriterConfig {
 
 /// `new IndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     Ok(iwc)
 }
@@ -346,7 +346,7 @@ fn test_commit_recreate() -> Result<()> {
 fn reopen_with_commit_iwc(
     random: &dyn randomizedtesting::jdk::random::Random,
 ) -> Result<IndexWriterConfig> {
-    let mut iwc =
+    let iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))));
     iwc.set_open_mode(OpenMode::CREATE)?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
@@ -791,7 +791,7 @@ pub fn create_index(
         Arc::new(LogMergePolicy::by_doc_count())
     };
 
-    let mut iwc = LuceneTestCase::new_index_writer_config_with(
+    let iwc = LuceneTestCase::new_index_writer_config_with(
         random,
         Some(Arc::new(MockAnalyzer::new(random))),
     );
@@ -917,7 +917,7 @@ impl IndexDeletionPolicy for KeepAllCommits {
 /// The body `testReopenOnCommit` and `testReopenOnCommitWithExecutor`
 /// share: only the first `open` takes the executor.
 fn reopen_on_commit(dir: &Arc<dyn Directory>, executor: &Exec) -> Result<()> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_index_deletion_policy(Some(Arc::new(KeepAllCommits)))?;
     iwc.set_max_buffered_docs(-1)?;
     iwc.set_merge_policy(Some(Arc::new(
@@ -1058,7 +1058,7 @@ impl Failure for FailOnReadLiveDocs {
 fn over_dec_ref_during_reopen(executor: &Exec) -> Result<()> {
     let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
 
-    let mut iwc = no_merge_iwc()?;
+    let iwc = no_merge_iwc()?;
     iwc.set_codec(TestUtil::get_default_codec())?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -1285,7 +1285,7 @@ fn leaf_count(r: &Arc<dyn DirectoryReader>) -> Result<usize> {
 
 /// The snapshotting writer config of the `testNRTM*` tests.
 fn snapshot_iwc(no_merge: bool) -> Result<(IndexWriterConfig, Arc<SnapshotDeletionPolicy>)> {
-    let mut iwc = if no_merge {
+    let iwc = if no_merge {
         no_merge_iwc()?
     } else {
         plain_iwc()
@@ -1596,7 +1596,7 @@ fn assert_not_same(a: &Option<Arc<dyn DirectoryReader>>, b: &Arc<dyn DirectoryRe
 /// variant.
 fn reuse_unchanged_leaf_reader_on_dv_update(executor: &Exec) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut index_writer_config = LuceneTestCase::new_index_writer_config();
+    let index_writer_config = LuceneTestCase::new_index_writer_config();
     index_writer_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 

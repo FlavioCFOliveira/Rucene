@@ -73,7 +73,7 @@ use crate::analysis::tokenattributes::{
     OffsetAttribute, PayloadAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
     TermToBytesRefAttribute,
 };
-use crate::analysis::Analyzer;
+use crate::analysis::{Analyzer, TokenStream};
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
@@ -622,6 +622,13 @@ struct PerField {
     /// `processBatch` uses to refuse two columns of one field claiming the same
     /// feature.
     column_features: u8,
+    /// The token stream this field produced last, handed back to the next
+    /// instance's [`IndexableField::token_stream`] as `reuse`.
+    ///
+    /// Equivalent to `PerField.tokenStream` ("reused",
+    /// `IndexingChain.java:1774-1775`), which `invertTokenStream` assigns from
+    /// `field.tokenStream(analyzer, tokenStream)` (`IndexingChain.java:1908`).
+    token_stream: Option<Box<dyn TokenStream>>,
 }
 
 impl PerField {
@@ -1181,7 +1188,7 @@ impl DefaultIndexingChain {
         // — see `get_or_add_parent_per_field`.
         let parent_field = config
             .parent_field()
-            .map(|name| NumericDocValuesField::new(name, -1));
+            .map(|name| NumericDocValuesField::new(&name, -1));
         Self {
             scratch: SharedIndexingScratch::new(Arc::clone(&bytes_used)),
             terms_writer: FreqProxTermsWriter::new(Arc::clone(&bytes_used)),
@@ -1649,6 +1656,7 @@ impl DefaultIndexingChain {
             point_values: None,
             knn_field_vectors_writer: None,
             column_features: 0,
+            token_stream: None,
         });
         self.per_field_index.insert(field_name.to_string(), index);
         index
@@ -1713,7 +1721,7 @@ impl DefaultIndexingChain {
             // (`IndexingChain.java:1312-1315`).
             if s.doc_values_type != DocValuesType::NONE {
                 if let Some(index_sort) = self.config.index_sort() {
-                    Self::validate_index_sort_dv_type(index_sort, &field_name, s.doc_values_type)?;
+                    Self::validate_index_sort_dv_type(&index_sort, &field_name, s.doc_values_type)?;
                 }
             }
             // `initializeFieldInfo` asks the codec how many dimensions it can
@@ -2475,7 +2483,13 @@ impl DefaultIndexingChain {
         // try-with-resources whose `finally` logs the failure
         // (`IndexingChain.java:1907-1908, 2039-2044`), so an exception raised
         // by the call itself is logged as well.
-        let mut stream = match field.token_stream(analyzer, None) {
+        //
+        // **Divergence.** Java keeps the previous `tokenStream` when the call
+        // throws, because the assignment never happens; `reuse` is passed by
+        // value here (it is a `Box`, which the field may return as its
+        // result), so a call that fails drops it and the next instance gets
+        // `None`. Only the identity of a later stream can observe this.
+        let mut stream = match field.token_stream(analyzer, per_field.token_stream.take()) {
             Ok(stream) => stream,
             Err(error) => {
                 if info_stream.is_enabled("DW") {
@@ -2615,6 +2629,9 @@ impl DefaultIndexingChain {
         })();
 
         let close_outcome = stream.close();
+        // `tokenStream = field.tokenStream(...)`: the stream is kept, closed,
+        // for the next instance of the field (`IndexingChain.java:1908`).
+        per_field.token_stream = Some(stream);
         if outcome.is_err() && info_stream.is_enabled("DW") {
             info_stream.message(
                 "DW",
@@ -4743,8 +4760,7 @@ impl IndexingChain for DefaultIndexingChain {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use crate::util::atomic_ref_cell::AtomicRefCell;
 
     use crate::document::Document;
 
@@ -4929,8 +4945,8 @@ mod tests {
         options: IndexOptions,
         tokens: Vec<Tok>,
     ) -> Box<dyn IndexableField> {
-        let stream: Rc<RefCell<dyn TokenStream>> =
-            Rc::new(RefCell::new(ScriptedTokenStream::new(tokens)));
+        let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
             Field::new_with_token_stream(name, stream, field_type(options))
                 .expect("token stream field"),
@@ -5803,8 +5819,8 @@ mod tests {
         options: IndexOptions,
         tokens: Vec<Tok>,
     ) -> Box<dyn IndexableField> {
-        let stream: Rc<RefCell<dyn TokenStream>> =
-            Rc::new(RefCell::new(ScriptedTokenStream::new(tokens)));
+        let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
             Field::new_with_token_stream(name, stream, norm_field_type(options))
                 .expect("token stream field"),
@@ -5848,7 +5864,7 @@ mod tests {
     #[test]
     fn a_failed_doc_values_consumer_is_reported_over_the_field_infos_check() {
         let codec = ensure_codec();
-        let mut live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
+        let live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_codec(Arc::new(
             crate::codecs::FilterCodec::new("RefusingCodec", Arc::clone(&codec))
                 .with_doc_values_format(RefusingDocValuesFormat),
@@ -6211,7 +6227,7 @@ mod tests {
             }
         }
 
-        let mut live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
+        let live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_similarity(Arc::new(ZeroSimilarity));
         ensure_codec();
         let config = Arc::new(live);
@@ -6279,7 +6295,7 @@ mod tests {
         let (_, norms) = flush_and_read_norms(config(), vec![document]);
         assert_eq!(norms, vec![("body".to_string(), 0, 2)]);
 
-        let mut live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
+        let live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_similarity(Arc::new(
             crate::search::BM25Similarity::with_discount_overlaps(false),
         ));
@@ -6754,8 +6770,8 @@ mod tests {
         payloads: bool,
         tokens: Vec<Tok>,
     ) -> Box<dyn IndexableField> {
-        let stream: Rc<RefCell<dyn TokenStream>> =
-            Rc::new(RefCell::new(ScriptedTokenStream::new(tokens)));
+        let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
             Field::new_with_token_stream(
                 name,
@@ -6894,8 +6910,8 @@ mod tests {
         field_type.freeze();
         let mut field_infos = builder();
         for doc_id in 0..2 {
-            let stream: Rc<RefCell<dyn TokenStream>> =
-                Rc::new(RefCell::new(ScriptedTokenStream::new(vec![
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+                Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(vec![
                     Tok::new("a", 1, 0, 1),
                     Tok::new("b", 1, 2, 3),
                 ])));

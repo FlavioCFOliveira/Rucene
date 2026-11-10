@@ -82,7 +82,7 @@ fn test_same_vector_indexed_multiple_times() -> Result<()> {
 /// indexes a document built over the array's current value (same field,
 /// same values reach the writer).
 fn test_large_segment() -> Result<()> {
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     // Make sure to use the ConfigurableMCodec instead of a random one
     iwc.set_codec(Arc::new(ConfigurableMCodec::with_max_conn(128)))?;
     iwc.set_ram_buffer_size_mb(64.0)?; // Use a 64MB buffer to create larger initial segments

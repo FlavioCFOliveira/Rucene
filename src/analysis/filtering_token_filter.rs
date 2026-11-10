@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::util::attribute::AttributeSource;
 
 /// User-supplied accept/reject predicate for a [`FilteringTokenFilter`].
-pub trait FilteringTokenFilterLogic: Debug {
+pub trait FilteringTokenFilterLogic: Debug + Send + Sync {
     /// Returns `true` if the current token should be kept.
     fn accept(&mut self, source: &AttributeSource) -> Result<bool>;
 }
@@ -80,7 +80,7 @@ impl<T: FilteringTokenFilterLogic> TokenFilterLogic for FilteringTokenFilterAdap
 /// (`FilteringTokenFilter.java:29-30`).
 fn pos_incr_att_mut(
     source: &AttributeSource,
-) -> std::cell::RefMut<'_, dyn PositionIncrementAttribute> {
+) -> crate::util::atomic_ref_cell::AtomicRefMut<'_, dyn PositionIncrementAttribute> {
     source
         .get_attribute_interface_mut::<dyn PositionIncrementAttribute>()
         .expect("INVARIANT: the constructor added the PositionIncrementAttribute")

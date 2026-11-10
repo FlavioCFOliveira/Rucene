@@ -97,7 +97,7 @@ fn force_merge_with(
         FilterCodec::new("Lucene104", Arc::new(Lucene104Codec::new()))
             .with_stored_fields_format(PanickingOnMerge { thrown }),
     );
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(codec).unwrap();
     config
         .set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))

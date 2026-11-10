@@ -58,7 +58,7 @@ fn test_asserting_leaf_reader() {
                     .throws(&["java.lang.Exception"])
                     .body_any(|| {
                         let mut dir = LuceneTestCase::new_directory();
-                        let mut config = LuceneTestCase::new_index_writer_config();
+                        let config = LuceneTestCase::new_index_writer_config();
                         config
                             .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
                             .unwrap_or_else(|e| rethrow(e));
@@ -186,7 +186,7 @@ fn test_mock_random_merge_policy() {
                     .throws(&["java.lang.Exception"])
                     .body_any(|| {
                         let mut dir = LuceneTestCase::new_directory();
-                        let mut config = IndexWriterConfig::new();
+                        let config = IndexWriterConfig::new();
                         config.set_parent_field(Some("_parent".to_string()));
                         let w = IndexWriter::new(dir.as_directory(), config)
                             .unwrap_or_else(|e| rethrow(e));

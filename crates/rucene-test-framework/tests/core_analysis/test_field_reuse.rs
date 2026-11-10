@@ -5,9 +5,8 @@
 //! `assertSame`/`assertNotSame` compare the identity (address) of the token
 //! streams.
 
-use std::cell::Cell;
-use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use randomizedtesting::jdk::reflect::{Class, Constructor};
 use randomizedtesting::junit::Assert;
@@ -85,16 +84,16 @@ fn test_string_field() -> Result<()> {
 }
 
 /// The fields `lastSeen` and `lastReturned` of `MyField`, as identities
-/// (`None` is `null`), shared with the test.
+/// (addresses; `None` is `null`), shared with the test.
 #[derive(Default)]
 struct MyFieldState {
-    last_seen: Cell<Option<*const ()>>,
-    last_returned: Cell<Option<*const ()>>,
+    last_seen: Mutex<Option<usize>>,
+    last_returned: Mutex<Option<usize>>,
 }
 
 /// `MyField implements IndexableField` (`static class`).
 struct MyField {
-    state: Rc<MyFieldState>,
+    state: Arc<MyFieldState>,
 }
 
 impl std::fmt::Display for MyField {
@@ -122,16 +121,14 @@ impl IndexableField for MyField {
         _analyzer: Option<&dyn Analyzer>,
         reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        self.state
-            .last_seen
-            .set(reuse.map(|reuse| identity(&*reuse)));
+        *self.state.last_seen.lock().unwrap() = reuse.map(|reuse| identity(&*reuse) as usize);
         let returned: Box<dyn TokenStream> =
             Box::new(CannedTokenStream::new(vec![Token::with_offsets(
                 "unimportant",
                 0,
                 10,
             )]));
-        self.state.last_returned.set(Some(identity(&*returned)));
+        *self.state.last_returned.lock().unwrap() = Some(identity(&*returned) as usize);
         Ok(returned)
     }
 
@@ -164,21 +161,24 @@ fn test_index_writer_actually_reuses() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(None);
     let iw = IndexWriter::new(dir.as_directory(), iwc)?;
-    let field1 = Rc::new(MyFieldState::default());
+    let field1 = Arc::new(MyFieldState::default());
     let doc1: Vec<Box<dyn IndexableField>> = vec![Box::new(MyField {
-        state: Rc::clone(&field1),
+        state: Arc::clone(&field1),
     })];
     iw.add_document(&doc1)?;
-    let previous = field1.last_returned.get();
+    let previous = *field1.last_returned.lock().unwrap();
     Assert::assert_true(previous.is_some());
 
-    let field2 = Rc::new(MyFieldState::default());
+    let field2 = Arc::new(MyFieldState::default());
     let doc2: Vec<Box<dyn IndexableField>> = vec![Box::new(MyField {
-        state: Rc::clone(&field2),
+        state: Arc::clone(&field2),
     })];
     iw.add_document(&doc2)?;
-    match (previous, field2.last_seen.get()) {
-        (Some(previous), Some(last_seen)) => assert_same(previous, last_seen),
+    let last_seen = *field2.last_seen.lock().unwrap();
+    match (previous, last_seen) {
+        (Some(previous), Some(last_seen)) => {
+            assert_same(previous as *const (), last_seen as *const ())
+        }
         (_, _) => Assert::fail("expected same: the previous stream, was: <null>"),
     }
     iw.close()?;

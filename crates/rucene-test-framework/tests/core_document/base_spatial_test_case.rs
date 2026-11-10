@@ -1578,7 +1578,7 @@ fn add_shape_to_doc<C: SpatialCase>(
 
 /// The private `verify(Object... shapes)`.
 fn verify<C: SpatialCase>(case: &C, shapes: &[Option<Shape>]) -> Result<()> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let mbd = iwc.max_buffered_docs();
     if mbd != -1 && mbd < (shapes.len() / 100) as i32 {

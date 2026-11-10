@@ -177,8 +177,8 @@ impl RandomIndexWriter {
         conf: impl Into<Arc<IndexWriterConfig>>,
         test_point: Arc<dyn TestPoint>,
     ) -> Result<Arc<IndexWriter>> {
-        let mut shared = conf.into();
-        let conf = config_mut(&mut shared)?;
+        let shared: Arc<IndexWriterConfig> = conf.into();
+        let conf = &*shared;
         let info_stream = conf.info_stream();
         conf.set_info_stream(Arc::new(TestPointInfoStream::new(
             Some(info_stream),
@@ -269,11 +269,11 @@ impl RandomIndexWriter {
     fn new_private(
         r: &dyn Random,
         dir: Arc<dyn Directory>,
-        mut shared: Arc<IndexWriterConfig>,
+        shared: Arc<IndexWriterConfig>,
         close_analyzer: bool,
         use_soft_deletes: bool,
     ) -> Result<Self> {
-        let c = config_mut(&mut shared)?;
+        let c = &*shared;
         // TODO: this should be solved in a different way; Random should not be shared (!).
         let own_random = JdkRandom::new(r.next_long());
         let soft_deletes_ratio = if use_soft_deletes {
@@ -473,7 +473,7 @@ impl RandomIndexWriter {
         let field_type = FieldType::new();
         field_type.set_doc_values_type(DocValuesType::NUMERIC)?;
         field_type.freeze();
-        Field::new_with_number(name, NumericValue::Long(1), field_type)
+        Field::new_with_number(&name, NumericValue::Long(1), field_type)
     }
 
     /// `updateDocument(t, doc)`: "Updates a document."
@@ -917,25 +917,4 @@ impl DocumentsIterable for SingleDocIterable<'_> {
             done: false,
         })
     }
-}
-
-/// The configuration `RandomIndexWriter` changes before it opens the writer
-/// (`setSoftDeletesField`, `setInfoStream`, `setIndexCommit`), as Java
-/// changes the object the caller passed.
-///
-/// A configuration shared with another holder cannot be changed in Rust. One
-/// shared with a writer is refused first with Java's `IllegalStateException`,
-/// which Java's `IndexWriter` constructor raises after those changes
-/// (`IndexWriterConfig.java:119-125`).
-///
-/// **Divergence.** Java changes a configuration that is shared but not yet
-/// attached to a writer; Rucene refuses it with `IllegalStateException`,
-/// because a value behind a shared `Arc` cannot be changed through `&mut`.
-fn config_mut(shared: &mut Arc<IndexWriterConfig>) -> Result<&mut IndexWriterConfig> {
-    shared.live().check_not_attached()?;
-    Arc::get_mut(shared).ok_or_else(|| {
-        rucene::error::LuceneError::illegal_state(
-            "an IndexWriterConfig shared with another holder cannot be changed",
-        )
-    })
 }

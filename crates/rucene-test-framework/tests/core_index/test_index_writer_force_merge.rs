@@ -7,9 +7,8 @@
 //!   formats the overrides return.
 //! * `new IndexWriterConfig()` is `IndexWriterConfig::new()`.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::fmt;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::{Throwable, ASSERTION_ERROR};
@@ -85,7 +84,7 @@ fn test_partial_merge() -> Result<()> {
         let mut ldmp = LogMergePolicy::new(Arc::new(LogDocSize));
         ldmp.set_min_merge_docs(1);
         ldmp.set_merge_factor(5)?;
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_open_mode(OpenMode::CREATE)?;
         conf.set_max_buffered_docs(2)?;
         conf.set_merge_policy(Some(Arc::new(ldmp)))?;
@@ -99,7 +98,7 @@ fn test_partial_merge() -> Result<()> {
 
         let ldmp = LogMergePolicy::new(Arc::new(LogDocSize));
         ldmp.set_merge_factor(5)?;
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_merge_policy(Some(Arc::new(ldmp)))?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         writer.force_merge(3)?;
@@ -131,7 +130,7 @@ fn test_max_num_segments2() -> Result<()> {
     let mut ldmp = LogMergePolicy::new(Arc::new(LogDocSize));
     ldmp.set_min_merge_docs(1);
     ldmp.set_merge_factor(4)?;
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_max_buffered_docs(2)?;
     conf.set_merge_policy(Some(Arc::new(ldmp)))?;
     conf.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
@@ -180,7 +179,7 @@ impl Analyzer for WhitespaceAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        Ok(tokenizer_components(Rc::new(RefCell::new(
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             MockTokenizer::new(Arc::clone(&WHITESPACE), true)?,
         ))))
     }
@@ -199,7 +198,7 @@ fn test_force_merge_temp_space_usage() -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(WhitespaceAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     conf.set_max_buffered_docs(10)?;
     conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(Arc::clone(&d), conf)?;
@@ -232,7 +231,7 @@ fn test_force_merge_temp_space_usage() -> Result<()> {
     dir.reset_max_used_size_in_bytes()?;
     dir.set_track_disk_usage(true);
 
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_open_mode(OpenMode::APPEND)?;
     conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(Arc::clone(&d), conf)?;
@@ -317,7 +316,7 @@ fn list_files(dir: &Arc<dyn Directory>) -> Result<String> {
 fn test_background_force_merge() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     for pass in 0..2 {
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_open_mode(OpenMode::CREATE)?;
         conf.set_max_buffered_docs(2)?;
         conf.set_merge_policy(Some(Arc::new(
@@ -373,7 +372,7 @@ fn await_barrier(barrier: &CyclicBarrier) {
 
 /// Port of `TestIndexWriterForceMerge.testMergePerField`.
 fn test_merge_per_field() -> Result<()> {
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     let merge_scheduler = ConcurrentMergeScheduler::new();
     merge_scheduler.set_intra_merge_executor_override(Some(Arc::new(|cms, _merge| {
         // always enable parallel merges

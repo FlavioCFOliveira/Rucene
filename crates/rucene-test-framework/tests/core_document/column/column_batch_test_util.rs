@@ -32,7 +32,7 @@ use rucene::util::BytesRef;
 /// **Divergence from Lucene 10.5.0.** Java throws the one exception instance
 /// the test supplied; `LuceneError` is not `Clone`, so the port takes a
 /// factory and raises a fresh, equal error each time.
-pub type ExceptionFactory = Arc<dyn Fn() -> LuceneError>;
+pub type ExceptionFactory = Arc<dyn Fn() -> LuceneError + Send + Sync>;
 
 /// `floatVectorType(dimension, sim)`.
 pub fn float_vector_type(dimension: i32, sim: VectorSimilarityFunction) -> Result<FieldType> {
@@ -190,7 +190,7 @@ struct SparseObjectCursor<'a, T> {
     throw: Option<(i32, ExceptionFactory)>,
 }
 
-impl<T> ObjectTupleCursor<T> for SparseObjectCursor<'_, T> {
+impl<T: Sync> ObjectTupleCursor<T> for SparseObjectCursor<'_, T> {
     fn next_doc(&mut self) -> Result<i32> {
         self.pos += 1;
         if let Some((at, e)) = &self.throw {
@@ -211,7 +211,7 @@ struct DenseObjectCursor<'a, T> {
     pos: i32,
 }
 
-impl<T> ObjectTupleCursor<T> for DenseObjectCursor<'_, T> {
+impl<T: Sync> ObjectTupleCursor<T> for DenseObjectCursor<'_, T> {
     fn next_doc(&mut self) -> Result<i32> {
         self.pos += 1;
         Ok(dense_doc(self.values.len(), self.pos))
@@ -915,7 +915,7 @@ impl<T> ColumnValues for ArrayVectorColumn<T> {
     }
 }
 
-impl<T> VectorColumn<T> for ArrayVectorColumn<T> {
+impl<T: Sync> VectorColumn<T> for ArrayVectorColumn<T> {
     fn tuples(&self) -> Result<Box<dyn ObjectTupleCursor<T> + '_>> {
         Ok(Box::new(SparseObjectCursor {
             doc_ids: &self.doc_ids,
@@ -989,7 +989,7 @@ impl<T> ColumnValues for ArrayDenseVectorColumn<T> {
     }
 }
 
-impl<T> VectorColumn<T> for ArrayDenseVectorColumn<T> {
+impl<T: Sync> VectorColumn<T> for ArrayDenseVectorColumn<T> {
     fn tuples(&self) -> Result<Box<dyn ObjectTupleCursor<T> + '_>> {
         Ok(Box::new(DenseObjectCursor {
             values: &self.values,

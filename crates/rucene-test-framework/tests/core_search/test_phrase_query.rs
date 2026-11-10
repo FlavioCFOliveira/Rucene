@@ -4,8 +4,7 @@
 //!
 //! @see TestPositionIncrement
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::Class;
@@ -128,7 +127,7 @@ impl Analyzer for GapAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        Ok(tokenizer_components(Rc::new(RefCell::new(
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
             MockTokenizer::new(Arc::clone(&WHITESPACE), false)?,
         ))))
     }
@@ -385,9 +384,9 @@ fn test_phrase_query_in_conjunction_scorer() -> Result<()> {
     drop(searcher);
     reader.close()?;
 
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     iwc.set_open_mode(OpenMode::CREATE)?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -437,9 +436,9 @@ fn test_phrase_query_in_conjunction_scorer() -> Result<()> {
 /// Port of `TestPhraseQuery.testSlopScoring`.
 fn test_slop_scoring() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     iwc.set_similarity(Some(Arc::new(BM25Similarity::new())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
@@ -756,8 +755,8 @@ fn test_zero_pos_incr() -> Result<()> {
 
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(CannedTokenStream::new(tokens)));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(CannedTokenStream::new(tokens)));
     doc.add(Box::new(TextField::new_with_token_stream("field", stream)?));
     writer.add_document(&doc)?;
     let r = writer.get_reader()?;
@@ -795,7 +794,7 @@ fn test_random_phrases() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
 
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut docs: Vec<Vec<String>> = Vec::new();
@@ -1162,14 +1161,14 @@ struct DummyState {
 #[derive(Debug, Clone)]
 struct DummyImpactsEnum {
     cost: i64,
-    state: Rc<RefCell<DummyState>>,
+    state: Arc<AtomicRefCell<DummyState>>,
 }
 
 impl DummyImpactsEnum {
     fn new(cost: i64) -> Self {
         Self {
             cost,
-            state: Rc::new(RefCell::new(DummyState::default())),
+            state: Arc::new(AtomicRefCell::new(DummyState::default())),
         }
     }
 

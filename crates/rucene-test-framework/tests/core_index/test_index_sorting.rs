@@ -4,16 +4,15 @@
 //!   wraps the default codec's; its two mutable fields are shared atomics, so
 //!   the test sets them after the codec is installed, as Java does.
 //! * The `PositionsTokenStream` of each `testRandom2` document is kept next to
-//!   the document (the field holds the same `Rc`), and its id is set through
+//!   the document (the field holds the same `Arc`), and its id is set through
 //!   that handle, as Java reaches it through `doc.getField("positions")`.
 //! * `Document.add(field)` of a field that Java keeps and changes
 //!   (`testIndexSortWithSparseField`, `testSortDocs`, `testWrongSortFieldType`)
 //!   adds a copy, rebuilt with the current value (guide section 6).
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::{HashMap, HashSet};
 use std::panic::resume_unwind;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -460,7 +459,7 @@ fn assert_needs_index_sort_merge(
     random_value_consumer: &dyn Fn(&mut Document),
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let (codec, codec_state) = asserting_needs_index_sort_codec();
     iwc.set_codec(codec)?;
     let index_sort = sort_of(vec![
@@ -646,7 +645,7 @@ fn index_three_docs(
     docs: [&dyn Fn() -> Document; 3],
 ) -> Result<ThreeDocIndex> {
     let dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let index_sort = sort_of(vec![index_sort_field])?;
     iwc.set_index_sort(index_sort)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1520,7 +1519,7 @@ fn random1_index(
 /// Port of `TestIndexSorting.testRandom1`.
 fn test_random1() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let index_sort = sort_of(vec![sort_field("foo", SortFieldType::Long)?])?;
     iwc.set_index_sort(index_sort.clone())?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1571,7 +1570,7 @@ fn test_random1() -> Result<()> {
 /// Port of `TestIndexSorting.testMultiValuedRandom1`.
 fn test_multi_valued_random1() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let index_sort = sort_of(vec![SortedNumericSortField::new(
         "foo",
         SortFieldType::Long,
@@ -1703,7 +1702,7 @@ fn run_update_threads(
 /// Port of `TestIndexSorting.testConcurrentUpdates`.
 fn test_concurrent_updates() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let values = Arc::new(Mutex::new(HashMap::new()));
@@ -1737,7 +1736,7 @@ fn test_concurrent_updates() -> Result<()> {
 /// Port of `TestIndexSorting.testBadDVUpdate`.
 fn test_bad_dv_update() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -1776,7 +1775,7 @@ fn iae_message_of<T>(runnable: impl FnOnce() -> Result<T>) -> String {
 /// Port of `TestIndexSorting.testConcurrentDVUpdates`.
 fn test_concurrent_dv_updates() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let values = Arc::new(Mutex::new(HashMap::new()));
@@ -1832,7 +1831,7 @@ fn codec_readers(
 fn test_bad_add_indexes() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let index_sort = sort_of(vec![sort_field("foo", SortFieldType::Long)?])?;
-    let mut iwc1 = LuceneTestCase::new_index_writer_config();
+    let iwc1 = LuceneTestCase::new_index_writer_config();
     iwc1.set_index_sort(index_sort)?;
     let w = IndexWriter::new(dir.as_directory(), iwc1)?;
     w.add_document(&Document::new())?;
@@ -1842,7 +1841,7 @@ fn test_bad_add_indexes() -> Result<()> {
     ];
     for sort in index_sorts {
         let mut dir2 = LuceneTestCase::new_directory();
-        let mut iwc2 = LuceneTestCase::new_index_writer_config();
+        let iwc2 = LuceneTestCase::new_index_writer_config();
         if let Some(sort) = sort {
             iwc2.set_index_sort(sort)?;
         }
@@ -1870,7 +1869,7 @@ fn test_bad_add_indexes() -> Result<()> {
 /// Port of `TestIndexSorting.testAddIndexes(boolean, boolean)`.
 fn do_test_add_indexes(with_deletes: bool, use_readers: bool) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc1 = LuceneTestCase::new_index_writer_config();
+    let iwc1 = LuceneTestCase::new_index_writer_config();
     let use_parent = LuceneTestCase::rarely();
     if use_parent {
         iwc1.set_parent_field(Some("___parent".to_string()));
@@ -1905,7 +1904,7 @@ fn do_test_add_indexes(with_deletes: bool, use_readers: bool) -> Result<()> {
     drop(w);
 
     let mut dir2 = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     if random().next_boolean() {
         // test congruent index sort
         iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::Long)?])?)?;
@@ -1977,7 +1976,7 @@ fn test_add_indexes_with_deletions_and_directory() -> Result<()> {
 
 /// Port of `TestIndexSorting.testBadSort`.
 fn test_bad_sort() -> Result<()> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let message = iae_message_of(|| iwc.set_index_sort(Sort::new()).map(|_| ()));
     assert_equals(
         &"Cannot sort index with sort field <score>".to_string(),
@@ -1991,7 +1990,7 @@ fn test_bad_sort() -> Result<()> {
 fn test_illegal_change_sort() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     w.add_document(&Document::new())?;
@@ -2001,7 +2000,7 @@ fn test_illegal_change_sort() -> Result<()> {
     w.close()?;
     drop(w);
 
-    let mut iwc2 = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc2 = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc2.set_index_sort(sort_of(vec![sort_field("bar", SortFieldType::Long)?])?)?;
     let message = iae_message_of(|| IndexWriter::new(Arc::clone(&d), iwc2));
     assert_contains(&message, "cannot change previous indexSort=<long: \"foo\">");
@@ -2123,13 +2122,15 @@ impl Analyzer for MockTokenizerAnalyzer {
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::whitespace_lower_case()?;
-        Ok(tokenizer_components(Rc::new(RefCell::new(tokenizer))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
+            tokenizer,
+        ))))
     }
 }
 
 /// `((PositionsTokenStream) ((Field) doc.getField("positions"))
 /// .tokenStreamValue()).setId(Integer.parseInt(doc.get("id")))`.
-fn set_positions_id(doc: &Document, positions: &Rc<RefCell<PositionsTokenStream>>) {
+fn set_positions_id(doc: &Document, positions: &Arc<AtomicRefCell<PositionsTokenStream>>) {
     let id: i32 = doc
         .get("id")
         .unwrap_or_else(|| npe("doc.get(\"id\")"))
@@ -2154,17 +2155,17 @@ fn test_random2() -> Result<()> {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
 
-    let mut docs: Vec<(Document, Rc<RefCell<PositionsTokenStream>>)> = Vec::new();
+    let mut docs: Vec<(Document, Arc<AtomicRefCell<PositionsTokenStream>>)> = Vec::new();
     for i in 0..num_docs {
         let id = i * 10;
         let mut doc = Document::new();
         doc.add(string_field("id", &id.to_string(), Store::YES)?);
         doc.add(string_field("docs", "#all#", Store::NO)?);
-        let positions = Rc::new(RefCell::new(PositionsTokenStream::new()?));
+        let positions = Arc::new(AtomicRefCell::new(PositionsTokenStream::new()?));
         positions.borrow_mut().set_id(id);
         doc.add(Box::new(Field::new_with_token_stream(
             "positions",
-            Rc::clone(&positions) as Rc<RefCell<dyn TokenStream>>,
+            Arc::clone(&positions) as Arc<AtomicRefCell<dyn TokenStream>>,
             positions_type.clone(),
         )?));
         doc.add(ndv("numeric", id as i64));
@@ -2204,7 +2205,7 @@ fn test_random2() -> Result<()> {
     let mut dir1 = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
 
     let random1 = JdkRandom::new(seed);
-    let mut iwc1 = LuceneTestCase::new_index_writer_config_with(&random1, Some(Arc::clone(&a)));
+    let iwc1 = LuceneTestCase::new_index_writer_config_with(&random1, Some(Arc::clone(&a)));
     let sim1 = iwc1.similarity();
     iwc1.set_similarity(Some(Arc::new(NormsSimilarity { inner: sim1 })))?; // for testing norms field
                                                                            // preserve docIDs
@@ -2222,7 +2223,7 @@ fn test_random2() -> Result<()> {
     let mut dir2 = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
 
     let random2 = JdkRandom::new(seed);
-    let mut iwc2 = LuceneTestCase::new_index_writer_config_with(&random2, Some(Arc::clone(&a)));
+    let iwc2 = LuceneTestCase::new_index_writer_config_with(&random2, Some(Arc::clone(&a)));
     let sim2 = iwc2.similarity();
     iwc2.set_similarity(Some(Arc::new(NormsSimilarity { inner: sim2 })))?; // for testing norms field
 
@@ -2468,9 +2469,9 @@ fn test_random3() -> Result<()> {
 
     // use index sorting:
     let mut dir2 = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
-    let mut iwc2 = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc2 = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     iwc2.set_index_sort(sort.clone())?;
     let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
 
@@ -2620,9 +2621,9 @@ fn test_random3() -> Result<()> {
 /// Port of `TestIndexSorting.testTieBreak`.
 fn test_tie_break() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::String)?])?)?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -2673,7 +2674,7 @@ fn test_tie_break() -> Result<()> {
 /// Port of `TestIndexSorting.testIndexSortWithSparseField`.
 fn test_index_sort_with_sparse_field() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let sort_field =
         SortField::new_reverse(Some("dense_int".to_string()), SortFieldType::Int, true)?;
     iwc.set_index_sort(sort_of(vec![sort_field])?)?;
@@ -2739,7 +2740,7 @@ fn test_index_sort_with_sparse_field() -> Result<()> {
 /// Port of `TestIndexSorting.testIndexSortOnSparseField`.
 fn test_index_sort_on_sparse_field() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let sort_field = sort_field_missing(
         "sparse",
         SortFieldType::Int,
@@ -2810,7 +2811,7 @@ fn test_wrong_sort_field_type() -> Result<()> {
                 continue;
             }
             let index_sort = sort_of(vec![sort_fields[i].clone()])?;
-            let mut iwc =
+            let iwc =
                 IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
             iwc.set_index_sort(index_sort)?;
             let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -2841,7 +2842,7 @@ fn test_wrong_sort_field_type() -> Result<()> {
 /// Port of `TestIndexSorting.testDeleteByTermOrQuery`.
 fn test_delete_by_term_or_query() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_index_sort(sort_of(vec![sort_field("numeric", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
     let mut doc = Document::new();
@@ -2924,7 +2925,7 @@ fn utf8(s: &str) -> BytesRef {
 /// Port of `TestIndexSorting.testSortDocs`.
 fn test_sort_docs() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_index_sort(sort_of(vec![sort_field("sort", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
     // `sort.setLongValue(v); field.setStringValue(s); w.addDocument(doc);`:
@@ -3005,7 +3006,7 @@ fn assert_position(
 /// Port of `TestIndexSorting.testSortDocsAndFreqs`.
 fn test_sort_docs_and_freqs() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_index_sort(sort_of(vec![sort_field("sort", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
     let ft = FieldType::new();
@@ -3052,7 +3053,7 @@ fn test_sort_docs_and_freqs() -> Result<()> {
 /// `testSortDocsAndFreqsAndPositionsAndOffsets`.
 fn sort_docs_and_positions(offsets: bool) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*random()),
     )));
     config.set_index_sort(sort_of(vec![sort_field("sort", SortFieldType::Long)?])?)?;
@@ -3128,7 +3129,7 @@ fn test_sort_docs_and_freqs_and_positions_and_offsets() -> Result<()> {
 /// Port of `TestIndexSorting.testParentFieldNotConfigured`.
 fn test_parent_field_not_configured() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::Int)?])?)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     let message = iae_message_of(|| writer.add_documents(&[Document::new(), Document::new()]));
@@ -3144,7 +3145,7 @@ fn test_parent_field_not_configured() -> Result<()> {
 /// Port of `TestIndexSorting.testBlockContainsParentField`.
 fn test_block_contains_parent_field() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let parent_field = "parent";
     iwc.set_parent_field(Some(parent_field.to_string()));
     iwc.set_index_sort(sort_of(vec![sort_field("foo", SortFieldType::Int)?])?)?;
@@ -3192,7 +3193,7 @@ fn merge_factor_above_two() -> Result<LogMergePolicy> {
 /// Port of `TestIndexSorting.testIndexSortWithBlocks`.
 fn test_index_sort_with_blocks() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let (codec, codec_state) = asserting_needs_index_sort_codec();
     iwc.set_codec(codec)?;
     let parent_field = "parent";
@@ -3290,7 +3291,7 @@ fn block_doc(i: i32, doc_type: i64, extra: Option<(&str, i64)>) -> Result<Docume
 /// Port of `TestIndexSorting.testMixRandomDocumentsWithBlocks`.
 fn test_mix_random_documents_with_blocks() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let (codec, _codec_state) = asserting_needs_index_sort_codec();
     iwc.set_codec(codec)?;
     let parent_field = "parent";

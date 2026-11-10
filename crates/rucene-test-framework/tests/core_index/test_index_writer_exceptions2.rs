@@ -7,9 +7,8 @@
 //!   writer call catch the error the call returns; `Rethrow.rethrow(e)`
 //!   returns it.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::io::Write as _;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::random::{JdkRandom, Random};
@@ -79,7 +78,7 @@ impl Analyzer for BrokenAnalyzer {
     fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
         let mut tokenizer = MockTokenizer::new(Arc::clone(&SIMPLE), false)?;
         tokenizer.set_enable_checks(false); // TODO: can we turn this on? our filter is probably too evil
-        let tokenizer = Rc::new(RefCell::new(tokenizer));
+        let tokenizer = Arc::new(AtomicRefCell::new(tokenizer));
         let mut stream: Box<dyn TokenStream> = shared(&tokenizer);
         // emit some payloads
         if field_name.contains("payloads") {
@@ -126,7 +125,7 @@ fn is_fake(e: &LuceneError) -> bool {
 /// `newIndexWriterConfig(analyzer)` with a `SerialMergeScheduler` (just for
 /// now, try to keep this test reproducible) and `codec`.
 fn config(analyzer: &Arc<dyn Analyzer>, codec: &Arc<dyn Codec>) -> Result<IndexWriterConfig> {
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(analyzer)));
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(analyzer)));
     conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     conf.set_codec(Arc::clone(codec))?;
     Ok(conf)

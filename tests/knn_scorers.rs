@@ -147,7 +147,7 @@ fn ensure_codec() {
 
 fn writer_config() -> IndexWriterConfig {
     ensure_codec();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -309,7 +309,7 @@ impl Codec for QuantizedCodec {
 }
 
 fn quantized_config() -> IndexWriterConfig {
-    let mut config = writer_config();
+    let config = writer_config();
     config.set_codec(Arc::new(QuantizedCodec::new())).unwrap();
     config
 }
@@ -771,7 +771,7 @@ const SCAN_DOCS: i32 = 200;
 fn the_sparse_sizes_cover_the_graph_and_the_scan() {
     // Separate files, so the graph file can be measured.
     let separate_files = || {
-        let mut config = writer_config();
+        let config = writer_config();
         config.set_use_compound_file(false).unwrap();
         config
     };

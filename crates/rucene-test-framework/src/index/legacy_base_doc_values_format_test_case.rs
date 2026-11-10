@@ -639,7 +639,7 @@ fn one_doc_search_test_with<C: BaseIndexFileFormatTestCase + ?Sized>(
 fn log_mp_writer() -> Result<(TestDirectory, RandomIndexWriter)> {
     let analyzer = mock_analyzer();
     let directory = LuceneTestCase::new_directory();
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iwriter = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
     Ok((directory, iwriter))
@@ -656,7 +656,7 @@ fn sorted_set_writer(log_mp: bool) -> Result<(TestDirectory, RandomIndexWriter)>
         return Ok((directory, iwriter));
     }
     let analyzer = mock_analyzer();
-    let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let iwconfig = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwconfig.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iwriter =
         RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
@@ -718,7 +718,7 @@ pub(crate) fn merge_away_all_values(
     let mut directory = LuceneTestCase::new_directory();
     {
         let analyzer = mock_analyzer();
-        let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+        let iwconfig = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         iwconfig.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iwriter =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
@@ -765,7 +765,7 @@ pub(crate) fn merge_away_all_values_large_segment(
     let mut directory = LuceneTestCase::new_directory();
     {
         let analyzer = mock_analyzer();
-        let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+        let iwconfig = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
         iwconfig.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iwriter =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
@@ -953,7 +953,7 @@ fn numbers_one_missing<C: BaseIndexFileFormatTestCase + ?Sized>(
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     {
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(None);
+        let conf = LuceneTestCase::new_index_writer_config_analyzer(None);
         conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
         let mut doc = Document::new();
@@ -1015,7 +1015,7 @@ fn bytes_one_missing<C: BaseIndexFileFormatTestCase + ?Sized>(
 ) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     {
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(None);
+        let conf = LuceneTestCase::new_index_writer_config_analyzer(None);
         conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
         let mut doc = Document::new();
@@ -1927,7 +1927,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let mut directory = LuceneTestCase::new_directory();
         {
             let analyzer = mock_analyzer();
-            let mut iwconfig = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+            let iwconfig = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
             iwconfig.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let iwriter =
                 RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwconfig)?;
@@ -2214,7 +2214,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         {
             let analyzer = mock_analyzer();
-            let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
             conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let writer = IndexWriter::new(dir.as_directory(), conf)?;
             for i in 0..5 {
@@ -4206,7 +4206,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_sorted_number_merge(&self) -> Result<()> {
         let mut directory = LuceneTestCase::new_directory();
         {
-            let mut iwc = IndexWriterConfig::with_analyzer(None);
+            let iwc = IndexWriterConfig::with_analyzer(None);
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let writer = IndexWriter::new(directory.as_directory(), iwc)?;
             let mut doc = Document::new();
@@ -4559,7 +4559,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         );
         let mut dir = LuceneTestCase::new_directory();
         {
-            let mut iwc = IndexWriterConfig::new();
+            let iwc = IndexWriterConfig::new();
             iwc.set_ram_buffer_size_mb(f64::from(8 + random().next_int_bound(64)))?;
             let writer = IndexWriter::new(dir.as_directory(), iwc)?;
             // many docs with some of them have very high ords
@@ -4601,7 +4601,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
 
         let mut directory = LuceneTestCase::new_directory();
         {
-            let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+            let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
             conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let w = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
             let num_chunks = LuceneTestCase::at_least(10);

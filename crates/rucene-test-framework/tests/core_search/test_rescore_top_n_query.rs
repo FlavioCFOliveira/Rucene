@@ -67,7 +67,7 @@ fn rescore_set_up(f: &mut RescoreTopN) -> Result<()> {
     f.directory = Some(Arc::new(ByteBuffersDirectory::default()));
 
     // Set up the IndexWriterConfig to use quantized vector storage
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(TestUtil::always_knn_vectors_format(Arc::new(
         Lucene104HnswScalarQuantizedVectorsFormat::new(),
     )))?;

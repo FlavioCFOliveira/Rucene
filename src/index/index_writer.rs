@@ -1128,12 +1128,12 @@ impl IndexWriter {
         // the un-committed segments (`IndexWriter.java:1126-1129`).
         let global_field_numbers = Arc::new(Self::get_field_number_map(
             &segment_infos,
-            config.soft_deletes_field(),
-            config.parent_field(),
+            config.soft_deletes_field().as_deref(),
+            config.parent_field().as_deref(),
         )?);
         if let Some(parent_field) = config.parent_field() {
             let names = global_field_numbers.get_field_names();
-            if !create && !names.is_empty() && !names.contains(parent_field) {
+            if !create && !names.is_empty() && !names.contains(&parent_field) {
                 return Err(LuceneError::IllegalArgument(
                     "can't add a parent field to an already existing index without a parent \
                      field"
@@ -1202,7 +1202,7 @@ impl IndexWriter {
             Arc::clone(&global_field_numbers),
             Arc::new(move || completed_del_gen.get_completed_del_gen()),
             Arc::clone(info_stream),
-            config.soft_deletes_field().map(str::to_string),
+            config.soft_deletes_field(),
             reader.as_deref(),
         )?);
         // `IndexWriter.java:1163-1165`.
@@ -4130,7 +4130,7 @@ impl IndexWriter {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            self.config.index_sort().cloned().unwrap_or_default(),
+            self.config.index_sort().unwrap_or_default(),
         )?;
         si.set_codec(self.config.codec());
         let details = HashMap::from([
@@ -5034,7 +5034,7 @@ impl IndexWriter {
                 if let Some(field) = self.config.soft_deletes_field() {
                     let iterator =
                         crate::search::field_exists_query::FieldExistsQuery::get_doc_values_doc_id_set_iterator(
-                            field,
+                            &field,
                             leaf.as_ref(),
                         )?;
                     num_soft_deleted += match iterator {
@@ -5079,7 +5079,7 @@ impl IndexWriter {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            self.config.index_sort().cloned().unwrap_or_default(),
+            self.config.index_sort().unwrap_or_default(),
         )?;
 
         let mut readers: Vec<Arc<dyn CodecReader>> = Vec::with_capacity(merge_readers.len());
@@ -6974,7 +6974,7 @@ impl IndexWriter {
             // `SegmentInfo.getIndexSort()` is `null` for an unsorted segment;
             // this port stores the relevance sort there instead.
             let unsorted = segment_sort.fields().is_empty() || *segment_sort == Sort::default();
-            if unsorted || !Self::is_congruent_sort(index_sort, segment_sort) {
+            if unsorted || !Self::is_congruent_sort(&index_sort, segment_sort) {
                 let segment_sort = if unsorted {
                     "null".to_string()
                 } else {
@@ -7022,7 +7022,7 @@ impl IndexWriter {
         if let Some(index_sort) = self.config.index_sort() {
             let leaf_sort = meta.sort();
             let congruent = leaf_sort
-                .map(|s| Self::is_congruent_sort(index_sort, s))
+                .map(|s| Self::is_congruent_sort(&index_sort, s))
                 .unwrap_or(false);
             if !congruent {
                 // `"cannot change index sort from " + leafIndexSort + " to " +
@@ -8307,7 +8307,7 @@ impl IndexWriter {
     /// The `try` block of `IndexWriter.addIndexes(Directory...)`
     /// (`IndexWriter.java:3094-3201`).
     fn add_indexes_dirs_locked(&self, dirs: &[Arc<dyn Directory>]) -> Result<i64> {
-        let index_sort = self.config.index_sort().cloned();
+        let index_sort = self.config.index_sort();
 
         if self.info_stream.is_enabled(IW) {
             self.info_stream
@@ -8823,7 +8823,7 @@ impl IndexWriter {
         };
         let mut soft_deleted_docs =
             match crate::search::field_exists_query::FieldExistsQuery::get_doc_values_doc_id_set_iterator(
-                field, reader,
+                &field, reader,
             )? {
                 Some(iterator) => iterator,
                 None => return Ok((soft_deletes_count, hard_delete_count)),
@@ -9188,7 +9188,7 @@ impl IndexWriter {
         let has_initial_soft_deleted = self
             .config
             .soft_deletes_field()
-            .and_then(|field| field_infos.field_info(field))
+            .and_then(|field| field_infos.field_info(&field))
             .is_some_and(|fi| {
                 fi.get_doc_values_gen() == -1 && fi.doc_values_type != DocValuesType::NONE
             });
@@ -10839,7 +10839,7 @@ mod tests {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let stream = Arc::new(RecordingInfoStream::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
@@ -11092,7 +11092,7 @@ mod tests {
     fn a_point_in_time_merge_is_not_taken_before_its_readers_are_open() {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Some(Arc::new(
                 crate::index::merge_scheduler::SerialMergeScheduler::new(),
@@ -11273,7 +11273,7 @@ mod tests {
             fired: std::sync::atomic::AtomicBool::new(false),
             helper: Mutex::new(None),
         });
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
@@ -11344,7 +11344,7 @@ mod tests {
                 merge
             }) as Arc<dyn Fn(OneMerge) -> OneMerge + Send + Sync>
         };
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
                 Arc::new(crate::index::merge_policy::TieredMergePolicy::new()),
@@ -11400,7 +11400,7 @@ mod tests {
     fn one_doc_writer() -> (Arc<dyn Directory>, Arc<IndexWriter>, Document) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Some(Arc::new(
                 crate::index::merge_scheduler::SerialMergeScheduler::new(),
@@ -11496,7 +11496,7 @@ mod tests {
         writer.add_document(&doc).unwrap();
         writer.commit().unwrap();
         writer.close().unwrap();
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_open_mode(crate::index::index_writer_config::OpenMode::CREATE)
             .unwrap();
@@ -11693,7 +11693,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir: Arc<dyn Directory> =
             Arc::new(crate::store::FSDirectory::open(tmp.path()).unwrap());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_open_mode(OpenMode::APPEND).unwrap();
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
         // Java oracle (`oracle9/Probe23.java locks`, "append empty"):
@@ -11775,7 +11775,7 @@ mod tests {
         register_default_codec();
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let keep_all = || {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config
                 .set_index_deletion_policy(Some(
                     crate::index::index_deletion_policy::NoDeletionPolicy::instance(),
@@ -11801,7 +11801,7 @@ mod tests {
         assert_eq!(first.get_segments_file_name(), "segments_1");
 
         let stream = Arc::new(RecordingInfoStream::default());
-        let mut config = keep_all();
+        let config = keep_all();
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
@@ -11836,7 +11836,7 @@ mod tests {
         let commit =
             Arc::clone(&crate::index::directory_reader::list_commits(Arc::clone(&dir)).unwrap()[0]);
 
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_open_mode(OpenMode::CREATE).unwrap();
         config.set_index_commit(Some(commit));
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
@@ -11857,7 +11857,7 @@ mod tests {
         register_default_codec();
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let no_merges = || {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config
                 .set_merge_policy(Some(Arc::new(
                     crate::index::merge_policy::NoMergePolicy::new(),
@@ -11874,7 +11874,7 @@ mod tests {
         writer.rollback().unwrap();
 
         let stream = Arc::new(RecordingInfoStream::default());
-        let mut config = no_merges();
+        let config = no_merges();
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
@@ -11913,7 +11913,7 @@ mod tests {
         register_default_codec();
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let no_merges = || {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config
                 .set_merge_policy(Some(Arc::new(
                     crate::index::merge_policy::NoMergePolicy::new(),
@@ -11932,7 +11932,7 @@ mod tests {
         assert_eq!((reader.max_doc(), reader.num_docs()), (2, 1));
         writer.rollback().unwrap();
 
-        let mut config = no_merges();
+        let config = no_merges();
         config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let info = writer.state().unwrap().segment_infos.info(0).clone();
@@ -11962,7 +11962,7 @@ mod tests {
         assert_eq!(reader.max_doc(), 1);
         writer.close().unwrap();
 
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         IndexReader::close(reader.as_ref()).unwrap();
@@ -11986,7 +11986,7 @@ mod tests {
 
         let reader = crate::index::directory_reader::open(Arc::clone(&dir)).unwrap();
         assert_eq!(reader.max_doc(), 1);
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         assert_eq!(reader.max_doc(), 1);
@@ -12010,7 +12010,7 @@ mod tests {
         let reader = IndexWriterTrait::get_reader(writer.as_ref(), true, false).unwrap();
         writer.rollback().unwrap();
 
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
         assert!(
@@ -12042,7 +12042,7 @@ mod tests {
             }
             writer.close().unwrap();
 
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
             let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
             // `new IllegalArgumentException(..., ioe)` (`IndexWriter.java:1060-1064`):
@@ -12192,7 +12192,7 @@ mod tests {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let stream = Arc::new(RecordingInfoStream::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
@@ -12244,7 +12244,7 @@ mod tests {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let soft_config = || {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config.set_soft_deletes_field(Some("soft".to_string()));
             config
                 .set_merge_policy(Some(Arc::new(
@@ -12317,7 +12317,7 @@ mod tests {
     /// The configuration of a writer that never merges and keeps soft deletes
     /// in `soft_field`.
     fn no_merge_config(soft_field: Option<&str>) -> IndexWriterConfig {
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_soft_deletes_field(soft_field.map(str::to_string));
         config
             .set_merge_policy(Some(Arc::new(
@@ -12433,7 +12433,7 @@ mod tests {
         let reader = IndexWriterTrait::get_reader(writer.as_ref(), true, false).unwrap();
         assert_eq!(stats(&writer), (1, 2), "after the NRT open");
         writer.rollback().unwrap();
-        let mut config = no_merge_config(None);
+        let config = no_merge_config(None);
         config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         assert_eq!(stats(&writer), (1, 2), "from the reader");
@@ -12519,7 +12519,7 @@ mod tests {
     #[test]
     fn update_pending_merges_returns_the_policys_specification() {
         crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new()).ok();
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
             .set_merge_scheduler(Some(Arc::new(
@@ -12571,7 +12571,7 @@ mod tests {
     #[test]
     fn get_merging_segments_reports_segments_that_left_the_live_infos() {
         crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new()).ok();
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
             .set_merge_scheduler(Some(Arc::new(
@@ -12696,7 +12696,7 @@ mod tests {
         register_default_codec();
         for soft_field in [None, Some("soft")] {
             let config = |policy: &Arc<DeletesToMergeRecorder>| {
-                let mut config = IndexWriterConfig::new();
+                let config = IndexWriterConfig::new();
                 config.set_soft_deletes_field(soft_field.map(str::to_string));
                 config
                     .set_merge_policy(Some(Arc::clone(policy) as Arc<dyn MergePolicy>))
@@ -12724,7 +12724,7 @@ mod tests {
             writer.rollback().unwrap();
 
             let policy = Arc::new(DeletesToMergeRecorder::default());
-            let mut from_reader = config(&policy);
+            let from_reader = config(&policy);
             from_reader.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
             let writer = IndexWriter::new(Arc::clone(&dir), from_reader).unwrap();
             let info = writer.state().unwrap().segment_infos.info(0).clone();
@@ -12775,7 +12775,7 @@ mod tests {
             .unwrap();
         let reader = IndexWriterTrait::get_reader(writer.as_ref(), true, false).unwrap();
         writer.rollback().unwrap();
-        let mut config = no_merge_config(Some("soft"));
+        let config = no_merge_config(Some("soft"));
         if let Some(info_stream) = info_stream {
             config.set_info_stream(info_stream).unwrap();
         }
@@ -12872,7 +12872,7 @@ mod tests {
         IndexReader::close(reader.as_ref()).unwrap();
         writer.close().unwrap();
 
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_commit(Some(commit));
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
         assert!(
@@ -12899,7 +12899,7 @@ mod tests {
         writer.commit().unwrap();
         writer.close().unwrap();
 
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
         assert!(
@@ -12990,7 +12990,7 @@ mod tests {
         let commit = Arc::clone(
             &crate::index::directory_reader::list_commits(Arc::clone(&source)).unwrap()[0],
         );
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_commit(Some(commit));
         let error = IndexWriter::new(Arc::clone(&target), config).unwrap_err();
         assert_eq!(
@@ -13005,7 +13005,7 @@ mod tests {
 
         let reader = crate::index::directory_reader::open(Arc::clone(&source)).unwrap();
         let reader_commit: Arc<dyn IndexCommit> = Arc::from(reader.index_commit().unwrap());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_commit(Some(Arc::clone(&reader_commit)));
         let error = IndexWriter::new(Arc::clone(&target), config).unwrap_err();
         assert!(
@@ -13014,7 +13014,7 @@ mod tests {
             "{error:?}"
         );
 
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_commit(Some(Arc::new(RedirectedCommit {
             inner: reader_commit,
             directory: Arc::clone(&target),
@@ -13207,7 +13207,7 @@ mod tests {
         register_default_codec();
         let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let scheduler = Arc::new(TrackingWrapScheduler::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Some(
                 Arc::clone(&scheduler) as Arc<dyn crate::index::merge_scheduler::MergeScheduler>
@@ -13254,7 +13254,7 @@ mod tests {
             StringField::new("foo", "XXX".to_string(), Store::NO).unwrap(),
         ));
         let source = reader_over(&[doc]);
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_parent_field(Some("foo".to_string()));
         let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         let error = writer
@@ -13496,7 +13496,7 @@ mod tests {
         let source = reader_over(&[id_body_doc("a"), id_body_doc("b")]);
         let gate = Arc::new(MergeGate::default());
         let stream = Arc::new(RecordingInfoStream::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Some(Arc::new(GatedScheduler {
                 serial: crate::index::merge_scheduler::SerialMergeScheduler::new(),
@@ -13542,7 +13542,7 @@ mod tests {
     fn a_rollback_aborts_the_add_indexes_merges_no_scheduler_took() {
         let source = reader_over(&[id_body_doc("a")]);
         let stream = Arc::new(RecordingInfoStream::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Some(Arc::new(
                 crate::index::merge_scheduler::NoMergeScheduler,
@@ -13673,7 +13673,7 @@ mod tests {
     #[test]
     fn a_failed_reader_merge_fails_add_indexes_with_its_error() {
         let source = reader_over(&[id_body_doc("a")]);
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(Arc::new(FailingReaderMergePolicy)))
             .unwrap();
@@ -13707,7 +13707,7 @@ mod tests {
             policy.set_no_cfs_ratio(no_cfs_ratio).unwrap();
             policy.set_max_cfs_segment_size_mb(f64::INFINITY).unwrap();
             let scheduler = Arc::new(TrackingWrapScheduler::default());
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config.set_merge_policy(Some(Arc::new(policy))).unwrap();
             config
                 .set_merge_scheduler(Some(Arc::clone(&scheduler)
@@ -14142,7 +14142,7 @@ mod tests {
         };
         let index = |index_sort: Option<Sort>, force_merge: bool| -> Arc<dyn Directory> {
             let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             if let Some(index_sort) = index_sort {
                 config.set_index_sort(index_sort).unwrap();
             }
@@ -14160,7 +14160,7 @@ mod tests {
         };
         let int_sorted = index(Some(sort(crate::search::SortFieldType::Int)), true);
         let unsorted = index(None, false);
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_index_sort(sort(crate::search::SortFieldType::String))
             .unwrap();
@@ -14248,7 +14248,7 @@ mod tests {
                 "\"_parent\" is a reserved field and should not be added to any document",
             ),
         ] {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config.set_parent_field(Some("_parent".to_string()));
             let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
             let field_type = crate::document::FieldType::new();
@@ -14287,7 +14287,7 @@ mod tests {
     #[test]
     fn a_reader_failure_closing_a_merge_replaces_the_hooks_failure() {
         crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new()).ok();
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
             .set_merge_scheduler(Some(Arc::new(
@@ -14449,7 +14449,7 @@ mod tests {
     fn register_merge_renders_merges_and_segments_as_the_writer_does() {
         register_default_codec();
         let stream = Arc::new(RecordingInfoStream::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_scheduler(Some(Arc::new(
                 crate::index::merge_scheduler::NoMergeScheduler,
@@ -14629,7 +14629,7 @@ mod tests {
                 panic_second,
                 serial: Default::default(),
             });
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config.set_merge_scheduler(Some(scheduler.clone())).unwrap();
             let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
             let outcome =
@@ -14681,7 +14681,7 @@ mod tests {
             panic_second: false,
             serial: Default::default(),
         });
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_merge_scheduler(Some(scheduler.clone())).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.rollback()));
@@ -14717,7 +14717,7 @@ mod tests {
         let tracking = Arc::new(CloseTrackingDirectory::default());
         let log = Arc::clone(&tracking.log);
         let dir: Arc<dyn Directory> = tracking;
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(Arc::new(
                 crate::index::merge_policy::NoMergePolicy::new(),
@@ -14771,7 +14771,7 @@ mod tests {
         let tracking = Arc::new(CloseTrackingDirectory::default());
         let log = Arc::clone(&tracking.log);
         let dir: Arc<dyn Directory> = tracking;
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(Arc::new(
                 crate::index::merge_policy::NoMergePolicy::new(),
@@ -14824,7 +14824,7 @@ mod tests {
         let log = Arc::clone(&tracking.log);
         let dir: Arc<dyn Directory> = tracking;
         let stream = Arc::new(RecordingInfoStream::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
@@ -14971,7 +14971,7 @@ mod tests {
         register_default_codec();
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let stream = Arc::new(DeleteAtCommitMerge::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_soft_deletes_field(Some("soft".to_string()));
         // Not pooled, so `commitMerge`'s `release` writes the merged segment's
         // live docs at once (`ReaderPool.java:216-237`).
@@ -15050,7 +15050,7 @@ mod tests {
     fn a_pooled_merged_segment_keeps_its_buffered_deletes_gen() {
         register_default_codec();
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_merge_policy(Some(Arc::new(
                 crate::index::merge_policy::LogMergePolicy::by_doc_count(),

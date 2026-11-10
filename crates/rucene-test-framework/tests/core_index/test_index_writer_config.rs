@@ -423,7 +423,7 @@ fn test_to_string() -> Result<()> {
 
 /// Port of `TestIndexWriterConfig.testInvalidValues`.
 fn test_invalid_values() -> Result<()> {
-    let mut conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
 
     // Test IndexDeletionPolicy
     assert_equals(
@@ -490,7 +490,7 @@ fn test_invalid_values() -> Result<()> {
 /// Port of `TestIndexWriterConfig.testLiveChangeToCFS`.
 fn test_live_change_to_cfs() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(true)))?;
     // Start false:
     iwc.set_use_compound_file(false)?;

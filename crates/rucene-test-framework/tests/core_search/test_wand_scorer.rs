@@ -199,7 +199,7 @@ fn wand(query: BooleanQuery, do_blocks: bool) -> Arc<dyn Query> {
 /// The six documents the basic tests index, with `newLogMergePolicy()` and a
 /// final `forceMerge(1)`.
 fn index_docs(dir: &TestDirectory, docs: &[&[&str]]) -> Result<()> {
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
     let result = (|| -> Result<()> {

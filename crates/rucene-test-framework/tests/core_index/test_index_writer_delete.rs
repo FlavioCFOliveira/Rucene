@@ -131,7 +131,7 @@ fn whitespace_iwc() -> IndexWriterConfig {
 
 /// [`whitespace_iwc`] with `setMaxBufferedDocs(max)`.
 fn whitespace_iwc_max_buffered(max: i32) -> Result<IndexWriterConfig> {
-    let mut iwc = whitespace_iwc();
+    let iwc = whitespace_iwc();
     iwc.set_max_buffered_docs(max)?;
     Ok(iwc)
 }
@@ -504,7 +504,7 @@ fn test_delete_all_simple() -> Result<()> {
 fn test_delete_all_no_dead_lock() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(MockRandomMergePolicy::new(&*random()))))?;
     let modifier = Arc::new(RandomIndexWriter::new_with_config(
         &*random(),
@@ -697,26 +697,33 @@ fn test_delete_all_repeated() -> Result<()> {
     let breaking_field_count: i64 = 50_000_000;
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&LuceneTestCase::create_temp_dir())?);
     // Avoid flushing until the end of the test to save time.
-    let mut conf = LuceneTestCase::new_index_writer_config();
+    let conf = LuceneTestCase::new_index_writer_config();
     conf.set_max_buffered_docs(1000)?;
     conf.set_ram_buffer_size_mb(1000.0)?;
     conf.set_ram_per_thread_hard_limit_mb(1000)?;
     conf.set_check_pending_flush_update(false)?;
     let modifier = IndexWriter::new(Arc::clone(&dir), conf)?;
+    let mut document = Document::new();
     let fields_per_doc: i64 = 1_000;
-    let document = repeated_fields_doc(fields_per_doc)?;
+    for i in 0..fields_per_doc {
+        document.add(Box::new(StoredField::new_string(
+            &format!("field{i}"),
+            String::new(),
+        )?));
+    }
+    let document = Arc::new(document);
     let num_fields = Arc::new(AtomicI64::new(0));
     let mut threads = Vec::new();
     let n_threads = LuceneTestCase::at_least(8);
     for _ in 0..n_threads {
         let modifier = Arc::clone(&modifier);
         let num_fields = Arc::clone(&num_fields);
+        let document = Arc::clone(&document);
         let t = Thread::unnamed(move || {
             let outcome = (|| -> Result<()> {
-                let document = repeated_fields_doc(fields_per_doc)?;
                 while num_fields.fetch_add(fields_per_doc, Ordering::SeqCst) < breaking_field_count
                 {
-                    modifier.add_document(&document)?;
+                    modifier.add_document(&*document)?;
                     modifier.delete_all()?;
                 }
                 Ok(())
@@ -738,29 +745,11 @@ fn test_delete_all_repeated() -> Result<()> {
         }
     }
     // Add one last document and flush to build FieldInfos.
-    modifier.add_document(&document)?;
+    modifier.add_document(&*document)?;
     modifier.flush()?;
     modifier.close()?;
     drop((threads, modifier));
     close_shared(dir)
-}
-
-/// The `document` of `testDeleteAllRepeated`: `fields_per_doc` empty
-/// `StoredField`s.
-///
-/// **Divergence.** Java shares one `Document` between the indexing threads
-/// (`TestIndexWriterDelete.java:500-517`); Rucene's `Document` holds
-/// `Box<dyn IndexableField>`, which is neither `Send` nor `Sync`, so each
-/// thread indexes its own identical copy (no random draws are involved).
-fn repeated_fields_doc(fields_per_doc: i64) -> Result<Document> {
-    let mut document = Document::new();
-    for i in 0..fields_per_doc {
-        document.add(Box::new(StoredField::new_string(
-            &format!("field{i}"),
-            String::new(),
-        )?));
-    }
-    Ok(document)
 }
 
 /// Port of `TestIndexWriterDelete.testDeletesOnDiskFull`.
@@ -845,7 +834,7 @@ fn do_test_operations_on_disk_full(updates: bool) -> Result<()> {
             TestDirectory::Mock(MockDirectoryWrapper::new(&*random(), Arc::from(copy)));
         let dir = dir_holder.as_mock().expect("MockDirectoryWrapper");
         dir.set_allow_random_file_not_found_exception(false);
-        let mut iwc = whitespace_iwc();
+        let iwc = whitespace_iwc();
         iwc.set_max_buffered_docs(1000)?;
         iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
         let modifier = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1124,7 +1113,7 @@ fn test_error_after_apply_deletes() -> Result<()> {
 
     let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let d = dir.as_directory();
-    let mut iwc = whitespace_iwc();
+    let iwc = whitespace_iwc();
     iwc.set_reader_pooling(false);
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let modifier = IndexWriter::new(Arc::clone(&d), iwc)?;
@@ -1369,8 +1358,8 @@ impl Analyzer for NoPayloadsAnalyzer {
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), true)?;
-        Ok(tokenizer_components(std::rc::Rc::new(
-            std::cell::RefCell::new(tokenizer),
+        Ok(tokenizer_components(std::sync::Arc::new(
+            rucene::util::atomic_ref_cell::AtomicRefCell::new(tokenizer),
         )))
     }
 }
@@ -1396,7 +1385,7 @@ fn test_indexing_then_deleting() -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(NoPayloadsAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwc.set_ram_buffer_size_mb(4.0)?;
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
@@ -1452,9 +1441,9 @@ fn test_flush_pushed_deletes_by_ram() -> Result<()> {
     // Cannot use RandomIndexWriter because we don't want to
     // ever call commit() for this test:
     // note: tiny RAM buffer used, as with a 1MB buffer the test is too slow (flush @ 128,999)
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     iwc.set_ram_buffer_size_mb(0.5f32 as f64)?;
     iwc.set_max_buffered_docs(1000)?;
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
@@ -1535,9 +1524,9 @@ fn test_apply_deletes_on_flush() -> Result<()> {
     let docs_in_segment = Arc::new(AtomicI32::new(0));
     let closing = Arc::new(AtomicBool::new(false));
     let saw_after_flush = Arc::new(AtomicBool::new(false));
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     iwc.set_ram_buffer_size_mb(0.5)?;
     iwc.set_max_buffered_docs(-1)?;
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
@@ -1609,7 +1598,7 @@ fn check_index_output(d: &Arc<dyn Directory>) -> Result<(bool, String)> {
 fn test_deletes_check_index_output() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     iwc.set_max_buffered_docs(2)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
@@ -1666,7 +1655,7 @@ fn test_try_delete_document() -> Result<()> {
     w.add_document(&doc)?;
     w.close()?;
 
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     iwc.set_open_mode(OpenMode::APPEND)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
@@ -1708,7 +1697,7 @@ fn test_nrt_is_current_after_delete() -> Result<()> {
     )?));
     w.add_document(&doc)?;
     w.close()?;
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     let r = directory_reader::open_with_writer_flags(&*w, false, false)?;
@@ -1729,7 +1718,7 @@ fn test_nrt_is_current_after_delete() -> Result<()> {
 /// `setMaxBufferedDocs(2)` and a `SerialMergeScheduler`, as the
 /// `testOnlyDeletes*` and `testMergingAfterDeleteAll` methods configure.
 fn log_doc_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_max_buffered_docs(2)?;
     let mut mp = LogMergePolicy::new(Arc::new(LogDocSize));
     mp.set_min_merge_docs(1);

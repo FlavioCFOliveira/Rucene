@@ -200,7 +200,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let inner = LogMergePolicy::by_doc_count();
         inner.set_merge_factor(2).unwrap();
-        let mut c = IndexWriterConfig::new();
+        let c = IndexWriterConfig::new();
         c.set_merge_policy(Some(Arc::new(ForceMergePolicy::new(Arc::new(inner)))))
             .unwrap();
         c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))

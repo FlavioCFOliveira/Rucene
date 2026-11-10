@@ -3322,7 +3322,7 @@ mod tests {
 
         let _ = register_codec("Lucene104", Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_use_compound_file(false).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let mut doc = Document::new();

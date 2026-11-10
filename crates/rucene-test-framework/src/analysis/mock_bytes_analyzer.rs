@@ -17,8 +17,7 @@
 
 //! Port of `org.apache.lucene.tests.analysis.MockBytesAnalyzer`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use rucene::analysis::{Analyzer, AnalyzerState, GlobalReuseStrategy, TokenStreamComponents};
@@ -68,7 +67,7 @@ impl Analyzer for MockBytesAnalyzer {
             false,
             DEFAULT_MAX_TOKEN_LENGTH,
         )?;
-        Ok(tokenizer_components(Rc::new(RefCell::new(t))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(t))))
     }
 
     fn attribute_factory(&self, _field_name: &str) -> Arc<dyn AttributeFactory> {

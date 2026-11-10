@@ -123,7 +123,7 @@ type Op = Box<dyn Fn(&IndexWriter) -> Result<i64>>;
 fn buffered_deletes_ram_matches_lucene() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
@@ -213,7 +213,7 @@ fn buffered_deletes_ram_matches_lucene() {
 fn ram_flushes_with_buffered_deletes_cut_segments_as_lucene() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();

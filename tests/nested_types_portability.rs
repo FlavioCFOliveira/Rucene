@@ -347,7 +347,7 @@ fn binary_sort_field(variant: &str) -> SortField {
 fn rust_sorted_flush(variant: &str) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
@@ -458,7 +458,7 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
     let java = run_java("sorted-private-delete", "");
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
@@ -518,7 +518,7 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
 #[test]
 fn binary_index_sort_is_accepted_and_feature_sort_refused() {
     ensure_codec();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     assert!(config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field("asc")]).unwrap())
         .is_ok());
@@ -542,7 +542,7 @@ fn binary_index_sort_is_accepted_and_feature_sort_refused() {
 fn binary_index_sort_refuses_a_numeric_key() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field("asc")]).unwrap())
         .unwrap();
@@ -670,7 +670,7 @@ fn feature_sort_orders_and_pages_as_lucene() {
     let java = run_java("feature-sort", "");
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -904,7 +904,7 @@ fn numeric_reset(name: &str) -> Field {
 fn rust_dv_update(variant: &str) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
@@ -1034,7 +1034,7 @@ const MULTI_NUMERIC: [&str; 5] = ["weight", "views", "stock", "rating", "price"]
 fn rust_dv_update_multi_field() -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
@@ -1254,7 +1254,7 @@ fn add_full_docs(writer: &IndexWriter, from: i32, to: i32) {
 fn rust_sorted_full(variant: &str, merge: bool) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     if merge {
         config
@@ -1663,7 +1663,7 @@ fn binary_index_sort_merge_keeps_every_document_consistent() {
 fn rust_merge_observer(variant: &str) -> Vec<String> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if variant == "pending" {
         config
             .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
@@ -1776,7 +1776,7 @@ fn delegating_cache_helper_matches_lucene() {
     let java = run_java("cache-helper", "");
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))

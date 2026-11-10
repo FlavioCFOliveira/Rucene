@@ -637,7 +637,7 @@ fn knn_field(name: &str, v: &[f32]) -> Result<Box<KnnFloatVectorField>> {
 
 /// `new IndexWriterConfig()` with `config.setCodec(TestUtil.getDefaultCodec())`.
 fn default_codec_config() -> Result<IndexWriterConfig> {
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(TestUtil::get_default_codec())?;
     Ok(config)
 }

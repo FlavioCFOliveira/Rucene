@@ -3661,10 +3661,7 @@ impl DocumentsWriterPerThread {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            index_writer_config
-                .index_sort()
-                .cloned()
-                .unwrap_or_default(),
+            index_writer_config.index_sort().unwrap_or_default(),
         )?;
         let delete_slice = delete_queue.new_slice();
         let has_parent_field = index_writer_config.parent_field().is_some();
@@ -4483,7 +4480,7 @@ impl DwptGuard {
                 .as_mut()
                 .expect("INVARIANT: state is only taken in Drop")
                 .indexing_chain
-                .get_has_doc_values(field)?,
+                .get_has_doc_values(&field)?,
             None => None,
         };
         // `final SegmentWriteState flushState = new SegmentWriteState(infoStream,

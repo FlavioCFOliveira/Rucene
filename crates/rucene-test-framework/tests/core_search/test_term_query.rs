@@ -92,7 +92,7 @@ fn test_equals() -> Result<()> {
 fn three_segment_writer(
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
 ) -> Result<RandomIndexWriter> {
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     // segment that contains the term
@@ -337,7 +337,7 @@ impl Query for RecordingTermQuery {
 /// Port of `TestTermQuery.testWithWithDifferentScoreModes`.
 fn test_with_with_different_score_modes() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     // segment that contains the term

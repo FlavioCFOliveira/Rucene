@@ -3,9 +3,8 @@
 //! `TestToken`, `TestLookaheadTokenFilter` and `TrivialLookaheadFilter`, each
 //! run as a suite by the ported runner.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::Throwable;
@@ -306,7 +305,7 @@ mod test_mock_analyzer {
     pub fn test_too_long_token() -> Result<()> {
         let whitespace = FnAnalyzer::new(|_| {
             let t = MockTokenizer::with_max_token_length(Arc::clone(&WHITESPACE), false, 5)?;
-            Ok(tokenizer_components(Rc::new(RefCell::new(t))))
+            Ok(tokenizer_components(Arc::new(AtomicRefCell::new(t))))
         });
         {
             let ts = whitespace.token_stream_from_str("bogus", "test 123 toolong ok ")?;
@@ -372,7 +371,7 @@ mod test_mock_analyzer {
             let limit = TestUtil::next_int(&*random(), 0, 500);
             let a = arc(FnAnalyzer::new(move |_| {
                 let t = MockTokenizer::with_max_token_length(Arc::clone(&dfa), lowercase, limit)?;
-                Ok(tokenizer_components(Rc::new(RefCell::new(t))))
+                Ok(tokenizer_components(Arc::new(AtomicRefCell::new(t))))
             }));
             B::check_random_data(&*random(), &a, 100)?;
             a.close();
@@ -566,7 +565,9 @@ impl Analyzer for CharFilterAnalyzer {
     }
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), false)?;
-        Ok(tokenizer_components(Rc::new(RefCell::new(tokenizer))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
+            tokenizer,
+        ))))
     }
     fn init_reader(&self, _field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
         Box::new(MockCharFilter::new(reader, 7).unwrap())
@@ -597,7 +598,7 @@ fn test_mock_char_filter() {
 /// test the mock synonym filter
 fn test_mock_synonym_filter_test() -> Result<()> {
     let analyzer = FnAnalyzer::new(|_| {
-        let tokenizer = Rc::new(RefCell::new(MockTokenizer::whitespace_lower_case()?));
+        let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
         let filter = MockSynonymFilter::new(shared(&tokenizer))?;
         Ok(components(tokenizer, sink(filter)))
     });
@@ -1115,7 +1116,7 @@ mod test_lookahead_token_filter {
     pub fn test_random_strings() -> Result<()> {
         let a = arc(FnAnalyzer::new(|_| {
             let random = random();
-            let tokenizer = Rc::new(RefCell::new(MockTokenizer::with_max_token_length(
+            let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::with_max_token_length(
                 Arc::clone(&WHITESPACE),
                 random.next_boolean(),
                 MAX_TERM_LENGTH / 2,
@@ -1144,7 +1145,7 @@ mod test_lookahead_token_filter {
 
     pub fn test_never_calling_peek() -> Result<()> {
         let a = arc(FnAnalyzer::new(|_| {
-            let tokenizer = Rc::new(RefCell::new(MockTokenizer::with_max_token_length(
+            let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::with_max_token_length(
                 Arc::clone(&WHITESPACE),
                 random().next_boolean(),
                 MAX_TERM_LENGTH / 2,
@@ -1159,7 +1160,7 @@ mod test_lookahead_token_filter {
 
     pub fn test_missed_first_token() -> Result<()> {
         let analyzer = FnAnalyzer::new(|_| {
-            let source = Rc::new(RefCell::new(MockTokenizer::new(
+            let source = Arc::new(AtomicRefCell::new(MockTokenizer::new(
                 Arc::clone(&WHITESPACE),
                 false,
             )?));
@@ -1274,7 +1275,7 @@ fn token_factory_stream_is_indexed_by_interface() {
         Token::with_offsets("ab", 0, 2),
         Token::with_offsets("cd", 3, 5),
     ];
-    let stream = Rc::new(RefCell::new(
+    let stream = Arc::new(AtomicRefCell::new(
         rucene_test_framework::analysis::CannedTokenStream::new(tokens),
     ));
     let field =

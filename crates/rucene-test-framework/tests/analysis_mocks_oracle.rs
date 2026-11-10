@@ -6,10 +6,10 @@
 
 mod oracle_support;
 
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use oracle_support::{assert_same, rows};
@@ -235,7 +235,7 @@ fn dump(ts: &mut dyn TokenStream) -> String {
     sb
 }
 
-fn dump_rc(ts: &Rc<RefCell<dyn TokenStream>>) -> String {
+fn dump_rc(ts: &Arc<AtomicRefCell<dyn TokenStream>>) -> String {
     dump(&mut *ts.borrow_mut())
 }
 
@@ -450,10 +450,10 @@ fn analyzers() {
 // fl
 // ---------------------------------------------------------------------------
 
-fn ws(text: &str) -> Result<Rc<RefCell<MockTokenizer>>> {
+fn ws(text: &str) -> Result<Arc<AtomicRefCell<MockTokenizer>>> {
     let mut t = MockTokenizer::new(Arc::clone(&WHITESPACE), false)?;
     t.set_reader(reader(text))?;
-    Ok(Rc::new(RefCell::new(t)))
+    Ok(Arc::new(AtomicRefCell::new(t)))
 }
 
 type Wrap = fn(&Arc<dyn Random>, Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>>;
@@ -781,7 +781,7 @@ impl Analyzer for CannedAnalyzer {
             AttributeSource::new_with_factory(rucene::analysis::default_token_attribute_factory());
         let term = Att::add(&mut source, char_term_id())?;
         let t = Tokenizer::with_source(source, OneX { term, done: false });
-        Ok(tokenizer_components(Rc::new(RefCell::new(t))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(t))))
     }
 }
 
@@ -1178,7 +1178,7 @@ impl Analyzer for RecordingAnalyzer {
         "org.apache.lucene.tests.analysis.AnalysisMocksOracle$2"
     }
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let t = Rc::new(RefCell::new(MockTokenizer::with_max_token_length(
+        let t = Arc::new(AtomicRefCell::new(MockTokenizer::with_max_token_length(
             Arc::clone(&KEYWORD),
             false,
             i32::MAX,
@@ -1247,7 +1247,7 @@ fn core() {
         let mut st = new_standard_tokenizer();
         st.set_reader(reader("hello world")).unwrap();
         row("core", 0, "standard.end", dump(&mut st));
-        let t = Rc::new(RefCell::new(
+        let t = Arc::new(AtomicRefCell::new(
             MockTokenizer::new(Arc::clone(&WHITESPACE), false).unwrap(),
         ));
         let mut outer = MockLowerCaseFilter::new(shared(&t)).unwrap();
@@ -1469,11 +1469,11 @@ impl Analyzer for FacAnalyzer {
         "org.apache.lucene.tests.analysis.AnalysisMocksOracle$2"
     }
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let t = Rc::new(RefCell::new(
+        let t = Arc::new(AtomicRefCell::new(
             rucene::analysis::new_standard_tokenizer_with_factory(factory(self.f))?,
         ));
         let ts = chain(shared(&t), true)?;
-        let ts: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(BoxedStream(ts)));
+        let ts: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(BoxedStream(ts)));
         Ok(components(t, ts))
     }
 }

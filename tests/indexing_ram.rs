@@ -217,7 +217,7 @@ fn doc(kind: &str, id: i32) -> Document {
 /// `IndexingRamFixture.trace(String, int)`.
 fn trace(kind: &str, docs: i32) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
@@ -341,7 +341,7 @@ fn doc_values_field_updates_ram_is_lucenes() {
 /// fixture prints after every operation when `TRACE` is set comes first.
 fn files(ram_mb: f64, ops: i32, seed: i64, trace: bool) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
@@ -529,7 +529,7 @@ impl InfoStream for FlushProbe {
 fn flushing(docs: i32, max_buffered_docs: i32) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let probe = Arc::new(FlushProbe::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();

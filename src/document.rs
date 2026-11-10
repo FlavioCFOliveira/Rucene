@@ -22,10 +22,9 @@ pub mod shape_doc_values;
 pub mod shape_field;
 pub mod spatial_query;
 
-use std::cell::RefCell;
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::analysis::{Analyzer, CharReader, TokenStream};
@@ -1082,7 +1081,7 @@ pub enum FieldData {
     /// [`IndexableField::token_stream`] handed it to the analyzer.
     Reader(SharedReader),
     /// A pre-analyzed token stream.
-    TokenStream(Rc<RefCell<dyn TokenStream>>),
+    TokenStream(Arc<AtomicRefCell<dyn TokenStream>>),
     /// A binary value.
     Bytes(BytesRef),
     /// A numeric value.
@@ -1091,13 +1090,13 @@ pub enum FieldData {
     ///
     /// Equivalent to a `Field` whose `fieldsData` is a
     /// `org.apache.lucene.index.StoredFieldDataInput`. The cursor lives behind
-    /// a [`RefCell`] because [`IndexableField::stored_value`] takes `&self`
+    /// an [`AtomicRefCell`] because [`IndexableField::stored_value`] takes `&self`
     /// while draining the input needs `&mut`; Java gets the same effect for
     /// free by handing out the object reference. Like Java's, the cursor is
     /// single-use: the indexing chain reads it exactly once per document.
     StoredInput {
         /// The underlying data input.
-        input: RefCell<Box<dyn DataInput>>,
+        input: AtomicRefCell<Box<dyn DataInput + Send + Sync>>,
         /// Length of the stored data.
         length: i32,
     },
@@ -1121,7 +1120,7 @@ impl Debug for FieldData {
 
 /// The reader value of a field: the `java.io.Reader` Java's `Field` keeps a
 /// reference to (`Field.readerValue()`).
-pub type SharedReader = Rc<RefCell<Box<dyn CharReader>>>;
+pub type SharedReader = Arc<AtomicRefCell<Box<dyn CharReader>>>;
 
 /// The [`CharReader`] [`IndexableField::token_stream`] hands to the analyzer
 /// for a field's [`SharedReader`]: the same reader, as Java passes the
@@ -1152,7 +1151,7 @@ fn reader_token_stream(
     reader: &SharedReader,
 ) -> Result<Box<dyn TokenStream>> {
     let stream = require_analyzer(analyzer)?
-        .token_stream(name, Box::new(SharedCharReader(Rc::clone(reader))))?;
+        .token_stream(name, Box::new(SharedCharReader(Arc::clone(reader))))?;
     Ok(Box::new(crate::analysis::SharedTokenStream::new(stream)))
 }
 
@@ -1234,14 +1233,14 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::Reader(Rc::new(RefCell::new(reader))),
+            fields_data: FieldData::Reader(Arc::new(AtomicRefCell::new(reader))),
         })
     }
 
     /// Creates a field with a pre-analyzed token stream.
     pub fn new_with_token_stream(
         name: &str,
-        token_stream: Rc<RefCell<dyn TokenStream>>,
+        token_stream: Arc<AtomicRefCell<dyn TokenStream>>,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
         let field_type: Arc<FieldType> = field_type.into();
@@ -1319,7 +1318,7 @@ impl Field {
     /// Creates a field from a stored data input.
     pub fn new_with_stored_input(
         name: &str,
-        input: Box<dyn DataInput>,
+        input: Box<dyn DataInput + Send + Sync>,
         length: i32,
         field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
@@ -1329,7 +1328,7 @@ impl Field {
             name: name.to_string(),
             field_type,
             fields_data: FieldData::StoredInput {
-                input: RefCell::new(input),
+                input: AtomicRefCell::new(input),
                 length,
             },
         })
@@ -1352,15 +1351,15 @@ impl Field {
     /// Returns the reader value, if the field holds one.
     pub fn reader_value(&self) -> Option<SharedReader> {
         match &self.fields_data {
-            FieldData::Reader(r) => Some(Rc::clone(r)),
+            FieldData::Reader(r) => Some(Arc::clone(r)),
             _ => None,
         }
     }
 
     /// Returns the token stream value, if the field holds one.
-    pub fn token_stream_value(&self) -> Option<Rc<RefCell<dyn TokenStream>>> {
+    pub fn token_stream_value(&self) -> Option<Arc<AtomicRefCell<dyn TokenStream>>> {
         match &self.fields_data {
-            FieldData::TokenStream(ts) => Some(Rc::clone(ts)),
+            FieldData::TokenStream(ts) => Some(Arc::clone(ts)),
             _ => None,
         }
     }
@@ -1413,7 +1412,7 @@ impl Field {
     pub fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
         match &self.fields_data {
             FieldData::Reader(_) => {
-                self.fields_data = FieldData::Reader(Rc::new(RefCell::new(value)));
+                self.fields_data = FieldData::Reader(Arc::new(AtomicRefCell::new(value)));
                 Ok(())
             }
             _ => Err(LuceneError::IllegalArgument(
@@ -1631,7 +1630,10 @@ impl Field {
     }
 
     /// Changes the token stream value of this field.
-    pub fn set_token_stream_value(&mut self, value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
+    pub fn set_token_stream_value(
+        &mut self,
+        value: Arc<AtomicRefCell<dyn TokenStream>>,
+    ) -> Result<()> {
         match &self.fields_data {
             FieldData::TokenStream(_) => {
                 self.fields_data = FieldData::TokenStream(value);
@@ -1817,10 +1819,21 @@ impl IndexableField for Field {
 /// A collection of fields that form the unit of indexing and search.
 ///
 /// Equivalent to `org.apache.lucene.document.Document`.
+///
+/// A document is `Send + Sync`, as Java shares one `Document` between the
+/// threads that index it (`TestIndexWriterDelete.testDeleteAllRepeated`):
+/// [`IndexableField`] requires both, and the shared state a field reaches
+/// (token streams, readers, stored inputs, attributes) lives in
+/// [`AtomicRefCell`]s.
 #[derive(Default)]
 pub struct Document {
     fields: Vec<Box<dyn IndexableField>>,
 }
+
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Document>();
+};
 
 impl Debug for Document {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -2225,7 +2238,7 @@ impl TextField {
         Ok(Self {
             name: name.to_string(),
             field_type: text_field_type_not_stored().clone(),
-            fields_data: FieldData::Reader(Rc::new(RefCell::new(reader))),
+            fields_data: FieldData::Reader(Arc::new(AtomicRefCell::new(reader))),
             stored_value: None,
         })
     }
@@ -2253,7 +2266,7 @@ impl TextField {
     /// Creates a new un-stored TextField with a token stream value.
     pub fn new_with_token_stream(
         name: &str,
-        token_stream: Rc<RefCell<dyn TokenStream>>,
+        token_stream: Arc<AtomicRefCell<dyn TokenStream>>,
     ) -> Result<Self> {
         Ok(Self {
             name: name.to_string(),
@@ -2280,7 +2293,7 @@ impl IndexableField for TextField {
     ) -> Result<Box<dyn TokenStream>> {
         match &self.fields_data {
             FieldData::TokenStream(ts) => Ok(Box::new(crate::analysis::SharedTokenStream::new(
-                Rc::clone(ts),
+                Arc::clone(ts),
             ))),
             FieldData::Reader(reader) => reader_token_stream(analyzer, &self.name, reader),
             FieldData::String(s) => string_token_stream(analyzer, &self.name, s),
@@ -2301,7 +2314,7 @@ impl IndexableField for TextField {
 
     fn reader_value(&self) -> Option<SharedReader> {
         match &self.fields_data {
-            FieldData::Reader(r) => Some(Rc::clone(r)),
+            FieldData::Reader(r) => Some(Arc::clone(r)),
             _ => None,
         }
     }
@@ -2414,7 +2427,7 @@ impl StoredField {
     /// (`StoredField.java:116-122`).
     pub fn new_stored_input(
         name: &str,
-        input: Option<Box<dyn DataInput>>,
+        input: Option<Box<dyn DataInput + Send + Sync>>,
         length: i32,
     ) -> Result<Self> {
         let Some(input) = input else {
@@ -7228,7 +7241,7 @@ pub trait FieldValueSetters {
     }
 
     /// `Field.setTokenStream(TokenStream)`.
-    fn set_token_stream(&mut self, _value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
+    fn set_token_stream(&mut self, _value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
         Err(cannot_change_value_type(
             self.fields_data_class(),
             "TokenStream",
@@ -7277,7 +7290,7 @@ impl FieldValueSetters for Field {
         Field::set_double_value(self, value)
     }
 
-    fn set_token_stream(&mut self, value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
+    fn set_token_stream(&mut self, value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
         if !matches!(self.fields_data, FieldData::TokenStream(_)) {
             return Err(cannot_change_value_type(
                 self.fields_data_class(),
@@ -7331,7 +7344,7 @@ impl FieldValueSetters for StoredField {
         FieldValueSetters::set_double_value(&mut self.0, value)
     }
 
-    fn set_token_stream(&mut self, value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
+    fn set_token_stream(&mut self, value: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<()> {
         FieldValueSetters::set_token_stream(&mut self.0, value)
     }
 }
@@ -7558,7 +7571,7 @@ impl FieldValueSetters for TextField {
         if !matches!(self.fields_data, FieldData::Reader(_)) {
             return Err(cannot_change_value_type(self.fields_data_class(), "Reader"));
         }
-        self.fields_data = FieldData::Reader(Rc::new(RefCell::new(value)));
+        self.fields_data = FieldData::Reader(Arc::new(AtomicRefCell::new(value)));
         Ok(())
     }
 }

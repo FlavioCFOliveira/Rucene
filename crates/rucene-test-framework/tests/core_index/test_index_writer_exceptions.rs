@@ -14,9 +14,9 @@
 //!   method (`sync`, `prepare_commit`, `rollback_internal`, …).
 //! * `new Throwable().printStackTrace(System.out)` prints the Rust backtrace.
 
-use std::cell::{Cell, RefCell};
+use rucene::util::atomic_ref_cell::AtomicRefCell;
+use std::cell::Cell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -608,7 +608,7 @@ fn test_random_exceptions() -> Result<()> {
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional cases.
 
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     conf.set_ram_buffer_size_mb(0.1)?;
     conf.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
     let writer = RandomIndexWriter::mock_index_writer_with_test_point(
@@ -643,7 +643,7 @@ fn test_random_exceptions_threads() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional cases.
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     conf.set_ram_buffer_size_mb(0.2)?;
     conf.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
     let writer = RandomIndexWriter::mock_index_writer_with_test_point(
@@ -779,7 +779,7 @@ impl Analyzer for CrashingAnalyzer {
     fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
         let mut tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), false)?;
         tokenizer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional cases.
-        let tokenizer = Rc::new(RefCell::new(tokenizer));
+        let tokenizer = Arc::new(AtomicRefCell::new(tokenizer));
         let crash = match &self.do_crash {
             Some(flag) => flag.load(Ordering::SeqCst),
             None => true,
@@ -832,7 +832,7 @@ fn test_exception_just_before_flush() -> Result<()> {
         "org.apache.lucene.index.TestIndexWriterExceptions$1",
     ));
 
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     conf.set_max_buffered_docs(2)?;
     let w = RandomIndexWriter::mock_index_writer_with_test_point(
         &*random(),
@@ -882,7 +882,7 @@ impl TestPoint for TestPoint3 {
 /// Port of `TestIndexWriterExceptions.testExceptionOnMergeInit`.
 fn test_exception_on_merge_init() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_max_buffered_docs(2)?;
     let mut lmp = LuceneTestCase::new_log_merge_policy();
     let cms = ConcurrentMergeScheduler::new();
@@ -968,7 +968,7 @@ impl Analyzer for TokenStreamFailureAnalyzer {
         let mut tokenizer = MockTokenizer::new(Arc::clone(&SIMPLE), true)?;
         tokenizer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional
                                             // cases.
-        let tokenizer = Rc::new(RefCell::new(tokenizer));
+        let tokenizer = Arc::new(AtomicRefCell::new(tokenizer));
         let stream = TokenFilter::new(shared(&tokenizer), FailOnSixthToken::default());
         Ok(components(tokenizer, sink(stream)))
     }
@@ -978,7 +978,7 @@ impl Analyzer for TokenStreamFailureAnalyzer {
 /// Port of `TestIndexWriterExceptions.testExceptionFromTokenStream`.
 fn test_exception_from_token_stream() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+    let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         TokenStreamFailureAnalyzer {
             state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
         },
@@ -1086,7 +1086,7 @@ fn test_documents_writer_abort() -> Result<()> {
     failure.set_do_fail();
     dir.as_mock().expect("newMockDirectory").fail_on(failure);
 
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_max_buffered_docs(2)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let mut doc = Document::new();
@@ -1150,8 +1150,7 @@ fn test_documents_writer_exceptions() -> Result<()> {
             println!("TEST: cycle i={i}");
         }
         let mut dir = LuceneTestCase::new_directory();
-        let mut conf =
-            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
+        let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -1205,8 +1204,7 @@ fn test_documents_writer_exceptions() -> Result<()> {
         }
         reader.close()?;
 
-        let mut conf =
-            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
+        let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_max_buffered_docs(10)?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let mut doc = Document::new();
@@ -1246,8 +1244,7 @@ fn test_documents_writer_exception_fail_one_doc() -> Result<()> {
     ));
     for _ in 0..10 {
         let mut dir = LuceneTestCase::new_directory();
-        let mut conf =
-            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
+        let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_max_buffered_docs(-1)?;
         conf.set_ram_buffer_size_mb(if random().next_boolean() {
             0.00001
@@ -1297,7 +1294,7 @@ fn test_documents_writer_exception_threads() -> Result<()> {
     for i in 0..2 {
         let mut dir = LuceneTestCase::new_directory();
         {
-            let mut conf =
+            let conf =
                 LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
             conf.set_max_buffered_docs(i32::MAX)?;
             conf.set_ram_buffer_size_mb(-1.0)?; // we don't want to flush automatically
@@ -1384,8 +1381,7 @@ fn test_documents_writer_exception_threads() -> Result<()> {
 
         assert_equals(&(NUM_THREAD * num_iter), &num_del);
 
-        let mut conf =
-            LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
+        let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_max_buffered_docs(10)?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let mut doc = Document::new();
@@ -1456,7 +1452,7 @@ fn test_exception_during_sync() -> Result<()> {
         .expect("newMockDirectory")
         .fail_on(Arc::clone(&failure) as Arc<dyn Failure>);
 
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_max_buffered_docs(2)?;
     conf.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
     conf.set_merge_policy(Some(Arc::new(
@@ -1600,7 +1596,7 @@ fn test_exceptions_during_commit() -> Result<()> {
 /// Port of `TestIndexWriterExceptions.testForceMergeExceptions`.
 fn test_force_merge_exceptions() -> Result<()> {
     let mut start_dir = LuceneTestCase::new_directory();
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_max_buffered_docs(2)?;
     let lmp = LuceneTestCase::new_log_merge_policy();
     lmp.set_merge_factor(100)?;
@@ -1618,7 +1614,7 @@ fn test_force_merge_exceptions() -> Result<()> {
         }
         let copy = TestUtil::ram_copy_of(&*start_dir.as_directory())?;
         let mut dir = TestDirectory::Mock(MockDirectoryWrapper::new(&*random(), Arc::from(copy)));
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
         as_cms(&conf.merge_scheduler()).set_suppress_exceptions();
         let w = IndexWriter::new(dir.as_directory(), conf)?;
@@ -1690,7 +1686,7 @@ impl InfoStream for OomeInfoStream {
 fn test_out_of_memory_error_causes_close_to_fail() -> Result<()> {
     let thrown = Arc::new(AtomicBool::new(false));
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_info_stream(Arc::new(OomeInfoStream {
         thrown: Arc::clone(&thrown),
         matches: |m| m.starts_with("now flush at close"),
@@ -1710,7 +1706,7 @@ fn test_out_of_memory_error_causes_close_to_fail() -> Result<()> {
 fn test_out_of_memory_error_rollback() -> Result<()> {
     let thrown = Arc::new(AtomicBool::new(false));
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_info_stream(Arc::new(OomeInfoStream {
         thrown: Arc::clone(&thrown),
         matches: |m| m.contains("startFullFlush"),
@@ -1873,7 +1869,7 @@ fn test_simulated_corrupt_index2() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     crate::support::set_check_index_on_close(&dir, false); // we are corrupting it!
 
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(true)))?;
     conf.set_use_compound_file(true)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -2059,8 +2055,9 @@ fn crash_field() -> Result<Field> {
     let mut tokenizer = MockTokenizer::new(Arc::clone(&WHITESPACE), false)?;
     tokenizer.set_reader(Box::new(StringCharReader::new("crash me on the 4th token")))?;
     tokenizer.set_enable_checks(false); // disable workflow checking as we forcefully close() in exceptional cases.
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(crashing_filter("crash", Box::new(tokenizer))));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
+        crashing_filter("crash", Box::new(tokenizer)),
+    ));
     Field::new_with_token_stream(
         "crash",
         stream,
@@ -2389,7 +2386,7 @@ fn test_null_stored_data_input_field() -> Result<()> {
 
     expect_throws(IAE, || {
         // set to null value
-        let v: Option<Box<dyn rucene::store::DataInput>> = None;
+        let v: Option<Box<dyn rucene::store::DataInput + Send + Sync>> = None;
         let the_field = StoredField::new_stored_input("foo", v, 0)?;
         doc.add(Box::new(the_field));
         iw.add_document(&doc)
@@ -2414,7 +2411,7 @@ impl Analyzer for CrazyGapAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let tokenizer = Rc::new(RefCell::new(MockTokenizer::new(
+        let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&KEYWORD),
             false,
         )?));
@@ -2731,12 +2728,13 @@ fn test_too_many_tokens() -> Result<()> {
     let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
     let term_att = Att::add(&mut source, char_term_id())?;
     let pos_inc_att = Att::add(&mut source, pos_inc_id())?;
-    let stream: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(TooManyTokensStream {
-        source,
-        term_att,
-        pos_inc_att,
-        num: 0,
-    }));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(TooManyTokensStream {
+            source,
+            term_att,
+            pos_inc_att,
+            num: 0,
+        }));
     doc.add(Box::new(Field::new_with_token_stream("foo", stream, ft)?));
 
     let expected = expect_throws(IAE, || iw.add_document(&doc));
@@ -2792,7 +2790,7 @@ fn test_exception_during_rollback() -> Result<()> {
     let evil_info_stream = Arc::new(EvilInfoStream { message_to_fail_on });
 
     let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory()); // we want to ensure we don't leak any locks or file handles
-    let mut iwc = plain_null_analyzer_iwc();
+    let iwc = plain_null_analyzer_iwc();
     iwc.set_info_stream(evil_info_stream)?;
     // TODO: cutover to RandomIndexWriter.mockIndexWriter?
     let iw = IndexWriter::new_with_test_points(dir.as_directory(), iwc)?;
@@ -3059,7 +3057,7 @@ fn test_only_rollback_once_on_exception() -> Result<()> {
     });
     let mut dir = LuceneTestCase::new_directory();
     let body = (|| -> Result<()> {
-        let mut conf = LuceneTestCase::new_index_writer_config();
+        let conf = LuceneTestCase::new_index_writer_config();
         conf.set_info_stream(stream)?;
         let writer = IndexWriter::new_with_test_points(dir.as_directory(), conf)?;
         let inner = (|| -> Result<()> {
@@ -3127,7 +3125,7 @@ impl Failure for SyncMetadataFailure {
 fn test_exception_on_sync_metadata() -> Result<()> {
     let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let body = (|| -> Result<()> {
-        let mut conf = LuceneTestCase::new_index_writer_config();
+        let conf = LuceneTestCase::new_index_writer_config();
         conf.set_commit_on_close(false);
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         writer.commit()?;
@@ -3232,7 +3230,7 @@ fn test_exception_just_before_flush_with_point_values() -> Result<()> {
         None,
         "org.apache.lucene.index.TestIndexWriterExceptions$21",
     ));
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwc.set_commit_on_close(false);
     iwc.set_max_buffered_docs(3)?;
     let mp = iwc.merge_policy();

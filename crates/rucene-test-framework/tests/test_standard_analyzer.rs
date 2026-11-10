@@ -6,8 +6,8 @@
 //! `BaseTokenStreamTestCase` by the ported runner against core
 //! `StandardTokenizer` and `StandardAnalyzer`.
 
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::Throwable;
@@ -53,8 +53,8 @@ impl Analyzer for StandardTokenizerAnalyzer {
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer =
             new_standard_tokenizer_with_factory(BaseTokenStreamTestCase::new_attribute_factory())?;
-        Ok(tokenizer_components(std::rc::Rc::new(
-            std::cell::RefCell::new(tokenizer),
+        Ok(tokenizer_components(std::sync::Arc::new(
+            rucene::util::atomic_ref_cell::AtomicRefCell::new(tokenizer),
         )))
     }
 }
@@ -765,12 +765,12 @@ impl Analyzer for GraphAfterAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let tokenizer = Rc::new(RefCell::new(new_standard_tokenizer_with_factory(
+        let tokenizer = Arc::new(AtomicRefCell::new(new_standard_tokenizer_with_factory(
             BaseTokenStreamTestCase::new_attribute_factory(),
         )?));
         let token_stream =
             MockGraphTokenFilter::new(&*LuceneTestCase::random(), shared(&tokenizer))?;
-        let sink: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(token_stream));
+        let sink: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(token_stream));
         Ok(components(tokenizer, sink))
     }
 }

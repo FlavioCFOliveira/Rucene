@@ -32,9 +32,8 @@
 //! **Divergence from Lucene 10.5.0.** An implementation outside that closed
 //! set cannot be cast; the accessors panic naming it.
 
+use rucene::util::atomic_ref_cell::{AtomicRef, AtomicRefMut};
 use std::any::TypeId;
-use std::cell::{Ref, RefMut};
-use std::rc::Rc;
 
 use rucene::analysis::tokenattributes::{
     BytesTermAttribute, BytesTermAttributeImpl, CharTermAttribute, CharTermAttributeImpl,
@@ -76,8 +75,8 @@ macro_rules! accessors {
                 ///
                 /// When the implementation is borrowed mutably, or is not one
                 /// the framework can cast.
-                pub fn $get(&self) -> Ref<'_, dyn $iface> {
-                    Ref::map(self.0.borrow(), |att| {
+                pub fn $get(&self) -> AtomicRef<'_, dyn $iface> {
+                    AtomicRef::map(self.0.borrow(), |att| {
                         let any = att.as_any();
                         $(
                             if let Some(x) = any.downcast_ref::<$imp>() {
@@ -98,8 +97,8 @@ macro_rules! accessors {
                 ///
                 /// When the implementation is borrowed, or is not one the
                 /// framework can cast.
-                pub fn $get_mut(&self) -> RefMut<'_, dyn $iface> {
-                    RefMut::map(self.0.borrow_mut(), |att| {
+                pub fn $get_mut(&self) -> AtomicRefMut<'_, dyn $iface> {
+                    AtomicRefMut::map(self.0.borrow_mut(), |att| {
                         let name = format!("{:?}", att);
                         let any = att.as_any_mut();
                         $(
@@ -231,11 +230,11 @@ impl Att {
 
     /// Java's `==` between two attribute references: the same instance.
     pub fn same(&self, other: &Att) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// The implementation, as an [`AttributeImpl`].
-    pub fn implementation(&self) -> Ref<'_, Box<dyn AttributeImpl>> {
+    pub fn implementation(&self) -> AtomicRef<'_, Box<dyn AttributeImpl>> {
         self.0.borrow()
     }
 

@@ -30,11 +30,10 @@
 //! scalar values, and the mocks convert where Java's arithmetic depends on
 //! it.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use rucene::analysis::{CharReader, SharedTokenStream, TokenStream, TokenStreamComponents};
 use rucene::error::Result;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
+use std::sync::Arc;
 
 pub mod attributes;
 pub mod base_token_stream_factory_test_case;
@@ -128,8 +127,8 @@ impl<T: rucene::analysis::TokenizerLogic + 'static> ReaderTokenizer
 /// `new TokenStreamComponents(tokenizer, sink)`: `tokenizer::setReader` as
 /// the source, `sink` as the stream handed out.
 pub fn components<T: ReaderTokenizer + 'static>(
-    tokenizer: Rc<RefCell<T>>,
-    sink: Rc<RefCell<dyn TokenStream>>,
+    tokenizer: Arc<AtomicRefCell<T>>,
+    sink: Arc<AtomicRefCell<dyn TokenStream>>,
 ) -> TokenStreamComponents {
     TokenStreamComponents::new(
         Box::new(move |reader| tokenizer.borrow_mut().set_reader(reader)),
@@ -140,20 +139,20 @@ pub fn components<T: ReaderTokenizer + 'static>(
 /// `new TokenStreamComponents(tokenizer)`: the tokenizer is both source and
 /// sink.
 pub fn tokenizer_components<T: ReaderTokenizer + 'static>(
-    tokenizer: Rc<RefCell<T>>,
+    tokenizer: Arc<AtomicRefCell<T>>,
 ) -> TokenStreamComponents {
-    let sink: Rc<RefCell<dyn TokenStream>> = tokenizer.clone();
+    let sink: Arc<AtomicRefCell<dyn TokenStream>> = tokenizer.clone();
     components(tokenizer, sink)
 }
 
 /// The tokenizer as the input of a filter chain, while the components keep
 /// it as their source.
-pub fn shared<T: TokenStream + 'static>(tokenizer: &Rc<RefCell<T>>) -> Box<dyn TokenStream> {
-    let inner: Rc<RefCell<dyn TokenStream>> = tokenizer.clone();
+pub fn shared<T: TokenStream + 'static>(tokenizer: &Arc<AtomicRefCell<T>>) -> Box<dyn TokenStream> {
+    let inner: Arc<AtomicRefCell<dyn TokenStream>> = tokenizer.clone();
     Box::new(SharedTokenStream::new(inner))
 }
 
 /// Wraps a stream for [`TokenStreamComponents`] as their sink.
-pub fn sink<T: TokenStream + 'static>(stream: T) -> Rc<RefCell<dyn TokenStream>> {
-    Rc::new(RefCell::new(stream))
+pub fn sink<T: TokenStream + 'static>(stream: T) -> Arc<AtomicRefCell<dyn TokenStream>> {
+    Arc::new(AtomicRefCell::new(stream))
 }

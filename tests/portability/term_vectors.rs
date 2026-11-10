@@ -26,11 +26,10 @@
 //! The order of the fields inside a document fixes the field numbers, which the
 //! term-vector chunks record.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rucene::analysis::tokenattributes::{
@@ -790,8 +789,9 @@ fn write_with_rucene(
     for (doc_id, values) in documents.iter().enumerate() {
         let mut document = Document::new();
         for value in values {
-            let stream: Rc<RefCell<dyn TokenStream>> =
-                Rc::new(RefCell::new(ScriptedTokenStream::new(value.tokens.clone())));
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
+                ScriptedTokenStream::new(value.tokens.clone()),
+            ));
             document.add(Box::new(
                 Field::new_with_token_stream(
                     specs[value.spec].name,
@@ -1259,7 +1259,7 @@ fn a_directory_reader_reads_the_term_vectors_of_every_segment() {
 
     let temp = tempfile::tempdir().expect("temp dir");
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(temp.path()).expect("open directory"));
-    let mut config = rucene::index::index_writer_config::IndexWriterConfig::new();
+    let config = rucene::index::index_writer_config::IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(
             rucene::index::merge_policy::NoMergePolicy::new(),

@@ -164,7 +164,7 @@ fn mock_iwc() -> IndexWriterConfig {
 
 /// `newIndexWriterConfig(analyzer)` with `setMergePolicy(newLogMergePolicy())`.
 fn log_mp_iwc(analyzer: Arc<dyn Analyzer>) -> Result<IndexWriterConfig> {
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     Ok(iwc)
 }
@@ -395,7 +395,7 @@ fn test_length_prefix_across_two_pages() -> Result<()> {
 /// Port of `TestDocValuesIndexing.testDocValuesUnstored`.
 fn test_doc_values_unstored() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwconfig = mock_iwc();
+    let iwconfig = mock_iwc();
     iwconfig.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwconfig)?;
     for i in 0..50 {
@@ -587,7 +587,7 @@ fn test_mixed_types_after_reopen_create() -> Result<()> {
     w.add_document(&doc_of(vec![ndv("foo", 0)]))?;
     w.close()?;
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::CREATE)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
@@ -812,7 +812,7 @@ fn test_type_change_after_commit_and_delete_all() -> Result<()> {
 fn test_type_change_after_open_create() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     numeric_dv_index(&dir.as_directory())?;
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_open_mode(OpenMode::CREATE)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     writer.add_document(&doc_of(vec![sdv("dv", "foo")]))?;

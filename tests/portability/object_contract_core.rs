@@ -400,7 +400,7 @@ fn writer_configs(m: &Measured) {
         "LiveIndexWriterConfig.toString() is the same text without `writer=`"
     );
 
-    let mut tuned = IndexWriterConfig::new();
+    let tuned = IndexWriterConfig::new();
     tuned
         .set_ram_buffer_size_mb(64.0)
         .expect("a valid RAM buffer size");

@@ -1,8 +1,7 @@
 //! Port of `org.apache.lucene.analysis.TestCachingTokenFilter`
 //! (`extends BaseTokenStreamTestCase`).
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
@@ -94,9 +93,11 @@ fn test_caching() -> Result<()> {
 
     // `stream = new CachingTokenFilter(stream)`: shared by the field and the
     // test, as Java's reference is.
-    let stream = Rc::new(RefCell::new(CachingTokenFilter::new(Box::new(stream))));
+    let stream = Arc::new(AtomicRefCell::new(CachingTokenFilter::new(Box::new(
+        stream,
+    ))));
 
-    let field_stream: Rc<RefCell<dyn TokenStream>> = stream.clone();
+    let field_stream: Arc<AtomicRefCell<dyn TokenStream>> = stream.clone();
     doc.add(Box::new(TextField::new_with_token_stream(
         "preanalyzed",
         field_stream,

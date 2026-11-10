@@ -1346,7 +1346,7 @@ fn misuse(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
 
 /// `addOne(dir)`: one more document committed.
 fn add_one(dir: &Arc<dyn Directory>) -> Result<()> {
-    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
+    let config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
     config.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let iw = IndexWriter::new(Arc::clone(dir), config)?;
     let mut d = Document::new();
@@ -1539,7 +1539,7 @@ fn lifecycle(rows: &mut Rows, c: &str) {
 /// lookup answers the larger segment's document.
 fn pk_duplicates(rows: &mut Rows) {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
+    let config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
@@ -1571,7 +1571,7 @@ fn pk_duplicates(rows: &mut Rows) {
 
 fn points_index() -> Arc<dyn Directory> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
+    let config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();

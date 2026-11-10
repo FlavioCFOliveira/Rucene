@@ -6,7 +6,6 @@
 //! `TypeId`s.
 
 use std::any::TypeId;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -85,7 +84,7 @@ fn set_flags(src: &AttributeSource, flags: i32) {
 
 /// `assertNotSame(message, unexpected, actual)` over attribute instances.
 fn assert_not_same(message: &str, unexpected: &AttributeCell, actual: &AttributeCell) {
-    if Rc::ptr_eq(unexpected, actual) {
+    if Arc::ptr_eq(unexpected, actual) {
         Assert::fail(&format!("{message} expected not same"))
     }
 }

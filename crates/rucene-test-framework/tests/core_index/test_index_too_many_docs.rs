@@ -42,7 +42,7 @@ fn assertion_error(e: rucene::error::LuceneError) -> ! {
 fn test_index_too_many_docs() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let num_max_doc = 25;
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_ram_buffer_size_mb(0.000001)?; // force lots of small segments and logs of concurrent deletes
     let writer = IndexWriter::new(dir.as_directory(), config)?;
     let result = (|| -> Result<()> {

@@ -10,11 +10,6 @@
 //!   `OneMerge` subclasses install the `OneMerge` override hooks.
 //! * `new OneMerge(merge) { setMergeInfo }` of `testSetDiagnostics` is
 //!   `OneMerge::wrapping(merge)` with the `setMergeInfo` hook installed.
-//! * A `Document` the Java test hands to another thread (`d2` of
-//!   `testCarryOverNewDeletesOnCommit`, `d1` of
-//!   `stressUpdateSameDocumentWithMergeOnX`) is built again, with the same
-//!   fields and no random draw, in that thread: Rucene's `Document` holds
-//!   `Box<dyn IndexableField>`, which is not `Send`.
 //! * `new FilterDirectory(newFSDirectory(path)) { openInput }` is
 //!   `AssertFileExistDirectory`; `mockDirectory.close()` (which closes the
 //!   wrapped directory) closes the `newFSDirectory` holder.
@@ -270,7 +265,7 @@ fn mock_iwc_buffered(
     max_buffered_docs: i32,
     mp: Arc<dyn MergePolicy>,
 ) -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_max_buffered_docs(max_buffered_docs)?;
     iwc.set_merge_policy(Some(mp))?;
     Ok(iwc)
@@ -366,7 +361,7 @@ fn as_mock(mp: &Arc<dyn MergePolicy>) -> &MockMergePolicy {
 fn test_merge_factor_change() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
 
-    let mut iwc = mock_iwc_buffered(10, Arc::new(MockMergePolicy::new()))?;
+    let iwc = mock_iwc_buffered(10, Arc::new(MockMergePolicy::new()))?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -391,7 +386,7 @@ fn test_merge_factor_change() -> Result<()> {
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setOpenMode(APPEND)
 /// .setMaxBufferedDocs(n).setMergePolicy(mp).setMergeScheduler(new SerialMergeScheduler())`.
 fn append_serial_iwc(max_buffered_docs: i32, mp: MockMergePolicy) -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     iwc.set_max_buffered_docs(max_buffered_docs)?;
     iwc.set_merge_policy(Some(Arc::new(mp)))?;
@@ -404,7 +399,7 @@ fn append_serial_iwc(max_buffered_docs: i32, mp: MockMergePolicy) -> Result<Inde
 fn test_max_buffered_docs_change() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
 
-    let mut iwc = mock_iwc_buffered(101, Arc::new(MockMergePolicy::new()))?;
+    let iwc = mock_iwc_buffered(101, Arc::new(MockMergePolicy::new()))?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let mut writer = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -463,7 +458,7 @@ fn test_merge_doc_count0() -> Result<()> {
     writer.close()?;
 
     // delete some docs without merging
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     writer.delete_documents_by_terms(vec![Term::from_text("content", "aaa")])?;
@@ -471,7 +466,7 @@ fn test_merge_doc_count0() -> Result<()> {
 
     let ldmp = MockMergePolicy::new();
     ldmp.set_merge_factor(5);
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     iwc.set_max_buffered_docs(10)?;
     iwc.set_merge_policy(Some(Arc::new(ldmp)))?;
@@ -550,7 +545,7 @@ fn test_setters() -> Result<()> {
 /// `TestIndexWriter.addDoc(firstWriter); firstWriter.flush()` five times over a
 /// `NoMergePolicy` writer, then the five-leaf check.
 fn five_flushed_segments(dir: &TestDirectory) -> Result<()> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let first_writer = IndexWriter::new(dir.as_directory(), iwc)?;
     for _ in 0..5 {
@@ -570,7 +565,7 @@ fn test_merge_on_commit() -> Result<()> {
 
     five_flushed_segments(&dir)?;
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(merge_on_x_merge_policy(
         LuceneTestCase::new_merge_policy(),
         MergeTrigger::Commit,
@@ -615,7 +610,7 @@ fn test_merge_on_commit_with_event_listener() -> Result<()> {
 
     let event_listener = Arc::new(MockIndexWriterEventListener::new());
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(merge_on_x_merge_policy(
         LuceneTestCase::new_merge_policy(),
         MergeTrigger::Commit,
@@ -704,7 +699,7 @@ fn test_carry_over_new_deletes_on_commit() -> Result<()> {
         let use_soft_deletes = random().next_boolean();
         let wait_for_merge = Arc::new(CountDownLatch::new(1));
         let wait_for_update = Arc::new(CountDownLatch::new(1));
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(merge_on_x_merge_policy(
             Arc::new(NoMergePolicy::new()),
             MergeTrigger::Commit,
@@ -721,11 +716,11 @@ fn test_carry_over_new_deletes_on_commit() -> Result<()> {
         }));
 
         let d1 = id_doc("1")?;
-        let d2 = id_doc("2")?;
+        let d2 = Arc::new(id_doc("2")?);
         let d3 = id_doc("3")?;
         writer.add_document(&d1)?;
         writer.flush()?;
-        writer.add_document(&d2)?;
+        writer.add_document(&*d2)?;
         let add_three_docs = random().next_boolean();
         let mut expected_num_docs = 2;
         if add_three_docs {
@@ -738,19 +733,18 @@ fn test_carry_over_new_deletes_on_commit() -> Result<()> {
             let writer = Arc::clone(&writer);
             let wait_for_merge = Arc::clone(&wait_for_merge);
             let wait_for_update = Arc::clone(&wait_for_update);
+            let d2 = Arc::clone(&d2);
             Thread::unnamed(move || {
                 let result = (|| -> Result<()> {
-                    // `d2` (see the module docs on documents read by other threads)
-                    let d2 = id_doc("2")?;
                     wait_for_merge.await_();
                     if use_soft_deletes {
                         writer.soft_update_document(
                             Term::from_text("id", "2"),
-                            &d2,
+                            &*d2,
                             &[soft_field("soft_delete", 1)?],
                         )?;
                     } else {
-                        writer.update_document(Term::from_text("id", "2"), &d2)?;
+                        writer.update_document(Term::from_text("id", "2"), &*d2)?;
                     }
                     writer.flush()
                 })();
@@ -818,7 +812,7 @@ fn abort_merge_on_x(use_get_reader: bool) -> Result<()> {
     {
         let wait_for_merge = Arc::new(CountDownLatch::new(1));
         let wait_for_delete_all = Arc::new(CountDownLatch::new(1));
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(merge_on_x_merge_policy(
             LuceneTestCase::new_merge_policy(),
             if use_get_reader {
@@ -886,7 +880,7 @@ fn test_force_merge_while_get_reader() -> Result<()> {
     {
         let wait_for_merge = Arc::new(CountDownLatch::new(1));
         let wait_for_force_merge_called = Arc::new(CountDownLatch::new(1));
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(merge_on_x_merge_policy(
             LuceneTestCase::new_merge_policy(),
             MergeTrigger::GetReader,
@@ -952,7 +946,7 @@ fn test_fail_after_merge_committed() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     {
         let merge_and_fail = Arc::new(AtomicBool::new(false));
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(merge_on_x_merge_policy(
             Arc::new(NoMergePolicy::new()),
             MergeTrigger::GetReader,
@@ -1002,7 +996,7 @@ fn test_stress_update_same_document_with_merge_on_commit() -> Result<()> {
 fn stress_update_same_document_with_merge_on_x(use_get_reader: bool) -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(merge_on_x_merge_policy(
             LuceneTestCase::new_merge_policy(),
             if use_get_reader {
@@ -1019,8 +1013,8 @@ fn stress_update_same_document_with_merge_on_x(use_get_reader: bool) -> Result<(
             directory.as_directory(),
             iwc,
         )?);
-        let d1 = id_doc("1")?;
-        writer.update_document(Term::from_text("id", "1"), &d1)?;
+        let d1 = Arc::new(id_doc("1")?);
+        writer.update_document(Term::from_text("id", "1"), &*d1)?;
         writer.commit()?;
 
         let iters = Arc::new(AtomicI32::new(
@@ -1037,14 +1031,13 @@ fn stress_update_same_document_with_merge_on_x(use_get_reader: bool) -> Result<(
             let iters = Arc::clone(&iters);
             let num_full_flushes = Arc::clone(&num_full_flushes);
             let done = Arc::clone(&done);
+            let d1 = Arc::clone(&d1);
             let t = Thread::unnamed(move || {
                 let result = (|| -> Result<()> {
-                    // `d1` (see the module docs on documents read by other threads)
-                    let d1 = id_doc("1")?;
                     while iters.fetch_sub(1, Ordering::SeqCst) - 1 > 0
                         || num_full_flushes.load(Ordering::SeqCst) > 0
                     {
-                        writer.update_document(Term::from_text("id", "1"), &d1)?;
+                        writer.update_document(Term::from_text("id", "1"), &*d1)?;
                         if random().next_boolean() {
                             writer.add_document(&Document::new())?;
                         }
@@ -1116,7 +1109,7 @@ fn test_merge_on_get_reader() -> Result<()> {
 
     five_flushed_segments(&dir)?;
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(merge_on_x_merge_policy(
         LuceneTestCase::new_merge_policy(),
         MergeTrigger::GetReader,
@@ -1233,7 +1226,7 @@ fn test_set_diagnostics() -> Result<()> {
         )),
     ));
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(my_merge_policy))?;
     iwc.set_max_buffered_docs(2)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1511,7 +1504,7 @@ fn test_force_merge_dv_update_file_with_concurrent_flush() -> Result<()> {
         ))
     };
 
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(mock_merge_policy))?;
     iwc.set_soft_deletes_field(Some("soft_delete".to_string()));
     let writer = IndexWriter::new(Arc::clone(&mock_directory), iwc)?;
@@ -1560,7 +1553,7 @@ fn test_force_merge_dv_update_file_with_concurrent_flush() -> Result<()> {
 /// The two-segment index the `testMergeDVUpdateFileOn*WithConcurrentFlush`
 /// tests start from, written through `mock_directory`.
 fn two_segments_with_soft_update(mock_directory: &Arc<dyn Directory>) -> Result<()> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let first_writer = IndexWriter::new(Arc::clone(mock_directory), iwc)?;
 
@@ -1645,7 +1638,7 @@ fn test_merge_dv_update_file_on_get_reader_with_concurrent_flush() -> Result<()>
     let mock_concurrent_merge_scheduler =
         waiting_cms(&wait_for_init_merge_reader, &wait_for_dv_update);
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(merge_on_x_merge_policy(
         LuceneTestCase::new_merge_policy(),
         MergeTrigger::GetReader,
@@ -1686,7 +1679,7 @@ fn test_merge_dv_update_file_on_commit_with_concurrent_flush() -> Result<()> {
     let mock_concurrent_merge_scheduler =
         waiting_cms(&wait_for_init_merge_reader, &wait_for_dv_update);
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(merge_on_x_merge_policy(
         LuceneTestCase::new_merge_policy(),
         MergeTrigger::Commit,
@@ -1723,7 +1716,7 @@ fn test_force_merge_with_pending_hard_and_soft_delete_file() -> Result<()> {
         }),
     ));
 
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(mock_merge_policy))?;
     let writer = IndexWriter::new(Arc::clone(&mock_directory), iwc)?;
 

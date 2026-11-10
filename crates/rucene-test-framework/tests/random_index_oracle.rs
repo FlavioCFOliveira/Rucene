@@ -219,7 +219,7 @@ fn walk(tree: &mut dyn PointTree, depth: usize, lines: &mut Vec<String>) {
 }
 
 fn config(codec: Arc<RandomCodec>) -> IndexWriterConfig {
-    let mut c = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
+    let c = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
     c.set_codec(codec).unwrap();
     c.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
@@ -292,7 +292,7 @@ fn files_row(seed: i64) -> String {
     let mut parts = Vec::new();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let codec = Arc::new(RandomCodec::new(&JdkRandom::new(seed)));
-    let mut c = config(Arc::clone(&codec));
+    let c = config(Arc::clone(&codec));
     c.set_use_compound_file(false).unwrap();
     let w = IndexWriter::new(Arc::clone(&dir), c).unwrap();
     let mut d = Document::new();

@@ -94,7 +94,7 @@ fn run(case: &str) -> Outcome {
     ensure_codec();
     let tmp = tempfile::tempdir().expect("temp dir");
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(tmp.path()).expect("open directory"));
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("set merge policy");

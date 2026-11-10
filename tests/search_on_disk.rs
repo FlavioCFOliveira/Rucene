@@ -42,7 +42,7 @@ fn term_query_over_on_disk_index_finds_documents() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).unwrap());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -77,7 +77,7 @@ fn a_positioned_term_reports_its_statistics_and_postings() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).unwrap());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();

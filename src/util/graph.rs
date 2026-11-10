@@ -6,7 +6,7 @@
 
 #![deny(unsafe_code)]
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
     PositionIncrementAttribute, PositionLengthAttribute, TermToBytesRefAttribute,
@@ -30,7 +30,7 @@ const MAX_RECURSION_LEVEL: i32 = 1000;
 /// Equivalent to the private `GraphTokenStreamFiniteStrings.FiniteStringsTokenStream`.
 #[derive(Debug)]
 pub struct FiniteStringsTokenStream {
-    tokens: Rc<Vec<AttributeSource>>,
+    tokens: Arc<Vec<AttributeSource>>,
     atts: AttributeSource,
     ids: IntsRef,
     end: usize,
@@ -38,7 +38,7 @@ pub struct FiniteStringsTokenStream {
 }
 
 impl FiniteStringsTokenStream {
-    fn new(tokens: Rc<Vec<AttributeSource>>, ids: IntsRef) -> Self {
+    fn new(tokens: Arc<Vec<AttributeSource>>, ids: IntsRef) -> Self {
         let atts = tokens[0].clone_attributes();
         let offset = ids.offset;
         let end = ids.offset + ids.length;
@@ -84,7 +84,7 @@ impl TokenStream for FiniteStringsTokenStream {
 /// unchecked exception.
 pub struct FiniteStringsTokenStreams<'a> {
     it: FiniteStringsIterator<'a>,
-    tokens: Rc<Vec<AttributeSource>>,
+    tokens: Arc<Vec<AttributeSource>>,
     current: Option<IntsRef>,
     finished: bool,
 }
@@ -118,7 +118,7 @@ impl FiniteStringsTokenStreams<'_> {
         }
         match self.current.take() {
             Some(ids) => Ok(Some(FiniteStringsTokenStream::new(
-                Rc::clone(&self.tokens),
+                Arc::clone(&self.tokens),
                 ids,
             ))),
             None => Ok(None),
@@ -138,7 +138,7 @@ impl FiniteStringsTokenStreams<'_> {
 ///   `null`s; this port stores exactly one entry per token, which is the filled
 ///   prefix Java indexes into.
 pub struct GraphTokenStreamFiniteStrings {
-    tokens: Rc<Vec<AttributeSource>>,
+    tokens: Arc<Vec<AttributeSource>>,
     det: Automaton,
 }
 
@@ -158,7 +158,7 @@ impl GraphTokenStreamFiniteStrings {
             DEFAULT_DETERMINIZE_WORK_LIMIT,
         )?);
         Ok(Self {
-            tokens: Rc::new(tokens),
+            tokens: Arc::new(tokens),
             det,
         })
     }
@@ -223,7 +223,7 @@ impl GraphTokenStreamFiniteStrings {
     ) -> FiniteStringsTokenStreams<'_> {
         FiniteStringsTokenStreams {
             it: FiniteStringsIterator::with_bounds(&self.det, start_state, end_state),
-            tokens: Rc::clone(&self.tokens),
+            tokens: Arc::clone(&self.tokens),
             current: None,
             finished: false,
         }

@@ -546,7 +546,7 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
                 1.0
             })?;
 
-            let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+            let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
                 MockAnalyzer::new(&*LuceneTestCase::random()),
             )));
             iwc.set_merge_scheduler(Some(merge_scheduler))?;

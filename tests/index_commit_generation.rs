@@ -76,7 +76,7 @@ fn pending_commit_files(dir: &dyn Directory) -> Vec<String> {
 fn every_commit_writes_the_next_generation() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .unwrap();
@@ -221,7 +221,7 @@ fn a_failed_rename_leaves_the_previous_commit_point_intact() {
     let dir = Arc::new(FailingRenameDirectory::new(Arc::clone(&ram)));
     let as_dir: Arc<dyn Directory> = Arc::clone(&dir) as Arc<dyn Directory>;
 
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .unwrap();

@@ -5,10 +5,9 @@
 //! * `Pattern.compile("maxDocsPerChunk=(\\d+), blockSize=(\\d+)")`: no regex
 //!   engine; [`find_chunk_params`] scans for the same pattern.
 //! * `tokenStream.n = …` on the stream the field holds: the stream is shared
-//!   through the `Rc` the field keeps.
+//!   through the `Arc` the field keeps.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -107,8 +106,8 @@ fn test_() -> Result<()> {
     let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
     ft.set_omit_norms(true)?;
-    let token_stream = Rc::new(RefCell::new(MyTokenStream::new()?));
-    let stream: Rc<RefCell<dyn TokenStream>> = token_stream.clone();
+    let token_stream = Arc::new(AtomicRefCell::new(MyTokenStream::new()?));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> = token_stream.clone();
     let field = Field::new_with_token_stream("field", stream, ft)?;
     doc.add(Box::new(field));
 

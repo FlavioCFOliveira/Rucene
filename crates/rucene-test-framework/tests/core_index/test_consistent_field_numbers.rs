@@ -41,7 +41,7 @@ fn mock_iwc() -> IndexWriterConfig {
 
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     Ok(iwc)
 }
@@ -243,7 +243,7 @@ fn test_field_number_gaps() -> Result<()> {
             writer.close()?;
         }
 
-        let mut iwc = mock_iwc();
+        let iwc = mock_iwc();
         iwc.set_merge_policy(Some(Arc::new(LogMergePolicy::by_byte_size())))?;
         iwc.set_info_stream(Arc::new(FailOnNonBulkMergesInfoStream))?;
         let writer = IndexWriter::new(dir.as_directory(), iwc)?;

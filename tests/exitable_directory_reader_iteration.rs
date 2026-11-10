@@ -99,7 +99,7 @@ fn build_index(name: &str) -> Arc<dyn DirectoryReader> {
     std::fs::create_dir_all(&tmp).expect("create the index directory");
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).expect("open the directory"));
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("no merges, so the segment layout is the one written");

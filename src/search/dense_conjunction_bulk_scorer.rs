@@ -663,7 +663,7 @@ mod tests {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn crate::store::Directory> =
             Arc::new(crate::store::ByteBuffersDirectory::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         // Keep the deletions in the segment instead of merging them away.
         config
             .set_merge_policy(Some(Arc::new(

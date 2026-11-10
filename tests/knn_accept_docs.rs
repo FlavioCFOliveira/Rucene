@@ -95,7 +95,7 @@ fn build_index(name: &str, deleted: Option<(i32, i32)>) -> Arc<dyn DirectoryRead
     std::fs::create_dir_all(&tmp).expect("create the index directory");
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).expect("open the directory"));
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("no merges, so the documents keep the ids they were written with");
@@ -380,7 +380,7 @@ fn a_sparse_field_returns_the_lucene_documents_not_the_ordinals() {
 
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_ram_buffer_size_mb(64.0).expect("RAM buffer");
     config
         .set_max_buffered_docs(100_000)

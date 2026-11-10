@@ -47,7 +47,7 @@ pub fn class_def() -> Arc<Class> {
 fn default_codec_writer(
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
 ) -> Result<Arc<IndexWriter>> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_codec(TestUtil::get_default_codec())?;
     IndexWriter::new(dir.as_directory(), iwc)
 }

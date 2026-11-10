@@ -366,7 +366,7 @@ fn test_get_stats_multi_valued_field() -> Result<()> {
 /// Port of `TestNumericFieldStats.testGetStatsMultipleSegments`.
 fn test_get_stats_multiple_segments() -> Result<()> {
     let config = || -> Result<IndexWriterConfig> {
-        let mut config = LuceneTestCase::new_index_writer_config();
+        let config = LuceneTestCase::new_index_writer_config();
         config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         Ok(config)
     };

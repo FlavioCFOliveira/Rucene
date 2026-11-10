@@ -234,7 +234,7 @@ fn test_duel_point_range_numeric_range_with_skipper_query() -> Result<()> {
 
 fn test_duel_point_numeric_sorted_with_skipper_range_query() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(get_codec())?;
     config.set_index_sort(sort_by("dv", SortFieldType::Long, random().next_boolean())?)?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
@@ -283,7 +283,7 @@ fn do_test_duel_point_range_numeric_range_query(
         let iw = if sorted_numeric || random().next_boolean() {
             RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?
         } else {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config.set_codec(get_codec())?;
             config.set_index_sort(sort_by("dv", SortFieldType::Long, random().next_boolean())?)?;
             RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?
@@ -364,7 +364,7 @@ fn do_test_duel_point_range_sorted_range_query(
         let iw = if sorted_set || random().next_boolean() {
             RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?
         } else {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config.set_codec(get_codec())?;
             config.set_index_sort(sort_by(
                 "dv",
@@ -500,7 +500,7 @@ fn assert_sorted_set_range_query_uses_two_phase_range_iterator_with_skipper(
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     {
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_codec(get_codec_with(8))?;
         let iw = IndexWriter::new(dir.as_directory(), config)?;
         for i in 0..512 {
@@ -598,7 +598,7 @@ fn test_duel_point_range_sorted_range_skipper_query() -> Result<()> {
 
 fn test_duel_point_sorted_set_sorted_with_skipper_range_query() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(get_codec())?;
     config.set_index_sort(sort_by(
         "dv",
@@ -1462,7 +1462,7 @@ fn do_test_primary_sort_dense_exact_match(
     let deletes = random().next_boolean();
     let mut dir = LuceneTestCase::new_directory();
     let skip_interval_size = random().next_int_range(4, 4096);
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(get_codec_with(skip_interval_size))?;
     config.set_index_sort(sort_by("dv", field_type, random().next_boolean())?)?;
     let num_blocks = random().next_int_range(4, 16);

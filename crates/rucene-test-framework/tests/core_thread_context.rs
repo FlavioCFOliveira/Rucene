@@ -99,7 +99,7 @@ impl InfoStream for MergeThreadObserver {
 /// thread that started the merge and draws from the suite's context.
 fn test_merge_thread_inherits_context() {
     let observer = Arc::new(MergeThreadObserver(Mutex::new(Vec::new())));
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))
         .unwrap();

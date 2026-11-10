@@ -557,7 +557,7 @@ fn test_multi_value_forces_deoptimization() -> Result<()> {
 /// Port of `TestIndexOptions.testFrozenFieldTypeInDocumentBlock`.
 fn test_frozen_field_type_in_document_block() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_parent_field(Some("__parent".to_string()));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let ft = stored();

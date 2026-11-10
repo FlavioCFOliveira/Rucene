@@ -74,7 +74,7 @@ fn round(f: f32) -> f32 {
 /// `new RandomIndexWriter(random(), dir,
 /// newIndexWriterConfig().setMergePolicy(newLogMergePolicy(random().nextBoolean())))`.
 fn log_mp_writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
     )))?;

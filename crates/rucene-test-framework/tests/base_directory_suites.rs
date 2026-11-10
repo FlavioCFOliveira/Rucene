@@ -1401,7 +1401,7 @@ fn file_switch_test_basic() -> Result<()> {
         true,
     )?);
     // for now we wire the default codec because we rely upon its specific impl
-    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*rnd()))));
+    let config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*rnd()))));
     config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
     config.set_codec(TestUtil::get_default_codec())?;
     config.set_use_compound_file(false)?;
@@ -1862,7 +1862,7 @@ fn byte_buffers_test_build_index(case: &dyn BaseDirectoryTestCase) -> Result<()>
     // `getDirectory(null)`: the suppliers ignore the path.
     let no_path = Path::new(rucene::store::java_nio_file::FileSystems::get_default(), "");
     let dir: Arc<dyn Directory> = Arc::from(case.get_directory(&no_path)?);
-    let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*rnd()))));
+    let config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*rnd()))));
     config.set_open_mode(OpenMode::CREATE)?;
     let writer = IndexWriter::new(Arc::clone(&dir), config)?;
     let result = (|| -> Result<()> {

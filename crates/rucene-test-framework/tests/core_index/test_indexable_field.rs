@@ -7,9 +7,8 @@
 //! * `IndexableFieldType.getAttributes()` returns `null` in Java; Rucene's
 //!   returns a map, so `MyField`'s type holds an empty one.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::fmt;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -182,9 +181,9 @@ impl IndexableField for MyField {
 
     fn reader_value(&self) -> Option<SharedReader> {
         if self.counter % 10 == 7 {
-            Some(Rc::new(RefCell::new(Box::new(StringCharReader::new(
-                format!("text {}", self.counter),
-            )))))
+            Some(Arc::new(AtomicRefCell::new(Box::new(
+                StringCharReader::new(format!("text {}", self.counter)),
+            ))))
         } else {
             None
         }

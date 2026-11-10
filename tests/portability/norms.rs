@@ -40,11 +40,10 @@
 //! widths that Lucene's own `computeNorm` can never reach because it always
 //! returns a signed byte.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rucene::analysis::tokenattributes::{
@@ -686,7 +685,7 @@ fn write_with_rucene(
         assert_eq!(analyzer.get_position_increment_gap(spec.name), 0);
         assert_eq!(analyzer.get_offset_gap(spec.name), 1);
     }
-    let mut live = LiveIndexWriterConfig::new(Some(Arc::clone(&analyzer)));
+    let live = LiveIndexWriterConfig::new(Some(Arc::clone(&analyzer)));
     live.set_similarity(similarity(case));
     let live = Arc::new(live);
 
@@ -723,8 +722,9 @@ fn write_with_rucene(
     for (doc_id, values) in documents.iter().enumerate() {
         let mut document = Document::new();
         for value in values {
-            let stream: Rc<RefCell<dyn TokenStream>> =
-                Rc::new(RefCell::new(ScriptedTokenStream::new(value.tokens.clone())));
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
+                ScriptedTokenStream::new(value.tokens.clone()),
+            ));
             document.add(Box::new(
                 Field::new_with_token_stream(
                     specs[value.spec].name,

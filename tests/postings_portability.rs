@@ -383,7 +383,7 @@ fn drain_docs(postings: &mut dyn PostingsEnum) -> Vec<i32> {
 fn two_reuse_segments() -> Arc<dyn DirectoryReader> {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();
@@ -605,8 +605,11 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
         vec![("aaa", vec![1u8, 2]), ("bbb", vec![3u8])],
         vec![("bbb", vec![4u8])],
     ] {
-        let stream: std::rc::Rc<std::cell::RefCell<dyn rucene::analysis::TokenStream>> =
-            std::rc::Rc::new(std::cell::RefCell::new(PayloadTokens::new(tokens)));
+        let stream: std::sync::Arc<
+            rucene::util::atomic_ref_cell::AtomicRefCell<dyn rucene::analysis::TokenStream>,
+        > = std::sync::Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(
+            PayloadTokens::new(tokens),
+        ));
         let mut doc = Document::new();
         doc.add(Box::new(
             Field::new_with_token_stream("f", stream, field_type.clone()).unwrap(),
@@ -1018,7 +1021,7 @@ fn a_merge_reuses_the_mapping_postings_enum_of_the_previous_term() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let log: OfferLog = Arc::new(Mutex::new(Vec::new()));
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_codec(Arc::new(RecordingCodec::new(&log)))
         .unwrap();
@@ -1052,7 +1055,7 @@ fn a_sorted_flush_reuses_the_sorting_postings_enum_of_the_previous_term() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let log: OfferLog = Arc::new(Mutex::new(Vec::new()));
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_codec(Arc::new(RecordingCodec::new(&log)))
         .unwrap();

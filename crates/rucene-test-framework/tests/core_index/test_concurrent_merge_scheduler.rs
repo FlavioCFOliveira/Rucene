@@ -190,7 +190,7 @@ fn test_flush_exceptions() -> Result<()> {
         .as_mock()
         .expect("INVARIANT: a mock directory")
         .fail_on(Arc::clone(&failure) as Arc<dyn Failure>);
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
     if is_cms(&iwc) {
         let cms = SuppressingConcurrentMergeScheduler::create(Arc::new(|th| {
@@ -273,7 +273,7 @@ fn test_delete_merging() -> Result<()> {
     // merging of segments with and without deletes at the
     // start:
     mp.set_min_merge_docs(1000);
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(mp)))?;
     let writer = IndexWriter::new(directory.as_directory(), iwc)?;
     TestUtil::reduce_open_files(&writer)?;
@@ -313,7 +313,7 @@ fn test_delete_merging() -> Result<()> {
 /// Port of `TestConcurrentMergeScheduler.testNoExtraFiles`.
 fn test_no_extra_files() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
     let mut writer = IndexWriter::new(directory.as_directory(), iwc)?;
 
@@ -336,7 +336,7 @@ fn test_no_extra_files() -> Result<()> {
         assert_no_unreferenced_files(&directory.as_directory(), "testNoExtraFiles")?;
 
         // Reopen
-        let mut iwc = mock_iwc();
+        let iwc = mock_iwc();
         iwc.set_open_mode(OpenMode::APPEND)?;
         iwc.set_max_buffered_docs(2)?;
         writer = IndexWriter::new(directory.as_directory(), iwc)?;
@@ -352,7 +352,7 @@ fn test_no_wait_close() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     let mut id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
     let mut knn_field = KnnFloatVectorField::with_euclidean("knn", &[0.0, 0.0])?;
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     // Force excessive merging:
     iwc.set_max_buffered_docs(2)?;
     iwc.set_merge_policy(Some(Arc::new(
@@ -405,7 +405,7 @@ fn test_no_wait_close() -> Result<()> {
         reader.close()?;
 
         // Reopen
-        let mut iwc = mock_iwc();
+        let iwc = mock_iwc();
         iwc.set_open_mode(OpenMode::APPEND)?;
         iwc.set_merge_policy(Some(Arc::new(
             LuceneTestCase::new_log_merge_policy_merge_factor(100)?,
@@ -425,7 +425,7 @@ fn test_no_wait_close() -> Result<()> {
 /// Port of `TestConcurrentMergeScheduler.testMaxMergeCount`.
 fn test_max_merge_count() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_commit_on_close(false);
 
     let max_merge_count = TestUtil::next_int(&*random(), 1, 5);
@@ -517,7 +517,7 @@ fn test_max_merge_count() -> Result<()> {
 /// Port of `TestConcurrentMergeScheduler.testSmallMergesDonNotGetThreads`.
 fn test_small_merges_don_not_get_threads() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_max_buffered_docs(2)?;
     let cms = ConcurrentMergeScheduler::new();
     cms.set_do_merge_override(Some(Arc::new(|cms, merge_source, merge| {
@@ -689,7 +689,7 @@ fn tracking_cms(
 fn test_total_bytes_size() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
     crate::support::never_throttle(&d);
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_max_buffered_docs(5)?;
     let at_least_one_merge = Arc::new(CountDownLatch::new(1));
     let (cms, tot_merged_bytes) = tracking_cms(Arc::clone(&at_least_one_merge))?;
@@ -792,7 +792,7 @@ impl MergePolicy for ManyForcedMerges {
 /// Port of `TestConcurrentMergeScheduler.testLiveMaxMergeCount`.
 fn test_live_max_merge_count() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_merge_policy(Some(Arc::new(ManyForcedMerges)))?;
     iwc.set_max_buffered_docs(2)?;
     iwc.set_ram_buffer_size_mb(-1.0)?;
@@ -875,7 +875,7 @@ fn test_live_max_merge_count() -> Result<()> {
 fn test_maybe_stall_called() -> Result<()> {
     let was_called = Arc::new(AtomicBool::new(false));
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LogMergePolicy::by_byte_size())))?;
     let cms = ConcurrentMergeScheduler::new();
     {
@@ -901,7 +901,7 @@ fn test_maybe_stall_called() -> Result<()> {
 /// Port of `TestConcurrentMergeScheduler.testHangDuringRollback`.
 fn test_hang_during_rollback() -> Result<()> {
     let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     iwc.set_max_buffered_docs(2)?;
     let mp = Arc::new(LogMergePolicy::by_doc_count());
     iwc.set_merge_policy(Some(Arc::clone(&mp) as Arc<dyn MergePolicy>))?;
@@ -997,7 +997,7 @@ impl InfoStream for MsMessages {
 /// Port of `TestConcurrentMergeScheduler.testMergeThreadMessages`.
 fn test_merge_thread_messages() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     let merge_thread_set: Arc<Mutex<Vec<Arc<MergeThread>>>> = Arc::new(Mutex::new(Vec::new()));
     let cms = ConcurrentMergeScheduler::new();
     {
@@ -1025,8 +1025,10 @@ fn test_merge_thread_messages() -> Result<()> {
 
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
-    let stream: std::rc::Rc<std::cell::RefCell<dyn TokenStream>> =
-        std::rc::Rc::new(std::cell::RefCell::new(CannedTokenStream::new(Vec::new())));
+    let stream: std::sync::Arc<rucene::util::atomic_ref_cell::AtomicRefCell<dyn TokenStream>> =
+        std::sync::Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(
+            CannedTokenStream::new(Vec::new()),
+        ));
     doc.add(Box::new(Field::new_with_token_stream(
         "foo",
         stream,
@@ -1080,7 +1082,7 @@ fn test_merge_thread_messages() -> Result<()> {
 /// Port of `TestConcurrentMergeScheduler.testDynamicDefaults`.
 fn test_dynamic_defaults() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = plain_iwc();
+    let iwc = plain_iwc();
     let cms = Arc::new(ConcurrentMergeScheduler::new());
     assert_equals(&AUTO_DETECT_MERGES_AND_THREADS, &cms.get_max_merge_count());
     assert_equals(&AUTO_DETECT_MERGES_AND_THREADS, &cms.get_max_thread_count());
@@ -1169,7 +1171,7 @@ fn test_non_spinning_defaults() -> Result<()> {
 fn test_no_stall_merge_threads() -> Result<()> {
     let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     iwc.set_max_buffered_docs(2)?;
     iwc.set_use_compound_file(true)?; // reduce open files
@@ -1186,7 +1188,7 @@ fn test_no_stall_merge_threads() -> Result<()> {
     }
     w.close()?;
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     let failed = Arc::new(AtomicBool::new(false));
     let cms = ConcurrentMergeScheduler::new();
     {
@@ -1268,7 +1270,7 @@ fn test_change_max_merge_county_while_force_merge() -> Result<()> {
             merge_threads_arrived: Arc::clone(&merge_threads_arrived),
         });
         let mut dir = LuceneTestCase::new_directory();
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
         config.set_merge_policy(Some(Arc::new(mp)))?;
         config.set_info_stream(stream)?;

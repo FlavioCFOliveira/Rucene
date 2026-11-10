@@ -61,7 +61,7 @@ fn report(prefix: &str, dir: &Arc<dyn Directory>) -> Vec<String> {
 }
 
 fn config(open_mode: OpenMode) -> IndexWriterConfig {
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config.set_open_mode(open_mode).unwrap();
     config

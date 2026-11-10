@@ -5,9 +5,8 @@
 //!   reference, which the indexing chain does not change after
 //!   `computeNorm` for the single document these tests index.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use randomizedtesting::jdk::exception::Throwable;
@@ -77,8 +76,8 @@ impl Similarity for NeverForgetsSimilarity {
 
 /// `new Field(name, new CannedTokenStream(tokens), TextField.TYPE_NOT_STORED)`.
 fn canned_field(name: &str, tokens: Vec<Token>) -> Result<Field> {
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(CannedTokenStream::new(tokens)));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(CannedTokenStream::new(tokens)));
     Field::new_with_token_stream(
         name,
         stream,
@@ -89,7 +88,7 @@ fn canned_field(name: &str, tokens: Vec<Token>) -> Result<Field> {
 /// `new IndexWriterConfig(new MockAnalyzer(random()))` with
 /// `setSimilarity(NeverForgetsSimilarity.INSTANCE)`.
 fn config() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_similarity(Some(Arc::clone(&*INSTANCE) as Arc<dyn Similarity>))?;
     Ok(iwc)
 }

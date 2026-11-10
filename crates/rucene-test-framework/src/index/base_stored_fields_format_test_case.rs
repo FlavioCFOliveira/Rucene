@@ -432,7 +432,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_random_stored_fields(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
         let rand = random();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
         iwc.set_max_buffered_docs(TestUtil::next_int(&*rand, 5, 20))?;
         let w = RandomIndexWriter::new_with_config(&*rand, dir.as_directory(), iwc)?;
         // w.w.setNoCFSRatio(0.0);
@@ -738,7 +738,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testReadSkip()`.
     fn test_read_skip(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
+        let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
         iw_conf.set_max_buffered_docs(RandomNumbers::random_int_between(&*random(), 2, 30))?;
         let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_conf)?;
 
@@ -870,7 +870,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testEmptyDocs()`.
     fn test_empty_docs(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
+        let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
         iw_conf.set_max_buffered_docs(RandomNumbers::random_int_between(&*random(), 2, 30))?;
         let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_conf)?;
 
@@ -905,7 +905,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testConcurrentReads()`.
     fn test_concurrent_reads(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
+        let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
         iw_conf.set_max_buffered_docs(RandomNumbers::random_int_between(&*random(), 2, 30))?;
         let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_conf)?;
 
@@ -1009,7 +1009,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             Arc::new(rucene_codecs::simpletext::SimpleTextCodec::new())
         };
         let mut dir = LuceneTestCase::new_directory();
-        let mut iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
+        let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
         iw_conf.set_max_buffered_docs(RandomNumbers::random_int_between(&*random(), 2, 30))?;
         let mut iw_codec = iw_conf.codec();
         let mut iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_conf)?;
@@ -1055,7 +1055,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             iw.w().add_document(&doc)?;
             if random().next_boolean() && (i % (data.len() / 10) == 0) {
                 iw.w().close()?;
-                let mut iw_conf_new =
+                let iw_conf_new =
                     LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
                 // test merging against a non-compressing codec
                 if std::ptr::addr_eq(Arc::as_ptr(&iw_codec), Arc::as_ptr(&other_codec)) {
@@ -1234,7 +1234,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             LuceneTestCase::create_temp_dir_prefix("testBigDocuments"),
         )?;
         let mut dir = MockDirectoryWrapper::new(&*random(), Arc::new(mmap));
-        let mut iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
+        let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
         iw_conf.set_max_buffered_docs(RandomNumbers::random_int_between(&*random(), 2, 30))?;
         let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_conf)?;
 
@@ -1310,7 +1310,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_bulk_merge_with_deletes(&self) -> Result<()> {
         let num_docs = LuceneTestCase::at_least(200);
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
         iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
         for i in 0..num_docs {
@@ -1486,7 +1486,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         }
 
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 5, 20))?;
         iwc.set_index_sort(sort()?)?;
         let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
@@ -1537,7 +1537,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         for id in &ids {
             if random().next_int_bound(100) < 5 {
                 // add via foreign reader
-                let mut other_iwc = LuceneTestCase::new_index_writer_config();
+                let other_iwc = LuceneTestCase::new_index_writer_config();
                 other_iwc.set_index_sort(sort()?)?;
                 let mut other_dir = LuceneTestCase::new_directory();
                 let other_iw = RandomIndexWriter::new_with_config(

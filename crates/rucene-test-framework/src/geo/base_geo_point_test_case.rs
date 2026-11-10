@@ -988,7 +988,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         let mut lats = vec![0.0; 2 * num_points];
         let mut lons = vec![0.0; 2 * num_points];
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
 
         // We rely on docID order:
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -1236,7 +1236,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         lats: &[f64],
         lons: &[f64],
     ) -> Result<(TestDirectory, Arc<dyn DirectoryReader>)> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
         iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         // Else we can get O(N^2) merging:
@@ -1595,7 +1595,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
             self.quantize_lon(rect.max_lon()),
         )?;
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
         iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
@@ -1741,7 +1741,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
     /// `doRandomDistanceTest(int numDocs, int numQueries)` (`private`).
     fn do_random_distance_test(&self, num_docs: i32, num_queries: i32) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
         iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let points_in_leaf = 2 + random().next_int_bound(4);
@@ -1909,7 +1909,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
         let mut directory = LuceneTestCase::new_directory();
 
         // TODO: must these simple tests really rely on docid order?
-        let mut iwc: IndexWriterConfig = LuceneTestCase::new_index_writer_config_analyzer(Some(
+        let iwc: IndexWriterConfig = LuceneTestCase::new_index_writer_config_analyzer(Some(
             Arc::new(MockAnalyzer::new(&*random())),
         ));
         iwc.set_max_buffered_docs(TestUtil::next_int(&*random(), 100, 1000))?;
@@ -2131,7 +2131,7 @@ pub trait BaseGeoPointTestCase: Send + Sync + 'static {
 
     /// `testNarrowPolygonCloseToNorthPole()`.
     fn test_narrow_polygon_close_to_north_pole(&self) -> Result<()> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let mut dir = LuceneTestCase::new_directory();
         let w = IndexWriter::new(dir.as_directory(), iwc)?;

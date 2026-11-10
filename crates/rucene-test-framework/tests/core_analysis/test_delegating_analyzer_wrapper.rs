@@ -98,8 +98,8 @@ impl Analyzer for CharFilteringAnalyzer {
 
     fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::with_factory_only(self.attribute_factory(field_name))?;
-        Ok(tokenizer_components(std::rc::Rc::new(
-            std::cell::RefCell::new(tokenizer),
+        Ok(tokenizer_components(std::sync::Arc::new(
+            rucene::util::atomic_ref_cell::AtomicRefCell::new(tokenizer),
         )))
     }
 }

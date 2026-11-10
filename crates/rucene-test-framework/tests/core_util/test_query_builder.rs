@@ -1,7 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/util/TestQueryBuilder.java`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::{Class, Method};
@@ -315,7 +314,7 @@ impl Analyzer for MockSynonymAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let tokenizer = Rc::new(RefCell::new(MockTokenizer::whitespace_lower_case()?));
+        let tokenizer = Arc::new(AtomicRefCell::new(MockTokenizer::whitespace_lower_case()?));
         let filter = MockSynonymFilter::new(shared(&tokenizer))?;
         Ok(components(tokenizer, sink(filter)))
     }
@@ -547,8 +546,8 @@ impl Analyzer for SimpleCJKAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        Ok(TokenStreamComponents::from_tokenizer(Rc::new(
-            RefCell::new(SimpleCJKTokenizer::create()?),
+        Ok(TokenStreamComponents::from_tokenizer(Arc::new(
+            AtomicRefCell::new(SimpleCJKTokenizer::create()?),
         )))
     }
 }
@@ -669,7 +668,7 @@ impl Analyzer for MockCJKSynonymAnalyzer {
     }
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-        let tokenizer = Rc::new(RefCell::new(SimpleCJKTokenizer::create()?));
+        let tokenizer = Arc::new(AtomicRefCell::new(SimpleCJKTokenizer::create()?));
         let filter = MockCJKSynonymFilter::create(shared(&tokenizer))?;
         Ok(components(tokenizer, sink(filter)))
     }
@@ -819,8 +818,8 @@ impl Analyzer for NoTermAnalyzer {
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         // Can't use MockTokenizer because it adds TermAttribute and we don't want that
         let source = AttributeSource::new_with_factory(default_token_attribute_factory());
-        Ok(TokenStreamComponents::from_tokenizer(Rc::new(
-            RefCell::new(Tokenizer::with_source(
+        Ok(TokenStreamComponents::from_tokenizer(Arc::new(
+            AtomicRefCell::new(Tokenizer::with_source(
                 source,
                 NoTermTokenizer { was_reset: false },
             )),

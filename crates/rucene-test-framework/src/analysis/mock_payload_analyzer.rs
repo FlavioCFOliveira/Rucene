@@ -17,8 +17,7 @@
 
 //! Port of `org.apache.lucene.tests.analysis.MockPayloadAnalyzer`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use rucene::analysis::{
@@ -68,7 +67,7 @@ impl Analyzer for MockPayloadAnalyzer {
     }
 
     fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
-        let result = Rc::new(RefCell::new(MockTokenizer::new(
+        let result = Arc::new(AtomicRefCell::new(MockTokenizer::new(
             Arc::clone(&WHITESPACE),
             true,
         )?));

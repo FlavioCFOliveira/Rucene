@@ -2,8 +2,7 @@
 //!
 //! This class tests the MultiPhraseQuery class.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -454,8 +453,8 @@ fn test_empty_to_string() -> Result<()> {
 
 /// `new TextField("field", new CannedTokenStream(tokens))`.
 fn canned_text_field(tokens: Vec<Token>) -> Result<Box<Field>> {
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(CannedTokenStream::new(tokens)));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(CannedTokenStream::new(tokens)));
     Ok(Box::new(Field::new_with_token_stream(
         "field",
         stream,

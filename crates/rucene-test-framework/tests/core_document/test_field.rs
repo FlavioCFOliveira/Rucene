@@ -5,8 +5,7 @@
 //! inherits, which the port declares as
 //! [`FieldValueSetters`](rucene::document::FieldValueSetters).
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -1036,7 +1035,7 @@ fn try_set_string_value<F: FieldValueSetters>(f: &mut F) {
 
 fn try_set_token_stream_value<F: FieldValueSetters>(f: &mut F) {
     expect_throws(IAE, || {
-        f.set_token_stream(Rc::new(RefCell::new(CannedTokenStream::new(vec![
+        f.set_token_stream(Arc::new(AtomicRefCell::new(CannedTokenStream::new(vec![
             Token::with_offsets("foo", 0, 3),
         ]))))
     });

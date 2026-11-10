@@ -9,9 +9,8 @@
 //!   extend one another).
 //! * `if (true) { … }` and `if (savedTerms == null)`: kept as in Java.
 
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::any::{Any, TypeId};
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use randomizedtesting::annotations::TimeoutSuite;
@@ -259,12 +258,15 @@ fn test_2b_terms() -> Result<()> {
         petabyte_max_merge(&w);
 
         let mut doc = Document::new();
-        let ts = Rc::new(RefCell::new(MyTokenStream::new(random(), terms_per_doc)?));
+        let ts = Arc::new(AtomicRefCell::new(MyTokenStream::new(
+            random(),
+            terms_per_doc,
+        )?));
 
         let custom_type = FieldType::new_from(TextField::type_not_stored());
         custom_type.set_index_options(IndexOptions::DOCS)?;
         custom_type.set_omit_norms(true)?;
-        let stream: Rc<RefCell<dyn TokenStream>> = ts.clone();
+        let stream: Arc<AtomicRefCell<dyn TokenStream>> = ts.clone();
         let field = Field::new_with_token_stream("field", stream, custom_type)?;
         doc.add(Box::new(field));
         // w.setInfoStream(System.out);

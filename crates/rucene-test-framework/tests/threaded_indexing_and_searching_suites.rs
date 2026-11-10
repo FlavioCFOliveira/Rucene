@@ -1131,7 +1131,7 @@ mod crt {
     pub fn test_thread_starvation_no_delete_nrt_reader(
         _inst: &mut ThreadedInstance<ControlledRealTimeSuite>,
     ) -> Result<()> {
-        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         )));
         conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
@@ -1361,7 +1361,7 @@ mod crt {
             5.0,
             128.0,
         ));
-        let mut config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
+        let config = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
             &*LuceneTestCase::random(),
         ))));
         config.set_commit_on_close(true);
@@ -1627,7 +1627,7 @@ mod sm {
     /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergeScheduler(new
     /// ConcurrentMergeScheduler())`.
     fn cms_config() -> Result<IndexWriterConfig> {
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         )));
         iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
@@ -2589,7 +2589,7 @@ mod sm {
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
-        let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
+        let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         )));
         iwc.set_index_deletion_policy(Some(NoDeletionPolicy::instance()))?;

@@ -11,7 +11,7 @@
 #![deny(unsafe_code)]
 
 use std::any::{Any, TypeId};
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -25,6 +25,7 @@ use crate::analysis::tokenattributes::{
     TermToBytesRefAttribute, TypeAttribute,
 };
 use crate::error::LuceneError;
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 
 /// Base marker trait for all Lucene attributes.
 ///
@@ -687,7 +688,7 @@ impl AttributeInterface for dyn KeywordAttribute {
 }
 
 /// A shared, mutable attribute implementation held by an [`AttributeSource`].
-pub type AttributeCell = Rc<RefCell<Box<dyn AttributeImpl>>>;
+pub type AttributeCell = Arc<AtomicRefCell<Box<dyn AttributeImpl>>>;
 
 /// The attribute maps every [`AttributeSource`] of one chain shares.
 ///
@@ -737,7 +738,7 @@ impl SharedAttributes {
 ///
 /// **Divergence from Lucene 10.5.0.** [`get_attribute`](Self::get_attribute)
 /// and [`get_attribute_mut`](Self::get_attribute_mut) return a guard borrowed
-/// from the source itself, which a map shared behind a `RefCell` cannot lend
+/// from the source itself, which a map shared behind an `AtomicRefCell` cannot lend
 /// without `unsafe`; they read the source's own view of the shared map, which
 /// is brought up to date by every `add_attribute*` call on that source. An
 /// attribute another source of the chain added afterwards is therefore found
@@ -748,7 +749,7 @@ pub struct AttributeSource {
     /// This source's view of `shared.attributes`, for the borrowed getters.
     attributes: HashMap<TypeId, AttributeCell>,
     /// The maps shared with every source of the chain.
-    shared: Rc<RefCell<SharedAttributes>>,
+    shared: Arc<AtomicRefCell<SharedAttributes>>,
     /// Factory used to create missing attributes.
     factory: Arc<dyn AttributeFactory>,
 }
@@ -763,7 +764,7 @@ impl AttributeSource {
     pub fn new_with_factory(factory: Arc<dyn AttributeFactory>) -> Self {
         Self {
             attributes: HashMap::new(),
-            shared: Rc::new(RefCell::new(SharedAttributes::default())),
+            shared: Arc::new(AtomicRefCell::new(SharedAttributes::default())),
             factory,
         }
     }
@@ -775,7 +776,7 @@ impl AttributeSource {
     pub fn new_from(input: &Self) -> Self {
         Self {
             attributes: input.shared.borrow().attributes.clone(),
-            shared: Rc::clone(&input.shared),
+            shared: Arc::clone(&input.shared),
             factory: Arc::clone(&input.factory),
         }
     }
@@ -794,7 +795,7 @@ impl AttributeSource {
             for (id, cell) in &shared.attributes {
                 self.attributes
                     .entry(*id)
-                    .or_insert_with(|| Rc::clone(cell));
+                    .or_insert_with(|| Arc::clone(cell));
             }
         }
     }
@@ -830,12 +831,12 @@ impl AttributeSource {
                     .iter()
                     .all(|interface_id| shared.attributes.contains_key(interface_id))
                 {
-                    let rc: AttributeCell = Rc::new(RefCell::new(att));
+                    let rc: AttributeCell = Arc::new(AtomicRefCell::new(att));
                     for interface_id in interfaces {
                         if let std::collections::hash_map::Entry::Vacant(slot) =
                             shared.attributes.entry(interface_id)
                         {
-                            slot.insert(Rc::clone(&rc));
+                            slot.insert(Arc::clone(&rc));
                             shared.interface_order.push(interface_id);
                         }
                     }
@@ -853,7 +854,7 @@ impl AttributeSource {
     ///
     /// Returns `LuceneError::IllegalArgument` if the factory cannot create the
     /// attribute.
-    pub fn add_attribute<A: Attribute>(&mut self) -> Result<Ref<'_, A>, LuceneError> {
+    pub fn add_attribute<A: Attribute>(&mut self) -> Result<AtomicRef<'_, A>, LuceneError> {
         let id = TypeId::of::<A>();
         self.sync_view();
         if !self.attributes.contains_key(&id) {
@@ -861,7 +862,7 @@ impl AttributeSource {
             self.add_attribute_impl(new_impl);
         }
         let rc = self.attributes.get(&id).unwrap();
-        Ok(Ref::map(rc.borrow(), |att| {
+        Ok(AtomicRef::map(rc.borrow(), |att| {
             att.as_any()
                 .downcast_ref::<A>()
                 .expect("attribute type mismatch")
@@ -887,14 +888,14 @@ impl AttributeSource {
             let new_impl = self.factory.create_attribute_instance(attribute_type)?;
             self.add_attribute_impl(new_impl);
         }
-        Ok(Rc::clone(self.attributes.get(&attribute_type).ok_or_else(
-            || {
+        Ok(Arc::clone(
+            self.attributes.get(&attribute_type).ok_or_else(|| {
                 LuceneError::IllegalArgument(format!(
                     "the factory's implementation does not provide TypeId {:?}",
                     attribute_type
                 ))
-            },
-        )?))
+            })?,
+        ))
     }
 
     /// Adds a pre-built [`AttributeImpl`] instance to this source.
@@ -933,13 +934,13 @@ impl AttributeSource {
             .borrow()
             .attributes
             .get(&attribute_type)
-            .map(Rc::clone)
+            .map(Arc::clone)
     }
 
     /// Returns a borrowed reference to attribute `A`, if present.
-    pub fn get_attribute<A: Attribute>(&self) -> Option<Ref<'_, A>> {
+    pub fn get_attribute<A: Attribute>(&self) -> Option<AtomicRef<'_, A>> {
         let rc = self.attributes.get(&TypeId::of::<A>())?;
-        Some(Ref::map(rc.borrow(), |att| {
+        Some(AtomicRef::map(rc.borrow(), |att| {
             att.as_any()
                 .downcast_ref::<A>()
                 .expect("attribute type mismatch")
@@ -956,9 +957,11 @@ impl AttributeSource {
     ///
     /// When the implementation is borrowed mutably, or does not answer the
     /// cast to `I` it is registered for.
-    pub fn get_attribute_interface<I: AttributeInterface + ?Sized>(&self) -> Option<Ref<'_, I>> {
+    pub fn get_attribute_interface<I: AttributeInterface + ?Sized>(
+        &self,
+    ) -> Option<AtomicRef<'_, I>> {
         let rc = self.attributes.get(&TypeId::of::<I>())?;
-        Some(Ref::map(rc.borrow(), |att| {
+        Some(AtomicRef::map(rc.borrow(), |att| {
             I::cast(&**att).expect("INVARIANT: an implementation answers the casts it is keyed by")
         }))
     }
@@ -972,9 +975,9 @@ impl AttributeSource {
     /// `I` it is registered for.
     pub fn get_attribute_interface_mut<I: AttributeInterface + ?Sized>(
         &self,
-    ) -> Option<RefMut<'_, I>> {
+    ) -> Option<AtomicRefMut<'_, I>> {
         let rc = self.attributes.get(&TypeId::of::<I>())?;
-        Some(RefMut::map(rc.borrow_mut(), |att| {
+        Some(AtomicRefMut::map(rc.borrow_mut(), |att| {
             I::cast_mut(&mut **att)
                 .expect("INVARIANT: an implementation answers the casts it is keyed by")
         }))
@@ -1003,9 +1006,9 @@ impl AttributeSource {
     }
 
     /// Returns a mutable borrowed reference to attribute `A`, if present.
-    pub fn get_attribute_mut<A: Attribute>(&self) -> Option<RefMut<'_, A>> {
+    pub fn get_attribute_mut<A: Attribute>(&self) -> Option<AtomicRefMut<'_, A>> {
         let rc = self.attributes.get(&TypeId::of::<A>())?;
-        Some(RefMut::map(rc.borrow_mut(), |att| {
+        Some(AtomicRefMut::map(rc.borrow_mut(), |att| {
             att.as_any_mut()
                 .downcast_mut::<A>()
                 .expect("attribute type mismatch")
@@ -1019,7 +1022,7 @@ impl AttributeSource {
             .borrow()
             .impls
             .iter()
-            .map(|(_, cell)| Rc::clone(cell))
+            .map(|(_, cell)| Arc::clone(cell))
             .collect()
     }
 
@@ -1103,7 +1106,7 @@ impl AttributeSource {
                 .shared
                 .borrow()
                 .impl_of(*type_id)
-                .map(Rc::clone)
+                .map(Arc::clone)
                 .ok_or_else(|| {
                     LuceneError::IllegalArgument(format!(
                         "State contains AttributeImpl of type {:?} that is not in in this AttributeSource",
@@ -1128,14 +1131,14 @@ impl AttributeSource {
                 .shared
                 .borrow()
                 .impl_of(type_id)
-                .map(Rc::clone)
+                .map(Arc::clone)
                 .ok_or_else(|| {
                     LuceneError::IllegalArgument(format!(
                         "This AttributeSource contains AttributeImpl of type {:?} that is not in the target",
                         type_id
                     ))
                 })?;
-            if Rc::ptr_eq(&cell, &target_rc) {
+            if Arc::ptr_eq(&cell, &target_rc) {
                 continue;
             }
             cell.borrow().copy_to(&mut **target_rc.borrow_mut());
@@ -1519,7 +1522,7 @@ mod tests {
         let first = source.add_attribute_by_id(id).unwrap();
         let second = source.add_attribute_by_id(id).unwrap();
 
-        assert!(Rc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[test]
@@ -1691,7 +1694,7 @@ mod tests {
         let from_derived = derived
             .get_attribute_by_id(TypeId::of::<OtherAttribute>())
             .unwrap();
-        assert!(Rc::ptr_eq(&from_input, &from_derived));
+        assert!(Arc::ptr_eq(&from_input, &from_derived));
         assert_eq!(input.attribute_impls_iter().count(), 2);
     }
 

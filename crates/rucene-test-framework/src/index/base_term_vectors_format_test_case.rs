@@ -41,12 +41,12 @@
 //!   that reuses it, so the port reads the freq of `docsOnly2`, which is
 //!   the same object whenever the format reuses it.
 
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::panic::AssertUnwindSafe;
-use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use randomizedtesting::generators::RandomPicks;
@@ -713,7 +713,7 @@ impl RandomDocument {
     pub fn to_document(&self) -> Document {
         let mut doc = Document::new();
         for i in 0..self.field_names.len() {
-            let stream: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
                 RandomTokenStream::over(Arc::clone(&self.token_streams[i])),
             ));
             doc.add(Box::new(
@@ -1126,7 +1126,9 @@ impl Analyzer for MockTokenizerAnalyzer {
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::whitespace_lower_case()?;
-        Ok(tokenizer_components(Rc::new(RefCell::new(tokenizer))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
+            tokenizer,
+        ))))
     }
 }
 
@@ -1543,7 +1545,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             }
             let mut dir = LuceneTestCase::new_directory();
             {
-                let mut iwc = LuceneTestCase::new_index_writer_config();
+                let iwc = LuceneTestCase::new_index_writer_config();
                 if let Some(index_sort) = &index_sort {
                     iwc.set_index_sort(index_sort.clone())?;
                 }
@@ -1582,7 +1584,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     }
                     if random().next_int_bound(100) < 5 {
                         // add via foreign writer
-                        let mut other_iwc = LuceneTestCase::new_index_writer_config();
+                        let other_iwc = LuceneTestCase::new_index_writer_config();
                         if let Some(index_sort) = &index_sort {
                             other_iwc.set_index_sort(index_sort.clone())?;
                         }
@@ -1840,8 +1842,8 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             || {
                 let tokens = payload_tokens();
                 let ft = tv_type(true, false, true)?;
-                let stream: Rc<RefCell<dyn TokenStream>> =
-                    Rc::new(RefCell::new(CannedTokenStream::new(tokens)));
+                let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+                    Arc::new(AtomicRefCell::new(CannedTokenStream::new(tokens)));
                 Field::new_with_token_stream("foo", stream, ft)
             },
             false,
@@ -1870,8 +1872,8 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             || {
                 let tokens = payload_tokens();
                 let ft = tv_type(true, true, true)?;
-                let stream: Rc<RefCell<dyn TokenStream>> =
-                    Rc::new(RefCell::new(CannedTokenStream::new(tokens)));
+                let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+                    Arc::new(AtomicRefCell::new(CannedTokenStream::new(tokens)));
                 Field::new_with_token_stream("foo", stream, ft)
             },
             false,

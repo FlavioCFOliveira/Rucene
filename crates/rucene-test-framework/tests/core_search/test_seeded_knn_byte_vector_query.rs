@@ -143,7 +143,7 @@ pub fn index_tagged_docs<C: KnnVectorCase>(
     num_docs: i32,
     dimension: i32,
 ) -> Result<()> {
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_codec(TestUtil::get_default_codec())?;
     let w = RandomIndexWriter::new_with_config(&*random(), d.as_directory(), iwc)?;
     for i in 0..num_docs {
@@ -222,7 +222,7 @@ fn test_seed_with_timeout() -> Result<()> {
 /// The writer config of `testRandomWithSeed`: always the default kNN format,
 /// to have predictable behavior around when it hits visitedLimit.
 pub fn random_with_seed_config() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_codec(TestUtil::always_knn_vectors_format(Arc::new(
         Lucene99HnswVectorsFormat::with_max_conn_beam_width_threshold(
             DEFAULT_MAX_CONN,

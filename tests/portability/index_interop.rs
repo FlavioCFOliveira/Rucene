@@ -28,11 +28,10 @@
 //! * Positive control: one flipped byte in a copy of `R` makes Lucene's
 //!   `CheckIndex` report the index as not clean.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rucene::analysis::tokenattributes::{
@@ -161,8 +160,8 @@ fn doc(i: i32) -> Document {
     let mut d = Document::new();
     d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
     d.add(Box::new(Field::new("body", body(i), body_type()).unwrap()));
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(ScriptedTokenStream::new(tv_tokens(i))));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tv_tokens(i))));
     d.add(Box::new(
         Field::new_with_token_stream("tv", stream, tv_type()).unwrap(),
     ));
@@ -253,7 +252,7 @@ fn add_batch(w: &IndexWriter, batch: usize) {
 fn write_corpus(path: &Path) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(path).unwrap());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
@@ -1169,7 +1168,7 @@ fn write_forced_deletes(path: &Path) {
     policy.set_floor_segment_mb(0.001).unwrap();
     policy.set_segments_per_tier(50.0).unwrap();
     policy.set_target_search_concurrency(2).unwrap();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))

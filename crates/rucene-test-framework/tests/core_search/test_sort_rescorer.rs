@@ -46,7 +46,7 @@ pub fn class_def() -> Arc<Class> {
 /// `setUp()`.
 fn sort_rescorer_set_up(f: &mut SortRescorerTest) -> Result<()> {
     let dir = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config();
+    let config = LuceneTestCase::new_index_writer_config();
     config.set_similarity(Some(Arc::new(ClassicSimilarity::new())))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
 

@@ -412,7 +412,7 @@ fn lucene_dump(dir: &Path) -> Vec<String> {
 #[test]
 fn shared_terms_sorted_merge_falls_back_to_the_default_merge() {
     let dir = TempDir::new("stuniformsplit-sorted");
-    let mut config = new_config(shared_terms_small_codec());
+    let config = new_config(shared_terms_small_codec());
     config
         .set_index_sort(
             Sort::new_fields(vec![SortField::new(

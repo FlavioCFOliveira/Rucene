@@ -140,9 +140,9 @@ fn index_and_merge(inst: &TestDocInstance, use_compound_file: bool) -> Result<St
         mock.set_assert_no_unrefenced_files_on_close(false);
     }
 
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
-        MockAnalyzer::new(&*random()),
-    )));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*random(),
+    ))));
     iwc.set_open_mode(OpenMode::CREATE)?;
     iwc.set_max_buffered_docs(-1)?;
     iwc.set_merge_policy(Some(Arc::new(

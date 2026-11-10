@@ -416,7 +416,7 @@ fn test_parsing_and_searching() -> Result<()> {
     // prepare the index
     let mut dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
+    let config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     for d in &docs {

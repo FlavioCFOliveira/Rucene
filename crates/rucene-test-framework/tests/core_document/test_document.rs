@@ -1,8 +1,7 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/document/TestDocument.java`:
 //! tests the `Document` class.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -435,7 +434,7 @@ fn test_invalid_fields() -> Result<()> {
         tok.set_reader(Box::new(StringCharReader::new("")))?;
         Field::new_with_token_stream(
             "foo",
-            Rc::new(RefCell::new(tok)),
+            Arc::new(AtomicRefCell::new(tok)),
             StringField::type_stored().clone(),
         )
     });

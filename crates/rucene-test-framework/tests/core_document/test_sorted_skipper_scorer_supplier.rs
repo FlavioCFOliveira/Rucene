@@ -55,7 +55,7 @@ fn build_index_and_get_costs(
 ) -> Result<Vec<i64>> {
     let mut dir = LuceneTestCase::new_directory();
     let outcome = (|| -> Result<Vec<i64>> {
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_codec(TestUtil::always_doc_values_format(Arc::new(
             Lucene90DocValuesFormat::with_interval(skip_interval_size),
         )))?;

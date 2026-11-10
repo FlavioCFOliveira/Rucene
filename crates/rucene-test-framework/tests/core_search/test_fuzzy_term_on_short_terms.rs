@@ -1,7 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/search/TestFuzzyTermOnShortTerms.java`.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -99,7 +98,9 @@ impl Analyzer for SimpleLowerCaseAnalyzer {
 
     fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
         let tokenizer = MockTokenizer::new(Arc::clone(&SIMPLE), true)?;
-        Ok(tokenizer_components(Rc::new(RefCell::new(tokenizer))))
+        Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
+            tokenizer,
+        ))))
     }
 }
 
@@ -113,7 +114,7 @@ pub fn get_analyzer() -> Arc<dyn Analyzer> {
 /// `public static Directory getDirectory(Analyzer analyzer, String[] vals)`.
 pub fn get_directory(analyzer: &Arc<dyn Analyzer>, vals: &[&str]) -> Result<TestDirectory> {
     let directory = LuceneTestCase::new_directory();
-    let mut config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(analyzer)));
+    let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(analyzer)));
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 100, 1000))?;
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;

@@ -1000,7 +1000,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         &self,
         merge_scheduler: Arc<TestMergeScheduler>,
     ) -> Result<IndexWriterConfig> {
-        let mut iwc = IndexWriterConfig::new();
+        let iwc = IndexWriterConfig::new();
         let codec = self.get_codec();
         if let Some(per_field_knn_vectors_format) = codec
             .knn_vectors_format()
@@ -1545,7 +1545,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 )?)?;
                 w.close()?;
             }
-            let mut iwc = LuceneTestCase::new_index_writer_config();
+            let iwc = LuceneTestCase::new_index_writer_config();
             iwc.set_codec(codec_for_name("SimpleText")?)?;
             {
                 let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1564,7 +1564,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testDifferentCodecs2()`: write vectors, one segment with SimpleText,
     /// another with default codec, then forceMerge.
     fn test_different_codecs2(&self) -> Result<()> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_codec(codec_for_name("SimpleText")?)?;
         let mut dir = LuceneTestCase::new_directory();
         {
@@ -1794,7 +1794,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testFloatVectorScorerIteration()`.
     fn test_float_vector_scorer_iteration(&self) -> Result<()> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         if random().next_boolean() {
             iwc.set_index_sort(sortkey_sort()?)?;
         }
@@ -1878,7 +1878,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testByteVectorScorerIteration()`.
     fn test_byte_vector_scorer_iteration(&self) -> Result<()> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         if random().next_boolean() {
             iwc.set_index_sort(sortkey_sort()?)?;
         }
@@ -2039,7 +2039,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut v = [0f32, 0.0];
         let mut dir = LuceneTestCase::new_directory();
         {
-            let mut iwc = LuceneTestCase::new_index_writer_config();
+            let iwc = LuceneTestCase::new_index_writer_config();
             iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
             iwc.set_max_buffered_docs(3)?;
             iwc.set_ram_buffer_size_mb(-1.0)?;
@@ -2078,7 +2078,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testSortedIndex()`.
     fn test_sorted_index(&self) -> Result<()> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_index_sort(sortkey_sort()?)?;
         let field_name = "field";
         let mut dir = LuceneTestCase::new_directory();
@@ -2125,7 +2125,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testSortedIndexBytes()`.
     fn test_sorted_index_bytes(&self) -> Result<()> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_index_sort(sortkey_sort()?)?;
         let field_name = "field";
         let mut dir = LuceneTestCase::new_directory();
@@ -2180,7 +2180,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_index_multiple_knn_vector_fields(&self) -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
         {
-            let mut iwc = LuceneTestCase::new_index_writer_config();
+            let iwc = LuceneTestCase::new_index_writer_config();
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let mut v = [1.0f32, 2.0];
@@ -2256,7 +2256,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// the index, and verify that the expected values can be read back
     /// consistently.
     fn test_random(&self) -> Result<()> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         if random().next_boolean() {
             iwc.set_index_sort(sortkey_sort()?)?;
         }
@@ -2357,7 +2357,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// sometimes sorting the index, and verify that the expected values can
     /// be read back consistently.
     fn test_random_bytes(&self) -> Result<()> {
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         if random().next_boolean() {
             iwc.set_index_sort(sortkey_sort()?)?;
         }
@@ -2985,7 +2985,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             }
 
             {
-                let mut iwc = IndexWriterConfig::new();
+                let iwc = IndexWriterConfig::new();
                 iwc.set_max_buffered_docs(num_vectors + 1)?;
                 iwc.set_ram_buffer_size_mb(f64::from(
                     rucene::index::index_writer_config::LiveIndexWriterConfig::DISABLE_AUTO_FLUSH,
@@ -3073,7 +3073,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             w1.add_document(&doc)?;
 
             dir2 = LuceneTestCase::new_directory();
-            let mut iwc2 = LuceneTestCase::new_index_writer_config();
+            let iwc2 = LuceneTestCase::new_index_writer_config();
             iwc2.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::default())))?;
             let w2 = IndexWriter::new(dir2.as_directory(), iwc2)?;
             w2.add_document(&doc)?;

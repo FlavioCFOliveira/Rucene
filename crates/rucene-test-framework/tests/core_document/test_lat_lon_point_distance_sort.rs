@@ -194,7 +194,7 @@ fn double_compare(a: f64, b: f64) -> std::cmp::Ordering {
 /// `doRandomTest(numDocs, numQueries)`.
 fn do_random_test(num_docs: i32, num_queries: i32) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     // else seeds may not to reproduce:
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;

@@ -320,7 +320,7 @@ fn add_doc_to_dir(
     s: &str,
     create: bool,
 ) -> Result<()> {
-    let mut iwc =
+    let iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))));
     iwc.set_open_mode(if create {
         OpenMode::CREATE
@@ -348,14 +348,14 @@ fn test_is_current() -> Result<()> {
     let reader = directory_reader::open(d.as_directory())?;
     Assert::assert_true(reader.is_current()?);
     // modify index by adding another document:
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     let writer = IndexWriter::new(d.as_directory(), iwc)?;
     add_document_with_fields(&writer)?;
     writer.close()?;
     Assert::assert_false(reader.is_current()?);
     // re-create index:
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::CREATE)?;
     let writer = IndexWriter::new(d.as_directory(), iwc)?;
     add_document_with_fields(&writer)?;
@@ -412,7 +412,7 @@ fn test_get_field_names() -> Result<()> {
     assert_not_null(&field_infos.field_info("unstored"));
     reader.close()?;
     // add more documents
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(d.as_directory(), iwc)?;
@@ -587,7 +587,7 @@ fn test_get_field_names() -> Result<()> {
 fn test_term_vectors() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
     // set up writer
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(d.as_directory(), iwc)?;
     // want to get some more segments here
@@ -683,7 +683,7 @@ fn test_binary_fields() -> Result<()> {
     let bin1: &'static [u8] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     let bin2: &'static [u8] = &[10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -694,7 +694,7 @@ fn test_binary_fields() -> Result<()> {
         add_document_with_term_vector_fields(&writer)?;
     }
     writer.close()?;
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -719,7 +719,7 @@ fn test_binary_fields() -> Result<()> {
     check_binary_fields(&dir.as_directory(), bin1, bin2)?;
     // force merge
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -746,7 +746,7 @@ fn test_files_open_close() -> Result<()> {
     let mut dir = LuceneTestCase::new_fs_directory(&dir_file);
 
     // Now create the data set again, just as before
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::CREATE)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     add_doc(&writer, "test")?;
@@ -1086,7 +1086,7 @@ pub fn assert_index_equals(
 /// The writer config `testGetIndexCommit` builds: `setMaxBufferedDocs(2)`,
 /// `setMergePolicy(newLogMergePolicy(10))`, and `APPEND` when asked.
 fn get_index_commit_iwc(append: bool) -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     if append {
         iwc.set_open_mode(OpenMode::APPEND)?;
     }
@@ -1138,7 +1138,7 @@ fn get_index_commit_body(
     assert_not_equals(&1, &r2.index_commit()?.get_segment_count());
     r2.close()?;
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     let writer = IndexWriter::new(Arc::clone(d), iwc)?;
     writer.force_merge(1)?;
@@ -1230,7 +1230,7 @@ fn test_no_dir_with_executor() -> Result<()> {
 fn test_no_dup_commit_file_names() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     writer.add_document(&create_document("a")?)?;
@@ -1330,7 +1330,7 @@ fn test_prepare_commit_is_current() -> Result<()> {
 /// Port of `TestDirectoryReader.testListCommits`.
 fn test_list_commits() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
     let sdp = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
         KeepOnlyLastCommitDeletionPolicy,
     ))));
@@ -1470,7 +1470,7 @@ impl ClosedListener for CountingListener {
 /// Port of `TestDirectoryReader.testReaderFinishedListener`.
 fn test_reader_finished_listener() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     as_lmp(&log_merge_policy(&writer)).set_merge_factor(3)?;
@@ -1895,7 +1895,7 @@ fn create_executor_service_that_fails_one_task() -> Arc<FailsOneTask> {
 
 /// `private void createMultiSegmentIndex(Directory dir, int numSegments)`.
 fn create_multi_segment_index(dir: &Arc<dyn Directory>, num_segments: i32) -> Result<()> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_max_buffered_docs(2)?;
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let writer = IndexWriter::new(Arc::clone(dir), iwc)?;

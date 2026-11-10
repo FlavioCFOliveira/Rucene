@@ -8,10 +8,9 @@
 
 #![allow(dead_code)]
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::{Arc, Once};
 
 use rucene::analysis::tokenattributes::{
@@ -297,8 +296,8 @@ pub fn doc(i: i32) -> Document {
     let mut d = Document::new();
     d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
     d.add(Box::new(Field::new("body", body(i), body_type()).unwrap()));
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(ScriptedTokenStream::new(tv_tokens(i))));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tv_tokens(i))));
     d.add(Box::new(
         Field::new_with_token_stream("tv", stream, tv_type()).unwrap(),
     ));
@@ -380,7 +379,7 @@ pub fn doc(i: i32) -> Document {
 
 pub fn new_config(codec: Arc<dyn Codec>) -> IndexWriterConfig {
     install_codecs();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(codec).unwrap();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
@@ -395,7 +394,7 @@ pub fn open_dir(path: &Path) -> Arc<dyn Directory> {
 
 /// `SimpleTextOracle.writeCorpus`.
 pub fn write_corpus(path: &Path, compound: bool, codec: Arc<dyn Codec>) {
-    let mut config = new_config(codec);
+    let config = new_config(codec);
     if !compound {
         let policy = TieredMergePolicy::new();
         policy.set_no_cfs_ratio(0.0).unwrap();
@@ -528,7 +527,7 @@ pub fn shared_type(options: IndexOptions) -> FieldType {
 
 /// `PostingsFormatOracle.writeShared(Directory, Codec)`.
 pub fn write_shared(path: &Path, codec: Arc<dyn Codec>) {
-    let mut config = new_config(codec);
+    let config = new_config(codec);
     let policy = TieredMergePolicy::new();
     policy.set_no_cfs_ratio(0.0).unwrap();
     config.set_merge_policy(Some(Arc::new(policy))).unwrap();
@@ -897,7 +896,7 @@ pub fn edge_doc(i: i32) -> Document {
 
 /// `SimpleTextOracle.writeEdge`.
 pub fn write_edge(path: &Path, codec: Arc<dyn Codec>) {
-    let mut config = new_config(codec);
+    let config = new_config(codec);
     config.set_use_compound_file(false).unwrap();
     config.set_soft_deletes_field(Some("e_soft".to_string()));
     config

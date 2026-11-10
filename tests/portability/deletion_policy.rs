@@ -354,7 +354,7 @@ fn rucene_commit_sequence(commits: usize) -> (Vec<i64>, Vec<i64>) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
 
     let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .expect("NoDeletionPolicy is a valid deletion policy");

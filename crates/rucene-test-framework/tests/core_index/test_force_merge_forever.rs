@@ -58,7 +58,7 @@ fn test_() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
-    let mut iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
+    let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     // SMS can cause this test to run indefinitely long:
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
 

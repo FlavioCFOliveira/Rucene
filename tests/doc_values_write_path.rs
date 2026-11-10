@@ -42,7 +42,7 @@ fn fresh_directory(name: &str) -> Arc<dyn Directory> {
 #[test]
 fn numeric_doc_values_written_by_the_index_writer_are_read_back() {
     let dir = fresh_directory("rucene-183-dv-round-trip");
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("merge policy");
@@ -83,7 +83,7 @@ fn numeric_doc_values_written_by_the_index_writer_are_read_back() {
 #[test]
 fn a_flushed_segment_records_how_many_documents_it_soft_deletes() {
     let dir = fresh_directory("rucene-183-soft-del-count");
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("merge policy");
@@ -122,7 +122,7 @@ fn a_flushed_segment_records_how_many_documents_it_soft_deletes() {
 #[test]
 fn a_segment_with_no_soft_deletes_field_configured_records_none() {
     let dir = fresh_directory("rucene-183-soft-del-count-off");
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .expect("merge policy");

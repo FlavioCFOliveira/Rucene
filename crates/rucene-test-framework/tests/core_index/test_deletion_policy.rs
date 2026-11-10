@@ -364,7 +364,7 @@ fn test_expiration_time_deletion_policy() -> Result<()> {
         expiration_time_seconds: SECONDS,
         num_delete: AtomicI32::new(0),
     });
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
     conf.merge_policy().set_no_cfs_ratio(1.0)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -378,7 +378,7 @@ fn test_expiration_time_deletion_policy() -> Result<()> {
         // Record last time when writer performed deletes of
         // past commits
         last_delete_time = randomizedtesting::jdk::system::nano_time();
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_open_mode(OpenMode::APPEND)?;
         conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
         conf.merge_policy().set_no_cfs_ratio(1.0)?;
@@ -462,7 +462,7 @@ fn test_keep_all_deletion_policy() -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
 
         let policy = Arc::new(KeepAllDeletionPolicy::new(dir.as_directory()));
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
         conf.set_max_buffered_docs(10)?;
         conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
@@ -481,7 +481,7 @@ fn test_keep_all_deletion_policy() -> Result<()> {
             needs_merging
         };
         if needs_merging {
-            let mut conf = mock_iwc();
+            let conf = mock_iwc();
             conf.set_open_mode(OpenMode::APPEND)?;
             conf.set_index_deletion_policy(Some(
                 Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>
@@ -534,7 +534,7 @@ fn test_keep_all_deletion_policy() -> Result<()> {
                 // Open & close a writer and assert that it
                 // actually removed something:
                 let pre_count = dir.as_directory().list_all()?.len();
-                let mut conf = mock_iwc();
+                let conf = mock_iwc();
                 conf.set_open_mode(OpenMode::APPEND)?;
                 conf.set_index_deletion_policy(Some(
                     Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>
@@ -558,7 +558,7 @@ fn prior_commit_iwc(
     policy: Option<&Arc<KeepAllDeletionPolicy>>,
     last_commit: &Arc<dyn IndexCommit>,
 ) -> Result<IndexWriterConfig> {
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     if let Some(policy) = policy {
         conf.set_index_deletion_policy(Some(Arc::clone(policy) as Arc<dyn IndexDeletionPolicy>))?;
     }
@@ -577,7 +577,7 @@ fn test_open_prior_snapshot() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
 
     let policy = Arc::new(KeepAllDeletionPolicy::new(dir.as_directory()));
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
     conf.set_max_buffered_docs(2)?;
     conf.set_merge_policy(Some(Arc::new(
@@ -607,7 +607,7 @@ fn test_open_prior_snapshot() -> Result<()> {
     let last_commit = last_commit.expect("checked by assertTrue");
 
     // Now add 1 doc and merge
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     add_doc(&writer)?;
@@ -658,7 +658,7 @@ fn test_open_prior_snapshot() -> Result<()> {
     r.close()?;
 
     // Re-merge
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     writer.force_merge(1)?;
@@ -704,7 +704,7 @@ fn test_keep_none_on_init_deletion_policy() -> Result<()> {
         let mut dir = LuceneTestCase::new_directory();
 
         let policy = Arc::new(KeepNoneOnInitDeletionPolicy::default());
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_open_mode(OpenMode::CREATE)?;
         conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
         conf.set_max_buffered_docs(10)?;
@@ -716,7 +716,7 @@ fn test_keep_none_on_init_deletion_policy() -> Result<()> {
         }
         writer.close()?;
 
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_open_mode(OpenMode::APPEND)?;
         conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
         conf.merge_policy().set_no_cfs_ratio(1.0)?;
@@ -762,7 +762,7 @@ fn test_keep_last_n_deletion_policy() -> Result<()> {
 
         let policy = Arc::new(KeepLastNDeletionPolicy::new(N));
         for _ in 0..N + 1 {
-            let mut conf = mock_iwc();
+            let conf = mock_iwc();
             conf.set_open_mode(OpenMode::CREATE)?;
             conf.set_index_deletion_policy(Some(
                 Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>
@@ -871,7 +871,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
 
         let mut dir = LuceneTestCase::new_directory();
         let policy = Arc::new(KeepLastNDeletionPolicy::new(N));
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_open_mode(OpenMode::CREATE)?;
         conf.set_index_deletion_policy(Some(Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>))?;
         conf.set_max_buffered_docs(10)?;
@@ -883,7 +883,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
         let query: Arc<dyn Query> = Arc::new(TermQuery::new(search_term));
 
         for i in 0..N + 1 {
-            let mut conf = mock_iwc();
+            let conf = mock_iwc();
             conf.set_open_mode(OpenMode::APPEND)?;
             conf.set_index_deletion_policy(Some(
                 Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>
@@ -897,7 +897,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
             }
             // this is a commit
             writer.close()?;
-            let mut conf =
+            let conf =
                 IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
             conf.set_index_deletion_policy(Some(
                 Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>
@@ -914,7 +914,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
             assert_equals(&16, &hits);
             reader.close()?;
 
-            let mut conf = mock_iwc();
+            let conf = mock_iwc();
             conf.set_open_mode(OpenMode::CREATE)?;
             conf.set_index_deletion_policy(Some(
                 Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>
@@ -984,7 +984,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
 /// Port of `TestDeletionPolicy.testKeepLastNCommitsDeletionPolicy`.
 fn test_keep_last_n_commits_deletion_policy() -> Result<()> {
     let num_commits_to_keep = 3;
-    let mut conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     conf.set_index_deletion_policy(Some(Arc::new(KeepLastNCommitsDeletionPolicy::new(
         num_commits_to_keep,
     )?)))?;
@@ -1032,7 +1032,7 @@ fn test_keep_last_n_commits_deletion_policy() -> Result<()> {
 /// Port of `TestDeletionPolicy.testKeepLastNCommitsDeletionPolicyWithZeroCommits`.
 fn test_keep_last_n_commits_deletion_policy_with_zero_commits() -> Result<()> {
     let num_commits_to_keep = 0;
-    let mut conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let expected = expect_throws(IAE, || -> Result<()> {
         conf.set_index_deletion_policy(Some(Arc::new(KeepLastNCommitsDeletionPolicy::new(
             num_commits_to_keep,

@@ -286,7 +286,7 @@ fn test_reclaimed_deletes() -> Result<()> {
 fn test_reclaimed_deletes_whole_segments() -> Result<()> {
     let _limit = MaxDocsGuard::set(10);
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = iwc_null();
+    let iwc = iwc_null();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     for i in 0..10 {

@@ -89,7 +89,7 @@ fn drain(mut terms_enum: Box<dyn TermsEnum>) -> Vec<String> {
 
 fn field_terms() -> Box<dyn Terms> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
         .unwrap();

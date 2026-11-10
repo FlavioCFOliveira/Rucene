@@ -2,9 +2,9 @@
 //!
 //! * `idField.setStringValue(...)` on a field already added to `document`
 //!   mutates the document's own field (`crate::support::field_mut`).
-//! * The `Document` `testNoWaitClose` hands to its thread is built again in
-//!   that thread (same field, no random draw): Rucene's `Document` holds
-//!   `Box<dyn IndexableField>`, which is not `Send`. The thread's `catch
+//! * `testNoWaitClose` shares its one `Document` with its thread (an `Arc`);
+//!   the main thread changes the `id` field once the previous iteration's
+//!   thread is joined, as Java does. The thread's `catch
 //!   (NullPointerException e)` has no Rust counterpart: Rucene reports a
 //!   closed writer as `AlreadyClosedException` only.
 //! * `new ConcurrentMergeScheduler() { doMerge }` installs the
@@ -33,7 +33,7 @@ use rucene::index::merge_scheduler::{
 use rucene::index::terms::Term;
 use rucene::util::SameThreadExecutorService;
 use rucene_test_framework::analysis::MockAnalyzer;
-use rucene_test_framework::util::java_exceptions::{is_instance, java_throwable, rethrow_java};
+use rucene_test_framework::util::java_exceptions::{is_instance, java_throwable};
 use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::LuceneTestCase;
 
@@ -87,28 +87,28 @@ fn mock_iwc() -> IndexWriterConfig {
 
 /// `new IndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn dont_merge_config() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     Ok(iwc)
 }
 
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     Ok(iwc)
 }
 
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy())`.
 fn log_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     Ok(iwc)
 }
 
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(newLogMergePolicy(n))`.
 fn log_n_iwc(merge_factor: i32) -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(merge_factor)?,
     )))?;
@@ -118,7 +118,7 @@ fn log_n_iwc(merge_factor: i32) -> Result<IndexWriterConfig> {
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setMaxBufferedDocs(2)
 /// .setRAMBufferSizeMB(IndexWriterConfig.DISABLE_AUTO_FLUSH)`.
 fn two_docs_iwc() -> Result<IndexWriterConfig> {
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
     iwc.set_ram_buffer_size_mb(
         rucene::index::index_writer_config::LiveIndexWriterConfig::DISABLE_AUTO_FLUSH as f64,
@@ -197,7 +197,7 @@ fn verify_index(directory: &TestDirectory, start_at: i32) -> Result<bool> {
 
 /// `private void fillIndex(Random random, Directory dir, int start, int numDocs)`.
 fn fill_index(random: &dyn Random, dir: &TestDirectory, start: i32, num_docs: i32) -> Result<()> {
-    let mut iwc =
+    let iwc =
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(random))));
     iwc.set_open_mode(OpenMode::CREATE)?;
     iwc.set_max_buffered_docs(2)?;
@@ -281,7 +281,7 @@ fn test_force_merge_deletes() -> Result<()> {
 /// The 98-document index of `testForceMergeDeletes2` and `3`, with every even
 /// id deleted.
 fn ninety_eight_docs_half_deleted(dir: &TestDirectory) -> Result<()> {
-    let mut iwc = two_docs_iwc()?;
+    let iwc = two_docs_iwc()?;
     iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(50)?,
     )))?;
@@ -527,7 +527,7 @@ fn test_merge_observer_await_timeout() -> Result<()> {
         )));
     }
 
-    let mut iwc = log_iwc()?;
+    let iwc = log_iwc()?;
     iwc.set_merge_scheduler(Some(Arc::new(merge_scheduler)))?;
     let indexer = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -628,7 +628,7 @@ fn as_log_merge_policy(mp: &Arc<dyn MergePolicy>) -> &LogMergePolicy {
 /// Port of `TestIndexWriterMerging.testSetMaxMergeDocs`.
 fn test_set_max_merge_docs() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    let mut conf = mock_iwc();
+    let conf = mock_iwc();
     conf.set_merge_scheduler(Some(Arc::new(MyMergeScheduler::default())))?;
     conf.set_max_buffered_docs(2)?;
     conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -665,13 +665,14 @@ fn test_no_wait_close() -> Result<()> {
 
     let id_field = LuceneTestCase::new_field("id", "", &custom_type);
     doc.add(Box::new(id_field));
+    let mut doc = Arc::new(doc);
 
     for pass in 0..2 {
         if verbose() {
             println!("TEST: pass={pass}");
         }
 
-        let mut conf = mock_iwc();
+        let conf = mock_iwc();
         conf.set_open_mode(OpenMode::CREATE)?;
         conf.set_max_buffered_docs(2)?;
         conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -689,8 +690,10 @@ fn test_no_wait_close() -> Result<()> {
                 println!("TEST: iter={iter}");
             }
             for j in 0..199 {
-                field_mut(&mut doc, "id").set_string_value((iter * 201 + j).to_string())?;
-                writer.add_document(&doc)?;
+                let doc_mut = Arc::get_mut(&mut doc)
+                    .expect("INVARIANT: the last thread sharing doc was joined");
+                field_mut(doc_mut, "id").set_string_value((iter * 201 + j).to_string())?;
+                writer.add_document(&*doc)?;
             }
 
             let mut del_id = iter * 199;
@@ -708,27 +711,14 @@ fn test_no_wait_close() -> Result<()> {
 
             let final_writer = Arc::clone(&writer);
             let failure: Arc<Mutex<Option<Throwable>>> = Arc::new(Mutex::new(None));
-            // `doc` holds the one field `id`; the thread builds the same field.
-            let (id_name, id_value, id_type) = {
-                let f = field_mut(&mut doc, "id");
-                (
-                    f.name().to_string(),
-                    f.string_value().unwrap_or_default(),
-                    FieldType::new_from(f.field_type()),
-                )
-            };
             let t1 = {
                 let failure = Arc::clone(&failure);
+                let doc = Arc::clone(&doc);
                 Thread::unnamed(move || {
-                    let mut doc = Document::new();
-                    match rucene::document::Field::new(&id_name, id_value, id_type) {
-                        Ok(f) => doc.add(Box::new(f)),
-                        Err(e) => rethrow_java(e),
-                    }
                     let done = AtomicBool::new(false);
                     while !done.load(Ordering::Relaxed) {
                         for _ in 0..100 {
-                            match final_writer.add_document(&doc) {
+                            match final_writer.add_document(&*doc) {
                                 Ok(_) => {}
                                 Err(e)
                                     if is_instance(
@@ -767,7 +757,7 @@ fn test_no_wait_close() -> Result<()> {
             reader.close()?;
 
             // Reopen
-            let mut conf = mock_iwc();
+            let conf = mock_iwc();
             conf.set_open_mode(OpenMode::APPEND)?;
             conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
             conf.set_commit_on_close(false);

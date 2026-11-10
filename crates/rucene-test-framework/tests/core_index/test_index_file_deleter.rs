@@ -94,7 +94,7 @@ fn test_delete_leftover_files() -> Result<()> {
     merge_policy.set_no_cfs_ratio(1.0)?;
     merge_policy.set_max_cfs_segment_size_mb(f64::INFINITY)?;
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_max_buffered_docs(10)?;
     iwc.set_merge_policy(Some(Arc::new(merge_policy)))?;
     iwc.set_use_compound_file(true)?;
@@ -114,7 +114,7 @@ fn test_delete_leftover_files() -> Result<()> {
     writer.close()?;
 
     // Delete one doc so we get a .del file:
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     iwc.set_use_compound_file(true)?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
@@ -186,7 +186,7 @@ fn test_delete_leftover_files() -> Result<()> {
     let files_pre = d.list_all()?;
 
     // Open & close a writer: it should delete the above files and nothing more:
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     iwc.set_open_mode(OpenMode::APPEND)?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     writer.close()?;
@@ -552,7 +552,7 @@ fn test_exc_in_dec_ref() -> Result<()> {
         do_fail: AtomicBool::new(false),
     }) as Arc<dyn Failure>);
 
-    let mut iwc = mock_iwc();
+    let iwc = mock_iwc();
     // iwc.setMergeScheduler(new SerialMergeScheduler());
     let ms = iwc.merge_scheduler();
     if let Some(cms) = ms
@@ -661,7 +661,7 @@ fn test_exc_in_delete_file() -> Result<()> {
             do_fail: AtomicBool::new(false),
         }) as Arc<dyn Failure>);
 
-        let mut iwc = LuceneTestCase::new_index_writer_config();
+        let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
         w.add_document(&Document::new())?;
@@ -761,7 +761,7 @@ fn test_throw_exception_while_delete_commits() -> Result<()> {
         let snapshot_deletion_policy = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
             KeepOnlyLastCommitDeletionPolicy::new(),
         ))));
-        let mut config = LuceneTestCase::new_index_writer_config();
+        let config = LuceneTestCase::new_index_writer_config();
         config.set_index_deletion_policy(Some(
             Arc::clone(&snapshot_deletion_policy) as Arc<dyn IndexDeletionPolicy>
         ))?;

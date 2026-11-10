@@ -111,7 +111,7 @@ fn string_field(name: &str, value: &str) -> Result<Box<StringField>> {
 
 /// `new IndexWriter(dir, newIndexWriterConfig().setMergePolicy(newLogMergePolicy()))`.
 fn log_merge_writer(dir: &TestDirectory) -> Result<Arc<IndexWriter>> {
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     IndexWriter::new(dir.as_directory(), iwc)
 }

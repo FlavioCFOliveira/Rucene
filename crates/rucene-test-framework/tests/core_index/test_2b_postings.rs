@@ -2,8 +2,7 @@
 //! test indexes ~82M docs with 26 terms each, so you get > Integer.MAX_VALUE
 //! terms/docs pairs.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::sync::Arc;
 
 use randomizedtesting::annotations::TimeoutSuite;
@@ -49,7 +48,7 @@ fn test_() -> Result<()> {
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BPostings"));
     never_throttle(&dir);
 
-    let mut iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     iwc.set_ram_buffer_size_mb(256.0)?;
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
@@ -66,7 +65,8 @@ fn test_() -> Result<()> {
     let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_omit_norms(true)?;
     ft.set_index_options(IndexOptions::DOCS)?;
-    let stream: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(MyTokenStream::new()?));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(MyTokenStream::new()?));
     let field = Field::new_with_token_stream("field", stream, ft)?;
     doc.add(Box::new(field));
 

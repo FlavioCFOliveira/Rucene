@@ -46,7 +46,7 @@ use SortFieldType::{Double as DOUBLE, Float as FLOAT, Int as INT, Long as LONG};
 
 /// `new IndexWriterConfig().setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_config() -> Result<IndexWriterConfig> {
-    let mut iwc = IndexWriterConfig::new();
+    let iwc = IndexWriterConfig::new();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     Ok(iwc)
 }

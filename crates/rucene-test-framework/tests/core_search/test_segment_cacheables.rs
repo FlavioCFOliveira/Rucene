@@ -69,7 +69,7 @@ fn test_multiple_doc_values_delegates() -> Result<()> {
     let dv12_dv1_dv3 = Lambda(|ctx: &LeafReaderContext| is_cacheable(ctx, &[&dv12, &dv1_dv3]));
 
     let mut dir = LuceneTestCase::new_directory();
-    let mut iwc = LuceneTestCase::new_index_writer_config();
+    let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
