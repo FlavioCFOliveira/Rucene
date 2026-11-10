@@ -95,6 +95,10 @@ impl TimeLimitingKnnCollector {
 }
 
 impl KnnCollector for TimeLimitingKnnCollector {
+    fn knn_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn early_terminated(&self) -> bool {
         self.query_timeout.should_exit() || self.delegate.early_terminated()
     }

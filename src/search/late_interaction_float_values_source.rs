@@ -52,11 +52,14 @@ impl LateInteractionFloatValuesSource {
     /// # Errors
     ///
     /// As [`with_score_function`](Self::with_score_function).
-    pub fn new(field_name: impl Into<String>, query_vector: Vec<Vec<f32>>) -> Result<Self> {
+    pub fn new(
+        field_name: impl Into<String>,
+        query_vector: Option<Vec<Option<Vec<f32>>>>,
+    ) -> Result<Self> {
         Self::with_score_function(
             field_name,
             query_vector,
-            VectorSimilarityFunction::COSINE,
+            Some(VectorSimilarityFunction::COSINE),
             Arc::new(LateInteractionScoreFunction::SumMaxSim),
         )
     }
@@ -72,8 +75,8 @@ impl LateInteractionFloatValuesSource {
     /// As [`with_score_function`](Self::with_score_function).
     pub fn with_similarity(
         field_name: impl Into<String>,
-        query_vector: Vec<Vec<f32>>,
-        vector_similarity_function: VectorSimilarityFunction,
+        query_vector: Option<Vec<Option<Vec<f32>>>>,
+        vector_similarity_function: Option<VectorSimilarityFunction>,
     ) -> Result<Self> {
         Self::with_score_function(
             field_name,
@@ -93,16 +96,25 @@ impl LateInteractionFloatValuesSource {
     ///
     /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
     /// the query multi-vector is empty, when a composing token vector is empty,
-    /// or when the token vectors do not all have the same length.
+    /// or when the token vectors do not all have the same length, and a
+    /// `java.lang.NullPointerException` when the similarity function is
+    /// missing. `None` stands for Java's `null`, for the query multi-vector,
+    /// for each of its rows and for the similarity function.
     pub fn with_score_function(
         field_name: impl Into<String>,
-        query_vector: Vec<Vec<f32>>,
-        vector_similarity_function: VectorSimilarityFunction,
+        query_vector: Option<Vec<Option<Vec<f32>>>>,
+        vector_similarity_function: Option<VectorSimilarityFunction>,
         score_function: Arc<dyn MultiVectorSimilarity>,
     ) -> Result<Self> {
+        let field_name = field_name.into();
+        let query_vector = validate_query_vector(query_vector)?;
+        // `Objects.requireNonNull(vectorSimilarityFunction)`.
+        let vector_similarity_function = vector_similarity_function.ok_or_else(|| {
+            LuceneError::unchecked("java.lang.NullPointerException", String::new())
+        })?;
         Ok(Self {
-            field_name: field_name.into(),
-            query_vector: validate_query_vector(query_vector)?,
+            field_name,
+            query_vector,
             vector_similarity_function,
             score_function,
         })
@@ -116,28 +128,35 @@ impl LateInteractionFloatValuesSource {
 
 /// Equivalent to the private
 /// `LateInteractionFloatValuesSource.validateQueryVector(float[][])`.
-fn validate_query_vector(query_vector: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>> {
-    if query_vector.is_empty() {
-        return Err(LuceneError::IllegalArgument(
-            "queryVector must not be null or empty".to_string(),
-        ));
-    }
-    if query_vector[0].is_empty() {
-        return Err(LuceneError::IllegalArgument(
-            "composing token vectors in provided query vector should not be null or empty"
-                .to_string(),
-        ));
-    }
-    let dimension = query_vector[0].len();
-    for vector in query_vector.iter().skip(1) {
-        if vector.len() != dimension {
+fn validate_query_vector(query_vector: Option<Vec<Option<Vec<f32>>>>) -> Result<Vec<Vec<f32>>> {
+    let query_vector = match query_vector {
+        Some(query_vector) if !query_vector.is_empty() => query_vector,
+        _ => {
             return Err(LuceneError::IllegalArgument(
+                "queryVector must not be null or empty".to_string(),
+            ))
+        }
+    };
+    let dimension = match query_vector[0].as_ref() {
+        Some(first) if !first.is_empty() => first.len(),
+        _ => {
+            return Err(LuceneError::IllegalArgument(
+                "composing token vectors in provided query vector should not be null or empty"
+                    .to_string(),
+            ))
+        }
+    };
+    let mut validated = Vec::with_capacity(query_vector.len());
+    for vector in query_vector {
+        match vector {
+            Some(vector) if vector.len() == dimension => validated.push(vector),
+            _ => return Err(LuceneError::IllegalArgument(
                 "all composing token vectors in provided query vector should have the same length"
                     .to_string(),
-            ));
+            )),
         }
     }
-    Ok(query_vector)
+    Ok(validated)
 }
 
 impl SegmentCacheable for LateInteractionFloatValuesSource {

@@ -17,6 +17,7 @@ mod core_search {
     pub mod support;
 
     pub mod base_doc_values_skipper_tests;
+    pub mod base_knn_vector_query_test_case;
     pub mod base_vector_similarity_query_test_case;
     pub mod similarities;
     pub mod test_accept_docs;
@@ -73,7 +74,26 @@ mod core_search {
     pub mod test_fuzzy_query;
     pub mod test_fuzzy_term_on_short_terms;
     pub mod test_hnsw_queue_saturation_collector;
+    pub mod test_index_or_doc_values_query;
+    pub mod test_index_searcher;
+    pub mod test_index_sort_sorted_numeric_doc_values_range_query;
+    pub mod test_indri_and_query;
+    pub mod test_knn_byte_vector_query;
+    pub mod test_knn_float_vector_query;
+    pub mod test_late_interaction_float_values_source;
+    pub mod test_late_interaction_rescorer;
+    pub mod test_live_field_values;
+    pub mod test_log_odds_fusion_query;
+    pub mod test_long_values_source;
+    pub mod test_match_all_docs_query;
+    pub mod test_match_no_docs_query;
+    pub mod test_max_clause_limit;
+    pub mod test_max_score_accumulator;
     pub mod test_multi_leaf_knn_collector;
+    pub mod test_multi_phrase_enum;
+    pub mod test_multi_slice_merge;
+    pub mod test_multi_term_query_rewrites;
+    pub mod test_multiset;
     pub mod test_numeric_comparator;
     pub mod test_regexp_random2;
     pub mod test_term_ord_val_comparator_adaptive_skipping;
@@ -411,4 +431,104 @@ fn test_fuzzy_term_on_short_terms() {
 #[test]
 fn test_hnsw_queue_saturation_collector() {
     run(test_hnsw_queue_saturation_collector::class_def);
+}
+
+#[test]
+fn test_index_or_doc_values_query() {
+    run(test_index_or_doc_values_query::class_def);
+}
+
+#[test]
+fn test_index_searcher() {
+    run(test_index_searcher::class_def);
+}
+
+#[test]
+fn test_index_sort_sorted_numeric_doc_values_range_query() {
+    run(test_index_sort_sorted_numeric_doc_values_range_query::class_def);
+}
+
+#[test]
+fn test_indri_and_query() {
+    run(test_indri_and_query::class_def);
+}
+
+#[test]
+fn test_knn_float_vector_query() {
+    run(test_knn_float_vector_query::class_def);
+}
+
+#[test]
+fn test_knn_byte_vector_query() {
+    run(test_knn_byte_vector_query::class_def);
+}
+
+#[test]
+fn test_knn_byte_vector_query_mmap() {
+    run(test_knn_byte_vector_query::mmap_class_def);
+}
+
+#[test]
+fn test_late_interaction_float_values_source() {
+    run(test_late_interaction_float_values_source::class_def);
+}
+
+#[test]
+fn test_late_interaction_rescorer() {
+    run(test_late_interaction_rescorer::class_def);
+}
+
+#[test]
+fn test_live_field_values() {
+    run(test_live_field_values::class_def);
+}
+
+#[test]
+fn test_log_odds_fusion_query() {
+    run(test_log_odds_fusion_query::class_def);
+}
+
+#[test]
+fn test_long_values_source() {
+    run(test_long_values_source::class_def);
+}
+
+#[test]
+fn test_match_all_docs_query() {
+    run(test_match_all_docs_query::class_def);
+}
+
+#[test]
+fn test_match_no_docs_query() {
+    run(test_match_no_docs_query::class_def);
+}
+
+#[test]
+fn test_max_clause_limit() {
+    run(test_max_clause_limit::class_def);
+}
+
+#[test]
+fn test_max_score_accumulator() {
+    run(test_max_score_accumulator::class_def);
+}
+
+#[test]
+fn test_multiset() {
+    run(test_multiset::class_def);
+}
+
+#[test]
+fn test_multi_slice_merge() {
+    run(test_multi_slice_merge::class_def);
+}
+
+#[test]
+fn test_multi_phrase_enum() {
+    run(test_multi_phrase_enum::class_def);
+}
+
+#[test]
+fn test_multi_term_query_rewrites() {
+    run(test_multi_term_query_rewrites::class_def);
 }

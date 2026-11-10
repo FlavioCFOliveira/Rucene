@@ -487,6 +487,19 @@ pub trait KnnCollector: Send {
     /// Equivalent to `KnnCollector.getSearchStrategy()`, which may return
     /// `null`.
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy>;
+
+    /// This collector as [`Any`](std::any::Any), for Java's
+    /// `collector instanceof X` tests.
+    ///
+    /// The default answers `None`, the `false` branch of every `instanceof`;
+    /// the concrete collectors a Lucene `instanceof` tests for
+    /// ([`TopKnnCollector`] and
+    /// [`TimeLimitingKnnCollector`](crate::search::time_limiting_knn_collector_manager::TimeLimitingKnnCollector),
+    /// tested by `BaseKnnVectorQueryTestCase.testTimeLimitingKnnCollectorManager`)
+    /// override it.
+    fn knn_as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// A kNN collector that keeps the top `k` results by similarity in a min-heap.
@@ -570,6 +583,10 @@ impl fmt::Display for TopKnnCollector {
 }
 
 impl KnnCollector for TopKnnCollector {
+    fn knn_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn early_terminated(&self) -> bool {
         self.base.early_terminated()
     }

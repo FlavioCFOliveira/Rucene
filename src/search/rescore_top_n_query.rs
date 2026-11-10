@@ -118,8 +118,8 @@ impl RescoreTopNQuery {
         let values_source: Arc<dyn DoubleValuesSource> =
             Arc::new(LateInteractionFloatValuesSource::with_similarity(
                 field_name,
-                query_vector,
-                vector_similarity_function,
+                Some(query_vector.into_iter().map(Some).collect()),
+                Some(vector_similarity_function),
             )?);
         Ok(Arc::new(RescoreTopNQuery::new(inner, values_source, n)?))
     }

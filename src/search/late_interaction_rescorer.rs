@@ -126,8 +126,8 @@ impl LateInteractionRescorer {
     ) -> Result<Self> {
         let values_source = LateInteractionFloatValuesSource::with_similarity(
             field_name,
-            query_vector,
-            vector_similarity_function,
+            Some(query_vector.into_iter().map(Some).collect()),
+            Some(vector_similarity_function),
         )?;
         Ok(Self::new(Arc::new(values_source)))
     }
@@ -148,8 +148,8 @@ impl LateInteractionRescorer {
     ) -> Result<Self> {
         let values_source = LateInteractionFloatValuesSource::with_similarity(
             field_name,
-            query_vector,
-            vector_similarity_function,
+            Some(query_vector.into_iter().map(Some).collect()),
+            Some(vector_similarity_function),
         )?;
         Ok(Self::with_fallback(
             Arc::new(values_source),

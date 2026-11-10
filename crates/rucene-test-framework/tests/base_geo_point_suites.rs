@@ -10,9 +10,9 @@
 //! * `TestXYPointQueries` (`XYPointField`) and `TestXYDocValuesQueries`
 //!   (`XYDocValuesField`) over `BaseXYPointTestCase`.
 //!
-//! The classes' own extra test methods
-//! (`TestLatLonPointQueries.testDistanceQueryWithInvertedIntersection`)
-//! belong to the core-test port (sprint 7) and are not declared here.
+//! `TestLatLonPointQueries` also declares its own test method,
+//! `testDistanceQueryWithInvertedIntersection` (rmp #392), bound here with
+//! the class.
 //!
 //! **Adaptation** (`field == null`): the suites pass `None` for Java's
 //! `null` field name; Rucene's query factories take a `&str`, which cannot
@@ -305,7 +305,69 @@ fn lat_lon_point_queries_class() -> Arc<Class> {
         .constructor(Constructor::no_args(|| {
             GeoPointTestInstance::new(TestLatLonPointQueries)
         }))
+        .method(
+            Method::new("testDistanceQueryWithInvertedIntersection")
+                .throws(&["java.io.IOException"])
+                .body(|_f: &mut GeoPointTestInstance| {
+                    if let Err(e) = test_distance_query_with_inverted_intersection() {
+                        rethrow_java(e)
+                    }
+                }),
+        )
         .build()
+}
+
+/// Port of `TestLatLonPointQueries.testDistanceQueryWithInvertedIntersection`.
+fn test_distance_query_with_inverted_intersection() -> Result<()> {
+    let case = TestLatLonPointQueries;
+    let num_matching_docs = LuceneTestCase::at_least(
+        10 * rucene::util::bkd::BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+    );
+
+    let mut dir = LuceneTestCase::new_directory();
+    let result = (|| -> Result<()> {
+        {
+            let w = rucene::index::index_writer::IndexWriter::new(
+                dir.as_directory(),
+                LuceneTestCase::new_index_writer_config(),
+            )?;
+            let written = (|| -> Result<()> {
+                for _i in 0..num_matching_docs {
+                    let mut doc = Document::new();
+                    case.add_point_to_doc("field", &mut doc, 18.313694, -65.227444)?;
+                    w.add_document(&doc)?;
+                }
+
+                // Add a handful of docs that don't match
+                for _i in 0..11 {
+                    let mut doc = Document::new();
+                    case.add_point_to_doc("field", &mut doc, 10.0, -65.227444)?;
+                    w.add_document(&doc)?;
+                }
+                w.force_merge(1)?;
+                Ok(())
+            })();
+            w.close()?;
+            written?;
+        }
+
+        let r = rucene::index::directory_reader::open(dir.as_directory())?;
+        let checked = (|| -> Result<()> {
+            let searcher = LuceneTestCase::new_searcher(Arc::clone(&r));
+            let count =
+                searcher.count(case.new_distance_query(Some("field"), 18.0, -65.0, 50_000.0)?)?;
+            if num_matching_docs != count {
+                randomizedtesting::junit::Assert::fail(&format!(
+                    "expected:<{num_matching_docs}> but was:<{count}>"
+                ));
+            }
+            Ok(())
+        })();
+        r.close()?;
+        checked
+    })();
+    dir.close()?;
+    result
 }
 
 fn lat_lon_doc_values_queries_class() -> Arc<Class> {

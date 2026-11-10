@@ -68,8 +68,8 @@ pub mod vector_util;
 pub use accountables::{Accountables, NamedAccountable};
 pub use annotations::{IgnoreRandomChains, SuppressForbidden};
 pub use bit_set::{
-    bit_set_of, check_unpositioned, BitSet, BitSetIterator, DocBaseBitSetIterator, FixedBits,
-    LiveDocs,
+    bit_set_of, check_unpositioned, BitSet, BitSetIterator, BitSetIteratorOverrides,
+    DocBaseBitSetIterator, FixedBits, LiveDocs,
 };
 pub use bytes_ref_array::{
     BytesRefArray, BytesRefBlockPool, BytesRefIterator, EmptyBytesRefIterator,

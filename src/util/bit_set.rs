@@ -481,6 +481,21 @@ pub struct BitSetIterator {
     length: usize,
     cost: i64,
     doc: i32,
+    overrides: Option<Arc<dyn BitSetIteratorOverrides>>,
+}
+
+/// The overridable members of [`BitSetIterator`]: an anonymous Java subclass
+/// of `BitSetIterator` (for example `ThrowingBitSetQuery` in
+/// `BaseKnnVectorQueryTestCase.java:1084-1090`) overrides the public
+/// `getBitSet()`.
+///
+/// **Divergence from Lucene 10.5.0.** Java subclasses the class; Rust has no
+/// implementation inheritance, so the override is installed on the iterator
+/// with [`BitSetIterator::set_overrides`]. Without one, the iterator behaves
+/// exactly as Java's base class.
+pub trait BitSetIteratorOverrides: Send + Sync {
+    /// `BitSetIterator.getBitSet()`.
+    fn get_bit_set<'a>(&'a self, iterator: &'a BitSetIterator) -> &'a Arc<dyn BitSet>;
 }
 
 impl std::fmt::Debug for BitSetIterator {
@@ -511,12 +526,25 @@ impl BitSetIterator {
             length,
             cost,
             doc: -1,
+            overrides: None,
         })
     }
 
     /// Returns the wrapped [`BitSet`].
+    ///
+    /// Equivalent to `BitSetIterator.getBitSet()`, dispatched to the installed
+    /// [`BitSetIteratorOverrides::get_bit_set`] when there is one.
     pub fn get_bit_set(&self) -> &Arc<dyn BitSet> {
-        &self.bits
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.get_bit_set(self),
+            None => &self.bits,
+        }
+    }
+
+    /// Installs the overrides of an anonymous Java subclass (see
+    /// [`BitSetIteratorOverrides`]).
+    pub fn set_overrides(&mut self, overrides: Arc<dyn BitSetIteratorOverrides>) {
+        self.overrides = Some(overrides);
     }
 
     /// Returns the set `iterator` wraps when it is a [`BitSetIterator`] over a
