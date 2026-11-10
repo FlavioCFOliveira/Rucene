@@ -989,6 +989,7 @@ pub fn get_merged_numeric_doc_values(
         let Some(values) = producer.get_numeric(reader_field_info)? else {
             continue;
         };
+        debug_assert!(values.doc_id() == -1);
         subs.push(NumericDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1060,6 +1061,7 @@ pub fn get_merged_binary_doc_values(
             continue;
         };
         cost += values.cost();
+        debug_assert!(values.doc_id() == -1);
         subs.push(BinaryDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1160,6 +1162,7 @@ pub fn get_merged_sorted_numeric_doc_values(
         if all_singletons && !values.is_singleton() {
             all_singletons = false;
         }
+        debug_assert!(values.doc_id() == -1);
         subs.push(SortedNumericDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1172,11 +1175,13 @@ pub fn get_merged_sorted_numeric_doc_values(
         // encode the merged field as a plain numeric one.
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
-            let single = sub.values.into_singleton().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "sorted numeric doc values reported singleton but did not unwrap".to_string(),
-                )
-            })?;
+            let single = sub.values.into_singleton();
+            debug_assert!(single.is_some());
+            // Java dereferences the null `unwrapSingleton` result (an NPE) when
+            // assertions are off.
+            let single =
+                single.expect("sorted numeric doc values reported singleton but did not unwrap");
+            debug_assert!(single.doc_id() == -1);
             single_valued_subs.push(NumericDocValuesSub {
                 doc_map: sub.doc_map,
                 values: single,
@@ -1334,6 +1339,7 @@ pub fn get_merged_sorted_doc_values(
         .into_iter()
         .enumerate()
     {
+        debug_assert!(values.doc_id() == -1);
         subs.push(SortedDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1525,6 +1531,7 @@ pub fn get_merged_sorted_set_doc_values(
         if all_singletons && !values.is_singleton() {
             all_singletons = false;
         }
+        debug_assert!(values.doc_id() == -1);
         subs.push(SortedSetDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1537,11 +1544,13 @@ pub fn get_merged_sorted_set_doc_values(
     if all_singletons {
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
-            let single = sub.values.into_singleton().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "sorted set doc values reported singleton but did not unwrap".to_string(),
-                )
-            })?;
+            let single = sub.values.into_singleton();
+            debug_assert!(single.is_some());
+            // Java dereferences the null `unwrapSingleton` result (an NPE) when
+            // assertions are off.
+            let single =
+                single.expect("sorted set doc values reported singleton but did not unwrap");
+            debug_assert!(single.doc_id() == -1);
             single_valued_subs.push(SortedDocValuesSub {
                 doc_map: sub.doc_map,
                 values: single,

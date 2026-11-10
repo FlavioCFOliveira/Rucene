@@ -160,7 +160,7 @@ impl ChildSaveStrategy {
 /// One node of the term-index trie.
 ///
 /// Equivalent to `TrieReader.Node`.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Node {
     /// Distance back to the single child, for a single-child node.
     child_delta_fp: i64,
@@ -240,11 +240,7 @@ impl TrieReader {
     /// the shared input; here the bytes are copied out so the caller does not
     /// hold the input across a later seek.
     pub fn floor_data(&mut self, node: &Node, len: usize) -> Result<Vec<u8>> {
-        if !node.is_floor() {
-            return Err(LuceneError::illegal_state(
-                "node has no floor data".to_string(),
-            ));
-        }
+        debug_assert!(node.is_floor());
         let mut buf = vec![0u8; len];
         self.input
             .read_bytes_at(node.floor_data_fp, &mut buf, 0, len)?;
@@ -318,12 +314,7 @@ impl TrieReader {
             node.has_terms = false;
             return Ok(());
         }
-        if sign != SIGN_SINGLE_CHILD_WITH_OUTPUT {
-            return Err(LuceneError::corrupt_index(
-                format!("unexpected trie node sign: {sign}"),
-                "term index",
-            ));
-        }
+        debug_assert!(sign == SIGN_SINGLE_CHILD_WITH_OUTPUT);
         let encoded_output_fp_bytes_minus_1 = ((term >> 5) & 0x07) as usize;
         let offset = fp + child_delta_fp_bytes_minus_1 as i64 + 3;
         let encoded_fp = (input.read_long_at(offset)? as u64)

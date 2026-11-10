@@ -352,7 +352,9 @@ impl TermsEnumIndex {
         match (&self.current_term, &other.current_term) {
             (Some(this), Some(that)) => {
                 if self.current_term_prefix8 != other.current_term_prefix8 {
-                    self.current_term_prefix8.cmp(&other.current_term_prefix8)
+                    let cmp = self.current_term_prefix8.cmp(&other.current_term_prefix8);
+                    debug_assert!(cmp == this.cmp(that));
+                    cmp
                 } else {
                     this.cmp(that)
                 }

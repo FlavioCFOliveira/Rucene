@@ -182,6 +182,7 @@ impl FieldUpdatesBuffer {
     /// carried a value; `None` says that in the type, and the caller that needs
     /// Java's literal answer writes `unwrap_or(0)`.
     pub fn max_numeric_value(&self) -> Option<i64> {
+        debug_assert!(self.is_numeric);
         (!(self.min_numeric == i64::MAX && self.max_numeric == i64::MIN))
             .then_some(self.max_numeric)
     }
@@ -193,6 +194,7 @@ impl FieldUpdatesBuffer {
     /// (`FieldUpdatesBuffer.java:117-123`); see
     /// [`max_numeric_value`](Self::max_numeric_value) for `None`.
     pub fn min_numeric_value(&self) -> Option<i64> {
+        debug_assert!(self.is_numeric);
         (!(self.min_numeric == i64::MAX && self.max_numeric == i64::MIN))
             .then_some(self.min_numeric)
     }
@@ -293,6 +295,7 @@ impl FieldUpdatesBuffer {
     /// `isNumeric`) or a finished one, and propagates whatever appending the
     /// term raises.
     pub fn add_numeric_update(&mut self, term: &Term, value: i64, doc_up_to: i32) -> Result<()> {
+        debug_assert!(self.is_numeric);
         if !self.is_numeric {
             return Err(LuceneError::illegal_state(
                 "cannot add a numeric update to a binary FieldUpdatesBuffer".to_string(),
@@ -357,6 +360,7 @@ impl FieldUpdatesBuffer {
         value: BytesRef,
         doc_up_to: i32,
     ) -> Result<()> {
+        debug_assert!(!self.is_numeric);
         if self.is_numeric {
             return Err(LuceneError::illegal_state(
                 "cannot add a binary update to a numeric FieldUpdatesBuffer".to_string(),
@@ -422,7 +426,15 @@ impl FieldUpdatesBuffer {
             .iterator_with_sort_state(self.term_sort_state.clone());
         let mut last: Option<BytesRef> = None;
         let mut last_ord = 0usize;
-        while let Ok(Some(current)) = iterator.next() {
+        loop {
+            let current = match iterator.next() {
+                Ok(Some(current)) => current,
+                Ok(None) => break,
+                Err(error) => {
+                    debug_assert!(false, "{error}");
+                    break;
+                }
+            };
             if let Some(last) = last.as_ref() {
                 let cmp = current.slice().cmp(last.slice());
                 assert!(cmp != std::cmp::Ordering::Less, "term in reverse order");

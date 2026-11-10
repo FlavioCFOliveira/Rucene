@@ -162,6 +162,17 @@ use crate::index::point_values::{
 };
 use crate::index::FieldInfo;
 use crate::index::BYTES_SCRATCH_SIZE;
+
+// `PointValuesWriter.java:50-57`: Java asserts this in its static initializer.
+// If Lucene ever supports packed points > BYTES_SCRATCH_SIZE either the buffer
+// needs to be increased or a fallback indexing code-path bypassing the buffer
+// needs to be added.
+const _: () = assert!(
+    BYTES_SCRATCH_SIZE as i64
+        >= crate::index::point_values::MAX_NUM_BYTES as i64
+            * crate::util::bkd::BKDConfig::MAX_DIMS as i64,
+    "BYTES_SCRATCH_SIZE must hold a packed point of the largest size"
+);
 use crate::store::DataOutput;
 use crate::util::{Accountable, ArrayUtil, BytesRef, PagedBytes, PagedBytesReader};
 
@@ -448,6 +459,11 @@ impl PointValuesWriter {
     /// flushed, and [`LuceneError::IllegalArgument`] when the range does not
     /// start after the last document written.
     fn reserve_dense_range(&mut self, first_doc_id: i32, size: i32) -> Result<i64> {
+        debug_assert!(
+            first_doc_id > self.last_doc_id,
+            "firstDocID={first_doc_id} must be > lastDocID={}",
+            self.last_doc_id
+        );
         if self.flushed {
             return Err(LuceneError::illegal_state(format!(
                 "the point values of field \"{}\" have already been flushed",
@@ -880,6 +896,7 @@ impl PointTree for BufferedPointTree {
     fn visit_doc_values(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
         for i in 0..self.buffer.num_points {
             let slot = self.slot(i);
+            debug_assert!(self.buffer.value(slot).len() == self.buffer.packed_bytes_length);
             visitor.visit_with_value(self.buffer.doc_ids[slot], &self.buffer.value(slot))?;
         }
         Ok(())

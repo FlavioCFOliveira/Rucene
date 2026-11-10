@@ -58,7 +58,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
     check_footer, check_footer_after, check_footer_with_prior, check_header, check_index_header,
-    checksum_entire_file, retrieve_checksum, write_footer, write_header, write_index_header,
+    checksum_entire_file, index_header_length, retrieve_checksum, write_footer, write_header,
+    write_index_header,
 };
 use crate::codecs::compressing::{
     self, CompressionMode, Compressor, Decompressor, MatchingReaders,
@@ -1270,6 +1271,12 @@ impl Lucene90CompressingStoredFieldsWriter {
                 &id,
                 segment_suffix,
             )?;
+            debug_assert!(
+                i64::from(index_header_length(
+                    &format!("{INDEX_CODEC_NAME}Meta"),
+                    segment_suffix
+                )) == meta.file_pointer()
+            );
 
             let fields_file = segment_file_name(&segment, segment_suffix, FIELDS_EXTENSION);
             let fields = fields_stream.insert(directory.create_output(&fields_file, context)?);
@@ -1280,6 +1287,10 @@ impl Lucene90CompressingStoredFieldsWriter {
                 &id,
                 segment_suffix,
             )?;
+            debug_assert!(
+                i64::from(index_header_length(format_name, segment_suffix))
+                    == fields.file_pointer()
+            );
 
             index_writer = Some(FieldsIndexWriter::new(
                 directory,
@@ -1812,6 +1823,8 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
     fn finish(&mut self, num_docs: i32) -> Result<()> {
         if self.num_buffered_docs > 0 {
             self.flush(true)?;
+        } else {
+            debug_assert!(self.buffered_docs.size() == 0);
         }
         if self.doc_base != num_docs {
             return Err(LuceneError::illegal_state(format!(
@@ -1827,6 +1840,7 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
         self.meta_stream.write_v_long(self.num_dirty_docs)?;
         write_footer(self.meta_stream.as_mut())?;
         write_footer(self.fields_stream.as_mut())?;
+        debug_assert!(self.buffered_docs.size() == 0);
         Ok(())
     }
 
@@ -2337,6 +2351,7 @@ impl BlockState {
                 };
                 let mut bytes = BytesRef::default();
                 decompressor.decompress(input, total, offset, length, &mut bytes)?;
+                debug_assert!(bytes.length == length);
                 bytes.slice().to_vec()
             }
         };
@@ -2395,6 +2410,10 @@ impl Lucene90CompressingStoredFieldsReader {
                 &id,
                 segment_suffix,
             )?;
+            debug_assert!(
+                i64::from(index_header_length(format_name, segment_suffix))
+                    == fields_stream.file_pointer()
+            );
             retrieve_checksum(fields_stream.as_mut())?;
 
             let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
@@ -2539,6 +2558,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             let info_and_bits = input.read_v_long()? as u64;
             let field_number = (info_and_bits >> (TYPE_BITS as u32)) as i32;
             let bits = (info_and_bits & TYPE_MASK as u64) as i32;
+            debug_assert!(bits <= TYPE_NUMERIC_DOUBLE, "bits={bits:x}");
 
             let field_info = self
                 .field_infos
@@ -2722,6 +2742,7 @@ impl Lucene90CompressingStoredFieldsReader {
     /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumChunks`;
     /// package-private in Java, `pub` for the core tests.
     pub fn num_chunks(&self) -> i64 {
+        debug_assert!(self.num_chunks >= 0);
         self.num_chunks
     }
 
@@ -2730,6 +2751,7 @@ impl Lucene90CompressingStoredFieldsReader {
     /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumDirtyChunks`;
     /// package-private in Java, `pub` for the core tests.
     pub fn num_dirty_chunks(&self) -> i64 {
+        debug_assert!(self.num_dirty_chunks >= 0);
         self.num_dirty_chunks
     }
 
@@ -2738,6 +2760,7 @@ impl Lucene90CompressingStoredFieldsReader {
     /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumDirtyDocs`;
     /// package-private in Java, `pub` for the core tests.
     pub fn num_dirty_docs(&self) -> i64 {
+        debug_assert!(self.num_dirty_docs >= 0);
         self.num_dirty_docs
     }
 

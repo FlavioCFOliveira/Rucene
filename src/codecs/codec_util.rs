@@ -690,6 +690,7 @@ pub fn checksum_entire_file_shared(input: &dyn IndexInput) -> Result<i64> {
     let mut clone = input.clone_input()?;
     clone.seek(0)?;
     let mut checksum_input = BufferedChecksumIndexInput::new(clone);
+    debug_assert!(checksum_input.file_pointer() == 0);
     if checksum_input.length() < footer_length() as i64 {
         // `CodecUtil.java:611-617`: Java prints `footerLength==`.
         return Err(LuceneError::corrupt_index(

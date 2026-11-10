@@ -225,6 +225,11 @@ impl OrdTermState {
 
 impl TermState for OrdTermState {
     fn copy_from(&mut self, other: &dyn TermState) {
+        debug_assert!(
+            other.as_any().is::<OrdTermState>(),
+            "can not copy from {}",
+            std::any::type_name_of_val(other)
+        );
         let other = other
             .as_any()
             .downcast_ref::<OrdTermState>()
@@ -1142,6 +1147,7 @@ pub struct TermStates {
 
 impl TermStates {
     fn with_term(term: Option<Term>, context: &Arc<dyn IndexReaderContext>) -> Result<Self> {
+        debug_assert!(context.is_top_level());
         if !context.is_top_level() {
             return Err(LuceneError::IllegalArgument(
                 "TermStates must be built from a top-level IndexReaderContext".to_string(),
@@ -1197,6 +1203,22 @@ impl TermStates {
     /// compares the stored identity by reference.
     pub fn was_built_for(&self, context: &Arc<dyn IndexReaderContext>) -> bool {
         self.top_reader_context_identity == context.id()
+    }
+
+    /// Returns whether this `TermStates` was built for the top-level context
+    /// of `context`.
+    ///
+    /// Equivalent to `termStates.wasBuiltFor(ReaderUtil.getTopLevelContext(context))`,
+    /// the form every `TermQuery` assert uses (`TermQuery.java:121, 207`). It
+    /// takes the context by reference because a weight receives its leaf as
+    /// `&LeafReaderContext`; a context without a live parent is its own top
+    /// level, as in `ReaderUtil.getTopLevelContext`.
+    pub fn was_built_for_top_level_of(&self, context: &dyn IndexReaderContext) -> bool {
+        let top_level_identity = match context.parent().and_then(|parent| parent.upgrade()) {
+            Some(parent) => crate::index::multi_reader::get_top_level_context(parent).id(),
+            None => context.id(),
+        };
+        self.top_reader_context_identity == top_level_identity
     }
 
     /// Builds a `TermStates` for `term` over every leaf of the searcher's
@@ -1346,6 +1368,7 @@ impl TermStates {
     /// range, which is the condition Java asserts.
     pub fn get(&self, ctx: &LeafReaderContext) -> Result<Option<Box<dyn TermState>>> {
         let ord = ctx.ord();
+        debug_assert!(ord >= 0 && (ord as usize) < self.states.len());
         if ord < 0 || ord as usize >= self.states.len() {
             return Err(LuceneError::IllegalArgument(format!(
                 "leaf ordinal {ord} is out of range for a TermStates over {} leaves",

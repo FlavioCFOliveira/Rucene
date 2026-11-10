@@ -1233,6 +1233,19 @@ impl IndexWriter {
                 reader.is_some(),
             )?
         };
+        // We incRef all files when we return an NRT reader from IW, so all
+        // files must exist even in the NRT case (`IndexWriter.java:1183-1185`).
+        debug_assert!(
+            create || {
+                for file_name in segment_infos.files(false)? {
+                    assert!(
+                        deleter.exists(&file_name),
+                        "IndexFileDeleter doesn't know about file {file_name}"
+                    );
+                }
+                true
+            }
+        );
         if deleter.starting_commit_deleted {
             // Deletion policy deleted the "head" commit point. We have to mark
             // ourself as changed so that if we are closed w/o any further
@@ -1496,6 +1509,9 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.onTragicEvent(Throwable, String)`, which sets
     /// the tragedy exactly once and leaves the first cause in place.
     pub fn on_tragic_event(&self, error: &LuceneError, location: &str) {
+        // This is not supposed to be tragic: `MergeAbortedException` is the
+        // merge being aborted deliberately (`IndexWriter.java:5853-5854`).
+        debug_assert!(!matches!(error, LuceneError::MergeAborted(_)));
         if self.info_stream.is_enabled(IW) {
             // `"hit tragic " + tragedy.getClass().getSimpleName() + " inside "
             // + location` (`IndexWriter.java:5857-5860`).
@@ -2539,6 +2555,10 @@ impl IndexWriter {
         let aborted = self.abort_merges(state);
         let mut state = match aborted {
             Ok(mut state) => {
+                debug_assert!(
+                    state.stop_merges,
+                    "merges should be disabled - who enabled them?"
+                );
                 debug_assert!(
                     state.merging_segments.is_empty(),
                     "found merging segments but merges are disabled: {:?}",
@@ -3824,47 +3844,53 @@ impl IndexWriter {
             return Ok(None);
         }
 
-        let spec = {
-            let locked = LockedMergeContext {
-                writer: self,
-                state: &*state,
-            };
-            let caching = CachingMergeContext::new(&locked);
-            let infos = &state.segment_infos;
-            if max_num_segments != UNBOUNDED_MAX_MERGE_SEGMENTS {
-                // `Collections.unmodifiableMap(segmentsToMerge)`
-                // (`IndexWriter.java:2443`): every segment present when the
-                // force-merge was requested maps to `true`, each merge product to
-                // `false`, which is how `LogMergePolicy.isMerged` tells a segment
-                // the caller asked for from one this force-merge produced.
-                let mut spec = merge_policy.find_forced_merges(
-                    infos,
-                    max_num_segments,
-                    &state.segments_to_merge,
-                    &caching,
-                )?;
-                if let Some(spec) = spec.as_mut() {
-                    for merge in &mut spec.merges {
-                        merge.set_max_num_segments(max_num_segments);
+        let spec =
+            {
+                let locked = LockedMergeContext {
+                    writer: self,
+                    state: &*state,
+                };
+                let caching = CachingMergeContext::new(&locked);
+                let infos = &state.segment_infos;
+                if max_num_segments != UNBOUNDED_MAX_MERGE_SEGMENTS {
+                    debug_assert!(
+                    matches!(trigger, MergeTrigger::Explicit | MergeTrigger::MergeFinished),
+                    "Expected EXPLICT or MERGE_FINISHED as trigger even with maxNumSegments set \
+                     but was: {trigger:?}"
+                );
+                    // `Collections.unmodifiableMap(segmentsToMerge)`
+                    // (`IndexWriter.java:2443`): every segment present when the
+                    // force-merge was requested maps to `true`, each merge product to
+                    // `false`, which is how `LogMergePolicy.isMerged` tells a segment
+                    // the caller asked for from one this force-merge produced.
+                    let mut spec = merge_policy.find_forced_merges(
+                        infos,
+                        max_num_segments,
+                        &state.segments_to_merge,
+                        &caching,
+                    )?;
+                    if let Some(spec) = spec.as_mut() {
+                        for merge in &mut spec.merges {
+                            merge.set_max_num_segments(max_num_segments);
+                        }
                     }
-                }
-                spec
-            } else {
-                match trigger {
-                    MergeTrigger::GetReader | MergeTrigger::Commit => {
-                        merge_policy.find_full_flush_merges(trigger, infos, &caching)?
-                    }
-                    MergeTrigger::AddIndexes => {
-                        return Err(LuceneError::illegal_state(
-                            "Merges with ADD_INDEXES trigger should be called from within the \
+                    spec
+                } else {
+                    match trigger {
+                        MergeTrigger::GetReader | MergeTrigger::Commit => {
+                            merge_policy.find_full_flush_merges(trigger, infos, &caching)?
+                        }
+                        MergeTrigger::AddIndexes => {
+                            return Err(LuceneError::illegal_state(
+                                "Merges with ADD_INDEXES trigger should be called from within the \
                              addIndexes() API flow"
-                                .to_string(),
-                        ))
+                                    .to_string(),
+                            ))
+                        }
+                        _ => merge_policy.find_merges(trigger, infos, &caching)?,
                     }
-                    _ => merge_policy.find_merges(trigger, infos, &caching)?,
                 }
-            }
-        };
+            };
 
         let Some(spec) = spec else { return Ok(None) };
         // `for (...) registerMerge(spec.merges.get(i)); return spec;`
@@ -4234,6 +4260,10 @@ impl IndexWriter {
         // (`apply_to_segments`), so it either is carried over here or retries
         // against the merged segment.
         let mut state = self.state()?;
+        debug_assert!(merge
+            .info()
+            .as_ref()
+            .is_none_or(|info| !state.segment_infos.contains(info)));
         let merged_updates = if merged_max_doc == 0 {
             None
         } else {
@@ -4311,6 +4341,7 @@ impl IndexWriter {
 
         if drop_segment {
             if let Some(info) = merge.info().as_ref() {
+                debug_assert!(!state.segment_infos.contains(info));
                 let _ = ReaderPool::drop(&self.reader_pool, info);
                 let files = info.files()?;
                 state.deleter.delete_new_files(files)?;
@@ -6711,7 +6742,9 @@ impl IndexWriter {
     ///
     /// Equivalent to `IndexWriter.adjustPendingNumDocs(long)`.
     fn adjust_pending_num_docs(&self, num_docs: i64) -> i64 {
-        self.pending_num_docs.fetch_add(num_docs, Ordering::AcqRel) + num_docs
+        let count = self.pending_num_docs.fetch_add(num_docs, Ordering::AcqRel) + num_docs;
+        debug_assert!(count >= 0, "pendingNumDocs is negative: {count}");
+        count
     }
 
     /// Reserves room for `added_num_docs` documents, failing when the index
@@ -7146,6 +7179,7 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.testPoint(String)`.
     fn test_point(&self, message: &str) {
         if self.is_enable_test_points() {
+            debug_assert!(self.info_stream.is_enabled("TP")); // don't enable unless you need them.
             self.info_stream.message("TP", message);
         }
     }
@@ -7157,9 +7191,10 @@ impl IndexWriter {
     /// skipped somewhere.
     fn files_exist(&self, state: &WriterState, to_sync: &SegmentInfos) -> Result<bool> {
         for file_name in to_sync.files(false)? {
-            if !state.deleter.exists(&file_name) {
-                return Ok(false);
-            }
+            assert!(
+                state.deleter.exists(&file_name),
+                "IndexFileDeleter doesn't know about file {file_name}"
+            );
         }
         Ok(true)
     }
@@ -8207,6 +8242,7 @@ impl IndexWriter {
             let context = Arc::clone(&leaves[sub_index]);
             doc_id -= context.doc_base();
             debug_assert!(doc_id >= 0);
+            debug_assert!(doc_id < context.leaf_reader().max_doc());
             context
         };
 
@@ -8478,6 +8514,14 @@ impl IndexWriter {
             self.delete_new_files(copied_files)?;
             return Err(error);
         }
+        debug_assert!(
+            {
+                let files: HashSet<String> = new_info_per_commit.files()?.into_iter().collect();
+                copied_files == files
+            },
+            "copiedFiles={copied_files:?} vs {:?}",
+            new_info_per_commit.files()
+        );
         Ok(new_info_per_commit)
     }
 
@@ -8868,6 +8912,10 @@ impl IndexWriter {
                 // There were deletions when the merge started, so there must
                 // still be deletions now.
                 debug_assert!(current_hard_live_docs.is_some());
+                debug_assert!(prev.length() == max_doc as usize);
+                debug_assert!(
+                    current_hard_live_docs.is_none_or(|bits| bits.length() == max_doc as usize)
+                );
                 for j in 0..max_doc {
                     if !prev.get(j as usize) {
                         // A document deleted before the merge had better still
@@ -8882,6 +8930,9 @@ impl IndexWriter {
                 }
             }
             None => {
+                if let Some(current) = current_hard_live_docs {
+                    debug_assert!(current.length() == max_doc as usize);
+                }
                 if current_hard_live_docs.is_some() {
                     // The segment had no deletions before, but has some now.
                     for j in 0..max_doc {
@@ -9440,6 +9491,7 @@ impl IndexWriter {
         &self,
         updates: &Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
     ) -> Result<()> {
+        debug_assert!(!updates.is_empty());
         let guard = updates.lock_apply()?;
         let outcome = self.apply_locked(updates);
         drop(guard);
@@ -10375,6 +10427,11 @@ impl IndexWriter {
                     .pending_merges
                     .iter()
                     .position(|pending| pending.segments == merge.segments);
+                debug_assert!(
+                    position.is_some(),
+                    "merge should be pending but isn't: {}",
+                    merge.seg_string()
+                );
                 let Some(position) = position else { continue };
                 let mut pending = state.pending_merges.remove(position);
                 let aborted = self.abort_one_merge(state, &pending);

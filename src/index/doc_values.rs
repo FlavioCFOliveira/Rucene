@@ -862,6 +862,7 @@ impl DocValuesIterator for EmptyNumericDocValues {
 
 impl NumericDocValues for EmptyNumericDocValues {
     fn long_value(&self) -> Result<i64> {
+        debug_assert!(false);
         Err(LuceneError::illegal_state(
             "long_value called on empty numeric doc values".to_string(),
         ))
@@ -907,6 +908,7 @@ impl DocValuesIterator for EmptyBinaryDocValues {
 
 impl BinaryDocValues for EmptyBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
+        debug_assert!(false);
         Err(LuceneError::illegal_state(
             "binary_value called on empty binary doc values".to_string(),
         ))
@@ -952,6 +954,7 @@ impl DocValuesIterator for EmptySortedDocValues {
 
 impl SortedDocValues for EmptySortedDocValues {
     fn ord_value(&self) -> Result<i32> {
+        debug_assert!(false);
         Err(LuceneError::illegal_state(
             "ord_value called on empty sorted doc values".to_string(),
         ))
@@ -2120,6 +2123,14 @@ impl SegmentMap {
         for (new, &old) in new_to_old.iter().enumerate() {
             old_to_new[old as usize] = new as i32;
         }
+        // `assert Arrays.equals(newToOld, inverse(oldToNew))`.
+        debug_assert!({
+            let mut inverse = vec![0i32; old_to_new.len()];
+            for (old, &new) in old_to_new.iter().enumerate() {
+                inverse[new as usize] = old as i32;
+            }
+            inverse == new_to_old
+        });
         Self {
             new_to_old,
             old_to_new,
@@ -2246,6 +2257,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
         let value_count = self.values.get_value_count()? as i64;
+        debug_assert!(ord >= 0 && ord < value_count);
         if ord < 0 || ord >= value_count {
             return Err(LuceneError::IllegalArgument(format!(
                 "ord {ord} out of range [0, {value_count})"
@@ -2294,6 +2306,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        debug_assert!(state.as_any().is::<OrdTermState>());
         let state = state
             .as_any()
             .downcast_ref::<OrdTermState>()
@@ -2397,6 +2410,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
         let value_count = self.values.get_value_count()?;
+        debug_assert!(ord >= 0 && ord < value_count);
         if ord < 0 || ord >= value_count {
             return Err(LuceneError::IllegalArgument(format!(
                 "ord {ord} out of range [0, {value_count})"
@@ -2445,6 +2459,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        debug_assert!(state.as_any().is::<OrdTermState>());
         let state = state
             .as_any()
             .downcast_ref::<OrdTermState>()

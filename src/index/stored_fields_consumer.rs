@@ -265,6 +265,7 @@ impl StoredFieldsConsumer {
     /// Returns [`LuceneError::IllegalState`] when `doc_id` does not advance —
     /// Lucene asserts `lastDoc < docID` — and propagates any I/O error.
     pub fn start_document(&mut self, doc_id: i32) -> Result<()> {
+        debug_assert!(self.last_doc < doc_id);
         if self.last_doc >= doc_id {
             return Err(LuceneError::illegal_state(format!(
                 "stored fields must be written in increasing doc order: lastDoc={} docID={doc_id}",

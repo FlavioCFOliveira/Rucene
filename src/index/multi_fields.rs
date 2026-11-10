@@ -547,7 +547,9 @@ impl Terms for MultiTerms {
         Ok({
             let mut sum: i64 = 0;
             for sub in &self.subs {
-                sum += sub.sum_total_term_freq()?;
+                let v = sub.sum_total_term_freq()?;
+                debug_assert!(v != -1);
+                sum += v;
             }
             sum
         })
@@ -557,7 +559,9 @@ impl Terms for MultiTerms {
         Ok({
             let mut sum: i64 = 0;
             for sub in &self.subs {
-                sum += sub.sum_doc_freq()?;
+                let v = sub.sum_doc_freq()?;
+                debug_assert!(v != -1);
+                sum += v;
             }
             sum
         })
@@ -567,7 +571,9 @@ impl Terms for MultiTerms {
         Ok({
             let mut sum: i32 = 0;
             for sub in &self.subs {
-                sum = sum.wrapping_add(sub.doc_count()?);
+                let v = sub.doc_count()?;
+                debug_assert!(v != -1);
+                sum = sum.wrapping_add(v);
             }
             sum
         })

@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
     check_footer, check_footer_with_prior, check_index_header, checksum_entire_file,
-    retrieve_checksum, write_footer, write_index_header,
+    index_header_length, retrieve_checksum, write_footer, write_index_header,
 };
 use crate::codecs::compressing::{
     self, CompressionMode, Compressor, Decompressor, MatchingReaders,
@@ -559,6 +559,12 @@ impl Lucene90CompressingTermVectorsWriter {
                 &id,
                 segment_suffix,
             )?;
+            debug_assert!(
+                i64::from(index_header_length(
+                    &format!("{INDEX_CODEC_NAME}Meta"),
+                    segment_suffix
+                )) == meta.file_pointer()
+            );
 
             let vectors_file = segment_file_name(&segment, segment_suffix, VECTORS_EXTENSION);
             let vectors = vectors_stream.insert(directory.create_output(&vectors_file, context)?);
@@ -569,6 +575,10 @@ impl Lucene90CompressingTermVectorsWriter {
                 &id,
                 segment_suffix,
             )?;
+            debug_assert!(
+                i64::from(index_header_length(format_name, segment_suffix))
+                    == vectors.file_pointer()
+            );
 
             index_writer = Some(FieldsIndexWriter::new(
                 directory,
@@ -1034,6 +1044,7 @@ impl Lucene90CompressingTermVectorsWriter {
                 FLAGS_BITS,
             )?;
             for flags in &field_flags {
+                debug_assert!(*flags >= 0);
                 writer.add(*flags as i64)?;
             }
             writer.finish()?;
@@ -1357,11 +1368,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
     }
 
     fn start_term(&mut self, term: &BytesRef, freq: i32) -> Result<()> {
-        if freq < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "freq must be >= 1, got {freq}"
-            )));
-        }
+        debug_assert!(freq >= 1);
         let cur_field_idx = self.cur_field.ok_or_else(|| {
             LuceneError::illegal_state("start_term called without active field".to_string())
         })?;
@@ -1404,6 +1411,7 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         })?;
         let doc = self.cur_doc.as_mut().unwrap();
         let field = &doc.fields[cur_field_idx];
+        debug_assert!(field.flags != 0);
 
         let payload_length = if let Some(p) = payload {
             if !field.has_payloads {
@@ -1793,6 +1801,10 @@ impl Lucene90CompressingTermVectorsReader {
                 &id,
                 segment_suffix,
             )?;
+            debug_assert!(
+                i64::from(index_header_length(format_name, segment_suffix))
+                    == vectors_stream.file_pointer()
+            );
             retrieve_checksum(vectors_stream.as_mut())?;
 
             let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
@@ -2127,6 +2139,8 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
 
         // Read field numbers.
         let token = reader.input().read_byte()? as i32;
+        // means no term vectors, cannot happen since we checked for numFields == 0
+        debug_assert!(token != 0);
         let bits_per_field_num = token & 0x1F;
         let mut total_distinct_fields = i64::from(token >> 5);
         if total_distinct_fields == 0x07 {
@@ -2171,14 +2185,9 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         let mut all_field_num_offs_vec = Vec::with_capacity(total_fields as usize);
         for i in 0..total_fields as i64 {
             let off = all_field_num_offs_reader.get_checked(i)?;
-            // Validated once, here, so that every later use — the flags, the
-            // per-field `charsPerTerm` — is provably in range.
-            if off < 0 || off >= field_nums.len() as i64 {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "field {i} of the chunk points at field-number slot {off} of {}",
-                    field_nums.len()
-                )));
-            }
+            // `Lucene90CompressingTermVectorsReader.java:451` only asserts the
+            // range; every later use goes through the checked `at`.
+            debug_assert!(off >= 0 && off < field_nums.len() as i64);
             all_field_num_offs_vec.push(off as i32);
         }
 
@@ -2345,6 +2354,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                 }
             }
             term_index = term_index.wrapping_add(term_count);
+            debug_assert!(
+                i != total_fields as usize - 1 || term_index == total_terms,
+                "{term_index} {total_terms}"
+            );
         }
 
         let position_index = Self::position_index(skip, num_fields, &num_terms_at, &term_freqs);
@@ -2607,6 +2620,12 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             term_index = term_index.wrapping_add(term_count);
         }
 
+        debug_assert!(
+            Self::sum(&field_lengths) == doc_len,
+            "{} != {doc_len}",
+            Self::sum(&field_lengths)
+        );
+
         Ok(Some(Box::new(TVFields {
             field_infos: self.field_infos.clone(),
             field_nums,
@@ -2755,6 +2774,7 @@ impl Lucene90CompressingTermVectorsReader {
     /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumChunks`;
     /// package-private in Java, `pub` for the core tests.
     pub fn num_chunks(&self) -> i64 {
+        debug_assert!(self.num_chunks >= 0);
         self.num_chunks
     }
 
@@ -2763,6 +2783,7 @@ impl Lucene90CompressingTermVectorsReader {
     /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumDirtyChunks`;
     /// package-private in Java, `pub` for the core tests.
     pub fn num_dirty_chunks(&self) -> i64 {
+        debug_assert!(self.num_dirty_chunks >= 0);
         self.num_dirty_chunks
     }
 
@@ -2771,6 +2792,7 @@ impl Lucene90CompressingTermVectorsReader {
     /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumDirtyDocs`;
     /// package-private in Java, `pub` for the core tests.
     pub fn num_dirty_docs(&self) -> i64 {
+        debug_assert!(self.num_dirty_docs >= 0);
         self.num_dirty_docs
     }
 
@@ -2944,6 +2966,7 @@ impl Fields for TVFields {
             field_off += i64::from(self.field_lengths[i]);
         }
         let field_len = i64::from(self.field_lengths[idx]);
+        debug_assert!(field_len >= 0);
         let block_len = self.suffix_bytes.length as i64;
         if field_off < 0 || field_len < 0 || field_off + field_len > block_len {
             return Err(LuceneError::CorruptIndex(format!(
@@ -3276,6 +3299,7 @@ impl TermsEnum for TVTermsEnum {
         if self.ord == self.num_terms - 1 {
             return Ok(None);
         }
+        debug_assert!(self.ord < self.num_terms);
         self.ord += 1;
         // Both lengths were decoded from the chunk, so both are untrusted. Java
         // reaches `ArrayUtil.grow(term.bytes, prefix + suffix)`, which answers a

@@ -484,11 +484,8 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         }
 
         if self.push_state.write_offsets {
-            if start_offset < self.last_start_offset || end_offset < start_offset {
-                return Err(LuceneError::CorruptIndex(
-                    "offsets out of order".to_string(),
-                ));
-            }
+            debug_assert!(start_offset >= self.last_start_offset);
+            debug_assert!(end_offset >= start_offset);
             self.offset_start_delta_buffer[idx] = start_offset - self.last_start_offset;
             self.offset_length_buffer[idx] = end_offset - start_offset;
             self.last_start_offset = start_offset;
@@ -541,6 +538,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         };
 
         if self.push_state.write_positions && self.pos_buffer_upto > 0 {
+            debug_assert!(self.pos_buffer_upto < BLOCK_SIZE);
             self.flush_tail_positions()?;
         }
 
@@ -899,6 +897,10 @@ impl Lucene104PostingsWriter {
                 }
             }
 
+            // There are at most 256 impacts, that require at most 2 bytes each
+            debug_assert!(num_impact_bytes <= i16::MAX as _);
+            // Like impacts plus a few vlongs, still way under the max short value
+            debug_assert!(self.scratch_output.len() + 2 <= i16::MAX as _);
             let level1_len = 2 * 2 + self.scratch_output.len() + self.level1_output.len();
             self.doc_out.write_v_long(level1_len)?;
             level1_end = self.doc_out.file_pointer() + level1_len;

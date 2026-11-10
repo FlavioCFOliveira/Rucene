@@ -215,6 +215,8 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Returns whatever reading the ordinal-to-document addresses raises.
     pub fn load(entry: FieldEntry, slice: Box<dyn IndexInput>) -> Result<Self> {
+        // `OffHeapScalarQuantizedVectorValues.java:213`, after the empty case.
+        debug_assert!(entry.ord_to_doc.is_empty() || entry.centroid.is_some());
         let ord_to_doc = if entry.ord_to_doc.is_empty() || entry.ord_to_doc.is_dense() {
             None
         } else {
@@ -253,6 +255,10 @@ impl OffHeapScalarQuantizedVectorValues {
         ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
         is_query_side: bool,
     ) -> Result<Self> {
+        debug_assert!(!is_query_side || entry.scalar_encoding.is_asymmetric());
+        // The sparse and empty shapes are never query side
+        // (`OffHeapScalarQuantizedVectorValues.java:374, 467`).
+        debug_assert!(!is_query_side || entry.ord_to_doc.is_dense());
         let disi = match ord_to_doc {
             Some(_) => Some(Arc::new(Mutex::new(
                 entry.ord_to_doc.get_indexed_disi(slice.as_ref())?,
@@ -365,6 +371,10 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Equivalent to `OffHeapScalarQuantizedVectorValues.copy()`.
     pub fn copy(&self) -> Result<Self> {
+        if !self.entry.ord_to_doc.is_dense() {
+            // `SparseOffHeapVectorValues.copy()` (`OffHeapScalarQuantizedVectorValues.java:383`).
+            debug_assert!(!self.is_query_side);
+        }
         Self::load_with_ord_to_doc(
             self.entry.clone(),
             self.slice.clone_input()?,
@@ -383,18 +393,12 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `unpacked` is not exactly
-    /// twice as long as `packed`, which Java asserts.
+    /// Never: that `unpacked` is exactly twice as long as `packed` is only
+    /// asserted, as in Java.
     ///
     /// Equivalent to `OffHeapScalarQuantizedVectorValues.packNibbles`.
     pub fn pack_nibbles(unpacked: &[u8], packed: &mut [u8]) -> Result<()> {
-        if unpacked.len() != packed.len() * 2 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "unpacked length {} must be twice the packed length {}",
-                unpacked.len(),
-                packed.len()
-            )));
-        }
+        debug_assert!(unpacked.len() == packed.len() * 2);
         for i in 0..packed.len() {
             let x = (unpacked[i] << 4) | unpacked[packed.len() + i];
             packed[i] = x;
@@ -407,18 +411,12 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `unpacked` is not exactly
-    /// twice as long as `packed`, which Java asserts.
+    /// Never: that `unpacked` is exactly twice as long as `packed` is only
+    /// asserted, as in Java.
     ///
     /// Equivalent to `OffHeapScalarQuantizedVectorValues.unpackNibbles`.
     pub fn unpack_nibbles(packed: &[u8], unpacked: &mut [u8]) -> Result<()> {
-        if unpacked.len() != packed.len() * 2 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "unpacked length {} must be twice the packed length {}",
-                unpacked.len(),
-                packed.len()
-            )));
-        }
+        debug_assert!(unpacked.len() == packed.len() * 2);
         for i in 0..packed.len() {
             unpacked[i] = (packed[i] >> 4) & 0x0F;
             unpacked[packed.len() + i] = packed[i] & 0x0F;
@@ -503,6 +501,7 @@ impl QuantizedByteVectorValues for OffHeapScalarQuantizedVectorValues {
         if self.entry.ord_to_doc.is_empty() {
             return Ok(None);
         }
+        debug_assert!(!self.is_query_side);
         let copy = OffHeapScalarQuantizedVectorValues::copy(self)?;
         let iterator = QuantizedByteVectorValues::iterator(&copy)?;
         let dense = self.entry.ord_to_doc.is_dense();
@@ -651,12 +650,9 @@ impl OffHeapScalarQuantizedFloatVectorValues {
         }
         // Java asserts `centroid != null` here: a non-empty configuration means
         // the metadata carried a centroid.
-        let centroid = centroid.ok_or_else(|| {
-            LuceneError::corrupt_index(
-                "quantized vectors have no centroid to dequantize against",
-                "quantized vectors metadata",
-            )
-        })?;
+        debug_assert!(centroid.is_some());
+        // Java dereferences the null centroid (an NPE) when assertions are off.
+        let centroid = centroid.expect("quantized vectors have no centroid to dequantize against");
         let dims = dimension.max(0) as usize;
         let packed_length = encoding.get_doc_packed_length(dimension.max(0)).max(0) as usize;
         let byte_size = packed_length + 3 * std::mem::size_of::<f32>() + std::mem::size_of::<i32>();
@@ -1359,8 +1355,8 @@ impl ScalarQuantizedVectorScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the encoding is asymmetric,
-    /// which Java asserts, and whatever copying the values raises.
+    /// Returns whatever copying the values raises. An asymmetric encoding is
+    /// only asserted against, as in Java.
     ///
     /// Equivalent to the
     /// `ScalarQuantizedVectorScorerSupplier(QuantizedByteVectorValues, VectorSimilarityFunction)`
@@ -1369,12 +1365,7 @@ impl ScalarQuantizedVectorScorerSupplier {
         values: OffHeapScalarQuantizedVectorValues,
         similarity: VectorSimilarityFunction,
     ) -> Result<Self> {
-        if values.get_scalar_encoding().is_asymmetric() {
-            return Err(LuceneError::illegal_state(format!(
-                "{} encoding is not supported for symmetric quantization",
-                values.get_scalar_encoding().name()
-            )));
-        }
+        debug_assert!(!values.get_scalar_encoding().is_asymmetric());
         let target_values = values.copy()?;
         Ok(Self {
             target_values,
@@ -1433,19 +1424,14 @@ impl AsymmetricQuantizedRandomVectorScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the target encoding is
-    /// symmetric, which Java asserts.
+    /// Never: a symmetric target encoding is only asserted against, as in
+    /// Java.
     pub fn new(
         query_vectors: OffHeapScalarQuantizedVectorValues,
         target_vectors: OffHeapScalarQuantizedVectorValues,
         similarity_function: VectorSimilarityFunction,
     ) -> Result<Self> {
-        if !target_vectors.get_scalar_encoding().is_asymmetric() {
-            return Err(LuceneError::illegal_state(format!(
-                "{} encoding is not asymmetric",
-                target_vectors.get_scalar_encoding().name()
-            )));
-        }
+        debug_assert!(target_vectors.get_scalar_encoding().is_asymmetric());
         Ok(Self {
             query_vectors,
             target_vectors,

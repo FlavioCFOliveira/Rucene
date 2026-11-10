@@ -414,11 +414,7 @@ impl Decompressor for Lz4Decompressor {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()> {
-        if offset + length > original_length {
-            return Err(LuceneError::IllegalArgument(format!(
-                "offset + length ({offset} + {length}) > originalLength ({original_length})"
-            )));
-        }
+        debug_assert!(offset + length <= original_length);
         // Add 7 padding bytes; not required but may help decompression speed.
         let buffer_len = original_length + 7;
         if bytes.bytes.len() < buffer_len {
@@ -601,11 +597,7 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()> {
-        if offset + length > original_length {
-            return Err(LuceneError::IllegalArgument(format!(
-                "offset + length ({offset} + {length}) > originalLength ({original_length})"
-            )));
-        }
+        debug_assert!(offset + length <= original_length);
         if length == 0 {
             bytes.offset = 0;
             bytes.length = 0;
@@ -670,6 +662,7 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
 
         bytes.offset = offset_in_bytes_ref;
         bytes.length = length;
+        debug_assert!(bytes.is_valid().is_ok(), "{:?}", bytes.is_valid());
         Ok(())
     }
 }
@@ -888,11 +881,7 @@ impl Decompressor for DeflateDecompressor {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()> {
-        if offset + length > original_length {
-            return Err(LuceneError::IllegalArgument(format!(
-                "offset + length ({offset} + {length}) > originalLength ({original_length})"
-            )));
-        }
+        debug_assert!(offset + length <= original_length);
         if length == 0 {
             bytes.offset = 0;
             bytes.length = 0;
@@ -1034,11 +1023,7 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()> {
-        if offset + length > original_length {
-            return Err(LuceneError::IllegalArgument(format!(
-                "offset + length ({offset} + {length}) > originalLength ({original_length})"
-            )));
-        }
+        debug_assert!(offset + length <= original_length);
         if length == 0 {
             bytes.offset = 0;
             bytes.length = 0;
@@ -1109,6 +1094,7 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         bytes.bytes = out;
         bytes.offset = offset_in_bytes_ref;
         bytes.length = length;
+        debug_assert!(bytes.is_valid().is_ok(), "{:?}", bytes.is_valid());
         Ok(())
     }
 }

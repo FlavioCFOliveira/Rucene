@@ -208,6 +208,7 @@ impl ByteSlicePool {
         let forwarding_address = new_upto as i32 + pool.byte_offset();
         pool.advance(new_size);
         let new_block = pool.buffer_upto() as usize;
+        debug_assert!(pool.buffer(new_block)[new_upto + 3] == 0);
 
         // The three bytes before the level marker already carry stream data;
         // the forwarding address is four bytes wide and will overwrite them, so
@@ -264,6 +265,7 @@ impl ByteSliceReader {
     pub fn init(&mut self, start_index: i32, end_index: i32) {
         debug_assert!(start_index >= 0);
         debug_assert!(end_index >= start_index);
+        debug_assert!(end_index >= 0);
         self.end_index = end_index;
         self.level = 0;
         self.block = (start_index as usize) >> BYTE_BLOCK_SHIFT;
@@ -279,6 +281,7 @@ impl ByteSliceReader {
 
     /// Returns `true` when every byte of the stream was consumed.
     pub fn eof(&self) -> bool {
+        debug_assert!(self.upto as i32 + self.block_offset <= self.end_index);
         self.remaining() == 0
     }
 
@@ -299,6 +302,7 @@ impl ByteSliceReader {
     /// Panics if called at end of stream.
     pub fn read_byte(&mut self, pool: &ByteBlockPool) -> u8 {
         debug_assert!(!self.eof());
+        debug_assert!(self.upto <= self.limit);
         if self.upto == self.limit {
             self.next_slice(pool);
         }
@@ -397,6 +401,7 @@ impl ByteSliceReader {
         self.level = NEXT_LEVEL_ARRAY[self.level];
         let new_size = LEVEL_SIZE_ARRAY[self.level];
 
+        debug_assert!(self.end_index - next_index > 0);
         self.block = (next_index as usize) >> BYTE_BLOCK_SHIFT;
         self.block_offset = (self.block as i32) << BYTE_BLOCK_SHIFT;
         self.upto = (next_index as usize) & BYTE_BLOCK_MASK;
@@ -1662,6 +1667,8 @@ impl FreqProxTermsWriterPerField {
                 if self.has_offsets {
                     self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
                 }
+            } else {
+                debug_assert!(!self.has_offsets);
             }
             field_state
                 .set_max_term_frequency(std::cmp::max(freq, field_state.max_term_frequency()));
@@ -1683,6 +1690,7 @@ impl FreqProxTermsWriterPerField {
         token: &InvertedToken<'_>,
     ) -> std::result::Result<(), TermsHashAddError> {
         let index = term_id as usize;
+        debug_assert!(!self.has_freq || self.base.postings[index].term_freq > 0);
         if !self.has_freq {
             if token.has_term_freq_attribute && token.term_freq != 1 {
                 return Err(LuceneError::illegal_state(format!(
@@ -1735,6 +1743,8 @@ impl FreqProxTermsWriterPerField {
                     self.base.postings[index].last_offset = 0;
                     self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
                 }
+            } else {
+                debug_assert!(!self.has_offsets);
             }
             field_state.increment_unique_term_count();
         } else {
@@ -2021,6 +2031,7 @@ impl TermsEnum for FreqProxTermsEnum {
                 std::cmp::Ordering::Greater => high = mid - 1,
                 std::cmp::Ordering::Equal => {
                     self.ord = mid;
+                    debug_assert!(self.field.term_bytes(mid as usize) == target);
                     return Ok(SeekStatus::FOUND);
                 }
             }
@@ -2029,6 +2040,7 @@ impl TermsEnum for FreqProxTermsEnum {
         if self.ord >= self.num_terms as i64 {
             Ok(SeekStatus::END)
         } else {
+            debug_assert!(self.field.term_bytes(self.ord as usize) > target);
             Ok(SeekStatus::NOT_FOUND)
         }
     }
@@ -2262,6 +2274,8 @@ impl DocIdSetIterator for FreqProxDocsEnum {
             } else {
                 self.doc_id += code;
             }
+
+            debug_assert!(self.doc_id != self.field.postings[self.term_id as usize].last_doc_id);
         }
         Ok(self.doc_id)
     }
@@ -2423,6 +2437,8 @@ impl DocIdSetIterator for FreqProxPostingsEnum {
             } else {
                 self.freq = self.reader.read_v_int(&self.field.pool)?;
             }
+
+            debug_assert!(self.doc_id != self.field.postings[self.term_id as usize].last_doc_id);
         }
 
         self.positions_left = self.freq;
@@ -3548,6 +3564,7 @@ fn apply_deletes_to(
             continue;
         }
         let mut postings = enumerator.postings(None, 0)?;
+        debug_assert!(delete.doc_id_upto < NO_MORE_DOCS);
         loop {
             let doc = postings.next_doc()?;
             if doc >= delete.doc_id_upto || doc == NO_MORE_DOCS {

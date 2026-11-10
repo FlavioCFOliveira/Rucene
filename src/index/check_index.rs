@@ -2886,6 +2886,7 @@ pub fn check_sorted_set_doc_values(
     let mut last_value: Option<BytesRef> = None;
     for i in 0..=max_ord {
         let term = dv.lookup_ord(i)?;
+        debug_assert!(term.is_valid().is_ok());
         term.is_valid()?;
         if let Some(last) = &last_value {
             if term.slice() <= last.slice() {
@@ -3341,6 +3342,7 @@ fn check_fields(
         } else {
             let min_term = match terms.min()? {
                 Some(bb) => {
+                    debug_assert!(bb.is_valid().is_ok());
                     bb.is_valid()?;
                     Some(BytesRef::deep_copy_of(&bb))
                 }
@@ -3348,6 +3350,7 @@ fn check_fields(
             };
             let max_term = match terms.max()? {
                 Some(bb) => {
+                    debug_assert!(bb.is_valid().is_ok());
                     bb.is_valid()?;
                     if min_term.is_none() {
                         return Err(check_index_error(format!(
@@ -3419,6 +3422,7 @@ fn check_fields(
         let mut visited_docs = FixedBitSet::new(max_doc.max(0) as usize);
 
         while let Some(term) = terms_enum.next()? {
+            debug_assert!(term.is_valid().is_ok());
             term.is_valid()?;
 
             // Terms must arrive in order.
@@ -3438,6 +3442,8 @@ fn check_fields(
 
             if !is_vectors {
                 let Some(min_term) = min_term.as_ref() else {
+                    // We checked this above:
+                    debug_assert!(max_term.is_none());
                     return Err(check_index_error(format!(
                         "field=\"{field}\": invalid term: term={}, minTerm=(null)",
                         term.to_hex_string()
@@ -6118,6 +6124,9 @@ fn cross_check_vector_field_against_postings(
             }
 
             let payload = postings.get_payload()?.map(<[u8]>::to_vec);
+            if payload.is_some() {
+                debug_assert!(vectors_has_payload);
+            }
             if postings_has_payload && vectors_has_payload {
                 let postings_payload = postings_docs.get_payload()?.map(<[u8]>::to_vec);
                 match (&payload, &postings_payload) {

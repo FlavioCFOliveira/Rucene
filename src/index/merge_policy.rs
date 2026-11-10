@@ -1716,6 +1716,7 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
         merge_context: &dyn MergeContext,
     ) -> Result<bool> {
         let del_count = merge_context.num_deletes_to_merge(info)?;
+        debug_assert!(self.assert_del_count(del_count, info)?);
         Ok(del_count == 0
             && self.use_compound_file(infos, info, merge_context)?
                 == info.info.get_use_compound_file())
@@ -2938,6 +2939,10 @@ impl TieredMergePolicy {
                     idx += 1;
                 }
 
+                // We should never see an empty candidate: we iterated over
+                // maxMergeAtOnce segments, and already pre-excluded the
+                // too-large segments.
+                debug_assert!(!candidate.is_empty());
                 if candidate.is_empty() {
                     continue;
                 }
@@ -6009,6 +6014,15 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
         if num_deletes_to_merge != 0 && info.get_soft_del_count() > 0 {
             return self.num_deletes_to_merge_for(info, num_deletes_to_merge, reader_supplier()?);
         }
+        debug_assert!(
+            num_deletes_to_merge >= 0,
+            "numDeletesToMerge: {num_deletes_to_merge}"
+        );
+        debug_assert!(
+            num_deletes_to_merge <= info.info.max_doc()?,
+            "numDeletesToMerge: {num_deletes_to_merge} maxDoc:{}",
+            info.info.max_doc()?
+        );
         Ok(num_deletes_to_merge)
     }
 

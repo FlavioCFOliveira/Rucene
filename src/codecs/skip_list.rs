@@ -219,17 +219,14 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
 
     /// Buffers a skip entry for the given document frequency.
     ///
+    /// `df` must be a multiple of `skip_interval`: Java only asserts it
+    /// (`MultiLevelSkipListWriter.java:130`), and so does this port.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `df` is not a multiple of
-    /// `skip_interval`.
+    /// Propagates the I/O errors of writing the skip data.
     pub fn buffer_skip(&mut self, df: i32) -> Result<()> {
-        if df % self.skip_interval != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "df ({df}) must be a multiple of skipInterval ({})",
-                self.skip_interval
-            )));
-        }
+        debug_assert!(df % self.skip_interval == 0);
 
         let mut num_levels = 1;
         if df % self.window_length == 0 {
@@ -452,6 +449,16 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
     pub fn init(&mut self, skip_pointer: i64, df: i32) -> Result<()> {
         self.skip_pointer[0] = skip_pointer;
         self.doc_count = df;
+        debug_assert!(
+            skip_pointer >= 0
+                && skip_pointer
+                    <= self.skip_stream[0]
+                        .as_ref()
+                        .expect("INVARIANT: level 0 skip stream is set")
+                        .length(),
+            "invalid skip pointer: {skip_pointer}, length={}",
+            self.skip_stream[0].as_ref().map_or(-1, |s| s.length())
+        );
 
         self.skip_doc.fill(0);
         self.num_skipped.fill(0);
@@ -717,13 +724,19 @@ mod tests {
         reader.close().unwrap();
     }
 
+    /// `MultiLevelSkipListWriter.java:130` only asserts `df % skipInterval == 0`.
     #[test]
-    fn writer_rejects_non_multiple_df() {
+    fn writer_asserts_df_is_a_multiple_of_skip_interval() {
+        if !cfg!(debug_assertions) {
+            return;
+        }
         let codec = IntervalSkipCodec::new_same(3);
         let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 3, 10, 30).unwrap();
         writer.reset_skip();
-        let err = writer.buffer_skip(4).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = writer.buffer_skip(4);
+        }));
+        assert!(result.is_err());
     }
 
     #[test]

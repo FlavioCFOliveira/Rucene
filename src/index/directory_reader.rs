@@ -459,6 +459,7 @@ impl StandardDirectoryReader {
                 // that we are passing the actual instance of
                 // SegmentCommitInfo in IndexWriter's segmentInfos.
                 let info = infos.info(i);
+                debug_assert!(Arc::ptr_eq(&info.info.directory, &dir));
                 let reader = reader_function(info)?;
                 if LeafReader::num_docs(reader.as_ref()) > 0
                     || writer.keep_fully_deleted_segment(&reader)?
@@ -757,6 +758,10 @@ impl StandardDirectoryReader {
             );
         }
 
+        debug_assert!(Arc::ptr_eq(
+            &commit_info.info.directory,
+            &old_reader.get_segment_info().info.directory
+        ));
         if del_gen_unchanged && !old_reader.is_nrt() {
             // Only the doc values changed; the live docs carry over.
             return SegmentReader::new_shared(
@@ -1870,7 +1875,15 @@ pub fn open_with_writer_flags(
 pub fn open_if_changed(
     old_reader: Arc<dyn DirectoryReader>,
 ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-    old_reader.do_open_if_changed()
+    let new_reader = old_reader.do_open_if_changed()?;
+    // `DirectoryReader.java:244`.
+    debug_assert!(new_reader
+        .as_ref()
+        .is_none_or(|new_reader| !std::ptr::addr_eq(
+            Arc::as_ptr(new_reader),
+            Arc::as_ptr(&old_reader)
+        )));
+    Ok(new_reader)
 }
 
 /// As [`open_if_changed`], opening the new segment readers on
@@ -1882,7 +1895,15 @@ pub fn open_if_changed_with_executor(
     old_reader: Arc<dyn DirectoryReader>,
     executor_service: Option<Arc<dyn crate::search::Executor>>,
 ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-    old_reader.do_open_if_changed_with_executor(executor_service)
+    let new_reader = old_reader.do_open_if_changed_with_executor(executor_service)?;
+    // `DirectoryReader.java:269`.
+    debug_assert!(new_reader
+        .as_ref()
+        .is_none_or(|new_reader| !std::ptr::addr_eq(
+            Arc::as_ptr(new_reader),
+            Arc::as_ptr(&old_reader)
+        )));
+    Ok(new_reader)
 }
 
 /// As [`open_if_changed_with_commit`], opening the new segment readers on
@@ -1895,7 +1916,16 @@ pub fn open_if_changed_with_commit_and_executor(
     commit: &dyn IndexCommit,
     executor_service: Option<Arc<dyn crate::search::Executor>>,
 ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-    old_reader.do_open_if_changed_from_commit_with_executor(commit, executor_service)
+    let new_reader =
+        old_reader.do_open_if_changed_from_commit_with_executor(commit, executor_service)?;
+    // `DirectoryReader.java:296`.
+    debug_assert!(new_reader
+        .as_ref()
+        .is_none_or(|new_reader| !std::ptr::addr_eq(
+            Arc::as_ptr(new_reader),
+            Arc::as_ptr(&old_reader)
+        )));
+    Ok(new_reader)
 }
 
 /// As [`open_if_changed_with_writer`], with an executor.
@@ -1909,11 +1939,19 @@ pub fn open_if_changed_with_writer_and_executor(
     apply_all_deletes: bool,
     executor_service: Option<Arc<dyn crate::search::Executor>>,
 ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-    old_reader.do_open_if_changed_from_writer_with_executor(
+    let new_reader = old_reader.do_open_if_changed_from_writer_with_executor(
         writer,
         apply_all_deletes,
         executor_service,
-    )
+    )?;
+    // `DirectoryReader.java:430`.
+    debug_assert!(new_reader
+        .as_ref()
+        .is_none_or(|new_reader| !std::ptr::addr_eq(
+            Arc::as_ptr(new_reader),
+            Arc::as_ptr(&old_reader)
+        )));
+    Ok(new_reader)
 }
 
 /// If the provided commit differs from what `old_reader` is searching, returns a
@@ -1924,7 +1962,15 @@ pub fn open_if_changed_with_commit(
     old_reader: Arc<dyn DirectoryReader>,
     commit: &dyn IndexCommit,
 ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-    old_reader.do_open_if_changed_from_commit(commit)
+    let new_reader = old_reader.do_open_if_changed_from_commit(commit)?;
+    // `DirectoryReader.java:282`.
+    debug_assert!(new_reader
+        .as_ref()
+        .is_none_or(|new_reader| !std::ptr::addr_eq(
+            Arc::as_ptr(new_reader),
+            Arc::as_ptr(&old_reader)
+        )));
+    Ok(new_reader)
 }
 
 /// If the provided writer has changes, returns a new reader covering them.
@@ -1935,7 +1981,15 @@ pub fn open_if_changed_with_writer(
     writer: &dyn IndexWriter,
     apply_all_deletes: bool,
 ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-    old_reader.do_open_if_changed_from_writer(writer, apply_all_deletes)
+    let new_reader = old_reader.do_open_if_changed_from_writer(writer, apply_all_deletes)?;
+    // `DirectoryReader.java:403`.
+    debug_assert!(new_reader
+        .as_ref()
+        .is_none_or(|new_reader| !std::ptr::addr_eq(
+            Arc::as_ptr(new_reader),
+            Arc::as_ptr(&old_reader)
+        )));
+    Ok(new_reader)
 }
 
 /// Returns all commit points that exist in the directory, sorted from oldest

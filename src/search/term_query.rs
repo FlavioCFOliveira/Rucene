@@ -283,6 +283,13 @@ impl TermWeight {
     /// `TermWeight.getTermsEnum(LeafReaderContext)`.
     fn get_terms_enum(&self, context: &LeafReaderContext) -> Result<Option<Box<dyn TermsEnum>>> {
         debug_assert!(self.term_states.is_some());
+        debug_assert!(
+            self.term_states
+                .as_ref()
+                .is_some_and(|states| states.was_built_for_top_level_of(context)),
+            "The top-reader used to create Weight is not the same as the current reader's \
+             top-reader ({context}"
+        );
         let Some(state) = self.term_state(context)? else {
             // The term is not present in that reader.
             debug_assert!(
@@ -327,6 +334,15 @@ impl TermWeight {
         &self,
         context: &LeafReaderContext,
     ) -> Result<Option<TermScorerSupplier>> {
+        // `TermQuery.java:121`, at the head of `scorerSupplier`, which
+        // `explain` also goes through.
+        debug_assert!(
+            self.term_states
+                .as_ref()
+                .is_none_or(|states| states.was_built_for_top_level_of(context)),
+            "The top-reader used to create Weight is not the same as the current reader's \
+             top-reader ({context}"
+        );
         let Some(state) = self.term_state(context)? else {
             return Ok(None);
         };

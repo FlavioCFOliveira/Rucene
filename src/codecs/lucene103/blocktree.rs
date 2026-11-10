@@ -263,12 +263,12 @@ impl Stats {
     }
 
     pub(crate) fn finish(&self) {
-        assert_eq!(
+        debug_assert_eq!(
             self.start_block_count, self.end_block_count,
             "startBlockCount={} endBlockCount={}",
             self.start_block_count, self.end_block_count
         );
-        assert_eq!(
+        debug_assert_eq!(
             self.total_block_count,
             self.floor_sub_block_count + self.non_floor_block_count,
             "floorSubBlockCount={} nonFloorBlockCount={} totalBlockCount={}",
@@ -276,7 +276,7 @@ impl Stats {
             self.non_floor_block_count,
             self.total_block_count
         );
-        assert_eq!(
+        debug_assert_eq!(
             self.total_block_count,
             self.mixed_block_count + self.terms_only_block_count + self.sub_blocks_only_block_count,
             "totalBlockCount={} mixedBlockCount={} subBlocksOnlyBlockCount={} termsOnlyBlockCount={}",
@@ -694,16 +694,18 @@ impl TrieBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a leaf node has no output,
-    /// and whatever error writing to the index raised.
+    /// Returns whatever error writing to the index raised.
     fn freeze_node(node: &FrontierNode, start_fp: i64, index: &mut dyn IndexOutput) -> Result<i64> {
         let children_num = node.children_num();
 
         if children_num == 0 {
             let bottom_fp = index.file_pointer() - start_fp;
-            let output = node.output.as_ref().ok_or_else(|| {
-                LuceneError::illegal_state("leaf nodes should have output".to_string())
-            })?;
+            debug_assert!(node.output.is_some(), "leaf nodes should have output.");
+            // Java dereferences the null output (an NPE) when assertions are off.
+            let output = node
+                .output
+                .as_ref()
+                .expect("leaf nodes should have output.");
             let output_fp_bytes = Self::bytes_required_v_long(output.fp);
             let header = trie_reader::SIGN_NO_CHILDREN
                 | ((output_fp_bytes - 1) << 2)
@@ -1354,6 +1356,7 @@ impl<'a> TermsWriter<'a> {
         index_out: &'a mut dyn IndexOutput,
         scratch_bytes: &'a mut ByteBuffersDataOutput,
     ) -> Self {
+        debug_assert!(field_info.index_options != IndexOptions::NONE);
         let has_freqs = field_info.index_options != IndexOptions::DOCS;
         Self {
             field_info,
@@ -1394,6 +1397,13 @@ impl<'a> TermsWriter<'a> {
         if let Some(state) =
             postings_writer.write_term(term, terms_enum, &mut self.docs_seen, norms)?
         {
+            debug_assert!(state.doc_freq != 0);
+            debug_assert!(
+                self.field_info.index_options == IndexOptions::DOCS
+                    || state.total_term_freq >= i64::from(state.doc_freq),
+                "postingsWriter={}",
+                std::any::type_name_of_val(postings_writer)
+            );
             self.push_term(term, postings_writer)?;
             let pending = PendingTerm::new(term, state);
             self.pending.push(PendingEntry::Term(pending.clone()));
@@ -1471,6 +1481,12 @@ impl<'a> TermsWriter<'a> {
             let suffix_lead_label = match &self.pending[i] {
                 PendingEntry::Term(term) => {
                     if term.term_bytes.len() == prefix_length as usize {
+                        // Suffix is 0, i.e. prefix 'foo' and term is 'foo' so
+                        // the term has empty string suffix in this block.
+                        debug_assert!(
+                            last_suffix_lead_label == -1,
+                            "i={i} lastSuffixLeadLabel={last_suffix_lead_label}"
+                        );
                         -1
                     } else {
                         term.term_bytes[prefix_length as usize] as i32 & 0xff
@@ -1561,6 +1577,7 @@ impl<'a> TermsWriter<'a> {
         has_sub_blocks: bool,
         postings_writer: &mut dyn PostingsWriterBase,
     ) -> Result<PendingBlock> {
+        debug_assert!(end > start);
         let start_fp = self.terms_out.file_pointer();
         let has_floor_lead_label = is_floor && floor_lead_label != -1;
         let prefix_len = prefix_length as usize + if has_floor_lead_label { 1 } else { 0 };
@@ -1592,7 +1609,8 @@ impl<'a> TermsWriter<'a> {
         let entries: Vec<PendingEntry> = self.pending[start..end].to_vec();
 
         if is_leaf_block {
-            for ent in entries {
+            for (k, ent) in entries.into_iter().enumerate() {
+                debug_assert!(matches!(ent, PendingEntry::Term(_)), "i={}", start + k);
                 if let PendingEntry::Term(term) = ent {
                     // `assert StringHelper.startsWith(term.termBytes, prefix) :
                     // term + " prefix=" + prefix` (`Lucene103BlockTreeTermsWriter.java:779`).
@@ -1606,6 +1624,11 @@ impl<'a> TermsWriter<'a> {
                         &term.term_bytes,
                         prefix_length as usize,
                         suffix,
+                    );
+                    debug_assert!(
+                        floor_lead_label == -1
+                            || i32::from(term.term_bytes[prefix_length as usize])
+                                >= floor_lead_label
                     );
                     self.write_term_stats(term.state.doc_freq, term.state.total_term_freq)?;
                     postings_writer.encode_term(
@@ -1647,7 +1670,17 @@ impl<'a> TermsWriter<'a> {
                         absolute = false;
                     }
                     PendingEntry::Block(block) => {
+                        debug_assert!(StringHelper::starts_with_bytes(
+                            block.prefix.slice(),
+                            &prefix
+                        ));
                         let suffix = block.prefix.length - prefix_length as usize;
+                        debug_assert!(StringHelper::starts_with_bytes(
+                            block.prefix.slice(),
+                            &prefix
+                        ));
+
+                        debug_assert!(suffix > 0);
                         self.suffix_lengths_writer
                             .write_v_int(((suffix as i32) << 1) | 1)?;
                         self.suffix_writer.append_bytes(
@@ -1659,6 +1692,14 @@ impl<'a> TermsWriter<'a> {
                         // suffix-lengths blob, which is written after the suffix
                         // bytes; writing it straight to the terms output would
                         // put it before them.
+                        debug_assert!(
+                            floor_lead_label == -1
+                                || i32::from(block.prefix.bytes[prefix_length as usize])
+                                    >= floor_lead_label,
+                            "floorLeadLabel={floor_lead_label} suffixLead={}",
+                            block.prefix.bytes[prefix_length as usize]
+                        );
+                        debug_assert!(block.fp < start_fp);
                         self.suffix_lengths_writer
                             .write_v_long(start_fp - block.fp)?;
                         if let Some(idx) = &block.index {
@@ -1668,6 +1709,8 @@ impl<'a> TermsWriter<'a> {
                 }
             }
             self.finish_term_stats()?;
+
+            debug_assert!(sub_indices.as_ref().is_some_and(|s| !s.is_empty()));
         }
 
         // Write suffixes byte[] blob to terms dict output, either uncompressed,

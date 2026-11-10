@@ -158,6 +158,7 @@ impl BaseCompositeReader {
             return cached;
         }
         let total: i32 = self.sub_readers.iter().map(|r| r.num_docs()).sum();
+        debug_assert!(total >= 0);
         self.num_docs.store(total, Ordering::Relaxed);
         total
     }

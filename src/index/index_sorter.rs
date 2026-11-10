@@ -767,7 +767,19 @@ impl SorterDocMap {
     pub fn is_consistent(&self) -> bool {
         (0..self.size()).all(|i| {
             let new_id = self.old_to_new(i);
-            new_id >= 0 && new_id < self.size() && self.new_to_old(new_id) == i
+            debug_assert!(
+                new_id >= 0 && new_id < self.size(),
+                "doc IDs must be in [0-{}[, got {new_id}",
+                self.size()
+            );
+            new_id >= 0 && new_id < self.size() && {
+                let old_id = self.new_to_old(new_id);
+                debug_assert!(
+                    i == old_id,
+                    "mapping is inconsistent: {i} --oldToNew--> {new_id} --newToOld--> {old_id}"
+                );
+                old_id == i
+            }
         })
     }
 }

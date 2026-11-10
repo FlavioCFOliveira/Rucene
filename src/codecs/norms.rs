@@ -310,6 +310,7 @@ impl NormsProducer for MergedNormsProducer<'_> {
                 let Some(values) = norms_producer.get_norms(reader_field_info)? else {
                     continue;
                 };
+                debug_assert!(values.doc_id() == -1);
                 subs.push(NumericDocValuesSub {
                     doc_map: Arc::clone(&self.merge_state.doc_maps[i]),
                     values,

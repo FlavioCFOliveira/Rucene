@@ -500,6 +500,11 @@ impl Lucene99FlatVectorsWriter {
                 break;
             }
             let binary_value = byte_vector_values.vector_value(iter.index())?;
+            debug_assert!(
+                binary_value.len()
+                    == byte_vector_values.dimension() as usize
+                        * VectorEncoding::BYTE.byte_size() as usize
+            );
             output.write_bytes(&binary_value, 0, binary_value.len())?;
             docs_with_field.add(doc_v)?;
         }

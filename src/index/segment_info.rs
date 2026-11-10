@@ -761,6 +761,11 @@ impl SegmentCommitInfo {
                 "invalid delCount={del_count} (maxDoc={max_doc})"
             )));
         }
+        debug_assert!(
+            self.soft_del_count + del_count <= max_doc,
+            "maxDoc={max_doc},delCount={del_count},softDelCount={}",
+            self.soft_del_count
+        );
         if del_count + self.soft_del_count > max_doc {
             return Err(LuceneError::IllegalArgument(format!(
                 "delCount + softDelCount > maxDoc (maxDoc={max_doc}, delCount={del_count}, softDelCount={})",
@@ -784,6 +789,11 @@ impl SegmentCommitInfo {
                 "invalid softDelCount={soft_del_count} (maxDoc={max_doc})"
             )));
         }
+        debug_assert!(
+            soft_del_count + self.del_count <= max_doc,
+            "maxDoc={max_doc},delCount={},softDelCount={soft_del_count}",
+            self.del_count
+        );
         if self.del_count + soft_del_count > max_doc {
             return Err(LuceneError::IllegalArgument(format!(
                 "delCount + softDelCount > maxDoc (maxDoc={max_doc}, delCount={}, softDelCount={soft_del_count})",

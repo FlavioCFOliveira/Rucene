@@ -977,6 +977,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         } else {
             let bits_per_value = DirectWriter::unsigned_bits_required(max.wrapping_sub(min) / gcd);
             encode_buffer.reset();
+            debug_assert!(encode_buffer.size() == 0);
             let mut writer = DirectWriter::new(encode_buffer, values.len() as i64, bits_per_value)?;
             for &v in values {
                 writer.add(v.wrapping_sub(min) / gcd)?;
@@ -1002,6 +1003,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             self.data.write_bytes(b, 0, b.len())?;
         }
         let data_length = self.data.file_pointer() - start;
+        debug_assert!(docs.len() as i64 <= i64::from(self.max_doc));
         self.meta.write_long(start)?;
         self.meta.write_long(data_length)?;
 
@@ -1360,8 +1362,8 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             } else {
                 let prefix = StringHelper::bytes_difference(&previous.get(), &term)? as usize;
                 let suffix_length = term.length - prefix;
-                assert!(suffix_length > 0);
-                // Will write (suffixLength + 1 byte + 2 vint) bytes. Grow the buffer in need.
+                debug_assert!(suffix_length > 0); // terms are unique
+                                                  // Will write (suffixLength + 1 byte + 2 vint) bytes. Grow the buffer in need.
                 Self::maybe_grow_buffer(terms_dict_buffer, buffered_position, suffix_length + 11);
                 let prefix_clipped = prefix.min(15);
                 let suffix_clipped = (suffix_length - 1).min(15);
@@ -3580,6 +3582,12 @@ impl TermsDict {
     /// Equivalent to `TermsDict.getTermFromIndex(long)`
     /// (`Lucene90DocValuesProducer.java:1660-1666`).
     fn get_term_from_index(&mut self, index: i64) -> Result<()> {
+        debug_assert!(
+            index >= 0
+                && index
+                    <= (self.size.wrapping_sub(1) as u64).wrapping_shr(self.index_shift as u32)
+                        as i64
+        );
         let start = self.index_addresses.get_checked(index)?;
         let end = self.index_addresses.get_checked(index.wrapping_add(1))?;
         // `(int) (indexAddresses.get(index + 1) - start)`.
@@ -3618,6 +3626,25 @@ impl TermsDict {
                 hi = mid - 1;
             }
         }
+
+        // Java's asserts read the index terms into `term`, as they do here.
+        debug_assert!(
+            hi < 0 || {
+                self.get_term_from_index(hi)?;
+                self.term.as_slice() <= text
+            }
+        );
+        debug_assert!(
+            hi == self
+                .size
+                .wrapping_sub(1)
+                .wrapping_shr(self.index_shift as u32)
+                || {
+                    self.get_term_from_index(hi + 1)?;
+                    self.term.as_slice() > text
+                }
+        );
+        debug_assert!((hi < 0) ^ (self.size > 0)); // return -1 iff empty term dict
         Ok(hi)
     }
 
@@ -3626,6 +3653,11 @@ impl TermsDict {
     /// Equivalent to `TermsDict.getFirstTermFromBlock(long)`
     /// (`Lucene90DocValuesProducer.java:1690-1697`).
     fn get_first_term_from_block(&mut self, block: i64) -> Result<()> {
+        debug_assert!(
+            block >= 0
+                && block
+                    <= ((self.size.wrapping_sub(1) as u64) >> TERMS_DICT_BLOCK_LZ4_SHIFT) as i64
+        );
         self.seek_block_address(block)?;
         self.term = self.read_raw_term()?;
         Ok(())
@@ -3668,6 +3700,25 @@ impl TermsDict {
                 block_hi = block_mid - 1;
             }
         }
+
+        // Java's asserts read the first terms of the blocks into `term`, as
+        // they do here.
+        debug_assert!(
+            block_hi < 0 || {
+                self.get_first_term_from_block(block_hi)?;
+                self.term.as_slice() <= text
+            }
+        );
+        debug_assert!(
+            block_hi == ((self.size.wrapping_sub(1) as u64) >> TERMS_DICT_BLOCK_LZ4_SHIFT) as i64
+                || {
+                    self.get_first_term_from_block(block_hi + 1)?;
+                    self.term.as_slice() > text
+                }
+        );
+
+        // read the block only if term dict is not empty
+        debug_assert!(self.size > 0);
 
         // reset ord and bytes to the ceiling block even if
         // text is before the first term (blockHi == -1)
@@ -3713,6 +3764,7 @@ impl TermsDict {
         let block = self.seek_block(text)?;
         if block == -2 {
             // empty terms dict
+            debug_assert!(self.size == 0);
             return Ok(SeekStatus::END);
         } else if block == -1 {
             // before the first term

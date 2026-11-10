@@ -136,15 +136,9 @@ impl FieldReader {
         max_term: BytesRef,
         meta_in: &mut dyn crate::store::DataInput,
     ) -> Result<Self> {
-        if num_terms <= 0 {
-            return Err(LuceneError::corrupt_index(
-                format!(
-                    "illegal numTerms for field {}: {num_terms}",
-                    field_info.name
-                ),
-                &shared.segment,
-            ));
-        }
+        // The terms reader rejects `numTerms <= 0` before it builds the field
+        // reader (`Lucene103BlockTreeTermsReader.java:163`); here Java asserts.
+        debug_assert!(num_terms > 0);
         let index_start = meta_in.read_v_long()?;
         let root_fp = meta_in.read_v_long()?;
         let index_end = meta_in.read_v_long()?;

@@ -532,6 +532,12 @@ impl FieldsProducer for FieldsReader {
         for (suffix, producer) in self.formats.iter() {
             formats.insert(suffix.clone(), producer.get_merge_instance()?);
         }
+        // `assert producer != null` (PerFieldPostingsFormat.java:289): every field's producer has
+        // its merge-instance replacement.
+        debug_assert!(self
+            .fields
+            .values()
+            .all(|suffix| formats.contains_key(suffix)));
         Ok(Box::new(FieldsReader {
             formats,
             fields: self.fields.clone(),
@@ -777,6 +783,9 @@ impl<'a> DvFieldsWriter<'a> {
             });
         }
 
+        // `assert suffixes.containsKey(formatName)` (`PerFieldDocValuesFormat.java:229`),
+        // checked on both branches: the new-instance branch has just inserted it.
+        debug_assert!(self.suffixes.contains_key(&format_name));
         let entry = self
             .formats
             .get_mut(&identity)
@@ -1079,6 +1088,12 @@ impl DocValuesProducer for DvFieldsReader {
         for (suffix, producer) in self.formats.iter() {
             formats.insert(suffix.clone(), producer.get_merge_instance()?);
         }
+        // `assert producer != null` (PerFieldDocValuesFormat.java:276): every field's producer has
+        // its merge-instance replacement.
+        debug_assert!(self
+            .fields
+            .values()
+            .all(|suffix| formats.contains_key(suffix)));
         Ok(Box::new(DvFieldsReader {
             formats,
             fields: self.fields.clone(),
@@ -1272,6 +1287,7 @@ impl KnnFieldsWriter {
         }
 
         // we've already seen this format, so just grab its suffix
+        debug_assert!(self.suffixes.contains_key(&format_name));
         let entry = self
             .formats
             .get_mut(&identity)

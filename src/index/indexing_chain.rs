@@ -1772,6 +1772,7 @@ impl DefaultIndexingChain {
         // copy nobody writes out, and produce an index Lucene cannot open.
         let field_info = field_infos.add(&described)?;
         // `pf.setFieldInfo(fi)`.
+        debug_assert!(self.per_fields[pf].field_info.is_none());
         self.per_fields[pf].field_info = Some(field_info.clone());
         let indexed = field_info.index_options != IndexOptions::NONE;
         if indexed {
@@ -1804,6 +1805,7 @@ impl DefaultIndexingChain {
             // we still write norms for this segment"
             // (`IndexingChain.java:1837-1841`). `has_norms()` is exactly Java's
             // `indexOptions != NONE && omitNorms == false`.
+            debug_assert!(per_field.norms.is_none());
             per_field.norms = field_info
                 .has_norms()
                 .then(|| NormValuesWriter::new(field_info.clone(), Arc::clone(&self.bytes_used)));
@@ -2677,6 +2679,7 @@ impl DefaultIndexingChain {
         // close runs either way.
         let outcome = (|| -> Result<()> {
             for info in state.field_infos.iter() {
+                debug_assert!(self.per_field_index.contains_key(&info.name));
                 // Java re-reads `omitsNorms()` and `getIndexOptions()` from the
                 // *final* field info rather than trusting the one the writer
                 // was created with; `has_norms()` is exactly that conjunction.
@@ -2689,6 +2692,11 @@ impl DefaultIndexingChain {
                         info.name
                     ))
                 })?;
+                debug_assert!(
+                    self.per_fields[index].norms.is_some(),
+                    "field={}",
+                    info.name
+                );
                 let norms = self.per_fields[index].norms.as_mut().ok_or_else(|| {
                     LuceneError::illegal_state(format!(
                         "field \"{}\" has norms but no norms buffer",

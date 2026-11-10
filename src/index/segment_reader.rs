@@ -840,6 +840,7 @@ impl SegmentDocValuesProducer {
 impl DocValuesProducer for SegmentDocValuesProducer {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
@@ -854,6 +855,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
@@ -868,6 +870,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
@@ -885,6 +888,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
@@ -899,6 +903,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
@@ -915,6 +920,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
     /// (`index/SegmentDocValuesProducer.java:126-131`): the answer of the
     /// producer serving the field, `None` included.
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -1270,6 +1276,7 @@ impl SegmentReader {
                         &*READONCE_IO_CONTEXT,
                     )?))
                 } else {
+                    debug_assert!(original_si_for_closure.get_del_count() == 0);
                     None
                 };
                 let hard_live_docs = live_docs.clone();
@@ -1383,6 +1390,12 @@ impl SegmentReader {
         let original_si = segment_info;
         let live_docs = live_docs.map(SharedBits::new);
         let hard_live_docs = hard_live_docs.map(SharedBits::new);
+        // `SegmentReader.java:151`.
+        debug_assert!(Self::assert_live_docs(
+            is_nrt,
+            hard_live_docs.as_ref(),
+            live_docs.as_ref()
+        ));
 
         parent.core_readers.inc_ref()?;
         let core_readers = Arc::clone(&parent.core_readers);

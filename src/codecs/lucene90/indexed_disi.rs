@@ -121,7 +121,7 @@ pub fn write_bit_set(
         let block_cardinality = buffer.cardinality();
         add_jumps(
             &mut jumps,
-            (out.file_pointer() - origo) as i32,
+            out.file_pointer() - origo,
             total_cardinality as i32,
             last_block,
             block + 1,
@@ -145,7 +145,7 @@ pub fn write_bit_set(
 
     add_jumps(
         &mut jumps,
-        (out.file_pointer() - origo) as i32,
+        out.file_pointer() - origo,
         total_cardinality as i32,
         last_block,
         last_block + 1,
@@ -161,7 +161,12 @@ pub fn write_bit_set(
     flush_block_jumps(last_block + 1, &jumps, out)
 }
 
-fn add_jumps(jumps: &mut Vec<i32>, offset: i32, index: i32, start_block: usize, end_block: usize) {
+fn add_jumps(jumps: &mut Vec<i32>, offset: i64, index: i32, start_block: usize, end_block: usize) {
+    debug_assert!(
+        offset < i64::from(i32::MAX),
+        "Logically the offset should not exceed 2^30 but was >= Integer.MAX_VALUE"
+    );
+    let offset = offset as i32;
     if jumps.len() < (end_block + 1) * 2 {
         jumps.resize((end_block + 1) * 2, 0);
     }
@@ -418,19 +423,11 @@ impl IndexedDISI {
 
     fn read_block_header(&mut self) -> Result<()> {
         let block_short = self.slice.read_short()? as u16;
-        // Java writes `doc >>> 16` as a short and asserts `block >= 0` when it
-        // reads it back (`IndexedDISI.java:520-521`). A document id is a
-        // non-negative `int`, so a legal block index never exceeds 32767 and
-        // the top bit of this short is only ever set by corruption. Java's
-        // assertion is disabled at runtime and it carries on with a negative
-        // block; a `debug_assert!` here would instead abort the process on a
-        // corrupt file, so the invariant is enforced as an error.
-        if block_short > i16::MAX as u16 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "invalid IndexedDISI block index: {block_short}"
-            )));
-        }
+        // `Short.toUnsignedInt(slice.readShort()) << 16`, an `int` shift that
+        // wraps for a corrupt short with its top bit set, which Java only
+        // asserts against (`IndexedDISI.java:520-521`).
         self.block = (block_short as i32) << 16;
+        debug_assert!(self.block >= 0);
         let num_values = 1 + (self.slice.read_short()? as u16 as i32);
         self.index = self.next_block_index;
         // Java adds these as `int`s and wraps; a jump-table entry read off a
@@ -564,6 +561,7 @@ impl IndexedDISI {
     fn sparse_advance_exact(&mut self, target: i32) -> Result<bool> {
         let target_in_block = target & 0xFFFF;
         if self.next_exist_doc_in_block > target_in_block {
+            debug_assert!(!self.exists);
             return Ok(false);
         }
         if target == self.doc {
@@ -746,16 +744,10 @@ impl DocIdSetIterator for IndexedDISI {
             self.read_block_header()?;
         }
         // Java asserts here that the freshly read block yields its own first
-        // document (`IndexedDISI.java:582`), which holds for every block it
-        // writes. Assertions are off at runtime, so a corrupt block leaves Java
-        // with a stale `doc`; a `debug_assert!` would instead abort this
-        // process, so the broken invariant is reported as corruption.
-        if !self.advance_within_block(self.block)? {
-            return Err(LuceneError::CorruptIndex(format!(
-                "IndexedDISI block {} names no document of its own",
-                self.block
-            )));
-        }
+        // document (`IndexedDISI.java:470-471`), which holds for every block it
+        // writes; without assertions a corrupt block leaves a stale `doc`.
+        let found = self.advance_within_block(self.block)?;
+        debug_assert!(found);
         Ok(self.doc)
     }
 
@@ -769,13 +761,9 @@ impl DocIdSetIterator for IndexedDISI {
         while self.doc < up_to && !self.into_bit_set_within_block(up_to, bit_set, offset)? {
             self.read_block_header()?;
             // Java asserts the freshly read block yields its own first
-            // document, as `advance` does (`IndexedDISI.java:479-480`).
-            if !self.advance_within_block(self.block)? {
-                return Err(LuceneError::CorruptIndex(format!(
-                    "IndexedDISI block {} names no document of its own",
-                    self.block
-                )));
-            }
+            // document, as `advance` does (`IndexedDISI.java:480-481`).
+            let found = self.advance_within_block(self.block)?;
+            debug_assert!(found);
         }
         Ok(())
     }

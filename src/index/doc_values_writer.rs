@@ -576,6 +576,7 @@ impl NumericDocValuesWriter {
     /// [`LuceneError::IllegalState`] when the values have already been built or
     /// flushed.
     pub fn add_repeat_values(&mut self, first_doc_id: i32, value: i64, count: i32) -> Result<()> {
+        debug_assert!(first_doc_id > self.last_doc_id);
         if count == 0 {
             return Ok(());
         }
@@ -604,6 +605,7 @@ impl NumericDocValuesWriter {
         first_doc_id: i32,
         cursor: &mut dyn LongValuesCursor,
     ) -> Result<()> {
+        debug_assert!(first_doc_id > self.last_doc_id);
         let num_values = cursor.size();
         if num_values == 0 {
             return Ok(());
@@ -1600,6 +1602,15 @@ impl Dictionary {
     /// range is Java's `ArithmeticException("integer overflow")`, and an
     /// out-of-range `int` one is refused (Java indexes the array and throws).
     fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        debug_assert!(
+            ord >= 0 && ord < self.sorted_values.len() as i64,
+            "ord={ord} is out of bounds 0 .. {}",
+            self.sorted_values.len() as i64 - 1
+        );
+        debug_assert!(usize::try_from(ord)
+            .ok()
+            .and_then(|o| self.sorted_values.get(o))
+            .is_none_or(|&term_id| term_id >= 0 && (term_id as usize) < self.sorted_values.len()));
         let ord = to_int_exact(ord)?;
         usize::try_from(ord)
             .ok()
@@ -1859,6 +1870,7 @@ impl SortedDocValuesWriter {
         pool: &mut Arc<ByteBlockPool>,
         scratch: &mut SharedIndexingScratch,
     ) -> Result<()> {
+        debug_assert!(first_doc_id > self.last_doc_id);
         let n = cursor.size();
         if n == 0 {
             return Ok(());
@@ -1971,6 +1983,7 @@ impl SortedDocValuesWriter {
     /// `hash.sort()`, `pending.build()` and the ordinal map.
     fn finish(&mut self, pool: &Arc<ByteBlockPool>) -> Result<()> {
         if self.dictionary.is_none() {
+            debug_assert!(self.final_ords.is_none());
             self.update_bytes_used();
             let dictionary = Dictionary::build(&mut self.hash, pool)?;
             let pending = self.pending.take().ok_or_else(already_built)?;
@@ -2637,6 +2650,7 @@ impl SortedNumericDocValuesWriter {
     /// (Java asserts), and [`LuceneError::IllegalState`] when the field has
     /// already been built or flushed.
     pub fn add_value(&mut self, doc_id: i32, value: i64) -> Result<()> {
+        debug_assert!(doc_id >= self.current_doc);
         self.check_open()?;
         if doc_id < self.current_doc {
             return Err(backwards_document(
@@ -2671,6 +2685,7 @@ impl SortedNumericDocValuesWriter {
         first_doc_id: i32,
         cursor: &mut dyn LongValuesCursor,
     ) -> Result<()> {
+        debug_assert!(first_doc_id > self.current_doc);
         let num_values = cursor.size();
         if num_values == 0 {
             return Ok(());
@@ -2785,6 +2800,7 @@ impl SortedNumericDocValuesWriter {
     /// needed: the current document is finished, then both builders built.
     fn finish(&mut self) -> Result<()> {
         if self.final_values.is_none() {
+            debug_assert!(self.final_values_count.is_none());
             self.finish_current_doc()?;
             let pending = self.pending.take().ok_or_else(already_built)?;
             self.final_values = Some(Arc::new(pending.build()?));
@@ -3285,6 +3301,7 @@ impl SortedSetDocValuesWriter {
         value: &[u8],
         pool: &mut Arc<ByteBlockPool>,
     ) -> Result<()> {
+        debug_assert!(doc_id >= self.current_doc);
         self.check_open()?;
         if doc_id < self.current_doc {
             return Err(backwards_document(
@@ -3352,6 +3369,7 @@ impl SortedSetDocValuesWriter {
                 break;
             }
             let doc_id = base_doc_id + batch_doc_id;
+            debug_assert!(doc_id >= self.current_doc);
             if doc_id < self.current_doc {
                 return Err(backwards_document(
                     &self.field_info,
@@ -3477,6 +3495,7 @@ impl SortedSetDocValuesWriter {
     /// (`SortedSetDocValuesWriter.java:222-236`).
     fn finish(&mut self, pool: &Arc<ByteBlockPool>) -> Result<()> {
         if self.final_ords.is_none() {
+            debug_assert!(self.final_ord_counts.is_none());
             self.finish_current_doc()?;
             let pending = self.pending.take().ok_or_else(already_built)?;
             self.final_ords = Some(Arc::new(pending.build()?));

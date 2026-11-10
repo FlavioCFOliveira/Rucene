@@ -580,8 +580,8 @@ impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
                 self.field_info.name
             )));
         }
-        // Java asserts `docID > lastDocID` here, which is disabled in
-        // production; `DocsWithFieldSet::add` enforces it unconditionally.
+        // Java asserts `docID > lastDocID` here (`Lucene99FlatVectorsWriter.java:412`).
+        debug_assert!(doc_id > self.last_doc_id);
         self.docs_with_field_set.add(doc_id)?;
         self.vectors.push(vector_value);
         self.last_doc_id = doc_id;

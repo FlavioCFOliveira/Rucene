@@ -290,6 +290,13 @@ impl BlockTermState {
 
 impl TermState for BlockTermState {
     fn copy_from(&mut self, other: &dyn crate::index::TermState) {
+        // `BlockTermState.java:47`: Java names the class of `_other`; a
+        // `dyn TermState` exposes no class name.
+        debug_assert!(
+            other.as_any().is::<Self>(),
+            "can not copy from {}",
+            std::any::type_name_of_val(other)
+        );
         if let Some(other) = other.as_any().downcast_ref::<Self>() {
             BlockTermState::copy_from(self, other);
         }

@@ -1576,7 +1576,9 @@ impl ReadersAndUpdates {
 
     /// Returns the current reference count.
     pub fn ref_count(&self) -> i32 {
-        self.ref_count.load(Ordering::Relaxed)
+        let rc = self.ref_count.load(Ordering::Relaxed);
+        debug_assert!(rc >= 0);
+        rc
     }
 
     /// Returns a clone of the segment commit info.
@@ -1725,6 +1727,9 @@ impl ReadersAndUpdates {
             )?;
             Ok(Arc::new(clone))
         } else {
+            // liveDocs == null and reader != null. That can only be if there
+            // are no deletes.
+            debug_assert!(LeafReader::get_live_docs(reader.as_ref()).is_none());
             reader.inc_ref()?;
             Ok(reader)
         }
@@ -2295,6 +2300,7 @@ impl ReadersAndUpdates {
 
             // `fieldFiles.put(fieldInfo.number, trackingDir.getCreatedFiles())`
             // (`ReadersAndUpdates.java:459`).
+            debug_assert!(!new_dv_files.contains_key(field_number));
             new_dv_files.insert(field_number, field_tracking.get_created_files_ordered());
         }
         let field_infos = if written_field_infos.is_empty() {
@@ -2322,6 +2328,7 @@ impl ReadersAndUpdates {
         state.info.set_field_infos_files(fi_files);
 
         // Merge with existing DV updates files.
+        debug_assert!(!new_dv_files.is_empty());
         let existing: Vec<(i32, JavaHashSet)> = state
             .info
             .get_doc_values_updates_files()
@@ -2710,6 +2717,10 @@ impl ReadersAndUpdates {
         let del_gen_differs = reader.get_segment_info().get_del_gen() != state.info.get_del_gen();
         if needs_refresh || del_gen_differs {
             // Beware of zombies.
+            debug_assert!(match &mut state.pending_deletes {
+                PendingDeletesKind::Hard(pd) => pd.get_live_docs().is_some(),
+                PendingDeletesKind::Soft(pd) => pd.get_live_docs().is_some(),
+            });
             reader = Self::create_new_reader_with_latest_live_docs(&mut state, &reader)?;
         }
 
@@ -3245,6 +3256,11 @@ impl ReaderPool {
             "info.dir={} vs {}",
             info.info.directory.directory_to_string(),
             self.original_directory.directory_to_string()
+        );
+        debug_assert!(
+            !self.closed.load(Ordering::Relaxed)
+                || self.reader_map.lock().map_or(true, |map| map.is_empty()),
+            "Reader map is not empty"
         );
         self.ensure_open()?;
         let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");

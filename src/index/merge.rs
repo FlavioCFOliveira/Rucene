@@ -826,6 +826,11 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
                         *current = Some(previous_top);
                     }
                     queue.sort_by_key(|&idx| self.subs[idx].mapped_doc_id());
+                    // `assert a.mappedDocID != b.mappedDocID` in the queue's
+                    // `lessThan` (`DocIDMerger.java:151`).
+                    debug_assert!(queue.windows(2).all(|pair| {
+                        self.subs[pair[0]].mapped_doc_id() != self.subs[pair[1]].mapped_doc_id()
+                    }));
                 }
 
                 *queue_min_doc_id = queue

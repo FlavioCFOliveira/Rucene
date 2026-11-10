@@ -380,6 +380,7 @@ impl BufferedUpdatesStream {
     /// Returns [`LuceneError::IllegalState`] when the stream's lock is
     /// poisoned.
     pub fn finished(&self, packet: &Arc<FrozenBufferedUpdates>) -> Result<()> {
+        debug_assert!(!packet.is_applied(), "packet={packet}");
         {
             let mut guard = self.updates.lock().map_err(|_| {
                 LuceneError::illegal_state("buffered updates stream lock poisoned".to_string())

@@ -943,6 +943,10 @@ impl FrozenBufferedUpdates {
     /// `private_segment_name` is `Some` for segment-private deletes and `None`
     /// for a global packet.
     pub fn new(mut updates: BufferedUpdates, private_segment_name: Option<String>) -> Self {
+        debug_assert!(
+            private_segment_name.is_none() || updates.delete_terms().is_empty(),
+            "segment private packet should only have del queries"
+        );
         // `PrefixCodedTerms.Builder builder = ...;
         // updates.deleteTerms.forEachOrdered((term, doc) -> builder.add(term));`
         // (`FrozenBufferedUpdates.java:87-89`).
@@ -1128,6 +1132,7 @@ impl FrozenBufferedUpdates {
                 "gen is not yet set; call BufferedUpdatesStream.push first".to_string(),
             ));
         }
+        debug_assert!(!self.is_applied());
         debug_assert!(
             self.private_segment_name.is_none() || seg_states.len() == 1,
             "a segment-private packet reaches exactly one segment"
@@ -1546,6 +1551,9 @@ pub struct TermDocsIterator<'a> {
     postings_enum: Option<Box<dyn PostingsEnum>>,
     sorted_terms: bool,
     reader_term: Option<BytesRef>,
+    /// The last term [`next_term`](Self::next_term) was asked for; kept, as in
+    /// Java, only for the assert-only `assertSorted`.
+    last_term: Option<BytesRef>,
 }
 
 impl<'a> TermDocsIterator<'a> {
@@ -1560,7 +1568,30 @@ impl<'a> TermDocsIterator<'a> {
             postings_enum: None,
             sorted_terms,
             reader_term: None,
+            last_term: None,
         }
+    }
+
+    /// Equivalent to the assert-only `TermDocsIterator.assertSorted(BytesRef)`
+    /// (`FrozenBufferedUpdates.java:624-630`); it takes the two fields it uses
+    /// so that it can run while the terms enum is borrowed.
+    fn assert_sorted(
+        last_term: &mut Option<BytesRef>,
+        sorted_terms: bool,
+        term: &BytesRef,
+    ) -> bool {
+        assert!(sorted_terms);
+        assert!(
+            last_term.as_ref().is_none_or(|last| term >= last),
+            "boom: {} last: {}",
+            String::from_utf8_lossy(term.slice()),
+            last_term
+                .as_ref()
+                .map(|last| String::from_utf8_lossy(last.slice()).into_owned())
+                .unwrap_or_default()
+        );
+        *last_term = Some(BytesRef::deep_copy_of(term));
+        true
     }
 
     /// Equivalent to `TermDocsIterator.setField(String)`.
@@ -1600,6 +1631,11 @@ impl<'a> TermDocsIterator<'a> {
             return Ok(false);
         };
         if self.sorted_terms && !terms_enum.prefer_seek_exact() {
+            debug_assert!(Self::assert_sorted(
+                &mut self.last_term,
+                self.sorted_terms,
+                term
+            ));
             // In the sorted case we can take advantage of the "seeking forward"
             // property; depending on the term dictionary implementation this
             // reuses internal data structures and speeds up iteration over terms
@@ -2341,7 +2377,14 @@ impl DocumentsWriterDeleteQueue {
         if self.start_seq_no < self.next_seq_no.load(Ordering::Acquire) {
             self.last_sequence_number()
         } else {
-            (self.previous_max_seq_id)()
+            // if we haven't advanced the seqNo make sure we fall back to the previous queue
+            let value = (self.previous_max_seq_id)();
+            debug_assert!(
+                value < self.start_seq_no,
+                "illegal max sequence ID: {value} start was: {}",
+                self.start_seq_no
+            );
+            value
         }
     }
 
@@ -3857,6 +3900,7 @@ impl DocumentsWriterPerThread {
     /// Equivalent to `DocumentsWriterPerThread.testPoint(String)`.
     pub fn test_point(&self, message: &str) {
         if self.enable_test_points {
+            debug_assert!(self.info_stream.is_enabled("TP")); // don't enable unless you need them.
             self.info_stream.message("TP", message);
         }
     }
@@ -4125,6 +4169,10 @@ impl DwptGuard {
             !self.dwpt.is_aborted(),
             "DWPT has hit aborting exception but is still indexing"
         );
+        debug_assert!(
+            self.state().aborting_error.is_none(),
+            "DWPT has hit aborting exception but is still indexing"
+        );
 
         let docs_in_ram_before = self.dwpt.num_docs_in_ram();
         let num_docs = column_batch.num_docs();
@@ -4178,6 +4226,10 @@ impl DwptGuard {
             .test_point("DocumentsWriterPerThread addDocuments start");
         debug_assert!(
             !self.dwpt.is_aborted(),
+            "DWPT has hit aborting exception but is still indexing"
+        );
+        debug_assert!(
+            self.state().aborting_error.is_none(),
             "DWPT has hit aborting exception but is still indexing"
         );
 
@@ -4300,6 +4352,10 @@ impl DwptGuard {
     /// the one the tragic event carries, which is what Java's invariant
     /// guarantees.
     fn on_aborting_exception(&mut self, error: LuceneError) {
+        debug_assert!(
+            self.state().aborting_error.is_none(),
+            "aborting exception has already been set"
+        );
         self.state_mut().aborting_error = Some(error);
     }
 
@@ -5125,6 +5181,12 @@ impl DocumentsWriterShared {
         debug_assert!(current.is_advanced());
         debug_assert!(!new_queue.is_advanced());
         debug_assert!(current.last_sequence_number() <= new_queue.last_sequence_number());
+        debug_assert!(
+            current.max_seq_no() <= new_queue.last_sequence_number(),
+            "maxSeqNo: {} vs. {}",
+            current.max_seq_no(),
+            new_queue.last_sequence_number()
+        );
         let old_max_seq_no = current.max_seq_no();
         *current = new_queue;
         Ok(old_max_seq_no)
@@ -5376,6 +5438,7 @@ impl DocumentsWriterFlushControl {
     /// Equivalent to `doOnAbort(DocumentsWriterPerThread)`.
     pub fn do_on_abort(&self, guard: &DwptGuard) {
         let mut inner = self.lock();
+        debug_assert!(self.per_thread_pool.is_registered(guard.dwpt()));
         let bytes = guard.last_committed_bytes_used();
         if guard.is_flush_pending() {
             inner.flush_bytes -= bytes;
@@ -5385,7 +5448,8 @@ impl DocumentsWriterFlushControl {
         debug_assert!(self.assert_memory(&mut inner));
         self.update_stall_state_locked(&mut inner);
         drop(inner);
-        self.per_thread_pool.checkout(guard);
+        let checked_out = self.per_thread_pool.checkout(guard);
+        debug_assert!(checked_out);
     }
 
     /// Accounts a finished flush and wakes anyone waiting for it.
@@ -5393,6 +5457,10 @@ impl DocumentsWriterFlushControl {
     /// Equivalent to `doAfterFlush(DocumentsWriterPerThread)`.
     pub fn do_after_flush(&self, dwpt: &Arc<DocumentsWriterPerThread>) {
         let mut inner = self.lock();
+        debug_assert!(inner
+            .flushing_writers
+            .iter()
+            .any(|candidate| Arc::ptr_eq(candidate, dwpt)));
         inner
             .flushing_writers
             .retain(|candidate| !Arc::ptr_eq(candidate, dwpt));
@@ -5510,6 +5578,7 @@ impl DocumentsWriterFlushControl {
             }
         } else {
             if mark_pending {
+                debug_assert!(!guard.is_flush_pending());
                 self.set_flush_pending_locked(guard.dwpt(), inner);
             }
             if guard.is_flush_pending() {
@@ -5520,6 +5589,7 @@ impl DocumentsWriterFlushControl {
     }
 
     fn checkout_and_block(&self, guard: &DwptGuard, inner: &mut FlushControlInner) {
+        debug_assert!(self.per_thread_pool.is_registered(guard.dwpt()));
         debug_assert!(guard.is_flush_pending(), "can not block non-pending DWPT");
         debug_assert!(inner.full_flush, "can not block if fullFlush == false");
         inner.num_pending -= 1;
@@ -5534,6 +5604,7 @@ impl DocumentsWriterFlushControl {
         inner: &mut FlushControlInner,
     ) -> Arc<DocumentsWriterPerThread> {
         debug_assert!(guard.is_flush_pending());
+        debug_assert!(self.per_thread_pool.is_registered(guard.dwpt()));
         Self::add_flushing_dwpt(guard.dwpt(), inner);
         inner.num_pending -= 1;
         let checked_out = self.per_thread_pool.checkout(guard);
@@ -5624,6 +5695,10 @@ impl DocumentsWriterFlushControl {
     pub fn mark_for_full_flush(&self) -> Result<i64> {
         let (flushing_queue, seq_no) = {
             let mut inner = self.lock();
+            debug_assert!(
+                !inner.full_flush,
+                "called DWFC#markForFullFlush() while full flush is still running"
+            );
             if inner.full_flush {
                 return Err(LuceneError::illegal_state(
                     "called markForFullFlush() while full flush is still running".to_string(),
@@ -6444,6 +6519,13 @@ impl DocumentsWriter {
         let mut next = Some(first);
         while let Some(flushing_dwpt) = next {
             debug_assert!(!flushing_dwpt.has_flushed());
+            debug_assert!(
+                self.assert_ticket_queue_modification(flushing_dwpt.delete_queue()),
+                "expected: {:?} but was: {:?} {}",
+                self.lock_full_flush_queue().as_ref(),
+                flushing_dwpt.delete_queue(),
+                self.flush_control.is_full_flush()
+            );
             // `DocumentsWriter.java:566-578`: the backlog check runs inside
             // the `try` whose `finally` is `doAfterFlush`.
             let outcome = self.flush_one(&flushing_dwpt).and_then(|()| {
@@ -6542,6 +6624,11 @@ impl DocumentsWriter {
             self.assert_set_flushing_delete_queue(Some(Arc::clone(&flushing_delete_queue)))?;
             (flushing_delete_queue, seq_no)
         };
+        debug_assert!(self.lock_full_flush_queue().is_some());
+        debug_assert!(self
+            .lock_full_flush_queue()
+            .as_ref()
+            .is_some_and(|current| !Arc::ptr_eq(current, &self.shared.delete_queue())));
 
         let outcome = (|| -> Result<bool> {
             let anything_flushed = self.maybe_flush()?;
@@ -6551,6 +6638,7 @@ impl DocumentsWriter {
                     self.info_stream
                         .message("DW", "flush naked frozen global deletes");
                 }
+                debug_assert!(self.assert_ticket_queue_modification(&flushing_delete_queue));
                 self.ticket_queue
                     .add_ticket(|| Ok(Self::maybe_freeze_global_buffer(&flushing_delete_queue)))?;
             }
@@ -6565,6 +6653,10 @@ impl DocumentsWriter {
             Ok(anything_flushed)
         })();
 
+        debug_assert!(self
+            .lock_full_flush_queue()
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &flushing_delete_queue)));
         // All DWPTs of this queue have been processed: the queue is now sealed.
         flushing_delete_queue.close()?;
 
@@ -6640,6 +6732,18 @@ impl DocumentsWriter {
             );
             Ok(())
         })();
+        if outcome.is_ok() {
+            debug_assert!(
+                self.flush_control.flushing_bytes() == 0,
+                "flushingBytes has unexpected value 0 != {}",
+                self.flush_control.flushing_bytes()
+            );
+            debug_assert!(
+                self.flush_control.net_bytes() == 0,
+                "netBytes has unexpected value 0 != {}",
+                self.flush_control.net_bytes()
+            );
+        }
         if self.info_stream.is_enabled("DW") {
             self.info_stream
                 .message("DW", &format!("done abort success={}", outcome.is_ok()));

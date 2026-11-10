@@ -254,7 +254,15 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
         }
         self.start_document(num_fields)?;
 
+        let mut last_field_name: Option<&String> = None;
+        let mut field_count = 0;
         for field_name in &field_names {
+            field_count += 1;
+            debug_assert!(
+                last_field_name.is_none_or(|last| field_name.as_str() > last.as_str()),
+                "lastFieldName={last_field_name:?} fieldName={field_name}"
+            );
+            last_field_name = Some(field_name);
             let field_info = merge_field_infos.field_info(field_name).ok_or_else(|| {
                 crate::error::LuceneError::illegal_state(format!(
                     "field \"{field_name}\" carries term vectors but is absent from the merged \
@@ -289,7 +297,9 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                 has_payloads,
             )?;
             let mut terms_enum = terms.iterator()?;
+            let mut term_count = 0;
             while let Some(term) = terms_enum.next()? {
+                term_count += 1;
                 let freq = terms_enum.total_term_freq()? as i32;
                 self.start_term(&term, freq)?;
 
@@ -298,6 +308,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                         .postings(None, POSTINGS_ENUM_OFFSETS | POSTINGS_ENUM_PAYLOADS)?;
                     let doc_id = postings.next_doc()?;
                     debug_assert_ne!(doc_id, NO_MORE_DOCS);
+                    debug_assert!(postings.freq()? == freq);
                     for _ in 0..freq {
                         let pos = postings.next_position()?;
                         let start_offset = postings.start_offset();
@@ -311,8 +322,10 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                 }
                 self.finish_term()?;
             }
+            debug_assert!(term_count == num_terms);
             self.finish_field()?;
         }
+        debug_assert!(field_count == num_fields);
         self.finish_document()
     }
 

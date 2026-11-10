@@ -587,6 +587,7 @@ impl TermVectorsConsumerPerField {
         self.do_vectors = false;
 
         let num_postings = self.base.num_terms();
+        debug_assert!(num_postings >= 0);
         // `termsHashPerField.sortTerms(); final int[] termIDs =
         // getSortedTermIDs();` (`TermVectorsConsumerPerField.java:98-100`),
         // of which the first `numPostings` are read.
@@ -1013,6 +1014,10 @@ impl TermVectorsConsumer {
         })?;
 
         Self::fill(writer.as_mut(), last_doc_id, doc_id)?;
+        debug_assert!(
+            *last_doc_id == doc_id,
+            "lastDocID={last_doc_id} docID={doc_id}"
+        );
         if *last_doc_id != doc_id {
             return Err(LuceneError::illegal_state(format!(
                 "term vectors must be written in increasing doc order: lastDocID={last_doc_id} docID={doc_id}"
@@ -1069,6 +1074,7 @@ impl TermVectorsConsumer {
         let Some(mut writer) = self.writer.take() else {
             return Ok(());
         };
+        debug_assert!(max_doc > 0);
         let filled = Self::fill(writer.as_mut(), &mut self.last_doc_id, max_doc);
         let finished = filled.and_then(|()| writer.finish(max_doc));
         crate::util::IOUtils::close([Some(|| writer.close())])?;

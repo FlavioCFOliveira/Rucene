@@ -2877,7 +2877,15 @@ impl HnswGraph for OffHeapHnswGraph {
                 .ok_or_else(|| {
                     LuceneError::CorruptIndex(format!("missing nodes for level {level}"))
                 })?;
-            match nodes.binary_search(&target) {
+            let found = nodes.binary_search(&target);
+            debug_assert!(
+                found.is_ok(),
+                "seek level={level} target={target} not found: {}",
+                found.map_or_else(|insertion| -(insertion as i64) - 1, |idx| idx as i64)
+            );
+            // Without assertions Java goes on with the negative index and fails
+            // on the array access; the error below stands in for that.
+            match found {
                 Ok(idx) => idx as i32,
                 Err(_) => {
                     return Err(LuceneError::CorruptIndex(format!(
@@ -2914,6 +2922,11 @@ impl HnswGraph for OffHeapHnswGraph {
             .filter(|arcs| *arcs >= 0)
             .map(|arcs| arcs as usize)
             .unwrap_or(0);
+        debug_assert!(
+            self.arc_count <= max_arcs,
+            "too many neighbors: {}",
+            self.arc_count
+        );
         if self.arc_count > max_arcs.min(self.current_neighbors_buffer.len()) {
             return Err(LuceneError::CorruptIndex(format!(
                 "node {target} on level {level} claims {} neighbours, more than the {} a graph \

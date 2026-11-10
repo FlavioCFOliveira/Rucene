@@ -130,8 +130,10 @@ impl<T> ApproximatePriorityQueue<T> {
             + free_slots
                 .wrapping_shr(expected_slot as u32)
                 .trailing_zeros() as usize;
+        debug_assert!(destination_slot >= expected_slot);
         if destination_slot < SPARSE_SLOTS {
             self.used_slots |= 1u64 << destination_slot;
+            debug_assert!(self.slots[destination_slot].is_none());
             self.slots[destination_slot] = Some(entry);
         } else {
             self.slots.push(Some(entry));
@@ -329,7 +331,14 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
 
 impl<T: PartialEq> ConcurrentApproximatePriorityQueue<T> {
     /// Returns `true` when `entry` is in any shard.
+    ///
+    /// Only used for assertions: as Java's (`ConcurrentApproximatePriorityQueue.java:137-142`),
+    /// it fails when assertions are disabled.
     pub fn contains(&self, entry: &T) -> bool {
+        assert!(
+            cfg!(debug_assertions),
+            "contains should only be used for assertions"
+        );
         self.queues
             .iter()
             .any(|queue| queue.lock().map(|q| q.contains(entry)).unwrap_or(false))

@@ -202,6 +202,7 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
         output.write_byte(0)?;
     }
 
+    debug_assert!(version.prerelease == 0);
     output.write_int(info.max_doc()?)?;
     output.write_byte(if info.get_use_compound_file() {
         SegmentInfo::YES as u8

@@ -1067,6 +1067,12 @@ impl<'a> DocIdSetIterator for MergedIterator<'a> {
             let mut min_idx = 0;
             let mut min_doc = self.subs[0].doc;
             for i in 1..self.subs.len() {
+                // delGens are unique across our subs
+                // (`assert cmp != 0`, `DocValuesFieldUpdates.java:173`):
+                debug_assert!(
+                    self.subs[i].doc != min_doc
+                        || self.subs[i].it.del_gen() != self.subs[min_idx].it.del_gen()
+                );
                 if self.subs[i].doc < min_doc
                     || (self.subs[i].doc == min_doc
                         && self.subs[i].it.del_gen() > self.subs[min_idx].it.del_gen())
@@ -1080,6 +1086,7 @@ impl<'a> DocIdSetIterator for MergedIterator<'a> {
                 return Ok(NO_MORE_DOCS);
             }
             if min_doc != self.doc {
+                debug_assert!(min_doc > self.doc, "doc={} newDoc={min_doc}", self.doc);
                 self.doc = min_doc;
                 self.top_idx = min_idx;
                 // Advance all NON-TOP subs at this docID past it, so the top

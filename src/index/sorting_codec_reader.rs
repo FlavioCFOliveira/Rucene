@@ -1106,7 +1106,9 @@ impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegm
                     }
                     // Unreachable: the enclosing test excludes it. Java's
                     // `default` arm asserts the same.
-                    crate::index::DocValuesType::NONE => {}
+                    crate::index::DocValuesType::NONE => {
+                        debug_assert!(false); // unknown dv type
+                    }
                 }
                 doc_values_count += 1;
             }
@@ -2876,6 +2878,7 @@ impl FloatVectorValues for MergedFloatVectorValues {
         // point; any stale value still yields the right sub.
         self.last_sub_index.store(last, Ordering::Relaxed);
         let sub = &self.subs[last];
+        debug_assert!(sub.sub.is_some());
         let values = sub.sub.as_ref().ok_or_else(|| {
             LuceneError::illegal_state(format!("ordinal {ord} falls in a sub without vectors"))
         })?;

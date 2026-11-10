@@ -479,6 +479,7 @@ impl SegmentInfos {
                     new_seg_idx += 1;
                 }
             } else {
+                debug_assert!(seg_idx >= new_seg_idx);
                 self.segments.swap(new_seg_idx, seg_idx);
                 new_seg_idx += 1;
             }
@@ -1366,6 +1367,8 @@ impl SegmentInfos {
 
 impl Clone for SegmentInfos {
     fn clone(&self) -> Self {
+        // `SegmentInfos.java:715`, per cloned segment.
+        debug_assert!(self.segments.iter().all(|info| info.info.codec().is_some()));
         Self {
             generation: self.generation,
             last_generation: self.last_generation,
@@ -2042,6 +2045,8 @@ impl SegmentInfos {
     /// a non-optional `Arc<dyn Codec>`, so a `SegmentCommitInfo` without one
     /// cannot be built.
     pub fn create_backup_segment_infos(&self) -> Vec<SegmentCommitInfo> {
+        // `SegmentInfos.java:1126`, per backed-up segment.
+        debug_assert!(self.segments.iter().all(|info| info.info.codec().is_some()));
         self.segments.to_vec()
     }
 }

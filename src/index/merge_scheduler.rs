@@ -2967,6 +2967,7 @@ impl MergeRateLimiter {
             } else {
                 scaled as i64
             };
+            debug_assert!(scaled.min(1024 * 1024) >= 0);
             self.min_pause_check_bytes
                 .store(scaled.min(1024 * 1024), Ordering::Relaxed);
         }

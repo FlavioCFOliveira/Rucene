@@ -975,6 +975,8 @@ impl BlockPostingsEnum {
             prefix_sum(&mut self.doc_buffer, BS, self.prev_doc_id);
             self.encoding = DeltaEncoding::Packed;
         } else {
+            // block is encoded as a bit set
+            debug_assert!(self.level0_last_doc_id != NO_MORE_DOCS);
             self.doc_bit_set_base = self.prev_doc_id + 1;
             self.doc_bit_set.clear_all();
             if bits_per_value == 0 {
@@ -1010,6 +1012,11 @@ impl BlockPostingsEnum {
                     }
                     prefix_sum(&mut self.doc_buffer, num_longs - 1, 0);
                     self.doc_buffer[num_longs - 1] = BS_I32;
+                    debug_assert!(
+                        self.doc_buffer[num_longs - 2]
+                            + (longs[num_longs - 1] as u64).count_ones() as i32
+                            == BS_I32
+                    );
                 }
             }
             self.encoding = DeltaEncoding::Unary;
@@ -1031,15 +1038,8 @@ impl BlockPostingsEnum {
         Ok(())
     }
 
-    /// The error a bit-set block with no document where one must be answers.
-    fn corrupt_bit_set_block(&self) -> LuceneError {
-        LuceneError::CorruptIndex(format!(
-            "postings bit-set block starting at doc {} has no document after doc {}",
-            self.doc_bit_set_base, self.doc
-        ))
-    }
-
     fn refill_remainder(&mut self) -> Result<()> {
+        debug_assert!(self.doc_count_left >= 0 && self.doc_count_left < BS_I32);
         if self.doc_freq == 1 {
             self.doc_buffer[0] = self.singleton_doc_id;
             self.freq_buffer.get_mut()[0] = self.total_term_freq as i32;
@@ -1073,6 +1073,7 @@ impl BlockPostingsEnum {
     }
 
     fn refill_docs(&mut self) -> Result<()> {
+        debug_assert!(self.doc_count_left >= 0);
         if self.doc_count_left >= BS_I32 {
             self.refill_full_block()
         } else {
@@ -1144,6 +1145,10 @@ impl BlockPostingsEnum {
                 unsafe { Self::input_ref(self.pos_in_ptr()?) }.seek(self.level0_pos_end_fp)?;
                 self.pos_pending_count = self.level0_block_pos_upto;
                 if self.pay_in.is_some() {
+                    debug_assert!(
+                        self.level0_pay_end_fp
+                            >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()
+                    );
                     unsafe { Self::input_ref(self.pay_in_ptr()?) }.seek(self.level0_pay_end_fp)?;
                     self.payload_byte_upto = self.level0_block_pay_upto;
                 }
@@ -1262,6 +1267,11 @@ impl BlockPostingsEnum {
             unsafe { Self::input_ref(self.pos_in_ptr()?) }.seek(pos_fp)?;
             self.pos_pending_count = pos_upto;
             if self.pay_in.is_some() {
+                // needs payloads or offsets
+                debug_assert!(
+                    self.level0_pay_end_fp
+                        >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()
+                );
                 unsafe { Self::input_ref(self.pay_in_ptr()?) }.seek(pay_fp)?;
                 self.payload_byte_upto = pay_upto;
             }
@@ -1615,11 +1625,12 @@ impl DocIdSetIterator for BlockPostingsEnum {
             }
             DeltaEncoding::Unary => {
                 // Java only asserts that the bit set has a next document
-                // (`Lucene104PostingsReader.java:916`); a corrupt block is an
-                // error here, not a panic.
-                let next = next_set_bit(&self.doc_bit_set, self.doc - self.doc_bit_set_base + 1)
-                    .ok_or_else(|| self.corrupt_bit_set_block())?;
-                self.doc = self.doc_bit_set_base + next;
+                // (`Lucene104PostingsReader.java:916`); without assertions it
+                // adds `NO_MORE_DOCS` to the base, as here.
+                let next = next_set_bit(&self.doc_bit_set, self.doc - self.doc_bit_set_base + 1);
+                debug_assert!(next.is_some());
+                let next = next.unwrap_or(NO_MORE_DOCS);
+                self.doc = self.doc_bit_set_base.wrapping_add(next);
             }
         }
 
@@ -1649,9 +1660,10 @@ impl DocIdSetIterator for BlockPostingsEnum {
             }
             DeltaEncoding::Unary => {
                 // Java only asserts this (`Lucene104PostingsReader.java:946`).
-                let next = next_set_bit(&self.doc_bit_set, target - self.doc_bit_set_base)
-                    .ok_or_else(|| self.corrupt_bit_set_block())?;
-                self.doc = self.doc_bit_set_base + next;
+                let next = next_set_bit(&self.doc_bit_set, target - self.doc_bit_set_base);
+                debug_assert!(next.is_some());
+                let next = next.unwrap_or(NO_MORE_DOCS);
+                self.doc = self.doc_bit_set_base.wrapping_add(next);
                 if self.needs_freq {
                     let word_index = next >> 6;
                     let word = self.doc_bit_set.get_bits()[word_index as usize]
@@ -1980,6 +1992,7 @@ impl ImpactsSource for BlockPostingsEnum {
     }
 
     fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+        debug_assert!(self.needs_impacts);
         self.update_impacts_state();
         Ok(Box::new(self.impacts.clone()))
     }

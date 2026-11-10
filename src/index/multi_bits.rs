@@ -61,6 +61,7 @@ impl BitsSlice {
     /// Returns [`LuceneError::IllegalArgument`] if `slice.start` or
     /// `slice.length` is negative.
     pub fn new(parent: Box<dyn Bits>, slice: ReaderSlice) -> Result<Self> {
+        debug_assert!(slice.length >= 0, "length={}", slice.length);
         let start = usize::try_from(slice.start).map_err(|_| {
             LuceneError::IllegalArgument(format!("slice start must be >= 0; got {}", slice.start))
         })?;
