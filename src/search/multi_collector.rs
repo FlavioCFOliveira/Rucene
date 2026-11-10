@@ -418,7 +418,19 @@ impl std::fmt::Debug for MinCompetitiveScoreAwareScorable<'_> {
     }
 }
 
-impl MinCompetitiveScoreAwareScorable<'_> {
+impl<'a> MinCompetitiveScoreAwareScorable<'a> {
+    /// Equivalent to the package-private
+    /// `MinCompetitiveScoreAwareScorable(Scorable in, int idx, float[] minScores)`;
+    /// `pub` because the port has no package visibility (`TestMultiCollector`
+    /// builds it).
+    pub fn new(inner: &'a mut dyn Scorable, idx: usize, min_scores: &'a mut [f32]) -> Self {
+        Self {
+            inner,
+            idx,
+            min_scores,
+        }
+    }
+
     /// Equivalent to the private
     /// `MinCompetitiveScoreAwareScorable.minScore()`.
     fn min_score(&self) -> f32 {
@@ -449,5 +461,12 @@ impl Scorable for MinCompetitiveScoreAwareScorable<'_> {
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         // Inherited from `FilterScorable`.
         Ok(vec![ChildScorable::new(&mut *self.inner, "FILTER")])
+    }
+
+    /// Answers `scorable.getClass()` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<
+            MinCompetitiveScoreAwareScorable<'static>,
+        >())
     }
 }

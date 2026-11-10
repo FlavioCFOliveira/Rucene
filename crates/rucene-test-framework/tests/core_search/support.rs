@@ -94,6 +94,7 @@ pub fn object_to_string<T: ?Sized>(class_name: &str, object: &T) -> String {
 }
 
 /// `java.util.concurrent.CountDownLatch`.
+#[derive(Debug)]
 pub struct CountDownLatch {
     count: std::sync::Mutex<i64>,
     zero: std::sync::Condvar,
@@ -117,6 +118,17 @@ impl CountDownLatch {
                 self.zero.notify_all();
             }
         }
+    }
+
+    /// `await(timeout, unit)`: whether the count reached zero before the
+    /// timeout elapsed.
+    pub fn await_timeout(&self, timeout: std::time::Duration) -> bool {
+        let count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        let (count, _) = self
+            .zero
+            .wait_timeout_while(count, timeout, |count| *count > 0)
+            .unwrap_or_else(|e| e.into_inner());
+        *count == 0
     }
 
     /// `await()`.

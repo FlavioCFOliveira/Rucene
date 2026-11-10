@@ -102,6 +102,25 @@ pub fn class_def() -> Arc<Class> {
     )
 }
 
+/// `TestBaseRangeFilter` as the superclass of `TestMultiTermConstantScore`:
+/// its static hooks, which run before the subclass's; the subclass binds the
+/// inherited `testPad` itself (see `J2R_GUIDE.md` section 4).
+pub fn base_class() -> Arc<Class> {
+    randomizedtesting::jdk::reflect::Class::builder("org.apache.lucene.search.TestBaseRangeFilter")
+        .extends(&LuceneTestCase::class())
+        .method(static_hook(
+            "beforeClassBaseTestRangeFilter",
+            BeforeClass,
+            before_class_base_test_range_filter,
+        ))
+        .method(static_hook(
+            "afterClassBaseTestRangeFilter",
+            AfterClass,
+            after_class_base_test_range_filter,
+        ))
+        .build()
+}
+
 pub fn before_class_base_test_range_filter() -> Result<()> {
     let max_id = LuceneTestCase::at_least(500);
     let mut signed_index_dir = TestIndex::new(&*random(), i32::MAX, i32::MIN, true);
@@ -224,7 +243,7 @@ fn build(
     }
 }
 
-fn test_pad() -> Result<()> {
+pub fn test_pad() -> Result<()> {
     let tests = [-9999999, -99560, -100, -3, -1, 0, 3, 9, 10, 1000, 999999999];
     for i in 0..tests.len() - 1 {
         let a = tests[i];

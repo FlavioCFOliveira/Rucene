@@ -186,6 +186,11 @@ impl Scorable for SimpleScorable {
         self.min_competitive_score = min_score;
         Ok(())
     }
+
+    /// Answers `scorable.getClass()` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<SimpleScorable>())
+    }
 }
 
 /// Filters a [`Scorable`], intercepting methods and optionally changing their
@@ -223,6 +228,11 @@ impl Scorable for FilterScorable<'_> {
 
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         Ok(vec![ChildScorable::new(&mut *self.inner, "FILTER")])
+    }
+
+    /// Answers `scorable.getClass()` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<FilterScorable<'static>>())
     }
 }
 

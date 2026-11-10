@@ -85,16 +85,45 @@ mod core_search {
     pub mod test_live_field_values;
     pub mod test_log_odds_fusion_query;
     pub mod test_long_values_source;
+    pub mod test_lru_query_cache;
     pub mod test_match_all_docs_query;
     pub mod test_match_no_docs_query;
+    pub mod test_matches_iterator;
     pub mod test_max_clause_limit;
     pub mod test_max_score_accumulator;
+    pub mod test_max_score_bulk_scorer;
+    pub mod test_min_should_match2;
+    pub mod test_multi_collector;
+    pub mod test_multi_collector_manager;
     pub mod test_multi_leaf_knn_collector;
     pub mod test_multi_phrase_enum;
+    pub mod test_multi_phrase_query;
     pub mod test_multi_slice_merge;
+    pub mod test_multi_term_constant_score;
     pub mod test_multi_term_query_rewrites;
+    pub mod test_multi_thread_term_vectors;
     pub mod test_multiset;
+    pub mod test_nearest;
+    pub mod test_needs_scores;
+    pub mod test_ngram_phrase_query;
+    pub mod test_not;
     pub mod test_numeric_comparator;
+    pub mod test_numeric_field_stats;
+    pub mod test_patience_byte_vector_query;
+    pub mod test_patience_float_vector_query;
+    pub mod test_phrase_matcher_contract;
+    pub mod test_phrase_prefix_query;
+    pub mod test_position_increment;
+    pub mod test_positive_scores_only_collector;
+    pub mod test_prefix_in_boolean_query;
+    pub mod test_prefix_query;
+    pub mod test_prefix_random;
+    pub mod test_query_rescorer;
+    pub mod test_query_visitor;
+    pub mod test_range_doc_id_stream;
+    pub mod test_range_fields_doc_values_query;
+    pub mod test_regexp_query;
+    pub mod test_regexp_random;
     pub mod test_regexp_random2;
     pub mod test_term_ord_val_comparator_adaptive_skipping;
     pub mod test_updateable_doc_id_set_iterator;
@@ -531,4 +560,149 @@ fn test_multi_phrase_enum() {
 #[test]
 fn test_multi_term_query_rewrites() {
     run(test_multi_term_query_rewrites::class_def);
+}
+
+#[test]
+fn test_lru_query_cache() {
+    run(test_lru_query_cache::class_def);
+}
+
+#[test]
+fn test_matches_iterator() {
+    run(test_matches_iterator::class_def);
+}
+
+#[test]
+fn test_max_score_bulk_scorer() {
+    run(test_max_score_bulk_scorer::class_def);
+}
+
+#[test]
+fn test_min_should_match2() {
+    run(test_min_should_match2::class_def);
+}
+
+#[test]
+fn test_multi_collector() {
+    run(test_multi_collector::class_def);
+}
+
+#[test]
+fn test_multi_collector_manager() {
+    run(test_multi_collector_manager::class_def);
+}
+
+#[test]
+fn test_multi_phrase_query() {
+    run(test_multi_phrase_query::class_def);
+}
+
+#[test]
+fn test_multi_term_constant_score() {
+    run(test_multi_term_constant_score::class_def);
+}
+
+#[test]
+fn test_not() {
+    run(test_not::class_def);
+}
+
+#[test]
+fn test_ngram_phrase_query() {
+    run(test_ngram_phrase_query::class_def);
+}
+
+#[test]
+fn test_phrase_prefix_query() {
+    run(test_phrase_prefix_query::class_def);
+}
+
+#[test]
+fn test_prefix_in_boolean_query() {
+    run(test_prefix_in_boolean_query::class_def);
+}
+
+#[test]
+fn test_prefix_query() {
+    run(test_prefix_query::class_def);
+}
+
+#[test]
+fn test_positive_scores_only_collector() {
+    run(test_positive_scores_only_collector::class_def);
+}
+
+#[test]
+fn test_prefix_random() {
+    run(test_prefix_random::class_def);
+}
+
+#[test]
+fn test_regexp_random() {
+    run(test_regexp_random::class_def);
+}
+
+#[test]
+fn test_range_doc_id_stream() {
+    run(test_range_doc_id_stream::class_def);
+}
+
+#[test]
+fn test_multi_thread_term_vectors() {
+    run(test_multi_thread_term_vectors::class_def);
+}
+
+#[test]
+fn test_patience_byte_vector_query() {
+    run(test_patience_byte_vector_query::class_def);
+}
+
+#[test]
+fn test_patience_float_vector_query() {
+    run(test_patience_float_vector_query::class_def);
+}
+
+#[test]
+fn test_regexp_query() {
+    run(test_regexp_query::class_def);
+}
+
+#[test]
+fn test_needs_scores() {
+    run(test_needs_scores::class_def);
+}
+
+#[test]
+fn test_position_increment() {
+    run(test_position_increment::class_def);
+}
+
+#[test]
+fn test_phrase_matcher_contract() {
+    run(test_phrase_matcher_contract::class_def);
+}
+
+#[test]
+fn test_range_fields_doc_values_query() {
+    run(test_range_fields_doc_values_query::class_def);
+}
+
+#[test]
+fn test_numeric_field_stats() {
+    run(test_numeric_field_stats::class_def);
+}
+
+#[test]
+fn test_nearest() {
+    run(test_nearest::class_def);
+}
+
+#[test]
+fn test_query_visitor() {
+    run(test_query_visitor::class_def);
+}
+
+#[test]
+fn test_query_rescorer() {
+    run(test_query_rescorer::class_def);
 }

@@ -75,6 +75,11 @@ impl Scorable for ScoreCachingWrappingScorer<'_> {
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         Ok(vec![ChildScorable::new(&mut *self.inner, "CACHED")])
     }
+
+    /// Answers `scorable.getClass()` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<ScoreCachingWrappingScorer<'static>>())
+    }
 }
 
 /// The leaf collector that installs a [`ScoreCachingWrappingScorer`] around the

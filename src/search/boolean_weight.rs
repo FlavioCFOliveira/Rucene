@@ -220,6 +220,12 @@ impl Weight for BooleanWeight {
         Arc::clone(&self.query_handle)
     }
 
+    /// Answers `weight instanceof BooleanWeight` (`TestMinShouldMatch2`
+    /// casts to it).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation> {
         let min_should_match = self.query.get_minimum_number_should_match();
         let mut subs: Vec<Explanation> = Vec::new();

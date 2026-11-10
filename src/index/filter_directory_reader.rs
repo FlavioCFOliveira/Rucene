@@ -132,7 +132,11 @@ pub trait DirectoryReaderWrapper: Send + Sync {
     /// Whether the `FilterDirectoryReader` subclass this wrapper stands for
     /// answers `getReaderCacheHelper()` with `null`, as
     /// `TestDemoParallelLeafReader.ParallelLeafDirectoryReader` does
-    /// (`TestDemoParallelLeafReader.java:259-262`). The default is `false`.
+    /// (`TestDemoParallelLeafReader.java:259-262`) and
+    /// `TestLRUQueryCache.DummyDirectoryReader` (`TestLRUQueryCache.java:1555-1558`).
+    /// It takes precedence over
+    /// [`uses_delegating_cache_helper`](Self::uses_delegating_cache_helper).
+    /// The default is `false`.
     fn reader_cache_helper_is_null(&self) -> bool {
         false
     }

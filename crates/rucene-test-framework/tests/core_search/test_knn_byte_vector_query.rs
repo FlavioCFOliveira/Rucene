@@ -282,11 +282,30 @@ fn test_vector_encoding_mismatch<C: KnnVectorCase<Q = KnnByteVectorQuery>>() -> 
 #[derive(Debug, Clone)]
 pub struct ThrowingKnnVectorQuery {
     inner: KnnByteVectorQuery,
+    /// Whether this is `TestPatienceByteVectorQuery.ThrowingKnnVectorQuery`, a
+    /// class of its own whose `toString(field)` is
+    /// `"ThrowingKnnVectorQuery{" + field + "}"`, rather than this class.
+    patience: bool,
 }
 
 impl ThrowingKnnVectorQuery {
+    /// `new TestPatienceByteVectorQuery.ThrowingKnnVectorQuery(field, target,
+    /// k, filter)`: the same query, as the Patience test's own class.
+    pub fn patience(
+        field: &str,
+        target: &[u8],
+        k: i32,
+        filter: Option<Arc<dyn Query>>,
+    ) -> Result<Self> {
+        Ok(ThrowingKnnVectorQuery {
+            patience: true,
+            ..Self::new(field, target, k, filter)?
+        })
+    }
+
     pub fn new(field: &str, target: &[u8], k: i32, filter: Option<Arc<dyn Query>>) -> Result<Self> {
         Ok(ThrowingKnnVectorQuery {
+            patience: false,
             inner: KnnByteVectorQuery::with_strategy(
                 field,
                 target.to_vec(),
@@ -348,9 +367,14 @@ impl AbstractKnnVectorQueryImpl for ThrowingKnnVectorQuery {
 }
 
 impl Query for ThrowingKnnVectorQuery {
-    /// Java returns `null`.
-    fn to_query_string(&self, _field: &str) -> String {
-        "null".to_string()
+    /// Java returns `null`; the Patience test's class renders
+    /// `"ThrowingKnnVectorQuery{" + field + "}"`.
+    fn to_query_string(&self, field: &str) -> String {
+        if self.patience {
+            format!("ThrowingKnnVectorQuery{{{field}}}")
+        } else {
+            "null".to_string()
+        }
     }
 
     fn visit(&self, visitor: &mut dyn QueryVisitor) {
@@ -367,7 +391,7 @@ impl Query for ThrowingKnnVectorQuery {
 
     fn query_eq(&self, other: &dyn Query) -> bool {
         match other.as_any().downcast_ref::<ThrowingKnnVectorQuery>() {
-            Some(other) => self.inner.query_eq(&other.inner),
+            Some(other) => self.patience == other.patience && self.inner.query_eq(&other.inner),
             None => false,
         }
     }

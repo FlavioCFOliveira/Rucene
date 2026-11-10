@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 
 use crate::error::{LuceneError, Result};
 use crate::index::{
@@ -409,6 +409,11 @@ struct CacheState {
     ram_bytes_used: AtomicI64,
     cache_count: AtomicI64,
     cache_size: AtomicI64,
+    /// The subclass behaviour; `None` for a plain `LRUQueryCache`.
+    overrides: Option<Arc<dyn LRUQueryCacheOverrides>>,
+    /// The `Arc` this state lives in, so that a hook can be handed the
+    /// [`LRUQueryCache`] it is called on (Java's `this`).
+    this: Weak<CacheState>,
 }
 
 impl Debug for CacheState {
@@ -427,30 +432,107 @@ impl CacheState {
         f32::from_bits(self.skip_cache_factor.load(Ordering::Acquire))
     }
 
+    /// The [`LRUQueryCache`] this state belongs to: Java's `this`.
+    fn handle(&self) -> LRUQueryCache {
+        LRUQueryCache {
+            state: self
+                .this
+                .upgrade()
+                .expect("INVARIANT: a cache state is only reached through its Arc"),
+        }
+    }
+
+    /// The virtual call `onHit(readerCoreKey, query)`.
+    fn on_hit(&self, reader_core_key: usize, query: &Arc<dyn Query>) {
+        match &self.overrides {
+            Some(o) => o.on_hit(&self.handle(), reader_core_key, query),
+            None => self.base_on_hit(),
+        }
+    }
+
+    /// The virtual call `onMiss(readerCoreKey, query)`.
+    fn on_miss(&self, reader_core_key: usize, query: &Arc<dyn Query>) {
+        match &self.overrides {
+            Some(o) => o.on_miss(&self.handle(), reader_core_key, query),
+            None => self.base_on_miss(),
+        }
+    }
+
+    /// The virtual call `onQueryCache(query, ramBytesUsed)`.
+    fn on_query_cache(&self, query: &Arc<dyn Query>, ram_bytes_used: i64) {
+        match &self.overrides {
+            Some(o) => o.on_query_cache(&self.handle(), query, ram_bytes_used),
+            None => self.base_on_query_cache(ram_bytes_used),
+        }
+    }
+
+    /// The virtual call `onQueryEviction(query, ramBytesUsed)`.
+    fn on_query_eviction(&self, query: &Arc<dyn Query>, ram_bytes_used: i64) {
+        match &self.overrides {
+            Some(o) => o.on_query_eviction(&self.handle(), query, ram_bytes_used),
+            None => self.base_on_query_eviction(ram_bytes_used),
+        }
+    }
+
+    /// The virtual call `onDocIdSetCache(readerCoreKey, ramBytesUsed)`.
+    fn on_doc_id_set_cache(&self, reader_core_key: usize, ram_bytes_used: i64) {
+        match &self.overrides {
+            Some(o) => o.on_doc_id_set_cache(&self.handle(), reader_core_key, ram_bytes_used),
+            None => self.base_on_doc_id_set_cache(ram_bytes_used),
+        }
+    }
+
+    /// The virtual call
+    /// `onDocIdSetEviction(readerCoreKey, numEntries, sumRamBytesUsed)`.
+    fn on_doc_id_set_eviction(
+        &self,
+        reader_core_key: usize,
+        num_entries: i32,
+        sum_ram_bytes_used: i64,
+    ) {
+        match &self.overrides {
+            Some(o) => o.on_doc_id_set_eviction(
+                &self.handle(),
+                reader_core_key,
+                num_entries,
+                sum_ram_bytes_used,
+            ),
+            None => self.base_on_doc_id_set_eviction(num_entries, sum_ram_bytes_used),
+        }
+    }
+
+    /// The virtual call `onClear()`.
+    fn on_clear(&self) {
+        match &self.overrides {
+            Some(o) => o.on_clear(&self.handle()),
+            None => self.base_on_clear(),
+        }
+    }
+
     /// Equivalent to `LRUQueryCache.onHit(Object, Query)`.
-    fn on_hit(&self) {
+    fn base_on_hit(&self) {
         self.hit_count.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Equivalent to `LRUQueryCache.onMiss(Object, Query)`.
-    fn on_miss(&self) {
+    fn base_on_miss(&self) {
         self.miss_count.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Equivalent to `LRUQueryCache.onQueryCache(Query, long)`.
-    fn on_query_cache(&self, ram_bytes_used: i64) {
+    fn base_on_query_cache(&self, ram_bytes_used: i64) {
         self.ram_bytes_used
             .fetch_add(ram_bytes_used, Ordering::AcqRel);
     }
 
     /// Equivalent to `LRUQueryCache.onQueryEviction(Query, long)`.
-    fn on_query_eviction(&self, ram_bytes_used: i64) {
+    fn base_on_query_eviction(&self, ram_bytes_used: i64) {
         self.ram_bytes_used
             .fetch_sub(ram_bytes_used, Ordering::AcqRel);
     }
 
     /// Equivalent to `LRUQueryCache.onDocIdSetCache(Object, long)`.
-    fn on_doc_id_set_cache(&self, ram_bytes_used: i64) {
+    fn base_on_doc_id_set_cache(&self, ram_bytes_used: i64) {
         self.cache_size.fetch_add(1, Ordering::AcqRel);
         self.cache_count.fetch_add(1, Ordering::AcqRel);
         self.ram_bytes_used
@@ -459,14 +541,15 @@ impl CacheState {
 
     /// Equivalent to
     /// `LRUQueryCache.onDocIdSetEviction(Object, int, long)`.
-    fn on_doc_id_set_eviction(&self, num_entries: i64, sum_ram_bytes_used: i64) {
+    fn base_on_doc_id_set_eviction(&self, num_entries: i32, sum_ram_bytes_used: i64) {
         self.ram_bytes_used
             .fetch_sub(sum_ram_bytes_used, Ordering::AcqRel);
-        self.cache_size.fetch_sub(num_entries, Ordering::AcqRel);
+        self.cache_size
+            .fetch_sub(num_entries as i64, Ordering::AcqRel);
     }
 
     /// Equivalent to `LRUQueryCache.onClear()`.
-    fn on_clear(&self) {
+    fn base_on_clear(&self) {
         self.ram_bytes_used.store(0, Ordering::Release);
         self.cache_size.store(0, Ordering::Release);
     }
@@ -495,7 +578,7 @@ impl CacheState {
         reader_key: usize,
     ) -> Option<CacheAndCount> {
         let Some(leaf_cache) = cache.get(&reader_key) else {
-            self.on_miss();
+            self.on_miss(reader_key, key);
             return None;
         };
         // This get call moves the query to the most-recently-used position.
@@ -507,13 +590,16 @@ impl CacheState {
             queries.get(&QueryKey::new(Arc::clone(key)))
         };
         let Some(singleton) = singleton else {
-            self.on_miss();
+            self.on_miss(reader_key, key);
             return None;
         };
-        let cached = leaf_cache.cache.get(&QueryKey::new(singleton)).cloned();
+        let cached = leaf_cache
+            .cache
+            .get(&QueryKey::new(Arc::clone(&singleton)))
+            .cloned();
         match &cached {
-            None => self.on_miss(),
-            Some(_) => self.on_hit(),
+            None => self.on_miss(reader_key, &singleton),
+            Some(_) => self.on_hit(reader_key, &singleton),
         }
         cached
     }
@@ -536,7 +622,7 @@ impl CacheState {
                 .unwrap_or_else(PoisonError::into_inner);
             match queries.put_if_absent(Arc::clone(&query)) {
                 None => {
-                    self.on_query_cache(query_ram_bytes_used(query.as_ref()));
+                    self.on_query_cache(&query, query_ram_bytes_used(query.as_ref()));
                     query
                 }
                 Some(singleton) => singleton,
@@ -562,7 +648,7 @@ impl CacheState {
             let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ram_bytes_used();
             leaf_cache.cache.insert(query_key, cached);
             leaf_cache.ram_bytes_used += ram;
-            self.on_doc_id_set_cache(ram);
+            self.on_doc_id_set_cache(key, ram);
         }
         self.evict_if_necessary(&mut cache);
     }
@@ -589,13 +675,13 @@ impl CacheState {
 
     /// Equivalent to the private `LRUQueryCache.onEviction(Query)`.
     fn on_eviction(&self, cache: &mut HashMap<usize, LeafCache>, singleton: &Arc<dyn Query>) {
-        self.on_query_eviction(query_ram_bytes_used(singleton.as_ref()));
+        self.on_query_eviction(singleton, query_ram_bytes_used(singleton.as_ref()));
         let key = QueryKey::new(Arc::clone(singleton));
-        for leaf_cache in cache.values_mut() {
+        for (core_key, leaf_cache) in cache.iter_mut() {
             if let Some(removed) = leaf_cache.cache.remove(&key) {
                 let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + removed.ram_bytes_used();
                 leaf_cache.ram_bytes_used -= ram;
-                self.on_doc_id_set_eviction(1, ram);
+                self.on_doc_id_set_eviction(*core_key, 1, ram);
             }
         }
     }
@@ -626,7 +712,7 @@ fn clear_core_cache_key(state: &Arc<CacheState>, core_key: usize) {
             .fetch_sub(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
         let num_entries = leaf_cache.cache.len();
         if num_entries > 0 {
-            state.on_doc_id_set_eviction(num_entries as i64, leaf_cache.ram_bytes_used);
+            state.on_doc_id_set_eviction(core_key, num_entries as i32, leaf_cache.ram_bytes_used);
         } else {
             debug_assert_eq!(leaf_cache.ram_bytes_used, 0);
         }
@@ -634,16 +720,15 @@ fn clear_core_cache_key(state: &Arc<CacheState>, core_key: usize) {
 }
 
 /// Equivalent to the private static
-/// `LRUQueryCache.getRamBytesUsed(Query)`.
-///
-/// **Divergence from Lucene 10.5.0.** Java asks the query for its own footprint
-/// when it implements `Accountable`, and otherwise assumes
-/// `QUERY_DEFAULT_RAM_BYTES_USED`. This port's [`Query`] does not extend
-/// `Accountable`, so the default always applies; the accounting is therefore
-/// coarser for the few queries that report their own size, and identical for
-/// every other one.
-fn query_ram_bytes_used(_query: &dyn Query) -> i64 {
-    LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY + RamUsageEstimator::QUERY_DEFAULT_RAM_BYTES_USED
+/// `LRUQueryCache.getRamBytesUsed(Query)` (`LRUQueryCache.java:428-433`): the
+/// query's own footprint when it is `Accountable`
+/// ([`Query::as_accountable`]), `QUERY_DEFAULT_RAM_BYTES_USED` otherwise.
+fn query_ram_bytes_used(query: &dyn Query) -> i64 {
+    LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
+        + match query.as_accountable() {
+            Some(accountable) => accountable.ram_bytes_used(),
+            None => RamUsageEstimator::QUERY_DEFAULT_RAM_BYTES_USED,
+        }
 }
 
 /// Returns the identity of a cache helper's key.
@@ -658,8 +743,102 @@ fn query_ram_bytes_used(_query: &dyn Query) -> i64 {
 /// whose key lies strictly inside a heap cell of its own that lives as long as
 /// the core: the address neither moves nor is reused while the core is open,
 /// exactly as Java's instance is (rmp #261).
-fn cache_key_identity(cache_helper: &dyn CacheHelper) -> usize {
+pub fn cache_key_identity(cache_helper: &dyn CacheHelper) -> usize {
     cache_helper.get_key() as *const CacheKey as usize
+}
+
+/// The protected methods of [`LRUQueryCache`] a subclass overrides.
+///
+/// Equivalent to overriding, in a Java subclass of `LRUQueryCache`, the
+/// statistics callbacks `onHit`, `onMiss`, `onQueryCache`,
+/// `onQueryEviction`, `onDocIdSetCache`, `onDocIdSetEviction` and `onClear`,
+/// and the population hook `tryPopulateCache` (`LRUQueryCache.java:200-280`,
+/// `:536-553`). Each default calls the inherited implementation, the
+/// `super_*` method of the [`LRUQueryCache`] the hook is called on; an
+/// override that calls `super` calls that method. Install the overrides with
+/// [`LRUQueryCache::with_overrides`].
+///
+/// A reader core key is the identity [`cache_key_identity`] computes for a
+/// core cache helper: Java passes the `IndexReader.CacheKey` object, whose
+/// identity this port represents by that address.
+///
+/// The hooks are called with the cache's locks held, as Java calls them.
+pub trait LRUQueryCacheOverrides: Send + Sync + Debug {
+    /// `protected void onHit(Object readerCoreKey, Query query)`.
+    fn on_hit(&self, cache: &LRUQueryCache, reader_core_key: usize, query: &Arc<dyn Query>) {
+        cache.super_on_hit(reader_core_key, query)
+    }
+
+    /// `protected void onMiss(Object readerCoreKey, Query query)`.
+    fn on_miss(&self, cache: &LRUQueryCache, reader_core_key: usize, query: &Arc<dyn Query>) {
+        cache.super_on_miss(reader_core_key, query)
+    }
+
+    /// `protected void onQueryCache(Query query, long ramBytesUsed)`.
+    fn on_query_cache(&self, cache: &LRUQueryCache, query: &Arc<dyn Query>, ram_bytes_used: i64) {
+        cache.super_on_query_cache(query, ram_bytes_used)
+    }
+
+    /// `protected void onQueryEviction(Query query, long ramBytesUsed)`.
+    fn on_query_eviction(
+        &self,
+        cache: &LRUQueryCache,
+        query: &Arc<dyn Query>,
+        ram_bytes_used: i64,
+    ) {
+        cache.super_on_query_eviction(query, ram_bytes_used)
+    }
+
+    /// `protected void onDocIdSetCache(Object readerCoreKey, long ramBytesUsed)`.
+    fn on_doc_id_set_cache(
+        &self,
+        cache: &LRUQueryCache,
+        reader_core_key: usize,
+        ram_bytes_used: i64,
+    ) {
+        cache.super_on_doc_id_set_cache(reader_core_key, ram_bytes_used)
+    }
+
+    /// `protected void onDocIdSetEviction(Object readerCoreKey, int numEntries,
+    /// long sumRamBytesUsed)`.
+    fn on_doc_id_set_eviction(
+        &self,
+        cache: &LRUQueryCache,
+        reader_core_key: usize,
+        num_entries: i32,
+        sum_ram_bytes_used: i64,
+    ) {
+        cache.super_on_doc_id_set_eviction(reader_core_key, num_entries, sum_ram_bytes_used)
+    }
+
+    /// `protected void onClear()`.
+    fn on_clear(&self, cache: &LRUQueryCache) {
+        cache.super_on_clear()
+    }
+
+    /// `protected CacheAndCount tryPopulateCache(IndexReader.CacheHelper
+    /// cacheKey, Weight weight, ScorerSupplier scorerSupplier,
+    /// LeafReaderContext context)`; `None` is Java's `null`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java passes the leaf context, of
+    /// which the inherited implementation reads `context.reader().maxDoc()`.
+    /// The port calls this hook from the scorer supplier, which outlives the
+    /// borrowed context it was built from, so the hook receives that
+    /// `max_doc` instead.
+    ///
+    /// # Errors
+    ///
+    /// As [`LRUQueryCache::super_try_populate_cache`].
+    fn try_populate_cache(
+        &self,
+        cache: &LRUQueryCache,
+        cache_helper: &dyn CacheHelper,
+        weight: &Arc<dyn Weight>,
+        scorer_supplier: &mut dyn ScorerSupplier,
+        max_doc: i32,
+    ) -> Result<Option<CacheAndCount>> {
+        cache.super_try_populate_cache(cache_helper, weight, scorer_supplier, max_doc)
+    }
 }
 
 /// A [`QueryCache`] that evicts queries with a least-recently-used policy, in
@@ -679,13 +858,12 @@ fn cache_key_identity(cache_helper: &dyn CacheHelper) -> usize {
 /// [`get_cache_count`](Self::get_cache_count) and
 /// [`get_eviction_count`](Self::get_eviction_count).
 ///
-/// **Divergence from Lucene 10.5.0.** Java declares the statistics callbacks —
-/// `onHit`, `onMiss`, `onQueryCache`, `onQueryEviction`, `onDocIdSetCache`,
-/// `onDocIdSetEviction`, `onClear` — and the caching strategy hooks `cacheImpl`
-/// and `tryPopulateCache` as `protected`, so that a subclass can gather
-/// finer-grained statistics or defer the population. Rust has no subclassing,
-/// so they are internal to this type and behave exactly as the base class does;
-/// a caller who needs different behaviour writes their own [`QueryCache`].
+/// Java declares the statistics callbacks — `onHit`, `onMiss`,
+/// `onQueryCache`, `onQueryEviction`, `onDocIdSetCache`, `onDocIdSetEviction`,
+/// `onClear` — and the population hook `tryPopulateCache` as `protected`, so
+/// that a subclass can gather finer-grained statistics or defer the
+/// population; a port subclass supplies them as [`LRUQueryCacheOverrides`]
+/// through [`with_overrides`](Self::with_overrides).
 #[derive(Debug)]
 pub struct LRUQueryCache {
     state: Arc<CacheState>,
@@ -712,6 +890,29 @@ impl LRUQueryCache {
         leaves_to_cache: LeavesToCache,
         skip_cache_factor: f32,
     ) -> Result<Self> {
+        Self::with_overrides(
+            max_size,
+            max_ram_bytes_used,
+            leaves_to_cache,
+            skip_cache_factor,
+            None,
+        )
+    }
+
+    /// [`with_predicate`](Self::with_predicate) for a subclass: `overrides`
+    /// carries the protected methods the subclass overrides (see
+    /// [`LRUQueryCacheOverrides`]); `None` is a plain `LRUQueryCache`.
+    ///
+    /// # Errors
+    ///
+    /// As [`with_predicate`](Self::with_predicate).
+    pub fn with_overrides(
+        max_size: i32,
+        max_ram_bytes_used: i64,
+        leaves_to_cache: LeavesToCache,
+        skip_cache_factor: f32,
+        overrides: Option<Arc<dyn LRUQueryCacheOverrides>>,
+    ) -> Result<Self> {
         // Spelled as Lucene spells it: `>= 1 == false` lets a NaN through the
         // guard, because every comparison against NaN is false.
         if !(skip_cache_factor >= 1.0) {
@@ -720,7 +921,7 @@ impl LRUQueryCache {
             )));
         }
         Ok(Self {
-            state: Arc::new(CacheState {
+            state: Arc::new_cyclic(|this| CacheState {
                 max_size: max_size.max(0) as usize,
                 max_ram_bytes_used,
                 leaves_to_cache,
@@ -732,6 +933,8 @@ impl LRUQueryCache {
                 ram_bytes_used: AtomicI64::new(0),
                 cache_count: AtomicI64::new(0),
                 cache_size: AtomicI64::new(0),
+                overrides,
+                this: Weak::clone(this),
             }),
         })
     }
@@ -756,6 +959,77 @@ impl LRUQueryCache {
             min_segment_size_predicate(10_000),
             10.0,
         )
+    }
+
+    /// The inherited `LRUQueryCache.onHit(Object, Query)`: counts a hit.
+    pub fn super_on_hit(&self, _reader_core_key: usize, _query: &Arc<dyn Query>) {
+        self.state.base_on_hit()
+    }
+
+    /// The inherited `LRUQueryCache.onMiss(Object, Query)`: counts a miss.
+    pub fn super_on_miss(&self, _reader_core_key: usize, _query: &Arc<dyn Query>) {
+        self.state.base_on_miss()
+    }
+
+    /// The inherited `LRUQueryCache.onQueryCache(Query, long)`.
+    pub fn super_on_query_cache(&self, _query: &Arc<dyn Query>, ram_bytes_used: i64) {
+        self.state.base_on_query_cache(ram_bytes_used)
+    }
+
+    /// The inherited `LRUQueryCache.onQueryEviction(Query, long)`.
+    pub fn super_on_query_eviction(&self, _query: &Arc<dyn Query>, ram_bytes_used: i64) {
+        self.state.base_on_query_eviction(ram_bytes_used)
+    }
+
+    /// The inherited `LRUQueryCache.onDocIdSetCache(Object, long)`.
+    pub fn super_on_doc_id_set_cache(&self, _reader_core_key: usize, ram_bytes_used: i64) {
+        self.state.base_on_doc_id_set_cache(ram_bytes_used)
+    }
+
+    /// The inherited `LRUQueryCache.onDocIdSetEviction(Object, int, long)`.
+    pub fn super_on_doc_id_set_eviction(
+        &self,
+        _reader_core_key: usize,
+        num_entries: i32,
+        sum_ram_bytes_used: i64,
+    ) {
+        self.state
+            .base_on_doc_id_set_eviction(num_entries, sum_ram_bytes_used)
+    }
+
+    /// The inherited `LRUQueryCache.onClear()`.
+    pub fn super_on_clear(&self) {
+        self.state.base_on_clear()
+    }
+
+    /// The inherited `LRUQueryCache.tryPopulateCache`: caches the scorer
+    /// supplier's matches with [`cache_impl`](Self::cache_impl), puts them
+    /// in the cache and returns them.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while scoring.
+    pub fn super_try_populate_cache(
+        &self,
+        cache_helper: &dyn CacheHelper,
+        weight: &Arc<dyn Weight>,
+        scorer_supplier: &mut dyn ScorerSupplier,
+        max_doc: i32,
+    ) -> Result<Option<CacheAndCount>> {
+        base_try_populate_cache(&self.state, cache_helper, weight, scorer_supplier, max_doc)
+    }
+
+    /// Default cache implementation: a `RoaringDocIdSet` for sets with a
+    /// density below 1% and a `BitDocIdSet` over a `FixedBitSet` otherwise.
+    ///
+    /// Equivalent to the protected `LRUQueryCache.cacheImpl(BulkScorer, int)`;
+    /// `pub` here because the port has no protected visibility.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while scoring.
+    pub fn cache_impl(&self, scorer: Box<dyn BulkScorer>, max_doc: i32) -> Result<CacheAndCount> {
+        cache_impl(scorer, max_doc)
     }
 
     /// Returns the skip-cache factor.
@@ -1294,7 +1568,7 @@ impl ConstantScoreIteratorSupplier for PopulatingIteratorSupplier {
         if self.cost as f32 / self.state.skip_cache_factor() > lead_cost as f32 {
             return Ok(into_scorer_iterator(self.supplier.get(lead_cost)?));
         }
-        let cached = try_populate_cache(
+        let cached = dispatch_try_populate_cache(
             &self.state,
             self.cache_helper.as_ref(),
             &self.inner,
@@ -1315,13 +1589,34 @@ impl ConstantScoreIteratorSupplier for PopulatingIteratorSupplier {
     }
 }
 
+/// The virtual call
+/// `tryPopulateCache(cacheKey, weight, scorerSupplier, context)`.
+fn dispatch_try_populate_cache(
+    state: &Arc<CacheState>,
+    cache_helper: &dyn CacheHelper,
+    weight: &Arc<dyn Weight>,
+    scorer_supplier: &mut dyn ScorerSupplier,
+    max_doc: i32,
+) -> Result<Option<CacheAndCount>> {
+    match &state.overrides {
+        Some(o) => o.try_populate_cache(
+            &state.handle(),
+            cache_helper,
+            weight,
+            scorer_supplier,
+            max_doc,
+        ),
+        None => base_try_populate_cache(state, cache_helper, weight, scorer_supplier, max_doc),
+    }
+}
+
 /// Populates the cache for the given scorer supplier and leaf.
 ///
 /// Equivalent to the protected
 /// `LRUQueryCache.tryPopulateCache(IndexReader.CacheHelper, Weight, ScorerSupplier, LeafReaderContext)`,
 /// whose base implementation always populates and therefore always returns a
 /// value.
-fn try_populate_cache(
+fn base_try_populate_cache(
     state: &Arc<CacheState>,
     cache_helper: &dyn CacheHelper,
     weight: &Arc<dyn Weight>,
