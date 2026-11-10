@@ -706,7 +706,7 @@ fn test_binary_fields() -> Result<()> {
     // `new StoredFieldDataInput(new ByteArrayDataInput(bin2))`: the whole input.
     doc.add(Box::new(StoredField::new_stored_input(
         "bin2",
-        Box::new(ByteArrayDataInput::new(bin2)),
+        Some(Box::new(ByteArrayDataInput::new(bin2))),
         bin2.len() as i32,
     )?));
     doc.add(Box::new(TextField::new(

@@ -97,7 +97,9 @@ fn test_binary_field_from_data_input_in_index() -> Result<()> {
     let length = byte_array.len() as i32;
     let binary_fld_stored = StoredField::new_stored_input(
         "binaryStored",
-        Box::new(InputStreamDataInput::new(std::io::Cursor::new(byte_array))),
+        Some(Box::new(InputStreamDataInput::new(std::io::Cursor::new(
+            byte_array,
+        )))),
         length,
     )?;
     let string_fld_stored = Field::new("stringStored", BINARY_VAL_STORED.to_string(), ft)?;

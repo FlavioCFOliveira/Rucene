@@ -575,3 +575,247 @@ pub fn add_doc_with_index(
     writer.add_document(&doc)?;
     Ok(())
 }
+
+/// `new FilterMergePolicy(in) { public boolean
+/// keepFullyDeletedSegment(IOSupplier<CodecReader> readerIOSupplier) {
+/// return true; } }`: the anonymous subclass several index tests use to keep
+/// fully deleted segments; every other decision is `FilterMergePolicy`'s
+/// delegation.
+pub struct KeepFullyDeletedSegmentsMergePolicy {
+    filter: rucene::index::merge_policy::FilterMergePolicy,
+}
+
+impl KeepFullyDeletedSegmentsMergePolicy {
+    /// `new FilterMergePolicy(in) { … }`.
+    pub fn new(inner: Arc<dyn rucene::index::merge_policy::MergePolicy>) -> Self {
+        KeepFullyDeletedSegmentsMergePolicy {
+            filter: rucene::index::merge_policy::FilterMergePolicy::new(inner),
+        }
+    }
+}
+
+impl std::fmt::Display for KeepFullyDeletedSegmentsMergePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.filter, f)
+    }
+}
+
+impl rucene::index::merge_policy::MergePolicy for KeepFullyDeletedSegmentsMergePolicy {
+    /// The subclass is an instance of `FilterMergePolicy`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(&self.filter)
+    }
+
+    fn find_merges(
+        &self,
+        merge_trigger: rucene::index::merge_policy::MergeTrigger,
+        segment_infos: &rucene::index::SegmentInfos,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.filter
+            .find_merges(merge_trigger, segment_infos, merge_context)
+    }
+
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn rucene::index::codec_reader::CodecReader>],
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.filter.find_merges_for_readers(readers)
+    }
+
+    fn find_forced_merges(
+        &self,
+        segment_infos: &rucene::index::SegmentInfos,
+        max_num_segments: i32,
+        segments_to_merge: &std::collections::HashMap<String, bool>,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.filter.find_forced_merges(
+            segment_infos,
+            max_num_segments,
+            segments_to_merge,
+            merge_context,
+        )
+    }
+
+    fn find_forced_deletes_merges(
+        &self,
+        segment_infos: &rucene::index::SegmentInfos,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.filter
+            .find_forced_deletes_merges(segment_infos, merge_context)
+    }
+
+    fn find_full_flush_merges(
+        &self,
+        merge_trigger: rucene::index::merge_policy::MergeTrigger,
+        segment_infos: &rucene::index::SegmentInfos,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<Option<rucene::index::merge_policy::MergeSpecification>> {
+        self.filter
+            .find_full_flush_merges(merge_trigger, segment_infos, merge_context)
+    }
+
+    fn use_compound_file(
+        &self,
+        infos: &rucene::index::SegmentInfos,
+        merged_info: &rucene::index::SegmentCommitInfo,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<bool> {
+        self.filter
+            .use_compound_file(infos, merged_info, merge_context)
+    }
+
+    fn get_no_cfs_ratio(&self) -> f64 {
+        self.filter.get_no_cfs_ratio()
+    }
+
+    fn get_max_cfs_segment_size(&self) -> i64 {
+        self.filter.get_max_cfs_segment_size()
+    }
+
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.filter.get_max_cfs_segment_size_mb()
+    }
+
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.filter.set_no_cfs_ratio(no_cfs_ratio)
+    }
+
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.filter.set_max_cfs_segment_size_mb(v)
+    }
+
+    fn size(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        merge_context: &dyn rucene::index::merge_policy::MergeContext,
+    ) -> Result<i64> {
+        self.filter.size(info, merge_context)
+    }
+
+    /// The override: `return true`.
+    fn keep_fully_deleted_segment(
+        &self,
+        _reader_supplier: &mut rucene::index::merge_policy::CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn num_deletes_to_merge_default(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        del_count: i32,
+    ) -> i32 {
+        self.filter.num_deletes_to_merge_default(info, del_count)
+    }
+
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &rucene::index::SegmentCommitInfo,
+        del_count: i32,
+        reader_supplier: &mut dyn FnMut() -> Result<
+            Arc<dyn rucene::index::codec_reader::CodecReader>,
+        >,
+    ) -> Result<i32> {
+        self.filter
+            .num_deletes_to_merge_with_reader(info, del_count, reader_supplier)
+    }
+
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.filter.max_full_flush_merge_size()
+    }
+}
+
+/// `java.util.concurrent.CyclicBarrier` (no barrier action): `parties`
+/// threads wait for each other at [`await_millis`](Self::await_millis); the
+/// barrier then resets for the next generation. A timed-out wait breaks the
+/// barrier for every waiter of its generation.
+pub struct CyclicBarrier {
+    parties: i32,
+    state: std::sync::Mutex<CyclicBarrierState>,
+    cond: std::sync::Condvar,
+}
+
+struct CyclicBarrierState {
+    count: i32,
+    generation: u64,
+    broken: bool,
+}
+
+/// Why [`CyclicBarrier::await_millis`] failed: the Java exception class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarrierError {
+    /// `java.util.concurrent.BrokenBarrierException`.
+    Broken,
+    /// `java.util.concurrent.TimeoutException`.
+    Timeout,
+}
+
+impl BarrierError {
+    /// The Java exception class name.
+    pub fn java_class(self) -> &'static str {
+        match self {
+            BarrierError::Broken => "java.util.concurrent.BrokenBarrierException",
+            BarrierError::Timeout => "java.util.concurrent.TimeoutException",
+        }
+    }
+}
+
+impl CyclicBarrier {
+    /// `new CyclicBarrier(parties)`.
+    pub fn new(parties: i32) -> Self {
+        CyclicBarrier {
+            parties,
+            state: std::sync::Mutex::new(CyclicBarrierState {
+                count: parties,
+                generation: 0,
+                broken: false,
+            }),
+            cond: std::sync::Condvar::new(),
+        }
+    }
+
+    /// `barrier.await(millis, TimeUnit.MILLISECONDS)`: the arrival index of
+    /// the caller, or why the barrier failed.
+    pub fn await_millis(&self, millis: u64) -> std::result::Result<i32, BarrierError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(millis);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.broken {
+            return Err(BarrierError::Broken);
+        }
+        state.count -= 1;
+        let index = state.count;
+        if index == 0 {
+            // the last party trips the barrier and starts a new generation
+            state.count = self.parties;
+            state.generation += 1;
+            self.cond.notify_all();
+            return Ok(0);
+        }
+        let generation = state.generation;
+        let _waiting = rucene::util::concurrent::enter_thread_wait(
+            rucene::util::concurrent::ThreadWaitState::TimedWaiting,
+        );
+        loop {
+            if state.broken {
+                return Err(BarrierError::Broken);
+            }
+            if state.generation != generation {
+                return Ok(index);
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                state.broken = true;
+                self.cond.notify_all();
+                return Err(BarrierError::Timeout);
+            }
+            state = self
+                .cond
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+}

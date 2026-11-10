@@ -1167,9 +1167,19 @@ impl Field {
     }
 
     /// Changes the string value of this field.
-    pub fn set_string_value(&mut self, value: String) -> Result<()> {
+    ///
+    /// Equivalent to `Field.setStringValue(String)`: `value` is `None` for
+    /// Java's `null`, which is rejected after the value-type check with
+    /// `IllegalArgumentException("value must not be null")`
+    /// (`Field.java:304-313`). A plain `String` converts into `Some`.
+    pub fn set_string_value(&mut self, value: impl Into<Option<String>>) -> Result<()> {
         match &self.fields_data {
             FieldData::String(_) | FieldData::Number(_) => {
+                let Some(value) = value.into() else {
+                    return Err(LuceneError::IllegalArgument(
+                        "value must not be null".to_string(),
+                    ));
+                };
                 self.fields_data = FieldData::String(value);
                 Ok(())
             }
@@ -1193,9 +1203,19 @@ impl Field {
     }
 
     /// Changes the binary value of this field.
-    pub fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
+    ///
+    /// Equivalent to `Field.setBytesValue(BytesRef)`: `value` is `None` for
+    /// Java's `null`, which is rejected after the value-type check with
+    /// `IllegalArgumentException("value must not be null")`
+    /// (`Field.java:335-346`). A plain `BytesRef` converts into `Some`.
+    pub fn set_bytes_value(&mut self, value: impl Into<Option<BytesRef>>) -> Result<()> {
         match &self.fields_data {
             FieldData::Bytes(_) => {
+                let Some(value) = value.into() else {
+                    return Err(LuceneError::IllegalArgument(
+                        "value must not be null".to_string(),
+                    ));
+                };
                 self.fields_data = FieldData::Bytes(value);
                 Ok(())
             }
@@ -1203,6 +1223,25 @@ impl Field {
                 "cannot change value type to BytesRef".to_string(),
             )),
         }
+    }
+
+    /// Changes the binary value of this field to a copy-free view of a whole
+    /// byte array.
+    ///
+    /// Equivalent to `Field.setBytesValue(byte[])`, which calls
+    /// `setBytesValue(new BytesRef(value))` (`Field.java:325-327`): `None`
+    /// is Java's `null`, on which `new BytesRef(byte[])` throws
+    /// `NullPointerException` before the value-type check.
+    pub fn set_bytes_value_array(&mut self, value: Option<&[u8]>) -> Result<()> {
+        let Some(value) = value else {
+            // The JVM computes the helpful message; the port keeps none.
+            return Err(LuceneError::Unchecked {
+                class: "java.lang.NullPointerException",
+                message: None,
+                cause: None,
+            });
+        };
+        self.set_bytes_value(BytesRef::new(value.to_vec()))
     }
 
     /// Changes the numeric value of this field.
@@ -2040,17 +2079,55 @@ impl StoredField {
     }
 
     /// Creates a stored-only field with a string value.
-    pub fn new_string(name: &str, value: String) -> Result<Self> {
+    ///
+    /// Equivalent to `StoredField(String, String)`: `value` is `None` for
+    /// Java's `null`, which `Field(String, CharSequence, IndexableFieldType)`
+    /// rejects with `IllegalArgumentException("value must not be null")`
+    /// (`Field.java:244-246`). A plain `String` converts into `Some`.
+    pub fn new_string(name: &str, value: impl Into<Option<String>>) -> Result<Self> {
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "value must not be null".to_string(),
+            ));
+        };
         Ok(Self(Field::new(name, value, stored_field_type().clone())?))
     }
 
     /// Creates a stored-only field with a binary value.
-    pub fn new_bytes(name: &str, value: BytesRef) -> Result<Self> {
+    ///
+    /// Equivalent to `StoredField(String, BytesRef)`: `value` is `None` for
+    /// Java's `null`, which `Field(String, BytesRef, IndexableFieldType)`
+    /// rejects with `IllegalArgumentException("bytes must not be null")`
+    /// (`Field.java:203-205`). A plain `BytesRef` converts into `Some`.
+    pub fn new_bytes(name: &str, value: impl Into<Option<BytesRef>>) -> Result<Self> {
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "bytes must not be null".to_string(),
+            ));
+        };
         Ok(Self(Field::new_with_bytes(
             name,
             value,
             stored_field_type().clone(),
         )?))
+    }
+
+    /// Creates a stored-only field over a whole byte array.
+    ///
+    /// Equivalent to `StoredField(String, byte[])`, which calls
+    /// `Field(name, value, 0, value.length, TYPE)` (`StoredField.java:75-77`,
+    /// `Field.java:165-167`): `None` is Java's `null`, on which
+    /// `value.length` throws `NullPointerException`.
+    pub fn new_byte_array(name: &str, value: Option<&[u8]>) -> Result<Self> {
+        let Some(value) = value else {
+            // The JVM computes the helpful message; the port keeps none.
+            return Err(LuceneError::Unchecked {
+                class: "java.lang.NullPointerException",
+                message: None,
+                cause: None,
+            });
+        };
+        Self::new_bytes(name, BytesRef::new(value.to_vec()))
     }
 
     /// Creates a stored-only field with a numeric value.
@@ -2063,7 +2140,21 @@ impl StoredField {
     }
 
     /// Creates a stored-only field with a stored-data input.
-    pub fn new_stored_input(name: &str, input: Box<dyn DataInput>, length: i32) -> Result<Self> {
+    ///
+    /// Equivalent to `StoredField(String, StoredFieldDataInput)`: `input` is
+    /// `None` for Java's `null` record, which is rejected with
+    /// `IllegalArgumentException("store field data input must not be null")`
+    /// (`StoredField.java:116-122`).
+    pub fn new_stored_input(
+        name: &str,
+        input: Option<Box<dyn DataInput>>,
+        length: i32,
+    ) -> Result<Self> {
+        let Some(input) = input else {
+            return Err(LuceneError::IllegalArgument(
+                "store field data input must not be null".to_string(),
+            ));
+        };
         Ok(Self(Field::new_with_stored_input(
             name,
             input,

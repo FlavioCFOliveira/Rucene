@@ -1159,9 +1159,9 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             let length = bytes.len() as i32;
             doc.add(Box::new(StoredField::new_stored_input(
                 "b2",
-                Box::new(rucene::store::InputStreamDataInput::new(
+                Some(Box::new(rucene::store::InputStreamDataInput::new(
                     std::io::Cursor::new(bytes.clone()),
-                )),
+                ))),
                 length,
             )?));
             docs.push(MergeFilterExpected {

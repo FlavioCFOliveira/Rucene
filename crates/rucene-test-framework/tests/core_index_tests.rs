@@ -184,6 +184,12 @@ mod test_index_writer_commit;
 mod test_index_writer_config;
 #[path = "core_index/test_index_writer_delete.rs"]
 mod test_index_writer_delete;
+#[path = "core_index/test_index_writer_exceptions.rs"]
+mod test_index_writer_exceptions;
+#[path = "core_index/test_index_writer_force_merge.rs"]
+mod test_index_writer_force_merge;
+#[path = "core_index/test_index_writer_from_reader.rs"]
+mod test_index_writer_from_reader;
 #[path = "core_index/test_index_writer_exceptions2.rs"]
 mod test_index_writer_exceptions2;
 #[path = "core_index/test_indexable_field.rs"]
@@ -645,4 +651,19 @@ fn test_index_sorting() {
 #[test]
 fn test_index_writer_commit() {
     run(test_index_writer_commit::class_def);
+}
+
+#[test]
+fn test_index_writer_exceptions() {
+    run(test_index_writer_exceptions::class_def);
+}
+
+#[test]
+fn test_index_writer_force_merge() {
+    run(test_index_writer_force_merge::class_def);
+}
+
+#[test]
+fn test_index_writer_from_reader() {
+    run(test_index_writer_from_reader::class_def);
 }

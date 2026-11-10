@@ -435,7 +435,7 @@ fn clone_document_is_lucenes() {
         TextField::new("t", "some text".into(), Store::NO).unwrap(),
     ));
     doc.add(Box::new(
-        StoredField::new_string("st", "stored".into()).unwrap(),
+        StoredField::new_string("st", "stored".to_string()).unwrap(),
     ));
     let clone = TestUtil::clone_document(&doc).unwrap();
     let rows = member_rows("cloneDocument");
