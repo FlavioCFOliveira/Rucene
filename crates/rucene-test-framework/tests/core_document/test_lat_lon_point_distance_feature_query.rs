@@ -1,10 +1,4 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/document/TestLatLonPointDistanceFeatureQuery.java`.
-//!
-//! **Divergence from Lucene 10.5.0 (several methods).** Java adds one
-//! `LatLonPoint` and one `LatLonDocValuesField` to a `Document` and calls
-//! `setLocationValue` on them between `addDocument` calls. The port's
-//! `Document` owns its fields, so each call indexes a document rebuilt with
-//! the fields' current values (same fields, same order, same values).
 
 use std::sync::Arc;
 
@@ -74,13 +68,26 @@ fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
     RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)
 }
 
-/// The document of `point` at `(lat, lon)` then `docValue` at
-/// `(dv_lat, dv_lon)`.
-fn point_doc(lat: f64, lon: f64, dv_lat: f64, dv_lon: f64) -> Result<Document> {
+/// `Document doc` holding `LatLonPoint point = new LatLonPoint("foo", 0, 0)`
+/// then `LatLonDocValuesField docValue = new LatLonDocValuesField("foo", 0, 0)`.
+fn point_doc() -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Box::new(LatLonPoint::new("foo", lat, lon)?));
-    doc.add(Box::new(LatLonDocValuesField::new("foo", dv_lat, dv_lon)?));
+    let point = LatLonPoint::new("foo", 0.0, 0.0)?;
+    doc.add(Box::new(point));
+    let doc_value = LatLonDocValuesField::new("foo", 0.0, 0.0)?;
+    doc.add(Box::new(doc_value));
     Ok(doc)
+}
+
+/// `point.setLocationValue(lat, lon); docValue.setLocationValue(dvLat, dvLon);`
+/// on the fields `doc` holds.
+fn set_location(doc: &mut Document, lat: f64, lon: f64, dv_lat: f64, dv_lon: f64) -> Result<()> {
+    doc.get_field_mut_as::<LatLonPoint>("foo")
+        .expect("point")
+        .set_location_value(lat, lon)?;
+    doc.get_field_mut_as::<LatLonDocValuesField>("foo")
+        .expect("docValue")
+        .set_location_value(dv_lat, dv_lon)
 }
 
 /// `SloppyMath.haversinMeters(decodeLatitude(encodeLatitude(lat)),
@@ -111,6 +118,8 @@ fn score(pivot: f64, distance: f64) -> f32 {
 fn test_basics() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
+    let mut doc = point_doc()?;
+
     let pivot_distance = 5000.0; // 5k
 
     for (lat, lon) in [
@@ -120,7 +129,8 @@ fn test_basics() -> Result<()> {
         (4.0, 4.0),
         (-1.0, -1.0),
     ] {
-        w.add_document(&point_doc(lat, lon, lat, lon)?)?;
+        set_location(&mut doc, lat, lon, lat, lon)?;
+        w.add_document(&doc)?;
     }
 
     let reader = w.get_reader()?;
@@ -171,14 +181,21 @@ fn test_basics() -> Result<()> {
 fn test_crosses_date_line() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
+    let mut doc = point_doc()?;
+
     let pivot_distance = 5000.0; // 5k
 
-    w.add_document(&point_doc(0.0, -179.0, 0.0, -179.0)?)?;
-    w.add_document(&point_doc(0.0, 176.0, 0.0, 176.0)?)?;
-    w.add_document(&point_doc(0.0, -150.0, 0.0, -150.0)?)?;
-    w.add_document(&point_doc(0.0, -140.0, 0.0, -140.0)?)?;
-    // `point.setLocationValue(0, 140); docValue.setLocationValue(01, 140);`
-    w.add_document(&point_doc(0.0, 140.0, 1.0, 140.0)?)?;
+    set_location(&mut doc, 0.0, -179.0, 0.0, -179.0)?;
+
+    w.add_document(&doc)?;
+    set_location(&mut doc, 0.0, 176.0, 0.0, 176.0)?;
+    w.add_document(&doc)?;
+    set_location(&mut doc, 0.0, -150.0, 0.0, -150.0)?;
+    w.add_document(&doc)?;
+    set_location(&mut doc, 0.0, -140.0, 0.0, -140.0)?;
+    w.add_document(&doc)?;
+    set_location(&mut doc, 0.0, 140.0, 1.0, 140.0)?;
+    w.add_document(&doc)?;
 
     let reader = w.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
@@ -218,9 +235,13 @@ fn test_missing_field() -> Result<()> {
 fn test_missing_value() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    w.add_document(&point_doc(3.0, 3.0, 3.0, 3.0)?)?;
+    let mut doc = point_doc()?;
+
+    set_location(&mut doc, 3.0, 3.0, 3.0, 3.0)?;
+    w.add_document(&doc)?;
     w.add_document(&Document::new())?;
-    w.add_document(&point_doc(7.0, 7.0, 7.0, 7.0)?)?;
+    set_location(&mut doc, 7.0, 7.0, 7.0, 7.0)?;
+    w.add_document(&doc)?;
 
     let reader = w.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
@@ -329,11 +350,14 @@ fn test_random() -> Result<()> {
         random().next_boolean(),
     )))?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
+    let mut doc = point_doc()?;
+
     let num_docs = LuceneTestCase::at_least(1000);
     for _i in 0..num_docs {
         let lat = random().next_double() * 180.0 - 90.0;
         let lon = random().next_double() * 360.0 - 180.0;
-        w.add_document(&point_doc(lat, lon, lat, lon)?)?;
+        set_location(&mut doc, lat, lon, lat, lon)?;
+        w.add_document(&doc)?;
     }
 
     let reader = rucene::index::directory_reader::open_with_writer(&*w)?;
@@ -361,11 +385,14 @@ fn test_random() -> Result<()> {
 fn test_compare_sorting() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
+    let mut doc = point_doc()?;
+
     let num_docs = LuceneTestCase::at_least(10000);
     for _i in 0..num_docs {
         let lat = random().next_double() * 180.0 - 90.0;
         let lon = random().next_double() * 360.0 - 180.0;
-        w.add_document(&point_doc(lat, lon, lat, lon)?)?;
+        set_location(&mut doc, lat, lon, lat, lon)?;
+        w.add_document(&doc)?;
     }
 
     let reader = w.get_reader()?;

@@ -51,7 +51,7 @@ use rucene_test_framework::util::java_exceptions::expect_throws;
 use rucene_test_framework::util::lucene_test_case::RANDOM_MULTIPLIER;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
-use crate::core_search::support::{doc_of, term, tq};
+use crate::core_search::support::{field_mut, field_mut_as, term, tq};
 use crate::core_search::test_boost_query::assert_query_equals;
 use crate::core_support::{assert_equals, assert_equals_delta, class, random, test, verbose};
 
@@ -565,14 +565,14 @@ fn text_field(name: &str, value: &str) -> Field {
 fn test_filter_clause_behaves_like_must() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-    let mut f = text_field("field", "a b c d");
-    // `doc.add(f); ... f.setStringValue(...); w.addDocument(doc)`: see
-    // `support::copy_field` for the divergence.
-    w.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("b d".to_string())?;
-    w.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("d".to_string())?;
-    w.add_document(&doc_of(&[&f])?)?;
+    let mut doc = Document::new();
+    let f = text_field("field", "a b c d");
+    doc.add(Box::new(f));
+    w.add_document(&doc)?;
+    field_mut(&mut doc, "field").set_string_value("b d".to_string())?;
+    w.add_document(&doc)?;
+    field_mut(&mut doc, "field").set_string_value("d".to_string())?;
+    w.add_document(&doc)?;
     w.commit()?;
 
     let reader = w.get_reader()?;
@@ -691,12 +691,14 @@ fn assert_same_scores_without_filters(searcher: &IndexSearcher, bq: &BooleanQuer
 fn test_filter_clause_does_not_impact_score() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-    let mut f = text_field("field", "a b c d");
-    w.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("b d".to_string())?;
-    w.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("a d".to_string())?;
-    w.add_document(&doc_of(&[&f])?)?;
+    let mut doc = Document::new();
+    let f = text_field("field", "a b c d");
+    doc.add(Box::new(f));
+    w.add_document(&doc)?;
+    field_mut(&mut doc, "field").set_string_value("b d".to_string())?;
+    w.add_document(&doc)?;
+    field_mut(&mut doc, "field").set_string_value("a d".to_string())?;
+    w.add_document(&doc)?;
     w.commit()?;
 
     let reader = w.get_reader()?;
@@ -877,9 +879,6 @@ fn test_query_matches_count() -> Result<()> {
 
 /// The two-document index of the `*MatchesCount` tests: `long=3,
 /// string=abc` and `long=10, string=xyz` (with `long3dim` when `three_dim`).
-///
-/// Java reuses the `LongPoint` and `StringField` objects through their
-/// setters; see `support::copy_field` for the divergence.
 fn two_doc_index(
     three_dim: bool,
 ) -> Result<(
@@ -900,16 +899,11 @@ fn two_doc_index(
         Store::NO,
     )?));
     writer.add_document(&doc)?;
-    let mut doc = Document::new();
-    doc.add(Box::new(LongPoint::new("long", &[10])?));
+    field_mut_as::<LongPoint>(&mut doc, "long").set_long_value(10)?;
     if three_dim {
-        doc.add(Box::new(LongPoint::new("long3dim", &[10, 11, 12])?));
+        field_mut_as::<LongPoint>(&mut doc, "long3dim").set_long_values(&[10, 11, 12])?;
     }
-    doc.add(Box::new(StringField::new(
-        "string",
-        "xyz".into(),
-        Store::NO,
-    )?));
+    field_mut_as::<StringField>(&mut doc, "string").set_string_value("xyz".to_string())?;
     writer.add_document(&doc)?;
     let reader = directory_reader::open_with_writer(&*writer)?;
     writer.close()?;

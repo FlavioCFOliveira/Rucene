@@ -6,10 +6,6 @@
 //!   parameter, so `LuceneJUnit3MethodProvider` does not select it as a test
 //!   (`m.getParameterTypes().length == 0`); it is declared with its
 //!   parameter and is not run, as in Lucene.
-//! * `doTestPrimarySortDenseExactMatch` adds the same `IndexableField`
-//!   object to two documents; a Rucene `Document` owns its fields, so the
-//!   second document gets a field rebuilt from the first one's value,
-//!   without drawing again.
 //! * `getClass().toString()` and `instanceOf(...)` over queries, suppliers
 //!   and iterators use the opt-in `as_any` downcasts against a declared list
 //!   of the classes the assertions name.
@@ -1405,28 +1401,17 @@ fn test_rewrite_works_with_points_but_no_skip_index() -> Result<()> {
 }
 
 /// The `IntFunction<IndexableField>` of the exact-match tests: the field for
-/// block `i`, and a rebuild of that same field for a second document (see
-/// the module documentation).
-type FieldFactory = fn(
-    i32,
-) -> (
-    Box<dyn IndexableField>,
-    Box<dyn Fn() -> Box<dyn IndexableField>>,
-);
+/// block `i`, shared so that it can be added to two documents, as Java does.
+type FieldFactory = fn(i32) -> Arc<dyn IndexableField>;
 
 fn test_primary_sort_dense_sorted_doc_values_exact_match() -> Result<()> {
     do_test_primary_sort_dense_exact_match(
         SortFieldType::String,
         |i| {
-            let value = nbr_str(&i.to_string());
-            let copy = value.clone();
-            (
-                Box::new(SortedDocValuesField::indexed_field("dv", value)),
-                Box::new(move || {
-                    Box::new(SortedDocValuesField::indexed_field("dv", copy.clone()))
-                        as Box<dyn IndexableField>
-                }),
-            )
+            Arc::new(SortedDocValuesField::indexed_field(
+                "dv",
+                nbr_str(&i.to_string()),
+            ))
         },
         |i| {
             let (lo, hi) = (nbr_str(&i.to_string()), nbr_str(&i.to_string()));
@@ -1438,15 +1423,7 @@ fn test_primary_sort_dense_sorted_doc_values_exact_match() -> Result<()> {
 fn test_primary_sort_dense_numeric_doc_values_exact_match() -> Result<()> {
     do_test_primary_sort_dense_exact_match(
         SortFieldType::Long,
-        |i| {
-            (
-                Box::new(NumericDocValuesField::indexed_field("dv", i64::from(i))),
-                Box::new(move || {
-                    Box::new(NumericDocValuesField::indexed_field("dv", i64::from(i)))
-                        as Box<dyn IndexableField>
-                }),
-            )
-        },
+        |i| Arc::new(NumericDocValuesField::indexed_field("dv", i64::from(i))),
         |i| NumericDocValuesField::new_slow_range_query("dv", i64::from(i), i64::from(i)),
     )
 }
@@ -1476,12 +1453,12 @@ fn do_test_primary_sort_dense_exact_match(
         total_sizes[i] = sizes[i];
         for _ in 0..sizes[i] {
             let mut doc = Document::new();
-            let (dv, same_dv) = fields(i as i32);
-            doc.add(dv);
+            let field = fields(i as i32);
+            doc.add_shared(Arc::clone(&field));
             iw.add_document(&doc)?;
             if deletes && random().next_int_bound(10) == 0 {
                 let mut doc = Document::new();
-                doc.add(same_dv());
+                doc.add_shared(field);
                 doc.add(Box::new(StringField::new(
                     "id",
                     "to_delete".to_string(),

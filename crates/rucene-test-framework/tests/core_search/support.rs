@@ -140,30 +140,38 @@ impl CountDownLatch {
     }
 }
 
-/// The same `Field` object added to a document again: a field with the same
-/// name, current string value and type.
+/// The `Field` named `name` that the Java test keeps a reference to after
+/// `doc.add(field)` and changes in place, reached through the document.
 ///
-/// **Divergence from Lucene 10.5.0.** Java tests keep a reference to a field
-/// they added to a `Document`, call `setStringValue` on it and add the
-/// document again; a Rucene `Document` owns its fields, so the test keeps the
-/// field and rebuilds the document from copies of it, in the same order and
-/// without drawing again.
-pub fn copy_field(field: &rucene::document::Field) -> Result<rucene::document::Field> {
-    rucene::document::Field::new(
-        field.name(),
-        field.string_value().unwrap_or_default(),
-        rucene::document::FieldType::new_from(field.field_type()),
-    )
+/// # Panics
+///
+/// `ClassCastException` when the document has no `Field` of that name.
+pub fn field_mut<'a>(
+    doc: &'a mut rucene::document::Document,
+    name: &str,
+) -> &'a mut rucene::document::Field {
+    field_mut_as::<rucene::document::Field>(doc, name)
 }
 
-/// `new Document()` holding copies of `fields`, in order (see
-/// [`copy_field`]).
-pub fn doc_of(fields: &[&rucene::document::Field]) -> Result<rucene::document::Document> {
-    let mut doc = rucene::document::Document::new();
-    for f in fields {
-        doc.add(Box::new(copy_field(f)?));
-    }
-    Ok(doc)
+/// The field of class `T` named `name` that the Java test keeps a reference
+/// to after `doc.add(field)` and changes in place, reached through the
+/// document ([`rucene::document::Document::get_field_mut_as`]).
+///
+/// # Panics
+///
+/// `ClassCastException` when the document has no field of that name and
+/// class.
+pub fn field_mut_as<'a, T: rucene::index::IndexableField + 'static>(
+    doc: &'a mut rucene::document::Document,
+    name: &str,
+) -> &'a mut T {
+    doc.get_field_mut_as::<T>(name).unwrap_or_else(|| {
+        randomizedtesting::jdk::exception::Throwable::new(
+            "java.lang.ClassCastException",
+            format!("no {} named {name}", std::any::type_name::<T>()),
+        )
+        .throw()
+    })
 }
 
 /// A `public static void name()` method annotated `annotation`

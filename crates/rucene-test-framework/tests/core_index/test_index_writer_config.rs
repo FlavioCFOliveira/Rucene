@@ -506,20 +506,22 @@ fn test_live_change_to_cfs() -> Result<()> {
             .get_use_compound_file())
     };
 
-    let mut fields = vec![LuceneTestCase::new_string_field("field", "foo", Store::NO)];
-    let doc_of = |fields: &[rucene::document::Field]| -> Result<Document> {
-        let mut doc = Document::new();
-        for f in fields {
-            doc.add(Box::new(crate::support::copy_field(f)?));
-        }
-        Ok(doc)
-    };
-    w.add_document(&doc_of(&fields)?)?;
+    let mut doc = Document::new();
+    doc.add(Box::new(LuceneTestCase::new_string_field(
+        "field",
+        "foo",
+        Store::NO,
+    )));
+    w.add_document(&doc)?;
     w.commit()?;
     Assert::assert_true_msg("Expected CFS after commit", newest_uses_cfs(&w)?);
 
-    fields.push(LuceneTestCase::new_string_field("field", "foo", Store::NO));
-    w.add_document(&doc_of(&fields)?)?;
+    doc.add(Box::new(LuceneTestCase::new_string_field(
+        "field",
+        "foo",
+        Store::NO,
+    )));
+    w.add_document(&doc)?;
     w.commit()?;
     w.force_merge(1)?;
     w.commit()?;
@@ -531,7 +533,7 @@ fn test_live_change_to_cfs() -> Result<()> {
     lmp.set_no_cfs_ratio(1.0)?;
     lmp.set_max_cfs_segment_size_mb(f64::INFINITY)?;
 
-    w.add_document(&doc_of(&fields)?)?;
+    w.add_document(&doc)?;
     w.force_merge(1)?;
     w.commit()?;
     Assert::assert_true_msg("Expected CFS after merge", newest_uses_cfs(&w)?);

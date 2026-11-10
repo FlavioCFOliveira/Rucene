@@ -636,7 +636,7 @@ fn indexing_thread_body(
                     let mut next = docs.next_doc()?;
                     for f in TestUtil::clone_document(&doc)?.into_fields() {
                         if f.name() == "packID" || added_field.as_deref() == Some(f.name()) {
-                            next.add(f);
+                            next.add_shared(f);
                         }
                     }
                     docs_list.push(TestUtil::clone_document(&next)?);

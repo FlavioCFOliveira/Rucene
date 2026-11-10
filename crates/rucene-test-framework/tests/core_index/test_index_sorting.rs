@@ -6,9 +6,10 @@
 //! * The `PositionsTokenStream` of each `testRandom2` document is kept next to
 //!   the document (the field holds the same `Arc`), and its id is set through
 //!   that handle, as Java reaches it through `doc.getField("positions")`.
-//! * `Document.add(field)` of a field that Java keeps and changes
-//!   (`testIndexSortWithSparseField`, `testSortDocs`, `testWrongSortFieldType`)
-//!   adds a copy, rebuilt with the current value (guide section 6).
+//! * A field Java keeps after `doc.add` is changed through the document
+//!   (`Document::get_field_mut_as`), or added to several documents with
+//!   `Document::add_shared` (`testIndexSortWithSparseField`,
+//!   `testWrongSortFieldType`).
 
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::{HashMap, HashSet};
@@ -70,7 +71,7 @@ use crate::core_support::{
     assert_contains, assert_equals, assert_equals_delta, assert_not_null, assert_null, class,
     random, shuffle, test, verbose,
 };
-use crate::support::{copy_field, npe, CountDownLatch};
+use crate::support::{npe, CountDownLatch};
 
 /// `TestIndexSorting`.
 pub fn class_def() -> Arc<Class> {
@@ -2679,7 +2680,7 @@ fn test_index_sort_with_sparse_field() -> Result<()> {
         SortField::new_reverse(Some("dense_int".to_string()), SortFieldType::Int, true)?;
     iwc.set_index_sort(sort_of(vec![sort_field])?)?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
-    let mut text_field = LuceneTestCase::new_text_field("sparse_text", "", Store::NO);
+    let mut text_field = Arc::new(LuceneTestCase::new_text_field("sparse_text", "", Store::NO));
     for i in 0..128 {
         let mut doc = Document::new();
         doc.add(ndv("dense_int", i));
@@ -2689,8 +2690,12 @@ fn test_index_sort_with_sparse_field() -> Result<()> {
                 "sparse_binary",
                 bytes_ref(&i.to_string()),
             )));
-            text_field.set_string_value("foo".to_string())?;
-            doc.add(Box::new(copy_field(&text_field)?));
+            // The documents that held `textField` were indexed and dropped,
+            // so the test holds it alone again.
+            Arc::get_mut(&mut text_field)
+                .expect("INVARIANT: no live document holds textField")
+                .set_string_value("foo".to_string())?;
+            doc.add_shared(Arc::clone(&text_field) as Arc<dyn rucene::index::IndexableField>);
         }
         w.add_document(&doc)?;
     }
@@ -2782,21 +2787,12 @@ fn test_index_sort_on_sparse_field() -> Result<()> {
 /// Port of `TestIndexSorting.testWrongSortFieldType`.
 fn test_wrong_sort_field_type() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
-    // The four fields of `dvs`; each use adds a fresh copy of the same field
-    // (the two `newBytesRef` draws happen here, once, as in Java).
-    let sorted_value = bytes_ref("");
-    let sorted_set_value = bytes_ref("");
-    let dvs = |j: usize| -> Box<dyn rucene::index::IndexableField> {
-        match j {
-            0 => Box::new(SortedDocValuesField::new("field", sorted_value.clone())),
-            1 => Box::new(SortedSetDocValuesField::new(
-                "field",
-                sorted_set_value.clone(),
-            )),
-            2 => Box::new(NumericDocValuesField::new("field", 42)),
-            _ => Box::new(SortedNumericDocValuesField::new("field", 42)),
-        }
-    };
+    let dvs: Vec<Arc<dyn rucene::index::IndexableField>> = vec![
+        Arc::new(SortedDocValuesField::new("field", bytes_ref(""))),
+        Arc::new(SortedSetDocValuesField::new("field", bytes_ref(""))),
+        Arc::new(NumericDocValuesField::new("field", 42)),
+        Arc::new(SortedNumericDocValuesField::new("field", 42)),
+    ];
 
     let sort_fields = vec![
         sort_field("field", SortFieldType::String)?,
@@ -2806,7 +2802,7 @@ fn test_wrong_sort_field_type() -> Result<()> {
     ];
 
     for i in 0..sort_fields.len() {
-        for j in 0..4 {
+        for j in 0..dvs.len() {
             if i == j {
                 continue;
             }
@@ -2816,19 +2812,19 @@ fn test_wrong_sort_field_type() -> Result<()> {
             iwc.set_index_sort(index_sort)?;
             let w = IndexWriter::new(dir.as_directory(), iwc)?;
             let mut doc = Document::new();
-            doc.add(dvs(j));
+            doc.add_shared(Arc::clone(&dvs[j]));
             let message = iae_message_of(|| w.add_document(&doc));
             assert_contains(&message, "expected field [field] to be ");
             doc.clear();
-            doc.add(dvs(i));
+            doc.add_shared(Arc::clone(&dvs[i]));
             w.add_document(&doc)?;
-            doc.add(dvs(j));
+            doc.add_shared(Arc::clone(&dvs[j]));
             let message = iae_message_of(|| w.add_document(&doc));
             assert_equals(
                 &format!(
                     "Inconsistency of field data structures across documents for field [field] of doc [2]. doc values type: expected '{:?}', but it has '{:?}'.",
-                    dvs(i).field_type().doc_values_type(),
-                    dvs(j).field_type().doc_values_type()
+                    dvs[i].field_type().doc_values_type(),
+                    dvs[j].field_type().doc_values_type()
                 ),
                 &message,
             );
@@ -2928,12 +2924,19 @@ fn test_sort_docs() -> Result<()> {
     let config = LuceneTestCase::new_index_writer_config();
     config.set_index_sort(sort_of(vec![sort_field("sort", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
-    // `sort.setLongValue(v); field.setStringValue(s); w.addDocument(doc);`:
-    // the document is rebuilt with the current values.
-    for (sort, field) in [(0, "a"), (1, "b"), (-1, "a"), (2, "a"), (3, "b")] {
-        let mut doc = Document::new();
-        doc.add(ndv("sort", sort));
-        doc.add(string_field("field", field, Store::NO)?);
+    let mut doc = Document::new();
+    let sort = ndv("sort", 0);
+    doc.add(sort);
+    let field = string_field("field", "a", Store::NO)?;
+    doc.add(field);
+    w.add_document(&doc)?;
+    for (sort, field) in [(1, "b"), (-1, "a"), (2, "a"), (3, "b")] {
+        doc.get_field_mut_as::<NumericDocValuesField>("sort")
+            .expect("sort")
+            .set_value(sort);
+        doc.get_field_mut_as::<StringField>("field")
+            .expect("field")
+            .set_string_value(field.to_string())?;
         w.add_document(&doc)?;
     }
     w.force_merge(1)?;

@@ -18,8 +18,8 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
 use rucene::document::{
-    Document, Field, FieldType, LongPoint, NumericDocValuesField, NumericValue,
-    SortedNumericDocValuesField, Store, StringField, TextField,
+    Document, Field, LongPoint, NumericDocValuesField, NumericValue, SortedNumericDocValuesField,
+    Store, StringField, TextField,
 };
 use rucene::error::Result;
 use rucene::index::directory_reader::{self, DirectoryReader};
@@ -74,7 +74,7 @@ use rucene_test_framework::util::java_exceptions::{java_throwable, rethrow_java}
 use rucene_test_framework::util::lucene_test_case::{AwaitsFix, MAYBE_CACHE_POLICY, TEST_NIGHTLY};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
-use crate::core_search::support::{doc_of, term, CountDownLatch};
+use crate::core_search::support::{field_mut_as, term, CountDownLatch};
 use crate::core_support::hamcrest::assert_has_size;
 use crate::core_support::{
     assert_equals, assert_equals_delta, assert_not_equals, assert_null, class, ram_used_unmodelled,
@@ -287,24 +287,13 @@ fn key_set(queries: &[&Arc<dyn Query>]) -> HashSet<QueryKey> {
 }
 
 /// `new StringField(name, value, Store.NO)`.
-///
-/// The test keeps the field to call `setStringValue` on it, so it is the
-/// `Field` a `StringField` is (see [`doc_of`]).
-fn string_field(name: &str, value: &str) -> Result<Field> {
-    Field::new(
-        name,
-        value.to_string(),
-        FieldType::new_from(StringField::type_not_stored()),
-    )
+fn string_field(name: &str, value: &str) -> Result<StringField> {
+    StringField::new(name, value.to_string(), Store::NO)
 }
 
-/// `new TextField(name, value, Store.NO)` as the `Field` the test keeps.
-fn text_field(name: &str, value: &str) -> Result<Field> {
-    Field::new(
-        name,
-        value.to_string(),
-        FieldType::new_from(TextField::type_not_stored()),
-    )
+/// `new TextField(name, value, Store.NO)`.
+fn text_field(name: &str, value: &str) -> Result<TextField> {
+    TextField::new(name, value.to_string(), Store::NO)
 }
 
 /// `new NumericDocValuesField(name, value)` as a `Field`.
@@ -476,13 +465,18 @@ fn test_concurrency() -> Result<()> {
             Arc::clone(&query_cache),
         );
         threads.push(Thread::unnamed(move || {
-            let mut f = unchecked(string_field("color", ""));
+            let mut doc = Document::new();
+            let f = unchecked(string_field("color", ""));
+            doc.add(Box::new(f));
             let mut i = 0;
             while indexing.load(Ordering::SeqCst) && i < num_docs {
                 let color = *RandomPicks::random_from(&*random(), &["blue", "red", "yellow"]);
-                unchecked(f.set_string_value(color.to_string()));
+                unchecked(
+                    field_mut_as::<StringField>(&mut doc, "color")
+                        .set_string_value(color.to_string()),
+                );
                 let outcome = try_catch("java.lang.Throwable", || {
-                    unchecked(w.add_document(&unchecked(doc_of(&[&f]))));
+                    unchecked(w.add_document(&doc));
                     if (i & 63) == 0 {
                         unchecked(mgr.maybe_refresh());
                         if LuceneTestCase::rarely() {
@@ -580,12 +574,14 @@ fn test_lru_eviction() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
-    let mut f = string_field("color", "blue")?;
-    w.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("red".to_string())?;
-    w.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("green".to_string())?;
-    w.add_document(&doc_of(&[&f])?)?;
+    let mut doc = Document::new();
+    let f = string_field("color", "blue")?;
+    doc.add(Box::new(f));
+    w.add_document(&doc)?;
+    field_mut_as::<StringField>(&mut doc, "color").set_string_value("red".to_string())?;
+    w.add_document(&doc)?;
+    field_mut_as::<StringField>(&mut doc, "color").set_string_value("green".to_string())?;
+    w.add_document(&doc)?;
     let reader = w.get_reader()?;
     let mut searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
     let query_cache = lru(2, 100000, |_| true, f32::INFINITY)?;
@@ -666,10 +662,12 @@ fn test_clear_filter() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
-    let mut f = string_field("color", "")?;
+    let mut doc = Document::new();
+    let f = string_field("color", "")?;
+    doc.add(Box::new(f));
     let num_docs = LuceneTestCase::at_least(10);
     for _ in 0..num_docs {
-        f.set_string_value(
+        field_mut_as::<StringField>(&mut doc, "color").set_string_value(
             (if random().next_boolean() {
                 "red"
             } else {
@@ -677,7 +675,7 @@ fn test_clear_filter() -> Result<()> {
             })
             .to_string(),
         )?;
-        w.add_document(&doc_of(&[&f])?)?;
+        w.add_document(&doc)?;
     }
     let reader = w.get_reader()?;
     let mut searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
@@ -747,13 +745,16 @@ fn test_ram_bytes_used_agrees_with_ram_usage_tester() -> Result<()> {
 
     let colors = ["blue", "red", "green", "yellow"];
 
-    let mut f = string_field("color", "")?;
+    let mut doc = Document::new();
+    let f = string_field("color", "")?;
+    doc.add(Box::new(f));
     let iters = LuceneTestCase::at_least(5);
     for _ in 0..iters {
         let num_docs = LuceneTestCase::at_least(10);
         for _ in 0..num_docs {
-            f.set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
-            w.add_document(&doc_of(&[&f])?)?;
+            field_mut_as::<StringField>(&mut doc, "color")
+                .set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
+            w.add_document(&doc)?;
         }
         {
             let reader = w.get_reader()?;
@@ -1046,11 +1047,14 @@ fn test_on_use() -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let colors = ["red", "blue", "green", "yellow"];
-    let mut f = string_field("color", "")?;
+    let mut doc = Document::new();
+    let f = string_field("color", "")?;
+    doc.add(Box::new(f));
     let num_docs = LuceneTestCase::at_least(10);
     for _ in 0..num_docs {
-        f.set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
-        w.add_document(&doc_of(&[&f])?)?;
+        field_mut_as::<StringField>(&mut doc, "color")
+            .set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
+        w.add_document(&doc)?;
         if random().next_boolean() {
             w.get_reader()?.close()?;
         }
@@ -1113,10 +1117,13 @@ fn test_stats() -> Result<()> {
 
     let colors = ["blue", "red", "green", "yellow"];
 
-    let mut f = string_field("color", "")?;
+    let mut doc = Document::new();
+    let f = string_field("color", "")?;
+    doc.add(Box::new(f));
     for _ in 0..10 {
-        f.set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
-        w.add_document(&doc_of(&[&f])?)?;
+        field_mut_as::<StringField>(&mut doc, "color")
+            .set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
+        w.add_document(&doc)?;
         if random().next_boolean() {
             w.get_reader()?.close()?;
         }
@@ -1297,11 +1304,14 @@ fn test_fine_grained_stats() -> Result<()> {
 
     let colors = ["blue", "red", "green", "yellow"];
 
-    let mut f = string_field("color", "")?;
+    let mut doc = Document::new();
+    let f = string_field("color", "")?;
+    doc.add(Box::new(f));
     for w in [&w1, &w2] {
         for _ in 0..10 {
-            f.set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
-            w.add_document(&doc_of(&[&f])?)?;
+            field_mut_as::<StringField>(&mut doc, "color")
+                .set_string_value(RandomPicks::random_from(&*random(), &colors).to_string())?;
+            w.add_document(&doc)?;
             if random().next_boolean() {
                 w.get_reader()?.close()?;
             }
@@ -1639,8 +1649,10 @@ fn build_random_query(level: i32) -> Result<Arc<dyn Query>> {
 fn test_random() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-    let mut f = text_field("foo", "foo")?;
-    w.add_document(&doc_of(&[&f])?)?;
+    let mut doc = Document::new();
+    let f = text_field("foo", "foo")?;
+    doc.add(Box::new(f));
+    w.add_document(&doc)?;
     let mut reader = w.get_reader()?;
 
     let (max_size, max_ram_bytes_used, iters) = if *TEST_NIGHTLY {
@@ -1669,10 +1681,10 @@ fn test_random() -> Result<()> {
     for i in 0..iters {
         if i == 0 || random().next_int_bound(100) == 1 {
             reader.close()?;
-            f.set_string_value(
+            field_mut_as::<TextField>(&mut doc, "foo").set_string_value(
                 RandomPicks::random_from(&*random(), &["foo", "bar", "bar baz"]).to_string(),
             )?;
-            w.add_document(&doc_of(&[&f])?)?;
+            w.add_document(&doc)?;
             if random().next_boolean() {
                 w.delete_documents_by_query(build_random_query(0)?)?;
             }
@@ -3301,10 +3313,11 @@ fn test_skip_caching_for_range_query() -> Result<()> {
 fn test_count_delegation() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-    let f = string_field("foo", "bar")?;
+    let mut doc = Document::new();
+    doc.add(Box::new(string_field("foo", "bar")?));
     let num_docs = random().next_int_bound(100) + 20;
     for _ in 0..num_docs {
-        w.add_document(&doc_of(&[&f])?)?;
+        w.add_document(&doc)?;
     }
     let reader = w.get_reader()?;
     let mut searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));

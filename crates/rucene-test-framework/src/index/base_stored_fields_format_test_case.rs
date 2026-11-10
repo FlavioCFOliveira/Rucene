@@ -26,14 +26,13 @@
 //! for how a suite runs.
 //!
 //! **Divergences** (declared, each confined to the member named):
-//! * Shared `Field` instances (`testRandomStoredFields`, `testReadSkip`,
-//!   `testConcurrentReads`, `testWriteReadMerge`, `testBigDocuments`): Java
-//!   adds one `Field` object to many documents and mutates its value
-//!   (`setStringValue`, `setIntValue`) between additions. A Rust `Document`
-//!   owns its fields, so the port adds a field of the same name, type and
-//!   value to each document (a field Java builds with `newField` is built
-//!   once, with its random draws, and copied with its randomized type). What
-//!   each document holds when it is indexed is what Java's holds.
+//! * Shared `Field` instances: `testRandomStoredFields`,
+//!   `testConcurrentReads` and `testWriteReadMerge` share or change the
+//!   field Java keeps (`Document::add_shared`, `Document::get_field_mut_as`).
+//!   `testReadSkip` and `testBigDocuments` still add a field of the same
+//!   name, type and value to each document: `testBigDocuments` changes
+//!   `idField` while three live documents hold it, which a `&mut` to a shared
+//!   field cannot express (`Document::get_field_mut`).
 //! * `docs` maps (`testRandomStoredFields`, `testRandomStoredFieldsWithIndexSort`):
 //!   Java's `HashMap<String, Document>` key order decides which document a
 //!   random index picks; the port keeps the expected values in a
@@ -404,11 +403,6 @@ fn stored_values(doc: &Document) -> StoredValues {
         .collect()
 }
 
-/// A copy of `field`: same name, same (randomized) type, value `value`.
-fn copy_field(field: &Field, value: String) -> Result<Field> {
-    Field::new(field.name(), value, field.field_type().clone())
-}
-
 // -----------------------------------------------------------------------------
 // The members
 // -----------------------------------------------------------------------------
@@ -443,7 +437,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let custom_type = FieldType::new_from(TextField::type_stored());
         custom_type.set_tokenized(false)?;
-        let id_field = LuceneTestCase::new_field("id", "", &custom_type);
+        let mut id_field = Arc::new(LuceneTestCase::new_field("id", "", &custom_type));
 
         for i in 0..field_count {
             field_ids.push(i);
@@ -461,7 +455,14 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         for i in 0..doc_count {
             let mut doc = Document::new();
             let id = i.to_string();
-            doc.add(Box::new(copy_field(&id_field, id.clone())?));
+            // `doc.add(idField); idField.setStringValue(id);`: the earlier
+            // documents were indexed and dropped (the port keeps their
+            // expected values, not the documents), so the test holds
+            // `idField` alone again.
+            Arc::get_mut(&mut id_field)
+                .expect("INVARIANT: no live document holds idField")
+                .set_string_value(id.clone())?;
+            doc.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
             if *VERBOSE {
                 println!("TEST: add doc id={id}");
             }
@@ -910,14 +911,14 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_conf)?;
 
         // make sure the readers are properly cloned
+        let mut doc = Document::new();
+        let field = StringField::new("fld", String::new(), Store::YES)?;
+        doc.add(Box::new(field));
         let num_docs = LuceneTestCase::at_least(1000);
         for i in 0..num_docs {
-            let mut doc = Document::new();
-            doc.add(Box::new(StringField::new(
-                "fld",
-                i.to_string(),
-                Store::YES,
-            )?));
+            doc.get_field_mut_as::<StringField>("fld")
+                .expect("field")
+                .set_string_value(i.to_string())?;
             iw.add_document(&doc)?;
         }
         iw.commit()?;
@@ -1038,13 +1039,20 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let ty = FieldType::new_from(StringField::type_stored());
         ty.set_index_options(IndexOptions::NONE)?;
         ty.freeze();
+        let mut id = Arc::new(IntPoint::new("id", &[0])?);
+        let mut id_stored = Arc::new(StoredField::new_number("id", NumericValue::Int(0))?);
         for (i, fields) in data.iter().enumerate() {
             let mut doc = Document::new();
-            doc.add(Box::new(IntPoint::new("id", &[i as i32])?));
-            doc.add(Box::new(StoredField::new_number(
-                "id",
-                NumericValue::Int(i as i32),
-            )?));
+            // The documents that held `id` and `idStored` were indexed and
+            // dropped, so the test holds them alone again.
+            Arc::get_mut(&mut id)
+                .expect("INVARIANT: no live document holds id")
+                .set_int_value(i as i32)?;
+            Arc::get_mut(&mut id_stored)
+                .expect("INVARIANT: no live document holds idStored")
+                .set_int_value(i as i32)?;
+            doc.add_shared(Arc::clone(&id) as Arc<dyn IndexableField>);
+            doc.add_shared(Arc::clone(&id_stored) as Arc<dyn IndexableField>);
             for (j, bytes) in fields.iter().enumerate() {
                 doc.add(Box::new(Field::new_with_bytes(
                     &format!("bytes{j}"),
@@ -1613,14 +1621,14 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
                     let mut stored_doc = Document::new();
                     for field in doc.into_fields() {
                         if field.field_type().stored() {
-                            let stored_field: Box<dyn IndexableField> = match field.string_value() {
+                            let stored_field: Arc<dyn IndexableField> = match field.string_value() {
                                 // Disable indexing
                                 Some(value) => {
-                                    Box::new(StoredField::new_string(field.name(), value)?)
+                                    Arc::new(StoredField::new_string(field.name(), value)?)
                                 }
                                 None => field,
                             };
-                            stored_doc.add(stored_field);
+                            stored_doc.add_shared(stored_field);
                         }
                     }
 

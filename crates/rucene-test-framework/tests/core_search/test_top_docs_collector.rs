@@ -610,20 +610,15 @@ fn test_relation_vs_top_docs_count(_f: &mut TopDocsCollectorTest) -> Result<()> 
     let result = (|| -> Result<()> {
         let w = no_merge_writer(&dir)?;
         let result = (|| -> Result<()> {
-            let doc_of = || -> Result<Document> {
-                let mut doc = Document::new();
-                doc.add(Box::new(TextField::new(
-                    "f",
-                    "foo bar".to_string(),
-                    Store::NO,
-                )?));
-                Ok(doc)
-            };
-            let docs: Vec<Document> = (0..5).map(|_| doc_of()).collect::<Result<_>>()?;
-            w.add_documents(&docs)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(TextField::new(
+                "f",
+                "foo bar".to_string(),
+                Store::NO,
+            )?));
+            w.add_documents(&[&doc, &doc, &doc, &doc, &doc])?;
             w.flush()?;
-            let docs: Vec<Document> = (0..5).map(|_| doc_of()).collect::<Result<_>>()?;
-            w.add_documents(&docs)?;
+            w.add_documents(&[&doc, &doc, &doc, &doc, &doc])?;
             w.flush()?;
 
             let reader = directory_reader::open_with_writer(&*w)?;

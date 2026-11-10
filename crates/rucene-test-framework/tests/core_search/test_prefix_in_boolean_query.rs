@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::{AfterClass, BeforeClass};
-use rucene::document::Store;
+use rucene::document::{Document, Store};
 use rucene::error::Result;
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::search::index_searcher::IndexSearcher;
@@ -22,7 +22,7 @@ use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
 use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::LuceneTestCase;
 
-use crate::core_search::support::{close_dir, close_reader, doc_of, static_hook, term, tq};
+use crate::core_search::support::{close_dir, close_reader, field_mut, static_hook, term, tq};
 use crate::core_support::{assert_equals_msg, class, random, test};
 
 const FIELD: &str = "name";
@@ -60,19 +60,22 @@ fn before_class() -> Result<()> {
     let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
 
-    let mut field = LuceneTestCase::new_string_field(FIELD, "meaninglessnames", Store::NO);
-    for _ in 0..5137 {
-        writer.add_document(&doc_of(&[&field])?)?;
-    }
-    field.set_string_value("tangfulin".to_string())?;
-    writer.add_document(&doc_of(&[&field])?)?;
+    let mut doc = Document::new();
+    let field = LuceneTestCase::new_string_field(FIELD, "meaninglessnames", Store::NO);
+    doc.add(Box::new(field));
 
-    field.set_string_value("meaninglessnames".to_string())?;
-    for _ in 5138..11377 {
-        writer.add_document(&doc_of(&[&field])?)?;
+    for _ in 0..5137 {
+        writer.add_document(&doc)?;
     }
-    field.set_string_value("tangfulin".to_string())?;
-    writer.add_document(&doc_of(&[&field])?)?;
+    field_mut(&mut doc, FIELD).set_string_value("tangfulin".to_string())?;
+    writer.add_document(&doc)?;
+
+    field_mut(&mut doc, FIELD).set_string_value("meaninglessnames".to_string())?;
+    for _ in 5138..11377 {
+        writer.add_document(&doc)?;
+    }
+    field_mut(&mut doc, FIELD).set_string_value("tangfulin".to_string())?;
+    writer.add_document(&doc)?;
 
     let reader = writer.get_reader()?;
     let searcher = Arc::new(LuceneTestCase::new_searcher(Arc::clone(&reader)));

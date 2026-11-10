@@ -79,7 +79,7 @@ use crate::core_support::{
     assert_equals, assert_equals_msg, assert_not_null, assert_null, class_annotated, random,
     shuffle, test, try_catch, verbose,
 };
-use crate::support::{add_doc, as_cms, copy_field, npe, KeepFullyDeletedSegmentsMergePolicy};
+use crate::support::{add_doc, as_cms, npe, KeepFullyDeletedSegmentsMergePolicy};
 
 const ISE: &str = "java.lang.IllegalStateException";
 const IAE: &str = "java.lang.IllegalArgumentException";
@@ -351,15 +351,6 @@ impl DocumentsIterable for DocCopyIterator<'_> {
             upto: 0,
         })
     }
-}
-
-/// A document holding copies of `fields`, in order.
-fn doc_of(fields: &[&Field]) -> Result<Document> {
-    let mut doc = Document::new();
-    for f in fields {
-        doc.add(Box::new(copy_field(f)?));
-    }
-    Ok(doc)
 }
 
 thread_local! {
@@ -1163,14 +1154,26 @@ fn test_documents_writer_exceptions() -> Result<()> {
             .unwrap_or_else(|| npe("LogMergePolicy"));
         lmp.set_merge_factor(lmp.get_merge_factor().max(5))?;
 
-        let contents = LuceneTestCase::new_field("contents", "here are some contents", &CUSTOM5);
-        let doc = doc_of(&[&contents])?;
+        let mut doc = Document::new();
+        doc.add(Box::new(LuceneTestCase::new_field(
+            "contents",
+            "here are some contents",
+            &CUSTOM5,
+        )));
         writer.add_document(&doc)?;
         writer.add_document(&doc)?;
-        let crash = LuceneTestCase::new_field("crash", "this should crash after 4 terms", &CUSTOM5);
-        let other = LuceneTestCase::new_field("other", "this will not get indexed", &CUSTOM5);
-        let final_doc = doc_of(&[&contents, &crash, &other])?;
-        let ioe = expect_throws(IOE, || writer.add_document(&final_doc));
+        doc.add(Box::new(LuceneTestCase::new_field(
+            "crash",
+            "this should crash after 4 terms",
+            &CUSTOM5,
+        )));
+        doc.add(Box::new(LuceneTestCase::new_field(
+            "other",
+            "this will not get indexed",
+            &CUSTOM5,
+        )));
+        let final_doc = &doc;
+        let ioe = expect_throws(IOE, || writer.add_document(final_doc));
         if verbose() {
             println!("TEST: hit expected exception");
             println!("{ioe}");
@@ -1256,13 +1259,23 @@ fn test_documents_writer_exception_fail_one_doc() -> Result<()> {
         ))))?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let body = (|| -> Result<()> {
-            let contents =
-                LuceneTestCase::new_field("contents", "here are some contents", &CUSTOM5);
-            writer.add_document(&doc_of(&[&contents])?)?;
-            let crash =
-                LuceneTestCase::new_field("crash", "this should crash after 4 terms", &CUSTOM5);
-            let other = LuceneTestCase::new_field("other", "this will not get indexed", &CUSTOM5);
-            let doc = doc_of(&[&contents, &crash, &other])?;
+            let mut doc = Document::new();
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "contents",
+                "here are some contents",
+                &CUSTOM5,
+            )));
+            writer.add_document(&doc)?;
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "crash",
+                "this should crash after 4 terms",
+                &CUSTOM5,
+            )));
+            doc.add(Box::new(LuceneTestCase::new_field(
+                "other",
+                "this will not get indexed",
+                &CUSTOM5,
+            )));
             expect_throws(IOE, || writer.add_document(&doc));
             writer.commit()?;
             let reader = directory_reader::open(dir.as_directory())?;
@@ -1317,25 +1330,24 @@ fn test_documents_writer_exception_threads() -> Result<()> {
                 let thread = Thread::unnamed(move || {
                     let outcome = catching(|| {
                         for _ in 0..num_iter {
-                            let contents = LuceneTestCase::new_field(
+                            let mut doc = Document::new();
+                            doc.add(Box::new(LuceneTestCase::new_field(
                                 "contents",
                                 "here are some contents",
                                 &CUSTOM5,
-                            );
-                            let doc = doc_of(&[&contents])?;
+                            )));
                             writer.add_document(&doc)?;
                             writer.add_document(&doc)?;
-                            let crash = LuceneTestCase::new_field(
+                            doc.add(Box::new(LuceneTestCase::new_field(
                                 "crash",
                                 "this should crash after 4 terms",
                                 &CUSTOM5,
-                            );
-                            let other = LuceneTestCase::new_field(
+                            )));
+                            doc.add(Box::new(LuceneTestCase::new_field(
                                 "other",
                                 "this will not get indexed",
                                 &CUSTOM5,
-                            );
-                            let doc = doc_of(&[&contents, &crash, &other])?;
+                            )));
                             expect_throws(IOE, || writer.add_document(&doc));
 
                             if 0 == final_i {
@@ -2264,13 +2276,14 @@ fn test_null_stored_field_reuse() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
     let iw = plain_mock_writer(&dir)?;
     // add good document
-    let mut the_field = Field::new("foo", "hello".to_string(), StoredField::type_().clone())?;
-    let doc = doc_of(&[&the_field])?;
+    let mut doc = Document::new();
+    let the_field = Field::new("foo", "hello".to_string(), StoredField::type_().clone())?;
+    doc.add(Box::new(the_field));
     iw.add_document(&doc)?;
     expect_throws(IAE, || {
         // set to null value
-        the_field.set_string_value(None::<String>)?;
-        iw.add_document(&doc_of(&[&the_field])?)
+        crate::support::field_mut(&mut doc, "foo").set_string_value(None::<String>)?;
+        iw.add_document(&doc)
     });
 
     assert_only_good_doc(&iw, dir)

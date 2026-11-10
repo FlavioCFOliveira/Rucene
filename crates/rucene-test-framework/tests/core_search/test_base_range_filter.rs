@@ -20,7 +20,7 @@ use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
 use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
-use crate::core_search::support::{close_dir, close_reader, copy_field, static_hook};
+use crate::core_search::support::{close_dir, close_reader, field_mut, field_mut_as, static_hook};
 use crate::core_support::{assert_equals_msg, class, random, test};
 
 pub const F: bool = false;
@@ -155,12 +155,35 @@ fn build(
 ) -> Result<Arc<dyn DirectoryReader>> {
     /* build an index */
 
-    // The `Field`s Java keeps and mutates between documents: the randomized
-    // string fields are kept (their type was drawn once); the others carry
-    // no draw and are rebuilt with the current values (see `copy_field`).
-    let mut id_field = LuceneTestCase::new_string_field_with(random, "id", "", Store::YES);
-    let mut rand_field = LuceneTestCase::new_string_field_with(random, "rand", "", Store::YES);
-    let mut body_field = LuceneTestCase::new_string_field_with(random, "body", "", Store::NO);
+    let mut doc = Document::new();
+    let id_field = LuceneTestCase::new_string_field_with(random, "id", "", Store::YES);
+    let id_dv_field = SortedDocValuesField::new("id", BytesRef::new(Vec::new()));
+    let int_id_field = IntPoint::new("id_int", &[0])?;
+    let int_dv_field = NumericDocValuesField::new("id_int", 0);
+    let float_id_field = FloatPoint::new("id_float", &[0.0])?;
+    let float_dv_field = NumericDocValuesField::new("id_float", 0);
+    let long_id_field = LongPoint::new("id_long", &[0])?;
+    let long_dv_field = NumericDocValuesField::new("id_long", 0);
+    let double_id_field = DoublePoint::new("id_double", &[0.0])?;
+    let double_dv_field = NumericDocValuesField::new("id_double", 0);
+    let rand_field = LuceneTestCase::new_string_field_with(random, "rand", "", Store::YES);
+    let rand_dv_field = SortedDocValuesField::new("rand", BytesRef::new(Vec::new()));
+    let body_field = LuceneTestCase::new_string_field_with(random, "body", "", Store::NO);
+    let body_dv_field = SortedDocValuesField::new("body", BytesRef::new(Vec::new()));
+    doc.add(Box::new(id_field));
+    doc.add(Box::new(id_dv_field));
+    doc.add(Box::new(int_id_field));
+    doc.add(Box::new(int_dv_field));
+    doc.add(Box::new(float_id_field));
+    doc.add(Box::new(float_dv_field));
+    doc.add(Box::new(long_id_field));
+    doc.add(Box::new(long_dv_field));
+    doc.add(Box::new(double_id_field));
+    doc.add(Box::new(double_dv_field));
+    doc.add(Box::new(rand_field));
+    doc.add(Box::new(rand_dv_field));
+    doc.add(Box::new(body_field));
+    doc.add(Box::new(body_dv_field));
 
     let config = LuceneTestCase::new_index_writer_config_with(
         random,
@@ -177,7 +200,19 @@ fn build(
         let mut max_count = 0;
 
         for d in MIN_ID..=max_id {
-            id_field.set_string_value(pad(d))?;
+            field_mut(&mut doc, "id").set_string_value(pad(d))?;
+            field_mut_as::<SortedDocValuesField>(&mut doc, "id")
+                .set_bytes_value(BytesRef::from_char_sequence(&pad(d)))?;
+            field_mut_as::<IntPoint>(&mut doc, "id_int").set_int_value(d)?;
+            field_mut_as::<NumericDocValuesField>(&mut doc, "id_int").set_value(i64::from(d));
+            field_mut_as::<FloatPoint>(&mut doc, "id_float").set_float_value(d as f32)?;
+            field_mut_as::<NumericDocValuesField>(&mut doc, "id_float")
+                .set_value(i64::from((d as f32).to_bits() as i32));
+            field_mut_as::<LongPoint>(&mut doc, "id_long").set_long_value(i64::from(d))?;
+            field_mut_as::<NumericDocValuesField>(&mut doc, "id_long").set_value(i64::from(d));
+            field_mut_as::<DoublePoint>(&mut doc, "id_double").set_double_value(f64::from(d))?;
+            field_mut_as::<NumericDocValuesField>(&mut doc, "id_double")
+                .set_value(f64::from(d).to_bits() as i64);
             let r = if index.allow_negative_random_ints {
                 random.next_int()
             } else {
@@ -196,42 +231,12 @@ fn build(
             } else if r == index.min_r {
                 min_count += 1;
             }
-            rand_field.set_string_value(pad(r))?;
-            body_field.set_string_value("body".to_string())?;
-
-            let mut doc = Document::new();
-            doc.add(Box::new(copy_field(&id_field)?));
-            doc.add(Box::new(SortedDocValuesField::new(
-                "id",
-                BytesRef::from_char_sequence(&pad(d)),
-            )));
-            doc.add(Box::new(IntPoint::new("id_int", &[d])?));
-            doc.add(Box::new(NumericDocValuesField::new("id_int", i64::from(d))));
-            doc.add(Box::new(FloatPoint::new("id_float", &[d as f32])?));
-            doc.add(Box::new(NumericDocValuesField::new(
-                "id_float",
-                i64::from((d as f32).to_bits() as i32),
-            )));
-            doc.add(Box::new(LongPoint::new("id_long", &[i64::from(d)])?));
-            doc.add(Box::new(NumericDocValuesField::new(
-                "id_long",
-                i64::from(d),
-            )));
-            doc.add(Box::new(DoublePoint::new("id_double", &[f64::from(d)])?));
-            doc.add(Box::new(NumericDocValuesField::new(
-                "id_double",
-                f64::from(d).to_bits() as i64,
-            )));
-            doc.add(Box::new(copy_field(&rand_field)?));
-            doc.add(Box::new(SortedDocValuesField::new(
-                "rand",
-                BytesRef::from_char_sequence(&pad(r)),
-            )));
-            doc.add(Box::new(copy_field(&body_field)?));
-            doc.add(Box::new(SortedDocValuesField::new(
-                "body",
-                BytesRef::from_char_sequence("body"),
-            )));
+            field_mut(&mut doc, "rand").set_string_value(pad(r))?;
+            field_mut_as::<SortedDocValuesField>(&mut doc, "rand")
+                .set_bytes_value(BytesRef::from_char_sequence(&pad(r)))?;
+            field_mut(&mut doc, "body").set_string_value("body".to_string())?;
+            field_mut_as::<SortedDocValuesField>(&mut doc, "body")
+                .set_bytes_value(BytesRef::from_char_sequence("body"))?;
             writer.add_document(&doc)?;
         }
 

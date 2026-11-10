@@ -26,14 +26,6 @@
 //! for how a suite runs.
 //!
 //! **Divergences** (declared, each confined to the member named):
-//! * [`RandomTokenStream`] / [`RandomDocument`]: Java's `RandomDocument`
-//!   holds the token streams it indexes, and `toDocument()` puts them in its
-//!   fields. A Rust token stream lives behind an `Rc` (its attribute source
-//!   is single-threaded) while a `RandomDocument` crosses threads
-//!   (`testClone`), so the document keeps each stream's random data
-//!   ([`RandomTokenStreamData`], drawn once by the constructor, as Java's)
-//!   and `toDocument()` builds a stream over it. A stream is reset before it
-//!   is consumed, so what each indexing reads is what Java's reads.
 //! * The `ThreadLocal<PostingsEnum> docsEnum` "to test reuse" is set and
 //!   never read in Java; the port keeps it as a thread-local slot.
 //! * `testPostingsEnumFreqs`: Java checks `docsOnly.freq()` after reusing
@@ -555,7 +547,7 @@ pub fn random_payload() -> Option<BytesRef> {
 
 /// Port of `BaseTermVectorsFormatTestCase.RandomTokenStream`: produces a
 /// random `TokenStream` based off of provided terms (over the data a
-/// [`RandomTokenStreamData`] drew; see the module docs).
+/// [`RandomTokenStreamData`] drew).
 #[derive(Debug)]
 pub struct RandomTokenStream {
     data: Arc<RandomTokenStreamData>,
@@ -659,7 +651,7 @@ impl TokenStream for RandomTokenStream {
 pub struct RandomDocument {
     field_names: Vec<String>,
     field_types: Vec<FieldType>,
-    token_streams: Vec<Arc<RandomTokenStreamData>>,
+    token_streams: Vec<Arc<AtomicRefCell<RandomTokenStream>>>,
 }
 
 impl RandomDocument {
@@ -696,11 +688,11 @@ impl RandomDocument {
             }
             used_file_names.insert(name.clone());
             names.push(name);
-            token_streams.push(Arc::new(RandomTokenStreamData::new(
+            token_streams.push(Arc::new(AtomicRefCell::new(RandomTokenStream::new(
                 TestUtil::next_int(&*random(), 1, max_term_count),
                 sample_terms,
                 sample_term_bytes,
-            )));
+            ))));
         }
         Ok(RandomDocument {
             field_names: names,
@@ -713,9 +705,10 @@ impl RandomDocument {
     pub fn to_document(&self) -> Document {
         let mut doc = Document::new();
         for i in 0..self.field_names.len() {
-            let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
-                RandomTokenStream::over(Arc::clone(&self.token_streams[i])),
-            ));
+            // The document's own stream, as Java's `new Field(fieldNames[i],
+            // tokenStreams[i], fieldTypes[i])` (`BaseTermVectorsFormatTestCase.java:373-378`).
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+                Arc::clone(&self.token_streams[i]) as _;
             doc.add(Box::new(
                 Field::new_with_token_stream(
                     &self.field_names[i],
@@ -843,9 +836,10 @@ fn assert_doc_equals(
 
     for i in 0..doc.field_names.len() {
         let terms = fields.terms(&doc.field_names[i])?;
+        let stream = doc.token_streams[i].borrow();
         assert_tk_equals(
             read_past,
-            &doc.token_streams[i],
+            stream.data(),
             &doc.field_types[i],
             terms.as_deref(),
         )?;

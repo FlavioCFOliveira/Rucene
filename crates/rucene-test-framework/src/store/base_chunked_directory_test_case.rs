@@ -33,7 +33,7 @@ use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::reflect::{modifier, Class};
 use randomizedtesting::junit::Assert;
-use rucene::document::{Document, Field, FieldType, Store};
+use rucene::document::{Document, Field, Store};
 use rucene::error::Result;
 use rucene::store::java_nio_file::Path;
 use rucene::store::{Directory, IndexInput, DEFAULT_IO_CONTEXT};
@@ -415,18 +415,20 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
         )));
         config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let writer = RandomIndexWriter::new_with_config(random, dir.as_directory(), config)?;
-        // Java adds the same two fields to one document and changes their
-        // values; the port's document owns its fields, so each document
-        // holds copies of the two fields with the values Java sets.
+        let mut doc = Document::new();
         let docid = LuceneTestCase::new_string_field("docid", "0", Store::YES);
         let junk = LuceneTestCase::new_string_field("junk", "", Store::YES);
+        doc.add(Box::new(docid));
+        doc.add(Box::new(junk));
+
         let num_docs = 100;
         for i in 0..num_docs {
-            let docid = copy_field(&docid, i.to_string())?;
-            let junk = copy_field(&junk, TestUtil::random_unicode_string(random))?;
-            let mut doc = Document::new();
-            doc.add(Box::new(docid));
-            doc.add(Box::new(junk));
+            doc.get_field_mut_as::<Field>("docid")
+                .expect("docid")
+                .set_string_value(i.to_string())?;
+            doc.get_field_mut_as::<Field>("junk")
+                .expect("junk")
+                .set_string_value(TestUtil::random_unicode_string(random))?;
             writer.add_document(&doc)?;
         }
         let reader = writer.get_reader()?;
@@ -567,12 +569,6 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
         })();
         result.and(dir.close())
     }
-}
-
-/// `field.setStringValue(value)` on the port's owned fields: a field with
-/// `field`'s name and type and the new value.
-fn copy_field(field: &Field, value: String) -> Result<Field> {
-    Field::new(field.name(), value, FieldType::new_from(field.field_type()))
 }
 
 /// `assertSlice(byte[] bytes, IndexInput slicer, int outerSliceStart, int

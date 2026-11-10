@@ -402,7 +402,7 @@ macro_rules! range_field {
             fn token_stream(
                 &self,
                 _analyzer: Option<&dyn Analyzer>,
-                _reuse: Option<Box<dyn TokenStream>>,
+                _reuse: &mut Option<Box<dyn TokenStream>>,
             ) -> Result<Box<dyn TokenStream>> {
                 let value = self
                     .binary_value()
@@ -642,6 +642,13 @@ impl std::fmt::Display for BinaryRangeDocValuesField {
 }
 
 impl IndexableField for BinaryRangeDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.field
     }
@@ -653,7 +660,7 @@ impl IndexableField for BinaryRangeDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(self.binary_value()).unwrap(),

@@ -4262,7 +4262,7 @@ mod tests {
         fn token_stream(
             &self,
             _analyzer: Option<&dyn Analyzer>,
-            _reuse: Option<Box<dyn TokenStream>>,
+            _reuse: &mut Option<Box<dyn TokenStream>>,
         ) -> Result<Box<dyn TokenStream>> {
             Ok(Box::new(
                 crate::analysis::StringTokenStream::new(String::new()).unwrap(),

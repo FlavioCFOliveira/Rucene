@@ -8,7 +8,7 @@ use std::sync::Arc;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
-use rucene::document::{Field, FieldType, Store, TextField};
+use rucene::document::{Document, Store, TextField};
 use rucene::error::Result;
 use rucene::index::directory_reader;
 use rucene::index::multi_reader::MultiReader;
@@ -28,7 +28,7 @@ use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
 use rucene_test_framework::search::random_approximation_query::RandomApproximationQuery;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
-use crate::core_search::support::{doc_of, term, tq};
+use crate::core_search::support::{field_mut_as, term, tq};
 use crate::core_search::test_boost_query::assert_query_equals;
 use crate::core_support::{
     assert_equals, assert_equals_delta, assert_equals_msg, class, random, test,
@@ -226,8 +226,10 @@ fn test_one_clause_rewrite_optimization() -> Result<()> {
 fn test_single_filter_clause() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
+    let mut doc = Document::new();
     let f = LuceneTestCase::new_text_field("field", "a", Store::NO);
-    w.add_document(&doc_of(&[&f])?)?;
+    doc.add(Box::new(f));
+    w.add_document(&doc)?;
     w.commit()?;
 
     let reader = w.get_reader()?;
@@ -688,29 +690,20 @@ impl IndexSearcherOverrides for NoRewriteSearcher {
 fn test_random() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-    // `new TextField("body", "a b c", Store.NO)`, held as the `Field` of the
-    // same type so that it can be reused through `setStringValue`; see
-    // `support::copy_field` for the divergence.
-    let mut f = Field::new(
-        "body",
-        "a b c".to_string(),
-        FieldType::new_from(TextField::type_not_stored()),
-    )?;
-    let add = |f: &Field| -> Result<()> {
-        w.add_document(&doc_of(&[f])?)?;
-        Ok(())
-    };
-    add(&f)?;
-    f.set_string_value(String::new())?;
-    add(&f)?;
-    f.set_string_value("a b".to_string())?;
-    add(&f)?;
-    f.set_string_value("b c".to_string())?;
-    add(&f)?;
-    f.set_string_value("a".to_string())?;
-    add(&f)?;
-    f.set_string_value("c".to_string())?;
-    add(&f)?;
+    let mut doc = Document::new();
+    let f = TextField::new("body", "a b c".to_string(), Store::NO)?;
+    doc.add(Box::new(f));
+    w.add_document(&doc)?;
+    field_mut_as::<TextField>(&mut doc, "body").set_string_value(String::new())?;
+    w.add_document(&doc)?;
+    field_mut_as::<TextField>(&mut doc, "body").set_string_value("a b".to_string())?;
+    w.add_document(&doc)?;
+    field_mut_as::<TextField>(&mut doc, "body").set_string_value("b c".to_string())?;
+    w.add_document(&doc)?;
+    field_mut_as::<TextField>(&mut doc, "body").set_string_value("a".to_string())?;
+    w.add_document(&doc)?;
+    field_mut_as::<TextField>(&mut doc, "body").set_string_value("c".to_string())?;
+    w.add_document(&doc)?;
     let num_random_docs = LuceneTestCase::at_least(3);
     for _i in 0..num_random_docs {
         let num_terms = random().next_int_bound(20);
@@ -719,8 +712,8 @@ fn test_random() -> Result<()> {
             text.push((b'a' + random().next_int_bound(4) as u8) as char);
             text.push(' ');
         }
-        f.set_string_value(text)?;
-        add(&f)?;
+        field_mut_as::<TextField>(&mut doc, "body").set_string_value(text)?;
+        w.add_document(&doc)?;
     }
     let reader = w.get_reader()?;
     w.close()?;

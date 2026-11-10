@@ -6,9 +6,9 @@
 //! * `MockIndexWriter` and the other `IndexWriter` subclasses are
 //!   [`IndexWriterOverrides`] implementations installed with
 //!   `IndexWriter::set_overrides`.
-//! * Fields whose value Java changes after `doc.add` are kept by the test and
-//!   the document is rebuilt from copies of them before each `addDocument`
-//!   (guide section 6).
+//! * Fields whose value Java changes after `doc.add` are changed in place
+//!   through the document (`support::field_mut`, `Document::get_field_mut_as`;
+//!   guide section 6).
 
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::{HashMap, HashSet};
@@ -121,7 +121,7 @@ use crate::core_support::{
     assert_null, class, random, test, verbose, IAE,
 };
 use crate::support::{
-    add_doc, add_doc_with_index, assert_no_unreferenced_files, assert_null_msg, copy_field, npe,
+    add_doc, add_doc_with_index, assert_no_unreferenced_files, assert_null_msg, field_mut, npe,
     set_check_index_on_close, CountDownLatch, KeepFullyDeletedSegmentsMergePolicy,
 };
 
@@ -1523,40 +1523,42 @@ impl IndexerThreadInterrupt {
             let writer = IndexWriter::new(dir.as_directory(), conf)?;
             *w = Some(Arc::clone(&writer));
 
-            let mut id_field = LuceneTestCase::new_string_field_with(random, "id", "", Store::NO);
-            // The placeholders `new BinaryDocValuesField("binarydv", newBytesRef())`,
-            // `new SortedDocValuesField("sorteddv", newBytesRef())` and
-            // `new SortedSetDocValuesField("sortedsetdv", newBytesRef())`: the
-            // document is rebuilt with each value before it is indexed.
-            LuceneTestCase::new_bytes_ref();
-            LuceneTestCase::new_bytes_ref();
-            LuceneTestCase::new_bytes_ref();
-            let text_field = LuceneTestCase::new_field_with(
+            let mut doc = Document::new();
+            let id_field = LuceneTestCase::new_string_field_with(random, "id", "", Store::NO);
+            let binary_dv_field =
+                BinaryDocValuesField::new("binarydv", LuceneTestCase::new_bytes_ref());
+            let numeric_dv_field = NumericDocValuesField::new("numericdv", 0);
+            let sorted_dv_field =
+                SortedDocValuesField::new("sorteddv", LuceneTestCase::new_bytes_ref());
+            let sorted_set_dv_field =
+                SortedSetDocValuesField::new("sortedsetdv", LuceneTestCase::new_bytes_ref());
+            doc.add(Box::new(id_field));
+            doc.add(Box::new(LuceneTestCase::new_field_with(
                 random,
                 "field",
                 NewFieldValue::String("some text contents".to_string()),
                 &stored_text_type(),
-            );
+            )));
+            doc.add(Box::new(binary_dv_field));
+            doc.add(Box::new(numeric_dv_field));
+            doc.add(Box::new(sorted_dv_field));
+            doc.add(Box::new(sorted_set_dv_field));
             for i in 0..100 {
                 // log.println("\nTEST: i=" + i);
-                id_field.set_string_value(i.to_string())?;
-                let id = id_field.string_value().unwrap_or_default();
-                let binary_dv = LuceneTestCase::new_bytes_ref_str(&id);
-                let sorted_dv = LuceneTestCase::new_bytes_ref_str(&id);
-                let sorted_set_dv = LuceneTestCase::new_bytes_ref_str(&id);
-                let mut doc = Document::new();
-                doc.add(Box::new(copy_field(&id_field)?));
-                doc.add(Box::new(copy_field(&text_field)?));
-                doc.add(Box::new(BinaryDocValuesField::new("binarydv", binary_dv)));
-                doc.add(Box::new(NumericDocValuesField::new(
-                    "numericdv",
-                    i64::from(i),
-                )));
-                doc.add(Box::new(SortedDocValuesField::new("sorteddv", sorted_dv)));
-                doc.add(Box::new(SortedSetDocValuesField::new(
-                    "sortedsetdv",
-                    sorted_set_dv,
-                )));
+                field_mut(&mut doc, "id").set_string_value(i.to_string())?;
+                let id = field_mut(&mut doc, "id").string_value().unwrap_or_default();
+                doc.get_field_mut_as::<BinaryDocValuesField>("binarydv")
+                    .expect("binaryDVField")
+                    .set_bytes_value(LuceneTestCase::new_bytes_ref_str(&id))?;
+                doc.get_field_mut_as::<NumericDocValuesField>("numericdv")
+                    .expect("numericDVField")
+                    .set_value(i64::from(i));
+                doc.get_field_mut_as::<SortedDocValuesField>("sorteddv")
+                    .expect("sortedDVField")
+                    .set_bytes_value(LuceneTestCase::new_bytes_ref_str(&id))?;
+                doc.get_field_mut_as::<SortedSetDocValuesField>("sortedsetdv")
+                    .expect("sortedSetDVField")
+                    .set_bytes_value(LuceneTestCase::new_bytes_ref_str(&id))?;
                 let action = random.next_int_bound(100);
                 if action == 17 {
                     writer.add_indexes_dirs(&[self.adder.as_directory()])?;
@@ -1805,7 +1807,7 @@ impl IndexableField for TokenizerField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(shared(&self.tokenizer))
     }
@@ -2483,19 +2485,26 @@ fn test_wicked_long_term() -> Result<()> {
     // and search on that term:
     let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_tokenized(false)?;
-    let mut content_field = Field::new("content", String::new(), custom_type)?;
+    let mut doc = Document::new();
+    let content_field = Field::new("content", String::new(), custom_type)?;
+    doc.add(Box::new(content_field));
 
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_codec(TestUtil::get_default_codec())?;
 
     let w2 = RandomIndexWriter::new_with_config(&*random(), Arc::clone(&d), iwc)?;
 
-    for value in ["other", "term", big_term.as_str(), "zzz"] {
-        content_field.set_string_value(value.to_string())?;
-        let mut doc = Document::new();
-        doc.add(Box::new(copy_field(&content_field)?));
-        w2.add_document(&doc)?;
-    }
+    field_mut(&mut doc, "content").set_string_value("other".to_string())?;
+    w2.add_document(&doc)?;
+
+    field_mut(&mut doc, "content").set_string_value("term".to_string())?;
+    w2.add_document(&doc)?;
+
+    field_mut(&mut doc, "content").set_string_value(big_term.clone())?;
+    w2.add_document(&doc)?;
+
+    field_mut(&mut doc, "content").set_string_value("zzz".to_string())?;
+    w2.add_document(&doc)?;
 
     let reader = w2.get_reader()?;
     w2.close()?;
@@ -2884,12 +2893,13 @@ fn test_dont_invoke_analyzer_for_un_analyzed_fields() -> Result<()> {
     custom_type.set_store_term_vectors(true)?;
     custom_type.set_store_term_vector_positions(true)?;
     custom_type.set_store_term_vector_offsets(true)?;
-    let f = LuceneTestCase::new_field("field", "abcd", &custom_type);
-    doc.add(Box::new(copy_field(&f)?));
-    doc.add(Box::new(copy_field(&f)?));
+    let f: Arc<dyn IndexableField> =
+        Arc::new(LuceneTestCase::new_field("field", "abcd", &custom_type));
+    doc.add_shared(Arc::clone(&f));
+    doc.add_shared(Arc::clone(&f));
     let f2 = LuceneTestCase::new_field("field", "", &custom_type);
     doc.add(Box::new(f2));
-    doc.add(Box::new(f));
+    doc.add_shared(f);
     w.add_document(&doc)?;
     w.close()?;
     drop(d);

@@ -1104,7 +1104,7 @@ impl IndexableField for LongColumnAdapter<'_> {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn crate::analysis::Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         // `invertable_type()` answers `None`, so the inverter never asks a long
         // column for a stream; Java's adapter does not override `tokenStream`
@@ -1346,7 +1346,7 @@ impl IndexableField for BinaryColumnAdapter<'_> {
     fn token_stream(
         &self,
         analyzer: Option<&dyn crate::analysis::Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         match &self.source {
             // Caller-supplied token stream: hand it straight to the inverter,

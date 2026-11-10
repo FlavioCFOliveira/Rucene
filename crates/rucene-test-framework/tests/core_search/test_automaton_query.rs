@@ -5,7 +5,7 @@ use std::sync::Arc;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
-use rucene::document::{Field, Store};
+use rucene::document::{Document, Field, Store};
 use rucene::error::Result;
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::index::multi_fields::MultiTerms;
@@ -28,7 +28,7 @@ use rucene_test_framework::util::lucene_test_case::{TestDirectory, TEST_NIGHTLY}
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_search::support::{
-    doc_of, fixture_class, ftest, set_up, tear_down, CountDownLatch,
+    field_mut, fixture_class, ftest, set_up, tear_down, CountDownLatch,
 };
 use crate::core_support::{assert_equals, det, random, verbose};
 
@@ -71,14 +71,18 @@ pub fn class_def() -> Arc<Class> {
 pub fn index_values(f: &mut AutomatonFixture, initial: &str, values: &[&str]) -> Result<()> {
     let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
+    let mut doc = Document::new();
     let title_field = LuceneTestCase::new_text_field("title", "some title", Store::NO);
-    let mut field: Field = LuceneTestCase::new_text_field(FN, initial, Store::NO);
+    let field: Field = LuceneTestCase::new_text_field(FN, initial, Store::NO);
     let footer_field = LuceneTestCase::new_text_field("footer", "a footer", Store::NO);
+    doc.add(Box::new(title_field));
+    doc.add(Box::new(field));
+    doc.add(Box::new(footer_field));
     for (i, value) in values.iter().enumerate() {
         if i > 0 || initial != *value {
-            field.set_string_value(value.to_string())?;
+            field_mut(&mut doc, FN).set_string_value(value.to_string())?;
         }
-        writer.add_document(&doc_of(&[&title_field, &field, &footer_field])?)?;
+        writer.add_document(&doc)?;
     }
     let reader = writer.get_reader()?;
     f.searcher = Some(LuceneTestCase::new_searcher(Arc::clone(&reader)));

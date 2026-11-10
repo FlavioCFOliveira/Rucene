@@ -1,10 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestDocValuesIndexing.java`.
 //!
 //! Tests DocValues integration into IndexWriter
-//!
-//! * A Java `Field` added to a document twice, or whose `BytesRef` array is
-//!   changed after `doc.add`, is a second field built from the same value
-//!   (guide section 6): Rucene's `Document` owns its fields.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -290,16 +286,16 @@ fn test_add_indexes() -> Result<()> {
 fn test_multi_valued_doc_values_field() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
-    // `Field f = new NumericDocValuesField("field", 17); doc.add(f);`
-    let doc = doc_of(vec![ndv("field", 17)]);
+    let mut doc = Document::new();
+    let f: Arc<dyn IndexableField> = Arc::new(NumericDocValuesField::new("field", 17));
+    doc.add_shared(Arc::clone(&f));
 
     // add the doc
     w.add_document(&doc)?;
 
     // Index doc values are single-valued so we should not
     // be able to add same field more than once:
-    // `doc.add(f)`: the same field a second time.
-    let doc = doc_of(vec![ndv("field", 17), ndv("field", 17)]);
+    doc.add_shared(f);
     expect_throws(IAE, || w.add_document(&doc));
 
     let r = w.get_reader()?;
@@ -313,12 +309,12 @@ fn test_multi_valued_doc_values_field() -> Result<()> {
 fn test_different_typed_doc_values_field() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
-    let doc = doc_of(vec![ndv("field", 17)]);
+    let mut doc = doc_of(vec![ndv("field", 17)]);
     w.add_document(&doc)?;
 
     // Index doc values are single-valued so we should not
     // be able to add same field more than once:
-    let doc = doc_of(vec![ndv("field", 17), bdv("field", "blah")]);
+    doc.add(bdv("field", "blah"));
     expect_throws(IAE, || w.add_document(&doc));
 
     let r = w.get_reader()?;
@@ -332,12 +328,12 @@ fn test_different_typed_doc_values_field() -> Result<()> {
 fn test_different_typed_doc_values_field2() -> Result<()> {
     let mut d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
-    let doc = doc_of(vec![ndv("field", 17)]);
+    let mut doc = doc_of(vec![ndv("field", 17)]);
     w.add_document(&doc)?;
 
     // Index doc values are single-valued so we should not
     // be able to add same field more than once:
-    let doc = doc_of(vec![ndv("field", 17), sdv("field", "hello")]);
+    doc.add(sdv("field", "hello"));
     expect_throws(IAE, || w.add_document(&doc));
 
     let r = w.get_reader()?;
@@ -357,18 +353,17 @@ fn test_length_prefix_across_two_pages() -> Result<()> {
     )?;
     let mut bytes = vec![0u8; 32764];
     // `BytesRef b = new BytesRef(); b.bytes = bytes; b.length = bytes.length;`:
-    // `b` shares `bytes`, so each document holds the array as it is when the
-    // document is added.
-    let doc = doc_of(vec![Box::new(SortedDocValuesField::new(
+    // `b` aliases `bytes`. A Rust `BytesRef` owns its bytes, so the change to
+    // the array reaches the document's own field through `setBytesValue`.
+    let mut doc = doc_of(vec![Box::new(SortedDocValuesField::new(
         "field",
         BytesRef::new(bytes.clone()),
     ))]);
     w.add_document(&doc)?;
     bytes[0] = 1;
-    let doc = doc_of(vec![Box::new(SortedDocValuesField::new(
-        "field",
-        BytesRef::new(bytes.clone()),
-    ))]);
+    doc.get_field_mut_as::<SortedDocValuesField>("field")
+        .expect("the SortedDocValuesField")
+        .set_bytes_value(BytesRef::new(bytes.clone()))?;
     w.add_document(&doc)?;
     w.force_merge(1)?;
     let r = directory_reader::open_with_writer(w.as_ref())?;
@@ -465,9 +460,8 @@ fn test_mixed_types_different_documents() -> Result<()> {
 /// The body `testAddSortedTwice`, `testAddBinaryTwice` and
 /// `testAddNumericTwice` share: `first` alone is accepted, `first` and
 /// `second` together are not.
-fn add_twice<V: Clone>(
-    first_value: impl FnOnce() -> V,
-    first: impl Fn(V) -> Box<dyn IndexableField>,
+fn add_twice(
+    first: impl FnOnce() -> Box<dyn IndexableField>,
     second: impl FnOnce() -> Box<dyn IndexableField>,
 ) -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
@@ -476,13 +470,10 @@ fn add_twice<V: Clone>(
     // we don't use RandomIndexWriter because it might add more docvalues than we expect !!!!1
     let iwc = log_mp_iwc(analyzer)?;
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
-    let value = first_value();
-    let doc = doc_of(vec![first(value.clone())]);
+    let mut doc = doc_of(vec![first()]);
     iwriter.add_document(&doc)?;
 
-    // `doc.add(second)`: the document now holds both fields. The first is
-    // rebuilt from the same value; building it draws nothing.
-    let doc = doc_of(vec![first(value), second()]);
+    doc.add(second());
     expect_throws(IAE, || iwriter.add_document(&doc));
 
     assert_one_doc(&iwriter)?;
@@ -493,8 +484,12 @@ fn add_twice<V: Clone>(
 /// Port of `TestDocValuesIndexing.testAddSortedTwice`.
 fn test_add_sorted_twice() -> Result<()> {
     add_twice(
-        || LuceneTestCase::new_bytes_ref_str("foo!"),
-        |foo| Box::new(SortedDocValuesField::new("dv", foo)),
+        || {
+            Box::new(SortedDocValuesField::new(
+                "dv",
+                LuceneTestCase::new_bytes_ref_str("foo!"),
+            ))
+        },
         || sdv("dv", "bar!"),
     )
 }
@@ -502,15 +497,19 @@ fn test_add_sorted_twice() -> Result<()> {
 /// Port of `TestDocValuesIndexing.testAddBinaryTwice`.
 fn test_add_binary_twice() -> Result<()> {
     add_twice(
-        || LuceneTestCase::new_bytes_ref_str("foo!"),
-        |foo| Box::new(BinaryDocValuesField::new("dv", foo)),
+        || {
+            Box::new(BinaryDocValuesField::new(
+                "dv",
+                LuceneTestCase::new_bytes_ref_str("foo!"),
+            ))
+        },
         || bdv("dv", "bar!"),
     )
 }
 
 /// Port of `TestDocValuesIndexing.testAddNumericTwice`.
 fn test_add_numeric_twice() -> Result<()> {
-    add_twice(|| 1, |v| ndv("dv", v), || ndv("dv", 2))
+    add_twice(|| ndv("dv", 1), || ndv("dv", 2))
 }
 
 /// The body `testTooLargeSortedBytes` and `testTooLargeTermSortedSetBytes`
@@ -969,7 +968,7 @@ impl IndexableField for ThrowingTokenStreamField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(ThrowingTokenStream {
             source: AttributeSource::new(),

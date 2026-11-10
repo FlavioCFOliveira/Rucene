@@ -6,7 +6,7 @@ use std::sync::Arc;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
-use rucene::document::Store;
+use rucene::document::{Document, Store};
 use rucene::error::Result;
 use rucene::index::Term;
 use rucene::search::term_query::TermQuery;
@@ -16,7 +16,7 @@ use rucene_test_framework::util::java_exceptions::rethrow_java;
 use rucene_test_framework::util::lucene_test_case::TEST_NIGHTLY;
 use rucene_test_framework::util::LuceneTestCase;
 
-use crate::core_search::support::doc_of;
+use crate::core_search::support::field_mut;
 use crate::core_support::{class, random, test, verbose};
 
 /// `TestSearchWithThreads`.
@@ -44,9 +44,9 @@ fn test_search_with_threads() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
-    // `Document doc` holding `Field body`: rebuilt from `body` for each
-    // `addDocument`.
-    let mut body = LuceneTestCase::new_text_field("body", "", Store::NO);
+    let mut doc = Document::new();
+    let body = LuceneTestCase::new_text_field("body", "", Store::NO);
+    doc.add(Box::new(body));
     let mut sb = String::new();
     for _doc_count in 0..num_docs {
         let num_terms = random().next_int_bound(10);
@@ -58,8 +58,8 @@ fn test_search_with_threads() -> Result<()> {
             });
             sb.push(' ');
         }
-        body.set_string_value(sb.clone())?;
-        w.add_document(&doc_of(&[&body])?)?;
+        field_mut(&mut doc, "body").set_string_value(sb.clone())?;
+        w.add_document(&doc)?;
         sb.clear();
     }
     let r = w.get_reader()?;

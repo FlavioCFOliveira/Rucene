@@ -135,6 +135,12 @@ pub fn before_class() -> Result<()> {
         directory.as_directory(),
         Arc::clone(&analyzer) as Arc<dyn Analyzer>,
     )?;
+    let mut doc = Document::new();
+    let id = StringField::new("id", String::new(), Store::NO)?;
+    let field = TextField::new("field", String::new(), Store::NO)?;
+    doc.add(Box::new(id));
+    doc.add(Box::new(field));
+
     // index some docs
     let num_docs = if *TEST_NIGHTLY {
         LuceneTestCase::at_least(1000)
@@ -142,16 +148,12 @@ pub fn before_class() -> Result<()> {
         LuceneTestCase::at_least(100)
     };
     for i in 0..num_docs {
-        // Java changes the values of the document's two fields; the port's
-        // document owns its fields, so each document gets fresh ones (their
-        // construction draws no randomness).
-        let mut doc = Document::new();
-        doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-        doc.add(Box::new(TextField::new(
-            "field",
-            random_field_contents(),
-            Store::NO,
-        )?));
+        doc.get_field_mut_as::<StringField>("id")
+            .expect("id")
+            .set_string_value(i.to_string())?;
+        doc.get_field_mut_as::<TextField>("field")
+            .expect("field")
+            .set_string_value(random_field_contents())?;
         iw.add_document(&doc)?;
     }
 

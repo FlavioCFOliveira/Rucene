@@ -6,11 +6,6 @@
 //! `TestFieldCacheRewriteMethod extends TestRegexpRandom2` and overrides
 //! `assertSame`: the fixture is generic over [`AssertSame`], the overridable
 //! method, and the subclass reuses `setUp`, `tearDown` and `testRegexps`.
-//!
-//! `setUp` reuses one `Field` and one `SortedDocValuesField` across the
-//! documents it adds (`setStringValue`/`setBytesValue`); a Rucene
-//! `Document` owns its fields, so each document is rebuilt from the mutated
-//! field and the current doc-values bytes, without drawing again.
 
 use std::any::Any;
 use std::fmt;
@@ -44,8 +39,8 @@ use rucene_test_framework::util::lucene_test_case::{TestDirectory, VERBOSE};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_search::support::{
-    close_dir, close_reader, copy_field, fixture_class, ftest, object_to_string, set_up, tear_down,
-    term,
+    close_dir, close_reader, field_mut, field_mut_as, fixture_class, ftest, object_to_string,
+    set_up, tear_down, term,
 };
 use crate::core_support::{det, random};
 
@@ -130,25 +125,21 @@ fn regexp_random2_set_up<V>(f: &mut RegexpRandom2Fixture<V>) -> Result<()> {
     let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
-    let mut field: Field = LuceneTestCase::new_string_field(&f.field_name, "", Store::NO);
-    // `Field dvField = new SortedDocValuesField(fieldName, newBytesRef())`.
-    let mut dv_value: BytesRef = LuceneTestCase::new_bytes_ref();
+    let mut doc = Document::new();
+    let field: Field = LuceneTestCase::new_string_field(&f.field_name, "", Store::NO);
+    doc.add(Box::new(field));
+    let dv_field = SortedDocValuesField::new(&f.field_name, LuceneTestCase::new_bytes_ref());
+    doc.add(Box::new(dv_field));
     let mut terms: Vec<String> = Vec::new();
     let num = LuceneTestCase::at_least(200);
     for _ in 0..num {
         let s = TestUtil::random_unicode_string(&*random());
-        field.set_string_value(s.clone())?;
-        dv_value = LuceneTestCase::new_bytes_ref_str(&s); // dvField.setBytesValue
+        field_mut(&mut doc, &f.field_name).set_string_value(s.clone())?;
+        field_mut_as::<SortedDocValuesField>(&mut doc, &f.field_name)
+            .set_bytes_value(LuceneTestCase::new_bytes_ref_str(&s))?;
         terms.push(s);
-        let mut doc = Document::new();
-        doc.add(Box::new(copy_field(&field)?));
-        doc.add(Box::new(SortedDocValuesField::new(
-            &f.field_name,
-            dv_value.clone(),
-        )));
         writer.add_document(&doc)?;
     }
-    drop(dv_value);
 
     if *VERBOSE {
         // utf16 order

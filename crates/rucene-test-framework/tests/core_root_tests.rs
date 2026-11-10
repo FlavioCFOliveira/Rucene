@@ -285,12 +285,6 @@ fn custom_per_field_codec() -> AssertingCodec {
 /// `TestExternalCodecs.testPerFieldCodec()`: tests storing "id" and
 /// "field2" fields as pulsing codec, whose term sort is backwards unicode
 /// code point, and storing "field1" as a custom entirely-in-RAM codec.
-///
-/// **Divergence from Lucene 10.5.0.** Java adds `idField` to the document
-/// once and changes its value with `setStringValue` before each
-/// `addDocument`; Rucene's `Document` owns its fields, so each iteration
-/// replaces the document's "id" field by one of the same type carrying the
-/// new value, last in the document as Java's.
 fn external_codecs_test_per_field_codec() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(173);
     if *VERBOSE {
@@ -323,13 +317,12 @@ fn external_codecs_test_per_field_codec() -> Result<()> {
     doc.add(Box::new(field2));
 
     let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
-    let id_type = id_field.field_type().clone();
     doc.add(Box::new(id_field));
 
     for i in 0..num_docs {
-        // `idField.setStringValue("" + i)`
-        doc.remove_fields("id");
-        doc.add(Box::new(Field::new("id", i.to_string(), id_type.clone())?));
+        doc.get_field_mut_as::<Field>("id")
+            .expect("idField")
+            .set_string_value(i.to_string())?;
         w.add_document(&doc)?;
         if (i + 1) % 10 == 0 {
             w.commit()?;

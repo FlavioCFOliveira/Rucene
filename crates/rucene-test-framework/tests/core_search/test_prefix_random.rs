@@ -8,7 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
-use rucene::document::Store;
+use rucene::document::{Document, Store};
 use rucene::error::Result;
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::index::terms::{AcceptStatus, FilteredTermsEnum, FilteredTermsEnumFilter};
@@ -31,7 +31,7 @@ use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_search::support::{
-    close_dir, close_reader, doc_of, fixture_class, ftest, set_up, tear_down, term,
+    close_dir, close_reader, field_mut, fixture_class, ftest, set_up, tear_down, term,
 };
 use crate::core_support::random;
 
@@ -66,11 +66,14 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
 
-    let mut field = LuceneTestCase::new_string_field("field", "", Store::NO);
+    let mut doc = Document::new();
+    let field = LuceneTestCase::new_string_field("field", "", Store::NO);
+    doc.add(Box::new(field));
     let num = LuceneTestCase::at_least(1000);
     for _ in 0..num {
-        field.set_string_value(TestUtil::random_unicode_string_max(&*random(), 10))?;
-        writer.add_document(&doc_of(&[&field])?)?;
+        field_mut(&mut doc, "field")
+            .set_string_value(TestUtil::random_unicode_string_max(&*random(), 10))?;
+        writer.add_document(&doc)?;
     }
     let reader = writer.get_reader()?;
     f.searcher = Some(LuceneTestCase::new_searcher(Arc::clone(&reader)));

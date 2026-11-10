@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
-use rucene::document::{FieldType, TextField};
+use rucene::document::{Document, FieldType, TextField};
 use rucene::error::Result;
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::search::index_searcher::IndexSearcher;
@@ -17,7 +17,7 @@ use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_search::support::{
-    close_dir, close_reader, doc_of, fixture_class, ftest, set_up, tear_down, term,
+    close_dir, close_reader, field_mut, fixture_class, ftest, set_up, tear_down, term,
 };
 use crate::core_support::{assert_equals_msg, random};
 
@@ -55,12 +55,14 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
 
     let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_omit_norms(true)?;
-    let mut field = LuceneTestCase::new_field("field", "", &custom_type);
+    let mut doc = Document::new();
+    let field = LuceneTestCase::new_field("field", "", &custom_type);
+    doc.add(Box::new(field));
 
     // `new DecimalFormat("000", new DecimalFormatSymbols(Locale.ROOT))`
     for i in 0..1000 {
-        field.set_string_value(format!("{i:03}"))?;
-        writer.add_document(&doc_of(&[&field])?)?;
+        field_mut(&mut doc, "field").set_string_value(format!("{i:03}"))?;
+        writer.add_document(&doc)?;
     }
 
     let reader = writer.get_reader()?;

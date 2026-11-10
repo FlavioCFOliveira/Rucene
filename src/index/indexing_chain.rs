@@ -2482,14 +2482,10 @@ impl DefaultIndexingChain {
         // `field.tokenStream(analyzer, tokenStream)` opens the
         // try-with-resources whose `finally` logs the failure
         // (`IndexingChain.java:1907-1908, 2039-2044`), so an exception raised
-        // by the call itself is logged as well.
-        //
-        // **Divergence.** Java keeps the previous `tokenStream` when the call
-        // throws, because the assignment never happens; `reuse` is passed by
-        // value here (it is a `Box`, which the field may return as its
-        // result), so a call that fails drops it and the next instance gets
-        // `None`. Only the identity of a later stream can observe this.
-        let mut stream = match field.token_stream(analyzer, per_field.token_stream.take()) {
+        // by the call itself is logged as well. A call that fails leaves the
+        // previous stream in `per_field.token_stream`, as Java's assignment
+        // never happens.
+        let mut stream = match field.token_stream(analyzer, &mut per_field.token_stream) {
             Ok(stream) => stream,
             Err(error) => {
                 if info_stream.is_enabled("DW") {
@@ -5455,7 +5451,7 @@ mod tests {
         fn token_stream(
             &self,
             _analyzer: Option<&dyn Analyzer>,
-            _reuse: Option<Box<dyn crate::analysis::TokenStream>>,
+            _reuse: &mut Option<Box<dyn crate::analysis::TokenStream>>,
         ) -> Result<Box<dyn crate::analysis::TokenStream>> {
             Ok(Box::new(
                 crate::analysis::StringTokenStream::new(String::new()).expect("stream"),

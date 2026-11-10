@@ -48,7 +48,7 @@ impl<F: IndexableField + 'static> IndexableField for SharedField<F> {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         self.0.token_stream(analyzer, reuse)
     }

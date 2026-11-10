@@ -744,23 +744,10 @@ fn format07(v: i32) -> String {
     format!("{v:07}")
 }
 
-/// The id field's current value, re-added under the field's type.
-///
-/// **Divergence from Lucene 10.5.0.** Java adds `idField` to the document
-/// once and changes its value with `setStringValue` before each
-/// `addDocument`; Rucene's `Document` owns its fields and exposes no
-/// mutable access to them, so the port keeps the field outside the
-/// document, sets its value the same way, and adds a field carrying that
-/// value and the field's type to a fresh document. No random value is
-/// drawn either way.
-fn doc_of(field: &Field) -> Result<Document> {
-    let mut doc = Document::new();
-    doc.add(Box::new(Field::new(
-        field.name(),
-        field.string_value().unwrap_or_default(),
-        field.field_type().clone(),
-    )?));
-    Ok(doc)
+/// The `Field` named `name` that the Java test keeps after `doc.add`.
+fn field_mut<'a>(doc: &'a mut Document, name: &str) -> &'a mut Field {
+    doc.get_field_mut_as::<Field>(name)
+        .expect("INVARIANT: the document holds the Field")
 }
 
 fn test_primary_keys() -> Result<()> {
@@ -775,7 +762,9 @@ fn test_primary_keys() -> Result<()> {
         )));
         iwc.set_open_mode(OpenMode::CREATE)?;
         let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
-        let mut id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
+        let mut doc = Document::new();
+        let id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
+        doc.add(Box::new(id_field));
         let num_ids = LuceneTestCase::at_least(200);
         // final int NUM_IDS = (int) (377 * (1.0+random.nextDouble()));
         if verbose() {
@@ -795,8 +784,8 @@ fn test_primary_keys() -> Result<()> {
                 }
             };
             all_ids.add(id_string.clone());
-            id_field.set_string_value(id_string)?;
-            w.add_document(&doc_of(&id_field)?)?;
+            field_mut(&mut doc, "id").set_string_value(id_string)?;
+            w.add_document(&doc)?;
         }
 
         // w.forceMerge(1);
@@ -932,7 +921,9 @@ fn test_random_term_lookup() -> Result<()> {
     ))));
     iwc.set_open_mode(OpenMode::CREATE)?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
-    let mut f = LuceneTestCase::new_string_field("field", "", Store::NO);
+    let mut doc = Document::new();
+    let f = LuceneTestCase::new_string_field("field", "", Store::NO);
+    doc.add(Box::new(f));
 
     let num_terms = (1000.0 * *RANDOM_MULTIPLIER as f64 * (1.0 + random().next_double())) as i32;
     if verbose() {
@@ -945,8 +936,8 @@ fn test_random_term_lookup() -> Result<()> {
     }
 
     for term in all_terms.iter() {
-        f.set_string_value(term.clone())?;
-        w.add_document(&doc_of(&f)?)?;
+        field_mut(&mut doc, "field").set_string_value(term.clone())?;
+        w.add_document(&doc)?;
     }
 
     // turn writer into reader:

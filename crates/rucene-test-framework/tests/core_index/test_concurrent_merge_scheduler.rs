@@ -47,7 +47,7 @@ use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_support::{assert_equals, assert_equals_msg, class, random, test, verbose, IAE};
 use crate::support::{
-    as_cms, assert_no_unreferenced_files, copy_field, open_reader, CountDownLatch,
+    as_cms, assert_no_unreferenced_files, field_mut, open_reader, CountDownLatch,
 };
 
 /// `TestConcurrentMergeScheduler`.
@@ -166,16 +166,6 @@ impl Failure for FailOnlyOnFlush {
     }
 }
 
-/// The document `testFlushExceptions` and `testNoWaitClose` add again after
-/// changing its fields' values: copies of `id_field` and `knn_field`.
-fn id_knn_doc(id_field: &Field, knn_field: &KnnFloatVectorField) -> Result<Document> {
-    let mut doc = Document::new();
-    doc.add(Box::new(copy_field(id_field)?));
-    // Add knn float vectors to test parallel merge
-    doc.add(Box::new(knn_field.clone()));
-    Ok(doc)
-}
-
 /// Make sure running BG merges still work fine even when we are hitting
 /// exceptions during flushing.
 ///
@@ -210,8 +200,12 @@ fn test_flush_exceptions() -> Result<()> {
         iwc.set_merge_scheduler(Some(Arc::new(cms)))?;
     }
     let writer = IndexWriter::new(directory.as_directory(), iwc)?;
-    let mut id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
-    let mut knn_field = KnnFloatVectorField::with_euclidean("knn", &[0.0, 0.0])?;
+    let mut doc = Document::new();
+    let id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
+    let knn_field = KnnFloatVectorField::with_euclidean("knn", &[0.0, 0.0])?;
+    doc.add(Box::new(id_field));
+    // Add knn float vectors to test parallel merge
+    doc.add(Box::new(knn_field));
 
     'outer: for i in 0..10 {
         if verbose() {
@@ -219,17 +213,19 @@ fn test_flush_exceptions() -> Result<()> {
         }
 
         for j in 0..20 {
-            id_field.set_string_value((i * 20 + j).to_string())?;
+            field_mut(&mut doc, "id").set_string_value((i * 20 + j).to_string())?;
             let (a, b) = (random().next_float(), random().next_float());
-            knn_field.set_vector_value(&[a, b])?;
-            writer.add_document(&id_knn_doc(&id_field, &knn_field)?)?;
+            doc.get_field_mut_as::<KnnFloatVectorField>("knn")
+                .expect("knnField")
+                .set_vector_value(&[a, b])?;
+            writer.add_document(&doc)?;
         }
 
         // must cycle here because sometimes the merge flushes
         // the doc we just added and so there's nothing to
         // flush, and we don't hit the exception
         loop {
-            writer.add_document(&id_knn_doc(&id_field, &knn_field)?)?;
+            writer.add_document(&doc)?;
             failure.set_do_fail();
             match writer.flush_with(true, true) {
                 Ok(()) => {
@@ -278,15 +274,15 @@ fn test_delete_merging() -> Result<()> {
     let writer = IndexWriter::new(directory.as_directory(), iwc)?;
     TestUtil::reduce_open_files(&writer)?;
 
-    let mut id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
+    let mut doc = Document::new();
+    let id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
+    doc.add(Box::new(id_field));
     for i in 0..10 {
         if verbose() {
             println!("\nTEST: cycle");
         }
         for j in 0..100 {
-            id_field.set_string_value((i * 100 + j).to_string())?;
-            let mut doc = Document::new();
-            doc.add(Box::new(copy_field(&id_field)?));
+            field_mut(&mut doc, "id").set_string_value((i * 100 + j).to_string())?;
             writer.add_document(&doc)?;
         }
 
@@ -350,8 +346,12 @@ fn test_no_extra_files() -> Result<()> {
 /// Port of `TestConcurrentMergeScheduler.testNoWaitClose`.
 fn test_no_wait_close() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
-    let mut id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
-    let mut knn_field = KnnFloatVectorField::with_euclidean("knn", &[0.0, 0.0])?;
+    let mut doc = Document::new();
+    let id_field = LuceneTestCase::new_string_field("id", "", Store::YES);
+    let knn_field = KnnFloatVectorField::with_euclidean("knn", &[0.0, 0.0])?;
+    doc.add(Box::new(id_field));
+    // Add knn float vectors to test parallel merge
+    doc.add(Box::new(knn_field));
     let iwc = mock_iwc();
     // Force excessive merging:
     iwc.set_max_buffered_docs(2)?;
@@ -370,10 +370,12 @@ fn test_no_wait_close() -> Result<()> {
     let num_iters = if *TEST_NIGHTLY { 10 } else { 3 };
     for iter in 0..num_iters {
         for j in 0..201 {
-            id_field.set_string_value((iter * 201 + j).to_string())?;
+            field_mut(&mut doc, "id").set_string_value((iter * 201 + j).to_string())?;
             let (a, b) = (random().next_float(), random().next_float());
-            knn_field.set_vector_value(&[a, b])?;
-            writer.add_document(&id_knn_doc(&id_field, &knn_field)?)?;
+            doc.get_field_mut_as::<KnnFloatVectorField>("knn")
+                .expect("knnField")
+                .set_vector_value(&[a, b])?;
+            writer.add_document(&doc)?;
         }
 
         let mut del_id = iter * 201;
@@ -393,7 +395,7 @@ fn test_no_wait_close() -> Result<()> {
                 Throwable::new("java.lang.ClassCastException", "not a LogMergePolicy").throw()
             })
             .set_merge_factor(3)?;
-        writer.add_document(&id_knn_doc(&id_field, &knn_field)?)?;
+        writer.add_document(&doc)?;
 
         let committed = writer.commit();
         // `finally`
@@ -499,11 +501,14 @@ fn test_max_merge_count() -> Result<()> {
     tmp.set_segments_per_tier(2.0)?;
 
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
-    let field = LuceneTestCase::new_field("field", "field", TextField::type_not_stored());
+    let mut doc = Document::new();
+    doc.add(Box::new(LuceneTestCase::new_field(
+        "field",
+        "field",
+        TextField::type_not_stored(),
+    )));
     while enough_merges_waiting.get_count() != 0 && !failed.load(Ordering::SeqCst) {
         for _ in 0..10 {
-            let mut doc = Document::new();
-            doc.add(Box::new(copy_field(&field)?));
             w.add_document(&doc)?;
         }
     }

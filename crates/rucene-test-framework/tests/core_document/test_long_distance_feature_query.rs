@@ -1,10 +1,4 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/document/TestLongDistanceFeatureQuery.java`.
-//!
-//! **Divergence from Lucene 10.5.0 (several methods).** Java adds one
-//! `LongField` to a `Document` and calls `setLongValue` on it between
-//! `addDocument` calls. The port's `Document` owns its fields, so each call
-//! indexes a document rebuilt with the field's current value (same field,
-//! same value reach the writer).
 
 use std::sync::Arc;
 
@@ -72,6 +66,21 @@ fn writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
     RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)
 }
 
+/// `Document doc` holding `LongField field = new LongField("foo", 0L, Store.NO)`.
+fn field_doc() -> Document {
+    let mut doc = Document::new();
+    let field = LongField::new("foo", 0, Store::NO);
+    doc.add(Box::new(field));
+    doc
+}
+
+/// `field.setLongValue(v)` on the `LongField` `doc` holds.
+fn set_long_value(doc: &mut Document, v: i64) {
+    doc.get_field_mut_as::<LongField>("foo")
+        .expect("field")
+        .set_value(v);
+}
+
 /// A document of `LongField("foo", v, Store.NO)` for each of `values`.
 fn doc(values: &[i64]) -> Document {
     let mut doc = Document::new();
@@ -97,8 +106,11 @@ fn top(
 fn test_basics() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
+    let mut doc = field_doc();
+
     for v in [3, 12, 8, -1, 7] {
-        w.add_document(&doc(&[v]))?;
+        set_long_value(&mut doc, v);
+        w.add_document(&doc)?;
     }
 
     let reader = w.get_reader()?;
@@ -138,8 +150,11 @@ fn test_basics() -> Result<()> {
 fn test_over_under_flow() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
+    let mut doc = field_doc();
+
     for v in [3, 12, -10, i64::MAX, i64::MIN] {
-        w.add_document(&doc(&[v]))?;
+        set_long_value(&mut doc, v);
+        w.add_document(&doc)?;
     }
 
     let reader = w.get_reader()?;
@@ -197,9 +212,15 @@ fn test_missing_field() -> Result<()> {
 fn test_missing_value() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    w.add_document(&doc(&[3]))?;
+    let mut doc = field_doc();
+
+    set_long_value(&mut doc, 3);
+    w.add_document(&doc)?;
+
     w.add_document(&Document::new())?;
-    w.add_document(&doc(&[7]))?;
+
+    set_long_value(&mut doc, 7);
+    w.add_document(&doc)?;
 
     let reader = w.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
@@ -274,10 +295,13 @@ fn test_random() -> Result<()> {
         random().next_boolean(),
     )))?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
+    let mut doc = field_doc();
+
     let num_docs = LuceneTestCase::at_least(10000);
     for _i in 0..num_docs {
         let v = random().next_long();
-        w.add_document(&doc(&[v]))?;
+        set_long_value(&mut doc, v);
+        w.add_document(&doc)?;
     }
 
     let reader = rucene::index::directory_reader::open_with_writer(&*w)?;

@@ -1,8 +1,4 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/Test2BNumericDocValues.java`.
-//!
-//! Java calls `dvField.setLongValue(i)` on the field already added to the
-//! document; Rucene's `Document` owns its fields, so the document is
-//! rebuilt per add with the current value.
 
 use std::sync::Arc;
 
@@ -50,10 +46,14 @@ fn test_numerics() -> Result<()> {
 
     let w = IndexWriter::new(dir.as_directory(), two_b_config()?)?;
 
+    let mut doc = Document::new();
+    let dv_field = NumericDocValuesField::new("dv", 0);
+    doc.add(Box::new(dv_field));
+
     for i in 0..MAX_DOCS {
-        // `dvField.setLongValue(i)`
-        let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("dv", i as i64)));
+        doc.get_field_mut_as::<NumericDocValuesField>("dv")
+            .expect("dvField")
+            .set_value(i as i64);
         w.add_document(&doc)?;
         if i % 100000 == 0 {
             println_flush(&format!("indexed: {i}"));

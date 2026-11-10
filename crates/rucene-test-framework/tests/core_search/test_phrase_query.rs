@@ -44,7 +44,7 @@ use rucene_test_framework::util::java_exceptions::expect_throws;
 use rucene_test_framework::util::lucene_test_case::{TestDirectory, TEST_NIGHTLY};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
-use crate::core_search::support::{close_dir, close_reader, doc_of, static_hook, term};
+use crate::core_search::support::{close_dir, close_reader, field_mut, static_hook, term};
 use crate::core_support::{assert_equals, assert_equals_msg, class, random, shuffle, test, IAE};
 
 const NPE: &str = "java.lang.NullPointerException";
@@ -798,8 +798,9 @@ fn test_random_phrases() -> Result<()> {
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let mut docs: Vec<Vec<String>> = Vec::new();
-    // `Document d` holding `Field f`: rebuilt from `f` for each `addDocument`.
-    let mut f = LuceneTestCase::new_text_field("f", "", Store::NO);
+    let mut d = Document::new();
+    let f = LuceneTestCase::new_text_field("f", "", Store::NO);
+    d.add(Box::new(f));
 
     let r = random();
 
@@ -850,8 +851,8 @@ fn test_random_phrases() -> Result<()> {
             }
         }
         docs.push(doc);
-        f.set_string_value(sb)?;
-        w.add_document(&doc_of(&[&f])?)?;
+        field_mut(&mut d, "f").set_string_value(sb)?;
+        w.add_document(&d)?;
     }
 
     let reader = w.get_reader()?;

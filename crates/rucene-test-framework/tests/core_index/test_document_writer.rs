@@ -705,7 +705,7 @@ impl IndexableField for MockIndexableField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         crate::support::npe("MockIndexableField.tokenStream returned null")
     }

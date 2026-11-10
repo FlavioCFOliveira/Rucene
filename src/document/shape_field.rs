@@ -594,6 +594,13 @@ impl Triangle {
 }
 
 impl IndexableField for Triangle {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -605,7 +612,7 @@ impl IndexableField for Triangle {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .packed_value()
@@ -794,6 +801,13 @@ impl LateInteractionField {
 }
 
 impl IndexableField for LateInteractionField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -805,7 +819,7 @@ impl IndexableField for LateInteractionField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),

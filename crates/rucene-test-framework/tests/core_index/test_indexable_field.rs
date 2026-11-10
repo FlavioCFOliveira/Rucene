@@ -200,7 +200,7 @@ impl IndexableField for MyField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        _previous: Option<Box<dyn TokenStream>>,
+        _previous: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         // `analyzer.tokenStream(...)` on a `null` analyzer.
         let analyzer = analyzer.ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -455,7 +455,7 @@ impl IndexableField for CustomField {
     fn token_stream(
         &self,
         _a: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         npe("CustomField.tokenStream returned null")
     }

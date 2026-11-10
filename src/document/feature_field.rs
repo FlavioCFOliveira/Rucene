@@ -544,6 +544,13 @@ impl FeatureField {
 }
 
 impl IndexableField for FeatureField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -555,7 +562,7 @@ impl IndexableField for FeatureField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(FeatureTokenStream::new(
             self.feature_name.clone(),
@@ -1688,7 +1695,7 @@ mod tests {
         // `FeatureField` could not be indexed at all.
         let field = FeatureField::new("feat", "pagerank", 3.0).unwrap();
         let analyzer = StandardAnalyzer::new();
-        let mut stream = field.token_stream(Some(&analyzer), None).unwrap();
+        let mut stream = field.token_stream(Some(&analyzer), &mut None).unwrap();
         stream.reset().unwrap();
         assert!(stream.increment_token().unwrap());
 

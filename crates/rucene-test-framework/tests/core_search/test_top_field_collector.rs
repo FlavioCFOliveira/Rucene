@@ -1,9 +1,4 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/search/TestTopFieldCollector.java`.
-//!
-//! Java changes a field's value after `doc.add` and adds the document again;
-//! the port's `Document` gives no mutable access to its fields, so each
-//! `addDocument` gets a document rebuilt with the field's current value (no
-//! random draw is involved).
 
 use std::sync::Arc;
 
@@ -36,7 +31,7 @@ use rucene_test_framework::util::java_exceptions::rethrow_java;
 use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
-use crate::core_search::support::{fixture_class, ftest, set_up, tear_down};
+use crate::core_search::support::{field_mut_as, fixture_class, ftest, set_up, tear_down};
 use crate::core_support::{assert_equals, assert_equals_delta, assert_null, random};
 
 /// The instance of `TestTopFieldCollector`.
@@ -306,17 +301,14 @@ fn test_total_hits(_f: &mut TopFieldCollectorTest) -> Result<()> {
     config.set_max_buffered_docs(7)?;
     config.set_ram_buffer_size_mb(f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH))?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
-    let doc = || -> Document {
-        let mut doc = Document::new();
-        doc.add(Box::new(NumericDocValuesField::new("foo", 3)));
-        doc
-    };
-    for _d in 0..4 {
-        w.add_document(&doc())?;
+    let mut doc = Document::new();
+    doc.add(Box::new(NumericDocValuesField::new("foo", 3)));
+    for d in [&doc, &doc, &doc, &doc] {
+        w.add_document(d)?;
     }
     w.flush()?;
-    for _d in 0..6 {
-        w.add_document(&doc())?;
+    for d in [&doc, &doc, &doc, &doc, &doc, &doc] {
+        w.add_document(d)?;
     }
     w.flush()?;
     let reader = directory_reader::open_with_writer(&*w)?;
@@ -687,21 +679,16 @@ impl CollectorManager for OnceCollectorManager {
 fn test_compute_scores_only_once(_f: &mut TopFieldCollectorTest) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-    let doc_with = |text: &str| -> Result<Document> {
-        let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "text",
-            text.to_string(),
-            Store::NO,
-        )?));
-        doc.add(Box::new(NumericDocValuesField::new("relevance", 1)));
-        Ok(doc)
-    };
-    w.add_document(&doc_with("foo")?)?;
-    // `text.setStringValue("bar")`
-    w.add_document(&doc_with("bar")?)?;
-    // `text.setStringValue("baz")`
-    w.add_document(&doc_with("baz")?)?;
+    let mut doc = Document::new();
+    let text = StringField::new("text", "foo".to_string(), Store::NO)?;
+    doc.add(Box::new(text));
+    let relevance = NumericDocValuesField::new("relevance", 1);
+    doc.add(Box::new(relevance));
+    w.add_document(&doc)?;
+    field_mut_as::<StringField>(&mut doc, "text").set_string_value("bar".to_string())?;
+    w.add_document(&doc)?;
+    field_mut_as::<StringField>(&mut doc, "text").set_string_value("baz".to_string())?;
+    w.add_document(&doc)?;
     let reader = w.get_reader()?;
     let foo: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text("text", "foo")));
     let bar: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text("text", "bar")));
@@ -740,27 +727,30 @@ fn test_compute_scores_only_once(_f: &mut TopFieldCollectorTest) -> Result<()> {
 fn test_populate_scores(_f: &mut TopFieldCollectorTest) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-    let doc_with = |text: &str, sort: i64| -> Result<Document> {
-        let mut doc = Document::new();
-        doc.add(Box::new(TextField::new("f", text.to_string(), Store::NO)?));
-        doc.add(Box::new(NumericDocValuesField::new("sort", sort)));
-        Ok(doc)
-    };
-    w.add_document(&doc_with("foo bar", 0)?)?;
+    let mut doc = Document::new();
+    let field = TextField::new("f", "foo bar".to_string(), Store::NO)?;
+    doc.add(Box::new(field));
+    let sort_field = NumericDocValuesField::new("sort", 0);
+    doc.add(Box::new(sort_field));
+    w.add_document(&doc)?;
 
-    // `field.setStringValue(""); sortField.setLongValue(3);`
-    w.add_document(&doc_with("", 3)?)?;
+    field_mut_as::<TextField>(&mut doc, "f").set_string_value("".to_string())?;
+    field_mut_as::<NumericDocValuesField>(&mut doc, "sort").set_value(3);
+    w.add_document(&doc)?;
 
-    // `field.setStringValue("foo foo bar"); sortField.setLongValue(2);`
-    w.add_document(&doc_with("foo foo bar", 2)?)?;
+    field_mut_as::<TextField>(&mut doc, "f").set_string_value("foo foo bar".to_string())?;
+    field_mut_as::<NumericDocValuesField>(&mut doc, "sort").set_value(2);
+    w.add_document(&doc)?;
 
     w.flush()?;
 
-    // `field.setStringValue("foo"); sortField.setLongValue(2);`
-    w.add_document(&doc_with("foo", 2)?)?;
+    field_mut_as::<TextField>(&mut doc, "f").set_string_value("foo".to_string())?;
+    field_mut_as::<NumericDocValuesField>(&mut doc, "sort").set_value(2);
+    w.add_document(&doc)?;
 
-    // `field.setStringValue("bar bar bar"); sortField.setLongValue(0);`
-    w.add_document(&doc_with("bar bar bar", 0)?)?;
+    field_mut_as::<TextField>(&mut doc, "f").set_string_value("bar bar bar".to_string())?;
+    field_mut_as::<NumericDocValuesField>(&mut doc, "sort").set_value(0);
+    w.add_document(&doc)?;
 
     let reader = w.get_reader()?;
     w.close()?;
@@ -1006,20 +996,15 @@ fn test_relation_vs_top_docs_count(_f: &mut TopFieldCollectorTest) -> Result<()>
     let result = (|| -> Result<()> {
         let w = no_merge_writer(&dir)?;
         let result = (|| -> Result<()> {
-            let doc_of = || -> Result<Document> {
-                let mut doc = Document::new();
-                doc.add(Box::new(TextField::new(
-                    "f",
-                    "foo bar".to_string(),
-                    Store::NO,
-                )?));
-                Ok(doc)
-            };
-            let docs: Vec<Document> = (0..5).map(|_| doc_of()).collect::<Result<_>>()?;
-            w.add_documents(&docs)?;
+            let mut doc = Document::new();
+            doc.add(Box::new(TextField::new(
+                "f",
+                "foo bar".to_string(),
+                Store::NO,
+            )?));
+            w.add_documents(&[&doc, &doc, &doc, &doc, &doc])?;
             w.flush()?;
-            let docs: Vec<Document> = (0..5).map(|_| doc_of()).collect::<Result<_>>()?;
-            w.add_documents(&docs)?;
+            w.add_documents(&[&doc, &doc, &doc, &doc, &doc])?;
             w.flush()?;
 
             let reader = directory_reader::open_with_writer(&*w)?;

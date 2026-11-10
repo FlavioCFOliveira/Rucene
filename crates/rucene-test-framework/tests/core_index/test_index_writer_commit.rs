@@ -5,8 +5,6 @@
 //! * `w.setLiveCommitData(commitData.entrySet())` hands Rucene a snapshot of
 //!   the map's entries; Java hands the live entry set, which the writer reads
 //!   at commit (`testCommitDataIsLive` depends on that).
-//! * The `Field f` whose value `testCommitThreadSafety` changes before each
-//!   `addDocument` is rebuilt for each document (guide section 6).
 
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
@@ -445,8 +443,10 @@ fn test_commit_thread_safety() -> Result<()> {
         let failed = Arc::clone(&failed);
         let thread = Thread::unnamed(move || {
             let r = (|| -> Result<()> {
+                let mut doc = Document::new();
                 let mut r = directory_reader::open(Arc::clone(&d))?;
-                let mut f = LuceneTestCase::new_string_field("f", "", Store::NO);
+                let f = LuceneTestCase::new_string_field("f", "", Store::NO);
+                doc.add(Box::new(f));
                 let mut iterations = 0;
                 let mut count = 0;
                 loop {
@@ -456,9 +456,7 @@ fn test_commit_thread_safety() -> Result<()> {
                     for _ in 0..10 {
                         let s = format!("{final_i}_{count}");
                         count += 1;
-                        f.set_string_value(s.clone())?;
-                        let mut doc = Document::new();
-                        doc.add(Box::new(crate::support::copy_field(&f)?));
+                        crate::support::field_mut(&mut doc, "f").set_string_value(s.clone())?;
                         w.add_document(&doc)?;
                         w.commit()?;
                         let r2 = directory_reader::open_if_changed(Arc::clone(&r))?;

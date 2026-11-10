@@ -39,13 +39,9 @@
 //!   terms enum owns the doc values it reads), so where Java goes on using
 //!   the doc values after taking its terms enum, the port asks the reader for
 //!   the field's doc values again. Asking draws nothing from `random()`.
-//! * Shared `Field` instances (`doTestNumericsVsStoredFields`,
-//!   `doTestBinaryVsStoredFields`, `doTestSortedVsStoredFields`, …): Java
-//!   adds one `Field` object to many documents and changes its value between
-//!   additions. A Rust `Document` owns its fields, so the port adds, to each
-//!   document, fields of the same names, types and values; the fields Java
-//!   builds with `newField`/`newStringField` (which draw) are built once,
-//!   with their draws, and copied with their randomized type.
+//! * Fields Java keeps after `doc.add` are changed through the document
+//!   (`Document::get_field_mut_as`) or, when Java adds one object to many
+//!   documents (`testThreads2`), shared with `Document::add_shared`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -492,9 +488,25 @@ fn doc_get(doc: &Document, name: &str) -> Option<String> {
     doc.get_values(name).into_iter().next()
 }
 
-/// A copy of `field`: same name, same (randomized) type, value `value`.
-fn copy_field(field: &Field, value: String) -> Result<Field> {
-    Field::new(field.name(), value, field.field_type().clone())
+/// A field the Java test keeps and adds to every document, changed between
+/// documents: the documents that held it were indexed and dropped, so the
+/// test holds it alone again (Rust forbids a `&mut` to a field a live
+/// document shares; see `Document::get_field_mut`).
+fn exclusive<T>(field: &mut Arc<T>) -> &mut T {
+    Arc::get_mut(field).expect("INVARIANT: no live document holds the field")
+}
+
+/// `field1` (`i == 0`) or `field2` (`i == 1`) of
+/// `testSortedSetEnumAdvanceIndependently`: the `i`-th
+/// `SortedSetDocValuesField` named "field" that the Java test keeps after
+/// `doc.add`.
+fn sorted_set_field(doc: &mut Document, i: usize) -> &mut SortedSetDocValuesField {
+    doc.get_fields_by_name_mut("field")
+        .into_iter()
+        .nth(i)
+        .and_then(|f| f.as_any_mut())
+        .and_then(|a| a.downcast_mut::<SortedSetDocValuesField>())
+        .expect("INVARIANT: the document holds two SortedSetDocValuesFields")
 }
 
 /// `Long.parseLong(s)`.
@@ -2380,7 +2392,13 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
             let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
+            let mut doc = Document::new();
+            let id_field = StringField::new("id", String::new(), Store::NO)?;
             let stored_field = LuceneTestCase::new_string_field("stored", "", Store::YES);
+            let dv_field = NumericDocValuesField::new("dv", 0);
+            doc.add(Box::new(id_field));
+            doc.add(Box::new(stored_field));
+            doc.add(Box::new(dv_field));
 
             // index some docs
             let num_docs = LuceneTestCase::at_least((f64::from(min_docs) * 1.172) as i32);
@@ -2392,11 +2410,16 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                     writer.add_document(&Document::new())?;
                     continue;
                 }
+                doc.get_field_mut_as::<StringField>("id")
+                    .expect("idField")
+                    .set_string_value(i.to_string())?;
                 let value = longs();
-                let mut doc = Document::new();
-                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-                doc.add(Box::new(copy_field(&stored_field, value.to_string())?));
-                doc.add(Box::new(NumericDocValuesField::new("dv", value)));
+                doc.get_field_mut_as::<Field>("stored")
+                    .expect("storedField")
+                    .set_string_value(value.to_string())?;
+                doc.get_field_mut_as::<NumericDocValuesField>("dv")
+                    .expect("dvField")
+                    .set_value(value);
                 writer.add_document(&doc)?;
                 if random().next_int_bound(31) == 0 {
                     writer.commit()?;
@@ -2716,8 +2739,13 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
             let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-            // `new BinaryDocValuesField("dv", newBytesRef())`
-            let _ = LuceneTestCase::new_bytes_ref();
+            let mut doc = Document::new();
+            let id_field = StringField::new("id", String::new(), Store::NO)?;
+            let stored_field = StoredField::new_bytes("stored", BytesRef::new(Vec::new()))?;
+            let dv_field = BinaryDocValuesField::new("dv", LuceneTestCase::new_bytes_ref());
+            doc.add(Box::new(id_field));
+            doc.add(Box::new(stored_field));
+            doc.add(Box::new(dv_field));
 
             // index some docs
             let num_docs = LuceneTestCase::at_least(300);
@@ -2726,17 +2754,16 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                     writer.add_document(&Document::new())?;
                     continue;
                 }
+                doc.get_field_mut_as::<StringField>("id")
+                    .expect("idField")
+                    .set_string_value(i.to_string())?;
                 let buffer = bytes();
-                let mut doc = Document::new();
-                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-                doc.add(Box::new(StoredField::new_bytes(
-                    "stored",
-                    BytesRef::new(buffer.clone()),
-                )?));
-                doc.add(Box::new(BinaryDocValuesField::new(
-                    "dv",
-                    BytesRef::new(buffer),
-                )));
+                doc.get_field_mut_as::<StoredField>("stored")
+                    .expect("storedField")
+                    .set_bytes_value(BytesRef::new(buffer.clone()))?;
+                doc.get_field_mut_as::<BinaryDocValuesField>("dv")
+                    .expect("dvField")
+                    .set_bytes_value(BytesRef::new(buffer))?;
                 writer.add_document(&doc)?;
                 if random().next_int_bound(31) == 0 {
                     writer.commit()?;
@@ -2843,8 +2870,13 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("dvduel"));
         let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
         let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-        // `new SortedDocValuesField("dv", newBytesRef())`
-        let _ = LuceneTestCase::new_bytes_ref();
+        let mut doc = Document::new();
+        let id_field = StringField::new("id", String::new(), Store::NO)?;
+        let stored_field = StoredField::new_bytes("stored", BytesRef::new(Vec::new()))?;
+        let dv_field = SortedDocValuesField::new("dv", LuceneTestCase::new_bytes_ref());
+        doc.add(Box::new(id_field));
+        doc.add(Box::new(stored_field));
+        doc.add(Box::new(dv_field));
 
         // index some docs
         for i in 0..num_docs {
@@ -2852,17 +2884,16 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 writer.add_document(&Document::new())?;
                 continue;
             }
+            doc.get_field_mut_as::<StringField>("id")
+                .expect("idField")
+                .set_string_value(i.to_string())?;
             let buffer = bytes();
-            let mut doc = Document::new();
-            doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-            doc.add(Box::new(StoredField::new_bytes(
-                "stored",
-                BytesRef::new(buffer.clone()),
-            )?));
-            doc.add(Box::new(SortedDocValuesField::new(
-                "dv",
-                BytesRef::new(buffer),
-            )));
+            doc.get_field_mut_as::<StoredField>("stored")
+                .expect("storedField")
+                .set_bytes_value(BytesRef::new(buffer.clone()))?;
+            doc.get_field_mut_as::<SortedDocValuesField>("dv")
+                .expect("dvField")
+                .set_bytes_value(BytesRef::new(buffer))?;
             writer.add_document(&doc)?;
             if random().next_int_bound(31) == 0 {
                 writer.commit()?;
@@ -3657,37 +3688,46 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
             let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-            // `new BinaryDocValuesField("dvBin", newBytesRef())`,
-            // `new SortedDocValuesField("dvSorted", newBytesRef())`
-            let _ = LuceneTestCase::new_bytes_ref();
-            let _ = LuceneTestCase::new_bytes_ref();
+            let mut doc = Document::new();
+            let id_field = StringField::new("id", String::new(), Store::NO)?;
+            let stored_bin_field = StoredField::new_bytes("storedBin", BytesRef::new(Vec::new()))?;
+            let dv_bin_field = BinaryDocValuesField::new("dvBin", LuceneTestCase::new_bytes_ref());
+            let dv_sorted_field =
+                SortedDocValuesField::new("dvSorted", LuceneTestCase::new_bytes_ref());
+            let stored_numeric_field = StoredField::new_string("storedNum", String::new())?;
+            let dv_numeric_field = NumericDocValuesField::new("dvNum", 0);
+            doc.add(Box::new(id_field));
+            doc.add(Box::new(stored_bin_field));
+            doc.add(Box::new(dv_bin_field));
+            doc.add(Box::new(dv_sorted_field));
+            doc.add(Box::new(stored_numeric_field));
+            doc.add(Box::new(dv_numeric_field));
 
             // index some docs
             let num_docs = LuceneTestCase::at_least(300);
             for i in 0..num_docs {
+                doc.get_field_mut_as::<StringField>("id")
+                    .expect("idField")
+                    .set_string_value(i.to_string())?;
                 let length = TestUtil::next_int(&*random(), 0, 8) as usize;
                 let mut buffer = vec![0u8; length];
                 random().next_bytes(&mut buffer);
+                doc.get_field_mut_as::<StoredField>("storedBin")
+                    .expect("storedBinField")
+                    .set_bytes_value(BytesRef::new(buffer.clone()))?;
+                doc.get_field_mut_as::<BinaryDocValuesField>("dvBin")
+                    .expect("dvBinField")
+                    .set_bytes_value(BytesRef::new(buffer.clone()))?;
+                doc.get_field_mut_as::<SortedDocValuesField>("dvSorted")
+                    .expect("dvSortedField")
+                    .set_bytes_value(BytesRef::new(buffer))?;
                 let numeric_value = random().next_long();
-                let mut doc = Document::new();
-                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
-                doc.add(Box::new(StoredField::new_bytes(
-                    "storedBin",
-                    BytesRef::new(buffer.clone()),
-                )?));
-                doc.add(Box::new(BinaryDocValuesField::new(
-                    "dvBin",
-                    BytesRef::new(buffer.clone()),
-                )));
-                doc.add(Box::new(SortedDocValuesField::new(
-                    "dvSorted",
-                    BytesRef::new(buffer),
-                )));
-                doc.add(Box::new(StoredField::new_string(
-                    "storedNum",
-                    numeric_value.to_string(),
-                )?));
-                doc.add(Box::new(NumericDocValuesField::new("dvNum", numeric_value)));
+                doc.get_field_mut_as::<StoredField>("storedNum")
+                    .expect("storedNumericField")
+                    .set_string_value(numeric_value.to_string())?;
+                doc.get_field_mut_as::<NumericDocValuesField>("dvNum")
+                    .expect("dvNumericField")
+                    .set_value(numeric_value);
                 writer.add_document(&doc)?;
                 if random().next_int_bound(31) == 0 {
                     writer.commit()?;
@@ -3768,40 +3808,46 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(mock_analyzer()));
             let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
-            // `new BinaryDocValuesField("dvBin", newBytesRef())`,
-            // `new SortedDocValuesField("dvSorted", newBytesRef())`
-            let _ = LuceneTestCase::new_bytes_ref();
-            let _ = LuceneTestCase::new_bytes_ref();
+            let mut id_field = Arc::new(StringField::new("id", String::new(), Store::NO)?);
+            let mut stored_bin_field = Arc::new(StoredField::new_bytes(
+                "storedBin",
+                BytesRef::new(Vec::new()),
+            )?);
+            let mut dv_bin_field = Arc::new(BinaryDocValuesField::new(
+                "dvBin",
+                LuceneTestCase::new_bytes_ref(),
+            ));
+            let mut dv_sorted_field = Arc::new(SortedDocValuesField::new(
+                "dvSorted",
+                LuceneTestCase::new_bytes_ref(),
+            ));
+            let mut stored_numeric_field =
+                Arc::new(StoredField::new_string("storedNum", String::new())?);
+            let mut dv_numeric_field = Arc::new(NumericDocValuesField::new("dvNum", 0));
 
             // index some docs
             let num_docs = TestUtil::next_int(&*random(), 1025, 2047);
             for i in 0..num_docs {
+                exclusive(&mut id_field).set_string_value(i.to_string())?;
                 let length = TestUtil::next_int(&*random(), 0, 8) as usize;
                 let mut buffer = vec![0u8; length];
                 random().next_bytes(&mut buffer);
+                exclusive(&mut stored_bin_field).set_bytes_value(BytesRef::new(buffer.clone()))?;
+                exclusive(&mut dv_bin_field).set_bytes_value(BytesRef::new(buffer.clone()))?;
+                exclusive(&mut dv_sorted_field).set_bytes_value(BytesRef::new(buffer))?;
                 let numeric_value = random().next_long();
+                exclusive(&mut stored_numeric_field).set_string_value(numeric_value.to_string())?;
+                exclusive(&mut dv_numeric_field).set_value(numeric_value);
                 let mut doc = Document::new();
-                doc.add(Box::new(StringField::new("id", i.to_string(), Store::NO)?));
+                doc.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
                 if random().next_int_bound(4) > 0 {
-                    doc.add(Box::new(StoredField::new_bytes(
-                        "storedBin",
-                        BytesRef::new(buffer.clone()),
-                    )?));
-                    doc.add(Box::new(BinaryDocValuesField::new(
-                        "dvBin",
-                        BytesRef::new(buffer.clone()),
-                    )));
-                    doc.add(Box::new(SortedDocValuesField::new(
-                        "dvSorted",
-                        BytesRef::new(buffer),
-                    )));
+                    doc.add_shared(Arc::clone(&stored_bin_field) as Arc<dyn IndexableField>);
+                    doc.add_shared(Arc::clone(&dv_bin_field) as Arc<dyn IndexableField>);
+                    doc.add_shared(Arc::clone(&dv_sorted_field) as Arc<dyn IndexableField>);
                 }
                 if random().next_int_bound(4) > 0 {
-                    doc.add(Box::new(StoredField::new_string(
-                        "storedNum",
-                        numeric_value.to_string(),
-                    )?));
-                    doc.add(Box::new(NumericDocValuesField::new("dvNum", numeric_value)));
+                    doc.add_shared(Arc::clone(&stored_numeric_field) as Arc<dyn IndexableField>);
+                    doc.add_shared(Arc::clone(&dv_numeric_field) as Arc<dyn IndexableField>);
                 }
                 let num_sorted_set_fields = random().next_int_bound(3);
                 let mut values: BTreeSet<String> = BTreeSet::new();
@@ -4255,11 +4301,18 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let iwriter = iwriter;
 
-            for value in ["2", "1", "3"] {
-                let mut doc = Document::new();
-                doc.add(Box::new(SortedDocValuesField::new("field", nbr(value))));
-                iwriter.add_document(&doc)?;
-            }
+            let mut doc = Document::new();
+            let field = SortedDocValuesField::new("field", nbr("2"));
+            doc.add(Box::new(field));
+            iwriter.add_document(&doc)?;
+            doc.get_field_mut_as::<SortedDocValuesField>("field")
+                .expect("field")
+                .set_bytes_value(nbr("1"))?;
+            iwriter.add_document(&doc)?;
+            doc.get_field_mut_as::<SortedDocValuesField>("field")
+                .expect("field")
+                .set_bytes_value(nbr("3"))?;
+            iwriter.add_document(&doc)?;
 
             iwriter.commit()?;
             iwriter.force_merge(1)?;
@@ -4287,34 +4340,15 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         {
             let iwriter = iwriter;
 
-            // field1 "2", field2 "3"; then field1 "1"; then field2 "2"
-            let mut values = ["2".to_string(), "3".to_string()];
-            let first = (nbr("2"), nbr("3"));
             let mut doc = Document::new();
-            doc.add(Box::new(SortedSetDocValuesField::new("field", first.0)));
-            doc.add(Box::new(SortedSetDocValuesField::new("field", first.1)));
+            let field1 = SortedSetDocValuesField::new("field", nbr("2"));
+            let field2 = SortedSetDocValuesField::new("field", nbr("3"));
+            doc.add(Box::new(field1));
+            doc.add(Box::new(field2));
             iwriter.add_document(&doc)?;
-            values[0] = "1".to_string();
-            let mut doc = Document::new();
-            doc.add(Box::new(SortedSetDocValuesField::new(
-                "field",
-                nbr(&values[0]),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
-                "field",
-                BytesRef::from_char_sequence(&values[1]),
-            )));
+            sorted_set_field(&mut doc, 0).set_bytes_value(nbr("1"))?;
             iwriter.add_document(&doc)?;
-            values[1] = "2".to_string();
-            let mut doc = Document::new();
-            doc.add(Box::new(SortedSetDocValuesField::new(
-                "field",
-                BytesRef::from_char_sequence(&values[0]),
-            )));
-            doc.add(Box::new(SortedSetDocValuesField::new(
-                "field",
-                nbr(&values[1]),
-            )));
+            sorted_set_field(&mut doc, 1).set_bytes_value(nbr("2"))?;
             iwriter.add_document(&doc)?;
 
             iwriter.commit()?;

@@ -201,7 +201,7 @@ fn test_clear_document() -> Result<()> {
 fn test_get_fields_immutable() -> Result<()> {
     let doc = make_document_with_fields()?;
     assert_has_size(doc.get_fields().len(), 10);
-    let fields: &[Box<dyn IndexableField>] = doc.get_fields();
+    let fields: &[Arc<dyn IndexableField>] = doc.get_fields();
     // fields.add(new StringField("name", "value", Field.Store.NO)) and
     // fields.clear(): statically rejected (see the divergence note).
     assert_has_size(fields.len(), 10);
@@ -363,37 +363,30 @@ fn do_assert(doc: &Document, from_index: bool) {
     }
 }
 
+/// `field`: the `StringField` "id" the Java test keeps after `doc.add`.
+fn id_field(doc: &mut Document) -> &mut StringField {
+    doc.get_field_mut_as::<StringField>("id")
+        .expect("INVARIANT: the document holds the StringField `id`")
+}
+
 /// Port of `testFieldSetValue`.
-///
-/// **Divergence from Lucene 10.5.0.** Java adds one `Field` to `doc` and
-/// calls `field.setStringValue(…)` between `addDocument` calls, mutating
-/// the instance the document holds. The port's `Document` owns its fields
-/// and exposes no mutable access, so each `addDocument` indexes the
-/// document rebuilt with the field's current value (same fields, same
-/// order, same types); what reaches the writer is identical.
 fn test_field_set_value() -> Result<()> {
-    let make_doc = |id: &str| -> Result<Document> {
-        let mut doc = Document::new();
-        doc.add(Box::new(StringField::new(
-            "id",
-            id.to_string(),
-            Store::YES,
-        )?));
-        doc.add(Box::new(StringField::new(
-            "keyword",
-            "test".to_string(),
-            Store::YES,
-        )?));
-        Ok(doc)
-    };
+    let field = StringField::new("id", "id1".to_string(), Store::YES)?;
+    let mut doc = Document::new();
+    doc.add(Box::new(field));
+    doc.add(Box::new(StringField::new(
+        "keyword",
+        "test".to_string(),
+        Store::YES,
+    )?));
 
     let mut dir = LuceneTestCase::new_directory();
     let writer = random_writer(&dir)?;
-    writer.add_document(&make_doc("id1")?)?;
-    // field.setStringValue("id2");
-    writer.add_document(&make_doc("id2")?)?;
-    // field.setStringValue("id3");
-    writer.add_document(&make_doc("id3")?)?;
+    writer.add_document(&doc)?;
+    id_field(&mut doc).set_string_value("id2".to_string())?;
+    writer.add_document(&doc)?;
+    id_field(&mut doc).set_string_value("id3".to_string())?;
+    writer.add_document(&doc)?;
 
     let reader = writer.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));

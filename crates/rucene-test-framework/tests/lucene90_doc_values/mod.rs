@@ -2,13 +2,6 @@
 //! `lucene/core/src/test/org/apache/lucene/codecs/lucene90/TestLucene90DocValuesFormat.java`
 //! and `TestLucene90DocValuesFormatVariableSkipInterval.java`, which
 //! `base_doc_values_format_suites.rs` declares on the classes' bindings.
-//!
-//! **Divergence (fields changed after `doc.add`).** Java keeps a field it added
-//! to a `Document`, changes its value and adds the document again; a Rucene
-//! `Document` owns its fields, so these tests rebuild the document for every
-//! `addDocument` from a copy of the field (`copy_field`), in the same order and
-//! without drawing again. The doc-values fields, which draw nothing, are built
-//! anew with the value.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
@@ -25,7 +18,7 @@ use rucene::codecs::lucene90::doc_values::{
 use rucene::codecs::per_field::PerFieldDocValuesFormat;
 use rucene::codecs::{Codec, DocValuesFormat, PostingsFormat};
 use rucene::document::{
-    BinaryDocValuesField, Document, Field, FieldType, NumericDocValuesField, NumericValue,
+    BinaryDocValuesField, Document, Field, NumericDocValuesField, NumericValue,
     SortedDocValuesField, SortedNumericDocValuesField, SortedSetDocValuesField, Store, StoredField,
     StringField,
 };
@@ -35,7 +28,9 @@ use rucene::index::doc_values::DocValues;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_scheduler::SerialMergeScheduler;
-use rucene::index::{DocValuesSkipper, IndexReader, NumericDocValues, SeekStatus, Term, TermsEnum};
+use rucene::index::{
+    DocValuesSkipper, IndexReader, IndexableField, NumericDocValues, SeekStatus, Term, TermsEnum,
+};
 use rucene::search::sort::{Sort, SortField, SortFieldType};
 use rucene::search::NO_MORE_DOCS;
 use rucene::store::{
@@ -69,14 +64,35 @@ fn npe(what: &str) -> ! {
     Throwable::new("java.lang.NullPointerException", format!("{what} is null")).throw()
 }
 
-/// The same `Field` object added to a document again: a field with the same
-/// name, current string value and type (see the module's divergence).
-fn copy_field(field: &Field) -> Result<Field> {
-    Field::new(
-        field.name(),
-        field.string_value().unwrap_or_default(),
-        FieldType::new_from(field.field_type()),
-    )
+/// The field the Java test keeps and adds to every document, changed between
+/// documents: the documents that held it were indexed and dropped, so the
+/// test holds it alone again (Rust forbids a `&mut` to a field a live
+/// document shares; see `Document::get_field_mut`).
+fn exclusive<T>(field: &mut Arc<T>) -> &mut T {
+    Arc::get_mut(field).expect("INVARIANT: no live document holds the field")
+}
+
+/// The `i`-th field of class `T` named `name` that the Java test keeps after
+/// `doc.add` (`field1`, `field2`, ...), reached through the document.
+fn nth_field_mut<'a, T: rucene::index::IndexableField + 'static>(
+    doc: &'a mut Document,
+    name: &str,
+    i: usize,
+) -> &'a mut T {
+    doc.get_fields_by_name_mut(name)
+        .into_iter()
+        .filter_map(|f| f.as_any_mut().and_then(|a| a.downcast_mut::<T>()))
+        .nth(i)
+        .expect("INVARIANT: the document holds the field the test keeps")
+}
+
+/// The field of class `T` named `name` that the Java test keeps after
+/// `doc.add`, reached through the document.
+fn field_mut<'a, T: rucene::index::IndexableField + 'static>(
+    doc: &'a mut Document,
+    name: &str,
+) -> &'a mut T {
+    nth_field_mut::<T>(doc, name, 0)
 }
 
 /// `new BytesRef(CharSequence)`.
@@ -885,12 +901,18 @@ fn test_sorted_set_around_block_size(_suite: &CompressingDocValuesSuite) -> Resu
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut out = ByteBuffersDataOutput::new();
+        let mut doc = Document::new();
+        let field1 = SortedSetDocValuesField::new("sset", BytesRef::new(Vec::new()));
+        doc.add(Box::new(field1));
+        let field2 = SortedSetDocValuesField::new("sset", BytesRef::new(Vec::new()));
+        doc.add(Box::new(field2));
         for _ in 0..max_doc {
             let s1 = bytes(&TestUtil::random_simple_string_max(&*random(), 2));
             let s2 = bytes(&TestUtil::random_simple_string_max(&*random(), 2));
-            let mut doc = Document::new();
-            doc.add(Box::new(SortedSetDocValuesField::new("sset", s1.clone())));
-            doc.add(Box::new(SortedSetDocValuesField::new("sset", s2.clone())));
+            nth_field_mut::<SortedSetDocValuesField>(&mut doc, "sset", 0)
+                .set_bytes_value(s1.clone())?;
+            nth_field_mut::<SortedSetDocValuesField>(&mut doc, "sset", 1)
+                .set_bytes_value(s2.clone())?;
             w.add_document(&doc)?;
             let set: BTreeSet<BytesRef> = BTreeSet::from([s1, s2]);
             out.write_v_int(set.len() as i32)?;
@@ -939,12 +961,16 @@ fn test_sorted_numeric_around_block_size(_suite: &CompressingDocValuesSuite) -> 
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut buffer = ByteBuffersDataOutput::new();
 
+        let mut doc = Document::new();
+        let field1 = SortedNumericDocValuesField::new("snum", 0);
+        doc.add(Box::new(field1));
+        let field2 = SortedNumericDocValuesField::new("snum", 0);
+        doc.add(Box::new(field2));
         for _ in 0..max_doc {
             let s1 = i64::from(random().next_int_bound(100));
             let s2 = i64::from(random().next_int_bound(100));
-            let mut doc = Document::new();
-            doc.add(Box::new(SortedNumericDocValuesField::new("snum", s1)));
-            doc.add(Box::new(SortedNumericDocValuesField::new("snum", s2)));
+            nth_field_mut::<SortedNumericDocValuesField>(&mut doc, "snum", 0).set_long_value(s1);
+            nth_field_mut::<SortedNumericDocValuesField>(&mut doc, "snum", 1).set_long_value(s2);
             w.add_document(&doc)?;
             buffer.write_v_long(s1.min(s2))?;
             buffer.write_v_long(s1.max(s2))?;
@@ -1014,19 +1040,21 @@ fn test_numeric_field_jump_tables(suite: &CompressingDocValuesSuite) -> Result<(
     let mut dir = LuceneTestCase::new_directory();
     let iw = create_fast_index_writer(&dir.as_directory(), max_doc)?;
 
-    let mut id_field = LuceneTestCase::new_string_field("id", "", Store::NO);
-    let mut stored_field = LuceneTestCase::new_string_field("stored", "", Store::YES);
+    let mut id_field = Arc::new(LuceneTestCase::new_string_field("id", "", Store::NO));
+    let mut stored_field = Arc::new(LuceneTestCase::new_string_field("stored", "", Store::YES));
+    let mut dv_field = Arc::new(NumericDocValuesField::new("dv", 0));
 
     for i in 0..max_doc {
         let mut doc = Document::new();
-        id_field.set_string_value(format!("{i:b}"))?;
-        doc.add(Box::new(copy_field(&id_field)?));
+        exclusive(&mut id_field).set_string_value(format!("{i:b}"))?;
+        doc.add_shared(Arc::clone(&id_field) as Arc<dyn IndexableField>);
         if random().next_int_bound(100) > 10 {
             // Skip 10% to make DENSE blocks
             let value = random().next_int_bound(100000);
-            stored_field.set_string_value(value.to_string())?;
-            doc.add(Box::new(copy_field(&stored_field)?));
-            doc.add(Box::new(NumericDocValuesField::new("dv", i64::from(value))));
+            exclusive(&mut stored_field).set_string_value(value.to_string())?;
+            doc.add_shared(Arc::clone(&stored_field) as Arc<dyn IndexableField>);
+            exclusive(&mut dv_field).set_value(i64::from(value));
+            doc.add_shared(Arc::clone(&dv_field) as Arc<dyn IndexableField>);
         }
         iw.add_document(&doc)?;
     }
@@ -1195,7 +1223,11 @@ fn do_test_sparse_numeric_blocks_of_various_bits_per_value(
         random().next_boolean(),
     )))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
-    let mut stored_field = LuceneTestCase::new_string_field("stored", "", Store::YES);
+    let mut doc = Document::new();
+    let stored_field = LuceneTestCase::new_string_field("stored", "", Store::YES);
+    let dv_field = NumericDocValuesField::new("dv", 0);
+    doc.add(Box::new(stored_field));
+    doc.add(Box::new(dv_field));
 
     let num_docs = LuceneTestCase::at_least(NUMERIC_BLOCK_SIZE as i32 * 3);
     let mut longs = blocks_of_various_bpv();
@@ -1205,10 +1237,8 @@ fn do_test_sparse_numeric_blocks_of_various_bits_per_value(
             continue;
         }
         let value = longs.get_as_long();
-        stored_field.set_string_value(value.to_string())?;
-        let mut doc = Document::new();
-        doc.add(Box::new(copy_field(&stored_field)?));
-        doc.add(Box::new(NumericDocValuesField::new("dv", value)));
+        field_mut::<Field>(&mut doc, "stored").set_string_value(value.to_string())?;
+        field_mut::<NumericDocValuesField>(&mut doc, "dv").set_value(value);
         writer.add_document(&doc)?;
     }
 
@@ -1403,13 +1433,13 @@ fn test_sorted_terms_dict_lookup_ord(_suite: &CompressingDocValuesSuite) -> Resu
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
     )?;
+    let mut doc = Document::new();
+    let field = SortedDocValuesField::new("foo", BytesRef::new(Vec::new()));
+    doc.add(Box::new(field));
     let num_docs = LuceneTestCase::at_least(TERMS_DICT_BLOCK_LZ4_SIZE as i32 + 1);
     for i in 0..num_docs {
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new(
-            "foo",
-            bytes(&i.to_string()),
-        )));
+        field_mut::<SortedDocValuesField>(&mut doc, "foo")
+            .set_bytes_value(bytes(&i.to_string()))?;
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;
@@ -1435,13 +1465,13 @@ fn test_sorted_set_terms_dict_lookup_ord(_suite: &CompressingDocValuesSuite) -> 
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
     )?;
+    let mut doc = Document::new();
+    let field = SortedSetDocValuesField::new("foo", BytesRef::new(Vec::new()));
+    doc.add(Box::new(field));
     let num_docs = LuceneTestCase::at_least(2 * TERMS_DICT_BLOCK_LZ4_SIZE as i32 + 1);
     for i in 0..num_docs {
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedSetDocValuesField::new(
-            "foo",
-            bytes(&i.to_string()),
-        )));
+        field_mut::<SortedSetDocValuesField>(&mut doc, "foo")
+            .set_bytes_value(bytes(&i.to_string()))?;
         writer.add_document(&doc)?;
     }
     writer.force_merge(1)?;
@@ -1496,11 +1526,14 @@ fn test_terms_enum_dictionary(_suite: &CompressingDocValuesSuite) -> Result<()> 
     let mut directory = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config();
     let iwriter = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
-    for value in ["abc0defghijkl", "abc1defghijkl", "abc2defghijkl"] {
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new("field", bytes(value))));
-        iwriter.add_document(&doc)?;
-    }
+    let mut doc = Document::new();
+    let field = SortedDocValuesField::new("field", bytes("abc0defghijkl"));
+    doc.add(Box::new(field));
+    iwriter.add_document(&doc)?;
+    field_mut::<SortedDocValuesField>(&mut doc, "field").set_bytes_value(bytes("abc1defghijkl"))?;
+    iwriter.add_document(&doc)?;
+    field_mut::<SortedDocValuesField>(&mut doc, "field").set_bytes_value(bytes("abc2defghijkl"))?;
+    iwriter.add_document(&doc)?;
     iwriter.force_merge(1)?;
     iwriter.close()?;
 
@@ -1542,12 +1575,13 @@ fn test_terms_enum_consistency(_suite: &CompressingDocValuesSuite) -> Result<()>
         ];
         chars.iter().collect()
     };
-    for i in 0..num_terms {
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new(
-            "field",
-            bytes(&string_supplier(i)),
-        )));
+    let mut doc = Document::new();
+    let field = SortedDocValuesField::new("field", bytes(&string_supplier(0)));
+    doc.add(Box::new(field));
+    iwriter.add_document(&doc)?;
+    for i in 1..num_terms {
+        field_mut::<SortedDocValuesField>(&mut doc, "field")
+            .set_bytes_value(bytes(&string_supplier(i)))?;
         iwriter.add_document(&doc)?;
     }
     // merging to one segment to make sure we have more than one block (TERMS_DICT_BLOCK_LZ4_SIZE)

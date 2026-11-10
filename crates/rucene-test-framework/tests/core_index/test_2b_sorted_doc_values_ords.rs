@@ -1,8 +1,10 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/Test2BSortedDocValuesOrds.java`.
 //!
 //! Java mutates the `byte[]` the field's `BytesRef` wraps between
-//! `addDocument` calls; Rucene's `Document` owns its fields, so the document
-//! is rebuilt per add with the current bytes (no random draw involved).
+//! `addDocument` calls. A Rust `BytesRef` owns its bytes (a `byte[]` aliased
+//! by the test and the field cannot be mutated through one alias in safe
+//! Rust), so the test hands the current bytes to the document's own field
+//! with `setBytesValue` before each add.
 
 use std::sync::Arc;
 
@@ -54,18 +56,19 @@ fn test_2b_ords() -> Result<()> {
 
     let w = IndexWriter::new(dir.as_directory(), two_b_config()?)?;
 
+    let mut doc = Document::new();
     let mut bytes = [0u8; 4];
+    let dv_field = SortedDocValuesField::new("dv", BytesRef::new(bytes.to_vec()));
+    doc.add(Box::new(dv_field));
 
     for i in 0..MAX_DOCS {
         bytes[0] = (i >> 24) as u8;
         bytes[1] = (i >> 16) as u8;
         bytes[2] = (i >> 8) as u8;
         bytes[3] = (i) as u8;
-        let mut doc = Document::new();
-        doc.add(Box::new(SortedDocValuesField::new(
-            "dv",
-            BytesRef::new(bytes.to_vec()),
-        )));
+        doc.get_field_mut_as::<SortedDocValuesField>("dv")
+            .expect("dvField")
+            .set_bytes_value(BytesRef::new(bytes.to_vec()))?;
         w.add_document(&doc)?;
         if i % 100000 == 0 {
             println_flush(&format!("indexed: {i}"));

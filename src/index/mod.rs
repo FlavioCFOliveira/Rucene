@@ -528,6 +528,14 @@ pub trait IndexableField: std::fmt::Display + Send + Sync {
     /// `analyzer` is `None` for Java's `null`, which an `IndexWriterConfig`
     /// built without an analyzer passes (`IndexingChain.java:1908`).
     ///
+    /// `reuse` is Java's `reuse` argument, the stream the caller holds from
+    /// the previous call: an implementation that reuses it takes it out of
+    /// the slot and returns it; one that does not leaves it in place. A call
+    /// that fails leaves `reuse` holding the stream it held on entry, so the
+    /// caller keeps it, as `IndexingChain`'s `tokenStream = field.tokenStream(
+    /// analyzer, tokenStream)` keeps its previous value when the call throws
+    /// (`IndexingChain.java:1908`).
+    ///
     /// # Errors
     ///
     /// The unchecked exceptions Java's implementations throw:
@@ -538,7 +546,7 @@ pub trait IndexableField: std::fmt::Display + Send + Sync {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>>;
 
     /// Non-null if this field has a binary value.
@@ -662,6 +670,15 @@ impl IndexableFieldIterable for [Box<dyn IndexableField>] {
 impl IndexableFieldIterable for Vec<Box<dyn IndexableField>> {
     fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
         self.as_slice().iterator()
+    }
+}
+
+/// A reference to a document, as a Java `List<Document>` holds references:
+/// the same document may appear several times in one block
+/// (`Arrays.asList(doc, doc, doc)`).
+impl<D: IndexableFieldIterable + ?Sized> IndexableFieldIterable for &D {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        (**self).iterator()
     }
 }
 

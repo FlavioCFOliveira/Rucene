@@ -3,16 +3,12 @@
 //! Create an index with terms from 000-999. Generates random wildcards
 //! according to patterns, and validates the correct number of hits are
 //! returned.
-//!
-//! Java changes the field's value after `doc.add` and adds the document
-//! again; each `addDocument` here gets a document rebuilt from a copy of the
-//! field (`copy_field`), with no extra random draw.
 
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
 use rucene::analysis::Analyzer;
-use rucene::document::Store;
+use rucene::document::{Document, Store};
 use rucene::error::Result;
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::index::Term;
@@ -24,7 +20,7 @@ use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
 use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
-use crate::core_search::support::{doc_of, fixture_class, ftest, set_up, tear_down};
+use crate::core_search::support::{field_mut, fixture_class, ftest, set_up, tear_down};
 use crate::core_support::{assert_equals_msg, random, verbose};
 
 /// The instance of `TestWildcardRandom`.
@@ -55,12 +51,14 @@ fn wildcard_random_set_up(f: &mut WildcardRandomTest) -> Result<()> {
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
 
-    let mut field = LuceneTestCase::new_string_field("field", "", Store::NO);
+    let mut doc = Document::new();
+    let field = LuceneTestCase::new_string_field("field", "", Store::NO);
+    doc.add(Box::new(field));
 
     // `new DecimalFormat("000", new DecimalFormatSymbols(Locale.ROOT))`.
     for i in 0..1000 {
-        field.set_string_value(format!("{i:03}"))?;
-        writer.add_document(&doc_of(&[&field])?)?;
+        field_mut(&mut doc, "field").set_string_value(format!("{i:03}"))?;
+        writer.add_document(&doc)?;
     }
 
     let reader = writer.get_reader()?;

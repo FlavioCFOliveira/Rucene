@@ -1,12 +1,4 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/document/TestFeatureField.java`.
-//!
-//! **Divergence from Lucene 10.5.0 (several methods).** Java adds a
-//! `FeatureField` (or `TextField`) to a `Document` once and calls
-//! `setFeatureValue`/`setStringValue` on it between `addDocument` calls,
-//! mutating the instance the document holds. The port's `Document` owns its
-//! fields and exposes no mutable access, so each `addDocument` indexes the
-//! document rebuilt with the fields' current values (same fields, same
-//! order, same types): what reaches the writer is identical.
 
 use std::sync::Arc;
 
@@ -81,24 +73,19 @@ fn log_mp_writer(dir: &TestDirectory) -> Result<RandomIndexWriter> {
     RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)
 }
 
-/// A document of `FeatureField("features", name, value)`s, in order.
-fn features(fs: &[(&str, f32)]) -> Result<Document> {
-    let mut doc = Document::new();
-    for (name, value) in fs {
-        doc.add(Box::new(FeatureField::new("features", *name, *value)?));
+/// `pagerank.setFeatureValue(v0); urlLength.setFeatureValue(v1); ...`: the
+/// `FeatureField`s named "features" that the Java test keeps after
+/// `doc.add`, in the order they were added, set to `values`.
+fn set_features(doc: &mut Document, values: &[f32]) -> Result<()> {
+    let fields = doc.get_fields_by_name_mut("features");
+    for (field, value) in fields.into_iter().zip(values) {
+        field
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<FeatureField>())
+            .expect("INVARIANT: the document holds FeatureFields named `features`")
+            .set_feature_value(*value)?;
     }
-    Ok(doc)
-}
-
-/// A document of `FeatureField("features", name, value, true)`s, in order.
-fn features_tv(fs: &[(&str, f32)]) -> Result<Document> {
-    let mut doc = Document::new();
-    for (name, value) in fs {
-        doc.add(Box::new(FeatureField::with_term_vectors(
-            "features", *name, *value, true,
-        )?));
-    }
-    Ok(doc)
+    Ok(())
 }
 
 /// `q.createWeight(searcher, mode, boost).scorer(context)`.
@@ -117,11 +104,25 @@ fn scorer_of(
 fn test_basics() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let writer = log_mp_writer(&dir)?;
-    writer.add_document(&features(&[("pagerank", 10.0), ("urlLen", 1.0 / 24.0)])?)?;
-    writer.add_document(&features(&[("pagerank", 100.0), ("urlLen", 1.0 / 20.0)])?)?;
+    let mut doc = Document::new();
+    let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
+    let url_length = FeatureField::new("features", "urlLen", 1.0)?;
+    doc.add(Box::new(pagerank));
+    doc.add(Box::new(url_length));
+
+    set_features(&mut doc, &[10.0, 1.0 / 24.0])?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[100.0, 1.0 / 20.0])?;
+    writer.add_document(&doc)?;
+
     writer.add_document(&Document::new())?; // gap
-    writer.add_document(&features(&[("pagerank", 1.0), ("urlLen", 1.0 / 100.0)])?)?;
-    writer.add_document(&features(&[("pagerank", 42.0), ("urlLen", 1.0 / 23.0)])?)?;
+
+    set_features(&mut doc, &[1.0, 1.0 / 100.0])?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[42.0, 1.0 / 23.0])?;
+    writer.add_document(&doc)?;
     writer.force_merge(1)?;
     let reader = writer.get_reader()?;
     writer.close()?;
@@ -211,11 +212,23 @@ fn test_basics() -> Result<()> {
 fn test_explanations() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let writer = log_mp_writer(&dir)?;
-    writer.add_document(&features(&[("pagerank", 10.0)])?)?;
-    writer.add_document(&features(&[("pagerank", 100.0)])?)?;
+    let mut doc = Document::new();
+    let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
+    doc.add(Box::new(pagerank));
+
+    set_features(&mut doc, &[10.0])?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[100.0])?;
+    writer.add_document(&doc)?;
+
     writer.add_document(&Document::new())?; // gap
-    writer.add_document(&features(&[("pagerank", 1.0)])?)?;
-    writer.add_document(&features(&[("pagerank", 42.0)])?)?;
+
+    set_features(&mut doc, &[1.0])?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[42.0])?;
+    writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     writer.close()?;
 
@@ -313,11 +326,23 @@ fn test_compute_pivot_feature_value() -> Result<()> {
     Assert::assert_true(pivot > 0.0);
     (reader as Arc<dyn IndexReader>).close()?;
 
-    writer.add_document(&features(&[("pagerank", 10.0)])?)?;
-    writer.add_document(&features(&[("pagerank", 100.0)])?)?;
+    let mut doc = Document::new();
+    let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
+    doc.add(Box::new(pagerank));
+
+    set_features(&mut doc, &[10.0])?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[100.0])?;
+    writer.add_document(&doc)?;
+
     writer.add_document(&Document::new())?; // gap
-    writer.add_document(&features(&[("pagerank", 1.0)])?)?;
-    writer.add_document(&features(&[("pagerank", 42.0)])?)?;
+
+    set_features(&mut doc, &[1.0])?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[42.0])?;
+    writer.add_document(&doc)?;
     let reader = writer.get_reader()?;
     writer.close()?;
 
@@ -334,22 +359,35 @@ fn test_compute_pivot_feature_value() -> Result<()> {
 fn test_demo() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let writer = log_mp_writer(&dir)?;
-    let demo_doc = |pagerank: f32, body: &str| -> Result<Document> {
-        let mut doc = Document::new();
-        doc.add(Box::new(FeatureField::new(
-            "features", "pagerank", pagerank,
-        )?));
-        doc.add(Box::new(TextField::new(
-            "body",
-            body.to_string(),
-            Store::NO,
-        )?));
-        Ok(doc)
-    };
-    writer.add_document(&demo_doc(10.0, "Apache Lucene")?)?;
-    writer.add_document(&demo_doc(1000.0, "Apache Web HTTP server")?)?;
-    writer.add_document(&demo_doc(1.0, "Lucene is a search engine")?)?;
-    writer.add_document(&demo_doc(42.0, "Lucene in the sky with diamonds")?)?;
+    let mut doc = Document::new();
+    let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
+    doc.add(Box::new(pagerank));
+    let body = TextField::new("body", String::new(), Store::NO)?;
+    doc.add(Box::new(body));
+
+    set_features(&mut doc, &[10.0])?;
+    doc.get_field_mut_as::<TextField>("body")
+        .expect("body")
+        .set_string_value("Apache Lucene".to_string())?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[1000.0])?;
+    doc.get_field_mut_as::<TextField>("body")
+        .expect("body")
+        .set_string_value("Apache Web HTTP server".to_string())?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[1.0])?;
+    doc.get_field_mut_as::<TextField>("body")
+        .expect("body")
+        .set_string_value("Lucene is a search engine".to_string())?;
+    writer.add_document(&doc)?;
+
+    set_features(&mut doc, &[42.0])?;
+    doc.get_field_mut_as::<TextField>("body")
+        .expect("body")
+        .set_string_value("Lucene in the sky with diamonds".to_string())?;
+    writer.add_document(&doc)?;
 
     let reader = writer.get_reader()?;
     writer.close()?;
@@ -391,15 +429,39 @@ fn test_basics_non_scoring_case() -> Result<()> {
     let reader;
     {
         let writer = log_mp_writer(&dir)?;
-        writer.add_document(&features(&[("pagerank", 10.0), ("urlLen", 1.0 / 24.0)])?)?;
-        writer.add_document(&features(&[("pagerank", 100.0), ("urlLen", 1.0 / 20.0)])?)?;
+        let mut doc = Document::new();
+        let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
+        let url_length = FeatureField::new("features", "urlLen", 1.0)?;
+        doc.add(Box::new(pagerank));
+        doc.add(Box::new(url_length));
+
+        set_features(&mut doc, &[10.0, 1.0 / 24.0])?;
+        writer.add_document(&doc)?;
+
+        set_features(&mut doc, &[100.0, 1.0 / 20.0])?;
+        writer.add_document(&doc)?;
+
         writer.add_document(&Document::new())?; // gap
-        writer.add_document(&features(&[("pagerank", 1.0), ("urlLen", 1.0 / 100.0)])?)?;
-        writer.add_document(&features(&[("pagerank", 42.0), ("urlLen", 1.0 / 23.0)])?)?;
-        // `urlLenDoc.add(urlLength)`: the same field, at its current value.
-        writer.add_document(&features(&[("urlLen", 1.0 / 23.0)])?)?;
-        // `pageRankDoc.add(pagerank)`.
-        writer.add_document(&features(&[("pagerank", 42.0)])?)?;
+
+        set_features(&mut doc, &[1.0, 1.0 / 100.0])?;
+        writer.add_document(&doc)?;
+
+        set_features(&mut doc, &[42.0, 1.0 / 23.0])?;
+        writer.add_document(&doc)?;
+
+        // `pagerank` and `urlLength`, the objects `doc` holds.
+        let (pagerank, url_length) = (
+            Arc::clone(&doc.get_fields()[0]),
+            Arc::clone(&doc.get_fields()[1]),
+        );
+
+        let mut url_len_doc = Document::new();
+        url_len_doc.add_shared(url_length);
+        writer.add_document(&url_len_doc)?;
+
+        let mut page_rank_doc = Document::new();
+        page_rank_doc.add_shared(pagerank);
+        writer.add_document(&page_rank_doc)?;
         writer.force_merge(1)?;
         reader = writer.get_reader()?;
         writer.close()?;
@@ -443,10 +505,20 @@ fn test_basics_non_scoring_case() -> Result<()> {
 fn test_store_term_vectors() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let writer = log_mp_writer(&dir)?;
-    writer.add_document(&features_tv(&[("pagerank", 10.0), ("urlLen", 0.5)])?)?;
+    let mut doc = Document::new();
+    let pagerank = FeatureField::with_term_vectors("features", "pagerank", 1.0, true)?;
+    let url_length = FeatureField::with_term_vectors("features", "urlLen", 1.0, true)?;
+    doc.add(Box::new(pagerank));
+    doc.add(Box::new(url_length));
+
+    set_features(&mut doc, &[10.0, 0.5])?;
+    writer.add_document(&doc)?;
+
     writer.add_document(&Document::new())?; // gap
-    writer.add_document(&features_tv(&[("pagerank", 42.0), ("urlLen", 1.5)])?)?;
-    let mut doc = features_tv(&[("pagerank", 42.0), ("urlLen", 1.5)])?;
+
+    set_features(&mut doc, &[42.0, 1.5])?;
+    writer.add_document(&doc)?;
+
     doc.clear();
     doc.add(Box::new(FeatureField::with_term_vectors(
         "features", "pagerank", 1.0, false,

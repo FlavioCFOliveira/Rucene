@@ -593,6 +593,13 @@ impl LatLonPoint {
 }
 
 impl IndexableField for LatLonPoint {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -604,7 +611,7 @@ impl IndexableField for LatLonPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(point_token_stream(self.packed_value()))
     }
@@ -889,6 +896,13 @@ impl LatLonDocValuesField {
 }
 
 impl IndexableField for LatLonDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -900,7 +914,7 @@ impl IndexableField for LatLonDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap(),
@@ -1141,6 +1155,13 @@ impl XYPointField {
 }
 
 impl IndexableField for XYPointField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1152,7 +1173,7 @@ impl IndexableField for XYPointField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(point_token_stream(self.packed_value()))
     }
@@ -1361,6 +1382,13 @@ impl XYDocValuesField {
 }
 
 impl IndexableField for XYDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1372,7 +1400,7 @@ impl IndexableField for XYDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap(),
@@ -1718,6 +1746,13 @@ fn inet_address_host_address(value: &[u8]) -> String {
 }
 
 impl IndexableField for InetAddressPoint {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1729,7 +1764,7 @@ impl IndexableField for InetAddressPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(point_token_stream(self.packed_value()))
     }
@@ -1974,6 +2009,13 @@ impl InetAddressRange {
 }
 
 impl IndexableField for InetAddressRange {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1985,7 +2027,7 @@ impl IndexableField for InetAddressRange {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(point_token_stream(self.packed_value()))
     }

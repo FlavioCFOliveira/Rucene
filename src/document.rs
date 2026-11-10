@@ -1664,7 +1664,7 @@ impl IndexableField for Field {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         if self.field_type.index_options() == IndexOptions::NONE {
             return Ok(Box::new(
@@ -1676,7 +1676,6 @@ impl IndexableField for Field {
                 // `if (!(reuse instanceof StringTokenStream)) reuse = new
                 // StringTokenStream(); ((StringTokenStream) reuse).setValue(..)`
                 // (`Field.java:471-477`): the lazily created stream is reused.
-                let mut reuse = reuse;
                 if let Some(stream) = reuse
                     .as_mut()
                     .and_then(|reuse| reuse.as_any_mut())
@@ -1684,28 +1683,23 @@ impl IndexableField for Field {
                     .filter(|stream| stream.is_field_stream())
                 {
                     stream.set_value(s);
-                    return Ok(reuse.expect("INVARIANT: matched above"));
+                    return Ok(reuse.take().expect("INVARIANT: matched above"));
                 }
-                // The new stream is built while the refused one is still
-                // alive, as in Java, where the caller keeps holding it.
-                let fresh = Box::new(crate::analysis::StringTokenStream::new(s)?);
-                drop(reuse);
-                return Ok(fresh);
+                // A refused stream is left in `reuse`; the caller replaces it
+                // with the returned one, as Java's `tokenStream = ...` does.
+                return Ok(Box::new(crate::analysis::StringTokenStream::new(s)?));
             }
             if let Some(b) = self.binary_value() {
                 // `Field.java:478-485`.
-                let mut reuse = reuse;
                 if let Some(stream) = reuse
                     .as_mut()
                     .and_then(|reuse| reuse.as_any_mut())
                     .and_then(|any| any.downcast_mut::<crate::analysis::BinaryTokenStream>())
                 {
                     stream.set_value(b);
-                    return Ok(reuse.expect("INVARIANT: matched above"));
+                    return Ok(reuse.take().expect("INVARIANT: matched above"));
                 }
-                let fresh = Box::new(crate::analysis::BinaryTokenStream::new(b)?);
-                drop(reuse);
-                return Ok(fresh);
+                return Ok(Box::new(crate::analysis::BinaryTokenStream::new(b)?));
             }
             return Err(LuceneError::IllegalArgument(
                 "Non-Tokenized Fields must have a String value".to_string(),
@@ -1825,9 +1819,14 @@ impl IndexableField for Field {
 /// [`IndexableField`] requires both, and the shared state a field reaches
 /// (token streams, readers, stored inputs, attributes) lives in
 /// [`AtomicRefCell`]s.
+///
+/// Fields are held by shared reference (`Arc`), as Java's `List<IndexableField>`
+/// holds object references: one field may be added to a document several
+/// times, or to several documents ([`Document::add_shared`]), and every entry
+/// is the same object.
 #[derive(Default)]
 pub struct Document {
-    fields: Vec<Box<dyn IndexableField>>,
+    fields: Vec<Arc<dyn IndexableField>>,
 }
 
 const _: () = {
@@ -1873,7 +1872,20 @@ impl Document {
     }
 
     /// Adds a field to the document.
+    ///
+    /// Equivalent to `Document.add(IndexableField)` (`Document.java:61-63`)
+    /// for a field no one else holds.
     pub fn add(&mut self, field: Box<dyn IndexableField>) {
+        self.fields.push(Arc::from(field));
+    }
+
+    /// Adds a field that the caller, or other entries, also hold.
+    ///
+    /// Equivalent to `Document.add(IndexableField)` (`Document.java:61-63`):
+    /// Java adds an object reference, so the same `Field` may be added more
+    /// than once, to one document or to several, and a change made through
+    /// any holder is seen by every entry.
+    pub fn add_shared(&mut self, field: Arc<dyn IndexableField>) {
         self.fields.push(field);
     }
 
@@ -1881,7 +1893,7 @@ impl Document {
     ///
     /// This is used by parallel/composite stored-fields views that need to merge
     /// the stored fields of several sub-readers for the same doc ID.
-    pub fn into_fields(self) -> Vec<Box<dyn IndexableField>> {
+    pub fn into_fields(self) -> Vec<Arc<dyn IndexableField>> {
         self.fields
     }
 
@@ -1912,11 +1924,59 @@ impl Document {
     /// through it is seen by the document. Rust ownership routes that access
     /// through the document; [`IndexableField::as_any_mut`] reaches the
     /// concrete field.
+    ///
+    /// **Divergence.** `None` also answers a field the document shares with
+    /// another holder ([`Document::add_shared`]): Java changes a shared object
+    /// through any reference, while Rust forbids a `&mut` to an aliased value
+    /// and the port's fields keep their values without interior mutability.
+    /// A field added with [`Document::add`] is always reachable.
     pub fn get_field_mut(&mut self, name: &str) -> Option<&mut dyn IndexableField> {
         match self.fields.iter_mut().find(|f| f.name() == name) {
-            Some(f) => Some(f.as_mut()),
+            Some(f) => match Arc::get_mut(f) {
+                Some(f) => Some(f),
+                None => None,
+            },
             None => None,
         }
+    }
+
+    /// Returns the first field with the given name whose concrete type is
+    /// `T`, mutable, or `None`.
+    ///
+    /// The typed form of [`Document::get_field_mut`], for the Java code that
+    /// keeps a reference to a field of a known class (`IntPoint`,
+    /// `NumericDocValuesField`, ...) after `doc.add(field)` and changes it in
+    /// place; a document may hold several fields of one name and different
+    /// classes, so the type selects the one Java holds.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, for the reason given on
+    /// [`Document::get_field_mut`]; a shared field is skipped, as there.
+    pub fn get_field_mut_as<T: IndexableField + 'static>(&mut self, name: &str) -> Option<&mut T> {
+        self.fields
+            .iter_mut()
+            .filter(|f| f.name() == name)
+            .filter_map(Arc::get_mut)
+            .find_map(|f| f.as_any_mut().and_then(|a| a.downcast_mut::<T>()))
+    }
+
+    /// Returns all fields with the given name, mutable, in the order they
+    /// were added.
+    ///
+    /// The mutable form of [`Document::get_fields_by_name`], for the Java code
+    /// that keeps references to several fields of one name (two
+    /// `FeatureField("features", ...)`s) and changes them in place.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, for the reason given on
+    /// [`Document::get_field_mut`]; shared fields are left out, as there.
+    pub fn get_fields_by_name_mut(
+        &mut self,
+        name: &str,
+    ) -> Vec<&mut (dyn IndexableField + 'static)> {
+        self.fields
+            .iter_mut()
+            .filter(|f| f.name() == name)
+            .filter_map(Arc::get_mut)
+            .collect()
     }
 
     /// Returns all fields with the given name.
@@ -1929,7 +1989,11 @@ impl Document {
     }
 
     /// Returns all fields in the document.
-    pub fn get_fields(&self) -> &[Box<dyn IndexableField>] {
+    ///
+    /// Equivalent to `Document.getFields()` (`Document.java:180-182`); each
+    /// entry is the shared field object, so a caller can add it to another
+    /// document with [`Document::add_shared`].
+    pub fn get_fields(&self) -> &[Arc<dyn IndexableField>] {
         &self.fields
     }
 
@@ -2132,9 +2196,41 @@ impl StringField {
             stored_value,
         })
     }
+
+    /// Changes the string value of this field.
+    ///
+    /// Equivalent to `StringField.setStringValue(String)`
+    /// (`StringField.java:99-106`): `Field.setStringValue` (`Field.java:304-313`)
+    /// checks the value type and rejects `None` (Java's `null`), then the
+    /// indexed bytes and the stored value follow the new string.
+    pub fn set_string_value(&mut self, value: impl Into<Option<String>>) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::String(_)) {
+            return Err(LuceneError::IllegalArgument(
+                "cannot change value type to String".to_string(),
+            ));
+        }
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "value must not be null".to_string(),
+            ));
+        };
+        self.binary_value = Some(BytesRef::from_char_sequence(&value));
+        if let Some(stored_value) = self.stored_value.as_mut() {
+            stored_value.set_string_value(value.clone())?;
+        }
+        self.fields_data = FieldData::String(value);
+        Ok(())
+    }
 }
 
 impl IndexableField for StringField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -2146,7 +2242,7 @@ impl IndexableField for StringField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value
@@ -2275,9 +2371,40 @@ impl TextField {
             stored_value: None,
         })
     }
+
+    /// Changes the string value of this field.
+    ///
+    /// Equivalent to `TextField.setStringValue(String)`
+    /// (`TextField.java:94-99`): `Field.setStringValue` (`Field.java:304-313`)
+    /// checks the value type and rejects `None` (Java's `null`), then the
+    /// stored value follows the new string.
+    pub fn set_string_value(&mut self, value: impl Into<Option<String>>) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::String(_)) {
+            return Err(LuceneError::IllegalArgument(
+                "cannot change value type to String".to_string(),
+            ));
+        }
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "value must not be null".to_string(),
+            ));
+        };
+        if let Some(stored_value) = self.stored_value.as_mut() {
+            stored_value.set_string_value(value.clone())?;
+        }
+        self.fields_data = FieldData::String(value);
+        Ok(())
+    }
 }
 
 impl IndexableField for TextField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -2289,7 +2416,7 @@ impl IndexableField for TextField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         match &self.fields_data {
             FieldData::TokenStream(ts) => Ok(Box::new(crate::analysis::SharedTokenStream::new(
@@ -2449,7 +2576,31 @@ impl StoredField {
     }
 }
 
+/// `StoredField extends Field`: the inherited `Field` members (the value
+/// setters `setStringValue`, `setBytesValue`, `setIntValue`, ...) are reached
+/// through the wrapped [`Field`].
+impl std::ops::Deref for StoredField {
+    type Target = Field;
+
+    fn deref(&self) -> &Field {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for StoredField {
+    fn deref_mut(&mut self) -> &mut Field {
+        &mut self.0
+    }
+}
+
 impl IndexableField for StoredField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         self.0.name()
     }
@@ -2461,7 +2612,7 @@ impl IndexableField for StoredField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         self.0.token_stream(analyzer, reuse)
     }
@@ -2855,6 +3006,13 @@ impl KeywordField {
 }
 
 impl IndexableField for KeywordField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     /// This field answers with itself: Java's `instanceof KeywordField` on it is
     /// `true`.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -2872,7 +3030,7 @@ impl IndexableField for KeywordField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value
@@ -3214,6 +3372,13 @@ impl IntPoint {
 }
 
 impl IndexableField for IntPoint {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -3225,7 +3390,7 @@ impl IndexableField for IntPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -3473,6 +3638,13 @@ impl LongPoint {
 }
 
 impl IndexableField for LongPoint {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -3484,7 +3656,7 @@ impl IndexableField for LongPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -3815,6 +3987,13 @@ impl FloatPoint {
 }
 
 impl IndexableField for FloatPoint {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -3826,7 +4005,7 @@ impl IndexableField for FloatPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -4085,6 +4264,13 @@ impl DoublePoint {
 }
 
 impl IndexableField for DoublePoint {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -4096,7 +4282,7 @@ impl IndexableField for DoublePoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -4295,6 +4481,13 @@ impl BinaryPoint {
 }
 
 impl IndexableField for BinaryPoint {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -4306,7 +4499,7 @@ impl IndexableField for BinaryPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -4524,6 +4717,13 @@ impl NumericDocValuesField {
 }
 
 impl IndexableField for NumericDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -4535,7 +4735,7 @@ impl IndexableField for NumericDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::StringTokenStream::new("".to_string()).unwrap(),
@@ -4613,6 +4813,13 @@ fn raw_float_bits_as_long(value: f32) -> i64 {
 }
 
 impl IndexableField for FloatDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         self.inner.name()
     }
@@ -4624,7 +4831,7 @@ impl IndexableField for FloatDocValuesField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         self.inner.token_stream(analyzer, reuse)
     }
@@ -4678,6 +4885,13 @@ impl DoubleDocValuesField {
 }
 
 impl IndexableField for DoubleDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         self.inner.name()
     }
@@ -4689,7 +4903,7 @@ impl IndexableField for DoubleDocValuesField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         self.inner.token_stream(analyzer, reuse)
     }
@@ -4753,6 +4967,21 @@ impl SortedDocValuesField {
         }
     }
 
+    /// Changes the value of this field.
+    ///
+    /// Equivalent to the inherited `Field.setBytesValue(BytesRef)`
+    /// (`Field.java:335-346`): `value` is `None` for Java's `null`, rejected
+    /// with `IllegalArgumentException("value must not be null")`.
+    pub fn set_bytes_value(&mut self, value: impl Into<Option<BytesRef>>) -> Result<()> {
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "value must not be null".to_string(),
+            ));
+        };
+        self.value = value;
+        Ok(())
+    }
+
     /// Creates a query matching documents whose term falls in the range.
     ///
     /// Equivalent to `SortedDocValuesField.newSlowRangeQuery(String, BytesRef,
@@ -4801,6 +5030,13 @@ impl SortedDocValuesField {
 }
 
 impl IndexableField for SortedDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -4812,7 +5048,7 @@ impl IndexableField for SortedDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
@@ -4878,6 +5114,21 @@ impl SortedSetDocValuesField {
         }
     }
 
+    /// Changes the value of this field.
+    ///
+    /// Equivalent to the inherited `Field.setBytesValue(BytesRef)`
+    /// (`Field.java:335-346`): `value` is `None` for Java's `null`, rejected
+    /// with `IllegalArgumentException("value must not be null")`.
+    pub fn set_bytes_value(&mut self, value: impl Into<Option<BytesRef>>) -> Result<()> {
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "value must not be null".to_string(),
+            ));
+        };
+        self.value = value;
+        Ok(())
+    }
+
     /// Creates a query matching documents with a term in the range.
     ///
     /// Equivalent to `SortedSetDocValuesField.newSlowRangeQuery(String,
@@ -4927,6 +5178,13 @@ impl SortedSetDocValuesField {
 }
 
 impl IndexableField for SortedSetDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -4938,7 +5196,7 @@ impl IndexableField for SortedSetDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
@@ -4995,6 +5253,15 @@ impl SortedNumericDocValuesField {
         }
     }
 
+    /// Changes the value of this field.
+    ///
+    /// Equivalent to the inherited `Field.setLongValue(long)`
+    /// (`Field.java:376-382`); the value is always a `Long`, so the value-type
+    /// check never fails.
+    pub fn set_long_value(&mut self, value: i64) {
+        self.value = value;
+    }
+
     /// Creates a SortedNumericDocValuesField with a skip index.
     pub fn indexed_field(name: &str, value: i64) -> Self {
         Self {
@@ -5035,6 +5302,13 @@ impl SortedNumericDocValuesField {
 }
 
 impl IndexableField for SortedNumericDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -5046,7 +5320,7 @@ impl IndexableField for SortedNumericDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::StringTokenStream::new("".to_string()).unwrap(),
@@ -5114,9 +5388,41 @@ impl BinaryDocValuesField {
             value,
         }
     }
+
+    /// Changes the value of this field.
+    ///
+    /// Equivalent to the inherited `Field.setBytesValue(BytesRef)`
+    /// (`Field.java:335-346`): `value` is `None` for Java's `null`, rejected
+    /// with `IllegalArgumentException("value must not be null")`.
+    /// A field built with a `null` value throws `NullPointerException` from
+    /// the value-type check, as Java's `fieldsData.getClass()` does.
+    pub fn set_bytes_value(&mut self, value: impl Into<Option<BytesRef>>) -> Result<()> {
+        if self.value.is_none() {
+            // `fieldsData.getClass()` on a `null` value.
+            return Err(LuceneError::Unchecked {
+                class: "java.lang.NullPointerException",
+                message: None,
+                cause: None,
+            });
+        }
+        let Some(value) = value.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "value must not be null".to_string(),
+            ));
+        };
+        self.value = Some(value);
+        Ok(())
+    }
 }
 
 impl IndexableField for BinaryDocValuesField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -5128,7 +5434,7 @@ impl IndexableField for BinaryDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(
@@ -5377,6 +5683,13 @@ impl IntField {
 }
 
 impl IndexableField for IntField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     /// This field answers with itself: Java's `instanceof IntField` on it is
     /// `true`.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -5394,7 +5707,7 @@ impl IndexableField for IntField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -5617,6 +5930,13 @@ impl LongField {
 }
 
 impl IndexableField for LongField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -5628,7 +5948,7 @@ impl IndexableField for LongField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -5775,6 +6095,13 @@ impl FloatField {
 }
 
 impl IndexableField for FloatField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -5786,7 +6113,7 @@ impl IndexableField for FloatField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -5932,6 +6259,13 @@ impl DoubleField {
 }
 
 impl IndexableField for DoubleField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -5943,7 +6277,7 @@ impl IndexableField for DoubleField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -6392,6 +6726,13 @@ impl KnnFloatVectorField {
 }
 
 impl IndexableField for KnnFloatVectorField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -6403,7 +6744,7 @@ impl IndexableField for KnnFloatVectorField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         // A vector field is never inverted: its `indexOptions` is `NONE`, so
         // `IndexingChain.invertAndStore` skips it and never asks for a stream.
@@ -6596,6 +6937,13 @@ impl KnnByteVectorField {
 }
 
 impl IndexableField for KnnByteVectorField {
+    /// This field as a mutable `Any`, so that a caller can change it in
+    /// place through [`Document::get_field_mut`](crate::document::Document::get_field_mut),
+    /// as Java changes the field object it added to a document.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -6607,7 +6955,7 @@ impl IndexableField for KnnByteVectorField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<Box<dyn TokenStream>>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::StringTokenStream::new(String::new()).unwrap(),

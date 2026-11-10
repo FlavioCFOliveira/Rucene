@@ -53,7 +53,7 @@ fn test_string_field() -> Result<()> {
     )?;
 
     // passing null
-    let mut ts = string_field.token_stream(None, None)?;
+    let mut ts = string_field.token_stream(None, &mut None)?;
     BaseTokenStreamTestCase::assert_token_stream_contents_offsets(&mut *ts, &["bar"], &[0], &[3])?;
 
     // now reuse previous stream
@@ -63,9 +63,9 @@ fn test_string_field() -> Result<()> {
         StringField::type_not_stored().clone(),
     )?;
     let ts_identity = identity(&*ts);
-    // `ts` moves into the call, as Java hands the object over; `ts2` is that
+    // `ts` is handed to the call, as Java hands the object over; `ts2` is that
     // object when it is reused (`assertSame(ts, ts2)`).
-    ts = string_field.token_stream(None, Some(ts))?;
+    ts = string_field.token_stream(None, &mut Some(ts))?;
     assert_same(ts_identity, identity(&*ts));
     BaseTokenStreamTestCase::assert_token_stream_contents_offsets(&mut *ts, &["baz"], &[0], &[3])?;
 
@@ -77,7 +77,7 @@ fn test_string_field() -> Result<()> {
     )?;
     let bogus: Box<dyn TokenStream> = Box::new(CannedTokenStream::new(Vec::new()));
     let bogus_identity = identity(&*bogus);
-    ts = string_field.token_stream(None, Some(bogus))?;
+    ts = string_field.token_stream(None, &mut Some(bogus))?;
     assert_not_same(identity(&*ts), bogus_identity);
     BaseTokenStreamTestCase::assert_token_stream_contents_offsets(&mut *ts, &["beer"], &[0], &[4])?;
     Ok(())
@@ -119,9 +119,10 @@ impl IndexableField for MyField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        reuse: Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        *self.state.last_seen.lock().unwrap() = reuse.map(|reuse| identity(&*reuse) as usize);
+        *self.state.last_seen.lock().unwrap() =
+            reuse.as_deref().map(|reuse| identity(reuse) as usize);
         let returned: Box<dyn TokenStream> =
             Box::new(CannedTokenStream::new(vec![Token::with_offsets(
                 "unimportant",

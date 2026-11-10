@@ -6,10 +6,7 @@
 //!
 //! Java's `AssertingCodec` subclasses (`MockCodec` and the anonymous ones)
 //! override `getPostingsFormatForField`; Rucene's `AssertingCodec` takes that
-//! choice as a function (`AssertingCodec::with_formats_for_field`). Rucene's
-//! `Document` gives no mutable access to its fields, so
-//! `doTestMixedPostings` rebuilds the document with each `setStringValue`'s
-//! value before each `addDocument`, with no extra random draws.
+//! choice as a function (`AssertingCodec::with_formats_for_field`).
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -365,22 +362,29 @@ fn do_test_mixed_postings(codec: Arc<dyn Codec>) -> Result<()> {
     ))));
     iwc.set_codec(codec)?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
-    let ft = FieldType::new_from(TextField::type_not_stored());
+    let mut doc = Document::new();
+    let ft = Arc::new(FieldType::new_from(TextField::type_not_stored()));
     // turn on vectors for the checkindex cross-check
     ft.set_store_term_vectors(true)?;
     ft.set_store_term_vector_offsets(true)?;
     ft.set_store_term_vector_positions(true)?;
+    let id_field = Field::new("id", String::new(), Arc::clone(&ft))?;
+    let date_field = Field::new("date", String::new(), Arc::clone(&ft))?;
+    doc.add(Box::new(id_field));
+    doc.add(Box::new(date_field));
     for _ in 0..100 {
-        // `idField.setStringValue(...)`, `dateField.setStringValue(...)`.
-        let id_value = random().next_int_bound(50).to_string();
-        let date_value = random().next_int_bound(100).to_string();
-        let mut doc = Document::new();
-        doc.add(Box::new(Field::new("id", id_value, ft.clone())?));
-        doc.add(Box::new(Field::new("date", date_value, ft.clone())?));
+        field_mut(&mut doc, "id").set_string_value(random().next_int_bound(50).to_string())?;
+        field_mut(&mut doc, "date").set_string_value(random().next_int_bound(100).to_string())?;
         iw.add_document(&doc)?;
     }
     iw.close()?;
     dir.close() // checkindex
+}
+
+/// The `Field` named `name` that the Java test keeps after `doc.add`.
+fn field_mut<'a>(doc: &'a mut Document, name: &str) -> &'a mut Field {
+    doc.get_field_mut_as::<Field>(name)
+        .expect("INVARIANT: the document holds the Field")
 }
 
 /// Port of `TestPerFieldPostingsFormat2.testMergeCalledOnTwoFormats`.

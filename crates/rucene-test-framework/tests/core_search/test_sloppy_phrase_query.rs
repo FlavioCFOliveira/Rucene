@@ -27,7 +27,7 @@ use rucene_test_framework::search::query_utils::QueryUtils;
 use rucene_test_framework::store::MockDirectoryWrapper;
 use rucene_test_framework::util::LuceneTestCase;
 
-use crate::core_search::support::doc_of;
+use crate::core_search::support::field_mut;
 use crate::core_support::{assert_equals, assert_equals_msg, class, random, test};
 
 /// `TestSloppyPhraseQuery`.
@@ -422,17 +422,17 @@ fn test_slop_with_holes() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let custom_type = omit_norms_type()?;
-    // `Document doc` holding `Field f`: rebuilt from `f` for each
-    // `addDocument`.
-    let mut f = Field::new("lyrics", String::new(), custom_type)?;
-    f.set_string_value("drug drug".to_string())?;
-    iw.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("drug druggy drug".to_string())?;
-    iw.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("drug druggy druggy drug".to_string())?;
-    iw.add_document(&doc_of(&[&f])?)?;
-    f.set_string_value("drug druggy drug druggy drug".to_string())?;
-    iw.add_document(&doc_of(&[&f])?)?;
+    let mut doc = Document::new();
+    let f = Field::new("lyrics", String::new(), custom_type)?;
+    doc.add(Box::new(f));
+    field_mut(&mut doc, "lyrics").set_string_value("drug drug".to_string())?;
+    iw.add_document(&doc)?;
+    field_mut(&mut doc, "lyrics").set_string_value("drug druggy drug".to_string())?;
+    iw.add_document(&doc)?;
+    field_mut(&mut doc, "lyrics").set_string_value("drug druggy druggy drug".to_string())?;
+    iw.add_document(&doc)?;
+    field_mut(&mut doc, "lyrics").set_string_value("drug druggy drug druggy drug".to_string())?;
+    iw.add_document(&doc)?;
     let ir = iw.get_reader()?;
     iw.close()?;
     let is = LuceneTestCase::new_searcher(Arc::clone(&ir));

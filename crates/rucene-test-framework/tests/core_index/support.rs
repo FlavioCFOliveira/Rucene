@@ -145,11 +145,6 @@ pub fn add_line_file_docs(riw: &rucene_test_framework::index::RandomIndexWriter)
 /// `TestAllFilesDetectTruncation` share: 100 documents of a text field with
 /// term vectors, a string field with sorted doc values, a long point with
 /// numeric doc values and a 16-dimension float vector.
-///
-/// Java adds the fields to one `Document` once and changes their values
-/// before each `addDocument`; a Rucene `Document` owns its fields, so each
-/// iteration builds the document again from fields of the same names, types
-/// and order carrying the new values, with the same draws (guide section 6).
 pub fn add_mutated_docs(riw: &rucene_test_framework::index::RandomIndexWriter) -> Result<()> {
     use rucene::document::{
         Document, Field, FieldType, KnnFloatVectorField, LongPoint, NumericDocValuesField,
@@ -157,34 +152,43 @@ pub fn add_mutated_docs(riw: &rucene_test_framework::index::RandomIndexWriter) -
     };
     use rucene::util::BytesRef;
 
-    let text_with_term_vectors_type = FieldType::new_from(TextField::type_stored());
+    let mut doc = Document::new();
+    let text_with_term_vectors_type = Arc::new(FieldType::new_from(TextField::type_stored()));
     text_with_term_vectors_type.set_store_term_vectors(true)?;
-    let mut vector = [0f32; 16];
+    let text = Field::new(
+        "text",
+        String::new(),
+        Arc::clone(&text_with_term_vectors_type),
+    )?;
+    doc.add(Box::new(text));
+    let term_string = StringField::new("string", String::new(), Store::YES)?;
+    doc.add(Box::new(term_string));
+    let dv_string = SortedDocValuesField::new("string", BytesRef::new(Vec::new()));
+    doc.add(Box::new(dv_string));
+    let point_number = LongPoint::new("long", &[0])?;
+    doc.add(Box::new(point_number));
+    let dv_number = NumericDocValuesField::new("long", 0);
+    doc.add(Box::new(dv_number));
+    let vector = KnnFloatVectorField::with_euclidean("vector", &[0f32; 16])?;
+    doc.add(Box::new(vector));
+
     for i in 0..100 {
-        let text = TestUtil::random_analysis_string(&*random(), 20, true);
+        field_mut(&mut doc, "text").set_string_value(TestUtil::random_analysis_string(
+            &*random(),
+            20,
+            true,
+        ))?;
         let random_string = TestUtil::random_simple_string_max(&*random(), 5);
+        field_mut_as::<StringField>(&mut doc, "string").set_string_value(random_string.clone())?;
+        field_mut_as::<SortedDocValuesField>(&mut doc, "string")
+            .set_bytes_value(BytesRef::from_char_sequence(&random_string))?;
         let number = random().next_int_bound(10) as i64;
-        vector.fill((i % 4) as f32);
-        let mut doc = Document::new();
-        doc.add(Box::new(Field::new(
-            "text",
-            text,
-            text_with_term_vectors_type.clone(),
-        )?));
-        doc.add(Box::new(StringField::new(
-            "string",
-            random_string.clone(),
-            Store::YES,
-        )?));
-        doc.add(Box::new(SortedDocValuesField::new(
-            "string",
-            BytesRef::from_char_sequence(&random_string),
-        )));
-        doc.add(Box::new(LongPoint::new("long", &[number])?));
-        doc.add(Box::new(NumericDocValuesField::new("long", number)));
-        doc.add(Box::new(KnnFloatVectorField::with_euclidean(
-            "vector", &vector,
-        )?));
+        field_mut_as::<LongPoint>(&mut doc, "long").set_long_value(number)?;
+        field_mut_as::<NumericDocValuesField>(&mut doc, "long").set_value(number);
+        // `Arrays.fill(vector.vectorValue(), i % 4)`: the array the field
+        // holds, changed through the field.
+        field_mut_as::<KnnFloatVectorField>(&mut doc, "vector")
+            .set_vector_value(&[(i % 4) as f32; 16])?;
         riw.add_document(&doc)?;
     }
     Ok(())
@@ -319,22 +323,6 @@ pub fn assert_no_unreferenced_files(
         ));
     }
     Ok(())
-}
-
-/// The same `Field` object added to a document again: a field with the same
-/// name, current string value and type.
-///
-/// **Divergence from Lucene 10.5.0.** Java tests keep a reference to a field
-/// they added to a `Document`, call `setStringValue` on it and add the
-/// document again; a Rucene `Document` owns its fields, so the test keeps the
-/// field and rebuilds the document from copies of it, in the same order and
-/// without drawing again (guide section 6).
-pub fn copy_field(field: &rucene::document::Field) -> Result<rucene::document::Field> {
-    rucene::document::Field::new(
-        field.name(),
-        field.string_value().unwrap_or_default(),
-        rucene::document::FieldType::new_from(field.field_type()),
-    )
 }
 
 /// Forwards the named `LeafReader` members of a `FilterLeafReader` subclass
@@ -1295,8 +1283,7 @@ impl rucene::index::merge_scheduler::MergeScheduler for PrologueMergeScheduler {
 }
 
 /// The `Field` named `name` that the Java test keeps a reference to after
-/// `doc.add(field)` (`idField.setStringValue(...)`), reached through the
-/// document that owns it.
+/// `doc.add(field)` and changes in place, reached through the document.
 ///
 /// # Panics
 ///
@@ -1305,14 +1292,26 @@ pub fn field_mut<'a>(
     doc: &'a mut rucene::document::Document,
     name: &str,
 ) -> &'a mut rucene::document::Field {
-    doc.get_field_mut(name)
-        .and_then(|f| f.as_any_mut())
-        .and_then(|a| a.downcast_mut::<rucene::document::Field>())
-        .unwrap_or_else(|| {
-            randomizedtesting::jdk::exception::Throwable::new(
-                "java.lang.ClassCastException",
-                format!("no Field named {name}"),
-            )
-            .throw()
-        })
+    field_mut_as::<rucene::document::Field>(doc, name)
+}
+
+/// The field of class `T` named `name` that the Java test keeps a reference
+/// to after `doc.add(field)` and changes in place, reached through the
+/// document ([`rucene::document::Document::get_field_mut_as`]).
+///
+/// # Panics
+///
+/// `ClassCastException` when the document has no field of that name and
+/// class.
+pub fn field_mut_as<'a, T: rucene::index::IndexableField + 'static>(
+    doc: &'a mut rucene::document::Document,
+    name: &str,
+) -> &'a mut T {
+    doc.get_field_mut_as::<T>(name).unwrap_or_else(|| {
+        randomizedtesting::jdk::exception::Throwable::new(
+            "java.lang.ClassCastException",
+            format!("no {} named {name}", std::any::type_name::<T>()),
+        )
+        .throw()
+    })
 }

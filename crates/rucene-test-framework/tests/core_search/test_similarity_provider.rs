@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
-use rucene::document::Store;
+use rucene::document::{Document, Store};
 use rucene::error::Result;
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::index::multi_doc_values::MultiDocValues;
@@ -21,7 +21,7 @@ use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
 use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::LuceneTestCase;
 
-use crate::core_search::support::{doc_of, fixture_class, ftest, set_up, tear_down};
+use crate::core_search::support::{field_mut, fixture_class, ftest, set_up, tear_down};
 use crate::core_support::{assert_equals, random};
 
 /// The instance of `TestSimilarityProvider`.
@@ -52,17 +52,18 @@ fn provider_set_up(f: &mut SimilarityProvider) -> Result<()> {
     ))));
     iwc.set_similarity(Some(Arc::clone(&sim)))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
-    // `Document doc` holding `field` and `field2`: rebuilt from them for each
-    // `addDocument`.
-    let mut field = LuceneTestCase::new_text_field("foo", "", Store::NO);
-    let mut field2 = LuceneTestCase::new_text_field("bar", "", Store::NO);
+    let mut doc = Document::new();
+    let field = LuceneTestCase::new_text_field("foo", "", Store::NO);
+    doc.add(Box::new(field));
+    let field2 = LuceneTestCase::new_text_field("bar", "", Store::NO);
+    doc.add(Box::new(field2));
 
-    field.set_string_value("quick brown fox".to_string())?;
-    field2.set_string_value("quick brown fox".to_string())?;
-    iw.add_document(&doc_of(&[&field, &field2])?)?;
-    field.set_string_value("jumps over lazy brown dog".to_string())?;
-    field2.set_string_value("jumps over lazy brown dog".to_string())?;
-    iw.add_document(&doc_of(&[&field, &field2])?)?;
+    field_mut(&mut doc, "foo").set_string_value("quick brown fox".to_string())?;
+    field_mut(&mut doc, "bar").set_string_value("quick brown fox".to_string())?;
+    iw.add_document(&doc)?;
+    field_mut(&mut doc, "foo").set_string_value("jumps over lazy brown dog".to_string())?;
+    field_mut(&mut doc, "bar").set_string_value("jumps over lazy brown dog".to_string())?;
+    iw.add_document(&doc)?;
     let reader = iw.get_reader()?;
     iw.close()?;
     let mut searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));

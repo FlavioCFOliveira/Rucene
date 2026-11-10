@@ -1,8 +1,5 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestFieldsReader.java`.
 //!
-//! * The static `testDoc` is rebuilt with `DocHelper.setupDoc` where it is
-//!   used: Rucene's `Document` owns its fields and is not `Send`, and
-//!   `setupDoc` draws nothing, so each build holds the same fields.
 //! * `FaultyIndexInput extends BufferedIndexInput` is the unbuffered source a
 //!   Rucene `BufferedIndexInput` buffers: its `read_bytes` is
 //!   `readInternal`, its `seek` is `seekInternal` (as
@@ -46,13 +43,15 @@ pub fn class_def() -> Arc<Class> {
     )
 }
 
-/// The static fields `dir` and `fieldInfos`.
+/// The static fields `testDoc`, `dir` and `fieldInfos`.
 struct Statics {
+    test_doc: Option<Arc<Document>>,
     dir: Option<TestDirectory>,
     field_infos: Option<FieldInfosBuilder>,
 }
 
 static STATICS: Mutex<Statics> = Mutex::new(Statics {
+    test_doc: None,
     dir: None,
     field_infos: None,
 });
@@ -61,16 +60,17 @@ fn statics() -> std::sync::MutexGuard<'static, Statics> {
     STATICS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// `testDoc`: `new Document()` filled by `DocHelper.setupDoc`.
-fn test_doc() -> Document {
-    let mut test_doc = Document::new();
-    DocHelper::setup_doc(&mut test_doc);
-    test_doc
+/// The static `testDoc`.
+fn test_doc() -> Arc<Document> {
+    statics().test_doc.clone().unwrap_or_else(|| npe("testDoc"))
 }
 
 /// `@BeforeClass public static void beforeClass()`.
 fn before_class() -> Result<()> {
-    let test_doc = test_doc();
+    let mut test_doc = Document::new();
+    DocHelper::setup_doc(&mut test_doc);
+    let test_doc = Arc::new(test_doc);
+    statics().test_doc = Some(Arc::clone(&test_doc));
     let mut field_infos = FieldInfosBuilder::new(Arc::new(FieldNumbers::new(None, None)?));
     for field in test_doc.get_fields() {
         let ift = field.field_type();
@@ -102,7 +102,7 @@ fn before_class() -> Result<()> {
     conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     conf.merge_policy().set_no_cfs_ratio(0.0)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
-    writer.add_document(&test_doc)?;
+    writer.add_document(&*test_doc)?;
     writer.close()?;
     let mut s = statics();
     s.field_infos = Some(field_infos);
@@ -115,6 +115,7 @@ fn after_class() -> Result<()> {
     let mut s = statics();
     let mut dir = s.dir.take().unwrap_or_else(|| npe("dir"));
     dir.close()?;
+    s.test_doc = None;
     s.field_infos = None;
     Ok(())
 }
@@ -381,7 +382,7 @@ fn test_exceptions() -> Result<()> {
     let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, iwc)?;
     let test_doc = test_doc();
     for _ in 0..2 {
-        writer.add_document(&test_doc)?;
+        writer.add_document(&*test_doc)?;
     }
     writer.force_merge(1)?;
     writer.close()?;
