@@ -342,6 +342,15 @@ impl DeletedTerms {
         self.terms_size = 0;
     }
 
+    /// Returns the pool the terms' bytes live in.
+    ///
+    /// Equivalent to the package-private `DeletedTerms.getPool()`
+    /// (`BufferedUpdates.java:275`); public so that the tests of the `index`
+    /// package can read it, as Java's do.
+    pub fn get_pool(&self) -> &ByteBlockPool {
+        &self.pool
+    }
+
     /// Returns the number of distinct terms.
     ///
     /// Equivalent to `DeletedTerms.size()`.

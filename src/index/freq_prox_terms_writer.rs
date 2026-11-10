@@ -150,12 +150,16 @@ impl ByteSlicePool {
     ///
     /// # Errors
     ///
-    /// Propagates the pool-overflow error of [`ByteBlockPool::next_buffer`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if `size` exceeds the pool's block size.
+    /// Propagates the pool-overflow error of [`ByteBlockPool::next_buffer`], and
+    /// returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when `size` exceeds the pool's block
+    /// size (`ByteSlicePool.java:71-77`).
     pub fn new_slice(pool: &mut ByteBlockPool, size: usize) -> Result<usize> {
+        if size > crate::util::BYTE_BLOCK_SIZE {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "Slice size {size} should be less than the block size {}",
+                crate::util::BYTE_BLOCK_SIZE
+            )));
+        }
         pool.ensure_capacity(size)?;
         let upto = pool.byte_upto();
         pool.advance(size);

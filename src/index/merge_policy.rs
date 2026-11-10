@@ -429,7 +429,17 @@ pub struct OneMerge {
     /// point-in-time readers while the writer's lock is held, so the later
     /// `initMergeReaders` call `mergeMiddle` makes must not open a second set.
     init_merge_readers_once: Option<Arc<AtomicBool>>,
+    /// Equivalent to overriding `OneMerge.setMergeInfo(SegmentCommitInfo)`;
+    /// see [`SetMergeInfoHook`].
+    set_merge_info_override: Option<SetMergeInfoHook>,
 }
+
+/// Replaces [`OneMerge::set_merge_info`].
+///
+/// Equivalent to overriding `MergePolicy.OneMerge.setMergeInfo(SegmentCommitInfo)`
+/// (`MergePolicy.java:326-328`) in a subclass; the override reaches the base
+/// behaviour through [`OneMerge::super_set_merge_info`].
+pub type SetMergeInfoHook = Arc<dyn Fn(&OneMerge, SegmentCommitInfo) + Send + Sync>;
 
 impl std::fmt::Debug for OneMerge {
     /// Renders the fields Java's `OneMerge` carries; the reader-wrapping hook is
@@ -489,6 +499,7 @@ impl OneMerge {
             merge_finished: None,
             on_merge_complete: None,
             init_merge_readers_once: None,
+            set_merge_info_override: None,
         })
     }
 
@@ -532,6 +543,7 @@ impl OneMerge {
             merge_finished: None,
             on_merge_complete: None,
             init_merge_readers_once: None,
+            set_merge_info_override: None,
         }
     }
 
@@ -946,6 +958,48 @@ impl OneMerge {
         self.merged.complete(success)
     }
 
+    /// Closes the merge: completes it with `success`, runs its
+    /// `mergeFinished` hook, then hands every merge reader to
+    /// `reader_consumer`, even when the hook fails.
+    ///
+    /// Equivalent to the package-private final
+    /// `OneMerge.close(boolean, boolean, IOConsumer<MergeReader>)`
+    /// (`MergePolicy.java:277-291`); public here so that the tests of the
+    /// `index` package can call it, as Java's do. The hook gets no deleter,
+    /// as when the merge is finished outside the writer.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
+    /// ("merge has already finished") when the merge was already complete;
+    /// otherwise the first failure of the hook or of the consumer.
+    pub fn close(
+        &self,
+        success: bool,
+        segment_dropped: bool,
+        mut reader_consumer: impl FnMut(MergeReader) -> Result<()>,
+    ) -> Result<()> {
+        if !self.complete(success) {
+            return Err(crate::error::LuceneError::illegal_state(
+                "merge has already finished".to_string(),
+            ));
+        }
+        let finished = self.merge_finished(success, segment_dropped, None);
+        // `finally { … IOUtils.applyToAll(readers, readerConsumer); }`: every
+        // reader is consumed and the first failure kept; thrown from the
+        // `finally`, it replaces the hook's failure.
+        let mut first: Option<crate::error::LuceneError> = None;
+        for reader in self.take_merge_readers() {
+            if let Err(e) = reader_consumer(reader) {
+                first.get_or_insert(e);
+            }
+        }
+        match first {
+            Some(e) => Err(e),
+            None => finished,
+        }
+    }
+
     /// Returns whether the merge has run to completion. Never blocks.
     ///
     /// Equivalent to `OneMerge.hasFinished()` (`MergePolicy.java:440-442`):
@@ -998,7 +1052,27 @@ impl OneMerge {
     ///
     /// Equivalent to `OneMerge.setMergeInfo(SegmentCommitInfo)`.
     pub fn set_merge_info(&self, info: SegmentCommitInfo) {
+        match &self.set_merge_info_override {
+            Some(hook) => hook(self, info),
+            None => self.super_set_merge_info(info),
+        }
+    }
+
+    /// The base `OneMerge.setMergeInfo(SegmentCommitInfo)`
+    /// (`MergePolicy.java:326-328`), which an override installed with
+    /// [`set_set_merge_info_override`](Self::set_set_merge_info_override)
+    /// calls as `super.setMergeInfo(info)`.
+    pub fn super_set_merge_info(&self, info: SegmentCommitInfo) {
         *self.info() = Some(info);
+    }
+
+    /// Installs the override of [`set_merge_info`](Self::set_merge_info).
+    ///
+    /// Equivalent to an anonymous `OneMerge` subclass overriding
+    /// `setMergeInfo` (`TestAddIndexes.testSetDiagnostics`); see
+    /// [`SetMergeInfoHook`].
+    pub fn set_set_merge_info_override(&mut self, hook: SetMergeInfoHook) {
+        self.set_merge_info_override = Some(hook);
     }
 
     /// Returns the merged segment, once the writer has built it.
@@ -1025,7 +1099,10 @@ impl OneMerge {
     /// through the writer is one such call — and must not be held across a
     /// call that renders or locks this merge again, such as
     /// [`seg_string`](Self::seg_string).
-    pub(crate) fn info(&self) -> std::sync::MutexGuard<'_, Option<SegmentCommitInfo>> {
+    ///
+    /// Public so that a [`SetMergeInfoHook`] can change the merged segment it
+    /// has just set, as Java's override changes the shared `info` object.
+    pub fn info(&self) -> std::sync::MutexGuard<'_, Option<SegmentCommitInfo>> {
         self.info.lock().expect("OneMerge info mutex poisoned")
     }
 
@@ -4281,6 +4358,18 @@ impl<'a> CachingMergeContext<'a> {
             inner,
             cached: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Returns a copy of the cached counts, keyed by segment name.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `CachingMergeContext.cachedNumDeletesToMerge`, as the tests of the
+    /// `index` package do; public here for them.
+    pub fn cached_num_deletes_to_merge(&self) -> HashMap<String, i32> {
+        self.cached
+            .lock()
+            .map(|cache| cache.clone())
+            .unwrap_or_default()
     }
 }
 

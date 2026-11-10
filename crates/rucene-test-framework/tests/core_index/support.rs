@@ -112,3 +112,146 @@ pub fn set_check_index_on_close(dir: &TestDirectory, value: bool) {
         TestDirectory::Raw(raw) => raw.base().set_check_index_on_close(value),
     }
 }
+
+/// The indexing loop `TestAllFilesCheckIndexHeader`,
+/// `TestAllFilesHaveChecksumFooter` and `TestAllFilesHaveCodecHeader` share:
+/// 100 `LineFileDocs` documents, with random commits, deletes and
+/// numeric doc-values updates.
+pub fn add_line_file_docs(riw: &rucene_test_framework::index::RandomIndexWriter) -> Result<()> {
+    use rucene::index::terms::Term;
+    // Use LineFileDocs so we (hopefully) get most Lucene features
+    // tested, e.g. IntPoint was recently added to it:
+    let docs = rucene_test_framework::util::LineFileDocs::with_default_file(&*random())?;
+    for i in 0..100 {
+        riw.add_document(&docs.next_doc()?)?;
+        if random().next_int_bound(7) == 0 {
+            riw.commit()?;
+        }
+        if random().next_int_bound(20) == 0 {
+            riw.delete_documents(Term::from_text("docid", &i.to_string()))?;
+        }
+        if random().next_int_bound(15) == 0 {
+            riw.update_numeric_doc_value(
+                Term::from_text("docid", &i.to_string()),
+                "page_views",
+                i as i64,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The indexing loop `TestAllFilesDetectMismatchedChecksum` and
+/// `TestAllFilesDetectTruncation` share: 100 documents of a text field with
+/// term vectors, a string field with sorted doc values, a long point with
+/// numeric doc values and a 16-dimension float vector.
+///
+/// Java adds the fields to one `Document` once and changes their values
+/// before each `addDocument`; a Rucene `Document` owns its fields, so each
+/// iteration builds the document again from fields of the same names, types
+/// and order carrying the new values, with the same draws (guide section 6).
+pub fn add_mutated_docs(riw: &rucene_test_framework::index::RandomIndexWriter) -> Result<()> {
+    use rucene::document::{
+        Document, Field, FieldType, KnnFloatVectorField, LongPoint, NumericDocValuesField,
+        SortedDocValuesField, Store, StringField, TextField,
+    };
+    use rucene::util::BytesRef;
+
+    let mut text_with_term_vectors_type = FieldType::new_from(TextField::type_stored());
+    text_with_term_vectors_type.set_store_term_vectors(true)?;
+    let mut vector = [0f32; 16];
+    for i in 0..100 {
+        let text = TestUtil::random_analysis_string(&*random(), 20, true);
+        let random_string = TestUtil::random_simple_string_max(&*random(), 5);
+        let number = random().next_int_bound(10) as i64;
+        vector.fill((i % 4) as f32);
+        let mut doc = Document::new();
+        doc.add(Box::new(Field::new(
+            "text",
+            text,
+            text_with_term_vectors_type.clone(),
+        )?));
+        doc.add(Box::new(StringField::new(
+            "string",
+            random_string.clone(),
+            Store::YES,
+        )?));
+        doc.add(Box::new(SortedDocValuesField::new(
+            "string",
+            BytesRef::from_char_sequence(&random_string),
+        )));
+        doc.add(Box::new(LongPoint::new("long", &[number])?));
+        doc.add(Box::new(NumericDocValuesField::new("long", number)));
+        doc.add(Box::new(KnnFloatVectorField::with_euclidean(
+            "vector", &vector,
+        )?));
+        riw.add_document(&doc)?;
+    }
+    Ok(())
+}
+
+/// `conf.setUseCompoundFile(false); conf.getMergePolicy().setNoCFSRatio(0.0);`
+pub fn disable_cfs(conf: &mut IndexWriterConfig) -> Result<()> {
+    conf.set_use_compound_file(false)?;
+    conf.merge_policy().set_no_cfs_ratio(0.0)
+}
+
+/// `dirCopy.sync(Collections.singleton(name))`.
+pub fn sync_one(dir: &Arc<dyn rucene::store::Directory>, name: &str) -> Result<()> {
+    dir.sync(&[name.to_string()])
+}
+
+/// `java.util.concurrent.CountDownLatch`: `await` blocks until `countDown`
+/// has been called `count` times.
+pub struct CountDownLatch {
+    count: std::sync::Mutex<i64>,
+    cond: std::sync::Condvar,
+}
+
+impl CountDownLatch {
+    /// `new CountDownLatch(count)`.
+    pub fn new(count: i64) -> Self {
+        CountDownLatch {
+            count: std::sync::Mutex::new(count),
+            cond: std::sync::Condvar::new(),
+        }
+    }
+
+    /// `latch.await()`.
+    pub fn await_(&self) {
+        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        while *count > 0 {
+            count = self.cond.wait(count).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// `latch.countDown()`.
+    pub fn count_down(&self) {
+        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        if *count > 0 {
+            *count -= 1;
+            if *count == 0 {
+                self.cond.notify_all();
+            }
+        }
+    }
+}
+
+/// A `public static void name()` method annotated `annotation`
+/// (`@BeforeClass`, `@AfterClass`).
+pub fn static_hook(
+    name: &str,
+    annotation: impl randomizedtesting::jdk::reflect::JavaAnnotation,
+    body: fn() -> Result<()>,
+) -> randomizedtesting::jdk::reflect::Method {
+    use randomizedtesting::jdk::reflect::{modifier, Method};
+    Method::new(name)
+        .modifiers(modifier::PUBLIC | modifier::STATIC)
+        .throws(&["java.lang.Exception"])
+        .annotate(annotation)
+        .static_body(move || {
+            if let Err(e) = body() {
+                rucene_test_framework::util::java_exceptions::rethrow_java(e)
+            }
+        })
+}

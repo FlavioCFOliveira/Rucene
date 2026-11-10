@@ -9,13 +9,11 @@
 //!   call the inherited methods of the same name on it. `BaseTestCheckIndex`
 //!   declares no JUnit test, so these four wrappers are the binding.
 //!
-//! The other test methods of `TestCheckIndex` (`testCheckIndexAllValid`,
-//! `testInvalidThreadCountArgument`, `testPriorBrokenCommitPoint`) belong to
-//! the core-test port (sprint 7) and are not declared here.
-//!
-//! The suite runs once on the seed `tests.seed` names (a random one when it
-//! is unset); `RUCENE_SUITE_SEEDS=<n>` runs it on the first `n` seeds of
-//! `suite_seeds::SEEDS` instead, reporting the pass counts.
+//! `TestCheckIndex` itself, with these wrappers and its own test methods
+//! (`testCheckIndexAllValid`, `testInvalidThreadCountArgument`,
+//! `testPriorBrokenCommitPoint`), is bound once, in the core-test port
+//! (`core_index/test_check_index.rs`); this file keeps the seeded-draw oracle
+//! over the same members.
 
 use std::sync::{Arc, Mutex};
 
@@ -28,8 +26,6 @@ use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::LuceneTestCase;
 
 mod suite_draws;
-mod suite_seeds;
-use suite_seeds::run_suite;
 
 /// The instance of `TestCheckIndex`: its `directory` field.
 #[derive(Default)]
@@ -99,20 +95,6 @@ fn with_members(
         ))
 }
 
-/// `TestCheckIndex`.
-fn check_index_class() -> Arc<Class> {
-    with_members(
-        Class::builder("org.apache.lucene.index.TestCheckIndex")
-            .extends(&base_test_check_index::class()),
-    )
-    .method(
-        Method::new("tearDown")
-            .throws(&["java.lang.Exception"])
-            .body(tear_down),
-    )
-    .build()
-}
-
 // -----------------------------------------------------------------------------
 // The seeded-draw oracle: TestCheckIndexSuiteDraws
 // -----------------------------------------------------------------------------
@@ -164,10 +146,4 @@ static SUITES: Mutex<()> = Mutex::new(());
 fn test_check_index_suite_draws_match_lucene() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     suite_draws::assert_draws_match("base_check_index_draws.tsv", draws_class, &DRAWS);
-}
-
-#[test]
-fn test_check_index() {
-    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    run_suite(check_index_class);
 }

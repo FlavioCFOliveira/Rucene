@@ -6816,7 +6816,7 @@ impl IndexWriter {
     ) {
         use crate::util::Constants;
         let mut diagnostics = HashMap::new();
-        diagnostics.insert("source".to_string(), source.to_string());
+        diagnostics.insert(SOURCE.to_string(), source.to_string());
         diagnostics.insert("lucene.version".to_string(), Version::LATEST.to_string());
         diagnostics.insert("os".to_string(), Constants::os_name().to_string());
         diagnostics.insert("os.arch".to_string(), Constants::os_arch().to_string());
@@ -7863,6 +7863,11 @@ impl IndexWriter {
 ///
 /// Equivalent to `IndexWriter.UNBOUNDED_MAX_MERGE_SEGMENTS`.
 pub const UNBOUNDED_MAX_MERGE_SEGMENTS: i32 = -1;
+
+/// The key of the diagnostic that records how a segment was written.
+///
+/// Equivalent to `IndexWriter.SOURCE`.
+pub const SOURCE: &str = "source";
 
 /// The `source` diagnostic recorded on a segment written by a merge.
 ///
