@@ -594,6 +594,11 @@ impl DocValuesRangeIterator {
 }
 
 impl TwoPhaseIterator for DocValuesRangeIterator {
+    /// Opts in to the `instanceof` test of `TestDocValuesQueries`.
+    fn two_phase_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
         match self.block_iterator.as_mut() {
             Some(block_iterator) => block_iterator,

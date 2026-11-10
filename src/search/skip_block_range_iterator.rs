@@ -171,4 +171,17 @@ impl DocIdSetIterator for SkipBlockRangeIterator {
         }
         Ok(())
     }
+
+    /// Opts in to the `instanceof`/cast test: Lucene's
+    /// `TestDocValuesRangeIterator` and its siblings cast
+    /// `DocValuesRangeIterator.approximation()` to `SkipBlockRangeIterator`.
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// The mutable form of [`disi_as_any`](Self::disi_as_any): the tests
+    /// advance the cast approximation.
+    fn disi_as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
 }

@@ -189,7 +189,8 @@ pub struct LiveIndexWriterConfig {
     merge_scheduler: Arc<dyn MergeScheduler>,
     codec: Arc<dyn Codec>,
     info_stream: Arc<dyn InfoStream>,
-    merge_policy: Arc<dyn MergePolicy>,
+    /// `protected volatile MergePolicy mergePolicy`: a live setting.
+    merge_policy: RwLock<Arc<dyn MergePolicy>>,
     reader_pooling: bool,
     flush_policy: Arc<dyn FlushPolicy>,
     per_thread_hard_limit_mb: i32,
@@ -287,7 +288,7 @@ impl LiveIndexWriterConfig {
             merge_scheduler: Arc::new(ConcurrentMergeScheduler::new()),
             codec,
             info_stream: crate::util::default_info_stream(),
-            merge_policy: Arc::new(TieredMergePolicy::new()),
+            merge_policy: RwLock::new(Arc::new(TieredMergePolicy::new())),
             reader_pooling: Self::DEFAULT_READER_POOLING,
             flush_policy: Arc::new(FlushByRamOrCountsPolicy::new()),
             per_thread_hard_limit_mb: Self::DEFAULT_RAM_PER_THREAD_HARD_LIMIT_MB,
@@ -408,15 +409,31 @@ impl LiveIndexWriterConfig {
         body(&settings)
     }
 
-    /// Sets the merge policy.
-    pub fn set_merge_policy(&mut self, merge_policy: Arc<dyn MergePolicy>) -> Result<&mut Self> {
-        self.merge_policy = merge_policy;
+    /// Sets the merge policy; it takes effect on an open writer.
+    ///
+    /// Equivalent to `LiveIndexWriterConfig.setMergePolicy(MergePolicy)`
+    /// (`LiveIndexWriterConfig.java:249-255`), which writes the `volatile`
+    /// field a running writer reads at each merge decision.
+    ///
+    /// # Errors
+    ///
+    /// Never fails; the `Result` keeps the setter chainable like the others.
+    pub fn set_merge_policy(&self, merge_policy: Arc<dyn MergePolicy>) -> Result<&Self> {
+        *self
+            .merge_policy
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = merge_policy;
         Ok(self)
     }
 
     /// Returns the current merge policy.
     pub fn merge_policy(&self) -> Arc<dyn MergePolicy> {
-        Arc::clone(&self.merge_policy)
+        Arc::clone(
+            &self
+                .merge_policy
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     /// Sets the merged-segment warmer; it takes effect on an open writer.
@@ -644,7 +661,7 @@ impl fmt::Display for LiveIndexWriterConfig {
         writeln!(f, "mergeScheduler={}", self.merge_scheduler)?;
         writeln!(f, "codec={}", self.codec)?;
         writeln!(f, "infoStream={}", self.info_stream.java_class_name())?;
-        writeln!(f, "mergePolicy={}", self.merge_policy)?;
+        writeln!(f, "mergePolicy={}", self.merge_policy())?;
         writeln!(f, "readerPooling={}", self.reader_pooling)?;
         writeln!(f, "perThreadHardLimitMB={}", self.per_thread_hard_limit_mb)?;
         writeln!(f, "useCompoundFile={}", self.use_compound_file())?;

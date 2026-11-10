@@ -80,6 +80,21 @@ impl<I: ConstantScoreIteratorSupplier> ConstantScoreScorerSupplier<I> {
     pub fn max_doc(&self) -> i32 {
         self.max_doc
     }
+
+    /// Returns an iterator that matches the documents of this supplier,
+    /// given the cost of the leading clause.
+    ///
+    /// Equivalent to the public abstract
+    /// `ConstantScoreScorerSupplier.iterator(long leadCost)`
+    /// (`ConstantScoreScorerSupplier.java:64`); Rucene's iterator is the
+    /// [`ScorerIterator`] the inner supplier returns.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the inner supplier's errors.
+    pub fn iterator(&mut self, lead_cost: i64) -> Result<ScorerIterator> {
+        self.inner.iterator(lead_cost)
+    }
 }
 
 /// A [`ConstantScoreIteratorSupplier`] that hands out one already-built
@@ -166,7 +181,7 @@ impl ConstantScoreScorerSupplier<SingleIteratorSupplier> {
     }
 }
 
-impl<I: ConstantScoreIteratorSupplier> ScorerSupplier for ConstantScoreScorerSupplier<I> {
+impl<I: ConstantScoreIteratorSupplier + 'static> ScorerSupplier for ConstantScoreScorerSupplier<I> {
     fn cost(&self) -> i64 {
         self.inner.cost()
     }
@@ -227,5 +242,12 @@ impl<I: ConstantScoreIteratorSupplier> ScorerSupplier for ConstantScoreScorerSup
                 ),
             };
         Ok(Box::new(DefaultBulkScorer::new(scorer)))
+    }
+
+    /// Opts in to the `instanceof`/cast test: Lucene's
+    /// `TestDocValuesQueries` casts a supplier to `ConstantScoreScorerSupplier`
+    /// to call its `iterator(long)`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }

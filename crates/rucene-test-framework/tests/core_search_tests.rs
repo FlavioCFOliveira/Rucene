@@ -16,6 +16,7 @@ mod core_support;
 mod core_search {
     pub mod support;
 
+    pub mod base_doc_values_skipper_tests;
     pub mod base_vector_similarity_query_test_case;
     pub mod similarities;
     pub mod test_accept_docs;
@@ -48,15 +49,33 @@ mod core_search {
     pub mod test_constant_score_scorer;
     pub mod test_custom_searcher_sort;
     pub mod test_date_sort;
+    pub mod test_dense_conjunction_bulk_scorer;
     pub mod test_disi_priority_queue;
     pub mod test_disjunction_disi_approximation;
+    pub mod test_disjunction_max_query;
     pub mod test_disjunction_score_block_boundary_propagator;
     pub mod test_doc_id_set_iterator;
     pub mod test_doc_score_encoder;
+    pub mod test_doc_values_ordinal_range_iterator;
+    pub mod test_doc_values_ordinal_set_iterator;
+    pub mod test_doc_values_queries;
+    pub mod test_doc_values_range_iterator;
+    pub mod test_doc_values_rewrite_method;
+    pub mod test_double_values_source;
+    pub mod test_double_values_source_rescorer;
     pub mod test_early_termination;
+    pub mod test_elevation_comparator;
+    pub mod test_field_cache_rewrite_method;
+    pub mod test_field_exists_query;
     pub mod test_filter_weight;
+    pub mod test_float_vector_similarity_query;
+    pub mod test_full_precision_float_vector_similarity_values_source;
+    pub mod test_fuzzy_query;
+    pub mod test_fuzzy_term_on_short_terms;
+    pub mod test_hnsw_queue_saturation_collector;
     pub mod test_multi_leaf_knn_collector;
     pub mod test_numeric_comparator;
+    pub mod test_regexp_random2;
     pub mod test_term_ord_val_comparator_adaptive_skipping;
     pub mod test_updateable_doc_id_set_iterator;
 }
@@ -302,4 +321,94 @@ fn test_filter_weight() {
 #[test]
 fn test_early_termination() {
     run(test_early_termination::class_def);
+}
+
+#[test]
+fn test_dense_conjunction_bulk_scorer() {
+    run(test_dense_conjunction_bulk_scorer::class_def);
+}
+
+#[test]
+fn test_disjunction_max_query() {
+    run(test_disjunction_max_query::class_def);
+}
+
+#[test]
+fn test_doc_values_ordinal_range_iterator() {
+    run(test_doc_values_ordinal_range_iterator::class_def);
+}
+
+#[test]
+fn test_doc_values_range_iterator() {
+    run(test_doc_values_range_iterator::class_def);
+}
+
+#[test]
+fn test_doc_values_ordinal_set_iterator() {
+    run(test_doc_values_ordinal_set_iterator::class_def);
+}
+
+#[test]
+fn test_doc_values_queries() {
+    run(test_doc_values_queries::class_def);
+}
+
+#[test]
+fn test_regexp_random2() {
+    run(test_regexp_random2::class_def);
+}
+
+#[test]
+fn test_field_cache_rewrite_method() {
+    run(test_field_cache_rewrite_method::class_def);
+}
+
+#[test]
+fn test_doc_values_rewrite_method() {
+    run(test_doc_values_rewrite_method::class_def);
+}
+
+#[test]
+fn test_double_values_source() {
+    run(test_double_values_source::class_def);
+}
+
+#[test]
+fn test_double_values_source_rescorer() {
+    run(test_double_values_source_rescorer::class_def);
+}
+
+#[test]
+fn test_elevation_comparator() {
+    run(test_elevation_comparator::class_def);
+}
+
+#[test]
+fn test_field_exists_query() {
+    run(test_field_exists_query::class_def);
+}
+
+#[test]
+fn test_float_vector_similarity_query() {
+    run(test_float_vector_similarity_query::class_def);
+}
+
+#[test]
+fn test_full_precision_float_vector_similarity_values_source() {
+    run(test_full_precision_float_vector_similarity_values_source::class_def);
+}
+
+#[test]
+fn test_fuzzy_query() {
+    run(test_fuzzy_query::class_def);
+}
+
+#[test]
+fn test_fuzzy_term_on_short_terms() {
+    run(test_fuzzy_term_on_short_terms::class_def);
+}
+
+#[test]
+fn test_hnsw_queue_saturation_collector() {
+    run(test_hnsw_queue_saturation_collector::class_def);
 }

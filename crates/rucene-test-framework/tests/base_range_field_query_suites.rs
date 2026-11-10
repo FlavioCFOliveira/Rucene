@@ -8,8 +8,8 @@
 //! (its `IpRange` box and its overrides of the inherited tests, which swap
 //! `testMultiValued` and `testRandomMedium`).
 //!
-//! The classes' own extra test methods (`testBasics`) belong to the
-//! core-test port (sprint 7) and are not declared here.
+//! Each numeric binding also declares its class's own `testBasics`
+//! (rmp #391/#392), with the class's literal ranges.
 //!
 //! `RUCENE_SUITE_SEEDS=<n>` runs each suite on the first `n` seeds of
 //! `suite_seeds::SEEDS`; `test_range_field_suite_draws_match_lucene`
@@ -57,6 +57,51 @@ trait RangeNumber: Copy + PartialOrd + fmt::Display + Send + Sync + 'static {
     fn new_field(min: &[Self], max: &[Self]) -> Result<Box<dyn IndexableField>>;
     /// `…Range.new<Relation>Query(FIELD_NAME, min, max)`.
     fn new_query(relation: usize, min: &[Self], max: &[Self]) -> Result<Arc<dyn Query>>;
+    /// The class's own `testBasics()`.
+    fn test_basics() -> Result<()>;
+}
+
+/// The body shared by the four `testBasics()`: index one document per range
+/// of `docs`, then count the intersects, within, contains and crosses
+/// matches of the query range `query`.
+fn do_test_basics<T: RangeNumber>(
+    docs: &[(&[T], &[T])],
+    query: (&[T], &[T]),
+    expected: [i32; 4],
+) -> Result<()> {
+    let mut dir = LuceneTestCase::new_directory();
+    let writer = rucene_test_framework::index::random_index_writer::RandomIndexWriter::new_with_mock_analyzer(
+        &*LuceneTestCase::random(),
+        dir.as_directory(),
+    )?;
+
+    for (min, max) in docs {
+        let mut document = rucene::document::Document::new();
+        document.add(T::new_field(min, max)?);
+        writer.add_document(&document)?;
+    }
+
+    // search
+    let reader = writer.get_reader()?;
+    let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
+    // intersects, within, contains, crosses
+    for (relation, expected) in [
+        (0, expected[0]),
+        (2, expected[1]),
+        (1, expected[2]),
+        (3, expected[3]),
+    ] {
+        randomizedtesting::junit::Assert::assert_equals(
+            expected,
+            searcher.count(T::new_query(relation, query.0, query.1)?)?,
+        );
+    }
+
+    drop(searcher);
+    reader.close()?;
+    writer.close()?;
+    dir.close()?;
+    Ok(())
 }
 
 /// The value `RangeValue` carries for `T`, or `ClassCastException`.
@@ -124,6 +169,31 @@ impl RangeNumber for i32 {
     fn new_query(relation: usize, min: &[Self], max: &[Self]) -> Result<Arc<dyn Query>> {
         range_queries!(IntRange, relation, min, max)
     }
+    /// `TestIntRangeFieldQueries.testBasics()`.
+    fn test_basics() -> Result<()> {
+        do_test_basics::<i32>(
+            &[
+                // intersects (within)
+                (&[-10, -10], &[9, 10]),
+                // intersects (crosses)
+                (&[10, -10], &[20, 10]),
+                // intersects (contains / crosses)
+                (&[-20, -20], &[30, 30]),
+                // intersects (within)
+                (&[-11, -11], &[1, 11]),
+                // intersects (crosses)
+                (&[12, 1], &[15, 29]),
+                // disjoint
+                (&[-122, 1], &[-115, 29]),
+                // intersects (crosses)
+                (&[i32::MIN, 1], &[-11, 29]),
+                // equal (within, contains, intersects)
+                (&[-11, -15], &[15, 20]),
+            ],
+            (&[-11, -15], &[15, 20]),
+            [7, 3, 2, 4],
+        )
+    }
 }
 
 impl RangeNumber for i64 {
@@ -173,6 +243,31 @@ impl RangeNumber for i64 {
     }
     fn new_query(relation: usize, min: &[Self], max: &[Self]) -> Result<Arc<dyn Query>> {
         range_queries!(LongRange, relation, min, max)
+    }
+    /// `TestLongRangeFieldQueries.testBasics()`.
+    fn test_basics() -> Result<()> {
+        do_test_basics::<i64>(
+            &[
+                // intersects (within)
+                (&[-10, -10], &[9, 10]),
+                // intersects (crosses)
+                (&[10, -10], &[20, 10]),
+                // intersects (contains, crosses)
+                (&[-20, -20], &[30, 30]),
+                // intersects (within)
+                (&[-11, -11], &[1, 11]),
+                // intersects (crosses)
+                (&[12, 1], &[15, 29]),
+                // disjoint
+                (&[-122, 1], &[-115, 29]),
+                // intersects (crosses)
+                (&[i64::MIN, 1], &[-11, 29]),
+                // equal (within, contains, intersects)
+                (&[-11, -15], &[15, 20]),
+            ],
+            (&[-11, -15], &[15, 20]),
+            [7, 3, 2, 4],
+        )
     }
 }
 
@@ -245,6 +340,31 @@ impl RangeNumber for f32 {
     fn new_query(relation: usize, min: &[Self], max: &[Self]) -> Result<Arc<dyn Query>> {
         range_queries!(FloatRange, relation, min, max)
     }
+    /// `TestFloatRangeFieldQueries.testBasics()`.
+    fn test_basics() -> Result<()> {
+        do_test_basics::<f32>(
+            &[
+                // intersects (within)
+                (&[-10.0, -10.0], &[9.1, 10.1]),
+                // intersects (crosses)
+                (&[10.0, -10.0], &[20.0, 10.0]),
+                // intersects (contains, crosses)
+                (&[-20.0, -20.0], &[30.0, 30.1]),
+                // intersects (crosses)
+                (&[-11.1, -11.2], &[1.23, 11.5]),
+                // intersects (crosses)
+                (&[12.33, 1.2], &[15.1, 29.9]),
+                // disjoint
+                (&[-122.33, 1.2], &[-115.1, 29.9]),
+                // intersects (crosses)
+                (&[f32::NEG_INFINITY, 1.2], &[-11.0, 29.9]),
+                // equal (within, contains, intersects)
+                (&[-11.0, -15.0], &[15.0, 20.0]),
+            ],
+            (&[-11.0, -15.0], &[15.0, 20.0]),
+            [7, 2, 2, 5],
+        )
+    }
 }
 
 impl RangeNumber for f64 {
@@ -279,6 +399,31 @@ impl RangeNumber for f64 {
     }
     fn new_query(relation: usize, min: &[Self], max: &[Self]) -> Result<Arc<dyn Query>> {
         range_queries!(DoubleRange, relation, min, max)
+    }
+    /// `TestDoubleRangeFieldQueries.testBasics()`.
+    fn test_basics() -> Result<()> {
+        do_test_basics::<f64>(
+            &[
+                // intersects (within)
+                (&[-10.0, -10.0], &[9.1, 10.1]),
+                // intersects (crosses)
+                (&[10.0, -10.0], &[20.0, 10.0]),
+                // intersects (contains, crosses)
+                (&[-20.0, -20.0], &[30.0, 30.1]),
+                // intersects (crosses)
+                (&[-11.1, -11.2], &[1.23, 11.5]),
+                // intersects (crosses)
+                (&[12.33, 1.2], &[15.1, 29.9]),
+                // disjoint
+                (&[-122.33, 1.2], &[-115.1, 29.9]),
+                // intersects (crosses)
+                (&[f64::NEG_INFINITY, 1.2], &[-11.0, 29.9]),
+                // equal (within, contains, intersects)
+                (&[-11.0, -15.0], &[15.0, 20.0]),
+            ],
+            (&[-11.0, -15.0], &[15.0, 20.0]),
+            [7, 2, 2, 5],
+        )
     }
 }
 
@@ -648,6 +793,7 @@ fn numeric_class<T: RangeNumber>(name: &str) -> Arc<Class> {
         .constructor(Constructor::no_args(|| {
             RangeTestInstance::new(NumericRangeBinding::<T>::new())
         }))
+        .method(range_test("testBasics", |_| T::test_basics()))
         .build()
 }
 
