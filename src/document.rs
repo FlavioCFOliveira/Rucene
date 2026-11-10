@@ -1086,6 +1086,12 @@ pub enum FieldData {
     Bytes(BytesRef),
     /// A numeric value.
     Number(NumericValue),
+    /// No value: Java's `fieldsData == null`, which the protected constructor
+    /// `Field(String, IndexableFieldType)` leaves (`Field.java:81-90`) and
+    /// which `NumericDocValuesField(String, Long)` and
+    /// `BinaryDocValuesField(String, BytesRef)` keep for a `null` value: an
+    /// `IndexWriter.updateDocValues` field without a value resets it.
+    Null,
     /// A stored-data input captured for later writing.
     ///
     /// Equivalent to a `Field` whose `fieldsData` is a
@@ -1114,6 +1120,7 @@ impl Debug for FieldData {
                 .debug_struct("StoredInput")
                 .field("length", length)
                 .finish_non_exhaustive(),
+            FieldData::Null => f.write_str("Null"),
         }
     }
 }
@@ -1185,6 +1192,22 @@ impl Field {
     /// indexes one).
     fn validate_name_and_type(_name: &str, _field_type: &FieldType) -> Result<()> {
         Ok(())
+    }
+
+    /// Creates a field without a value.
+    ///
+    /// Equivalent to the protected `Field(String name, IndexableFieldType
+    /// type)` (`Field.java:81-90`), `pub` here so that a doc-values field
+    /// with a `null` value (`new NumericDocValuesField(name, (Long) null)`)
+    /// can be handed to [`IndexWriter::update_doc_values`](crate::index::index_writer::IndexWriter::update_doc_values).
+    pub fn new_with_type(name: &str, field_type: impl Into<Arc<FieldType>>) -> Result<Self> {
+        let field_type: Arc<FieldType> = field_type.into();
+        Self::validate_name_and_type(name, &field_type)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: AtomicRefCell::new(FieldData::Null),
+        })
     }
 
     /// Creates a field with a string value.
@@ -1785,6 +1808,8 @@ impl IndexableField for Field {
                 input.borrow_mut().read_bytes(Some(&mut bytes), 0, length)?;
                 Ok(Some(StoredValue::DataInput(BytesRef::new(bytes))))
             }
+            // `fieldsData.getClass()` on a `null` value (`Field.java:628`).
+            FieldData::Null => Err(LuceneError::null_pointer()),
             FieldData::Reader(_) | FieldData::TokenStream(_) => Ok(None),
         }
     }
@@ -7012,6 +7037,8 @@ pub(crate) fn field_data_to_string(data: &FieldData) -> String {
         FieldData::Reader(_) => "java.io.Reader".to_string(),
         FieldData::TokenStream(_) => "org.apache.lucene.analysis.TokenStream".to_string(),
         FieldData::StoredInput { .. } => "org.apache.lucene.index.StoredFieldDataInput".to_string(),
+        // `"" + fieldsData` with a `null` value.
+        FieldData::Null => "null".to_string(),
     }
 }
 
@@ -7488,11 +7515,20 @@ fn fields_data_simple_name(data: &FieldData) -> &'static str {
         FieldData::Number(NumericValue::Float(_)) => "Float",
         FieldData::Number(NumericValue::Double(_)) => "Double",
         FieldData::StoredInput { .. } => "StoredFieldDataInput",
+        FieldData::Null => NULL_FIELDS_DATA,
     }
 }
 
+/// What [`fields_data_simple_name`] answers for a `null` value, on which
+/// Java's `fieldsData.getClass()` throws `NullPointerException`.
+const NULL_FIELDS_DATA: &str = "null";
+
 /// `new IllegalArgumentException("cannot change value type from " + from + " to " + to)`.
 fn cannot_change_value_type(from: &str, to: &str) -> LuceneError {
+    if std::ptr::eq(from, NULL_FIELDS_DATA) {
+        // `fieldsData.getClass().getSimpleName()` on a `null` value.
+        return LuceneError::null_pointer();
+    }
     LuceneError::IllegalArgument(format!("cannot change value type from {from} to {to}"))
 }
 

@@ -204,10 +204,6 @@ mod test_index_writer_merge_policy;
 mod test_index_writer_merging;
 #[path = "core_index/test_index_writer_nrt_is_current.rs"]
 mod test_index_writer_nrt_is_current;
-#[path = "core_index/test_indexable_field.rs"]
-mod test_indexable_field;
-#[path = "core_index/test_indexing_sequence_numbers.rs"]
-mod test_indexing_sequence_numbers;
 #[path = "core_index/test_index_writer_on_disk_full.rs"]
 mod test_index_writer_on_disk_full;
 #[path = "core_index/test_index_writer_on_error.rs"]
@@ -220,12 +216,66 @@ mod test_index_writer_reader;
 mod test_index_writer_threads_to_segments;
 #[path = "core_index/test_index_writer_unicode.rs"]
 mod test_index_writer_unicode;
+#[path = "core_index/test_index_writer_with_threads.rs"]
+mod test_index_writer_with_threads;
+#[path = "core_index/test_indexable_field.rs"]
+mod test_indexable_field;
+#[path = "core_index/test_indexing_sequence_numbers.rs"]
+mod test_indexing_sequence_numbers;
 #[path = "core_index/test_info_stream.rs"]
 mod test_info_stream;
 #[path = "core_index/test_int_block_pool.rs"]
 mod test_int_block_pool;
 #[path = "core_index/test_is_current.rs"]
 mod test_is_current;
+#[path = "core_index/test_knn_graph.rs"]
+mod test_knn_graph;
+#[path = "core_index/test_lockable_concurrent_approximate_priority_queue.rs"]
+mod test_lockable_concurrent_approximate_priority_queue;
+#[path = "core_index/test_log_merge_policy.rs"]
+mod test_log_merge_policy;
+#[path = "core_index/test_long_postings.rs"]
+mod test_long_postings;
+#[path = "core_index/test_many_fields.rs"]
+mod test_many_fields;
+#[path = "core_index/test_max_position.rs"]
+mod test_max_position;
+#[path = "core_index/test_max_term_frequency.rs"]
+mod test_max_term_frequency;
+#[path = "core_index/test_merge_policy.rs"]
+mod test_merge_policy;
+#[path = "core_index/test_merge_rate_limiter.rs"]
+mod test_merge_rate_limiter;
+#[path = "core_index/test_mixed_codecs.rs"]
+mod test_mixed_codecs;
+#[path = "core_index/test_mixed_doc_values_updates.rs"]
+mod test_mixed_doc_values_updates;
+#[path = "core_index/test_multi_doc_values.rs"]
+mod test_multi_doc_values;
+#[path = "core_index/test_multi_fields.rs"]
+mod test_multi_fields;
+#[path = "core_index/test_multi_index_merge_scheduler.rs"]
+mod test_multi_index_merge_scheduler;
+#[path = "core_index/test_multi_level_skip_list.rs"]
+mod test_multi_level_skip_list;
+#[path = "core_index/test_multi_terms_enum.rs"]
+mod test_multi_terms_enum;
+#[path = "core_index/test_never_delete.rs"]
+mod test_never_delete;
+#[path = "core_index/test_newest_segment.rs"]
+mod test_newest_segment;
+#[path = "core_index/test_no_deletion_policy.rs"]
+mod test_no_deletion_policy;
+#[path = "core_index/test_no_merge_policy.rs"]
+mod test_no_merge_policy;
+#[path = "core_index/test_no_merge_scheduler.rs"]
+mod test_no_merge_scheduler;
+#[path = "core_index/test_norms.rs"]
+mod test_norms;
+#[path = "core_index/test_nrt_reader_cleanup.rs"]
+mod test_nrt_reader_cleanup;
+#[path = "core_index/test_nrt_reader_with_threads.rs"]
+mod test_nrt_reader_with_threads;
 use core_support::run;
 
 #[test]
@@ -639,6 +689,11 @@ fn test_flush_by_ram_or_counts_policy() {
 }
 
 #[test]
+fn test_index_writer_with_threads() {
+    run(test_index_writer_with_threads::class_def);
+}
+
+#[test]
 fn test_indexable_field() {
     run(test_indexable_field::class_def);
 }
@@ -770,4 +825,124 @@ fn test_int_block_pool() {
 #[test]
 fn test_is_current() {
     run(test_is_current::class_def);
+}
+
+#[test]
+fn test_knn_graph() {
+    run(test_knn_graph::class_def);
+}
+
+#[test]
+fn test_lockable_concurrent_approximate_priority_queue() {
+    run(test_lockable_concurrent_approximate_priority_queue::class_def);
+}
+
+#[test]
+fn test_log_merge_policy() {
+    run(test_log_merge_policy::class_def);
+}
+
+#[test]
+fn test_long_postings() {
+    run(test_long_postings::class_def);
+}
+
+#[test]
+fn test_many_fields() {
+    run(test_many_fields::class_def);
+}
+
+#[test]
+fn test_max_position() {
+    run(test_max_position::class_def);
+}
+
+#[test]
+fn test_max_term_frequency() {
+    run(test_max_term_frequency::class_def);
+}
+
+#[test]
+fn test_merge_policy() {
+    run(test_merge_policy::class_def);
+}
+
+#[test]
+fn test_merge_rate_limiter() {
+    run(test_merge_rate_limiter::class_def);
+}
+
+#[test]
+fn test_mixed_codecs() {
+    run(test_mixed_codecs::class_def);
+}
+
+#[test]
+fn test_mixed_doc_values_updates() {
+    run(test_mixed_doc_values_updates::class_def);
+}
+
+#[test]
+fn test_multi_doc_values() {
+    run(test_multi_doc_values::class_def);
+}
+
+#[test]
+fn test_multi_fields() {
+    run(test_multi_fields::class_def);
+}
+
+#[test]
+fn test_multi_index_merge_scheduler() {
+    run(test_multi_index_merge_scheduler::class_def);
+}
+
+#[test]
+fn test_multi_level_skip_list() {
+    run(test_multi_level_skip_list::class_def);
+}
+
+#[test]
+fn test_multi_terms_enum() {
+    run(test_multi_terms_enum::class_def);
+}
+
+#[test]
+fn test_never_delete() {
+    run(test_never_delete::class_def);
+}
+
+#[test]
+fn test_newest_segment() {
+    run(test_newest_segment::class_def);
+}
+
+#[test]
+fn test_no_deletion_policy() {
+    run(test_no_deletion_policy::class_def);
+}
+
+#[test]
+fn test_no_merge_policy() {
+    run(test_no_merge_policy::class_def);
+}
+
+#[test]
+fn test_no_merge_scheduler() {
+    run(test_no_merge_scheduler::class_def);
+}
+
+#[test]
+fn test_norms() {
+    run(test_norms::class_def);
+}
+
+#[test]
+fn test_nrt_reader_cleanup() {
+    run(test_nrt_reader_cleanup::class_def);
+}
+
+#[test]
+fn test_nrt_reader_with_threads() {
+    run(test_nrt_reader_with_threads::class_def);
 }

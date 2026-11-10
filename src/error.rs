@@ -447,6 +447,7 @@ impl LuceneError {
     /// extend `IOException`: `CorruptIndexException` and its
     /// `IndexFormatTooOldException` and `IndexFormatTooNewException`,
     /// `IndexNotFoundException` (a `FileNotFoundException`),
+    /// [`LuceneError::NotFound`] (`FileNotFoundException`),
     /// `LockObtainFailedException`, `LockReleaseFailedException` and
     /// `MergePolicy.MergeAbortedException`.
     pub fn is_io_exception(&self) -> bool {
@@ -457,6 +458,7 @@ impl LuceneError {
                 | Self::IndexFormatTooOld { .. }
                 | Self::IndexFormatTooNew { .. }
                 | Self::IndexNotFound(_)
+                | Self::NotFound(_)
                 | Self::LockObtainFailed { .. }
                 | Self::LockReleaseFailed { .. }
                 | Self::MergeAborted(_)

@@ -298,6 +298,15 @@ impl MergeScheduler for NoMergeScheduler {
         Ok(())
     }
 
+    /// `NoMergeScheduler.wrapForMerge` (`NoMergeScheduler.java:44-47`): `in`.
+    fn wrap_for_merge(
+        &self,
+        _merge: &OneMerge,
+        directory: Arc<dyn Directory>,
+    ) -> Result<Arc<dyn Directory>> {
+        Ok(directory)
+    }
+
     /// The executor of `NoMergeScheduler.INSTANCE`, Java's only instance
     /// (`NoMergeScheduler.java:31-36`), so one process-wide service is that
     /// instance's field.
@@ -3336,7 +3345,16 @@ impl MergeScheduler for MultiIndexMergeScheduler {
 /// to an `IndexWriter` directly.
 pub struct CombinedMergeScheduler {
     cms: ConcurrentMergeScheduler,
+    /// An override of `sync(Directory)`, as an anonymous Java subclass
+    /// declares (`TestMultiIndexMergeScheduler`); `None` runs Lucene's.
+    sync_override: Mutex<Option<CombinedSyncOverride>>,
 }
+
+/// An override of `CombinedMergeScheduler.sync(Directory)`: it receives the
+/// scheduler, whose [`CombinedMergeScheduler::super_sync_directory`] is
+/// Java's `super.sync(directory)`.
+pub type CombinedSyncOverride =
+    Arc<dyn Fn(&CombinedMergeScheduler, &Arc<dyn Directory>) + Send + Sync>;
 
 /// The process-wide combined scheduler and its reference count.
 ///
@@ -3356,7 +3374,17 @@ impl CombinedMergeScheduler {
     pub fn new() -> Self {
         Self {
             cms: ConcurrentMergeScheduler::new(),
+            sync_override: Mutex::new(None),
         }
+    }
+
+    /// Installs (or, with `None`, removes) an override of `sync(Directory)`,
+    /// as an anonymous Java subclass overriding it does.
+    pub fn set_sync_override(&self, sync_override: Option<CombinedSyncOverride>) {
+        *self
+            .sync_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = sync_override;
     }
 
     /// Returns the singleton, creating it on first use, and counts the
@@ -3424,7 +3452,25 @@ impl CombinedMergeScheduler {
     /// a [`TaggedMergeSource`] for that directory are joined. Java compares
     /// the directories with `equals`, which `Directory` inherits from `Object`
     /// as identity; so does this.
+    ///
+    /// Runs the override [`set_sync_override`](Self::set_sync_override)
+    /// installed, when there is one; otherwise
+    /// [`super_sync_directory`](Self::super_sync_directory).
     pub fn sync_directory(&self, directory: &Arc<dyn Directory>) {
+        let sync_override = self
+            .sync_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        match sync_override {
+            Some(sync_override) => sync_override(self, directory),
+            None => self.super_sync_directory(directory),
+        }
+    }
+
+    /// Lucene's `CombinedMergeScheduler.sync(Directory)`: what an override
+    /// reaches as `super.sync(directory)`.
+    pub fn super_sync_directory(&self, directory: &Arc<dyn Directory>) {
         self.cms.sync_matching(|thread| {
             thread.merge_source().is_some_and(|source| {
                 let source: &dyn Any = source.as_ref();

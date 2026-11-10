@@ -188,20 +188,16 @@ impl Display for LongsRef {
 // CharsRefBuilder
 // ---------------------------------------------------------------------------
 
-/// The string Java appends for a `null` `CharSequence`. `CharsRefBuilder.NULL_STRING`.
-const NULL_STRING: &str = "null";
+/// The UTF-16 units Java appends for a `null` `CharSequence`.
+/// `CharsRefBuilder.NULL_STRING`.
+const NULL_STRING: &[u16] = &[0x6e, 0x75, 0x6c, 0x6c];
 
 /// A builder for [`CharsRef`] instances.
 ///
 /// Port of `org.apache.lucene.util.CharsRefBuilder`, which implements
 /// `Appendable`.
 ///
-/// **Divergence from Lucene 10.5.0.** Rucene's [`CharsRef`] stores Rust `char`
-/// values (Unicode scalar values) rather than Java's UTF-16 code units — a
-/// choice already made by [`crate::util::chars_ref`]. `copy_utf8_bytes`
-/// therefore produces one element per code point, where Java produces one per
-/// UTF-16 code unit; the decoded text is the same. Use
-/// [`UnicodeUtil::utf8_to_utf16`] directly when UTF-16 units are required.
+/// Characters are UTF-16 code units (`u16`), as Java's `char[]`.
 ///
 /// # `equals` and `hashCode`
 ///
@@ -224,7 +220,7 @@ impl CharsRefBuilder {
     }
 
     /// Returns the characters of this builder.
-    pub fn chars(&self) -> &[char] {
+    pub fn chars(&self) -> &[u16] {
         &self.r.chars
     }
 
@@ -239,12 +235,12 @@ impl CharsRefBuilder {
     }
 
     /// Returns the character at `offset`.
-    pub fn char_at(&self, offset: usize) -> char {
+    pub fn char_at(&self, offset: usize) -> u16 {
         self.r.chars[offset]
     }
 
     /// Sets the character at `offset`.
-    pub fn set_char_at(&mut self, offset: usize, c: char) {
+    pub fn set_char_at(&mut self, offset: usize, c: u16) {
         self.r.chars[offset] = c;
     }
 
@@ -253,17 +249,16 @@ impl CharsRefBuilder {
         self.r.length = 0;
     }
 
-    /// Appends the characters of `csq`, or the literal `null` when `None`.
+    /// Appends the UTF-16 units of `csq`, or the literal `null` when `None`.
     ///
-    /// Equivalent to `CharsRefBuilder.append(CharSequence)`.
-    pub fn append_str(&mut self, csq: Option<&str>) -> &mut Self {
+    /// Equivalent to `CharsRefBuilder.append(CharSequence)`
+    /// (`CharsRefBuilder.java:66-71`): a Java `CharSequence` is a sequence of
+    /// UTF-16 units, which may hold an unpaired surrogate (a `substring` that
+    /// splits a pair), so it is taken as `&[u16]`.
+    pub fn append_str(&mut self, csq: Option<&[u16]>) -> &mut Self {
         match csq {
             None => self.append_str(Some(NULL_STRING)),
-            Some(s) => {
-                let chars: Vec<char> = s.chars().collect();
-                self.append_chars(&chars, 0, chars.len());
-                self
-            }
+            Some(s) => self.append_str_range(Some(s), 0, s.len()),
         }
     }
 
@@ -271,21 +266,20 @@ impl CharsRefBuilder {
     /// `null` when `None`.
     ///
     /// Equivalent to `CharsRefBuilder.append(CharSequence, int, int)`
-    /// (`CharsRefBuilder.java:74-83`). `start` and `end` index the characters
-    /// of `csq` as this builder stores them ([`char`]s).
+    /// (`CharsRefBuilder.java:74-83`). `start` and `end` index the UTF-16
+    /// code units of `csq`, as Java's `csq.charAt(i)` does.
     ///
     /// # Panics
     ///
     /// When `end` exceeds the character count of `csq`, which is the
     /// `IndexOutOfBoundsException` of Java's `csq.charAt(i)`, or when
     /// `end < start`.
-    pub fn append_str_range(&mut self, csq: Option<&str>, start: usize, end: usize) -> &mut Self {
+    pub fn append_str_range(&mut self, csq: Option<&[u16]>, start: usize, end: usize) -> &mut Self {
         let Some(csq) = csq else {
             return self.append_str(Some(NULL_STRING));
         };
-        let chars: Vec<char> = csq.chars().collect();
         self.grow(self.r.length + end - start);
-        for &c in &chars[start..end] {
+        for &c in &csq[start..end] {
             let len = self.r.length;
             self.set_char_at(len, c);
             self.r.length += 1;
@@ -294,7 +288,7 @@ impl CharsRefBuilder {
     }
 
     /// Appends a single character. Equivalent to `CharsRefBuilder.append(char)`.
-    pub fn append(&mut self, c: char) -> &mut Self {
+    pub fn append(&mut self, c: u16) -> &mut Self {
         self.grow(self.r.length + 1);
         let len = self.r.length;
         self.set_char_at(len, c);
@@ -313,7 +307,7 @@ impl CharsRefBuilder {
     pub fn grow(&mut self, new_length: usize) {
         if self.r.chars.len() < new_length {
             let target = ArrayUtil::oversize(new_length, 4).max(new_length);
-            self.r.chars.resize(target, '\0');
+            self.r.chars.resize(target, 0);
         }
     }
 
@@ -322,14 +316,7 @@ impl CharsRefBuilder {
     /// Equivalent to `CharsRefBuilder.copyUTF8Bytes(byte[], int, int)`.
     pub fn copy_utf8_bytes(&mut self, bytes: &[u8], offset: usize, length: usize) {
         self.grow(length);
-        let mut units = vec![0u16; length];
-        let n = UnicodeUtil::utf8_to_utf16(bytes, offset, length, &mut units);
-        let decoded: Vec<char> = char::decode_utf16(units[..n].iter().copied())
-            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .collect();
-        self.grow(decoded.len());
-        self.r.chars[..decoded.len()].copy_from_slice(&decoded);
-        self.r.length = decoded.len();
+        self.r.length = UnicodeUtil::utf8_to_utf16(bytes, offset, length, &mut self.r.chars);
     }
 
     /// Copies the provided [`BytesRef`], interpreted as UTF-8.
@@ -343,7 +330,7 @@ impl CharsRefBuilder {
     /// builder, replacing its content.
     ///
     /// Equivalent to `CharsRefBuilder.copyChars(char[], int, int)`.
-    pub fn copy_chars(&mut self, other_chars: &[char], other_offset: usize, other_length: usize) {
+    pub fn copy_chars(&mut self, other_chars: &[u16], other_offset: usize, other_length: usize) {
         self.grow(other_length);
         self.r.chars[..other_length]
             .copy_from_slice(&other_chars[other_offset..other_offset + other_length]);
@@ -353,7 +340,7 @@ impl CharsRefBuilder {
     /// Appends `other_chars[other_offset..other_offset + other_length]`.
     ///
     /// Equivalent to `CharsRefBuilder.append(char[], int, int)`.
-    pub fn append_chars(&mut self, other_chars: &[char], other_offset: usize, other_length: usize) {
+    pub fn append_chars(&mut self, other_chars: &[u16], other_offset: usize, other_length: usize) {
         let new_len = self.r.length + other_length;
         self.grow(new_len);
         let start = self.r.length;

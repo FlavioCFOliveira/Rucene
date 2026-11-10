@@ -7,18 +7,15 @@
 //! * `org.apache.lucene.index.TestUpgradeIndexMergePolicy`: an
 //!   `UpgradeIndexMergePolicy` over `newTieredMergePolicy()` with a max
 //!   merged segment of 1 to 10 GB; both assertions are no-ops;
-//! * `org.apache.lucene.index.TestNoMergePolicy`: `NoMergePolicy.INSTANCE`;
-//!   every segment comes from a flush and no merge is ever selected; the
-//!   simulations run on fewer documents;
 //! * `org.apache.lucene.index.TestTieredMergePolicy`: `newTieredMergePolicy()`,
 //!   with the segment-count and merge-size assertions; the simulations run
 //!   with a max merged segment of 1 to 10 GB;
-//! * `org.apache.lucene.index.TestLogMergePolicy`: `newLogMergePolicy(random())`,
-//!   with the size assertions.
 //!
 //! The classes' own test methods (`testNoMergePolicy`, `testForceMergeDeletes`,
-//! `testIncreasingSegmentSizes`, …) belong to the core-test port (sprint 7)
-//! and are not declared here.
+//! …) belong to the core-test port (sprint 9) and are not declared here.
+//! `TestLogMergePolicy` and `TestNoMergePolicy` are bound, with their own
+//! methods, in `core_index/test_log_merge_policy.rs` and
+//! `core_index/test_no_merge_policy.rs`.
 //!
 //! Each suite runs once on the seed `tests.seed` names (a random one when it
 //! is unset); `RUCENE_SUITE_SEEDS=<n>` runs it on the first `n` seeds of
@@ -29,14 +26,12 @@ use std::sync::{Arc, Mutex};
 use randomizedtesting::jdk::reflect::{modifier, Class, Constructor, Method};
 use randomizedtesting::junit::Assert;
 use rucene::error::Result;
-use rucene::index::index_writer::SOURCE_FLUSH;
 use rucene::index::merge_policy::{
-    LogMergePolicy, MergePolicy, MergeSpecification, NoMergePolicy, TieredMergePolicy,
-    UpgradeIndexMergePolicy,
+    MergePolicy, MergeSpecification, TieredMergePolicy, UpgradeIndexMergePolicy,
 };
 use rucene::index::segment_infos::SegmentInfos;
 use rucene_test_framework::index::base_merge_policy_test_case::{
-    self, fail, BaseMergePolicyTestCase, MergePolicyTestInstance, MockMergeContext, SOURCE,
+    self, fail, BaseMergePolicyTestCase, MergePolicyTestInstance,
 };
 use rucene_test_framework::util::lucene_test_case::TEST_NIGHTLY;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
@@ -51,14 +46,6 @@ fn as_tiered(policy: &dyn MergePolicy) -> &TieredMergePolicy {
         .as_any()
         .and_then(|a| a.downcast_ref::<TieredMergePolicy>())
         .unwrap_or_else(|| fail("java.lang.ClassCastException: not a TieredMergePolicy"))
-}
-
-/// `(LogMergePolicy) policy`.
-fn as_log(policy: &dyn MergePolicy) -> &LogMergePolicy {
-    policy
-        .as_any()
-        .and_then(|a| a.downcast_ref::<LogMergePolicy>())
-        .unwrap_or_else(|| fail("java.lang.ClassCastException: not a LogMergePolicy"))
 }
 
 // -----------------------------------------------------------------------------
@@ -98,53 +85,6 @@ fn upgrade_index_class() -> Arc<Class> {
         .extends(&base_merge_policy_test_case::class())
         .constructor(Constructor::no_args(|| {
             MergePolicyTestInstance::new(Arc::new(UpgradeIndexSuite))
-        }))
-        .build()
-}
-
-// -----------------------------------------------------------------------------
-// TestNoMergePolicy
-// -----------------------------------------------------------------------------
-
-/// `TestNoMergePolicy`.
-struct NoMergeSuite;
-
-impl BaseMergePolicyTestCase for NoMergeSuite {
-    fn merge_policy(&self) -> Arc<dyn MergePolicy> {
-        Arc::new(NoMergePolicy::new())
-    }
-
-    fn assert_segment_infos(&self, _policy: &dyn MergePolicy, infos: &SegmentInfos) -> Result<()> {
-        for info in infos.iter() {
-            Assert::assert_equals_str(
-                None,
-                Some(SOURCE_FLUSH),
-                info.info.get_attribute(SOURCE).as_deref(),
-            );
-        }
-        Ok(())
-    }
-
-    fn assert_merge(&self, _policy: &dyn MergePolicy, _merge: &MergeSpecification) -> Result<()> {
-        Assert::fail_without_message() // should never happen
-    }
-
-    fn test_simulate_append_only(&self) -> Result<()> {
-        // Reduce numbers as this merge policy doesn't work well with lots of data
-        self.do_test_simulate_append_only(&*self.merge_policy(), 1_000_000, 10_000)
-    }
-
-    fn test_simulate_updates(&self) -> Result<()> {
-        // Reduce numbers as this merge policy doesn't work well with lots of data
-        self.do_test_simulate_updates(&*self.merge_policy(), 100_000, 1000)
-    }
-}
-
-fn no_merge_class() -> Arc<Class> {
-    Class::builder("org.apache.lucene.index.TestNoMergePolicy")
-        .extends(&base_merge_policy_test_case::class())
-        .constructor(Constructor::no_args(|| {
-            MergePolicyTestInstance::new(Arc::new(NoMergeSuite))
         }))
         .build()
 }
@@ -383,67 +323,6 @@ fn tiered_class() -> Arc<Class> {
 }
 
 // -----------------------------------------------------------------------------
-// TestLogMergePolicy
-// -----------------------------------------------------------------------------
-
-/// `TestLogMergePolicy`.
-struct LogSuite;
-
-impl BaseMergePolicyTestCase for LogSuite {
-    fn merge_policy(&self) -> Arc<dyn MergePolicy> {
-        Arc::new(LuceneTestCase::new_log_merge_policy_with(
-            &*LuceneTestCase::random(),
-        ))
-    }
-
-    fn assert_segment_infos(&self, policy: &dyn MergePolicy, infos: &SegmentInfos) -> Result<()> {
-        let mp = as_log(policy);
-
-        let mock_merge_context = MockMergeContext::del_count();
-        for info in infos.iter() {
-            Assert::assert_true(
-                MergePolicy::size(mp, info, &mock_merge_context)?
-                    / i64::from(mp.get_merge_factor())
-                    < mp.max_merge_size(),
-            );
-        }
-        // TODO: what else can we check?
-        Ok(())
-    }
-
-    fn assert_merge(&self, policy: &dyn MergePolicy, merge: &MergeSpecification) -> Result<()> {
-        let lmp = as_log(policy);
-        let mock_merge_context = MockMergeContext::del_count();
-        for one_merge in &merge.merges {
-            let mut merge_size = 0i64;
-            for info in &one_merge.segments {
-                merge_size += MergePolicy::size(lmp, info, &mock_merge_context)?;
-            }
-            Assert::assert_true_msg(
-                &format!(
-                    "mergeSize: {merge_size} minMergeSize: {} segmentsCount: {} mergeFactor: {}",
-                    lmp.min_merge_size(),
-                    one_merge.segments.len(),
-                    lmp.get_merge_factor()
-                ),
-                merge_size <= lmp.min_merge_size()
-                    || one_merge.segments.len() as i32 <= lmp.get_merge_factor(),
-            );
-        }
-        Ok(())
-    }
-}
-
-fn log_class() -> Arc<Class> {
-    Class::builder("org.apache.lucene.index.TestLogMergePolicy")
-        .extends(&base_merge_policy_test_case::class())
-        .constructor(Constructor::no_args(|| {
-            MergePolicyTestInstance::new(Arc::new(LogSuite))
-        }))
-        .build()
-}
-
-// -----------------------------------------------------------------------------
 // The seeded-draw oracle: TestMergePolicySuiteDraws
 // -----------------------------------------------------------------------------
 
@@ -503,19 +382,7 @@ fn test_upgrade_index_merge_policy() {
 }
 
 #[test]
-fn test_no_merge_policy() {
-    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    run_suite(no_merge_class);
-}
-
-#[test]
 fn test_tiered_merge_policy() {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     run_suite(tiered_class);
-}
-
-#[test]
-fn test_log_merge_policy() {
-    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
-    run_suite(log_class);
 }

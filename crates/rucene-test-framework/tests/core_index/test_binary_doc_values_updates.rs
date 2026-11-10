@@ -129,7 +129,7 @@ pub fn class_def() -> Arc<Class> {
 // ---------------------------------------------------------------------------
 
 /// `static long getValue(BinaryDocValues bdv)`.
-fn get_value(bdv: &dyn BinaryDocValues) -> Result<i64> {
+pub(crate) fn get_value(bdv: &dyn BinaryDocValues) -> Result<i64> {
     let term = bdv.binary_value()?;
     let mut idx = term.offset;
     debug_assert!(term.length > 0);
@@ -148,7 +148,7 @@ fn get_value(bdv: &dyn BinaryDocValues) -> Result<i64> {
 
 /// `static BytesRef toBytes(long value)`: encodes a long into a BytesRef as
 /// VLong so that we get varying number of bytes when we update.
-fn to_bytes(value: i64) -> BytesRef {
+pub(crate) fn to_bytes(value: i64) -> BytesRef {
     let mut value = value as u64;
     let mut bytes = LuceneTestCase::new_bytes_ref_len(10); // negative longs may take 10 bytes
     let mut upto = 0;

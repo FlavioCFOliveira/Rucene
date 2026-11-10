@@ -2002,14 +2002,65 @@ impl MergePolicy for NoMergePolicy {
         Ok(None)
     }
 
+    /// `NoMergePolicy.findMerges(CodecReader...)` (`NoMergePolicy.java:43-51`):
+    /// `super.findMerges(readers)`, so that `addIndexes(CodecReader...)`
+    /// still adds the readers.
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn CodecReader>],
+    ) -> Result<Option<MergeSpecification>> {
+        let mut merge_spec = MergeSpecification::new();
+        merge_spec.add(OneMerge::from_codec_readers(readers.to_vec()));
+        Ok(Some(merge_spec))
+    }
+
+    /// `NoMergePolicy.findFullFlushMerges` (`NoMergePolicy.java:66-70`): `null`.
+    fn find_full_flush_merges(
+        &self,
+        _merge_trigger: MergeTrigger,
+        _segment_infos: &SegmentInfos,
+        _merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        Ok(None)
+    }
+
+    /// `NoMergePolicy.useCompoundFile` (`NoMergePolicy.java:72-76`): the new
+    /// segment's own setting, `newSegment.info.getUseCompoundFile()`.
     fn use_compound_file(
         &self,
         _infos: &SegmentInfos,
-        _merged_info: &SegmentCommitInfo,
+        merged_info: &SegmentCommitInfo,
         _merge_context: &dyn MergeContext,
+    ) -> Result<bool> {
+        Ok(merged_info.info.get_use_compound_file())
+    }
+
+    /// `NoMergePolicy.size` (`NoMergePolicy.java:78-81`): `Long.MAX_VALUE`.
+    fn size(&self, _info: &SegmentCommitInfo, _merge_context: &dyn MergeContext) -> Result<i64> {
+        Ok(i64::MAX)
+    }
+
+    /// `NoMergePolicy.keepFullyDeletedSegment` (`NoMergePolicy.java:103-107`):
+    /// `super.keepFullyDeletedSegment(readerIOSupplier)`, which is `false`.
+    fn keep_fully_deleted_segment(
+        &self,
+        _reader_supplier: &mut CodecReaderSupplier<'_>,
     ) -> Result<bool> {
         Ok(false)
     }
+
+    /// `NoMergePolicy.numDeletesToMerge` (`NoMergePolicy.java:109-114`):
+    /// `super.numDeletesToMerge(info, delCount, readerSupplier)`, which is
+    /// `delCount`.
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &SegmentCommitInfo,
+        del_count: i32,
+        _reader_supplier: &mut dyn FnMut() -> Result<Arc<dyn CodecReader>>,
+    ) -> Result<i32> {
+        Ok(self.num_deletes_to_merge_default(info, del_count))
+    }
+
     fn get_no_cfs_ratio(&self) -> f64 {
         self.cfs.get_no_cfs_ratio()
     }

@@ -285,7 +285,7 @@ fn test_random_unicode_strings() -> Result<()> {
         utf16.copy_utf8_bytes(&utf8.bytes, 0, utf8.length);
         assert_equals(&utf16.length(), &20);
         for (i, e) in expected.iter().enumerate() {
-            assert_equals(&u32::from(*e), &(utf16.char_at(i) as u32));
+            assert_equals(e, &utf16.char_at(i));
         }
     }
     Ok(())

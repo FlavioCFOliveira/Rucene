@@ -1,7 +1,7 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/util/TestCharsRefBuilder.java`.
 //!
-//! Rucene's `CharsRefBuilder` stores [`char`]s, so the lengths and indices
-//! of the Java `String` are taken over its characters.
+//! Java `String` lengths, indices and `CharSequence`s are UTF-16 units, as
+//! `CharsRefBuilder` stores them.
 
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub fn class_def() -> Arc<Class> {
 
 fn test_append() -> Result<()> {
     let s = TestUtil::random_unicode_string_max(&*random(), 100);
-    let s_chars: Vec<char> = s.chars().collect();
+    let s_chars: Vec<u16> = s.encode_utf16().collect();
     let mut builder = CharsRefBuilder::new();
     while builder.length() < s_chars.len() {
         if random().next_boolean() {
@@ -34,10 +34,10 @@ fn test_append() -> Result<()> {
             let start = builder.length();
             let end = TestUtil::next_int(&*random(), start as i32, s_chars.len() as i32) as usize;
             if random().next_boolean() {
-                let sub: String = s_chars[start..end].iter().collect();
+                let sub: Vec<u16> = s_chars[start..end].to_vec();
                 builder.append_str(Some(&sub));
             } else {
-                builder.append_str_range(Some(&s), start, end);
+                builder.append_str_range(Some(&s_chars), start, end);
             }
         }
     }

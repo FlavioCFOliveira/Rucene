@@ -1,7 +1,7 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/util/TestCharsRef.java`.
 //!
-//! Rucene's `CharsRef` stores [`char`]s, so Java's `toCharArray()` is
-//! `chars().collect()` here; negative Java indices are passed as their
+//! Rucene's `CharsRef` stores UTF-16 units, as Java's `char[]`, so Java's
+//! `toCharArray()` is `encode_utf16().collect()` here; negative Java indices are passed as their
 //! two's-complement `usize`, which the bounds checks reject as Java's do.
 
 use std::sync::Arc;
@@ -59,20 +59,21 @@ fn test_utf16_in_utf8_order() -> Result<()> {
 
 fn test_append() -> Result<()> {
     let mut r#ref = CharsRefBuilder::new();
-    let mut builder = String::new();
+    // Java's `StringBuilder`, a sequence of UTF-16 units.
+    let mut builder: Vec<u16> = Vec::new();
     let num_strings = LuceneTestCase::at_least(10);
     for _ in 0..num_strings {
-        let char_array: Vec<char> =
+        let char_array: Vec<u16> =
             TestUtil::random_realistic_unicode_string_between(&*random(), 1, 100)
-                .chars()
+                .encode_utf16()
                 .collect();
         let offset = random().next_int_bound(char_array.len() as i32) as usize;
         let length = char_array.len() - offset;
-        builder.extend(&char_array[offset..offset + length]);
+        builder.extend_from_slice(&char_array[offset..offset + length]);
         r#ref.append_chars(&char_array, offset, length);
     }
 
-    assert_equals(&builder, &r#ref.get().to_string());
+    assert_equals(builder.as_slice(), r#ref.get().chars());
     Ok(())
 }
 
@@ -80,15 +81,16 @@ fn test_copy() -> Result<()> {
     let num_iters = LuceneTestCase::at_least(10);
     for _ in 0..num_iters {
         let mut r#ref = CharsRefBuilder::new();
-        let char_array: Vec<char> =
+        let char_array: Vec<u16> =
             TestUtil::random_realistic_unicode_string_between(&*random(), 1, 100)
-                .chars()
+                .encode_utf16()
                 .collect();
         let offset = random().next_int_bound(char_array.len() as i32) as usize;
         let length = char_array.len() - offset;
-        let str: String = char_array[offset..offset + length].iter().collect();
+        // `new String(charArray, offset, length)`: the same UTF-16 units.
+        let str: &[u16] = &char_array[offset..offset + length];
         r#ref.copy_chars(&char_array, offset, length);
-        assert_equals(&str, &r#ref.to_string());
+        assert_equals(str, r#ref.get().chars());
     }
     Ok(())
 }
@@ -97,7 +99,7 @@ fn test_copy() -> Result<()> {
 fn test_char_sequence_char_at() -> Result<()> {
     let c = CharsRef::from_string("abc");
 
-    assert_equals(&'b', &c.char_at(1));
+    assert_equals(&u16::from(b'b'), &c.char_at(1));
 
     expect_throws_panic(IOOBE, || {
         c.char_at(MINUS_ONE);
@@ -114,9 +116,9 @@ fn test_char_sequence_char_at() -> Result<()> {
 fn test_char_sequence_sub_sequence() -> Result<()> {
     let sequences: Vec<CharsRef> = vec![
         CharsRef::from_string("abc"),
-        CharsRef::from_chars_offset("0abc".chars().collect(), 1, 3),
-        CharsRef::from_chars_offset("abc0".chars().collect(), 0, 3),
-        CharsRef::from_chars_offset("0abc0".chars().collect(), 1, 3),
+        CharsRef::from_chars_offset("0abc".encode_utf16().collect(), 1, 3),
+        CharsRef::from_chars_offset("abc0".encode_utf16().collect(), 0, 3),
+        CharsRef::from_chars_offset("0abc0".encode_utf16().collect(), 1, 3),
     ];
 
     for c in &sequences {
@@ -154,7 +156,7 @@ fn do_test_sequence(c: &CharsRef) {
 }
 
 fn test_invalid_deep_copy() -> Result<()> {
-    let mut from = CharsRef::from_chars_offset(vec!['a', 'b'], 0, 2);
+    let mut from = CharsRef::from_chars_offset(vec![u16::from(b'a'), u16::from(b'b')], 0, 2);
     from.offset += 1; // now invalid
     expect_throws_panic(IOOBE, || {
         CharsRef::deep_copy_of(&from);

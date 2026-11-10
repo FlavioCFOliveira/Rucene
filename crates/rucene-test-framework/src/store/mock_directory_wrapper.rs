@@ -336,7 +336,17 @@ pub(crate) struct Core {
     fail_on_open_input: AtomicBool,
     assert_no_unreferenced_files_on_close: AtomicBool,
     next_handle_id: AtomicU64,
+    /// An override of `openInput` that a Java subclass declares
+    /// (`TestMultiLevelSkipList.CountingDirectory`); see
+    /// [`MockDirectoryWrapper::set_open_input_override`].
+    open_input_override: Mutex<Option<OpenInputOverride>>,
 }
+
+/// An override of `MockDirectoryWrapper.openInput(String, IOContext)` whose
+/// body starts with `super.openInput(name, context)`: it receives the file
+/// name and the input `super` returned, and returns the input to hand out.
+pub type OpenInputOverride =
+    Arc<dyn Fn(&str, Box<dyn IndexInput>) -> Result<Box<dyn IndexInput>> + Send + Sync>;
 
 /// Port of `org.apache.lucene.tests.store.MockDirectoryWrapper` (`extends
 /// BaseDirectoryWrapper`): a directory wrapper for tests.
@@ -384,6 +394,7 @@ impl MockDirectoryWrapper {
                     open_files_deleted: JavaHashSet::new(),
                 }),
                 failures: Mutex::new(None),
+                open_input_override: Mutex::new(None),
                 random_state,
                 throttle_bytes_per_second: bytes_per_second,
                 throttle_delay_millis: delay,
@@ -1081,6 +1092,13 @@ impl MockDirectoryWrapper {
 
     /// `failOn(fail)`: adds a [`Failure`] to the ones evaluated at every
     /// potential failure point.
+    /// Installs (or, with `None`, removes) an override of `openInput`, as a
+    /// Java subclass overriding it and calling `super.openInput` first does
+    /// (`TestMultiLevelSkipList.CountingDirectory`).
+    pub fn set_open_input_override(&self, open_input_override: Option<OpenInputOverride>) {
+        *lock(&self.core.open_input_override) = open_input_override;
+    }
+
     pub fn fail_on(&self, fail: Arc<dyn Failure>) {
         let _monitor = self.core.monitor.enter();
         lock(&self.core.failures)
@@ -1686,7 +1704,11 @@ impl Directory for MockDirectoryWrapper {
             self.add_file_handle(id, Closer::Input(ctl), name, Handle::Input);
             Box::new(ii)
         };
-        Ok(ii)
+        let open_input_override = lock(&self.core.open_input_override).clone();
+        match open_input_override {
+            Some(open_input_override) => open_input_override(name, ii),
+            None => Ok(ii),
+        }
     }
 
     /// `obtainLock(name)`: the delegate's lock.
