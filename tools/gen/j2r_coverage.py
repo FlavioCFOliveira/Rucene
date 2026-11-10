@@ -8,6 +8,10 @@ For every `Test*.java` under Lucene's core test tree, counts the declared
 Rust class definition whose Java name (`"org.apache.lucene.…"`) matches.
 Inherited methods are not counted on either side. `J2R` markers still present
 in the Rust file are reported as untranslated.
+
+Known limit: a class bound through a generic base or a macro that builds its
+Java name at runtime (`concat!`, `format!`) is reported as unbound; check such
+reports against the Rust tree before translating.
 """
 
 import re
@@ -17,6 +21,7 @@ from pathlib import Path
 
 JAVA = Path("/tmp/lucene1050/lucene/core/src/test")
 RUST = [Path("crates"), Path("tests")]
+COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
 TEST_RE = re.compile(r"^\s*public\s+(?:final\s+)?void\s+(test\w*)\s*\(\s*\)", re.M)
 
 
@@ -46,7 +51,7 @@ def main() -> None:
         if not fq.startswith("org.apache.lucene." + prefix):
             continue
         pkg = ".".join(rel.parts[3:-1]) or "(root)"
-        methods = set(TEST_RE.findall(java.read_text(errors="replace")))
+        methods = set(TEST_RE.findall(COMMENT_RE.sub("", java.read_text(errors="replace"))))
         entry = rust.get(fq)
         done = (methods & entry["methods"]) if entry else set()
         if entry and entry["todo"]:
