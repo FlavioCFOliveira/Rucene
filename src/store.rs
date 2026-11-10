@@ -9585,7 +9585,11 @@ impl FSDirectory {
     }
 
     /// Equivalent to `FSDirectory.deletePendingFiles()` (`FSDirectory.java:314-325`).
-    fn delete_pending_files(&self) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// The I/O error of a pending delete that fails again.
+    pub fn delete_pending_files(&self) -> Result<()> {
         let pending = {
             let pending = self
                 .pending_deletes
@@ -10020,6 +10024,17 @@ impl NIOFSDirectory {
     /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
     pub fn get_directory(&self) -> Result<&nio::Path> {
         self.inner.get_directory()
+    }
+
+    /// `deletePendingFiles()`, inherited from `FSDirectory`
+    /// (`FSDirectory.java:314-325`): tries again to delete the files whose
+    /// deletion failed.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error of a pending delete that fails again.
+    pub fn delete_pending_files(&self) -> Result<()> {
+        self.inner.delete_pending_files()
     }
 }
 

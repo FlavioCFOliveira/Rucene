@@ -413,6 +413,14 @@ pub type GetMergeThreadOverride = Arc<
 /// on the scheduler's monitor.
 pub type DoStallOverride = Arc<dyn Fn(&mut dyn FnMut() -> Result<()>) -> Result<()> + Send + Sync>;
 
+/// Overrides `ConcurrentMergeScheduler.close()`
+/// (`ConcurrentMergeScheduler.java:466-476`), as [`DoMergeOverride`]
+/// overrides `doMerge`: a Java subclass that declares `public void close()
+/// {}` (`TestIndexWriter.testCloseWhileMergeIsRunning`) replaces the inherited
+/// body. The hook receives the scheduler, Java's `this`; the inherited body is
+/// [`ConcurrentMergeScheduler::default_close`].
+pub type CloseOverride = Arc<dyn Fn(&ConcurrentMergeScheduler) -> Result<()> + Send + Sync>;
+
 /// The body of a [`MergeThread`] that overrides `run()`, as Java's anonymous
 /// subclass `mergeScheduler.new MergeThread(mergeSource, merge) { public void
 /// run() { … } }` does (`TestConcurrentMergeScheduler.java:282-299`). It
@@ -488,6 +496,7 @@ struct CmsShared {
     get_merge_thread_override: Mutex<Option<GetMergeThreadOverride>>,
     /// See [`DoStallOverride`].
     do_stall_override: Mutex<Option<DoStallOverride>>,
+    close_override: Mutex<Option<CloseOverride>>,
     /// The executor big merges run their intra-merge work on, created by
     /// `initialize` and shut down by `close`.
     ///
@@ -758,6 +767,7 @@ impl ConcurrentMergeScheduler {
                 intra_merge_executor_override: Mutex::new(None),
                 get_merge_thread_override: Mutex::new(None),
                 do_stall_override: Mutex::new(None),
+                close_override: Mutex::new(None),
                 intra_merge_executor: Mutex::new(None),
                 executor: Arc::new(SameThreadExecutorService::new()),
             }),
@@ -876,6 +886,39 @@ impl ConcurrentMergeScheduler {
             .do_stall_override
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = hook;
+    }
+
+    /// Installs, or with `None` removes, the override of `close`.
+    ///
+    /// See [`CloseOverride`].
+    pub fn set_close_override(&self, hook: Option<CloseOverride>) {
+        *self
+            .shared
+            .close_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = hook;
+    }
+
+    /// The inherited body of `ConcurrentMergeScheduler.close()`
+    /// (`ConcurrentMergeScheduler.java:466-476`), which a [`CloseOverride`]
+    /// replaces.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `super.close()`.
+    pub fn default_close(&self) -> Result<()> {
+        merge_scheduler_close(self)?;
+        self.sync();
+        if let Some(executor) = self
+            .shared
+            .intra_merge_executor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            executor.shutdown();
+        }
+        Ok(())
     }
 
     /// Installs, or with `None` removes, the override of
@@ -2157,18 +2200,16 @@ impl MergeScheduler for ConcurrentMergeScheduler {
     /// the merge threads, and, even when that fails, the intra-merge executor
     /// is shut down.
     fn close(&self) -> Result<()> {
-        merge_scheduler_close(self)?;
-        self.sync();
-        if let Some(executor) = self
+        let hook = self
             .shared
-            .intra_merge_executor
+            .close_override
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
-            executor.shutdown();
+            .clone();
+        match hook {
+            Some(hook) => hook(self),
+            None => self.default_close(),
         }
-        Ok(())
     }
 
     /// Equivalent to `ConcurrentMergeScheduler.initialize(InfoStream, Directory)`

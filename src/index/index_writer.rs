@@ -635,6 +635,169 @@ impl EventQueue {
     }
 }
 
+/// `IndexWriter.EventQueue` (`IndexWriter.java:294-366`) and its `Event`
+/// (`IndexWriter.java:6152-6162`), package-private in Java and `pub` here so
+/// that `TestIndexWriter.testCloseableQueue` can build one over a writer.
+///
+/// **Divergence from Lucene 10.5.0.** Java's writer runs its own events
+/// through an instance of this class; Rucene's writer keeps the private,
+/// enum-based queue above, whose events are the closed set the writer adds.
+/// This type is the Java class as is: a queue of arbitrary events processed
+/// against the writer it was built over.
+pub mod event_queue {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Condvar, Mutex, PoisonError};
+
+    use super::IndexWriter;
+    use crate::error::{LuceneError, Result};
+
+    /// `IndexWriter.Event`: `void process(IndexWriter writer)`.
+    pub type Event = Box<dyn FnOnce(&IndexWriter) -> Result<()> + Send>;
+
+    /// The `Semaphore(Integer.MAX_VALUE)`: the permits held, and whether
+    /// `close` took them all.
+    #[derive(Default)]
+    struct Permits {
+        held: usize,
+        all_taken: bool,
+    }
+
+    /// `static final class EventQueue implements Closeable`.
+    pub struct EventQueue {
+        closed: Mutex<bool>,
+        permits: Mutex<Permits>,
+        released: Condvar,
+        queue: Mutex<VecDeque<Event>>,
+        writer: Arc<IndexWriter>,
+    }
+
+    /// A permit, released when dropped (`permits.release()`).
+    struct Permit<'a>(&'a EventQueue);
+
+    impl Drop for Permit<'_> {
+        fn drop(&mut self) {
+            let mut permits = self
+                .0
+                .permits
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            permits.held -= 1;
+            if permits.held == 0 {
+                self.0.released.notify_all();
+            }
+        }
+    }
+
+    impl EventQueue {
+        /// `EventQueue(IndexWriter writer)`.
+        pub fn new(writer: Arc<IndexWriter>) -> Self {
+            EventQueue {
+                closed: Mutex::new(false),
+                permits: Mutex::new(Permits::default()),
+                released: Condvar::new(),
+                queue: Mutex::new(VecDeque::new()),
+                writer,
+            }
+        }
+
+        /// `acquire()` (`IndexWriter.java:307-315`).
+        fn acquire(&self) -> Result<Permit<'_>> {
+            {
+                let mut permits = self.permits.lock().unwrap_or_else(PoisonError::into_inner);
+                if permits.all_taken {
+                    return Err(LuceneError::already_closed("queue is closed".to_string()));
+                }
+                permits.held += 1;
+            }
+            let permit = Permit(self);
+            if *self.closed.lock().unwrap_or_else(PoisonError::into_inner) {
+                drop(permit);
+                return Err(LuceneError::already_closed("queue is closed".to_string()));
+            }
+            Ok(permit)
+        }
+
+        /// `boolean add(Event event)` (`IndexWriter.java:317-324`).
+        ///
+        /// # Errors
+        ///
+        /// `AlreadyClosedException` once the queue is closed.
+        pub fn add(&self, event: Event) -> Result<bool> {
+            let _permit = self.acquire()?;
+            self.queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push_back(event);
+            Ok(true)
+        }
+
+        /// `void processEvents()` (`IndexWriter.java:326-333`).
+        ///
+        /// # Errors
+        ///
+        /// `AlreadyClosedException` once the queue is closed, and what an
+        /// event raises.
+        pub fn process_events(&self) -> Result<()> {
+            let _permit = self.acquire()?;
+            self.process_events_internal()
+        }
+
+        /// `processEventsInternal()` (`IndexWriter.java:335-342`).
+        fn process_events_internal(&self) -> Result<()> {
+            loop {
+                let event = self
+                    .queue
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .pop_front();
+                match event {
+                    Some(event) => event(&self.writer)?,
+                    None => return Ok(()),
+                }
+            }
+        }
+
+        /// `close()` (`IndexWriter.java:344-365`), `synchronized` "to prevent
+        /// double closing".
+        ///
+        /// # Errors
+        ///
+        /// What a remaining event raises.
+        pub fn close(&self) -> Result<()> {
+            let mut closed = self.closed.lock().unwrap_or_else(PoisonError::into_inner);
+            debug_assert!(!*closed, "we should never close this twice");
+            *closed = true;
+            drop(closed);
+            // it's possible that we close this queue while we are in a processEvents call
+            if self.writer.get_tragic_exception().is_some() {
+                // we are already handling a tragic exception let's drop it all on the floor and return
+                self.queue
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+                return Ok(());
+            }
+            // now we acquire all the permits to ensure we are the only one processing the queue
+            {
+                let mut permits = self.permits.lock().unwrap_or_else(PoisonError::into_inner);
+                while permits.held > 0 {
+                    permits = self
+                        .released
+                        .wait(permits)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                permits.all_taken = true;
+            }
+            let result = self.process_events_internal();
+            self.permits
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .all_taken = false;
+            result
+        }
+    }
+}
+
 /// Bridges the flush machinery's callbacks back onto the writer.
 ///
 /// Equivalent to the anonymous `IndexWriter.EventQueue` / `FlushNotifications`
@@ -2090,14 +2253,20 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `soft_deletes` is empty, or
+    /// Returns [`LuceneError::IllegalArgument`] when `term` is `None` (Java's
+    /// `null`, `IndexWriter.java:1679-1681`), when `soft_deletes` is empty, or
     /// when a field is not an updatable doc-values field.
     pub fn soft_update_document(
         &self,
-        term: Term,
+        term: impl Into<Option<Term>>,
         doc: &Document,
         soft_deletes: &[Field],
     ) -> Result<i64> {
+        let Some(term) = term.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "term must not be null".to_string(),
+            ));
+        };
         if soft_deletes.is_empty() {
             return Err(LuceneError::IllegalArgument(
                 "at least one soft delete must be present".to_string(),
@@ -2119,14 +2288,20 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `soft_deletes` is empty, or
+    /// Returns [`LuceneError::IllegalArgument`] when `term` is `None` (Java's
+    /// `null`, `IndexWriter.java:1679-1681`), when `soft_deletes` is empty, or
     /// when a field is not an updatable doc-values field.
     pub fn soft_update_documents(
         &self,
-        term: Term,
+        term: impl Into<Option<Term>>,
         docs: &[Document],
         soft_deletes: &[Field],
     ) -> Result<i64> {
+        let Some(term) = term.into() else {
+            return Err(LuceneError::IllegalArgument(
+                "term must not be null".to_string(),
+            ));
+        };
         if soft_deletes.is_empty() {
             return Err(LuceneError::IllegalArgument(
                 "at least one soft delete must be present".to_string(),

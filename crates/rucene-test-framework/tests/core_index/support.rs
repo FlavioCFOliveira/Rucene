@@ -583,6 +583,10 @@ pub fn add_doc_with_index(
 /// delegation.
 pub struct KeepFullyDeletedSegmentsMergePolicy {
     filter: rucene::index::merge_policy::FilterMergePolicy,
+    /// The answer of `keepFullyDeletedSegment`: `None` for `return true`,
+    /// otherwise the flag's current value (`return
+    /// keepFullyDeletedSegments.get()`, `TestIndexWriter.testMergeAllDeleted`).
+    keep: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl KeepFullyDeletedSegmentsMergePolicy {
@@ -590,6 +594,19 @@ impl KeepFullyDeletedSegmentsMergePolicy {
     pub fn new(inner: Arc<dyn rucene::index::merge_policy::MergePolicy>) -> Self {
         KeepFullyDeletedSegmentsMergePolicy {
             filter: rucene::index::merge_policy::FilterMergePolicy::new(inner),
+            keep: None,
+        }
+    }
+
+    /// `new FilterMergePolicy(in) { … return keep.get(); }`: keeps a fully
+    /// deleted segment while `keep` is set.
+    pub fn with_flag(
+        inner: Arc<dyn rucene::index::merge_policy::MergePolicy>,
+        keep: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        KeepFullyDeletedSegmentsMergePolicy {
+            filter: rucene::index::merge_policy::FilterMergePolicy::new(inner),
+            keep: Some(keep),
         }
     }
 }
@@ -695,12 +712,15 @@ impl rucene::index::merge_policy::MergePolicy for KeepFullyDeletedSegmentsMergeP
         self.filter.size(info, merge_context)
     }
 
-    /// The override: `return true`.
+    /// The override: `return true`, or the flag's value.
     fn keep_fully_deleted_segment(
         &self,
         _reader_supplier: &mut rucene::index::merge_policy::CodecReaderSupplier<'_>,
     ) -> Result<bool> {
-        Ok(true)
+        Ok(self
+            .keep
+            .as_ref()
+            .is_none_or(|k| k.load(std::sync::atomic::Ordering::SeqCst)))
     }
 
     fn num_deletes_to_merge_default(

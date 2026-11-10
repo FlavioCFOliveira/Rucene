@@ -70,6 +70,14 @@ pub trait IndexDeletionPolicy: Send + Sync + Debug {
     /// every implementor states its own.
     fn java_class_name(&self) -> &'static str;
 
+    /// `this` as `Any`, for the `instanceof` checks and casts Java applies to
+    /// a policy (`(SnapshotDeletionPolicy) config.getIndexDeletionPolicy()`,
+    /// `TestIndexWriter.testGetCommitDataFromOldSnapshot`): `None` unless the
+    /// implementation opts in.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Called once when a writer is first instantiated, to give the policy a
     /// chance to remove old commit points.
     ///
@@ -698,6 +706,11 @@ impl SnapshotDeletionPolicy {
 }
 
 impl IndexDeletionPolicy for SnapshotDeletionPolicy {
+    /// The policy is a `SnapshotDeletionPolicy`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.index.SnapshotDeletionPolicy"
     }

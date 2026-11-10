@@ -178,6 +178,8 @@ mod test_index_reader_close;
 mod test_index_sorting;
 #[path = "core_index/test_index_too_many_docs.rs"]
 mod test_index_too_many_docs;
+#[path = "core_index/test_index_writer.rs"]
+mod test_index_writer;
 #[path = "core_index/test_index_writer_commit.rs"]
 mod test_index_writer_commit;
 #[path = "core_index/test_index_writer_config.rs"]
@@ -192,6 +194,8 @@ mod test_index_writer_exceptions2;
 mod test_index_writer_force_merge;
 #[path = "core_index/test_index_writer_from_reader.rs"]
 mod test_index_writer_from_reader;
+#[path = "core_index/test_index_writer_lock_release.rs"]
+mod test_index_writer_lock_release;
 #[path = "core_index/test_indexable_field.rs"]
 mod test_indexable_field;
 #[path = "core_index/test_indexing_sequence_numbers.rs"]
@@ -661,6 +665,16 @@ fn test_index_writer_exceptions() {
 #[test]
 fn test_index_writer_force_merge() {
     run(test_index_writer_force_merge::class_def);
+}
+
+#[test]
+fn test_index_writer() {
+    run(test_index_writer::class_def);
+}
+
+#[test]
+fn test_index_writer_lock_release() {
+    run(test_index_writer_lock_release::class_def);
 }
 
 #[test]

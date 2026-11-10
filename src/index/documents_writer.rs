@@ -3049,6 +3049,14 @@ impl DocumentsWriterStallControl {
         self.lock().num_waiting > 0
     }
 
+    /// `synchronized (stallControl) { stallControl.notifyAll(); }`: wakes every
+    /// thread waiting on this controller's monitor, which re-checks the stall
+    /// flag (`TestIndexWriter.testIndexWriterBlocksOnStall`).
+    pub fn notify_all(&self) {
+        let _state = self.lock();
+        self.healthy.notify_all();
+    }
+
     /// Returns the number of parked threads.
     pub fn num_waiting(&self) -> usize {
         self.lock().num_waiting

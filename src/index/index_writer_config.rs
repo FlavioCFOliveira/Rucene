@@ -199,7 +199,9 @@ pub struct LiveIndexWriterConfig {
     index_sort: Option<Sort>,
     index_sort_fields: HashSet<String>,
     leaf_sorter: Option<Arc<dyn LeafComparator>>,
-    check_pending_flush_on_update: bool,
+    /// Live (`volatile` in Java): `IndexWriter.getConfig()` may change it
+    /// while the writer runs (`LiveIndexWriterConfig.java:108,436-439`).
+    check_pending_flush_on_update: AtomicBool,
     soft_deletes_field: Option<String>,
     max_full_flush_merge_wait_millis: i64,
     event_listener: Arc<dyn IndexWriterEventListener>,
@@ -297,7 +299,7 @@ impl LiveIndexWriterConfig {
             index_sort: None,
             index_sort_fields: HashSet::new(),
             leaf_sorter: None,
-            check_pending_flush_on_update: true,
+            check_pending_flush_on_update: AtomicBool::new(true),
             soft_deletes_field: None,
             max_full_flush_merge_wait_millis: Self::DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             event_listener: Arc::new(NoOpIndexWriterEventListener),
@@ -592,15 +594,14 @@ impl LiveIndexWriterConfig {
     /// update.
     pub fn check_pending_flush_on_update(&self) -> bool {
         self.check_pending_flush_on_update
+            .load(AtomicOrdering::Acquire)
     }
 
     /// Sets whether indexing threads should check for pending flushes on
     /// update.
-    pub fn set_check_pending_flush_update(
-        &mut self,
-        check_pending_flush_on_update: bool,
-    ) -> &mut Self {
-        self.check_pending_flush_on_update = check_pending_flush_on_update;
+    pub fn set_check_pending_flush_update(&self, check_pending_flush_on_update: bool) -> &Self {
+        self.check_pending_flush_on_update
+            .store(check_pending_flush_on_update, AtomicOrdering::Release);
         self
     }
 
@@ -682,7 +683,7 @@ impl fmt::Display for LiveIndexWriterConfig {
         writeln!(
             f,
             "checkPendingFlushOnUpdate={}",
-            self.check_pending_flush_on_update
+            self.check_pending_flush_on_update()
         )?;
         writeln!(
             f,
