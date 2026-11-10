@@ -19,7 +19,14 @@ that establishes it.
   package-private Java member becomes `pub`, with a doc line saying so.
 * **No new divergence** unless Lucene's way is impossible in Rust; then
   declare it (section 9). Pre-existing divergences you notice in `src/` are
-  reported, not fixed.
+  reported, not fixed — **except** when the test you translate needs the
+  Java behaviour: then make the core faithful (in scope).
+* **No test stand-in may hide a core divergence** (user, 2026-11-10). When a
+  Java test relies on a core behaviour Rucene lacks (a null argument, an
+  iterable that fails mid-way, a shared or mutable object, an unmodifiable
+  view, an exception class), change the core to Lucene's behaviour and keep
+  Java's check in the test. Only what Rust makes impossible (reflection, JVM
+  internals, object identity of values) is declared instead.
 
 ## 2. Workflow per class
 
