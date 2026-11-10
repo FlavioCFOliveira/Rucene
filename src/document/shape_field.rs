@@ -654,7 +654,10 @@ impl std::fmt::Display for LateInteractionField {
 
 impl LateInteractionField {
     /// Creates the field from one vector per token.
-    pub fn new(name: impl Into<String>, value: &[Vec<f32>]) -> Result<Self> {
+    ///
+    /// `value` is Java's `float[][]`, which may be `null` (`None`) and hold
+    /// `null` rows; [`encode`](Self::encode) raises Java's errors for them.
+    pub fn new(name: impl Into<String>, value: Option<&[Option<Vec<f32>>]>) -> Result<Self> {
         Ok(Self {
             name: name.into(),
             value: Self::encode(value)?,
@@ -662,7 +665,7 @@ impl LateInteractionField {
     }
 
     /// Replaces the value.
-    pub fn set_value(&mut self, value: &[Vec<f32>]) -> Result<()> {
+    pub fn set_value(&mut self, value: Option<&[Option<Vec<f32>>]>) -> Result<()> {
         self.value = Self::encode(value)?;
         Ok(())
     }
@@ -686,21 +689,36 @@ impl LateInteractionField {
     /// vector's components as little-endian floats.
     ///
     /// Equivalent to `LateInteractionField.encode(float[][])`.
-    pub fn encode(value: &[Vec<f32>]) -> Result<BytesRef> {
-        if value.is_empty() {
-            return Err(LuceneError::IllegalArgument(
-                "Value should not be null or empty".to_string(),
-            ));
-        }
-        let dimension = value[0].len();
-        if dimension == 0 {
-            return Err(LuceneError::IllegalArgument(
-                "Composing token vectors should not be null or empty".to_string(),
-            ));
-        }
+    pub fn encode(value: Option<&[Option<Vec<f32>>]>) -> Result<BytesRef> {
+        // `if (value == null || value.length == 0)`.
+        let value = match value {
+            Some(v) if !v.is_empty() => v,
+            _ => {
+                return Err(LuceneError::IllegalArgument(
+                    "Value should not be null or empty".to_string(),
+                ))
+            }
+        };
+        // `if (value[0] == null || value[0].length == 0)`.
+        let dimension = match &value[0] {
+            Some(first) if !first.is_empty() => first.len(),
+            _ => {
+                return Err(LuceneError::IllegalArgument(
+                    "Composing token vectors should not be null or empty".to_string(),
+                ))
+            }
+        };
         let mut bytes = Vec::with_capacity(4 + value.len() * dimension * 4);
         bytes.extend_from_slice(&(dimension as i32).to_le_bytes());
         for (i, vector) in value.iter().enumerate() {
+            // `value[i].length` dereferences the row: a `null` one throws
+            // `NullPointerException`.
+            let vector = vector.as_ref().ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.NullPointerException",
+                    format!("Cannot read the array length because \"value[{i}]\" is null"),
+                )
+            })?;
             if vector.len() != dimension {
                 return Err(LuceneError::IllegalArgument(format!(
                     "Composing token vectors should have the same dimension. Mismatching \

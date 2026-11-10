@@ -96,6 +96,15 @@ pub enum FeatureFunction {
         /// Value at which the function reaches half its maximum.
         pivot: f32,
     },
+    /// `SaturationFunction` with a `null` pivot: the pivot is computed by
+    /// [`FeatureField::compute_pivot_feature_value`] when the query is
+    /// rewritten (`FeatureField.SaturationFunction.rewrite`,
+    /// `FeatureField.java:409-415`). Scoring before the rewrite fails with
+    /// `IllegalStateException("Rewrite first")`, as Java's `scorer` does.
+    SaturationUnresolved {
+        /// Weight applied to the result.
+        weight: f32,
+    },
     /// `w * log(scaling_factor + value)` — compresses a long tail.
     Logarithm {
         /// Weight applied to the result.
@@ -122,6 +131,9 @@ impl FeatureFunction {
         match self {
             Self::Linear { weight } => weight * value,
             Self::Saturation { weight, pivot } => weight * value / (value + pivot),
+            // Unreachable: `FeatureQuery::create_weight` rejects an unresolved
+            // pivot before any scorer exists, as Java's `scorer` throws.
+            Self::SaturationUnresolved { .. } => f32::NAN,
             Self::Logarithm {
                 weight,
                 scaling_factor,
@@ -220,6 +232,30 @@ impl FeatureField {
                 },
             ),
             weight,
+        )
+    }
+
+    /// Returns a saturation query whose weight is `1` and whose pivot is
+    /// computed on rewrite.
+    ///
+    /// Equivalent to `FeatureField.newSaturationQuery(String, String)`
+    /// (`FeatureField.java`: `newSaturationQuery(fieldName, featureName, 1f,
+    /// null)`).
+    ///
+    /// # Errors
+    ///
+    /// Never in practice; the signature matches the other factories.
+    pub fn new_saturation_query_auto_pivot(
+        field_name: &str,
+        feature_name: &str,
+    ) -> Result<Arc<dyn Query>> {
+        boosted(
+            FeatureQuery::new(
+                field_name,
+                feature_name,
+                FeatureFunction::SaturationUnresolved { weight: 1.0 },
+            ),
+            1.0,
         )
     }
 
@@ -1262,6 +1298,22 @@ impl Query for FeatureQuery {
         hasher.finish()
     }
 
+    /// Equivalent to `FeatureQuery.rewrite(IndexSearcher)`: a function that
+    /// rewrites to another (a saturation function computing its pivot)
+    /// yields a new query over it.
+    fn rewrite(&self, searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
+        if let FeatureFunction::SaturationUnresolved { weight } = self.function {
+            let pivot =
+                FeatureField::compute_pivot_feature_value(searcher, &self.field, &self.feature)?;
+            return Ok(Some(Arc::new(FeatureQuery::new(
+                self.field.clone(),
+                self.feature.clone(),
+                FeatureFunction::Saturation { weight, pivot },
+            ))));
+        }
+        Ok(None)
+    }
+
     fn create_weight(
         &self,
         searcher: &IndexSearcher,
@@ -1276,11 +1328,206 @@ impl Query for FeatureQuery {
             let rewritten = searcher.rewrite(Arc::new(tq))?;
             return rewritten.create_weight(searcher, score_mode, boost);
         }
+        if matches!(self.function, FeatureFunction::SaturationUnresolved { .. }) {
+            // `SaturationFunction.scorer`: `if (pivot == null) throw new
+            // IllegalStateException("Rewrite first")`.
+            return Err(LuceneError::illegal_state("Rewrite first"));
+        }
         Ok(Arc::new(FeatureWeight {
             query: Arc::new(self.clone()),
             boost,
             top_level_scoring_clause: false,
         }))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// The nested `FeatureField.FeatureFunction` implementations and their scorers
+// -----------------------------------------------------------------------------
+
+/// The `SimScorer` every `FeatureFunction.scorer(float)` returns: the
+/// anonymous class that scores `doScore(decodeFeatureValue(freq))` and whose
+/// `asBulkSimScorer()` applies the same `doScore` to each entry
+/// (`FeatureField.java:262-560`).
+pub struct FeatureFunctionSimScorer {
+    do_score: Box<dyn Fn(f32) -> f32 + Send + Sync>,
+}
+
+impl SimScorer for FeatureFunctionSimScorer {
+    fn score(&self, freq: f32, _norm: i64) -> f32 {
+        let f = decode_feature_value(freq);
+        (self.do_score)(f)
+    }
+
+    fn as_bulk_sim_scorer(&self) -> Box<dyn crate::search::similarities::BulkSimScorer + '_> {
+        Box::new(FeatureFunctionBulkSimScorer { scorer: self })
+    }
+}
+
+/// The anonymous `Similarity.BulkSimScorer` of a [`FeatureFunctionSimScorer`].
+struct FeatureFunctionBulkSimScorer<'a> {
+    scorer: &'a FeatureFunctionSimScorer,
+}
+
+impl crate::search::similarities::BulkSimScorer for FeatureFunctionBulkSimScorer<'_> {
+    fn score(&mut self, size: usize, freqs: &[f32], _norms: &[i64], scores: &mut [f32]) {
+        for i in 0..size {
+            let f = decode_feature_value(freqs[i]);
+            scores[i] = (self.scorer.do_score)(f);
+        }
+    }
+}
+
+/// `FeatureField.LinearFunction`.
+///
+/// Java package-private; public for the port of `TestFeatureField`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LinearFunction;
+
+impl LinearFunction {
+    /// `new LinearFunction()`.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// `LinearFunction.scorer(float w)`: `w * S`.
+    pub fn scorer(&self, w: f32) -> FeatureFunctionSimScorer {
+        FeatureFunctionSimScorer {
+            do_score: Box::new(move |f| w * f),
+        }
+    }
+}
+
+impl std::fmt::Display for LinearFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LinearFunction")
+    }
+}
+
+/// `FeatureField.LogFunction`.
+///
+/// Java package-private; public for the port of `TestFeatureField`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogFunction {
+    scaling_factor: f32,
+}
+
+impl LogFunction {
+    /// `new LogFunction(a)`.
+    pub fn new(a: f32) -> Self {
+        Self { scaling_factor: a }
+    }
+
+    /// `LogFunction.scorer(float weight)`: `(float) (weight * Math.log(a + S))`.
+    pub fn scorer(&self, weight: f32) -> FeatureFunctionSimScorer {
+        let scaling_factor = self.scaling_factor;
+        FeatureFunctionSimScorer {
+            do_score: Box::new(move |f| {
+                (weight as f64 * ((scaling_factor + f) as f64).ln()) as f32
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for LogFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LogFunction(scalingFactor={})",
+            crate::search::similarities::java_fmt::float_to_string(self.scaling_factor)
+        )
+    }
+}
+
+/// `FeatureField.SaturationFunction`.
+///
+/// Java package-private; public for the port of `TestFeatureField`. Java's
+/// `Float pivot` may be `null` (computed on rewrite); here it is `None`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SaturationFunction {
+    field: String,
+    feature: String,
+    pivot: Option<f32>,
+}
+
+impl SaturationFunction {
+    /// `new SaturationFunction(field, feature, pivot)`.
+    pub fn new(field: impl Into<String>, feature: impl Into<String>, pivot: Option<f32>) -> Self {
+        Self {
+            field: field.into(),
+            feature: feature.into(),
+            pivot,
+        }
+    }
+
+    /// `SaturationFunction.scorer(float weight)`: `weight * (1 - pivot / (S + pivot))`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalStateException("Rewrite first")` when the pivot is `null`.
+    pub fn scorer(&self, weight: f32) -> Result<FeatureFunctionSimScorer> {
+        let pivot = self
+            .pivot
+            .ok_or_else(|| LuceneError::illegal_state("Rewrite first"))?;
+        Ok(FeatureFunctionSimScorer {
+            do_score: Box::new(move |f| weight * (1.0 - pivot / (f + pivot))),
+        })
+    }
+}
+
+impl std::fmt::Display for SaturationFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.pivot {
+            Some(p) => write!(
+                f,
+                "SaturationFunction(pivot={})",
+                crate::search::similarities::java_fmt::float_to_string(p)
+            ),
+            None => f.write_str("SaturationFunction(pivot=null)"),
+        }
+    }
+}
+
+/// `FeatureField.SigmoidFunction`.
+///
+/// Java package-private; public for the port of `TestFeatureField`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SigmoidFunction {
+    pivot: f32,
+    a: f32,
+    pivot_pa: f64,
+}
+
+impl SigmoidFunction {
+    /// `new SigmoidFunction(pivot, a)`.
+    pub fn new(pivot: f32, a: f32) -> Self {
+        Self {
+            pivot,
+            a,
+            pivot_pa: (pivot as f64).powf(a as f64),
+        }
+    }
+
+    /// `SigmoidFunction.scorer(float weight)`:
+    /// `(float) (weight * (1 - pivotPa / (Math.pow(S, a) + pivotPa)))`.
+    pub fn scorer(&self, weight: f32) -> FeatureFunctionSimScorer {
+        let (a, pivot_pa) = (self.a as f64, self.pivot_pa);
+        FeatureFunctionSimScorer {
+            do_score: Box::new(move |f| {
+                (weight as f64 * (1.0 - pivot_pa / ((f as f64).powf(a) + pivot_pa))) as f32
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for SigmoidFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SigmoidFunction(pivot={}, a={})",
+            crate::search::similarities::java_fmt::float_to_string(self.pivot),
+            crate::search::similarities::java_fmt::float_to_string(self.a)
+        )
     }
 }
 

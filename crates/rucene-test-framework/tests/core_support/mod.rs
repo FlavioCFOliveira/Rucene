@@ -293,6 +293,94 @@ pub mod hamcrest {
         }
     }
 
+    /// `assertThat(reason, actual, matcher)` failing with `expected` and
+    /// `but` descriptions.
+    pub fn fail_that(reason: &str, expected: &str, but: &str) -> ! {
+        Assert::fail(&format!("{reason}\nExpected: {expected}\n     but: {but}"))
+    }
+
+    /// `assertThat(collection, hasSize(size))`.
+    pub fn assert_has_size(actual_size: usize, size: usize) {
+        if actual_size != size {
+            fail(
+                &format!("a collection with size <{size}>"),
+                &format!("collection size was <{actual_size}>"),
+            )
+        }
+    }
+
+    /// `assertThat(array, arrayWithSize(size))`.
+    pub fn assert_array_with_size(actual_size: usize, size: usize) {
+        if actual_size != size {
+            fail(
+                &format!("an array with size <{size}>"),
+                &format!("array size was <{actual_size}>"),
+            )
+        }
+    }
+
+    /// `assertThat(collection, empty())`.
+    pub fn assert_empty(actual_size: usize) {
+        if actual_size != 0 {
+            fail(
+                "an empty collection",
+                &format!("collection size was <{actual_size}>"),
+            )
+        }
+    }
+
+    /// `assertThat(value, notNullValue())`.
+    pub fn assert_not_null_value(is_null: bool) {
+        if is_null {
+            fail("not null", "was null")
+        }
+    }
+
+    /// `assertThat(value, nullValue())`.
+    pub fn assert_null_value<T: std::fmt::Debug>(actual: &Option<T>) {
+        if let Some(a) = actual {
+            fail("null", &format!("was {a:?}"))
+        }
+    }
+
+    /// `assertThat(actual, not(equalTo(value)))`.
+    pub fn assert_not_equal_to<T: PartialEq + Display>(actual: T, value: T) {
+        if actual == value {
+            fail(&format!("not <{value}>"), &format!("was <{actual}>"))
+        }
+    }
+
+    /// `assertThat(array, arrayContaining(items...))`: same elements, same order.
+    pub fn assert_array_containing(actual: &[String], items: &[&str]) {
+        if actual.len() != items.len() || actual.iter().zip(items).any(|(a, i)| a != i) {
+            fail(&format!("{items:?}"), &format!("was {actual:?}"))
+        }
+    }
+
+    /// `assertThat(reason, actual, containsInAnyOrder(items...))`.
+    pub fn assert_contains_in_any_order(reason: &str, actual: &[String], items: &[&str]) {
+        let mut remaining: Vec<&str> = items.to_vec();
+        let mut ok = actual.len() == items.len();
+        if ok {
+            for a in actual {
+                match remaining.iter().position(|i| i == a) {
+                    Some(p) => {
+                        remaining.remove(p);
+                    }
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !ok {
+            Assert::fail(&format!(
+                "{reason}\nExpected: iterable with items {items:?} in any order\n     but: was {actual:?}"
+            ))
+        }
+    }
+
     /// `assertThat(actual, hasToString(not(emptyString())))`.
     pub fn assert_has_non_empty_to_string(to_string: &str) {
         if to_string.is_empty() {
@@ -316,4 +404,115 @@ pub fn iae_message<T>(runnable: impl FnOnce() -> Result<T>) -> String {
 /// `assertTrue(message.contains(part))`.
 pub fn assert_contains(message: &str, part: &str) {
     Assert::assert_true_msg(message, message.contains(part))
+}
+
+/// `java.lang.Number`'s conversions over `IndexableField.numericValue()`:
+/// Java dereferences the returned `Number`, so a `null` (`None`) throws
+/// `NullPointerException`; the narrowing and widening follow Java's casts
+/// (Rust `as` wraps integers and saturates floats exactly as Java does).
+pub mod java_number {
+    use randomizedtesting::jdk::exception::Throwable;
+    use rucene::document::NumericValue;
+
+    fn npe() -> ! {
+        Throwable::new(
+            "java.lang.NullPointerException",
+            "Cannot invoke \"java.lang.Number\" method because the value is null",
+        )
+        .throw()
+    }
+
+    /// `Number.longValue()`.
+    pub fn long_value(n: Option<NumericValue>) -> i64 {
+        match n {
+            Some(NumericValue::Int(v)) => v as i64,
+            Some(NumericValue::Long(v)) => v,
+            Some(NumericValue::Float(v)) => v as i64,
+            Some(NumericValue::Double(v)) => v as i64,
+            None => npe(),
+        }
+    }
+
+    /// `Number.intValue()`.
+    pub fn int_value(n: Option<NumericValue>) -> i32 {
+        match n {
+            Some(NumericValue::Int(v)) => v,
+            Some(NumericValue::Long(v)) => v as i32,
+            Some(NumericValue::Float(v)) => v as i32,
+            Some(NumericValue::Double(v)) => v as i32,
+            None => npe(),
+        }
+    }
+
+    /// `Number.floatValue()`.
+    pub fn float_value(n: Option<NumericValue>) -> f32 {
+        match n {
+            Some(NumericValue::Int(v)) => v as f32,
+            Some(NumericValue::Long(v)) => v as f32,
+            Some(NumericValue::Float(v)) => v,
+            Some(NumericValue::Double(v)) => v as f32,
+            None => npe(),
+        }
+    }
+
+    /// `Number.doubleValue()`.
+    pub fn double_value(n: Option<NumericValue>) -> f64 {
+        match n {
+            Some(NumericValue::Int(v)) => v as f64,
+            Some(NumericValue::Long(v)) => v as f64,
+            Some(NumericValue::Float(v)) => v as f64,
+            Some(NumericValue::Double(v)) => v,
+            None => npe(),
+        }
+    }
+}
+
+/// `assertArrayEquals(message, float[] expecteds, float[] actuals, delta)`
+/// (and the `double[]` overload, widened): lengths first, then each element
+/// as `assertEquals(float, float, delta)` does (equal when `Float.compare`
+/// says so, or within `delta`).
+pub fn assert_array_equals_delta_msg(
+    message: Option<&str>,
+    expecteds: &[f64],
+    actuals: &[f64],
+    delta: f64,
+) {
+    let header = match message {
+        Some(m) if !m.is_empty() => format!("{m}: "),
+        _ => String::new(),
+    };
+    if expecteds.len() != actuals.len() {
+        Assert::fail(&format!(
+            "{header}array lengths differed, expected.length={} actual.length={}",
+            expecteds.len(),
+            actuals.len()
+        ))
+    }
+    for (i, (&e, &a)) in expecteds.iter().zip(actuals).enumerate() {
+        let same = e.to_bits() == a.to_bits() || (e.is_nan() && a.is_nan());
+        if !same && !((e - a).abs() <= delta) {
+            Assert::fail(&format!(
+                "{header}arrays first differed at element [{i}]; expected:<{e}> but was:<{a}>"
+            ))
+        }
+    }
+}
+
+/// `assertArrayEquals(float[] expecteds, float[] actuals, float delta)`.
+pub fn assert_array_equals_f32(expecteds: &[f32], actuals: &[f32], delta: f32) {
+    let e: Vec<f64> = expecteds.iter().map(|&v| v as f64).collect();
+    let a: Vec<f64> = actuals.iter().map(|&v| v as f64).collect();
+    assert_array_equals_delta_msg(None, &e, &a, delta as f64)
+}
+
+/// [`test`] over a closure: a test method inherited from an abstract Java
+/// base class, bound to the concrete class that declares it.
+pub fn test_closure(name: &str, body: impl Fn() -> Result<()> + Send + Sync + 'static) -> Method {
+    Method::new(name)
+        .throws(&["java.lang.Exception"])
+        .body_any(move || {
+            if let Err(e) = body() {
+                rethrow_java(e)
+            }
+        })
 }

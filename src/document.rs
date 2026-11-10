@@ -2034,6 +2034,11 @@ fn stored_field_type() -> &'static FieldType {
 pub struct StoredField(Field);
 
 impl StoredField {
+    /// Returns `StoredField.TYPE`, the field type every instance shares.
+    pub fn type_() -> &'static FieldType {
+        stored_field_type()
+    }
+
     /// Creates a stored-only field with a string value.
     pub fn new_string(name: &str, value: String) -> Result<Self> {
         Ok(Self(Field::new(name, value, stored_field_type().clone())?))
@@ -3905,6 +3910,11 @@ pub struct NumericDocValuesField {
 }
 
 impl NumericDocValuesField {
+    /// Returns `NumericDocValuesField.TYPE`, the field type every instance shares.
+    pub fn type_() -> &'static FieldType {
+        numeric_doc_values_field_type()
+    }
+
     /// Creates a new NumericDocValuesField.
     pub fn new(name: &str, value: i64) -> Self {
         Self {
@@ -4163,6 +4173,11 @@ pub struct SortedDocValuesField {
 }
 
 impl SortedDocValuesField {
+    /// Returns `SortedDocValuesField.TYPE`, the field type every instance shares.
+    pub fn type_() -> &'static FieldType {
+        sorted_doc_values_field_type()
+    }
+
     /// Creates a new SortedDocValuesField.
     pub fn new(name: &str, value: BytesRef) -> Self {
         Self {
@@ -4281,6 +4296,11 @@ pub struct SortedSetDocValuesField {
 }
 
 impl SortedSetDocValuesField {
+    /// Returns `SortedSetDocValuesField.TYPE`, the field type every instance shares.
+    pub fn type_() -> &'static FieldType {
+        sorted_set_doc_values_field_type()
+    }
+
     /// Creates a new SortedSetDocValuesField.
     pub fn new(name: &str, value: BytesRef) -> Self {
         Self {
@@ -4400,6 +4420,11 @@ pub struct SortedNumericDocValuesField {
 }
 
 impl SortedNumericDocValuesField {
+    /// Returns `SortedNumericDocValuesField.TYPE`, the field type every instance shares.
+    pub fn type_() -> &'static FieldType {
+        sorted_numeric_doc_values_field_type()
+    }
+
     /// Creates a new SortedNumericDocValuesField.
     pub fn new(name: &str, value: i64) -> Self {
         Self {
@@ -4501,6 +4526,11 @@ pub struct BinaryDocValuesField {
 }
 
 impl BinaryDocValuesField {
+    /// Returns `BinaryDocValuesField.TYPE`, the field type every instance shares.
+    pub fn type_() -> &'static FieldType {
+        binary_doc_values_field_type()
+    }
+
     /// Creates a new BinaryDocValuesField.
     pub fn new(name: &str, value: BytesRef) -> Self {
         Self {
@@ -6464,6 +6494,436 @@ impl std::hash::Hash for FieldType {
         self.store_term_vectors.hash(state);
         self.stored.hash(state);
         self.tokenized.hash(state);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The setters every `Field` subclass inherits
+// ---------------------------------------------------------------------------
+
+/// `fieldsData.getClass().getSimpleName()` for a [`FieldData`].
+fn fields_data_simple_name(data: &FieldData) -> &'static str {
+    match data {
+        FieldData::String(_) => "String",
+        FieldData::Reader(_) => "Reader",
+        FieldData::TokenStream(_) => "TokenStream",
+        FieldData::Bytes(_) => "BytesRef",
+        FieldData::Number(NumericValue::Int(_)) => "Integer",
+        FieldData::Number(NumericValue::Long(_)) => "Long",
+        FieldData::Number(NumericValue::Float(_)) => "Float",
+        FieldData::Number(NumericValue::Double(_)) => "Double",
+        FieldData::StoredInput { .. } => "StoredFieldDataInput",
+    }
+}
+
+/// `new IllegalArgumentException("cannot change value type from " + from + " to " + to)`.
+fn cannot_change_value_type(from: &str, to: &str) -> LuceneError {
+    LuceneError::IllegalArgument(format!("cannot change value type from {from} to {to}"))
+}
+
+/// The value setters every subclass of `org.apache.lucene.document.Field`
+/// inherits (`Field.java`: `setStringValue`, `setReaderValue`,
+/// `setBytesValue`, `setByteValue`, `setShortValue`, `setIntValue`,
+/// `setLongValue`, `setFloatValue`, `setDoubleValue`, `setTokenStream`).
+///
+/// **Divergence from Lucene 10.5.0.** Java's field classes extend `Field`
+/// and inherit these methods, each checking the class of `fieldsData`.
+/// Rust has no implementation inheritance and the port's field types are
+/// separate structs, so the inherited methods are this trait: each default
+/// method is `Field`'s base behaviour (it throws `IllegalArgumentException`
+/// unless `fieldsData` already holds the target class), and each field type
+/// overrides the methods its Java class overrides or for which `Field`'s
+/// base succeeds. A type's inherent setter of the same name, where one
+/// exists, is the one a method call resolves to.
+pub trait FieldValueSetters {
+    /// `fieldsData.getClass().getSimpleName()`.
+    fn fields_data_class(&self) -> &'static str;
+
+    /// `Field.setStringValue(String)`.
+    fn set_string_value(&mut self, _value: String) -> Result<()> {
+        Err(cannot_change_value_type(self.fields_data_class(), "String"))
+    }
+
+    /// `Field.setReaderValue(Reader)`.
+    fn set_reader_value(&mut self, _value: Box<dyn CharReader>) -> Result<()> {
+        Err(cannot_change_value_type(self.fields_data_class(), "Reader"))
+    }
+
+    /// `Field.setBytesValue(BytesRef)` (`setBytesValue(byte[])` is
+    /// `setBytesValue(new BytesRef(value))`).
+    fn set_bytes_value(&mut self, _value: BytesRef) -> Result<()> {
+        Err(cannot_change_value_type(
+            self.fields_data_class(),
+            "BytesRef",
+        ))
+    }
+
+    /// `Field.setByteValue(byte)`.
+    fn set_byte_value(&mut self, _value: i8) -> Result<()> {
+        Err(cannot_change_value_type(self.fields_data_class(), "Byte"))
+    }
+
+    /// `Field.setShortValue(short)`.
+    fn set_short_value(&mut self, _value: i16) -> Result<()> {
+        Err(cannot_change_value_type(self.fields_data_class(), "Short"))
+    }
+
+    /// `Field.setIntValue(int)`.
+    fn set_int_value(&mut self, _value: i32) -> Result<()> {
+        Err(cannot_change_value_type(
+            self.fields_data_class(),
+            "Integer",
+        ))
+    }
+
+    /// `Field.setLongValue(long)`.
+    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+        Err(cannot_change_value_type(self.fields_data_class(), "Long"))
+    }
+
+    /// `Field.setFloatValue(float)`.
+    fn set_float_value(&mut self, _value: f32) -> Result<()> {
+        Err(cannot_change_value_type(self.fields_data_class(), "Float"))
+    }
+
+    /// `Field.setDoubleValue(double)`.
+    fn set_double_value(&mut self, _value: f64) -> Result<()> {
+        Err(cannot_change_value_type(self.fields_data_class(), "Double"))
+    }
+
+    /// `Field.setTokenStream(TokenStream)`.
+    fn set_token_stream(&mut self, _value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
+        Err(cannot_change_value_type(
+            self.fields_data_class(),
+            "TokenStream",
+        ))
+    }
+}
+
+impl FieldValueSetters for Field {
+    fn fields_data_class(&self) -> &'static str {
+        fields_data_simple_name(&self.fields_data)
+    }
+
+    fn set_string_value(&mut self, value: String) -> Result<()> {
+        Field::set_string_value(self, value)
+    }
+
+    fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
+        Field::set_reader_value(self, value)
+    }
+
+    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
+        Field::set_bytes_value(self, value)
+    }
+
+    fn set_byte_value(&mut self, value: i8) -> Result<()> {
+        Field::set_byte_value(self, value)
+    }
+
+    fn set_short_value(&mut self, value: i16) -> Result<()> {
+        Field::set_short_value(self, value)
+    }
+
+    fn set_int_value(&mut self, value: i32) -> Result<()> {
+        Field::set_int_value(self, value)
+    }
+
+    fn set_long_value(&mut self, value: i64) -> Result<()> {
+        Field::set_long_value(self, value)
+    }
+
+    fn set_float_value(&mut self, value: f32) -> Result<()> {
+        Field::set_float_value(self, value)
+    }
+
+    fn set_double_value(&mut self, value: f64) -> Result<()> {
+        Field::set_double_value(self, value)
+    }
+
+    fn set_token_stream(&mut self, value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::TokenStream(_)) {
+            return Err(cannot_change_value_type(
+                self.fields_data_class(),
+                "TokenStream",
+            ));
+        }
+        self.fields_data = FieldData::TokenStream(value);
+        Ok(())
+    }
+}
+
+/// `StoredField` adds no setter of its own: all are `Field`'s.
+impl FieldValueSetters for StoredField {
+    fn fields_data_class(&self) -> &'static str {
+        self.0.fields_data_class()
+    }
+
+    fn set_string_value(&mut self, value: String) -> Result<()> {
+        FieldValueSetters::set_string_value(&mut self.0, value)
+    }
+
+    fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
+        FieldValueSetters::set_reader_value(&mut self.0, value)
+    }
+
+    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
+        FieldValueSetters::set_bytes_value(&mut self.0, value)
+    }
+
+    fn set_byte_value(&mut self, value: i8) -> Result<()> {
+        FieldValueSetters::set_byte_value(&mut self.0, value)
+    }
+
+    fn set_short_value(&mut self, value: i16) -> Result<()> {
+        FieldValueSetters::set_short_value(&mut self.0, value)
+    }
+
+    fn set_int_value(&mut self, value: i32) -> Result<()> {
+        FieldValueSetters::set_int_value(&mut self.0, value)
+    }
+
+    fn set_long_value(&mut self, value: i64) -> Result<()> {
+        FieldValueSetters::set_long_value(&mut self.0, value)
+    }
+
+    fn set_float_value(&mut self, value: f32) -> Result<()> {
+        FieldValueSetters::set_float_value(&mut self.0, value)
+    }
+
+    fn set_double_value(&mut self, value: f64) -> Result<()> {
+        FieldValueSetters::set_double_value(&mut self.0, value)
+    }
+
+    fn set_token_stream(&mut self, value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
+        FieldValueSetters::set_token_stream(&mut self.0, value)
+    }
+}
+
+/// `IntPoint`/`LongPoint`/`FloatPoint`/`DoublePoint` hold the packed
+/// `BytesRef` and override `setBytesValue` to throw (`IntPoint.java:75-78`
+/// and its siblings); their numeric setters are inherent.
+macro_rules! point_field_value_setters {
+    ($($ty:ty => $prim:literal, $setter:ident, $num:ty);*) => {
+        $(impl FieldValueSetters for $ty {
+            fn fields_data_class(&self) -> &'static str {
+                fields_data_simple_name(&self.fields_data)
+            }
+
+            /// The point's own one-dimension setter (`IntPoint.setIntValue`
+            /// and its siblings), which Java's override routes through.
+            fn $setter(&mut self, value: $num) -> Result<()> {
+                <$ty>::$setter(self, value)
+            }
+
+            fn set_bytes_value(&mut self, _value: BytesRef) -> Result<()> {
+                Err(cannot_change_value_type($prim, "BytesRef"))
+            }
+        })*
+    };
+}
+
+point_field_value_setters!(
+    IntPoint => "int", set_int_value, i32;
+    LongPoint => "long", set_long_value, i64;
+    FloatPoint => "float", set_float_value, f32;
+    DoublePoint => "double", set_double_value, f64
+);
+
+impl FieldValueSetters for IntField {
+    fn fields_data_class(&self) -> &'static str {
+        "Integer"
+    }
+
+    /// `IntField.setIntValue(int)`.
+    fn set_int_value(&mut self, value: i32) -> Result<()> {
+        self.set_value(value);
+        Ok(())
+    }
+}
+
+impl FieldValueSetters for LongField {
+    fn fields_data_class(&self) -> &'static str {
+        "Long"
+    }
+
+    /// `LongField.setLongValue(long)`.
+    fn set_long_value(&mut self, value: i64) -> Result<()> {
+        self.set_value(value);
+        Ok(())
+    }
+}
+
+impl FieldValueSetters for FloatField {
+    /// `fieldsData = (long) NumericUtils.floatToSortableInt(value)`.
+    fn fields_data_class(&self) -> &'static str {
+        "Long"
+    }
+
+    /// `FloatField.setFloatValue(float)`.
+    fn set_float_value(&mut self, value: f32) -> Result<()> {
+        self.set_value(value);
+        Ok(())
+    }
+
+    /// `FloatField.setLongValue(long)` (`FloatField.java:112-114`).
+    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+        Err(cannot_change_value_type("Float", "Long"))
+    }
+}
+
+impl FieldValueSetters for DoubleField {
+    /// `fieldsData = NumericUtils.doubleToSortableLong(value)`.
+    fn fields_data_class(&self) -> &'static str {
+        "Long"
+    }
+
+    /// `DoubleField.setDoubleValue(double)`.
+    fn set_double_value(&mut self, value: f64) -> Result<()> {
+        self.set_value(value);
+        Ok(())
+    }
+
+    /// `DoubleField.setLongValue(long)` (`DoubleField.java:112-114`).
+    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+        Err(cannot_change_value_type("Double", "Long"))
+    }
+}
+
+impl FieldValueSetters for NumericDocValuesField {
+    fn fields_data_class(&self) -> &'static str {
+        "Long"
+    }
+
+    /// `Field.setLongValue(long)`: `fieldsData` is a `Long`.
+    fn set_long_value(&mut self, value: i64) -> Result<()> {
+        self.set_value(value);
+        Ok(())
+    }
+}
+
+impl FieldValueSetters for DoubleDocValuesField {
+    /// `NumericDocValuesField`'s `Long`.
+    fn fields_data_class(&self) -> &'static str {
+        "Long"
+    }
+
+    /// `DoubleDocValuesField.setDoubleValue(double)`.
+    fn set_double_value(&mut self, value: f64) -> Result<()> {
+        self.set_value(value);
+        Ok(())
+    }
+
+    /// `DoubleDocValuesField.setLongValue(long)` (`DoubleDocValuesField.java:48-50`).
+    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+        Err(cannot_change_value_type("Double", "Long"))
+    }
+}
+
+impl FieldValueSetters for FloatDocValuesField {
+    /// `NumericDocValuesField`'s `Long`.
+    fn fields_data_class(&self) -> &'static str {
+        "Long"
+    }
+
+    /// `FloatDocValuesField.setFloatValue(float)`.
+    fn set_float_value(&mut self, value: f32) -> Result<()> {
+        self.set_value(value);
+        Ok(())
+    }
+
+    /// `FloatDocValuesField.setLongValue(long)` (`FloatDocValuesField.java:49-51`).
+    fn set_long_value(&mut self, _value: i64) -> Result<()> {
+        Err(cannot_change_value_type("Float", "Long"))
+    }
+}
+
+impl FieldValueSetters for SortedDocValuesField {
+    fn fields_data_class(&self) -> &'static str {
+        "BytesRef"
+    }
+
+    /// `Field.setBytesValue(BytesRef)`: `fieldsData` is a `BytesRef`.
+    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
+        self.value = value;
+        Ok(())
+    }
+}
+
+impl FieldValueSetters for BinaryDocValuesField {
+    fn fields_data_class(&self) -> &'static str {
+        "BytesRef"
+    }
+
+    /// `Field.setBytesValue(BytesRef)`: `fieldsData` is a `BytesRef`.
+    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
+        self.value = value;
+        Ok(())
+    }
+}
+
+impl FieldValueSetters for StringField {
+    fn fields_data_class(&self) -> &'static str {
+        fields_data_simple_name(&self.fields_data)
+    }
+
+    /// `StringField.setStringValue(String)`: `super.setStringValue(value);
+    /// binaryValue = new BytesRef(value); storedValue.setStringValue(value)`.
+    fn set_string_value(&mut self, value: String) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::String(_)) {
+            return Err(cannot_change_value_type(self.fields_data_class(), "String"));
+        }
+        self.binary_value = Some(BytesRef::from_char_sequence(&value));
+        if let Some(stored) = self.stored_value.as_mut() {
+            stored.set_string_value(value.clone())?;
+        }
+        self.fields_data = FieldData::String(value);
+        Ok(())
+    }
+
+    /// `StringField.setBytesValue(BytesRef)`: `super.setBytesValue(value);
+    /// binaryValue = value; storedValue.setBinaryValue(value)`.
+    fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::Bytes(_)) {
+            return Err(cannot_change_value_type(
+                self.fields_data_class(),
+                "BytesRef",
+            ));
+        }
+        self.binary_value = Some(value.clone());
+        if let Some(stored) = self.stored_value.as_mut() {
+            stored.set_binary_value(value.clone())?;
+        }
+        self.fields_data = FieldData::Bytes(value);
+        Ok(())
+    }
+}
+
+impl FieldValueSetters for TextField {
+    fn fields_data_class(&self) -> &'static str {
+        fields_data_simple_name(&self.fields_data)
+    }
+
+    /// `TextField.setStringValue(String)`: `super.setStringValue(value);
+    /// storedValue.setStringValue(value)`.
+    fn set_string_value(&mut self, value: String) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::String(_)) {
+            return Err(cannot_change_value_type(self.fields_data_class(), "String"));
+        }
+        if let Some(stored) = self.stored_value.as_mut() {
+            stored.set_string_value(value.clone())?;
+        }
+        self.fields_data = FieldData::String(value);
+        Ok(())
+    }
+
+    /// `Field.setReaderValue(Reader)`.
+    fn set_reader_value(&mut self, value: Box<dyn CharReader>) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::Reader(_)) {
+            return Err(cannot_change_value_type(self.fields_data_class(), "Reader"));
+        }
+        self.fields_data = FieldData::Reader(Rc::new(RefCell::new(value)));
+        Ok(())
     }
 }
 
