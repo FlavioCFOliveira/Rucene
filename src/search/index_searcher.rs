@@ -536,6 +536,15 @@ pub trait IndexSearcherOverrides: Send + Sync + fmt::Debug {
         searcher.super_search_leaf(ctx, min_doc_id, max_doc_id, weight, collector)
     }
 
+    /// `IndexSearcher.count(Query)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_count`].
+    fn count(&self, searcher: &IndexSearcher, query: Arc<dyn Query>) -> Result<i32> {
+        searcher.super_count(query)
+    }
+
     /// `IndexSearcher.search(Query, int)`.
     ///
     /// # Errors
@@ -1291,6 +1300,21 @@ impl IndexSearcher {
     ///
     /// Propagates any I/O error raised while rewriting, weighting or counting.
     pub fn count(&self, query: Arc<dyn Query>) -> Result<i32> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.count(self, query),
+            None => self.super_count(query),
+        }
+    }
+
+    /// The body of `IndexSearcher.count(Query)`, which an
+    /// [`IndexSearcherOverrides::count`] reaches as Java's `super.count`; its
+    /// recursive counts go through [`count`](Self::count), as Java's virtual
+    /// calls do.
+    ///
+    /// # Errors
+    ///
+    /// As [`count`](Self::count).
+    pub fn super_count(&self, query: Arc<dyn Query>) -> Result<i32> {
         // CSQ.rewrite may simplify the query -- don't need scores
         let query = self.rewrite(Arc::new(ConstantScoreQuery::new(query)))?;
 

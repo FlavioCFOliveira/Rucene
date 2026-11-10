@@ -408,6 +408,12 @@ impl DocIdSetIterator for ReqOptSumScorer {
 }
 
 impl Scorable for ReqOptSumScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `ReqOptSumScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         // TODO(lucene): sum into a double and cast to float if we ever send
         // required clauses to BS1
@@ -461,6 +467,11 @@ impl Scorable for ReqOptSumScorer {
 }
 
 impl Scorer for ReqOptSumScorer {
+    /// This scorer answers with itself: Java tests `instanceof ReqOptSumScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.core.req_scorer.doc_id()
     }

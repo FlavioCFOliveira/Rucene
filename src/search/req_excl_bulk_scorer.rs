@@ -66,6 +66,11 @@ impl ReqExclBulkScorer {
 }
 
 impl BulkScorer for ReqExclBulkScorer {
+    /// This bulk scorer answers with itself: Java tests `instanceof ReqExclBulkScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn score(
         &mut self,
         collector: &mut dyn LeafCollector,

@@ -292,6 +292,12 @@ impl ConstantScoreScorer {
 }
 
 impl Scorable for ConstantScoreScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `ConstantScoreScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         Ok(self.score)
     }
@@ -314,6 +320,11 @@ impl Scorable for ConstantScoreScorer {
 }
 
 impl Scorer for ConstantScoreScorer {
+    /// This scorer answers with itself: Java tests `instanceof ConstantScoreScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         match &self.iteration {
             Iteration::Plain(disi) => disi.doc_id(),

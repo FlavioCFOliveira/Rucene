@@ -485,6 +485,11 @@ impl BooleanScorer {
 }
 
 impl BulkScorer for BooleanScorer {
+    /// This bulk scorer answers with itself: Java tests `instanceof BooleanScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn cost(&self) -> i64 {
         self.cost
     }

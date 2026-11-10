@@ -16,6 +16,21 @@ use crate::util::Bits;
 /// extends `Scorable`. A scorer exposes an [`iterator`](Self::iterator) over
 /// the documents matching a query in increasing order of doc ID.
 pub trait Scorer: Scorable {
+    /// Returns this scorer as [`Any`](std::any::Any), so that a caller can
+    /// test its concrete type, or `None` when the type does not take part in
+    /// such a test.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests a scorer's class with
+    /// `instanceof` (`TestBooleanQuery.testConjunctionPropagatesApproximations`
+    /// and its siblings check `scorer instanceof ConjunctionScorer`). Rust
+    /// cannot downcast a `dyn Scorer`, so the escape hatch is declared in the
+    /// shape of [`BulkScorer::as_any`](crate::search::BulkScorer::as_any); its
+    /// default answers `None`, Java's `false` branch, and a type that is
+    /// tested overrides it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Returns this scorer viewed as an [`IndriScorer`], or `None` when it is
     /// not one.
     ///
@@ -471,6 +486,11 @@ impl Scorable for FilterScorer {
 }
 
 impl Scorer for FilterScorer {
+    /// This scorer answers with itself: Java tests `instanceof FilterScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }

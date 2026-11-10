@@ -79,6 +79,12 @@ impl DisjunctionScorerImpl for DisjunctionSumScorer {
 }
 
 impl Scorable for DisjunctionSumScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `DisjunctionSumScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     /// Equivalent to the inherited `DisjunctionScorer.score()`, which is
     /// `score(getSubMatches())`.
     fn score(&mut self) -> Result<f32> {
@@ -91,6 +97,11 @@ impl Scorable for DisjunctionSumScorer {
 }
 
 impl Scorer for DisjunctionSumScorer {
+    /// This scorer answers with itself: Java tests `instanceof DisjunctionSumScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.base.doc_id()
     }

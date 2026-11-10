@@ -14,10 +14,13 @@
 //!   threads wait for.
 //!
 //! `ThreadedIndexingAndSearchingTestCase` declares no JUnit test; each
-//! class's `test…` method that calls `runTest` is the binding. The other test
-//! methods of these classes (`testIntermediateClose`,
-//! `testThreadStarvationNoDeleteNRTReader`, …) belong to the core-test port
-//! (sprint 7) and are not declared here, nor is
+//! class's `test…` method that calls `runTest` is the binding.
+//! `TestControlledRealTimeReopenThread` also carries its other test methods
+//! (`testThreadStarvationNoDeleteNRTReader`, `testEvilSearcherFactory`,
+//! `testListenerCalled`, `testCRTReopen`, `testDeleteAll`; sprint 9, #390),
+//! so that the class has one binding. The other test methods of the other
+//! classes (`testIntermediateClose`, …) belong to their core-test port and
+//! are not declared here, nor is
 //! `TestIndexWriterOnJRECrash` (it extends `TestNRTThreads` but overrides
 //! its only test to fork and crash a child JVM).
 //!
@@ -941,6 +944,541 @@ fn controlled_real_time_members(
                     .unwrap_or_else(|e| rethrow(e));
                 }),
         )
+        .method(crt_test(
+            "testThreadStarvationNoDeleteNRTReader",
+            crt::test_thread_starvation_no_delete_nrt_reader,
+        ))
+        .method(crt_test(
+            "testEvilSearcherFactory",
+            crt::test_evil_searcher_factory,
+        ))
+        .method(crt_test("testListenerCalled", crt::test_listener_called))
+        .method(
+            crt_test("testCRTReopen", crt::test_crt_reopen)
+                // Relies on wall clock time, so it can easily false-fail when the machine is otherwise busy:
+                .annotate(rucene_test_framework::util::lucene_test_case::AwaitsFix {
+                    bug_url: "https://issues.apache.org/jira/browse/LUCENE-5737".to_string(),
+                }),
+        )
+        .method(crt_test("testDeleteAll", crt::test_delete_all))
+}
+
+/// A `public void name() throws Exception` of `TestControlledRealTimeReopenThread`.
+fn crt_test(
+    name: &str,
+    body: fn(&mut ThreadedInstance<ControlledRealTimeSuite>) -> Result<()>,
+) -> Method {
+    Method::new(name).throws(&["java.lang.Exception"]).body(
+        move |inst: &mut ThreadedInstance<ControlledRealTimeSuite>| {
+            body(inst).unwrap_or_else(|e| rethrow(e));
+        },
+    )
+}
+
+/// The test methods of `TestControlledRealTimeReopenThread` that do not run
+/// `runTest`.
+mod crt {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use randomizedtesting::jdk::thread::Thread;
+    use randomizedtesting::junit::Assert;
+    use rucene::document::{Document, Store, TextField};
+    use rucene::error::Result;
+    use rucene::index::directory_reader::{self, DirectoryReader};
+    use rucene::index::documents_writer::SharedDirectory;
+    use rucene::index::index_deletion_policy::{
+        KeepOnlyLastCommitDeletionPolicy, SnapshotDeletionPolicy,
+    };
+    use rucene::index::index_writer::IndexWriter;
+    use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
+    use rucene::index::merge_policy::NoMergePolicy;
+    use rucene::index::terms::Term;
+    use rucene::index::IndexReader;
+    use rucene::search::controlled_real_time_reopen_thread::ControlledRealTimeReopenThread;
+    use rucene::search::reference_manager::RefreshListener;
+    use rucene::search::{
+        DefaultSearcherFactory, IndexSearcher, SearcherFactory, SearcherManager, TermQuery,
+    };
+    use rucene::store::{Directory, NRTCachingDirectory};
+    use rucene_test_framework::analysis::MockAnalyzer;
+    use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
+    use rucene_test_framework::util::java_exceptions::expect_throws;
+    use rucene_test_framework::util::lucene_test_case::VERBOSE;
+    use rucene_test_framework::util::LuceneTestCase;
+
+    use super::{ControlledRealTimeSuite, ThreadedInstance};
+
+    /// `java.util.concurrent.CountDownLatch`.
+    pub struct CountDownLatch {
+        count: Mutex<i64>,
+        zero: Condvar,
+    }
+
+    impl CountDownLatch {
+        pub fn new(count: i64) -> CountDownLatch {
+            CountDownLatch {
+                count: Mutex::new(count),
+                zero: Condvar::new(),
+            }
+        }
+
+        pub fn count_down(&self) {
+            let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+            if *count > 0 {
+                *count -= 1;
+                if *count == 0 {
+                    self.zero.notify_all();
+                }
+            }
+        }
+
+        pub fn await_(&self) {
+            let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+            while *count > 0 {
+                count = self.zero.wait(count).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+    }
+
+    /// `LatchedIndexWriter extends IndexWriter`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java subclasses `IndexWriter` and
+    /// overrides `updateDocument`; Rucene's `IndexWriter` is a concrete
+    /// type, so this wrapper holds the writer and adds the latch handshake
+    /// to the `updateDocument` calls the test makes through it. The
+    /// `SearcherManager` and the reopen thread take the wrapped writer;
+    /// neither calls `updateDocument`.
+    pub struct LatchedIndexWriter {
+        pub writer: Arc<IndexWriter>,
+        latch: Arc<CountDownLatch>,
+        pub wait_after_update: AtomicBool,
+        signal: Arc<CountDownLatch>,
+    }
+
+    impl LatchedIndexWriter {
+        pub fn new(
+            d: Arc<dyn Directory>,
+            conf: IndexWriterConfig,
+            latch: Arc<CountDownLatch>,
+            signal: Arc<CountDownLatch>,
+        ) -> Result<LatchedIndexWriter> {
+            Ok(LatchedIndexWriter {
+                writer: IndexWriter::new(d, conf)?,
+                latch,
+                wait_after_update: AtomicBool::new(false),
+                signal,
+            })
+        }
+
+        /// `updateDocument(term, doc)`.
+        pub fn update_document(&self, term: Term, doc: &Document) -> Result<i64> {
+            let result = self.writer.update_document(term, doc)?;
+            // Java maps an `InterruptedException` of `latch.await()` to a
+            // `ThreadInterruptedException`; this latch is not interruptible.
+            if self.wait_after_update.load(Ordering::SeqCst) {
+                self.signal.count_down();
+                self.latch.await_();
+            }
+            Ok(result)
+        }
+    }
+
+    /*
+     * LUCENE-3528 - NRTManager hangs in certain situations
+     */
+    pub fn test_thread_starvation_no_delete_nrt_reader(
+        _inst: &mut ThreadedInstance<ControlledRealTimeSuite>,
+    ) -> Result<()> {
+        let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Arc::new(
+            MockAnalyzer::new(&*LuceneTestCase::random()),
+        ));
+        conf.set_merge_policy(Arc::new(NoMergePolicy::new()))?;
+        let mut d = LuceneTestCase::new_directory();
+        let latch = Arc::new(CountDownLatch::new(1));
+        let signal = Arc::new(CountDownLatch::new(1));
+
+        let writer = Arc::new(LatchedIndexWriter::new(
+            d.as_directory(),
+            conf,
+            Arc::clone(&latch),
+            Arc::clone(&signal),
+        )?);
+        let manager = Arc::new(SearcherManager::from_writer(
+            &*writer.writer,
+            false,
+            false,
+            None,
+            None,
+        )?);
+        let mut doc = Document::new();
+        doc.add(Box::new(LuceneTestCase::new_text_field(
+            "test",
+            "test",
+            Store::YES,
+        )));
+        writer.writer.add_document(&doc)?;
+        manager.maybe_refresh()?;
+        let t = {
+            let (signal, latch) = (Arc::clone(&signal), Arc::clone(&latch));
+            let (manager, writer) = (Arc::clone(&manager), Arc::clone(&writer));
+            Thread::unnamed(move || {
+                let run =
+                    || -> Result<()> {
+                        signal.await_();
+                        manager.maybe_refresh()?;
+                        writer.writer.delete_documents_by_queries(vec![Arc::new(
+                            TermQuery::new(Term::from_text("foo", "barista")),
+                        )])?;
+                        manager.maybe_refresh()?; // kick off another reopen so we inc. the internal gen
+                        Ok(())
+                    };
+                if let Err(e) = run() {
+                    // e.printStackTrace()
+                    eprintln!("{e}");
+                }
+                latch.count_down(); // let the add below finish
+            })
+        };
+        t.start();
+        writer.wait_after_update.store(true, Ordering::SeqCst); // wait in addDocument to let some reopens go through
+
+        let last_gen = writer.update_document(Term::from_text("foo", "bar"), &doc)?; // once this returns the doc is already reflected in the last reopen
+
+        // We now eagerly resolve deletes so the manager should see it after update:
+        Assert::assert_true(manager.is_searcher_current()?);
+
+        let searcher = manager.acquire()?;
+        let num_docs = searcher.searcher().get_index_reader().num_docs();
+        manager.release(searcher)?;
+        Assert::assert_equals(2i64, num_docs as i64);
+        let mut thread = ControlledRealTimeReopenThread::new(
+            Arc::clone(&writer.writer) as _,
+            Arc::clone(&manager),
+            0.01,
+            0.01,
+        )?;
+        thread.start(); // start reopening
+        if *VERBOSE {
+            println!("waiting now for generation {last_gen}");
+        }
+
+        let thread = Arc::new(thread);
+        let finished = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let (thread, finished) = (Arc::clone(&thread), Arc::clone(&finished));
+            // Java catches the `InterruptedException` of `waitForGeneration`;
+            // Rucene's wait is not interruptible.
+            Thread::unnamed(move || {
+                thread.wait_for_generation(last_gen);
+                finished.store(true, Ordering::SeqCst);
+            })
+        };
+        waiter.start();
+        manager.maybe_refresh()?;
+        waiter.join_millis(1000);
+        if !finished.load(Ordering::SeqCst) {
+            waiter.interrupt();
+            Assert::fail("thread deadlocked on waitForGeneration");
+        }
+        // The waiter dropped its handle on the reopen thread when it ended;
+        // `close()` needs the only one.
+        let _ = waiter.join();
+        let mut thread = Arc::try_unwrap(thread)
+            .unwrap_or_else(|_| panic!("the waiter released the reopen thread"));
+        thread.close();
+        // `thread.join()`: `close()` already joined the reopen thread.
+        writer.writer.close()?;
+        // IOUtils.close(manager, d)
+        manager.close()?;
+        d.close()?;
+        Ok(())
+    }
+
+    /// The anonymous `SearcherFactory` of `testEvilSearcherFactory`.
+    #[derive(Debug)]
+    struct EvilSearcherFactory {
+        other: Arc<dyn DirectoryReader>,
+    }
+
+    impl SearcherFactory for EvilSearcherFactory {
+        fn new_searcher(
+            &self,
+            _ignored: Arc<dyn IndexReader>,
+            _previous: Option<Arc<dyn IndexReader>>,
+        ) -> Result<IndexSearcher> {
+            Ok(LuceneTestCase::new_searcher(Arc::clone(&self.other)))
+        }
+    }
+
+    pub fn test_evil_searcher_factory(
+        _inst: &mut ThreadedInstance<ControlledRealTimeSuite>,
+    ) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        let w = RandomIndexWriter::new_with_mock_analyzer(
+            &*LuceneTestCase::random(),
+            dir.as_directory(),
+        )?;
+        w.commit()?;
+
+        let other = directory_reader::open(dir.as_directory())?;
+
+        let the_evil_one: Arc<dyn SearcherFactory> = Arc::new(EvilSearcherFactory {
+            other: Arc::clone(&other),
+        });
+
+        expect_throws("java.lang.IllegalStateException", || {
+            SearcherManager::from_writer(
+                &**w.w(),
+                false,
+                false,
+                Some(Arc::clone(&the_evil_one)),
+                None,
+            )
+        });
+
+        w.close()?;
+        other.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    /// The anonymous `ReferenceManager.RefreshListener` of `testListenerCalled`.
+    struct AfterRefreshListener {
+        after_refresh_called: Arc<AtomicBool>,
+    }
+
+    impl RefreshListener for AfterRefreshListener {
+        fn before_refresh(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn after_refresh(&self, did_refresh: bool) -> Result<()> {
+            if did_refresh {
+                self.after_refresh_called.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    /// `new IndexWriterConfig(null)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java passes a `null` analyzer;
+    /// Rucene's configuration always holds one, so the default
+    /// `IndexWriterConfig()` analyzer stands for it. The tests that use it
+    /// index no tokenized field, so no analyzer is ever asked for.
+    fn iwc_null_analyzer() -> IndexWriterConfig {
+        IndexWriterConfig::new()
+    }
+
+    pub fn test_listener_called(
+        _inst: &mut ThreadedInstance<ControlledRealTimeSuite>,
+    ) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        let iw = IndexWriter::new(dir.as_directory(), iwc_null_analyzer())?;
+        let after_refresh_called = Arc::new(AtomicBool::new(false));
+        let sm = SearcherManager::from_writer(
+            &*iw,
+            true,
+            false,
+            Some(Arc::new(DefaultSearcherFactory)),
+            None,
+        )?;
+        sm.add_listener(Arc::new(AfterRefreshListener {
+            after_refresh_called: Arc::clone(&after_refresh_called),
+        }));
+        iw.add_document(&Document::new())?;
+        iw.commit()?;
+        Assert::assert_false(after_refresh_called.load(Ordering::SeqCst));
+        sm.maybe_refresh_blocking()?;
+        Assert::assert_true(after_refresh_called.load(Ordering::SeqCst));
+        sm.close()?;
+        iw.close()?;
+        dir.close()?;
+        Ok(())
+    }
+
+    // LUCENE-5461
+    pub fn test_crt_reopen(_inst: &mut ThreadedInstance<ControlledRealTimeSuite>) -> Result<()> {
+        // test behaving badly
+
+        // should be high enough
+        let max_stale_secs = 20;
+
+        // build crap data just to store it.
+        let s = "        abcdefghijklmnopqrstuvwxyz     ";
+        let chars: Vec<char> = s.chars().collect();
+        let mut builder = String::with_capacity(2048);
+        for _i in 0..2048 {
+            builder
+                .push(chars[LuceneTestCase::random().next_int_bound(chars.len() as i32) as usize]);
+        }
+        let content = builder;
+
+        let sdp = Arc::new(SnapshotDeletionPolicy::new(Arc::new(
+            KeepOnlyLastCommitDeletionPolicy,
+        )));
+        let mut fs_dir =
+            LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("nrt"));
+        let dir: Arc<dyn Directory> = Arc::new(NRTCachingDirectory::new(
+            Box::new(SharedDirectory(fs_dir.as_directory())),
+            5.0,
+            128.0,
+        ));
+        let mut config = IndexWriterConfig::with_analyzer(Arc::new(MockAnalyzer::new(
+            &*LuceneTestCase::random(),
+        )));
+        config.set_commit_on_close(true);
+        config.set_index_deletion_policy(Arc::clone(&sdp) as _)?;
+        config.set_open_mode(OpenMode::CREATE_OR_APPEND)?;
+        let iw = IndexWriter::new(Arc::clone(&dir), config)?;
+        let sm = Arc::new(SearcherManager::from_writer(
+            &*iw,
+            true,
+            false,
+            Some(Arc::new(DefaultSearcherFactory)),
+            None,
+        )?);
+        let mut controlled_real_time_reopen_thread = ControlledRealTimeReopenThread::new(
+            Arc::clone(&iw) as _,
+            Arc::clone(&sm),
+            max_stale_secs as f64,
+            0.0,
+        )?;
+
+        // `setDaemon(true)`: not a `java.lang.Thread` here (see the module
+        // documentation).
+        controlled_real_time_reopen_thread.start();
+
+        let mut commit_threads: Vec<Thread> = Vec::new();
+
+        for i in 0..500 {
+            if i > 0 && i % 50 == 0 {
+                let (iw, sdp, dir) = (Arc::clone(&iw), Arc::clone(&sdp), Arc::clone(&dir));
+                let commit_thread = Thread::unnamed(move || {
+                    let run = || -> Result<()> {
+                        iw.commit()?;
+                        let ic = sdp.snapshot()?;
+                        for name in ic.get_file_names()? {
+                            // distribute, and backup
+                            // System.out.println(names);
+                            Assert::assert_true(LuceneTestCase::slow_file_exists(&*dir, &name)?);
+                        }
+                        Ok(())
+                    };
+                    if let Err(e) = run() {
+                        // `throw new RuntimeException(e)`
+                        rucene_test_framework::util::java_exceptions::rethrow_java(e);
+                    }
+                });
+                commit_thread.start();
+                commit_threads.push(commit_thread);
+            }
+            let mut d = Document::new();
+            d.add(Box::new(TextField::new(
+                "count",
+                format!("{i}"),
+                Store::NO,
+            )?));
+            d.add(Box::new(TextField::new(
+                "content",
+                content.clone(),
+                Store::YES,
+            )?));
+            let start = std::time::Instant::now();
+            let l = iw.add_document(&d)?;
+            controlled_real_time_reopen_thread.wait_for_generation(l);
+            let wait = start.elapsed().as_nanos() as i64;
+            Assert::assert_true_msg(
+                &format!("waited too long for generation {wait}"),
+                wait < (max_stale_secs as i64 * 1_000_000_000),
+            );
+            let searcher = sm.acquire()?;
+            let td = searcher.searcher().search(
+                Arc::new(TermQuery::new(Term::from_text("count", &format!("{i}")))),
+                10,
+            );
+            sm.release(searcher)?;
+            Assert::assert_equals(1i64, td?.total_hits.value());
+        }
+
+        for commit_thread in &commit_threads {
+            let _ = commit_thread.join();
+        }
+
+        controlled_real_time_reopen_thread.close();
+        sm.close()?;
+        iw.close()?;
+        // `dir.close()`: the caching directory, then the wrapped
+        // `newFSDirectory` it closes in Java.
+        drop(iw);
+        let mut dir = dir;
+        if let Some(d) = Arc::get_mut(&mut dir) {
+            d.close()?;
+        }
+        fs_dir.close()?;
+        Ok(())
+    }
+
+    pub fn test_delete_all(inst: &mut ThreadedInstance<ControlledRealTimeSuite>) -> Result<()> {
+        let mut dir = LuceneTestCase::new_directory();
+        let w = IndexWriter::new(
+            dir.as_directory(),
+            LuceneTestCase::new_index_writer_config(),
+        )?;
+        let mgr = Arc::new(SearcherManager::from_writer(
+            &*w,
+            true,
+            false,
+            Some(Arc::new(DefaultSearcherFactory)),
+            None,
+        )?);
+        let mut nrt_deletes_thread =
+            ControlledRealTimeReopenThread::new(Arc::clone(&w) as _, mgr, 0.1, 0.01)?;
+        // `setName`, `setDaemon`: not a `java.lang.Thread` here (see the
+        // module documentation).
+        nrt_deletes_thread.start();
+        *inst
+            .case
+            .nrt_deletes_thread
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(nrt_deletes_thread);
+
+        w.add_document(&Document::new())?;
+        let gen2 = w.delete_all()?;
+        if let Some(t) = inst
+            .case
+            .nrt_deletes_thread
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            t.wait_for_generation(gen2);
+        }
+        // IOUtils.close(nrtDeletesThread, nrtDeletes, w, dir): `nrtDeletes`
+        // is still `null` in this test, which `IOUtils.close` skips.
+        if let Some(mut t) = inst
+            .case
+            .nrt_deletes_thread
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            t.close();
+        }
+        if let Some(nrt_deletes) = inst
+            .case
+            .nrt_deletes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            nrt_deletes.close()?;
+        }
+        w.close()?;
+        dir.close()?;
+        Ok(())
+    }
 }
 
 fn controlled_real_time_class() -> Arc<Class> {

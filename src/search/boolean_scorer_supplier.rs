@@ -860,6 +860,12 @@ fn opt(
 }
 
 impl ScorerSupplier for BooleanScorerSupplier {
+    /// This supplier answers with itself: Java casts to
+    /// `BooleanScorerSupplier` to reach `booleanScorer()`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn cost(&self) -> i64 {
         if self.cost.get() == -1 {
             self.cost.set(self.compute_cost());

@@ -153,6 +153,12 @@ impl TwoPhaseIterator for PhraseScorer {
 }
 
 impl Scorable for PhraseScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `PhraseScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         if self.freq == 0.0 {
             self.freq = self.matcher.sloppy_weight();
@@ -173,6 +179,11 @@ impl Scorable for PhraseScorer {
 }
 
 impl Scorer for PhraseScorer {
+    /// This scorer answers with itself: Java tests `instanceof PhraseScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.matcher.approximation_ref().doc_id()
     }

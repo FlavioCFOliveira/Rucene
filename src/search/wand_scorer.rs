@@ -852,6 +852,12 @@ impl DocIdSetIterator for WANDScorer {
 }
 
 impl Scorable for WANDScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `WANDScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         // we need to know about all matches
         self.core.advance_all_tail()?;
@@ -903,6 +909,11 @@ impl Scorable for WANDScorer {
 }
 
 impl Scorer for WANDScorer {
+    /// This scorer answers with itself: Java tests `instanceof WANDScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.core.doc
     }

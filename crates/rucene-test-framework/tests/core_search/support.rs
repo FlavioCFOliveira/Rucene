@@ -228,3 +228,13 @@ pub fn null_leaf_context() -> Result<(
     let leaves = (Arc::clone(&reader) as Arc<dyn IndexReader>).leaves()?;
     Ok((reader, leaves))
 }
+
+/// `assertNotEquals(unexpected, actual)` over `Query.equals`.
+pub fn assert_query_not_equals(unexpected: &Arc<dyn Query>, actual: &Arc<dyn Query>) {
+    if unexpected.query_eq(&**actual) {
+        randomizedtesting::junit::Assert::fail(&format!(
+            "Values should be different. Actual: {}",
+            rucene::search::query_to_string(&**actual)
+        ));
+    }
+}

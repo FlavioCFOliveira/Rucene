@@ -122,6 +122,12 @@ impl DocIdSetIterator for ConjunctionScorer {
 }
 
 impl Scorable for ConjunctionScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `ConjunctionScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         let mut sum = 0.0f64;
         for i in 0..self.scoring.len() {
@@ -155,6 +161,11 @@ impl Scorable for ConjunctionScorer {
 }
 
 impl Scorer for ConjunctionScorer {
+    /// This scorer answers with itself: Java tests `instanceof ConjunctionScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         DocIdSetIterator::doc_id(self)
     }

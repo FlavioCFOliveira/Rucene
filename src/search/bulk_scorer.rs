@@ -290,6 +290,11 @@ impl DefaultBulkScorer {
 }
 
 impl BulkScorer for DefaultBulkScorer {
+    /// This bulk scorer answers with itself: Java tests `instanceof DefaultBulkScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn cost(&self) -> i64 {
         self.cost
     }
