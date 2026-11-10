@@ -32,8 +32,20 @@
 //!   enumerated, so threads the harness owns never count as leaked threads.
 //! * Thread identifiers come from a process-wide counter starting at 1; they
 //!   are unique like Java's, but not the numbers a JVM would assign.
-//! * Only the states `NEW`, `RUNNABLE` and `TERMINATED` are observable: a
-//!   blocked thread still reports `RUNNABLE`.
+//! * **Divergence: thread states.** The JVM records a thread's
+//!   `Thread.State` itself, at every monitor entry, `Object.wait`,
+//!   `LockSupport.park`, `Thread.sleep` and `Thread.join`; Lucene's tests
+//!   read it (`TestDocumentsWriterStallControl.awaitState`,
+//!   `TestDocumentsWriterPerThreadPool.testCloseWhileNewWritersLocked`).
+//!   Rust threads carry no state, so here the waiting primitives record it:
+//!   this module's own blocking calls ([`Thread::sleep`],
+//!   [`Thread::join`], [`Thread::join_millis`], [`Thread::park_nanos`]),
+//!   and `rucene`'s waiting points through
+//!   `rucene::util::concurrent::set_thread_wait_hook`, which the test
+//!   framework points at [`Thread::enter_wait_state`]. A thread waiting
+//!   anywhere else (a bare `std::sync` wait, or an uncontended-looking mutex
+//!   acquisition, which Java reports as `BLOCKED`) still reports
+//!   `RUNNABLE`.
 //! * Interruption is cooperative, as Java's is for code that does not block:
 //!   [`Thread::interrupt`] sets the flag and wakes the blocking calls of this
 //!   module ([`Thread::sleep`], [`Thread::join_millis`],
@@ -190,8 +202,16 @@ impl ThreadGroup {
 pub enum State {
     /// `NEW`: created, not started.
     New,
-    /// `RUNNABLE`: started, not terminated.
+    /// `RUNNABLE`: started, not terminated, and not recorded as waiting.
     Runnable,
+    /// `BLOCKED`: waiting for a monitor lock.
+    Blocked,
+    /// `WAITING`: waiting with no timeout (`Object.wait()`, `Thread.join()`,
+    /// `LockSupport.park()`).
+    Waiting,
+    /// `TIMED_WAITING`: waiting with a timeout (`Thread.sleep`,
+    /// `Object.wait(long)`, `Thread.join(long)`, `LockSupport.parkNanos`).
+    TimedWaiting,
     /// `TERMINATED`: its body returned or panicked.
     Terminated,
 }
@@ -201,8 +221,32 @@ impl State {
         match v {
             0 => State::New,
             1 => State::Runnable,
+            2 => State::Blocked,
+            3 => State::Waiting,
+            4 => State::TimedWaiting,
             _ => State::Terminated,
         }
+    }
+}
+
+/// Restores `RUNNABLE` when the wait [`Thread::enter_wait_state`] recorded
+/// ends.
+#[must_use = "the thread reports the waiting state until the guard drops"]
+pub struct WaitStateGuard {
+    thread: Thread,
+    state: State,
+}
+
+impl Drop for WaitStateGuard {
+    fn drop(&mut self) {
+        // Only the waiting state this guard recorded is undone: a thread that
+        // terminated meanwhile stays `TERMINATED`.
+        let _ = self.thread.0.state.compare_exchange(
+            self.state as u8,
+            State::Runnable as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 }
 
@@ -212,6 +256,9 @@ impl fmt::Display for State {
         f.write_str(match self {
             State::New => "NEW",
             State::Runnable => "RUNNABLE",
+            State::Blocked => "BLOCKED",
+            State::Waiting => "WAITING",
+            State::TimedWaiting => "TIMED_WAITING",
             State::Terminated => "TERMINATED",
         })
     }
@@ -493,12 +540,16 @@ impl Thread {
             .take();
         match handle {
             Some(h) => {
-                let result = h.join();
+                let result = {
+                    let _waiting = Thread::enter_wait_state(State::Waiting);
+                    h.join()
+                };
                 self.terminate();
                 result
             }
             None => {
                 // Joined before (or never started): wait for termination.
+                let _waiting = Thread::enter_wait_state(State::Waiting);
                 while self.is_alive() {
                     std::thread::sleep(Duration::from_millis(1));
                 }
@@ -521,6 +572,11 @@ impl Thread {
         }
         let me = Thread::current();
         let deadline = (millis > 0).then(|| Instant::now() + Duration::from_millis(millis as u64));
+        let _waiting = Thread::enter_wait_state(if millis > 0 {
+            State::TimedWaiting
+        } else {
+            State::Waiting
+        });
         while self.is_alive() {
             let slice = match deadline {
                 None => Duration::from_millis(10),
@@ -606,7 +662,41 @@ impl Thread {
 
     /// `Thread.isAlive()`: started and not terminated.
     pub fn is_alive(&self) -> bool {
-        self.state() == State::Runnable
+        !matches!(self.state(), State::New | State::Terminated)
+    }
+
+    /// Records that the current thread enters `state` (`BLOCKED`, `WAITING`
+    /// or `TIMED_WAITING`), as the JVM does when a thread blocks, until the
+    /// returned guard drops and the thread is `RUNNABLE` again.
+    ///
+    /// A nested wait (a waiting primitive called while another is recorded)
+    /// leaves the outer state in place.
+    ///
+    /// # Panics
+    ///
+    /// When `state` is not a waiting state.
+    pub fn enter_wait_state(state: State) -> WaitStateGuard {
+        assert!(
+            matches!(state, State::Blocked | State::Waiting | State::TimedWaiting),
+            "not a waiting state: {state}"
+        );
+        let thread = Thread::current();
+        let recorded = thread
+            .0
+            .state
+            .compare_exchange(
+                State::Runnable as u8,
+                state as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok();
+        WaitStateGuard {
+            thread,
+            // A guard that recorded nothing undoes nothing: `New` is never a
+            // waiting thread's state, so its compare-exchange cannot match.
+            state: if recorded { state } else { State::New },
+        }
     }
 
     /// `Thread.getThreadGroup()`: `None` once the thread terminated.
@@ -690,6 +780,7 @@ impl Thread {
         }
         let me = Thread::current();
         let deadline = Instant::now() + Duration::from_millis(millis as u64);
+        let _waiting = Thread::enter_wait_state(State::TimedWaiting);
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if me.wait_on(remaining) {
@@ -719,6 +810,7 @@ impl Thread {
         if s.interrupted {
             return;
         }
+        let _waiting = Thread::enter_wait_state(State::TimedWaiting);
         let (mut s, _) =
             me.0.wake
                 .wait_timeout(s, Duration::from_nanos(nanos as u64))

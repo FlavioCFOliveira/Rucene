@@ -402,6 +402,73 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Thread waiting states
+// ---------------------------------------------------------------------------
+
+/// The `java.lang.Thread.State` a thread is in while it waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ThreadWaitState {
+    /// `WAITING`: `Object.wait()` and the other waits with no timeout.
+    Waiting,
+    /// `TIMED_WAITING`: `Object.wait(long)` and the other timed waits.
+    TimedWaiting,
+}
+
+/// Records a waiting state of the current thread: called with
+/// `Some(state)` when the thread starts waiting, and with `None` when the
+/// wait ends.
+pub type ThreadWaitHook = fn(Option<ThreadWaitState>);
+
+/// The hook [`set_thread_wait_hook`] installed, once per process.
+static THREAD_WAIT_HOOK: OnceLock<ThreadWaitHook> = OnceLock::new();
+
+/// Installs the hook this crate's waiting points report their thread's
+/// waiting state to.
+///
+/// This models the JVM recording `Thread.getState()` while a thread waits
+/// on a monitor: Lucene's tests observe it
+/// (`TestDocumentsWriterStallControl.awaitState`,
+/// `TestDocumentsWriterPerThreadPool.testCloseWhileNewWritersLocked`). A Rust
+/// thread has no such state, so a test runner that models `Thread`
+/// (randomizedtesting's shim) installs this hook and records the state the
+/// waiting points of [`DocumentsWriterStallControl`] and
+/// [`DocumentsWriterPerThreadPool`] report. Without a hook the waits record
+/// nothing.
+///
+/// Returns `false`, leaving the installed hook in place, when one is already
+/// installed.
+///
+/// [`DocumentsWriterStallControl`]: crate::index::documents_writer::DocumentsWriterStallControl
+/// [`DocumentsWriterPerThreadPool`]: crate::index::documents_writer::DocumentsWriterPerThreadPool
+pub fn set_thread_wait_hook(hook: ThreadWaitHook) -> bool {
+    THREAD_WAIT_HOOK.set(hook).is_ok()
+}
+
+/// Ends the wait [`enter_thread_wait`] reported when it drops.
+#[must_use = "the wait ends when the guard drops"]
+pub struct ThreadWaitGuard {
+    hook: Option<ThreadWaitHook>,
+}
+
+impl Drop for ThreadWaitGuard {
+    fn drop(&mut self) {
+        if let Some(hook) = self.hook {
+            hook(None);
+        }
+    }
+}
+
+/// Reports to the installed [`ThreadWaitHook`] that the current thread
+/// waits in `state` until the returned guard drops.
+pub fn enter_thread_wait(state: ThreadWaitState) -> ThreadWaitGuard {
+    let hook = THREAD_WAIT_HOOK.get().copied();
+    if let Some(hook) = hook {
+        hook(Some(state));
+    }
+    ThreadWaitGuard { hook }
+}
+
+// ---------------------------------------------------------------------------
 // Panics as Java's unchecked throwables
 // ---------------------------------------------------------------------------
 

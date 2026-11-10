@@ -1,17 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestDocumentsWriterStallControl.java`.
 //!
 //! Tests for `DocumentsWriterStallControl`.
-//!
-//! **Divergence.** Java observes a parked thread through `Thread.getState()`
-//! (`TIMED_WAITING` inside `waitIfStalled()`'s `wait(1000)`, `WAITING`);
-//! the port's `java.lang.Thread` shim knows only `NEW`, `RUNNABLE` and
-//! `TERMINATED`, because a Rust thread blocked on a condition variable
-//! reports nothing. [`await_state`] therefore waits until every thread is
-//! queued in the stall control (`isThreadQueued`, which is what being in
-//! `TIMED_WAITING` inside `waitIfStalled` means), and the final check of
-//! `testAcquireReleaseRace` — failing when a still-alive waiter is in
-//! `WAITING`, a state none of its waits (all timed) can put it in — is not
-//! expressed.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,7 +43,7 @@ fn test_simple_stall() -> Result<()> {
     ctrl.update_stalled(true);
     let threads = wait_threads(LuceneTestCase::at_least(1), &ctrl);
     start(&threads);
-    await_state(&ctrl, &threads);
+    await_state(State::TimedWaiting, &threads);
     Assert::assert_true(ctrl.has_blocked());
     Assert::assert_true(ctrl.any_stalled_threads());
     ctrl.update_stalled(false);
@@ -198,12 +187,18 @@ fn test_acquire_release_race() -> Result<()> {
     sync.waiter().count_down();
     sync.left_checkpoint().await_();
 
-    for thread in &threads {
+    for (i, thread) in threads.iter().enumerate() {
         ctrl.update_stalled(false);
         thread.join_millis(2000);
-        // `if (threads[i].isAlive() && threads[i] instanceof Waiter &&
-        // threads[i].getState() == Thread.State.WAITING) fail(...)`: see the
-        // module docs.
+        // `threads[i] instanceof Waiter`: the waiters are the last
+        // `numWaiters` threads.
+        let is_waiter = i as i32 >= num_releasers + num_stallers;
+        if thread.is_alive() && is_waiter && thread.state() == State::Waiting {
+            Assert::fail(&format!(
+                "waiter is not released - anyThreadsStalled: {}",
+                ctrl.any_stalled_threads()
+            ));
+        }
     }
     Ok(())
 }
@@ -358,23 +353,23 @@ fn wait_threads(num: i32, ctrl: &Arc<DocumentsWriterStallControl>) -> Vec<Thread
 
 /// Waits for all incoming threads to be in wait() methods.
 ///
-/// `public static void awaitState(Thread.State state, Thread... threads)`
-/// with `TIMED_WAITING`, the state a thread parked in `waitIfStalled()` is
-/// in: here, queued in `ctrl` (see the module docs).
-fn await_state(ctrl: &DocumentsWriterStallControl, threads: &[Thread]) {
+/// `public static void awaitState(Thread.State state, Thread... threads)`.
+fn await_state(state: State, threads: &[Thread]) {
     loop {
-        let done = threads.iter().all(|thread| {
-            thread
-                .os_thread_id()
-                .is_some_and(|id| ctrl.is_thread_queued(id))
-        });
+        let mut done = true;
+        for thread in threads {
+            if thread.state() != state {
+                done = false;
+                break;
+            }
+        }
         if done {
             return;
         }
         if random().next_boolean() {
             std::thread::yield_now();
         } else {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            Thread::sleep(1);
         }
     }
 }

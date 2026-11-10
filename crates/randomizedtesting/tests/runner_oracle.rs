@@ -6,8 +6,8 @@
 //! `runner_traces_asserts.tsv`).
 //!
 //! Masked on both sides before comparing: thread ids (`id=N`, `#N`), thread
-//! states (`state=…`: the port observes only `NEW`, `RUNNABLE`,
-//! `TERMINATED`), stack frames (the port has no Java frames) and the
+//! states (`state=…`: the port records a waiting state only at its own
+//! waiting primitives, see `jdk::thread`), stack frames (the port has no Java frames) and the
 //! unnamed module's identity hash (`unnamed module @…`).
 //!
 //! Every suite, hook, rule and test below mirrors one Java declaration of

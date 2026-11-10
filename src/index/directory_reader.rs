@@ -158,6 +158,38 @@ pub trait DirectoryReader: CompositeReader {
         writer: &dyn IndexWriter,
         apply_all_deletes: bool,
     ) -> Result<Option<Arc<dyn DirectoryReader>>>;
+
+    /// Implements [`open_if_changed_with_executor`]: as
+    /// [`do_open_if_changed`](Self::do_open_if_changed), opening the new
+    /// segment readers on `executor` when one is given.
+    ///
+    /// Equivalent to `DirectoryReader.doOpenIfChanged(ExecutorService)`;
+    /// `None` is Java's `null` executor.
+    fn do_open_if_changed_with_executor(
+        &self,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>>;
+
+    /// Implements [`open_if_changed_with_commit_and_executor`].
+    ///
+    /// Equivalent to `DirectoryReader.doOpenIfChanged(IndexCommit,
+    /// ExecutorService)`.
+    fn do_open_if_changed_from_commit_with_executor(
+        &self,
+        commit: &dyn IndexCommit,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>>;
+
+    /// Implements [`open_if_changed_with_writer_and_executor`].
+    ///
+    /// Equivalent to `DirectoryReader.doOpenIfChanged(IndexWriter, boolean,
+    /// ExecutorService)`.
+    fn do_open_if_changed_from_writer_with_executor(
+        &self,
+        writer: &dyn IndexWriter,
+        apply_all_deletes: bool,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>>;
 }
 
 // -----------------------------------------------------------------------------
@@ -322,8 +354,9 @@ impl StandardDirectoryReader {
         old_readers: Option<&[Arc<SegmentReader>]>,
         writer: Option<Arc<dyn IndexWriter>>,
         leaf_sorter: Option<Arc<dyn LeafComparator>>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
     ) -> Result<Arc<dyn DirectoryReader>> {
-        let segment_readers = Self::create_segment_readers(&infos, old_readers)?;
+        let segment_readers = Self::create_segment_readers(&infos, old_readers, executor)?;
         Ok(StandardDirectoryReader::new(
             directory,
             segment_readers,
@@ -340,9 +373,9 @@ impl StandardDirectoryReader {
     ///
     /// Equivalent to the `FindSegmentsFile.doBody` of
     /// `StandardDirectoryReader.open(Directory, int, IndexCommit, Comparator,
-    /// ExecutorService)` (`StandardDirectoryReader.java:94-107`), with no leaf
-    /// sorter: the segment readers are created, and when building the reader
-    /// over them fails — it throws `CorruptIndexException` over too many
+    /// ExecutorService)` (`StandardDirectoryReader.java:94-107`): the segment
+    /// readers are created, on `executor` when one is given, and when building
+    /// the reader over them fails — it throws `CorruptIndexException` over too many
     /// documents — `IOUtils.closeWhileSuppressingExceptions(t, readers)`
     /// closes them before the failure is rethrown.
     ///
@@ -352,10 +385,20 @@ impl StandardDirectoryReader {
     fn open_from_commit(
         directory: Arc<dyn Directory>,
         infos: SegmentInfos,
+        leaf_sorter: Option<Arc<dyn LeafComparator>>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
     ) -> Result<Arc<dyn DirectoryReader>> {
-        let readers = Self::create_segment_readers(&infos, None)?;
+        let readers = Self::create_segment_readers(&infos, None, executor)?;
         let to_close = readers.clone();
-        match StandardDirectoryReader::new(directory, readers, infos, None, None, false, false) {
+        match StandardDirectoryReader::new(
+            directory,
+            readers,
+            infos,
+            None,
+            leaf_sorter,
+            false,
+            false,
+        ) {
             Ok(reader) => Ok(reader.into_shared()),
             Err(t) => Err(crate::util::IOUtils::close_while_suppressing_exceptions(
                 t,
@@ -460,20 +503,107 @@ impl StandardDirectoryReader {
     /// Builds one reader per segment, reusing an old reader wherever the
     /// segment has not changed.
     ///
-    /// Equivalent to `StandardDirectoryReader.createSegmentReaders(SegmentInfos, List, ExecutorService)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java opens the readers on an
-    /// `ExecutorService` when one is configured, newest segment first, and
-    /// falls back to the calling thread otherwise. This port always takes the
-    /// sequential path; the reuse decision, which is what makes a reopen cheap,
-    /// is identical either way.
+    /// Equivalent to `StandardDirectoryReader.createSegmentReaders(SegmentInfos, List, ExecutorService)`
+    /// (`StandardDirectoryReader.java:188-245`): with an executor, one task
+    /// per segment is submitted to it, newest segment first, and every
+    /// completed reader is collected before the first failure is raised;
+    /// without one, the readers are opened sequentially on the calling thread.
     fn create_segment_readers(
         infos: &SegmentInfos,
         old_readers: Option<&[Arc<SegmentReader>]>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
     ) -> Result<Vec<Arc<SegmentReader>>> {
         // The old readers go into a map so one can be looked up by segment name.
         let previous_segment_readers = Self::map_previous_readers(old_readers);
         let index_created_version = infos.index_created_version_major();
+        if let Some(executor) = executor {
+            let mut futures = Vec::with_capacity(infos.size());
+            for i in (0..infos.size()).rev() {
+                let commit_info = infos.info(i).clone();
+                let old_reader = Self::get_old_segment_reader(
+                    old_readers,
+                    previous_segment_readers
+                        .get(&commit_info.info.name)
+                        .copied(),
+                    &commit_info,
+                )?
+                .map(Arc::clone);
+                // `executor.submit(...)`: a rejection is Java's unchecked
+                // `RejectedExecutionException`, which escapes as is.
+                let future = executor
+                    .submit(Box::new(move || {
+                        let reader = Self::create_or_reuse_segment_reader(
+                            &commit_info,
+                            old_reader.as_ref(),
+                            index_created_version,
+                        )?;
+                        Ok(Box::new(Arc::new(reader)) as crate::search::TaskValue)
+                    }))
+                    .map_err(|rejected| {
+                        LuceneError::unchecked(
+                            "java.util.concurrent.RejectedExecutionException",
+                            rejected.message,
+                        )
+                    })?;
+                futures.push(future);
+            }
+            let mut readers: Vec<Option<Arc<SegmentReader>>> = vec![None; infos.size()];
+            let mut first_cause: Option<LuceneError> = None;
+            let count = futures.len();
+            for (i, future) in futures.into_iter().enumerate() {
+                match future.get() {
+                    Ok(value) => {
+                        readers[count - 1 - i] = Some(
+                            *value
+                                .downcast::<Arc<SegmentReader>>()
+                                .expect("INVARIANT: the submitted task returns a SegmentReader"),
+                        );
+                    }
+                    Err(cause) => {
+                        // If there is an exception creating the reader we still
+                        // process the rest of the completed futures to allow us
+                        // to close created readers.
+                        if first_cause.is_none() {
+                            first_cause = Some(cause);
+                        }
+                    }
+                }
+            }
+            let readers: Vec<Arc<SegmentReader>> = readers.into_iter().flatten().collect();
+            if let Some(cause) = first_cause {
+                if cause.is_io_exception() {
+                    // If its a new reader decRef should close... otherwise old
+                    // readers we will remove the new refs that were created.
+                    // Java folds the release failures into the wrapping
+                    // `RuntimeException`, which it then drops to unwrap the
+                    // IOException: they are dropped with it.
+                    for reader in &readers {
+                        let _ = reader.dec_ref();
+                    }
+                    // Unwrap IOExceptions.
+                    return Err(cause);
+                }
+                // `firstException = new RuntimeException(e)`, `e` the
+                // `ExecutionException` whose cause the task raised.
+                let execution = LuceneError::Unchecked {
+                    class: "java.util.concurrent.ExecutionException",
+                    message: Some(crate::util::concurrent::throwable_to_string(&cause)),
+                    cause: Some(Arc::new(cause)),
+                };
+                let first_exception = LuceneError::Unchecked {
+                    class: "java.lang.RuntimeException",
+                    message: Some(crate::util::concurrent::throwable_to_string(&execution)),
+                    cause: Some(Arc::new(execution)),
+                };
+                return Err(Self::dec_ref_while_suppressing_exception(
+                    first_exception,
+                    &readers,
+                ));
+            }
+            return Ok(readers);
+        }
+        // No Executor Service has been passed in fallback to sequentially
+        // processing on the caller thread.
         let mut readers: Vec<Arc<SegmentReader>> = Vec::with_capacity(infos.size());
         // Equivalent to the `try`/`catch (Throwable t)` of the sequential branch
         // of `StandardDirectoryReader.createSegmentReaders`: on any failure,
@@ -1095,26 +1225,15 @@ impl DirectoryReader for StandardDirectoryReader {
     }
 
     fn do_open_if_changed(&self) -> Result<Option<Arc<dyn DirectoryReader>>> {
-        self.ensure_open()?;
-        if self.writer.is_some() {
-            self.do_open_from_writer(None)
-        } else {
-            self.do_open_no_writer(None)
-        }
+        // `doOpenIfChanged((IndexCommit) null, null)`.
+        self.do_open_if_changed_commit_executor(None, None)
     }
 
     fn do_open_if_changed_from_commit(
         &self,
         commit: &dyn IndexCommit,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-        self.ensure_open()?;
-        // If we were obtained by writer.getReader(), re-ask the writer to get a
-        // new reader.
-        if self.writer.is_some() {
-            self.do_open_from_writer(Some(commit))
-        } else {
-            self.do_open_no_writer(Some(commit))
-        }
+        self.do_open_if_changed_commit_executor(Some(commit), None)
     }
 
     fn do_open_if_changed_from_writer(
@@ -1122,12 +1241,37 @@ impl DirectoryReader for StandardDirectoryReader {
         writer: &dyn IndexWriter,
         apply_all_deletes: bool,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        self.do_open_if_changed_from_writer_with_executor(writer, apply_all_deletes, None)
+    }
+
+    fn do_open_if_changed_with_executor(
+        &self,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        // `doOpenIfChanged((IndexCommit) null, executorService)`.
+        self.do_open_if_changed_commit_executor(None, executor.as_ref())
+    }
+
+    fn do_open_if_changed_from_commit_with_executor(
+        &self,
+        commit: &dyn IndexCommit,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        self.do_open_if_changed_commit_executor(Some(commit), executor.as_ref())
+    }
+
+    fn do_open_if_changed_from_writer_with_executor(
+        &self,
+        writer: &dyn IndexWriter,
+        apply_all_deletes: bool,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
         self.ensure_open()?;
         if let Some(ref my_writer) = self.writer {
             if std::ptr::eq(my_writer.as_ref(), writer)
                 && apply_all_deletes == self.apply_all_deletes
             {
-                return self.do_open_from_writer(None);
+                return self.do_open_from_writer(None, executor.as_ref());
             }
         }
         // Different writer or different applyAllDeletes setting: ask the writer.
@@ -1136,12 +1280,29 @@ impl DirectoryReader for StandardDirectoryReader {
 }
 
 impl StandardDirectoryReader {
+    /// `doOpenIfChanged(IndexCommit, ExecutorService)`
+    /// (`StandardDirectoryReader.java:421-431`), `commit` and `executor`
+    /// being Java's nullable arguments.
+    fn do_open_if_changed_commit_executor(
+        &self,
+        commit: Option<&dyn IndexCommit>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        self.ensure_open()?;
+        // If we were obtained by writer.getReader(), re-ask the writer to get a
+        // new reader.
+        if self.writer.is_some() {
+            self.do_open_from_writer(commit, executor)
+        } else {
+            self.do_open_no_writer(commit, executor)
+        }
+    }
+
     /// Reopens over the writer that produced this reader, when one did.
     ///
     /// Equivalent to the private
-    /// `StandardDirectoryReader.doOpenFromWriter(IndexCommit, ExecutorService)`
-    /// without the executor (see [`Self::create_segment_readers`]'s divergence
-    /// note).
+    /// `StandardDirectoryReader.doOpenFromWriter(IndexCommit, ExecutorService)`;
+    /// as in Java, `executor` serves only a reopen from `commit`.
     ///
     /// # Panics
     ///
@@ -1156,9 +1317,10 @@ impl StandardDirectoryReader {
     fn do_open_from_writer(
         &self,
         commit: Option<&dyn IndexCommit>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
         if commit.is_some() {
-            return self.do_open_from_commit(commit);
+            return self.do_open_from_commit(commit, executor);
         }
         let writer = self
             .writer
@@ -1180,8 +1342,7 @@ impl StandardDirectoryReader {
     /// commit.
     ///
     /// Equivalent to the private
-    /// `StandardDirectoryReader.doOpenNoWriter(IndexCommit, ExecutorService)`
-    /// without the executor.
+    /// `StandardDirectoryReader.doOpenNoWriter(IndexCommit, ExecutorService)`.
     ///
     /// # Errors
     ///
@@ -1190,6 +1351,7 @@ impl StandardDirectoryReader {
     fn do_open_no_writer(
         &self,
         commit: Option<&dyn IndexCommit>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
         match commit {
             None => {
@@ -1211,15 +1373,15 @@ impl StandardDirectoryReader {
                 }
             }
         }
-        self.do_open_from_commit(commit)
+        self.do_open_from_commit(commit, executor)
     }
 
     /// Reopens from `commit`'s segments file, or the directory's latest one
     /// when `commit` is `None`.
     ///
     /// Equivalent to the private
-    /// `StandardDirectoryReader.doOpenFromCommit(IndexCommit, ExecutorService)`
-    /// without the executor: Java's anonymous `SegmentInfos.FindSegmentsFile`
+    /// `StandardDirectoryReader.doOpenFromCommit(IndexCommit, ExecutorService)`:
+    /// Java's anonymous `SegmentInfos.FindSegmentsFile`
     /// plays the same "specific commit, or whatever is latest" role that
     /// [`SegmentInfos::read_commit`]/[`SegmentInfos::read_latest_commit`]
     /// already give this port directly.
@@ -1231,6 +1393,7 @@ impl StandardDirectoryReader {
     fn do_open_from_commit(
         &self,
         commit: Option<&dyn IndexCommit>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
         let infos = match commit {
             Some(commit) => SegmentInfos::read_commit(
@@ -1249,6 +1412,7 @@ impl StandardDirectoryReader {
             Some(&self.segment_readers),
             None,
             self.leaf_sorter.as_ref().map(Arc::clone),
+            executor,
         )
         .map(Some)
     }
@@ -1467,12 +1631,119 @@ impl CacheHelper for Arc<DirectoryReaderCacheHelper> {
 // Static helpers mirroring Java DirectoryReader static methods
 // -----------------------------------------------------------------------------
 
+/// `StandardDirectoryReader.open(Directory, int, IndexCommit, Comparator,
+/// ExecutorService)` (`StandardDirectoryReader.java:76-108`): reads `commit`,
+/// or the latest commit when `commit` is `None`, and opens a reader over it.
+///
+/// # Errors
+///
+/// `IllegalArgumentException` when `min_supported_major_version` is negative
+/// or above [`Version::LATEST`](crate::util::Version::LATEST)'s major, and
+/// whatever reading the commit or opening its segments raises.
+fn open_standard(
+    directory: Arc<dyn Directory>,
+    min_supported_major_version: i32,
+    commit: Option<&dyn IndexCommit>,
+    leaf_sorter: Option<Arc<dyn LeafComparator>>,
+    executor: Option<&Arc<dyn crate::search::Executor>>,
+) -> Result<Arc<dyn DirectoryReader>> {
+    let latest_major = crate::util::Version::LATEST.major as i32;
+    if min_supported_major_version > latest_major || min_supported_major_version < 0 {
+        return Err(LuceneError::IllegalArgument(format!(
+            "minSupportedMajorVersion must be positive and <= {latest_major} but was: \
+             {min_supported_major_version}"
+        )));
+    }
+    let infos = match commit {
+        Some(commit) => SegmentInfos::read_commit_with_min_version(
+            Arc::clone(&directory),
+            &commit.get_segments_file_name(),
+            min_supported_major_version,
+        )?,
+        None => SegmentInfos::read_latest_commit_with_min_version(
+            Arc::clone(&directory),
+            min_supported_major_version,
+        )?,
+    };
+    StandardDirectoryReader::open_from_commit(directory, infos, leaf_sorter, executor)
+}
+
 /// Returns a `DirectoryReader` reading the index in the given `Directory`.
 ///
 /// Equivalent to `DirectoryReader.open(Directory)`.
 pub fn open(directory: Arc<dyn Directory>) -> Result<Arc<dyn DirectoryReader>> {
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
-    StandardDirectoryReader::open_from_commit(directory, infos)
+    StandardDirectoryReader::open_from_commit(directory, infos, None, None)
+}
+
+/// Returns a `DirectoryReader` reading the index in the given `Directory`,
+/// opening its segment readers on `executor_service` (sequentially on the
+/// calling thread when it is `None`).
+///
+/// Equivalent to `DirectoryReader.open(Directory, ExecutorService)`; `None`
+/// is Java's `null` executor.
+///
+/// # Errors
+///
+/// As [`open`]; with an executor, a failure opening a segment that is not an
+/// `IOException` is raised as `RuntimeException(ExecutionException(cause))`,
+/// and a rejected task as `RejectedExecutionException`.
+pub fn open_with_executor(
+    directory: Arc<dyn Directory>,
+    executor_service: Option<Arc<dyn crate::search::Executor>>,
+) -> Result<Arc<dyn DirectoryReader>> {
+    open_standard(
+        directory,
+        crate::util::Version::MIN_SUPPORTED_MAJOR,
+        None,
+        None,
+        executor_service.as_ref(),
+    )
+}
+
+/// Returns a `DirectoryReader` reading the index in the given `Directory`,
+/// whose leaves are sorted with `leaf_sorter`.
+///
+/// Equivalent to `DirectoryReader.open(Directory, Comparator<LeafReader>)`.
+///
+/// # Errors
+///
+/// As [`open`].
+pub fn open_with_leaf_sorter(
+    directory: Arc<dyn Directory>,
+    leaf_sorter: Option<Arc<dyn LeafComparator>>,
+) -> Result<Arc<dyn DirectoryReader>> {
+    open_standard(
+        directory,
+        crate::util::Version::MIN_SUPPORTED_MAJOR,
+        None,
+        leaf_sorter,
+        None,
+    )
+}
+
+/// Returns a `DirectoryReader` reading the index in the given `Directory`,
+/// whose leaves are sorted with `leaf_sorter`, opening its segment readers on
+/// `executor_service`.
+///
+/// Equivalent to `DirectoryReader.open(Directory, Comparator<LeafReader>,
+/// ExecutorService)`.
+///
+/// # Errors
+///
+/// As [`open_with_executor`].
+pub fn open_with_leaf_sorter_and_executor(
+    directory: Arc<dyn Directory>,
+    leaf_sorter: Option<Arc<dyn LeafComparator>>,
+    executor_service: Option<Arc<dyn crate::search::Executor>>,
+) -> Result<Arc<dyn DirectoryReader>> {
+    open_standard(
+        directory,
+        crate::util::Version::MIN_SUPPORTED_MAJOR,
+        None,
+        leaf_sorter,
+        executor_service.as_ref(),
+    )
 }
 
 /// Returns a `DirectoryReader` for the given `IndexCommit`.
@@ -1482,7 +1753,77 @@ pub fn open_with_commit(commit: &dyn IndexCommit) -> Result<Arc<dyn DirectoryRea
     let directory = commit.get_directory();
     let infos =
         SegmentInfos::read_commit(Arc::clone(&directory), &commit.get_segments_file_name())?;
-    StandardDirectoryReader::open_from_commit(directory, infos)
+    StandardDirectoryReader::open_from_commit(directory, infos, None, None)
+}
+
+/// Returns a `DirectoryReader` for the given `IndexCommit`, opening its
+/// segment readers on `executor_service`.
+///
+/// Equivalent to `DirectoryReader.open(IndexCommit, ExecutorService)`.
+///
+/// # Errors
+///
+/// As [`open_with_executor`].
+pub fn open_with_commit_and_executor(
+    commit: &dyn IndexCommit,
+    executor_service: Option<Arc<dyn crate::search::Executor>>,
+) -> Result<Arc<dyn DirectoryReader>> {
+    open_standard(
+        commit.get_directory(),
+        crate::util::Version::MIN_SUPPORTED_MAJOR,
+        Some(commit),
+        None,
+        executor_service.as_ref(),
+    )
+}
+
+/// Returns a `DirectoryReader` for the given `IndexCommit`, accepting
+/// segments written by major versions from `min_supported_major_version`,
+/// with its leaves sorted by `leaf_sorter`.
+///
+/// Equivalent to `DirectoryReader.open(IndexCommit, int,
+/// Comparator<LeafReader>)`.
+///
+/// # Errors
+///
+/// `IllegalArgumentException` for an out-of-range
+/// `min_supported_major_version`, and as [`open_with_commit`].
+pub fn open_with_commit_min_version(
+    commit: &dyn IndexCommit,
+    min_supported_major_version: i32,
+    leaf_sorter: Option<Arc<dyn LeafComparator>>,
+) -> Result<Arc<dyn DirectoryReader>> {
+    open_standard(
+        commit.get_directory(),
+        min_supported_major_version,
+        Some(commit),
+        leaf_sorter,
+        None,
+    )
+}
+
+/// As [`open_with_commit_min_version`], opening the segment readers on
+/// `executor_service`.
+///
+/// Equivalent to `DirectoryReader.open(IndexCommit, int,
+/// Comparator<LeafReader>, ExecutorService)`.
+///
+/// # Errors
+///
+/// As [`open_with_commit_min_version`] and [`open_with_executor`].
+pub fn open_with_commit_min_version_and_executor(
+    commit: &dyn IndexCommit,
+    min_supported_major_version: i32,
+    leaf_sorter: Option<Arc<dyn LeafComparator>>,
+    executor_service: Option<Arc<dyn crate::search::Executor>>,
+) -> Result<Arc<dyn DirectoryReader>> {
+    open_standard(
+        commit.get_directory(),
+        min_supported_major_version,
+        Some(commit),
+        leaf_sorter,
+        executor_service.as_ref(),
+    )
 }
 
 /// Returns a near-real-time reader covering every change `writer` has made so
@@ -1530,6 +1871,49 @@ pub fn open_if_changed(
     old_reader: Arc<dyn DirectoryReader>,
 ) -> Result<Option<Arc<dyn DirectoryReader>>> {
     old_reader.do_open_if_changed()
+}
+
+/// As [`open_if_changed`], opening the new segment readers on
+/// `executor_service`.
+///
+/// Equivalent to `DirectoryReader.openIfChanged(DirectoryReader,
+/// ExecutorService)`.
+pub fn open_if_changed_with_executor(
+    old_reader: Arc<dyn DirectoryReader>,
+    executor_service: Option<Arc<dyn crate::search::Executor>>,
+) -> Result<Option<Arc<dyn DirectoryReader>>> {
+    old_reader.do_open_if_changed_with_executor(executor_service)
+}
+
+/// As [`open_if_changed_with_commit`], opening the new segment readers on
+/// `executor_service`.
+///
+/// Equivalent to `DirectoryReader.openIfChanged(DirectoryReader, IndexCommit,
+/// ExecutorService)`.
+pub fn open_if_changed_with_commit_and_executor(
+    old_reader: Arc<dyn DirectoryReader>,
+    commit: &dyn IndexCommit,
+    executor_service: Option<Arc<dyn crate::search::Executor>>,
+) -> Result<Option<Arc<dyn DirectoryReader>>> {
+    old_reader.do_open_if_changed_from_commit_with_executor(commit, executor_service)
+}
+
+/// As [`open_if_changed_with_writer`], with an executor.
+///
+/// Equivalent to `DirectoryReader.openIfChanged(DirectoryReader, IndexWriter,
+/// boolean, ExecutorService)`; as in Java, a reader obtained from the writer
+/// is reopened through the writer, which does not use the executor.
+pub fn open_if_changed_with_writer_and_executor(
+    old_reader: Arc<dyn DirectoryReader>,
+    writer: &dyn IndexWriter,
+    apply_all_deletes: bool,
+    executor_service: Option<Arc<dyn crate::search::Executor>>,
+) -> Result<Option<Arc<dyn DirectoryReader>>> {
+    old_reader.do_open_if_changed_from_writer_with_executor(
+        writer,
+        apply_all_deletes,
+        executor_service,
+    )
 }
 
 /// If the provided commit differs from what `old_reader` is searching, returns a
@@ -2110,6 +2494,7 @@ mod tests {
                     closed: std::sync::atomic::AtomicBool::new(false),
                 })),
                 None,
+                None,
             )
         }
 
@@ -2156,6 +2541,7 @@ mod tests {
             SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap(),
             None,
             Some(writer),
+            None,
             None,
         )
         .unwrap();
@@ -2398,6 +2784,7 @@ mod tests {
             SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap(),
             None,
             Some(Arc::clone(&writer) as Arc<dyn IndexWriter>),
+            None,
             None,
         )
         .unwrap();

@@ -99,14 +99,6 @@ fn test_lock_release_and_close() -> Result<()> {
 }
 
 /// Port of `TestDocumentsWriterPerThreadPool.testCloseWhileNewWritersLocked`.
-///
-/// **Divergence.** Java spins until the thread's state is `WAITING`, that
-/// is until it blocks in `getAndLock()` waiting for the writer permits
-/// (`TestDocumentsWriterPerThreadPool.java:97-99`); the port's
-/// `java.lang.Thread` shim cannot observe a thread blocked on a monitor (its
-/// states are `NEW`, `RUNNABLE` and `TERMINATED`), so it spins until the
-/// thread has started. Either way the thread ends with
-/// `AlreadyClosedException` once the pool closes.
 fn test_close_while_new_writers_locked() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     {
@@ -131,7 +123,7 @@ fn test_close_while_new_writers_locked() -> Result<()> {
         };
         t.start();
         latch.await_();
-        while t.state() == State::New {
+        while t.state() != State::Waiting {
             std::thread::yield_now();
         }
         first.unlock();

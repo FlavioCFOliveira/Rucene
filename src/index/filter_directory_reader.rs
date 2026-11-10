@@ -659,6 +659,37 @@ impl DirectoryReader for FilterDirectoryReader {
                 .do_open_if_changed_from_writer(writer, apply_all_deletes)?,
         )
     }
+
+    fn do_open_if_changed_with_executor(
+        &self,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        self.wrap_directory_reader(self.inner.do_open_if_changed_with_executor(executor)?)
+    }
+
+    fn do_open_if_changed_from_commit_with_executor(
+        &self,
+        commit: &dyn IndexCommit,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        self.wrap_directory_reader(
+            self.inner
+                .do_open_if_changed_from_commit_with_executor(commit, executor)?,
+        )
+    }
+
+    fn do_open_if_changed_from_writer_with_executor(
+        &self,
+        writer: &dyn crate::index::directory_reader::IndexWriter,
+        apply_all_deletes: bool,
+        executor: Option<Arc<dyn crate::search::Executor>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        self.wrap_directory_reader(self.inner.do_open_if_changed_from_writer_with_executor(
+            writer,
+            apply_all_deletes,
+            executor,
+        )?)
+    }
 }
 
 /// Raised when a [`QueryTimeout`] fires inside a reader.

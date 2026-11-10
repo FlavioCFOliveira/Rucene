@@ -367,6 +367,9 @@ impl LuceneTestCase {
                     let _ = rucene::util::concurrent::set_thread_start_hook(
                         randomizedtesting::jdk::thread::Thread::start_context,
                     );
+                    // The JVM records a waiting thread's `Thread.State`;
+                    // `lucene-core`'s waiting points report it to the shim.
+                    let _ = rucene::util::concurrent::set_thread_wait_hook(record_thread_wait);
                     // The throwables of this runner are panics carrying a
                     // `Throwable`: `lucene-core` records the one that escapes
                     // a merge with its Java class and message.
@@ -457,4 +460,34 @@ impl LuceneTestCase {
         });
         Arc::clone(&CLASS)
     }
+}
+
+thread_local! {
+    /// The waits [`record_thread_wait`] recorded on this thread, innermost
+    /// last.
+    static THREAD_WAITS: std::cell::RefCell<Vec<randomizedtesting::jdk::thread::WaitStateGuard>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The [`rucene::util::concurrent::ThreadWaitHook`] this runner installs:
+/// records the waiting state on the current thread's
+/// `randomizedtesting` `Thread` while `lucene-core` waits, and restores
+/// `RUNNABLE` when the wait ends.
+fn record_thread_wait(state: Option<rucene::util::concurrent::ThreadWaitState>) {
+    use randomizedtesting::jdk::thread::{State, Thread};
+    use rucene::util::concurrent::ThreadWaitState;
+    THREAD_WAITS.with(|waits| {
+        let mut waits = waits.borrow_mut();
+        match state {
+            Some(ThreadWaitState::Waiting) => {
+                waits.push(Thread::enter_wait_state(State::Waiting));
+            }
+            Some(ThreadWaitState::TimedWaiting) => {
+                waits.push(Thread::enter_wait_state(State::TimedWaiting));
+            }
+            None => {
+                waits.pop();
+            }
+        }
+    });
 }

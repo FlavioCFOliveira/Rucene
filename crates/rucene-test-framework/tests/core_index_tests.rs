@@ -96,6 +96,10 @@ mod test_default_codec_parallelizes_io;
 mod test_deletion_policy;
 #[path = "core_index/test_demo_parallel_leaf_reader.rs"]
 mod test_demo_parallel_leaf_reader;
+#[path = "core_index/test_directory_reader.rs"]
+mod test_directory_reader;
+#[path = "core_index/test_directory_reader_reopen.rs"]
+mod test_directory_reader_reopen;
 #[path = "core_index/test_doc.rs"]
 mod test_doc;
 #[path = "core_index/test_doc_count.rs"]
@@ -104,8 +108,12 @@ mod test_doc_count;
 mod test_doc_id_merger;
 #[path = "core_index/test_doc_inverter_per_field_error_info.rs"]
 mod test_doc_inverter_per_field_error_info;
+#[path = "core_index/test_doc_values.rs"]
+mod test_doc_values;
 #[path = "core_index/test_doc_values_field_updates.rs"]
 mod test_doc_values_field_updates;
+#[path = "core_index/test_doc_values_indexing.rs"]
+mod test_doc_values_indexing;
 #[path = "core_index/test_docs_and_positions.rs"]
 mod test_docs_and_positions;
 #[path = "core_index/test_docs_with_field_set.rs"]
@@ -341,6 +349,16 @@ fn test_demo_parallel_leaf_reader() {
 }
 
 #[test]
+fn test_directory_reader() {
+    run(test_directory_reader::class_def);
+}
+
+#[test]
+fn test_directory_reader_reopen() {
+    run(test_directory_reader_reopen::class_def);
+}
+
+#[test]
 fn test_doc_count() {
     run(test_doc_count::class_def);
 }
@@ -393,4 +411,14 @@ fn test_document_writer() {
 #[test]
 fn test_doc_values_field_updates() {
     run(test_doc_values_field_updates::class_def);
+}
+
+#[test]
+fn test_doc_values() {
+    run(test_doc_values::class_def);
+}
+
+#[test]
+fn test_doc_values_indexing() {
+    run(test_doc_values_indexing::class_def);
 }

@@ -3906,7 +3906,9 @@ pub(crate) fn binary_doc_values_field_type() -> &'static FieldType {
 pub struct NumericDocValuesField {
     name: String,
     field_type: FieldType,
-    value: i64,
+    /// `fieldsData`: `None` for the `null` value
+    /// `NumericDocValuesField(String, Long)` accepts.
+    value: Option<i64>,
 }
 
 impl NumericDocValuesField {
@@ -3917,6 +3919,15 @@ impl NumericDocValuesField {
 
     /// Creates a new NumericDocValuesField.
     pub fn new(name: &str, value: i64) -> Self {
+        Self::new_nullable(name, Some(value))
+    }
+
+    /// Creates a new NumericDocValuesField whose value may be `null`.
+    ///
+    /// Equivalent to `NumericDocValuesField(String name, Long value)`; a
+    /// `None` value is rejected when the document is indexed
+    /// (`field="name": null value not allowed`).
+    pub fn new_nullable(name: &str, value: Option<i64>) -> Self {
         Self {
             name: name.to_string(),
             field_type: numeric_doc_values_field_type().clone(),
@@ -3929,13 +3940,13 @@ impl NumericDocValuesField {
         Self {
             name: name.to_string(),
             field_type: numeric_doc_values_indexed_field_type().clone(),
-            value,
+            value: Some(value),
         }
     }
 
     /// Sets a new value.
     pub fn set_value(&mut self, value: i64) {
-        self.value = value;
+        self.value = Some(value);
     }
 
     /// Creates a query matching values in `[lower_value, upper_value]`.
@@ -3990,7 +4001,7 @@ impl IndexableField for NumericDocValuesField {
     }
 
     fn string_value(&self) -> Option<String> {
-        Some(self.value.to_string())
+        self.value.map(|value| value.to_string())
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -3998,7 +4009,7 @@ impl IndexableField for NumericDocValuesField {
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        Some(NumericValue::Long(self.value))
+        self.value.map(NumericValue::Long)
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
@@ -4522,7 +4533,9 @@ impl IndexableField for SortedNumericDocValuesField {
 pub struct BinaryDocValuesField {
     name: String,
     field_type: FieldType,
-    value: BytesRef,
+    /// `fieldsData`: `None` for the `null` value
+    /// `BinaryDocValuesField(String, BytesRef)` accepts.
+    value: Option<BytesRef>,
 }
 
 impl BinaryDocValuesField {
@@ -4533,6 +4546,16 @@ impl BinaryDocValuesField {
 
     /// Creates a new BinaryDocValuesField.
     pub fn new(name: &str, value: BytesRef) -> Self {
+        Self::new_nullable(name, Some(value))
+    }
+
+    /// Creates a new BinaryDocValuesField whose value may be `null`.
+    ///
+    /// Equivalent to `BinaryDocValuesField(String name, BytesRef value)`
+    /// with a `null` value, which Java accepts; a `None` value is rejected
+    /// when the document is indexed (`field="name": null value not
+    /// allowed`).
+    pub fn new_nullable(name: &str, value: Option<BytesRef>) -> Self {
         Self {
             name: name.to_string(),
             field_type: binary_doc_values_field_type().clone(),
@@ -4555,15 +4578,24 @@ impl IndexableField for BinaryDocValuesField {
         _analyzer: &dyn Analyzer,
         _reuse: Option<&mut dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+        Box::new(
+            crate::analysis::BinaryTokenStream::new(
+                self.value
+                    .clone()
+                    .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
+            )
+            .unwrap(),
+        )
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        Some(self.value.clone())
+        self.value.clone()
     }
 
     fn string_value(&self) -> Option<String> {
-        String::from_utf8(self.value.slice().to_vec()).ok()
+        self.value
+            .as_ref()
+            .and_then(|value| String::from_utf8(value.slice().to_vec()).ok())
     }
 
     fn reader_value(&self) -> Option<crate::document::SharedReader> {
@@ -6265,7 +6297,12 @@ impl std::fmt::Display for BinaryPoint {
 impl std::fmt::Display for NumericDocValuesField {
     /// `docValuesType=NUMERIC<n:17>`.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        field_to_string(f, &self.field_type, &self.name, &self.value.to_string())
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &self.value.map(|v| v.to_string()).unwrap_or_default(),
+        )
     }
 }
 
@@ -6325,7 +6362,11 @@ impl std::fmt::Display for BinaryDocValuesField {
             f,
             &self.field_type,
             &self.name,
-            &bytes_ref_to_string(self.value.slice()),
+            &self
+                .value
+                .as_ref()
+                .map(|v| bytes_ref_to_string(v.slice()))
+                .unwrap_or_default(),
         )
     }
 }
@@ -6857,7 +6898,7 @@ impl FieldValueSetters for BinaryDocValuesField {
 
     /// `Field.setBytesValue(BytesRef)`: `fieldsData` is a `BytesRef`.
     fn set_bytes_value(&mut self, value: BytesRef) -> Result<()> {
-        self.value = value;
+        self.value = Some(value);
         Ok(())
     }
 }

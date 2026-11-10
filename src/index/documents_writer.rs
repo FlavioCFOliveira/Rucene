@@ -2982,10 +2982,15 @@ impl DocumentsWriterStallControl {
         let mut state = self.lock();
         if self.stalled.load(Ordering::Acquire) {
             Self::inc_waiters(&mut state);
+            // `wait(1000)`: the thread is `TIMED_WAITING` while it waits.
+            let waiting = crate::util::concurrent::enter_thread_wait(
+                crate::util::concurrent::ThreadWaitState::TimedWaiting,
+            );
             let (guard, _timeout) = self
                 .healthy
                 .wait_timeout(state, Duration::from_secs(1))
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(waiting);
             state = guard;
             Self::decr_waiters(&mut state);
         }
@@ -4880,6 +4885,10 @@ impl DocumentsWriterPerThreadPool {
     fn new_writer(&self) -> Result<DwptGuard> {
         let mut state = self.lock_state();
         while state.taken_writer_permits > 0 {
+            // `this.wait()`: the thread is `WAITING` while it waits.
+            let _waiting = crate::util::concurrent::enter_thread_wait(
+                crate::util::concurrent::ThreadWaitState::Waiting,
+            );
             state = self
                 .permits_released
                 .wait(state)

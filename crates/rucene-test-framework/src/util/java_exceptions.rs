@@ -114,6 +114,14 @@ const HIERARCHY: &[(&str, &str)] = &[
         "org.apache.lucene.search.IndexSearcher$TooManyClauses",
         "java.lang.RuntimeException",
     ),
+    (
+        "java.util.concurrent.RejectedExecutionException",
+        "java.lang.RuntimeException",
+    ),
+    (
+        "java.util.concurrent.ExecutionException",
+        "java.lang.Exception",
+    ),
 ];
 
 /// Registers [`HIERARCHY`] once.
