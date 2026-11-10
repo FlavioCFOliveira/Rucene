@@ -457,7 +457,8 @@ impl IndexedDISI {
             self.block_end = self.dense_bitmap_offset + (1i64 << 13);
             if self.dense_rank_power != -1 {
                 let len = self.dense_rank_table.len();
-                self.slice.read_bytes(&mut self.dense_rank_table, 0, len)?;
+                self.slice
+                    .read_bytes(Some(&mut self.dense_rank_table), 0, len)?;
             }
             self.word_index = -1;
             self.number_of_ones = self.index.wrapping_add(1);
@@ -667,7 +668,7 @@ impl IndexedDISI {
         let word_index = self.word_index as usize;
         let num_words = FixedBitSet::bits2words(source_to as usize) - word_index;
         let mut words = vec![0i64; num_words];
-        self.slice.read_longs(&mut words, 0, num_words)?;
+        self.slice.read_longs(Some(&mut words), 0, num_words)?;
         let bits = source.get_bits();
         for (i, word) in words.into_iter().enumerate() {
             bits[word_index + i].store(word as u64, std::sync::atomic::Ordering::Relaxed);

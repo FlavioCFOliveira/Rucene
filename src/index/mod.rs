@@ -482,7 +482,12 @@ pub trait IndexableFieldType: std::fmt::Display {
     fn vector_similarity_function(&self) -> VectorSimilarityFunction;
 
     /// Attributes for the field type.
-    fn attributes(&self) -> &crate::util::java_collections::JavaHashMap<String>;
+    ///
+    /// Java returns the type's own map (`FieldType.getAttributes()`); a
+    /// [`FieldType`](crate::document::FieldType) keeps its map behind a lock
+    /// so that a shared type can change through `&self`, so this returns a
+    /// snapshot of it, which every caller only reads.
+    fn attributes(&self) -> crate::util::java_collections::JavaHashMap<String>;
 
     /// The identity of this type when it is a frozen
     /// [`FieldType`](crate::document::FieldType), or `None` for any other type.
@@ -491,8 +496,9 @@ pub trait IndexableFieldType: std::fmt::Display {
     /// re-validating a field whose type is the very frozen `FieldType` it
     /// validated last: it tests `candidateFieldType instanceof FieldType ft &&
     /// ft.isFrozen()` and compares types by reference
-    /// (`IndexingChain.java:1803-1825`). A Rust field owns a clone of its type,
-    /// so neither the downcast nor the reference is available; two types are
+    /// (`IndexingChain.java:1803-1825`). The predefined Rust fields own a clone
+    /// of their frozen type, so neither the downcast nor the reference is
+    /// available; two types are
     /// the same Java object exactly when this returns the same `Some` for both.
     /// Only `FieldType` overrides it.
     fn frozen_field_type_identity(&self) -> Option<u64> {
@@ -532,7 +538,7 @@ pub trait IndexableField: std::fmt::Display {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<&mut dyn TokenStream>,
+        reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>>;
 
     /// Non-null if this field has a binary value.

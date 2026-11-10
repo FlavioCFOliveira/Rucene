@@ -712,7 +712,7 @@ impl SegmentInfos {
                 codec_util::check_header_no_magic(input, "segments", VERSION_74, VERSION_CURRENT)?;
 
             let mut id = [0u8; ID_LENGTH];
-            input.read_bytes(&mut id, 0, ID_LENGTH)?;
+            input.read_bytes(Some(&mut id), 0, ID_LENGTH)?;
             codec_util::check_index_header_suffix(input, &radix_36(generation as u64))?;
 
             let lucene_version = Version::from_bits(
@@ -807,7 +807,7 @@ impl SegmentInfos {
         for _ in 0..num_segments {
             let seg_name = input.read_string()?;
             let mut segment_id = [0u8; ID_LENGTH];
-            input.read_bytes(&mut segment_id, 0, ID_LENGTH)?;
+            input.read_bytes(Some(&mut segment_id), 0, ID_LENGTH)?;
             let codec = Self::read_codec(input)?;
 
             let mut info = codec.segment_info_format().read(
@@ -856,7 +856,7 @@ impl SegmentInfos {
                 match marker {
                     1 => {
                         let mut buf = [0u8; ID_LENGTH];
-                        input.read_bytes(&mut buf, 0, ID_LENGTH)?;
+                        input.read_bytes(Some(&mut buf), 0, ID_LENGTH)?;
                         buf
                     }
                     0 => StringHelper::random_id(),
@@ -1728,7 +1728,7 @@ mod tests {
             .unwrap();
         let mut bytes = vec![0u8; input.length() as usize];
         let length = bytes.len();
-        input.read_bytes(&mut bytes, 0, length).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, length).unwrap();
         input.close().unwrap();
         (dir, bytes)
     }

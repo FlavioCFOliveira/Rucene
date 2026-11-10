@@ -272,8 +272,8 @@ fn assert_files_identical(dir: &Arc<dyn Directory>, golden: &str, sorted: &str) 
         while left > 0 {
             let chunk = (buf1.len() as i64).min(left) as usize;
             left -= chunk as i64;
-            in1.read_bytes(&mut buf1, 0, chunk)?;
-            in2.read_bytes(&mut buf2, 0, chunk)?;
+            in1.read_bytes(Some(&mut buf1), 0, chunk)?;
+            in2.read_bytes(Some(&mut buf2), 0, chunk)?;
             for i in 0..chunk {
                 assert_equals(&buf1[i], &buf2[i]);
             }

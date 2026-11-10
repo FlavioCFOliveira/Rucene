@@ -230,7 +230,8 @@ impl DataInput for SliceDataInput<'_> {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         if self.pos + len > self.bytes.len() {
             // `System.arraycopy(bytes, pos, b, offset, len)`
             // (`ByteArrayDataInput.java:140-144`).
@@ -1550,7 +1551,7 @@ impl XYShapeDocValues {
 pub fn shape_doc_values_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::BINARY)
             .expect("INVARIANT: a new type is mutable");
         ft.set_omit_norms(true)
@@ -1725,7 +1726,7 @@ macro_rules! shape_doc_values_field_delegates {
             fn token_stream(
                 &self,
                 _analyzer: Option<&dyn crate::analysis::Analyzer>,
-                _reuse: Option<&mut dyn crate::analysis::TokenStream>,
+                _reuse: Option<Box<dyn crate::analysis::TokenStream>>,
             ) -> Result<Box<dyn crate::analysis::TokenStream>> {
                 // Java answers `null`: token streams are not supported, and the
                 // field is never inverted because its `indexOptions` is `NONE`.

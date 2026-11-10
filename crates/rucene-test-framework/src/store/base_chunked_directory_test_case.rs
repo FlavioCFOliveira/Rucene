@@ -246,7 +246,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
             let mut ii = dir.open_input("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut actual = vec![0u8; 1 << i];
             let n = actual.len();
-            ii.read_bytes(&mut actual, 0, n)?;
+            ii.read_bytes(Some(&mut actual), 0, n)?;
             assert_bytes_ref_equals(&bytes, &actual);
             ii.seek(1 << i)?;
             ii.close()?;
@@ -270,7 +270,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
             let mut ii = slicer.slice("full slice", 0, bytes.len() as i64)?;
             let mut actual = vec![0u8; 1 << i];
             let n = actual.len();
-            ii.read_bytes(&mut actual, 0, n)?;
+            ii.read_bytes(Some(&mut actual), 0, n)?;
             assert_bytes_ref_equals(&bytes, &actual);
             ii.seek(1 << i)?;
             ii.close()?;
@@ -294,14 +294,14 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
             let mut ii = dir.open_input("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut actual = vec![0u8; 1 << (i + 1)]; // first read all bytes
             let n = actual.len();
-            ii.read_bytes(&mut actual, 0, n)?;
+            ii.read_bytes(Some(&mut actual), 0, n)?;
             assert_bytes_ref_equals(&bytes, &actual);
             for slice_start in 0..bytes.len() {
                 for slice_length in 0..bytes.len() - slice_start {
                     let mut slice = vec![0u8; slice_length];
                     ii.seek(slice_start as i64)?;
                     let n = slice.len();
-                    ii.read_bytes(&mut slice, 0, n)?;
+                    ii.read_bytes(Some(&mut slice), 0, n)?;
                     assert_bytes_ref_equals(
                         &bytes[slice_start..slice_start + slice_length],
                         &slice,
@@ -330,7 +330,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
             let mut ii = dir.open_input("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut actual = vec![0u8; 1 << (i + 1)]; // first read all bytes
             let n = actual.len();
-            ii.read_bytes(&mut actual, 0, n)?;
+            ii.read_bytes(Some(&mut actual), 0, n)?;
             ii.close()?;
             assert_bytes_ref_equals(&bytes, &actual);
             let mut slicer =
@@ -360,7 +360,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
             let mut ii = dir.open_input("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut actual = vec![0u8; 1 << (i + 1)]; // first read all bytes
             let n = actual.len();
-            ii.read_bytes(&mut actual, 0, n)?;
+            ii.read_bytes(Some(&mut actual), 0, n)?;
             ii.close()?;
             assert_bytes_ref_equals(&bytes, &actual);
             let mut outer_slicer =
@@ -531,7 +531,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
             Assert::assert_equals(25, input.length());
             Assert::assert_equals(2, input.read_byte()?);
             let mut l = [0i64; 4];
-            input.read_longs(&mut l, 1, 3)?;
+            input.read_longs(Some(&mut l), 1, 3)?;
             crate::index::base_index_file_format_test_case::assert_array_equals(
                 &[0i64, 3, i64::MAX, -3],
                 &l,
@@ -558,7 +558,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
             Assert::assert_equals(13, input.length());
             Assert::assert_equals(2, input.read_byte()?);
             let mut ff = [0f32; 4];
-            input.read_floats(&mut ff, 1, 3)?;
+            input.read_floats(Some(&mut ff), 1, 3)?;
             for (e, a) in [0f32, 3.0, f32::MAX, -3.0].iter().zip(ff.iter()) {
                 Assert::assert_equals_float_msg(None, *e, *a, 0.0);
             }
@@ -587,7 +587,7 @@ fn assert_slice(
     let mut slice = vec![0u8; slice_length];
     let mut input = slicer.slice("bytesSlice", slice_start as i64, slice.len() as i64)?;
     let n = slice.len();
-    input.read_bytes(&mut slice, 0, n)?;
+    input.read_bytes(Some(&mut slice), 0, n)?;
     input.close()?;
     let from = outer_slice_start + slice_start;
     assert_bytes_ref_equals(&bytes[from..from + slice_length], &slice);

@@ -261,7 +261,7 @@ fn test_2b_terms() -> Result<()> {
         let mut doc = Document::new();
         let ts = Rc::new(RefCell::new(MyTokenStream::new(random(), terms_per_doc)?));
 
-        let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+        let custom_type = FieldType::new_from(TextField::type_not_stored());
         custom_type.set_index_options(IndexOptions::DOCS)?;
         custom_type.set_omit_norms(true)?;
         let stream: Rc<RefCell<dyn TokenStream>> = ts.clone();

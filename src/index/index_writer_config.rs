@@ -314,6 +314,23 @@ impl LiveIndexWriterConfig {
         }
     }
 
+    /// Whether `setIndexWriter` would refuse this configuration: the check
+    /// `IndexWriter`'s constructor makes first thing (`IndexWriter.java:951`),
+    /// before it takes the write lock. `pub` for `RandomIndexWriter`, which
+    /// changes the configuration first (Java's check is package-private).
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::IllegalState`] once a writer is attached.
+    pub fn check_not_attached(&self) -> Result<()> {
+        match &self.index_writer {
+            Some(slot) if slot.get().is_some() => Err(LuceneError::illegal_state(
+                "do not share IndexWriterConfig instances across IndexWriters".to_string(),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// Records the writer this configuration is attached to.
     ///
     /// Equivalent to the package-private `IndexWriterConfig.setIndexWriter`
@@ -752,7 +769,13 @@ impl fmt::Display for LiveIndexWriterConfig {
 pub struct IndexWriterConfig {
     /// The live settings, and the `writer` field Java keeps on this class
     /// (see the note on that field of [`LiveIndexWriterConfig`]).
-    live: LiveIndexWriterConfig,
+    ///
+    /// Shared with the writer built over this configuration, as Java's
+    /// writer keeps the configuration object itself
+    /// (`IndexWriter.java:951-952`). A writer also holds the
+    /// `Arc<IndexWriterConfig>` it was given, so a `&mut IndexWriterConfig`
+    /// exists only while no writer holds this `Arc` (see [`Self::live_mut`]).
+    live: Arc<LiveIndexWriterConfig>,
 }
 
 impl IndexWriterConfig {
@@ -771,17 +794,33 @@ impl IndexWriterConfig {
         // `private SetOnce<IndexWriter> writer = new SetOnce<>()`
         // (`IndexWriterConfig.java:112`).
         live.index_writer = Some(OnceLock::new());
-        Self { live }
+        Self {
+            live: Arc::new(live),
+        }
+    }
+
+    /// The live config this configuration wraps, shared.
+    ///
+    /// `IndexWriter` keeps it and attaches itself to it
+    /// (`LiveIndexWriterConfig::attach_writer`, Java's `setIndexWriter`), so
+    /// the `writer=` line of `toString()` follows the configuration.
+    pub fn live(&self) -> &Arc<LiveIndexWriterConfig> {
+        &self.live
     }
 
     /// Consumes this config and returns the live config it wraps.
-    ///
-    /// `IndexWriter` takes ownership of the live config at construction and
-    /// attaches itself to it
-    /// (`LiveIndexWriterConfig::attach_writer`, Java's `setIndexWriter`), so
-    /// the `writer=` line of `toString()` follows the configuration.
-    pub fn into_live(self) -> LiveIndexWriterConfig {
+    pub fn into_live(self) -> Arc<LiveIndexWriterConfig> {
         self.live
+    }
+
+    /// The live config, for a setter.
+    ///
+    /// A writer holds both the live config and the `Arc<IndexWriterConfig>`
+    /// over it, so while one exists no `&mut IndexWriterConfig` can be
+    /// borrowed; the live config is therefore unshared whenever this runs.
+    fn live_mut(&mut self) -> &mut LiveIndexWriterConfig {
+        Arc::get_mut(&mut self.live)
+            .expect("INVARIANT: no writer holds an IndexWriterConfig borrowed mutably")
     }
 
     // -------------------------------------------------------------------------
@@ -795,7 +834,7 @@ impl IndexWriterConfig {
     /// Returns `LuceneError::IllegalArgument` if `open_mode` is null-equivalent
     /// (not possible for the enum, but kept for API parity).
     pub fn set_open_mode(&mut self, open_mode: OpenMode) -> Result<&mut Self> {
-        self.live.open_mode = open_mode;
+        self.live_mut().open_mode = open_mode;
         Ok(self)
     }
 
@@ -821,7 +860,7 @@ impl IndexWriterConfig {
                 latest_major - 1
             )));
         }
-        self.live.created_version_major = index_created_version_major;
+        self.live_mut().created_version_major = index_created_version_major;
         Ok(self)
     }
 
@@ -841,13 +880,13 @@ impl IndexWriterConfig {
                 "indexDeletionPolicy must not be null".to_string(),
             ));
         };
-        self.live.del_policy = del_policy;
+        self.live_mut().del_policy = del_policy;
         Ok(self)
     }
 
     /// Sets the commit point to open from.
     pub fn set_index_commit(&mut self, commit: Option<Arc<dyn IndexCommit>>) -> &mut Self {
-        self.live.commit = commit;
+        self.live_mut().commit = commit;
         self
     }
 
@@ -864,7 +903,7 @@ impl IndexWriterConfig {
                 "similarity must not be null".to_string(),
             ));
         };
-        self.live.set_similarity(similarity);
+        self.live_mut().set_similarity(similarity);
         Ok(self)
     }
 
@@ -884,7 +923,7 @@ impl IndexWriterConfig {
                 "mergeScheduler must not be null".to_string(),
             ));
         };
-        self.live.merge_scheduler = merge_scheduler;
+        self.live_mut().merge_scheduler = merge_scheduler;
         Ok(self)
     }
 
@@ -898,13 +937,13 @@ impl IndexWriterConfig {
     /// also forbids changing the codec once the writer is running — can be
     /// added without breaking callers.
     pub fn set_codec(&mut self, codec: Arc<dyn Codec>) -> Result<&mut Self> {
-        self.live.set_codec(codec);
+        self.live_mut().set_codec(codec);
         Ok(self)
     }
 
     /// Sets whether segment readers should be pooled.
     pub fn set_reader_pooling(&mut self, reader_pooling: bool) -> &mut Self {
-        self.live.reader_pooling = reader_pooling;
+        self.live_mut().reader_pooling = reader_pooling;
         self
     }
 
@@ -922,7 +961,7 @@ impl IndexWriterConfig {
                 "PerThreadHardLimit must be greater than 0 and less than 2048MB".to_string(),
             ));
         }
-        self.live.per_thread_hard_limit_mb = per_thread_hard_limit_mb;
+        self.live_mut().per_thread_hard_limit_mb = per_thread_hard_limit_mb;
         Ok(self)
     }
 
@@ -932,7 +971,7 @@ impl IndexWriterConfig {
     /// `IndexWriterConfig.setFlushPolicy(FlushPolicy)`; `pub` for the tests
     /// that set it (`TestFlushByRamOrCountsPolicy`).
     pub fn set_flush_policy(&mut self, flush_policy: Arc<dyn FlushPolicy>) -> Result<&mut Self> {
-        self.live.flush_policy = flush_policy;
+        self.live_mut().flush_policy = flush_policy;
         Ok(self)
     }
 
@@ -942,7 +981,7 @@ impl IndexWriterConfig {
     ///
     /// Returns `LuceneError::IllegalArgument` if `info_stream` is null.
     pub fn set_info_stream(&mut self, info_stream: Arc<dyn InfoStream>) -> Result<&mut Self> {
-        self.live.info_stream = info_stream;
+        self.live_mut().info_stream = info_stream;
         Ok(self)
     }
 
@@ -969,7 +1008,7 @@ impl IndexWriterConfig {
 
     /// Sets whether `IndexWriter.close()` should commit first.
     pub fn set_commit_on_close(&mut self, commit_on_close: bool) -> &mut Self {
-        self.live.commit_on_close = commit_on_close;
+        self.live_mut().commit_on_close = commit_on_close;
         self
     }
 
@@ -997,8 +1036,8 @@ impl IndexWriterConfig {
                 fields.insert(name.to_string());
             }
         }
-        self.live.index_sort = Some(sort);
-        self.live.index_sort_fields = fields;
+        self.live_mut().index_sort = Some(sort);
+        self.live_mut().index_sort_fields = fields;
         Ok(self)
     }
 
@@ -1008,13 +1047,13 @@ impl IndexWriterConfig {
     /// Equivalent to `IndexWriterConfig.setLeafSorter(Comparator<LeafReader>)`
     /// (`IndexWriterConfig.java:488-497`).
     pub fn set_leaf_sorter(&mut self, leaf_sorter: Option<Arc<dyn LeafComparator>>) -> &mut Self {
-        self.live.leaf_sorter = leaf_sorter;
+        self.live_mut().leaf_sorter = leaf_sorter;
         self
     }
 
     /// Sets the soft deletes field.
     pub fn set_soft_deletes_field(&mut self, soft_deletes_field: Option<String>) -> &mut Self {
-        self.live.soft_deletes_field = soft_deletes_field;
+        self.live_mut().soft_deletes_field = soft_deletes_field;
         self
     }
 
@@ -1023,13 +1062,13 @@ impl IndexWriterConfig {
         &mut self,
         event_listener: Arc<dyn IndexWriterEventListener>,
     ) -> &mut Self {
-        self.live.event_listener = event_listener;
+        self.live_mut().event_listener = event_listener;
         self
     }
 
     /// Sets the parent document field.
     pub fn set_parent_field(&mut self, parent_field: Option<String>) -> &mut Self {
-        self.live.parent_field = parent_field;
+        self.live_mut().parent_field = parent_field;
         self
     }
 
@@ -1038,7 +1077,7 @@ impl IndexWriterConfig {
         &mut self,
         max_full_flush_merge_wait_millis: i64,
     ) -> &mut Self {
-        self.live.max_full_flush_merge_wait_millis = max_full_flush_merge_wait_millis;
+        self.live_mut().max_full_flush_merge_wait_millis = max_full_flush_merge_wait_millis;
         self
     }
 
@@ -1058,7 +1097,7 @@ impl IndexWriterConfig {
 
     /// Sets the RAM buffer size in megabytes.
     pub fn set_ram_buffer_size_mb(&mut self, ram_buffer_size_mb: f64) -> Result<&mut Self> {
-        self.live.set_ram_buffer_size_mb(ram_buffer_size_mb)?;
+        self.live_mut().set_ram_buffer_size_mb(ram_buffer_size_mb)?;
         Ok(self)
     }
 
@@ -1069,7 +1108,7 @@ impl IndexWriterConfig {
 
     /// Sets the maximum number of buffered documents before flushing.
     pub fn set_max_buffered_docs(&mut self, max_buffered_docs: i32) -> Result<&mut Self> {
-        self.live.set_max_buffered_docs(max_buffered_docs)?;
+        self.live_mut().set_max_buffered_docs(max_buffered_docs)?;
         Ok(self)
     }
 
@@ -1091,7 +1130,7 @@ impl IndexWriterConfig {
         &mut self,
         merge_policy: Option<Arc<dyn MergePolicy>>,
     ) -> Result<&mut Self> {
-        self.live.set_merge_policy(merge_policy)?;
+        self.live_mut().set_merge_policy(merge_policy)?;
         Ok(self)
     }
 
@@ -1105,7 +1144,8 @@ impl IndexWriterConfig {
         &mut self,
         merge_segment_warmer: Option<Arc<dyn MergedSegmentWarmer>>,
     ) -> Result<&mut Self> {
-        self.live.set_merged_segment_warmer(merge_segment_warmer);
+        self.live_mut()
+            .set_merged_segment_warmer(merge_segment_warmer);
         Ok(self)
     }
 
@@ -1172,7 +1212,7 @@ impl IndexWriterConfig {
 
     /// Sets whether newly flushed segments use compound files.
     pub fn set_use_compound_file(&mut self, use_compound_file: bool) -> Result<&mut Self> {
-        self.live.set_use_compound_file(use_compound_file);
+        self.live_mut().set_use_compound_file(use_compound_file);
         Ok(self)
     }
 
@@ -1213,7 +1253,7 @@ impl IndexWriterConfig {
         &mut self,
         check_pending_flush_on_update: bool,
     ) -> Result<&mut Self> {
-        self.live
+        self.live_mut()
             .set_check_pending_flush_update(check_pending_flush_on_update);
         Ok(self)
     }

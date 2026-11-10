@@ -122,7 +122,7 @@ impl DataInput for SharedIndexInput {
         self.inner.lock().unwrap().to_java_string()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.inner.lock().unwrap().read_bytes(b, offset, len)
     }
 

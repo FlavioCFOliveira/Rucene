@@ -46,7 +46,7 @@ pub fn class_def() -> Arc<Class> {
 /// `new DocumentsWriterPerThreadPool(() -> new DocumentsWriterPerThread(…))`.
 fn new_pool(directory: Arc<dyn Directory>) -> DocumentsWriterPerThreadPool {
     DocumentsWriterPerThreadPool::new(move || {
-        let config = Arc::new(LuceneTestCase::new_index_writer_config().into_live());
+        let config = LuceneTestCase::new_index_writer_config().into_live();
         DocumentsWriterPerThread::new(
             i32::from(Version::LATEST.major),
             String::new(),

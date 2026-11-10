@@ -281,7 +281,7 @@ impl IntersectTermsEnumFrame {
             let b = terms_in.read_byte()?;
             self.suffix_length_bytes[..n].fill(b);
         } else {
-            terms_in.read_bytes(&mut self.suffix_length_bytes, 0, n)?;
+            terms_in.read_bytes(Some(&mut self.suffix_length_bytes), 0, n)?;
         }
         self.suffix_lengths_pos = 0;
         self.suffix_lengths_limit = n;
@@ -290,7 +290,7 @@ impl IntersectTermsEnumFrame {
         if self.stat_bytes.len() < num_stat_bytes {
             self.stat_bytes.resize(num_stat_bytes, 0);
         }
-        terms_in.read_bytes(&mut self.stat_bytes, 0, num_stat_bytes)?;
+        terms_in.read_bytes(Some(&mut self.stat_bytes), 0, num_stat_bytes)?;
         self.stats_pos = 0;
         self.stats_limit = num_stat_bytes;
         self.stats_singleton_run_length = 0;
@@ -304,7 +304,7 @@ impl IntersectTermsEnumFrame {
         if self.bytes.len() < num_meta_bytes {
             self.bytes.resize(num_meta_bytes, 0);
         }
-        terms_in.read_bytes(&mut self.bytes, 0, num_meta_bytes)?;
+        terms_in.read_bytes(Some(&mut self.bytes), 0, num_meta_bytes)?;
         self.bytes_pos = 0;
         self.bytes_limit = num_meta_bytes;
 

@@ -1949,8 +1949,9 @@ impl DefaultIndexingChain {
                 field_type.vector_dimension(),
             )?;
         }
-        if !field_type.attributes().is_empty() {
-            schema.update_attributes(field_type.attributes());
+        let attributes = field_type.attributes();
+        if !attributes.is_empty() {
+            schema.update_attributes(&attributes);
         }
         Ok(())
     }
@@ -4913,7 +4914,7 @@ mod tests {
     }
 
     fn field_type(options: IndexOptions) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_omit_norms(true).expect("omit norms");
         field_type
@@ -5368,7 +5369,7 @@ mod tests {
             TextField::new("body", "ignored".to_string(), Store::YES).expect("text field"),
         ));
         // A stored-only field: index options NONE.
-        let mut stored_type = FieldType::new();
+        let stored_type = FieldType::new();
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
         let mut only_stored = Document::new();
@@ -5407,7 +5408,7 @@ mod tests {
 
     impl VectorlessVectorField {
         fn new(name: &str, encoding: VectorEncoding) -> Self {
-            let mut field_type = FieldType::new();
+            let field_type = FieldType::new();
             field_type
                 .set_vector_attributes(3, encoding, VectorSimilarityFunction::EUCLIDEAN)
                 .expect("vector attributes");
@@ -5438,7 +5439,7 @@ mod tests {
         fn token_stream(
             &self,
             _analyzer: Option<&dyn Analyzer>,
-            _reuse: Option<&mut dyn crate::analysis::TokenStream>,
+            _reuse: Option<Box<dyn crate::analysis::TokenStream>>,
         ) -> Result<Box<dyn crate::analysis::TokenStream>> {
             Ok(Box::new(
                 crate::analysis::StringTokenStream::new(String::new()).expect("stream"),
@@ -5787,7 +5788,7 @@ mod tests {
 
     /// A field type that keeps norms; the shared [`field_type`] omits them.
     fn norm_field_type(options: IndexOptions) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_omit_norms(false).expect("keep norms");
         field_type
@@ -5999,7 +6000,7 @@ mod tests {
         // the document is dropped, and the segment flushes without norms — so
         // `write_norms`' "has norms but no norms buffer" guard stays
         // unreachable through the ordinary path.
-        let mut stored_type = FieldType::new();
+        let stored_type = FieldType::new();
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
 
@@ -6398,7 +6399,7 @@ mod tests {
 
     #[test]
     fn flushing_a_segment_without_postings_writes_only_the_stored_fields() {
-        let mut stored_type = FieldType::new();
+        let stored_type = FieldType::new();
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
         let mut document = Document::new();
@@ -6722,7 +6723,7 @@ mod tests {
         offsets: bool,
         payloads: bool,
     ) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_omit_norms(true).expect("omit norms");
         field_type
@@ -6881,7 +6882,7 @@ mod tests {
         let mut chain =
             DefaultIndexingChain::new_for_segment(config(), Arc::clone(&tracking), &make_info(-1))
                 .expect("bind segment");
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_omit_norms(false).expect("keep norms");
         field_type
@@ -7477,7 +7478,7 @@ mod tests {
         let (mut chain, _tracking, _) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_stored(true).expect("stored");
         field_type
             .set_store_term_vectors(true)

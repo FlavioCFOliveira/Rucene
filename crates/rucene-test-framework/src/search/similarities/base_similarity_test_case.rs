@@ -124,7 +124,7 @@ impl SimilarityTestInstance {
 /// `beforeClass()` (`@BeforeClass`): with norms.
 pub fn before_class() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
-    let mut field_type = FieldType::new_from(TextField::type_not_stored());
+    let field_type = FieldType::new_from(TextField::type_not_stored());
     field_type.set_omit_norms(true)?;
     if LuceneTestCase::random().next_boolean() {
         field_type.set_index_options(IndexOptions::DOCS_AND_FREQS)?;

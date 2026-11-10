@@ -63,7 +63,7 @@ impl OnHeapFSTStore {
                 LuceneError::CorruptIndex(format!("FST length {num_bytes} does not fit in memory"))
             })?;
             let mut bytes_array = vec![0u8; len];
-            input.read_bytes(&mut bytes_array, 0, len)?;
+            input.read_bytes(Some(&mut bytes_array), 0, len)?;
             Ok(Self {
                 data_output: None,
                 bytes_array: Some(bytes_array),

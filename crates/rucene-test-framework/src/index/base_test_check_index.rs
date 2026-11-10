@@ -88,7 +88,7 @@ pub fn test_deleted_docs(dir: Arc<dyn Directory>) -> Result<()> {
     let writer = IndexWriter::new(Arc::clone(&dir), config)?;
     for i in 0..19 {
         let mut doc = Document::new();
-        let mut custom_type = FieldType::new_from(TextField::type_stored());
+        let custom_type = FieldType::new_from(TextField::type_stored());
         custom_type.set_store_term_vectors(true)?;
         custom_type.set_store_term_vector_positions(true)?;
         custom_type.set_store_term_vector_offsets(true)?;

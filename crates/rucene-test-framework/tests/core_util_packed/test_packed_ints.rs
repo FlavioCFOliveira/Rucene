@@ -1534,7 +1534,7 @@ fn test_block_packed_reader_writer() -> Result<()> {
 
         let mut in1 = dir.open_input("out.bin", &*DEFAULT_IO_CONTEXT)?;
         let mut buf = vec![0u8; fp as usize];
-        in1.read_bytes(&mut buf, 0, fp as usize)?;
+        in1.read_bytes(Some(&mut buf), 0, fp as usize)?;
         in1.seek(0)?;
         let mut in2 = ByteArrayDataInput::new(&buf);
         if random.next_boolean() {

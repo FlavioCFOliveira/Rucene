@@ -110,7 +110,7 @@ const SIMILARITIES: [VectorSimilarityFunction; 4] = [
 
 /// `randomIndexedField(random, fieldName)`.
 fn random_indexed_field(random: &dyn Random, field_name: &str) -> Result<FieldSpec> {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     let mut index_options = *RandomPicks::random_from(random, &INDEX_OPTIONS);
     while index_options == IndexOptions::NONE {
         index_options = *RandomPicks::random_from(random, &INDEX_OPTIONS);

@@ -81,7 +81,7 @@ pub fn class_def() -> Arc<Class> {
 }
 
 fn new_custom_width_point(name: &str, num_bytes: i32, mut value: i64) -> Result<Field> {
-    let mut r#type = FieldType::new();
+    let r#type = FieldType::new();
     r#type.set_dimensions(1, num_bytes)?;
     r#type.freeze();
     let mut packed = vec![0u8; num_bytes as usize];

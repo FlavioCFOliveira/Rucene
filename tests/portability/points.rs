@@ -735,7 +735,7 @@ fn write_with_rucene(
                     // indexing either: `IntPoint` always indexes every
                     // dimension, so the field type is built by hand with a
                     // smaller index dimension count.
-                    let mut field_type = FieldType::new();
+                    let field_type = FieldType::new();
                     field_type
                         .set_dimensions_with_index_count(values.len() as i32, *index_dims, 4)
                         .expect("selective dimensions");

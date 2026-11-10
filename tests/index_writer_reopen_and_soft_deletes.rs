@@ -108,7 +108,7 @@ fn soft_update_document_commits_and_leaves_one_live_document() {
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
     // `new NumericDocValuesField("soft", 1)`, as the `Field` the writer takes.
-    let mut numeric = FieldType::new();
+    let numeric = FieldType::new();
     numeric.set_doc_values_type(DocValuesType::NUMERIC).unwrap();
     numeric.freeze();
     let soft = Field::new_with_number("soft", NumericValue::Long(1), numeric).unwrap();
@@ -325,7 +325,7 @@ fn num_deletes_to_merge_excludes_the_soft_deletes_the_retention_query_keeps() {
         writer.add_document(&retention_doc(i, 1)).unwrap();
     }
     writer.commit().unwrap();
-    let mut numeric = FieldType::new();
+    let numeric = FieldType::new();
     numeric.set_doc_values_type(DocValuesType::NUMERIC).unwrap();
     numeric.freeze();
     for i in 0..5 {

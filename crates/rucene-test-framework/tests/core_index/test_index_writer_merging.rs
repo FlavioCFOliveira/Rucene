@@ -222,10 +222,10 @@ fn fill_index(random: &dyn Random, dir: &TestDirectory, start: i32, num_docs: i3
 /// `customType` (stored only) and `customType1` (untokenized text with term
 /// vectors, positions and offsets) of the `testForceMergeDeletes*` tests.
 fn force_merge_deletes_types(stored_text: bool) -> Result<(FieldType, FieldType)> {
-    let mut custom_type = FieldType::new();
+    let custom_type = FieldType::new();
     custom_type.set_stored(true)?;
 
-    let mut custom_type1 = FieldType::new_from(if stored_text {
+    let custom_type1 = FieldType::new_from(if stored_text {
         TextField::type_stored()
     } else {
         TextField::type_not_stored()
@@ -640,7 +640,7 @@ fn test_set_max_merge_docs() -> Result<()> {
     let iw = IndexWriter::new(dir.as_directory(), conf)?;
     let mut document = Document::new();
 
-    let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+    let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_store_term_vectors(true)?;
 
     document.add(Box::new(LuceneTestCase::new_field(
@@ -660,7 +660,7 @@ fn test_no_wait_close() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
 
     let mut doc = Document::new();
-    let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+    let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_tokenized(false)?;
 
     let id_field = LuceneTestCase::new_field("id", "", &custom_type);

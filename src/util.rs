@@ -1965,12 +1965,42 @@ impl Thrown {
         }
     }
 
+    /// `this.addSuppressed(other)`.
+    ///
+    /// A panic payload holds no suppressed list, and a panic cannot be kept
+    /// as a [`LuceneError`]: suppressing into a panic, or suppressing a
+    /// panic, drops the suppressed one.
+    fn add_suppressed(&mut self, other: Thrown) {
+        if let (Self::Error(first), Self::Error(second)) = (self, other) {
+            first.add_suppressed(second);
+        }
+    }
+
     /// Java's `throw`: returns the error, or resumes the panic.
     fn rethrow(self) -> LuceneError {
         match self {
             Self::Error(e) => e,
             Self::Panic(payload) => std::panic::resume_unwind(payload),
         }
+    }
+}
+
+/// A throwable `IOUtils.useOrSuppress` can add a suppressed one to.
+trait Suppressible {
+    /// `this.addSuppressed(other)`.
+    fn suppress(&mut self, other: Self);
+}
+
+impl Suppressible for Thrown {
+    fn suppress(&mut self, other: Self) {
+        self.add_suppressed(other);
+    }
+}
+
+impl Suppressible for io::Error {
+    fn suppress(&mut self, other: Self) {
+        let first = std::mem::replace(self, io::Error::other(""));
+        *self = nio::add_suppressed(first, &other);
     }
 }
 
@@ -2065,18 +2095,26 @@ impl IOUtils {
         C: FnOnce() -> Result<(), LuceneError>,
     {
         let mut first_error: Option<Thrown> = None;
+        let mut first_throwable: Option<Thrown> = None;
         for object in objects.into_iter().flatten() {
             match Self::close_one(object) {
                 Some(t) if t.is_java_error() => {
                     first_error = Some(Self::use_or_suppress(first_error, t));
                 }
-                // Java keeps the first non-Error throwable only to add it to
-                // the Error's suppressed list.
-                _ => {}
+                Some(t) => first_throwable = Some(Self::use_or_suppress(first_throwable, t)),
+                None => {}
             }
         }
         match first_error {
-            Some(first_error) => Err(first_error.rethrow()),
+            Some(mut first_error) => {
+                // we ensure that we bubble up any errors. We can't recover from these but need
+                // to make sure they are bubbled up. if a non-Error is thrown we also add the
+                // suppressed exceptions to it.
+                if let Some(first_throwable) = first_throwable {
+                    first_error.add_suppressed(first_throwable);
+                }
+                Err(first_error.rethrow())
+            }
             None => Ok(()),
         }
     }
@@ -2186,21 +2224,15 @@ impl IOUtils {
         Ok(())
     }
 
-    /// Returns `second` when there is no `first`, and `first` otherwise.
+    /// Returns `second` when there is no `first`, and `first` otherwise, with
+    /// `second` added to its suppressed list.
     ///
-    /// Equivalent to `IOUtils.useOrSuppress(T, T)` (`IOUtils.java:490-497`),
-    /// which keeps the first throwable and adds the second to its suppressed
-    /// list.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Neither [`LuceneError`] nor
-    /// [`io::Error`] has a suppressed list, so `second` is dropped; `first` is
-    /// returned unchanged, so the error the caller sees — its class and
-    /// message, Java's `getMessage()` — is the one Java reports.
-    fn use_or_suppress<T>(first: Option<T>, second: T) -> T {
+    /// Equivalent to `IOUtils.useOrSuppress(T, T)` (`IOUtils.java:490-497`).
+    fn use_or_suppress<T: Suppressible>(first: Option<T>, second: T) -> T {
         match first {
             None => second,
-            Some(first) => {
-                drop(second);
+            Some(mut first) => {
+                first.suppress(second);
                 first
             }
         }
@@ -2218,30 +2250,37 @@ impl IOUtils {
     /// closeable hits one — that first `Error`, which Java throws with `ex`
     /// suppressed into it. Java's `Error` is [`LuceneError::AssertionError`],
     /// or a panic, which is resumed once every closeable is closed (see
-    /// [`Thrown::is_java_error`]).
+    /// [`Thrown::is_java_error`]). Every other failure is suppressed into
+    /// `ex`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java adds every other failure to the
-    /// suppressed list of the throwable it rethrows; [`LuceneError`] has no
-    /// such list, so they are dropped, as in
-    /// [`use_or_suppress`](Self::use_or_suppress).
-    pub fn close_while_suppressing_exceptions<I, C>(ex: LuceneError, objects: I) -> LuceneError
+    /// Java suppresses `ex` into the first `Error` as soon as it is hit, and
+    /// keeps adding to `ex` afterwards through the shared reference; the port
+    /// adds to `ex` while it owns it and suppresses it into the `Error` at the
+    /// end, which yields the same two lists.
+    pub fn close_while_suppressing_exceptions<I, C>(mut ex: LuceneError, objects: I) -> LuceneError
     where
         I: IntoIterator<Item = Option<C>>,
         C: FnOnce() -> Result<(), LuceneError>,
     {
-        let ex_is_error = matches!(ex, LuceneError::AssertionError(_));
+        let ex_is_error = matches!(ex.unwrap_suppressed(), LuceneError::AssertionError(_));
         let mut first_error: Option<Thrown> = None;
         for object in objects.into_iter().flatten() {
             if let Some(e) = Self::close_one(object) {
                 if !ex_is_error && first_error.is_none() && e.is_java_error() {
                     // don't try and suppress it - this Error should be the thing that is thrown
                     first_error = Some(e);
+                } else if let Thrown::Error(e) = e {
+                    ex.add_suppressed(e);
                 }
-                // Otherwise Java's `ex.addSuppressed(e)`.
+                // A suppressed panic is dropped (see `Thrown::add_suppressed`).
             }
         }
         match first_error {
-            Some(first_error) => first_error.rethrow(),
+            Some(mut first_error) => {
+                // `firstError.addSuppressed(ex)`.
+                first_error.add_suppressed(Thrown::Error(ex));
+                first_error.rethrow()
+            }
             None => ex,
         }
     }

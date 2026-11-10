@@ -1489,7 +1489,7 @@ mod tests {
         let len = input.length() as usize;
         let mut bytes = vec![0u8; len];
         input
-            .read_bytes(&mut bytes, 0, len)
+            .read_bytes(Some(&mut bytes), 0, len)
             .expect("read should succeed");
         bytes
     }

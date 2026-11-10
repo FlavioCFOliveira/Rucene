@@ -166,7 +166,7 @@ fn test_field_infos() -> Result<()> {
 
 /// `new FieldType()` with `setStored(true)`.
 fn stored_type() -> Result<FieldType> {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_stored(true)?;
     Ok(t)
 }
@@ -181,12 +181,12 @@ fn test_field_attributes() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let writer = no_merge_writer(&dir)?;
 
-    let mut type1 = stored_type()?;
+    let type1 = stored_type()?;
     type1.put_attribute("testKey1".to_string(), "testValue1".to_string())?;
 
     let mut d1 = Document::new();
     d1.add(Box::new(Field::new("f1", "v1".to_string(), type1.clone())?));
-    let mut type2 = FieldType::new_from(&type1);
+    let type2 = FieldType::new_from(&type1);
     // changing the value after copying shouldn't impact the original type1
     type2.put_attribute("testKey1".to_string(), "testValue2".to_string())?;
     writer.add_document(&d1)?;
@@ -229,7 +229,7 @@ fn test_field_attributes_single_segment() -> Result<()> {
     let writer = no_merge_writer(&dir)?;
 
     let mut d1 = Document::new();
-    let mut type1 = stored_type()?;
+    let type1 = stored_type()?;
     type1.put_attribute("att1".to_string(), "attdoc1".to_string())?;
     d1.add(Box::new(Field::new("f1", "v1".to_string(), type1.clone())?));
     // add field with the same name and an extra attribute
@@ -241,7 +241,7 @@ fn test_field_attributes_single_segment() -> Result<()> {
     type1.put_attribute("att1".to_string(), "attdoc2".to_string())?;
     type1.put_attribute("att2".to_string(), "attdoc2".to_string())?;
     type1.put_attribute("att3".to_string(), "attdoc2".to_string())?;
-    let mut type2 = stored_type()?;
+    let type2 = stored_type()?;
     type2.put_attribute("att4".to_string(), "attdoc2".to_string())?;
     d2.add(Box::new(Field::new("f1", "v2".to_string(), type1.clone())?));
     d2.add(Box::new(Field::new("f2", "v2".to_string(), type2.clone())?));

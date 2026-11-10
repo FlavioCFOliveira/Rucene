@@ -252,7 +252,7 @@ fn test_basics() -> Result<()> {
                 Store::NO,
             )));
             // ensure we get some vectors
-            let mut ft = FieldType::new_from(TextField::type_not_stored());
+            let ft = FieldType::new_from(TextField::type_not_stored());
             ft.set_store_term_vectors(true)?;
             doc.add(Box::new(LuceneTestCase::new_field(
                 "text_vectors",

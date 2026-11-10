@@ -131,7 +131,7 @@ pub const LAZY_FIELD_BINARY_BYTES: &[u8] = b"These are some binary field bytes";
 pub static LARGE_LAZY_FIELD_TEXT: LazyLock<String> =
     LazyLock::new(|| "Lazily loading lengths of language in lieu of laughing ".repeat(10000));
 
-fn frozen(mut ft: FieldType) -> FieldType {
+fn frozen(ft: FieldType) -> FieldType {
     ft.freeze();
     ft
 }
@@ -150,7 +150,7 @@ impl DocHelper {
     /// `TEXT_TYPE_STORED_WITH_TVS`: `TextField.TYPE_STORED` with term vectors,
     /// their positions and offsets, frozen.
     pub fn text_type_stored_with_tvs() -> FieldType {
-        let mut ft = FieldType::new_from(TextField::type_stored());
+        let ft = FieldType::new_from(TextField::type_stored());
         set(ft.set_store_term_vectors(true));
         set(ft.set_store_term_vector_positions(true));
         set(ft.set_store_term_vector_offsets(true));
@@ -159,14 +159,14 @@ impl DocHelper {
 
     /// `customType3`: `TextField.TYPE_STORED` omitting norms.
     pub fn custom_type3() -> FieldType {
-        let mut ft = FieldType::new_from(TextField::type_stored());
+        let ft = FieldType::new_from(TextField::type_stored());
         set(ft.set_omit_norms(true));
         ft
     }
 
     /// `customType5`: `TextField.TYPE_STORED` omitting norms, not tokenized.
     pub fn custom_type5() -> FieldType {
-        let mut ft = FieldType::new_from(TextField::type_stored());
+        let ft = FieldType::new_from(TextField::type_stored());
         set(ft.set_omit_norms(true));
         set(ft.set_tokenized(false));
         ft
@@ -174,14 +174,14 @@ impl DocHelper {
 
     /// `customType6`: `TextField.TYPE_STORED` indexing `DOCS` only.
     pub fn custom_type6() -> FieldType {
-        let mut ft = FieldType::new_from(TextField::type_stored());
+        let ft = FieldType::new_from(TextField::type_stored());
         set(ft.set_index_options(IndexOptions::DOCS));
         ft
     }
 
     /// `customType7`: a stored, unindexed `new FieldType()`.
     pub fn custom_type7() -> FieldType {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         set(ft.set_stored(true));
         ft
     }
@@ -191,7 +191,7 @@ impl DocHelper {
     pub fn string_type_stored_with_tvs() -> FieldType {
         let string_field = StringField::new("", String::new(), Store::YES)
             .expect("INVARIANT: a StringField of an empty value is valid");
-        let mut ft = FieldType::new_from(string_field.field_type());
+        let ft = FieldType::new_from(string_field.field_type());
         set(ft.set_store_term_vectors(true));
         set(ft.set_store_term_vector_positions(true));
         set(ft.set_store_term_vector_offsets(true));
@@ -200,7 +200,7 @@ impl DocHelper {
 
     /// `customType8`: `TextField.TYPE_NOT_STORED` with term vectors.
     pub fn custom_type8() -> FieldType {
-        let mut ft = FieldType::new_from(TextField::type_not_stored());
+        let ft = FieldType::new_from(TextField::type_not_stored());
         set(ft.set_store_term_vectors(true));
         ft
     }

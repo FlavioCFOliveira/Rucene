@@ -85,7 +85,7 @@ fn test_data_input_output() -> Result<()> {
                 read += 1;
             } else {
                 let chunk = random.next_int_bound(1000).min(num_bytes - read);
-                r#in.read_bytes(&mut verify, read as usize, chunk as usize)?;
+                r#in.read_bytes(Some(&mut verify), read as usize, chunk as usize)?;
                 read += chunk;
             }
         }
@@ -155,7 +155,7 @@ fn test_data_input_output2() -> Result<()> {
                 let chunk = LuceneTestCase::random()
                     .next_int_bound(1000)
                     .min(num_bytes - read);
-                r#in.read_bytes(&mut verify, read as usize, chunk as usize)?;
+                r#in.read_bytes(Some(&mut verify), read as usize, chunk as usize)?;
                 read += chunk;
             }
         }

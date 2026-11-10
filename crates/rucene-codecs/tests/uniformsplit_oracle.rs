@@ -277,7 +277,7 @@ impl WritableBytes for Bytes {
 
 fn read_all(input: &mut dyn DataInput, length: i64) -> rucene::error::Result<Vec<u8>> {
     let mut bytes = vec![0u8; length as usize];
-    input.read_bytes(&mut bytes, 0, length as usize)?;
+    input.read_bytes(Some(&mut bytes), 0, length as usize)?;
     Ok(bytes)
 }
 

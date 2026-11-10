@@ -220,7 +220,7 @@ impl ShapeField {
     pub fn field_type() -> &'static FieldType {
         static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions_with_index_count(7, 4, BYTES as i32)
                 .expect("INVARIANT: seven dimensions, four indexed, fit a new, mutable type");
             ft.freeze();
@@ -593,7 +593,7 @@ impl IndexableField for Triangle {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .packed_value()
@@ -793,7 +793,7 @@ impl IndexableField for LateInteractionField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),

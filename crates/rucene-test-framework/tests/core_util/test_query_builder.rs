@@ -147,7 +147,7 @@ fn global_state() -> AnalyzerState {
 /// Port of `TestQueryBuilder.testTerm`.
 fn test_term() -> Result<()> {
     let expected = tq("field", "test");
-    let builder = QueryBuilder::new(mock_analyzer());
+    let builder = QueryBuilder::new(Some(mock_analyzer()));
     assert_query(&expected, &builder.create_boolean_query("field", "test")?);
     Ok(())
 }
@@ -157,7 +157,7 @@ fn test_boolean() -> Result<()> {
     let mut expected = boolean_query::Builder::new();
     expected.add(tq("field", "foo"), Occur::SHOULD)?;
     expected.add(tq("field", "bar"), Occur::SHOULD)?;
-    let builder = QueryBuilder::new(mock_analyzer());
+    let builder = QueryBuilder::new(Some(mock_analyzer()));
     let expected: Arc<dyn Query> = Arc::new(expected.build());
     assert_query(
         &expected,
@@ -171,7 +171,7 @@ fn test_boolean_must() -> Result<()> {
     let mut expected = boolean_query::Builder::new();
     expected.add(tq("field", "foo"), Occur::MUST)?;
     expected.add(tq("field", "bar"), Occur::MUST)?;
-    let builder = QueryBuilder::new(mock_analyzer());
+    let builder = QueryBuilder::new(Some(mock_analyzer()));
     let expected: Arc<dyn Query> = Arc::new(expected.build());
     assert_query(
         &expected,
@@ -182,7 +182,7 @@ fn test_boolean_must() -> Result<()> {
 
 /// Port of `TestQueryBuilder.testMinShouldMatchNone`.
 fn test_min_should_match_none() -> Result<()> {
-    let builder = QueryBuilder::new(mock_analyzer());
+    let builder = QueryBuilder::new(Some(mock_analyzer()));
     let expected = builder
         .create_boolean_query("field", "one two three four")?
         .expect("non-null query");
@@ -195,7 +195,7 @@ fn test_min_should_match_none() -> Result<()> {
 
 /// Port of `TestQueryBuilder.testMinShouldMatchAll`.
 fn test_min_should_match_all() -> Result<()> {
-    let builder = QueryBuilder::new(mock_analyzer());
+    let builder = QueryBuilder::new(Some(mock_analyzer()));
     let expected = builder
         .create_boolean_query_with_operator("field", "one two three four", Occur::MUST)?
         .expect("non-null query");
@@ -216,7 +216,7 @@ fn test_min_should_match() -> Result<()> {
     expected_b.set_minimum_number_should_match(0);
     let _expected: Arc<dyn Query> = Arc::new(expected_b.build());
 
-    let builder = QueryBuilder::new(mock_analyzer());
+    let builder = QueryBuilder::new(Some(mock_analyzer()));
     // assertEquals(expected, builder.createMinShouldMatchQuery("field", "one two three four",
     // 0.1f));
     // assertEquals(expected, builder.createMinShouldMatchQuery("field", "one two three four",
@@ -274,7 +274,7 @@ fn test_phrase_query_position_increments() -> Result<()> {
         stop_list,
     ));
 
-    let builder = QueryBuilder::new(analyzer);
+    let builder = QueryBuilder::new(Some(analyzer));
     assert_query(
         &expected,
         &builder.create_phrase_query("field", "1 stop 2")?,
@@ -284,7 +284,7 @@ fn test_phrase_query_position_increments() -> Result<()> {
 
 /// Port of `TestQueryBuilder.testEmpty`.
 fn test_empty() -> Result<()> {
-    let builder = QueryBuilder::new(mock_analyzer());
+    let builder = QueryBuilder::new(Some(mock_analyzer()));
     Assert::assert_true(builder.create_boolean_query("field", "")?.is_none());
     Ok(())
 }
@@ -326,7 +326,7 @@ impl Analyzer for MockSynonymAnalyzer {
 /// Port of `TestQueryBuilder.testSynonyms`.
 fn test_synonyms() -> Result<()> {
     let expected = synonym("field", "dogs", "dog")?;
-    let builder = QueryBuilder::new(Arc::new(MockSynonymAnalyzer::new()));
+    let builder = QueryBuilder::new(Some(Arc::new(MockSynonymAnalyzer::new())));
     assert_query(&expected, &builder.create_boolean_query("field", "dogs")?);
     assert_query(&expected, &builder.create_phrase_query("field", "dogs")?);
     assert_query(
@@ -344,7 +344,7 @@ fn test_synonyms_phrase() -> Result<()> {
     let mut expected_builder = multi_phrase_query::Builder::new();
     expected_builder.add(term("field", "old"))?;
     expected_builder.add_terms(vec![term("field", "dogs"), term("field", "dog")])?;
-    let builder = QueryBuilder::new(Arc::new(MockSynonymAnalyzer::new()));
+    let builder = QueryBuilder::new(Some(Arc::new(MockSynonymAnalyzer::new())));
     let expected: Arc<dyn Query> = Arc::new(expected_builder.build());
     assert_query(
         &expected,
@@ -362,7 +362,7 @@ fn test_multi_word_synonyms_phrase() -> Result<()> {
     b.add(tq("field", "cavy"), Occur::SHOULD)?;
     let expected: Arc<dyn Query> = Arc::new(b.build());
 
-    let query_builder = QueryBuilder::new(Arc::new(MockSynonymAnalyzer::new()));
+    let query_builder = QueryBuilder::new(Some(Arc::new(MockSynonymAnalyzer::new())));
     assert_query(
         &expected,
         &query_builder.create_phrase_query("field", "guinea pig")?,
@@ -380,7 +380,7 @@ fn test_multi_word_synonyms_phrase_with_slop() -> Result<()> {
     b.add(Arc::new(pq.build()?), Occur::SHOULD)?;
     b.add(tq("field", "cavy"), Occur::SHOULD)?;
     let expected: Arc<dyn Query> = Arc::new(b.build());
-    let query_builder = QueryBuilder::new(Arc::new(MockSynonymAnalyzer::new()));
+    let query_builder = QueryBuilder::new(Some(Arc::new(MockSynonymAnalyzer::new())));
     assert_query(
         &expected,
         &query_builder.create_phrase_query_with_slop("field", "guinea pig", 4)?,
@@ -459,7 +459,7 @@ fn test_multi_word_synonyms_boolean() -> Result<()> {
         b.add(syn2, Occur::SHOULD)?;
         let syn_query: Arc<dyn Query> = Arc::new(b.build());
 
-        let query_builder = QueryBuilder::new(Arc::new(MockSynonymAnalyzer::new()));
+        let query_builder = QueryBuilder::new(Some(Arc::new(MockSynonymAnalyzer::new())));
         check_multi_word_boolean(&query_builder, &syn_query, occur)?;
     }
     Ok(())
@@ -480,7 +480,7 @@ fn test_multi_word_phrase_synonyms_boolean() -> Result<()> {
         b.add(syn1, Occur::SHOULD)?;
         b.add(syn2, Occur::SHOULD)?;
         let syn_query: Arc<dyn Query> = Arc::new(b.build());
-        let mut query_builder = QueryBuilder::new(Arc::new(MockSynonymAnalyzer::new()));
+        let mut query_builder = QueryBuilder::new(Some(Arc::new(MockSynonymAnalyzer::new())));
         query_builder.set_auto_generate_multi_term_synonyms_phrase_query(true);
         check_multi_word_boolean(&query_builder, &syn_query, occur)?;
     }
@@ -562,7 +562,7 @@ fn test_cjk_term() -> Result<()> {
     expected.add(tq("field", "中"), Occur::SHOULD)?;
     expected.add(tq("field", "国"), Occur::SHOULD)?;
 
-    let builder = QueryBuilder::new(analyzer);
+    let builder = QueryBuilder::new(Some(analyzer));
     let expected: Arc<dyn Query> = Arc::new(expected.build());
     assert_query(&expected, &builder.create_boolean_query("field", "中国")?);
     Ok(())
@@ -575,7 +575,7 @@ fn test_cjk_phrase() -> Result<()> {
 
     let expected = phrase(0, "field", &["中", "国"])?;
 
-    let builder = QueryBuilder::new(analyzer);
+    let builder = QueryBuilder::new(Some(analyzer));
     assert_query(&expected, &builder.create_phrase_query("field", "中国")?);
     Ok(())
 }
@@ -587,7 +587,7 @@ fn test_cjk_sloppy_phrase() -> Result<()> {
 
     let expected = phrase(3, "field", &["中", "国"])?;
 
-    let builder = QueryBuilder::new(analyzer);
+    let builder = QueryBuilder::new(Some(analyzer));
     assert_query(
         &expected,
         &builder.create_phrase_query_with_slop("field", "中国", 3)?,
@@ -680,7 +680,7 @@ impl Analyzer for MockCJKSynonymAnalyzer {
 /// Port of `TestQueryBuilder.testCJKSynonym`.
 fn test_cjk_synonym() -> Result<()> {
     let expected = synonym("field", "国", "國")?;
-    let builder = QueryBuilder::new(Arc::new(MockCJKSynonymAnalyzer::new()));
+    let builder = QueryBuilder::new(Some(Arc::new(MockCJKSynonymAnalyzer::new())));
     assert_query(&expected, &builder.create_boolean_query("field", "国")?);
     assert_query(&expected, &builder.create_phrase_query("field", "国")?);
     assert_query(
@@ -698,7 +698,7 @@ fn test_cjk_synonyms_or() -> Result<()> {
     expected.add(tq("field", "中"), Occur::SHOULD)?;
     let inner = synonym("field", "国", "國")?;
     expected.add(inner, Occur::SHOULD)?;
-    let builder = QueryBuilder::new(Arc::new(MockCJKSynonymAnalyzer::new()));
+    let builder = QueryBuilder::new(Some(Arc::new(MockCJKSynonymAnalyzer::new())));
     let expected: Arc<dyn Query> = Arc::new(expected.build());
     assert_query(&expected, &builder.create_boolean_query("field", "中国")?);
     Ok(())
@@ -714,7 +714,7 @@ fn test_cjk_synonyms_or2() -> Result<()> {
     expected.add(inner, Occur::SHOULD)?;
     let inner2 = synonym("field", "国", "國")?;
     expected.add(inner2, Occur::SHOULD)?;
-    let builder = QueryBuilder::new(Arc::new(MockCJKSynonymAnalyzer::new()));
+    let builder = QueryBuilder::new(Some(Arc::new(MockCJKSynonymAnalyzer::new())));
     let expected: Arc<dyn Query> = Arc::new(expected.build());
     assert_query(&expected, &builder.create_boolean_query("field", "中国国")?);
     Ok(())
@@ -728,7 +728,7 @@ fn test_cjk_synonyms_and() -> Result<()> {
     expected.add(tq("field", "中"), Occur::MUST)?;
     let inner = synonym("field", "国", "國")?;
     expected.add(inner, Occur::MUST)?;
-    let builder = QueryBuilder::new(Arc::new(MockCJKSynonymAnalyzer::new()));
+    let builder = QueryBuilder::new(Some(Arc::new(MockCJKSynonymAnalyzer::new())));
     let expected: Arc<dyn Query> = Arc::new(expected.build());
     assert_query(
         &expected,
@@ -747,7 +747,7 @@ fn test_cjk_synonyms_and2() -> Result<()> {
     expected.add(inner, Occur::MUST)?;
     let inner2 = synonym("field", "国", "國")?;
     expected.add(inner2, Occur::MUST)?;
-    let builder = QueryBuilder::new(Arc::new(MockCJKSynonymAnalyzer::new()));
+    let builder = QueryBuilder::new(Some(Arc::new(MockCJKSynonymAnalyzer::new())));
     let expected: Arc<dyn Query> = Arc::new(expected.build());
     assert_query(
         &expected,
@@ -763,7 +763,7 @@ fn test_cjk_synonyms_phrase() -> Result<()> {
     let mut expected_builder = multi_phrase_query::Builder::new();
     expected_builder.add(term("field", "中"))?;
     expected_builder.add_terms(vec![term("field", "国"), term("field", "國")])?;
-    let builder = QueryBuilder::new(Arc::new(MockCJKSynonymAnalyzer::new()));
+    let builder = QueryBuilder::new(Some(Arc::new(MockCJKSynonymAnalyzer::new())));
     let expected: Arc<dyn Query> = Arc::new(expected_builder.build());
     assert_query(&expected, &builder.create_phrase_query("field", "中国")?);
     expected_builder.set_slop(3)?;
@@ -833,7 +833,7 @@ fn test_no_term_attribute() -> Result<()> {
     let analyzer = Arc::new(NoTermAnalyzer {
         state: global_state(),
     });
-    let builder = QueryBuilder::new(analyzer);
+    let builder = QueryBuilder::new(Some(analyzer));
     Assert::assert_true(builder.create_boolean_query("field", "whatever")?.is_none());
     Ok(())
 }
@@ -856,11 +856,7 @@ fn test_max_boolean_clause() -> Result<()> {
         }
     }
     let tokens: Vec<BinaryToken> = tokens.into_iter().map(|t| t.expect("filled")).collect();
-    // DIVERGENCE: Java builds `new QueryBuilder(null)`; Rucene's
-    // `QueryBuilder::new` takes a non-null `Arc<dyn Analyzer>` (Java never
-    // checks it). `analyzeGraphBoolean` and `analyzeGraphPhrase` never read
-    // the analyzer, so a `MockAnalyzer` stands in for `null`.
-    let qb = QueryBuilder::new(mock_analyzer());
+    let qb = QueryBuilder::new(None);
     {
         let mut ts = CannedBinaryTokenStream::new(tokens.clone());
         expect_throws(TOO_MANY_CLAUSES, || {
@@ -949,7 +945,7 @@ fn test_token_stream_boosts() -> Result<()> {
         Box::new(GlobalReuseStrategy),
     ));
 
-    let builder = QueryBuilder::new(a);
+    let builder = QueryBuilder::new(Some(a));
     let q = builder.create_boolean_query("field", "hot dogs")?;
     let mut syn = synonym_query::Builder::new(Some("field"));
     syn.add_term(&term("field", "dogs"))?;

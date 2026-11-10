@@ -309,7 +309,7 @@ fn field_typed_setters_refuse_to_change_the_value_type() {
     );
 
     let mut field = Field::new("s", "text".to_string(), {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
         ft
     })

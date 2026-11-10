@@ -110,7 +110,7 @@ impl CompressionAlgorithm {
         len: usize,
     ) -> Result<()> {
         match self {
-            Self::NoCompression => input.read_bytes(out, 0, len),
+            Self::NoCompression => input.read_bytes(Some(out), 0, len),
             Self::LowercaseAscii => {
                 LowercaseAsciiCompression::decompress(input, out, len)?;
                 Ok(())
@@ -990,13 +990,13 @@ impl<'a> EntryIterator<'a> {
         if self.key.len() < self.key_len {
             self.key.resize(self.key_len, 0);
         }
-        input.read_bytes(&mut self.key, self.prefix_len, self.suffix_len)?;
+        input.read_bytes(Some(&mut self.key), self.prefix_len, self.suffix_len)?;
         let fp = input.read_v_long()?;
         let has_terms = input.read_byte()? == 1;
         let floor_data_len = input.read_v_int()?.max(0) as usize;
         let floor_data = if floor_data_len > 0 {
             let mut fd = vec![0u8; floor_data_len];
-            input.read_bytes(&mut fd, 0, floor_data_len)?;
+            input.read_bytes(Some(&mut fd), 0, floor_data_len)?;
             Some(BytesRef::new(fd))
         } else {
             None
@@ -2537,7 +2537,7 @@ fn read_bytes_ref(input: &mut dyn DataInput, resource: &str) -> Result<BytesRef>
         ));
     }
     let mut bytes = vec![0u8; num_bytes as usize];
-    input.read_bytes(&mut bytes, 0, num_bytes as usize)?;
+    input.read_bytes(Some(&mut bytes), 0, num_bytes as usize)?;
     Ok(BytesRef::new(bytes))
 }
 

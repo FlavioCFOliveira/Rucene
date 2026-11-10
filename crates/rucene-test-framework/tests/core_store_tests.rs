@@ -377,7 +377,7 @@ impl TestBufferedIndexInput {
         } else if left < size as i64 {
             size = left as i32;
         }
-        input.read_bytes(&mut self.buffer, offset as usize, size as usize)?;
+        input.read_bytes(Some(&mut self.buffer), offset as usize, size as usize)?;
         Assert::assert_equals((pos + size) as i64, input.file_pointer());
         for i in 0..size {
             Assert::assert_equals_msg(
@@ -504,7 +504,7 @@ impl TestBufferedIndexInput {
                 let float_offset = random().next_int_bound(3) as usize;
                 input.skip_bytes((float_offset * 4) as i64)?;
                 input.read_floats(
-                    &mut float_buffer,
+                    Some(&mut float_buffer),
                     float_offset,
                     buffer_length - float_offset,
                 )?;
@@ -542,7 +542,11 @@ impl TestBufferedIndexInput {
                 let pos = alignment + i * buffer_length * 4;
                 let int_offset = random().next_int_bound(3) as usize;
                 input.skip_bytes((int_offset * 4) as i64)?;
-                input.read_ints(&mut int_buffer, int_offset, buffer_length - int_offset)?;
+                input.read_ints(
+                    Some(&mut int_buffer),
+                    int_offset,
+                    buffer_length - int_offset,
+                )?;
                 for (idx, &v) in int_buffer.iter().enumerate().skip(int_offset) {
                     let offset = (pos + idx * 4) as i64;
                     let bb = [
@@ -574,7 +578,11 @@ impl TestBufferedIndexInput {
                 let pos = alignment + i * buffer_length * 8;
                 let long_offset = random().next_int_bound(3) as usize;
                 input.skip_bytes((long_offset * 8) as i64)?;
-                input.read_longs(&mut long_buffer, long_offset, buffer_length - long_offset)?;
+                input.read_longs(
+                    Some(&mut long_buffer),
+                    long_offset,
+                    buffer_length - long_offset,
+                )?;
                 for (idx, &v) in long_buffer.iter().enumerate().skip(long_offset) {
                     let offset = (pos + idx * 8) as i64;
                     let mut bb = [0u8; 8];
@@ -619,12 +627,13 @@ impl DataInput for MyBufferedIndexInput {
 
     fn read_byte(&mut self) -> Result<u8> {
         let mut b = [0u8; 1];
-        self.read_bytes(&mut b, 0, 1)?;
+        self.read_bytes(Some(&mut b), 0, 1)?;
         Ok(b[0])
     }
 
     /// `readInternal(ByteBuffer b)`.
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = rucene::store::require_array(b)?;
         self.read_count.fetch_add(1, Ordering::SeqCst);
         for slot in &mut b[offset..offset + len] {
             *slot = byten(self.pos) as u8;
@@ -869,7 +878,7 @@ static GENERATORS: [Generator; 11] = [
         Ok(Box::new(move |src| {
             let mut read = vec![0u8; bytes.len()];
             let n = read.len();
-            src.read_bytes(&mut read, 0, n)?;
+            src.read_bytes(Some(&mut read), 0, n)?;
             if use_buffers_for_read {
                 assert_bytes_equals_msg("readBytes(ByteBuffer)", &bytes, &read);
             } else {
@@ -886,7 +895,7 @@ static GENERATORS: [Generator; 11] = [
         dst.write_bytes(&bytes, off, len)?;
         Ok(Box::new(move |src| {
             let mut read = vec![0u8; bytes.len() + off];
-            src.read_bytes(&mut read, off, len)?;
+            src.read_bytes(Some(&mut read), off, len)?;
             assert_bytes_equals_msg(
                 "readBytes(byte[], off)",
                 &bytes[off..len + off],
@@ -1706,12 +1715,12 @@ fn bb_input_test_eof_on_array_read_past_buffer_size() -> Result<()> {
 
     expect_throws("java.io.EOFException", || {
         let mut r#in = dst.to_data_input()?;
-        r#in.read_bytes(&mut [0u8; 100], 0, 100)
+        r#in.read_bytes(Some(&mut [0u8; 100]), 0, 100)
     });
 
     expect_throws("java.io.EOFException", || {
         let mut r#in = dst.to_data_input()?;
-        r#in.read_bytes(&mut [0u8; 100], 0, 100)
+        r#in.read_bytes(Some(&mut [0u8; 100]), 0, 100)
     });
     Ok(())
 }
@@ -1897,8 +1906,9 @@ impl DataInput for InterceptingChecksumIndexInput {
         self.main.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
-        self.main.read_bytes(b, offset, len)?;
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = rucene::store::require_array(b)?;
+        self.main.read_bytes(Some(b), offset, len)?;
         self.read_bytes_copy[self.off..self.off + len].copy_from_slice(&b[offset..offset + len]);
         self.off += len;
         Ok(())
@@ -2010,12 +2020,12 @@ fn directory_test_direct_instantiation() -> Result<()> {
             // read array with buffering enabled
             large_read_buffer.fill(0);
             let n = large_read_buffer.len();
-            input.read_bytes_buffered(&mut large_read_buffer, 0, n, true)?;
+            input.read_bytes_buffered(Some(&mut large_read_buffer), 0, n, true)?;
             assert_bytes_equals(&large_buffer, &large_read_buffer);
             // read again without using buffer
             input.seek(1)?;
             large_read_buffer.fill(0);
-            input.read_bytes_buffered(&mut large_read_buffer, 0, n, false)?;
+            input.read_bytes_buffered(Some(&mut large_read_buffer), 0, n, false)?;
             assert_bytes_equals(&large_buffer, &large_read_buffer);
             input.close()?;
         }
@@ -2324,7 +2334,8 @@ impl DataInput for NoReadInputStreamDataInput {
         Err(LuceneError::UnsupportedOperation(String::new()))
     }
 
-    fn read_bytes(&mut self, _b: &mut [u8], _offset: usize, _len: usize) -> Result<()> {
+    fn read_bytes(&mut self, _b: Option<&mut [u8]>, _offset: usize, _len: usize) -> Result<()> {
+        let _b = rucene::store::require_array(_b)?;
         Err(LuceneError::UnsupportedOperation(String::new()))
     }
 

@@ -269,8 +269,8 @@ pub fn assert_same_streams(
     let mut remainder = expected.length() - expected.file_pointer();
     while remainder > 0 {
         let read_len = remainder.min(expected_buffer.len() as i64) as usize;
-        expected.read_bytes(&mut expected_buffer, 0, read_len)?;
-        test.read_bytes(&mut test_buffer, 0, read_len)?;
+        expected.read_bytes(Some(&mut expected_buffer), 0, read_len)?;
+        test.read_bytes(Some(&mut test_buffer), 0, read_len)?;
         assert_equal_arrays(
             &format!("{msg}, remainder {remainder}"),
             &expected_buffer,
@@ -988,7 +988,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             let length = is.length();
             is.seek(length - 10)?;
             let mut b = vec![0u8; 100];
-            is.read_bytes(&mut b, 0, 10)?;
+            is.read_bytes(Some(&mut b), 0, 10)?;
 
             // Single byte read past end of file
             expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
@@ -999,7 +999,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             // Block read past end of file
             expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
-                is.read_bytes(&mut b, 0, 50)
+                is.read_bytes(Some(&mut b), 0, 50)
             });
 
             is.close()?;

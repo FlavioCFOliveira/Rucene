@@ -564,7 +564,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
             )))),
         )?;
         let mut one_doc = Document::new();
-        let mut custom_type = FieldType::new_from(TextField::type_stored());
+        let custom_type = FieldType::new_from(TextField::type_stored());
         custom_type.set_store_term_vectors(true)?;
         let custom_field = Field::new("field", "contents".to_string(), custom_type)?;
         let stored_value = custom_field.stored_value()?;
@@ -1579,7 +1579,7 @@ impl DataInput for ReadBytesIndexInputWrapper {
         self.resource_description.clone()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let fp = to_int_exact(self.file_pointer())?;
         for i in 0..len as i32 {
             (self.read_byte)(

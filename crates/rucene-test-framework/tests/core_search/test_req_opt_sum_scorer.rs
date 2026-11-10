@@ -180,7 +180,7 @@ fn test_max_block() -> Result<()> {
     let mut iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
     ft.set_tokenized(true)?;
     ft.freeze();

@@ -63,7 +63,7 @@ fn test_() -> Result<()> {
     petabyte_max_merge(&w);
 
     let mut doc = Document::new();
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_omit_norms(true)?;
     ft.set_index_options(IndexOptions::DOCS)?;
     let stream: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(MyTokenStream::new()?));

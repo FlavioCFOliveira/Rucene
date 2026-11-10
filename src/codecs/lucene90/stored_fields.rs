@@ -738,7 +738,7 @@ pub(crate) fn declare_no_fields_index_chunks(
     let mut bytes = vec![0u8; len];
     dir.open_input(meta_file, ctx)
         .unwrap()
-        .read_bytes(&mut bytes, 0, len)
+        .read_bytes(Some(&mut bytes), 0, len)
         .unwrap();
     // Index header: magic, codec name, version, segment id, suffix.
     let mut at = 4;
@@ -3342,7 +3342,7 @@ mod tests {
             let mut input = dir.open_input(&fdt, &*READONCE_IO_CONTEXT).unwrap();
             let mut bytes = vec![0u8; input.length() as usize];
             let length = bytes.len();
-            input.read_bytes(&mut bytes, 0, length).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, length).unwrap();
             bytes
         };
         let p = crate::codecs::codec_util::index_header_length("Lucene90StoredFieldsFastData", "")
@@ -3730,7 +3730,7 @@ mod tests {
                 .expect("the stored-fields data file");
             let length = input.length() as usize;
             let mut bytes = vec![0u8; length];
-            input.read_bytes(&mut bytes, 0, length).expect("read");
+            input.read_bytes(Some(&mut bytes), 0, length).expect("read");
             bytes
         };
 
@@ -3762,7 +3762,7 @@ mod tests {
             ) -> Result<()> {
                 let length = value.length() as usize;
                 let mut bytes = vec![0u8; length];
-                value.data_input().read_bytes(&mut bytes, 0, length)?;
+                value.data_input().read_bytes(Some(&mut bytes), 0, length)?;
                 self.streamed.push(bytes);
                 Ok(())
             }
@@ -4000,7 +4000,7 @@ mod tests {
             let mut input = dir.open_input("_0.fdt", &*DEFAULT_IO_CONTEXT).unwrap();
             let length = input.length() as usize;
             let mut buffer = vec![0u8; length];
-            input.read_bytes(&mut buffer, 0, length).unwrap();
+            input.read_bytes(Some(&mut buffer), 0, length).unwrap();
             buffer
         };
 
@@ -4037,7 +4037,7 @@ mod tests {
             let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
             let length = input.length() as usize;
             let mut buffer = vec![0u8; length];
-            input.read_bytes(&mut buffer, 0, length).unwrap();
+            input.read_bytes(Some(&mut buffer), 0, length).unwrap();
             let mut output = corrupt.create_output(name, &*DEFAULT_IO_CONTEXT).unwrap();
             output.write_bytes(&buffer, 0, buffer.len()).unwrap();
             output.close().unwrap();
@@ -4890,7 +4890,7 @@ mod tests {
             let mut input = dir.open_input(&name, &*DEFAULT_IO_CONTEXT).unwrap();
             let length = input.length() as usize;
             let mut bytes = vec![0u8; length];
-            input.read_bytes(&mut bytes, 0, length).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, length).unwrap();
             files.push((name, bytes));
         }
         files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -5448,7 +5448,7 @@ mod tests {
             self.inner.read_byte()
         }
 
-        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
             self.inner.read_bytes(b, offset, len)
         }
 

@@ -1131,7 +1131,7 @@ fn similarity_base_set_up(f: &mut SimilarityBaseTest) -> Result<()> {
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for (i, text) in DOCS.iter().enumerate() {
         let mut d = Document::new();
-        let mut ft = FieldType::new_from(TextField::type_stored());
+        let ft = FieldType::new_from(TextField::type_stored());
         ft.set_index_options(IndexOptions::NONE)?;
         d.add(Box::new(LuceneTestCase::new_field(
             FIELD_ID,

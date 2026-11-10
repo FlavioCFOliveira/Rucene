@@ -590,7 +590,7 @@ fn write_with_rucene(
     let codec = ensure_codec();
     let options = index_options(case);
 
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).expect("tokenized");
     field_type.set_omit_norms(true).expect("omit norms");
     field_type
@@ -740,7 +740,7 @@ fn assert_case_matches_lucene(case: &str) {
 fn rucene_invert_states(case: &str, documents: &[Vec<Vec<OwnedTok>>]) -> Vec<InvertStats> {
     ensure_codec();
     let options = index_options(case);
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).expect("tokenized");
     field_type
         .set_index_options(options)

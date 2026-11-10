@@ -305,7 +305,7 @@ pub fn verify_and_copy_index_header(
     // we can't verify extension either, so we pass-through:
     let suffix_length = input.read_byte()? as usize;
     let mut suffix_bytes = vec![0u8; suffix_length];
-    input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
+    input.read_bytes(Some(&mut suffix_bytes), 0, suffix_length)?;
 
     // now write the header we just verified
     write_be_int(out, CODEC_MAGIC)?;
@@ -331,7 +331,7 @@ pub fn verify_and_copy_index_header(
 /// is the input's `toString()`), and propagates any I/O error.
 pub fn check_index_header_id(input: &mut dyn DataInput, expected_id: &[u8]) -> Result<()> {
     let mut id = [0u8; ID_LENGTH];
-    input.read_bytes(&mut id, 0, ID_LENGTH)?;
+    input.read_bytes(Some(&mut id), 0, ID_LENGTH)?;
     if id != expected_id {
         return Err(LuceneError::corrupt_index(
             format!(
@@ -359,7 +359,7 @@ pub fn check_index_header_id(input: &mut dyn DataInput, expected_id: &[u8]) -> R
 pub fn check_index_header_suffix(input: &mut dyn DataInput, expected_suffix: &str) -> Result<()> {
     let suffix_length = input.read_byte()? as usize;
     let mut suffix_bytes = vec![0u8; suffix_length];
-    input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
+    input.read_bytes(Some(&mut suffix_bytes), 0, suffix_length)?;
     let suffix = crate::util::java_fmt::java_utf8_to_string(&suffix_bytes);
     if suffix != expected_suffix {
         return Err(LuceneError::corrupt_index(
@@ -428,48 +428,74 @@ pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<i64> {
 /// * the checksum passes, or verifying it fails with anything but a
 ///   `CorruptIndexException` — `prior` itself is rethrown, of its own type.
 ///
-/// The error returned therefore has Java's class and Java's `getMessage()`.
-///
-/// **Divergence from Lucene 10.5.0.** [`LuceneError`] has no
-/// `Throwable.addSuppressed`, the port-wide divergence
-/// [`IOUtils::use_or_suppress`](crate::util::IOUtils) declares. Java's
-/// suppressed exception — `prior` under the thrown corruption, or the note
+/// The error returned therefore has Java's class, Java's `getMessage()` and
+/// Java's `getSuppressed()`: `prior` under the thrown corruption, or the note
 /// ("checksum passed (...). possibly transient resource issue, or a Lucene or
-/// JVM bug", or "checksum status indeterminate: unexpected exception") under
-/// the rethrown `prior` — is dropped; neither changes the message.
+/// JVM bug", none for an `IndexFormatTooOldException`, or "checksum status
+/// indeterminate: unexpected exception") under the rethrown `prior`.
+///
+/// The note's `CorruptIndexException(message, in, t)` carries no cause:
+/// [`LuceneError::CorruptIndex`] has no cause field (a limit of that variant,
+/// not of this method).
 ///
 /// Returning the error rather than a `Result` mirrors the fact that this is
 /// only ever called when something has already gone wrong.
 pub fn check_footer_with_prior(
     input: &mut dyn ChecksumIndexInput,
-    prior: LuceneError,
+    mut prior: LuceneError,
 ) -> LuceneError {
     let remaining = input.length() - input.file_pointer();
     if remaining < footer_length() as i64 {
         // corruption caused us to read into the checksum footer already: we can't proceed
-        // `prior` is Java's suppressed exception, dropped (see above).
-        drop(prior);
+        // (thrown inside the `try`, so `catch (CorruptIndexException)` suppresses
+        // `priorException` into it).
         return LuceneError::corrupt_index(
             format!(
                 "checksum status indeterminate: remaining={remaining}; please run \
                  checkindex for more details"
             ),
             input.resource_description(),
-        );
+        )
+        .with_suppressed(prior);
     }
     // Java skips the unread bytes rather than seeking, because the digest must
     // cover them; this input's `seek` is the forward-only, checksum-preserving
-    // one for the same reason. A failure here is Java's `catch (Throwable t)`:
-    // the prior error is rethrown.
+    // one for the same reason.
     let target = input.length() - footer_length() as i64;
-    if ChecksumIndexInput::seek(input, target).is_err() {
-        return prior;
-    }
-    match check_footer(input) {
-        Ok(_) => prior,
-        // `corruptException.addSuppressed(priorException)`: `prior` dropped.
-        Err(corruption @ LuceneError::CorruptIndex(_)) => corruption,
-        Err(_) => prior,
+    let checked = ChecksumIndexInput::seek(input, target).and_then(|()| check_footer(input));
+    match checked {
+        Ok(checksum) => {
+            if !matches!(
+                prior.unwrap_suppressed(),
+                LuceneError::IndexFormatTooOld { .. }
+            ) {
+                // If the index format is too old and no corruption, do not add checksums
+                // matching message since this may tend to unnecessarily alarm people who
+                // see "JVM bug" in their logs
+                prior.add_suppressed(LuceneError::corrupt_index(
+                    format!(
+                        "checksum passed ({checksum:x}). possibly transient resource issue, \
+                         or a Lucene or JVM bug"
+                    ),
+                    input.to_java_string(),
+                ));
+            }
+            prior
+        }
+        // `corruptException.addSuppressed(priorException); throw corruptException;`
+        Err(corruption)
+            if matches!(corruption.unwrap_suppressed(), LuceneError::CorruptIndex(_)) =>
+        {
+            corruption.with_suppressed(prior)
+        }
+        // catch-all for things that shouldn't go wrong (e.g. OOM during readInt) but could...
+        Err(_) => {
+            prior.add_suppressed(LuceneError::corrupt_index(
+                "checksum status indeterminate: unexpected exception",
+                input.to_java_string(),
+            ));
+            prior
+        }
     }
 }
 
@@ -534,7 +560,7 @@ pub fn read_index_header(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     let len = header_length(&codec) as usize + ID_LENGTH + 1 + suffix_length;
     let mut bytes = vec![0u8; len];
     input.seek(0)?;
-    input.read_bytes(&mut bytes, 0, len)?;
+    input.read_bytes(Some(&mut bytes), 0, len)?;
     Ok(bytes)
 }
 
@@ -565,7 +591,7 @@ pub fn read_footer(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     input.seek(input.length() - footer_length() as i64)?;
     let len = footer_length() as usize;
     let mut bytes = vec![0u8; len];
-    input.read_bytes(&mut bytes, 0, len)?;
+    input.read_bytes(Some(&mut bytes), 0, len)?;
     Ok(bytes)
 }
 
@@ -1065,7 +1091,7 @@ mod tests {
         let len = bytes.len();
         let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(bytes, "t")));
         let mut skip = vec![0u8; len - 8];
-        input.read_bytes(&mut skip, 0, len - 8).unwrap();
+        input.read_bytes(Some(&mut skip), 0, len - 8).unwrap();
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
             LuceneError::CorruptIndex(m) => {

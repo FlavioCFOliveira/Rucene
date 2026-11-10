@@ -244,7 +244,7 @@ fn copy_file(dir: &dyn Directory, src: &str, dest: &str) -> Result<()> {
     let mut remainder = r#in.length();
     while remainder > 0 {
         let len = (b.len() as i64).min(remainder) as usize;
-        r#in.read_bytes(&mut b, 0, len)?;
+        r#in.read_bytes(Some(&mut b), 0, len)?;
         out.write_bytes(&b, 0, len)?;
         remainder -= len as i64;
     }

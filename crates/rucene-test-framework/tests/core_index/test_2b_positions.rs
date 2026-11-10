@@ -45,7 +45,7 @@ fn test_() -> Result<()> {
     petabyte_max_merge(&w);
 
     let mut doc = Document::new();
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_omit_norms(true)?;
     let stream: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(MyTokenStream::new()?));
     let field = Field::new_with_token_stream("field", stream, ft)?;

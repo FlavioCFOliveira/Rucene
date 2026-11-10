@@ -321,67 +321,67 @@ fn get_field(number: i32) -> Result<Box<dyn IndexableField>> {
     let field_name = number.to_string();
     let custom_type = FieldType::new_from(TextField::type_stored());
 
-    let mut custom_type2 = FieldType::new_from(TextField::type_stored());
+    let custom_type2 = FieldType::new_from(TextField::type_stored());
     custom_type2.set_tokenized(false)?;
 
-    let mut custom_type3 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type3 = FieldType::new_from(TextField::type_not_stored());
     custom_type3.set_tokenized(false)?;
 
-    let mut custom_type4 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type4 = FieldType::new_from(TextField::type_not_stored());
     custom_type4.set_tokenized(false)?;
     custom_type4.set_store_term_vectors(true)?;
     custom_type4.set_store_term_vector_offsets(true)?;
 
-    let mut custom_type5 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type5 = FieldType::new_from(TextField::type_not_stored());
     custom_type5.set_store_term_vectors(true)?;
     custom_type5.set_store_term_vector_offsets(true)?;
 
-    let mut custom_type6 = FieldType::new_from(TextField::type_stored());
+    let custom_type6 = FieldType::new_from(TextField::type_stored());
     custom_type6.set_tokenized(false)?;
     custom_type6.set_store_term_vectors(true)?;
     custom_type6.set_store_term_vector_offsets(true)?;
 
-    let mut custom_type7 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type7 = FieldType::new_from(TextField::type_not_stored());
     custom_type7.set_tokenized(false)?;
     custom_type7.set_store_term_vectors(true)?;
     custom_type7.set_store_term_vector_offsets(true)?;
 
-    let mut custom_type8 = FieldType::new_from(TextField::type_stored());
+    let custom_type8 = FieldType::new_from(TextField::type_stored());
     custom_type8.set_tokenized(false)?;
     custom_type8.set_store_term_vectors(true)?;
     custom_type8.set_store_term_vector_positions(true)?;
 
-    let mut custom_type9 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type9 = FieldType::new_from(TextField::type_not_stored());
     custom_type9.set_store_term_vectors(true)?;
     custom_type9.set_store_term_vector_positions(true)?;
 
-    let mut custom_type10 = FieldType::new_from(TextField::type_stored());
+    let custom_type10 = FieldType::new_from(TextField::type_stored());
     custom_type10.set_tokenized(false)?;
     custom_type10.set_store_term_vectors(true)?;
     custom_type10.set_store_term_vector_positions(true)?;
 
-    let mut custom_type11 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type11 = FieldType::new_from(TextField::type_not_stored());
     custom_type11.set_tokenized(false)?;
     custom_type11.set_store_term_vectors(true)?;
     custom_type11.set_store_term_vector_positions(true)?;
 
-    let mut custom_type12 = FieldType::new_from(TextField::type_stored());
+    let custom_type12 = FieldType::new_from(TextField::type_stored());
     custom_type12.set_store_term_vectors(true)?;
     custom_type12.set_store_term_vector_offsets(true)?;
     custom_type12.set_store_term_vector_positions(true)?;
 
-    let mut custom_type13 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type13 = FieldType::new_from(TextField::type_not_stored());
     custom_type13.set_store_term_vectors(true)?;
     custom_type13.set_store_term_vector_offsets(true)?;
     custom_type13.set_store_term_vector_positions(true)?;
 
-    let mut custom_type14 = FieldType::new_from(TextField::type_stored());
+    let custom_type14 = FieldType::new_from(TextField::type_stored());
     custom_type14.set_tokenized(false)?;
     custom_type14.set_store_term_vectors(true)?;
     custom_type14.set_store_term_vector_offsets(true)?;
     custom_type14.set_store_term_vector_positions(true)?;
 
-    let mut custom_type15 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type15 = FieldType::new_from(TextField::type_not_stored());
     custom_type15.set_tokenized(false)?;
     custom_type15.set_store_term_vectors(true)?;
     custom_type15.set_store_term_vector_offsets(true)?;

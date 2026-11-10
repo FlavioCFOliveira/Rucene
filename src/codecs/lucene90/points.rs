@@ -1728,7 +1728,7 @@ mod tests {
                 .unwrap();
             let len = input.length() as usize;
             let mut bytes = vec![0u8; len];
-            input.read_bytes(&mut bytes, 0, len).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, len).unwrap();
             drop(input);
             bytes[len - 1] ^= 0x01;
             dir.delete_file(&name).unwrap();

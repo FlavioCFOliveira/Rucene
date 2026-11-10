@@ -343,10 +343,14 @@ fn test_setters_chaining() -> Result<()> {
 fn test_reuse() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     // test that IWC cannot be reused across two IWs
-    let conf = LuceneTestCase::new_index_writer_config_analyzer(None);
-    RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?.close()?;
+    let conf = Arc::new(LuceneTestCase::new_index_writer_config_analyzer(None));
+    RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), Arc::clone(&conf))?
+        .close()?;
 
-    // this should fail: `conf` was moved into the first writer.
+    // this should fail
+    expect_throws("java.lang.IllegalStateException", || {
+        RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), Arc::clone(&conf))
+    });
 
     dir.close()
 }

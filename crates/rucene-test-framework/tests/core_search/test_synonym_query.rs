@@ -300,7 +300,7 @@ fn do_test_boosts(total_hits_threshold: i32) -> Result<()> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_omit_norms(true)?;
     let field = |value: &str| -> Result<Box<Field>> {
         Ok(Box::new(Field::new("f", value.to_string(), ft.clone())?))

@@ -351,7 +351,7 @@ mod tests {
             self.0.read_byte()
         }
 
-        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
             self.0.read_bytes(b, offset, len)
         }
 

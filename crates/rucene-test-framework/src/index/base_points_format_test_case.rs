@@ -1295,7 +1295,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         }
 
         let body = (|| -> Result<()> {
-            let mut field_type = FieldType::new();
+            let field_type = FieldType::new();
             field_type.set_dimensions_with_index_count(
                 num_dims,
                 num_index_dims,

@@ -1102,7 +1102,8 @@ impl PrefixCodedTermsIterator {
 
         let suffix = self.input.read_v_int()? as usize;
         self.bytes.resize(prefix + suffix, 0);
-        self.input.read_bytes(&mut self.bytes[..], prefix, suffix)?;
+        self.input
+            .read_bytes(Some(&mut self.bytes[..]), prefix, suffix)?;
         self.bytes.truncate(prefix + suffix);
 
         Ok(Some(BytesRef::new(self.bytes.clone())))

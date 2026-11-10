@@ -400,7 +400,7 @@ fn buffered_checksum_index_input_reads_and_checksums_as_java() {
     let i = input.read_int().unwrap();
     let l = input.read_long().unwrap();
     let mut dst = [0i64; 7];
-    input.read_longs(&mut dst, 1, 5).unwrap();
+    input.read_longs(Some(&mut dst), 1, 5).unwrap();
     let tail = input.read_short().unwrap();
     let checksum = input.get_checksum().unwrap();
     let dst_text = format!(
@@ -457,7 +457,7 @@ fn buffered_checksum_index_input_checksums_only_whole_values() {
             "short" => input.read_short().map(|_| ()),
             "int" => input.read_int().map(|_| ()),
             "long" => input.read_long().map(|_| ()),
-            _ => input.read_longs(&mut [0i64; 2], 0, 2),
+            _ => input.read_longs(Some(&mut [0i64; 2]), 0, 2),
         };
         assert_eq!(
             if outcome.is_ok() { "read" } else { "eof" },

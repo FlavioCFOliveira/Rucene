@@ -503,9 +503,9 @@ fn test_pre_analyzed_field(inst: &Instance) -> Result<()> {
 fn test_lucene_1590(inst: &Instance) -> Result<()> {
     let mut doc = Document::new();
     // f1 has no norms
-    let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+    let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_omit_norms(true)?;
-    let mut custom_type2 = FieldType::new();
+    let custom_type2 = FieldType::new();
     custom_type2.set_stored(true)?;
     doc.add(Box::new(LuceneTestCase::new_field(
         "f1",
@@ -518,7 +518,7 @@ fn test_lucene_1590(inst: &Instance) -> Result<()> {
         &custom_type2,
     )));
     // f2 has no TF
-    let mut custom_type3 = FieldType::new_from(TextField::type_not_stored());
+    let custom_type3 = FieldType::new_from(TextField::type_not_stored());
     custom_type3.set_index_options(IndexOptions::DOCS)?;
     let f = LuceneTestCase::new_field("f2", "v1", &custom_type3);
     doc.add(Box::new(f));
@@ -706,7 +706,7 @@ impl IndexableField for MockIndexableField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         crate::support::npe("MockIndexableField.tokenStream returned null")
     }

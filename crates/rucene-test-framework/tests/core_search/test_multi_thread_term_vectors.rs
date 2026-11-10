@@ -50,7 +50,7 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     )));
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(directory.as_directory(), iwc)?;
-    let mut custom_type = FieldType::new_from(TextField::type_stored());
+    let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_tokenized(false)?;
     custom_type.set_store_term_vectors(true)?;
     for i in 0..f.num_docs {

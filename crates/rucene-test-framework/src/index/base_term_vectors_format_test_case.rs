@@ -1150,7 +1150,7 @@ fn payload_tokens() -> Vec<Token> {
 /// The term vector type of the `testPostingsEnum*` tests: `TYPE_NOT_STORED`
 /// with term vectors and the given options.
 fn tv_type(positions: bool, offsets: bool, payloads: bool) -> Result<FieldType> {
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_store_term_vectors(true)?;
     if positions {
         ft.set_store_term_vector_positions(true)?;
@@ -1273,7 +1273,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `fieldType(options)`.
     fn field_type(&self, options: Options) -> FieldType {
-        let mut ft = FieldType::new_from(TextField::type_not_stored());
+        let ft = FieldType::new_from(TextField::type_not_stored());
         let set = (|| -> Result<()> {
             ft.set_store_term_vectors(true)?;
             ft.set_store_term_vector_positions(options.positions())?;

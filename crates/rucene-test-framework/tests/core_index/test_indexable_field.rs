@@ -119,8 +119,8 @@ impl IndexableFieldType for MyFieldType {
     fn vector_similarity_function(&self) -> VectorSimilarityFunction {
         VectorSimilarityFunction::EUCLIDEAN
     }
-    fn attributes(&self) -> &JavaHashMap<String> {
-        &self.attributes
+    fn attributes(&self) -> JavaHashMap<String> {
+        self.attributes.clone()
     }
 }
 
@@ -201,7 +201,7 @@ impl IndexableField for MyField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        _previous: Option<&mut dyn TokenStream>,
+        _previous: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         // `analyzer.tokenStream(...)` on a `null` analyzer.
         let analyzer = analyzer.ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -414,7 +414,7 @@ impl CustomField {
     fn new() -> Result<Self> {
         // `fieldType()`: `new FieldType(StoredField.TYPE)` with
         // `setStoreTermVectors(true)`, frozen.
-        let mut ft = FieldType::new_from(StoredField::type_());
+        let ft = FieldType::new_from(StoredField::type_());
         ft.set_store_term_vectors(true)?;
         ft.freeze();
         Ok(CustomField { field_type: ft })
@@ -456,7 +456,7 @@ impl IndexableField for CustomField {
     fn token_stream(
         &self,
         _a: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         npe("CustomField.tokenStream returned null")
     }

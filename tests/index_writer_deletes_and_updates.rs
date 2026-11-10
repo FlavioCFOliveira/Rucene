@@ -157,7 +157,7 @@ fn write_reader_pool_drops_a_segment_its_writes_emptied() {
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
     writer.commit().unwrap();
-    let mut numeric = rucene::document::FieldType::new();
+    let numeric = rucene::document::FieldType::new();
     numeric
         .set_doc_values_type(rucene::index::DocValuesType::NUMERIC)
         .unwrap();
@@ -198,7 +198,7 @@ fn doc_values_gen_after_write_some(ram_buffer_size_mb: f64) -> i64 {
         "price",
         rucene::document::NumericValue::Long(5),
         {
-            let mut numeric = rucene::document::FieldType::new();
+            let numeric = rucene::document::FieldType::new();
             numeric
                 .set_doc_values_type(rucene::index::DocValuesType::NUMERIC)
                 .unwrap();

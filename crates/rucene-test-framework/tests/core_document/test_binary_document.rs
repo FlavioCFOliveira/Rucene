@@ -70,7 +70,7 @@ fn index_and_check(doc: Document) -> Result<()> {
 
 /// Port of `TestBinaryDocument.testBinaryFieldInIndex`.
 fn test_binary_field_in_index() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true)?;
     let binary_fld_stored = StoredField::new_bytes(
         "binaryStored",
@@ -91,7 +91,7 @@ fn test_binary_field_in_index() -> Result<()> {
 /// two members of `StoredFieldDataInput`), so the bytes are read through an
 /// owned `InputStreamDataInput` over them.
 fn test_binary_field_from_data_input_in_index() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true)?;
     let byte_array = BINARY_VAL_STORED.as_bytes().to_vec();
     let length = byte_array.len() as i32;

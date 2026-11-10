@@ -354,7 +354,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
 
             let mut input = dir.open_input("foobaz", &*io_context())?;
             let mut bytes2 = vec![0u8; num_bytes];
-            input.read_bytes(&mut bytes2, 0, num_bytes)?;
+            input.read_bytes(Some(&mut bytes2), 0, num_bytes)?;
             Assert::assert_equals(input.length(), num_bytes as i64);
             input.close()?;
 
@@ -461,7 +461,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                     |input| {
                         Assert::assert_equals(24, input.length());
                         let mut l = [0i64; 4];
-                        input.read_longs(&mut l, 1, 3)?;
+                        input.read_longs(Some(&mut l), 1, 3)?;
                         assert_array_equals(&[0i64, 3, i64::MAX, -3], &l);
                         Assert::assert_equals(24, input.file_pointer());
                         Ok(())
@@ -491,7 +491,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                         Assert::assert_equals(25, input.length());
                         Assert::assert_equals(2, input.read_byte()?);
                         let mut l = [0i64; 4];
-                        input.read_longs(&mut l, 1, 3)?;
+                        input.read_longs(Some(&mut l), 1, 3)?;
                         assert_array_equals(&[0i64, 3, i64::MAX, -3], &l);
                         Assert::assert_equals(25, input.file_pointer());
                         Ok(())
@@ -525,7 +525,11 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                     |input| {
                         input.seek(i64::from(offset))?;
                         expect_throws("java.io.EOFException", || {
-                            input.read_longs(&mut vec![0i64; length as usize], 0, length as usize)
+                            input.read_longs(
+                                Some(&mut vec![0i64; length as usize]),
+                                0,
+                                length as usize,
+                            )
                         });
                         Ok(())
                     },
@@ -545,7 +549,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             with_input(dir.open_input("Ints", &*io_context())?, |input| {
                 Assert::assert_equals(12, input.length());
                 let mut i = [0i32; 4];
-                input.read_ints(&mut i, 1, 3)?;
+                input.read_ints(Some(&mut i), 1, 3)?;
                 assert_array_equals(&[0, 3, i32::MAX, -3], &i);
                 Assert::assert_equals(12, input.file_pointer());
                 Ok(())
@@ -571,7 +575,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                     Assert::assert_equals(2, input.read_byte()?);
                 }
                 let mut i = [0i32; 4];
-                input.read_ints(&mut i, 1, 3)?;
+                input.read_ints(Some(&mut i), 1, 3)?;
                 assert_array_equals(&[0, 3, i32::MAX, -3], &i);
                 Assert::assert_equals(12 + i64::from(padding), input.file_pointer());
                 Ok(())
@@ -596,7 +600,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             with_input(dir.open_input("Ints", &*io_context())?, |input| {
                 input.seek(i64::from(offset))?;
                 expect_throws("java.io.EOFException", || {
-                    input.read_ints(&mut vec![0i32; length as usize], 0, length as usize)
+                    input.read_ints(Some(&mut vec![0i32; length as usize]), 0, length as usize)
                 });
                 Ok(())
             })
@@ -614,7 +618,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
             with_input(dir.open_input("Floats", &*io_context())?, |input| {
                 Assert::assert_equals(12, input.length());
                 let mut ff = [0f32; 4];
-                input.read_floats(&mut ff, 1, 3)?;
+                input.read_floats(Some(&mut ff), 1, 3)?;
                 assert_float_array_equals(&[0.0, 3.0, f32::MAX, -3.0], &ff);
                 Assert::assert_equals(12, input.file_pointer());
                 Ok(())
@@ -642,7 +646,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                         Assert::assert_equals(2, input.read_byte()?);
                     }
                     let mut ff = [0f32; 4];
-                    input.read_floats(&mut ff, 1, 3)?;
+                    input.read_floats(Some(&mut ff), 1, 3)?;
                     assert_float_array_equals(&[0.0, 3.0, f32::MAX, -3.0], &ff);
                     Assert::assert_equals(12 + i64::from(padding), input.file_pointer());
                     Ok(())
@@ -670,7 +674,11 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 with_input(dir.open_input("Floats", &*io_context())?, |input| {
                     input.seek(i64::from(offset))?;
                     expect_throws("java.io.EOFException", || {
-                        input.read_floats(&mut vec![0f32; length as usize], 0, length as usize)
+                        input.read_floats(
+                            Some(&mut vec![0f32; length as usize]),
+                            0,
+                            length as usize,
+                        )
                     });
                     Ok(())
                 })
@@ -1033,7 +1041,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 i.seek(2 * buffer_length as i64 - 1)?;
                 i.seek(3 * buffer_length as i64)?;
                 i.seek(buffer_length as i64)?;
-                i.read_bytes(&mut bytes, 0, 2 * buffer_length)?;
+                i.read_bytes(Some(&mut bytes), 0, 2 * buffer_length)?;
                 i.close()
             },
         )
@@ -1072,7 +1080,9 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
 
             // But any read following the seek(len) should throw an EOFException.
             expect_throws("java.io.EOFException", || i.read_byte());
-            expect_throws("java.io.EOFException", || i.read_bytes(&mut [0u8; 1], 0, 1));
+            expect_throws("java.io.EOFException", || {
+                i.read_bytes(Some(&mut [0u8; 1]), 0, 1)
+            });
 
             i.close()
         })
@@ -1178,7 +1188,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 } else {
                     let limit =
                         TestUtil::next_int(&*random(), 1, bytes.len() as i32).min(size - upto);
-                    in2.read_bytes(&mut bytes, 0, limit as usize)?;
+                    in2.read_bytes(Some(&mut bytes), 0, limit as usize)?;
                     for &b in bytes.iter().take(limit as usize) {
                         Assert::assert_equals(value(upto) as i8, b as i8);
                         upto += 1;
@@ -1252,7 +1262,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                         data_copy[..header_len as usize]
                             .copy_from_slice(&data[..header_len as usize]);
                         copied.read_bytes(
-                            &mut data_copy,
+                            Some(&mut data_copy),
                             header_len as usize,
                             data.len() - header_len as usize,
                         )?;
@@ -1586,18 +1596,18 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                     data[..i + j].copy_from_slice(&bytes[..i + j]);
                     if random().next_boolean() {
                         // read the bytes for this slice-of-slice
-                        slice2.read_bytes(&mut data, i + j, num - i - j)?;
+                        slice2.read_bytes(Some(&mut data), i + j, num - i - j)?;
                     } else {
                         // seek to a random spot in between, read some, seek back and read the rest
                         let seek = TestUtil::next_long(&*random(), 0, slice2.length());
                         slice2.seek(seek)?;
                         slice2.read_bytes(
-                            &mut data,
+                            Some(&mut data),
                             i + j + seek as usize,
                             num - i - j - seek as usize,
                         )?;
                         slice2.seek(0)?;
-                        slice2.read_bytes(&mut data, i + j, seek as usize)?;
+                        slice2.read_bytes(Some(&mut data), i + j, seek as usize)?;
                     }
                     assert_array_equals(&java_bytes(&bytes), &java_bytes(&data));
                     j += 16;
@@ -2078,7 +2088,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                                     (temp.len() as i64).min(input.length() - i64::from(offset))
                                         as i32,
                                 ) as usize;
-                                input.read_bytes(&mut temp, 0, read_length)?;
+                                input.read_bytes(Some(&mut temp), 0, read_length)?;
                                 assert_array_equals(
                                     &java_bytes(&arr[at..at + read_length]),
                                     &java_bytes(&temp[..read_length]),
@@ -2195,7 +2205,7 @@ fn run_copy_from(source: &dyn Directory, dest: &dyn Directory) -> Result<()> {
     let mut input = dest.open_input("foobaz", &*io_context())?;
     let mut bytes2 = vec![0u8; bytes.len()];
     let n = bytes2.len();
-    input.read_bytes(&mut bytes2, 0, n)?;
+    input.read_bytes(Some(&mut bytes2), 0, n)?;
     input.close()?;
 
     assert_array_equals(&java_bytes(&bytes), &java_bytes(&bytes2));

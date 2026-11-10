@@ -227,7 +227,7 @@ impl OrdsBlockTreeTermsReader {
             java_assert!(num_terms >= 0);
             let num_bytes = super::array_len(input.read_v_int()?)?;
             let mut code = vec![0u8; num_bytes];
-            input.read_bytes(&mut code, 0, num_bytes)?;
+            input.read_bytes(Some(&mut code), 0, num_bytes)?;
             let root_code = FST_OUTPUTS.new_output(code, 0, num_terms);
             let field_info = state.field_infos.field_info_by_number(field);
             java_assert!(field_info.is_some(), "field={field}");
@@ -313,7 +313,7 @@ impl OrdsBlockTreeTermsReader {
 fn read_bytes_ref(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     let length = super::array_len(input.read_v_int()?)?;
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length)?;
+    input.read_bytes(Some(&mut bytes), 0, length)?;
     Ok(bytes)
 }
 

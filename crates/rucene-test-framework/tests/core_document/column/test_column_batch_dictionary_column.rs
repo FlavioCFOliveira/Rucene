@@ -283,7 +283,7 @@ fn test_sorted_set_deduplicates_within_doc() -> Result<()> {
 /// Port of `testStoredField`.
 fn test_stored_field() -> Result<()> {
     let c = Ctx::open()?;
-    let mut stored_sorted = FieldType::new_from(SortedDocValuesField::type_());
+    let stored_sorted = FieldType::new_from(SortedDocValuesField::type_());
     stored_sorted.set_stored(true)?;
     stored_sorted.freeze();
     c.add_batch(&simple_batch(
@@ -502,7 +502,7 @@ fn test_rejects_binary_doc_values() -> Result<()> {
 
 /// Port of `testRejectsPoints`.
 fn test_rejects_points() -> Result<()> {
-    let mut point_type = FieldType::new_from(SortedDocValuesField::type_());
+    let point_type = FieldType::new_from(SortedDocValuesField::type_());
     point_type.set_dimensions(1, 4)?;
     point_type.freeze();
     with_writer(|w| {
@@ -515,7 +515,7 @@ fn test_rejects_points() -> Result<()> {
 /// Port of `testRejectsNumericStoredType`.
 fn test_rejects_numeric_stored_type() -> Result<()> {
     // storedType() returning a numeric type should be rejected during validation
-    let mut stored_sorted = FieldType::new_from(SortedDocValuesField::type_());
+    let stored_sorted = FieldType::new_from(SortedDocValuesField::type_());
     stored_sorted.set_stored(true)?;
     stored_sorted.freeze();
     let c = Ctx::open()?;

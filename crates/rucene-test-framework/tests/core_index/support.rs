@@ -157,7 +157,7 @@ pub fn add_mutated_docs(riw: &rucene_test_framework::index::RandomIndexWriter) -
     };
     use rucene::util::BytesRef;
 
-    let mut text_with_term_vectors_type = FieldType::new_from(TextField::type_stored());
+    let text_with_term_vectors_type = FieldType::new_from(TextField::type_stored());
     text_with_term_vectors_type.set_store_term_vectors(true)?;
     let mut vector = [0f32; 16];
     for i in 0..100 {

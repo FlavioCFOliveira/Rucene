@@ -456,7 +456,7 @@ fn ir(reader: &Arc<dyn DirectoryReader>) -> Arc<dyn IndexReader> {
 /// A `FieldType` copied from `TextField.TYPE_STORED` with term vectors,
 /// positions and offsets.
 fn tv_type() -> Result<FieldType> {
-    let mut custom_type = FieldType::new_from(TextField::type_stored());
+    let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_store_term_vectors(true)?;
     custom_type.set_store_term_vector_positions(true)?;
     custom_type.set_store_term_vector_offsets(true)?;
@@ -734,7 +734,7 @@ fn test_enabling_norms() -> Result<()> {
     iwc.set_max_buffered_docs(10)?;
     let w = writer(&d, iwc)?;
     // Enable norms for only 1 doc, pre flush
-    let mut custom_type = FieldType::new_from(TextField::type_stored());
+    let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_omit_norms(true)?;
     for j in 0..10 {
         let mut doc = Document::new();
@@ -891,7 +891,7 @@ fn test_bad_segment() -> Result<()> {
     let iw = writer(&d, mock_iwc())?;
 
     let mut document = Document::new();
-    let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+    let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_store_term_vectors(true)?;
     document.add(Box::new(LuceneTestCase::new_field(
         "tvtest",
@@ -921,7 +921,7 @@ fn test_max_thread_priority() -> Result<()> {
             .set_merge_factor(2)?;
         let iw = writer(&d, conf)?;
         let mut document = Document::new();
-        let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+        let custom_type = FieldType::new_from(TextField::type_not_stored());
         custom_type.set_store_term_vectors(true)?;
         document.add(Box::new(LuceneTestCase::new_field(
             "tvtest",
@@ -1240,7 +1240,7 @@ fn test_position_increment_gap_empty_field() -> Result<()> {
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer))),
     )?;
     let mut doc = Document::new();
-    let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+    let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_store_term_vectors(true)?;
     custom_type.set_store_term_vector_positions(true)?;
     let f = LuceneTestCase::new_field("field", "", &custom_type);
@@ -1783,15 +1783,8 @@ fn runtime_exception_msg(message: &str, cause: LuceneError) -> LuceneError {
 
 /// The anonymous `Field` subclasses of `testIndexStoreCombos`: a field whose
 /// `tokenStream(analyzer, reuse)` returns a shared `MockTokenizer`.
-///
-/// Java changes `customType` after creating the binary field ("this is
-/// evil, changing the type after creating the field"), and the field sees
-/// the change because it holds the `FieldType` object; a Rucene `Field`
-/// owns a copy of its type, so this wrapper holds the changed type and
-/// answers `fieldType()` with it.
 struct TokenizerField {
     field: Field,
-    field_type: FieldType,
     tokenizer: Rc<RefCell<MockTokenizer>>,
 }
 
@@ -1807,13 +1800,13 @@ impl IndexableField for TokenizerField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        self.field.field_type()
     }
 
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(shared(&self.tokenizer))
     }
@@ -1870,7 +1863,7 @@ fn test_index_store_combos() -> Result<()> {
 
     let mut doc = Document::new();
 
-    let mut custom_type = FieldType::new_from(StoredField::type_());
+    let custom_type = Arc::new(FieldType::new_from(StoredField::type_()));
     custom_type.set_tokenized(true)?;
 
     let field1 = Rc::new(RefCell::new(MockTokenizer::new(
@@ -1884,15 +1877,14 @@ fn test_index_store_combos() -> Result<()> {
             offset: 10,
             length: 17,
         },
-        custom_type.clone(),
+        Arc::clone(&custom_type),
     )?;
-    // TODO: this is evil, changing the type after creating the field:
-    custom_type.set_index_options(IndexOptions::DOCS)?;
     let f = TokenizerField {
         field: f,
-        field_type: custom_type.clone(),
         tokenizer: Rc::clone(&field1),
     };
+    // TODO: this is evil, changing the type after creating the field:
+    custom_type.set_index_options(IndexOptions::DOCS)?;
     field1
         .borrow_mut()
         .set_reader(Box::new(StringCharReader::new("doc1field1")))?;
@@ -1904,8 +1896,7 @@ fn test_index_store_combos() -> Result<()> {
         false,
     )?));
     let f2 = TokenizerField {
-        field: Field::new("string", "value".to_string(), custom_type2.clone())?,
-        field_type: custom_type2,
+        field: Field::new("string", "value".to_string(), custom_type2)?,
         tokenizer: Rc::clone(&field2),
     };
 
@@ -2290,11 +2281,11 @@ fn test_no_unwanted_tv_files() -> Result<()> {
         "alskjhlaksjghlaksjfhalksvjepgjioefgjnsdfjgefgjhelkgjhqewlrkhgwlekgrhwelkgjhwelkgrhwlkejg";
     let big = big.repeat(4);
 
-    let mut custom_type = FieldType::new_from(TextField::type_stored());
+    let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_omit_norms(true)?;
-    let mut custom_type2 = FieldType::new_from(TextField::type_stored());
+    let custom_type2 = FieldType::new_from(TextField::type_stored());
     custom_type2.set_tokenized(false)?;
-    let mut custom_type3 = FieldType::new_from(TextField::type_stored());
+    let custom_type3 = FieldType::new_from(TextField::type_stored());
     custom_type3.set_tokenized(false)?;
     custom_type3.set_omit_norms(true)?;
 
@@ -2491,7 +2482,7 @@ fn test_wicked_long_term() -> Result<()> {
 
     // Make sure we can add a document with exactly the maximum length term,
     // and search on that term:
-    let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+    let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_tokenized(false)?;
     let mut content_field = Field::new("content", String::new(), custom_type)?;
 
@@ -2891,7 +2882,7 @@ fn test_dont_invoke_analyzer_for_un_analyzed_fields() -> Result<()> {
         LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer)),
     )?;
     let mut doc = Document::new();
-    let mut custom_type = FieldType::new_from(StringField::type_not_stored());
+    let custom_type = FieldType::new_from(StringField::type_not_stored());
     custom_type.set_store_term_vectors(true)?;
     custom_type.set_store_term_vector_positions(true)?;
     custom_type.set_store_term_vector_offsets(true)?;
@@ -6186,7 +6177,7 @@ fn test_closeable_queue() -> Result<()> {
     let d = dir.as_directory();
     {
         let w = writer(&d, LuceneTestCase::new_index_writer_config())?;
-        let queue = Arc::new(EventQueue::new(Arc::clone(&w)));
+        let queue = Arc::new(EventQueue::new(&w));
         let executed = Arc::new(AtomicI32::new(0));
 
         queue.add(counting_event(&executed))?;
@@ -7324,7 +7315,7 @@ fn test_doc_values_mixed_skipping_index() -> Result<()> {
 /// Port of `TestIndexWriter.testDocValuesSkippingIndexWithoutDocValues`.
 fn test_doc_values_skipping_index_without_doc_values() -> Result<()> {
     for doc_values_type in [DocValuesType::NONE, DocValuesType::BINARY] {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_stored(true)?;
         field_type.set_doc_values_type(doc_values_type)?;
         field_type.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)?;

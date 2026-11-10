@@ -285,7 +285,7 @@ fn test_stress_per_field_codec() -> Result<()> {
         for _ in 0..docs_per_round {
             let mut doc = Document::new();
             for k in 0..num {
-                let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+                let custom_type = FieldType::new_from(TextField::type_not_stored());
                 custom_type.set_tokenized(random().next_boolean())?;
                 custom_type.set_omit_norms(random().next_boolean())?;
                 let field = LuceneTestCase::new_field(
@@ -365,7 +365,7 @@ fn do_test_mixed_postings(codec: Arc<dyn Codec>) -> Result<()> {
     )));
     iwc.set_codec(codec)?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     // turn on vectors for the checkindex cross-check
     ft.set_store_term_vectors(true)?;
     ft.set_store_term_vector_offsets(true)?;

@@ -393,7 +393,7 @@ impl Serializer {
         let mut last_term = BytesRef::new(vec![0u8; array_len(last_term_length)?]);
         last_term.length = 0;
         if last_term_length > 0 {
-            input.read_bytes(&mut last_term.bytes, 0, last_term_length as usize)?;
+            input.read_bytes(Some(&mut last_term.bytes), 0, last_term_length as usize)?;
             last_term.length = last_term_length as usize;
         }
         field_metadata.set_last_term(last_term);

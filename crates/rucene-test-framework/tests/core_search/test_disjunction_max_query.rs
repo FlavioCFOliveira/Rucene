@@ -107,7 +107,7 @@ impl TFIDFSimilarity for TestSimilarity {
 
 /// `private static final FieldType nonAnalyzedType` and its `static` block.
 static NON_ANALYZED_TYPE: LazyLock<FieldType> = LazyLock::new(|| {
-    let mut t = FieldType::new_from(TextField::type_stored());
+    let t = FieldType::new_from(TextField::type_stored());
     t.set_tokenized(false)
         .expect("a new FieldType is not frozen");
     t

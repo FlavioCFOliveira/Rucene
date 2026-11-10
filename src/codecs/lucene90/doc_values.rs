@@ -3700,7 +3700,7 @@ impl TermsDict {
         }
         let term_length = term_length as usize;
         let mut term = try_zeroed(term_length)?;
-        self.bytes.read_bytes(&mut term, 0, term_length)?;
+        self.bytes.read_bytes(Some(&mut term), 0, term_length)?;
         Ok(term)
     }
 
@@ -4986,7 +4986,7 @@ mod tests {
                 .unwrap();
             let mut bytes = vec![0u8; input.length() as usize];
             let length = bytes.len();
-            input.read_bytes(&mut bytes, 0, length).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, length).unwrap();
             bytes
         };
         let at =
@@ -5074,7 +5074,7 @@ mod tests {
                 .unwrap();
             let mut bytes = vec![0u8; input.length() as usize];
             let length = bytes.len();
-            input.read_bytes(&mut bytes, 0, length).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, length).unwrap();
             bytes
         };
         let read_long = |offset: usize| {
@@ -5781,19 +5781,19 @@ mod tests {
             let mut input = dir.open_input("_0.dvd", &*DEFAULT_IO_CONTEXT).unwrap();
             let len = input.length() as usize;
             dvd.resize(len, 0);
-            input.read_bytes(&mut dvd, 0, len).unwrap();
+            input.read_bytes(Some(&mut dvd), 0, len).unwrap();
         }
         {
             let mut input = dir.open_input("_0.dvm", &*DEFAULT_IO_CONTEXT).unwrap();
             let len = input.length() as usize;
             dvm.resize(len, 0);
-            input.read_bytes(&mut dvm, 0, len).unwrap();
+            input.read_bytes(Some(&mut dvm), 0, len).unwrap();
         }
         {
             let mut input = dir.open_input("_0.dvs", &*DEFAULT_IO_CONTEXT).unwrap();
             let len = input.length() as usize;
             dvs.resize(len, 0);
-            input.read_bytes(&mut dvs, 0, len).unwrap();
+            input.read_bytes(Some(&mut dvs), 0, len).unwrap();
         }
         (dvd, dvm, dvs)
     }

@@ -646,7 +646,7 @@ fn test_norms_query_matches_count() -> Result<()> {
 
     let random_num_docs = TestUtil::next_int(&*random(), 10, 100);
 
-    let mut no_norms_field_type = FieldType::new();
+    let no_norms_field_type = FieldType::new();
     no_norms_field_type.set_omit_norms(true)?;
     no_norms_field_type.set_index_options(IndexOptions::DOCS)?;
 

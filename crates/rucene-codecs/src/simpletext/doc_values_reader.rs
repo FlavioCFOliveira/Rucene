@@ -472,7 +472,7 @@ impl BinaryValues {
         debug_assert!(scratch.starts_with(LENGTH));
         let len = parse_length(&scratch, input.resource_description())?;
         let mut term_byte_array = vec![0u8; len];
-        input.read_bytes(&mut term_byte_array, 0, len)?;
+        input.read_bytes(Some(&mut term_byte_array), 0, len)?;
         util::from_bytes_ref_string(&java_utf8_to_string(&term_byte_array))
     }
 }
@@ -511,7 +511,7 @@ impl DocsWithField {
             let len = parse_length(&self.scratch, self.input.resource_description())?;
             // skip past bytes
             let mut bytes = vec![0u8; len];
-            self.input.read_bytes(&mut bytes, 0, len)?;
+            self.input.read_bytes(Some(&mut bytes), 0, len)?;
             read_line(self.input.as_mut(), &mut self.scratch)?; // newline
         }
         read_line(self.input.as_mut(), &mut self.scratch)?; // 'T' or 'F'
@@ -712,7 +712,7 @@ impl SortedDocValues for TextSortedDocValues {
         );
         let len = parse_length(&scratch, input.resource_description())?;
         let mut term = vec![0u8; len];
-        input.read_bytes(&mut term, 0, len)?;
+        input.read_bytes(Some(&mut term), 0, len)?;
         Ok(BytesRef::new(term))
     }
 }
@@ -903,7 +903,7 @@ impl SortedSetDocValues for TextSortedSetDocValues {
         );
         let len = parse_length(&scratch, input.resource_description())?;
         let mut term = vec![0u8; len];
-        input.read_bytes(&mut term, 0, len)?;
+        input.read_bytes(Some(&mut term), 0, len)?;
         Ok(BytesRef::new(term))
     }
 

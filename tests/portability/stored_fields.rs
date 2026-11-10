@@ -661,7 +661,7 @@ fn ensure_codec() -> Arc<dyn Codec> {
 
 /// The field type of `StoredFieldsFixture`'s indexed-and-stored field.
 fn indexed_and_stored_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_stored(true).expect("stored");
     field_type.set_tokenized(true).expect("tokenized");
     field_type.set_omit_norms(true).expect("omit norms");

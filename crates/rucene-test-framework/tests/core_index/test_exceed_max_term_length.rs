@@ -102,7 +102,7 @@ fn test_token_stream(inst: &Instance) -> Result<()> {
         LuceneTestCase::new_index_writer_config_with(&*random(), Some(Arc::new(mock_analyzer))),
     )?;
     let result = (|| -> Result<()> {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
         ft.set_stored(random().next_boolean())?;
         ft.freeze();
@@ -148,7 +148,7 @@ fn test_token_stream(inst: &Instance) -> Result<()> {
 fn test_binary_value(inst: &Instance) -> Result<()> {
     let w = IndexWriter::new(inst.dir(), LuceneTestCase::new_index_writer_config())?;
     let result = (|| -> Result<()> {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_index_options(*RandomPicks::random_from(
             &*random(),
             &[IndexOptions::DOCS, IndexOptions::DOCS_AND_FREQS],

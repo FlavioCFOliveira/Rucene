@@ -431,7 +431,7 @@ impl FeatureField {
     /// The body of `FeatureField`'s static initialiser for one of its two
     /// types (`FeatureField.java:111-120`).
     fn new_field_type(store_term_vectors: bool) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type
             .set_tokenized(false)
             .expect("INVARIANT: a new type is mutable");
@@ -555,7 +555,7 @@ impl IndexableField for FeatureField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(FeatureTokenStream::new(
             self.feature_name.clone(),

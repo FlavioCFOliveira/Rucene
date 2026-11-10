@@ -228,6 +228,11 @@ pub struct IndexWriter {
     /// copies or deletes goes through it.
     directory: Arc<dyn Directory>,
     config: Arc<LiveIndexWriterConfig>,
+    /// The configuration this writer was built with, which shares `config`.
+    ///
+    /// Held so that no `&mut IndexWriterConfig` can be borrowed while the
+    /// writer shares its live settings (see `IndexWriterConfig::live_mut`).
+    _shared_config: Arc<IndexWriterConfig>,
     info_stream: Arc<dyn InfoStream>,
     documents_writer: Arc<DocumentsWriter>,
     /// Segment readers shared between deletes, merges and NRT reopen.
@@ -370,12 +375,10 @@ pub struct IndexWriter {
     point_in_time_merge_registered_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// The events waiting to run on this writer.
     ///
-    /// Equivalent to `IndexWriter.eventQueue`. The `deleteUnusedFiles` and
-    /// `flushFailed` events are kept apart, in
-    /// [`WriterFlushNotifications::orphaned_files`], and drained by the same
-    /// [`process_events`](Self::process_events); Java's queue guarantees no
-    /// order between events (`IndexWriter.java:6146-6150`).
-    event_queue: EventQueue,
+    /// Equivalent to `IndexWriter.eventQueue = new EventQueue(this)`
+    /// (`IndexWriter.java:288`). The queue holds this writer weakly, as the
+    /// writer owns it; see [`event_queue::EventQueue`].
+    event_queue: event_queue::EventQueue,
     /// Serialises commits, and keeps a rollback from closing the writer while a
     /// commit is still syncing.
     ///
@@ -539,117 +542,15 @@ impl Drop for ReentrantGuard<'_> {
     }
 }
 
-/// One event waiting in the writer's [`EventQueue`].
-///
-/// Equivalent to the `IndexWriter.Event` lambdas Java adds to
-/// `IndexWriter.eventQueue`.
-enum WriterEvent {
-    /// `w -> tryApply(packet)`, added by `publishFrozenUpdates`
-    /// (`IndexWriter.java:2895-2918`).
-    TryApply(Arc<crate::index::documents_writer::FrozenBufferedUpdates>),
-    /// `w -> w.publishFlushedSegments(true)`, added by `onTicketBacklog`
-    /// (`IndexWriter.java:462-465`) and, with `count_flush`, by
-    /// `onDeletesApplied`, whose `finally` increments `flushCount`
-    /// (`IndexWriter.java:450-460`).
-    PublishFlushedSegments {
-        /// Whether `flushCount` is incremented once the publication ends.
-        count_flush: bool,
-    },
-}
-
-/// Whether the [`EventQueue`] is closed, and how many permits are taken.
-#[derive(Default)]
-struct EventQueuePermits {
-    closed: bool,
-    held: usize,
-}
-
-/// The events a writer runs when its callers come back up the stack.
-///
-/// Equivalent to `IndexWriter.EventQueue` (`IndexWriter.java:294-366`). Java
-/// guards it with a `Semaphore(Integer.MAX_VALUE)` so that any number of
-/// threads may add and process events at once, while `close` takes every
-/// permit and so waits for them; [`EventQueuePermits`] counts the permits held
-/// and [`close`](IndexWriter::close_event_queue) waits for none to be.
-#[derive(Default)]
-struct EventQueue {
-    queue: Mutex<std::collections::VecDeque<WriterEvent>>,
-    permits: Mutex<EventQueuePermits>,
-    released: std::sync::Condvar,
-}
-
-/// One permit of an [`EventQueue`], given back when dropped.
-struct EventPermit<'a> {
-    queue: &'a EventQueue,
-}
-
-impl Drop for EventPermit<'_> {
-    fn drop(&mut self) {
-        let mut permits = self
-            .queue
-            .permits
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        permits.held -= 1;
-        if permits.held == 0 {
-            self.queue.released.notify_all();
-        }
-    }
-}
-
-impl EventQueue {
-    /// Takes a permit, failing once the queue is closed.
-    ///
-    /// Equivalent to `EventQueue.acquire()` (`IndexWriter.java:307-315`).
-    fn acquire(&self) -> Result<EventPermit<'_>> {
-        let mut permits = self
-            .permits
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if permits.closed {
-            return Err(LuceneError::already_closed("queue is closed".to_string()));
-        }
-        permits.held += 1;
-        Ok(EventPermit { queue: self })
-    }
-
-    /// Queues `event`.
-    ///
-    /// Equivalent to `EventQueue.add(Event)` (`IndexWriter.java:317-324`).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the queue is closed.
-    fn add(&self, event: WriterEvent) -> Result<()> {
-        let _permit = self.acquire()?;
-        self.queue
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_back(event);
-        Ok(())
-    }
-
-    /// Takes the next event, if any.
-    fn poll(&self) -> Option<WriterEvent> {
-        self.queue
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop_front()
-    }
-}
-
 /// `IndexWriter.EventQueue` (`IndexWriter.java:294-366`) and its `Event`
 /// (`IndexWriter.java:6152-6162`), package-private in Java and `pub` here so
 /// that `TestIndexWriter.testCloseableQueue` can build one over a writer.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's writer runs its own events
-/// through an instance of this class; Rucene's writer keeps the private,
-/// enum-based queue above, whose events are the closed set the writer adds.
-/// This type is the Java class as is: a queue of arbitrary events processed
-/// against the writer it was built over.
+/// The writer runs its own events through an instance of this class, as
+/// Java's does (`IndexWriter.java:288`).
 pub mod event_queue {
     use std::collections::VecDeque;
-    use std::sync::{Arc, Condvar, Mutex, PoisonError};
+    use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 
     use super::IndexWriter;
     use crate::error::{LuceneError, Result};
@@ -666,12 +567,17 @@ pub mod event_queue {
     }
 
     /// `static final class EventQueue implements Closeable`.
+    ///
+    /// Java's queue holds a strong reference to its writer, and the writer
+    /// holds its queue; a Rust writer owns its queue, so the queue holds the
+    /// writer through a [`Weak`] handle, which every writer that owns a queue
+    /// outlives.
     pub struct EventQueue {
         closed: Mutex<bool>,
         permits: Mutex<Permits>,
         released: Condvar,
         queue: Mutex<VecDeque<Event>>,
-        writer: Arc<IndexWriter>,
+        writer: OnceLock<Weak<IndexWriter>>,
     }
 
     /// A permit, released when dropped (`permits.release()`).
@@ -693,14 +599,37 @@ pub mod event_queue {
 
     impl EventQueue {
         /// `EventQueue(IndexWriter writer)`.
-        pub fn new(writer: Arc<IndexWriter>) -> Self {
+        pub fn new(writer: &Arc<IndexWriter>) -> Self {
+            let queue = Self::unbound();
+            queue.bind(Arc::downgrade(writer));
+            queue
+        }
+
+        /// A queue whose writer is not built yet: the writer's own queue,
+        /// created with the writer and bound by [`bind`](Self::bind) once
+        /// the writer is inside its `Arc`.
+        pub(crate) fn unbound() -> Self {
             EventQueue {
                 closed: Mutex::new(false),
                 permits: Mutex::new(Permits::default()),
                 released: Condvar::new(),
                 queue: Mutex::new(VecDeque::new()),
-                writer,
+                writer: OnceLock::new(),
             }
+        }
+
+        /// Records the writer this queue processes its events against.
+        pub(crate) fn bind(&self, writer: Weak<IndexWriter>) {
+            // `OnceLock::set` fails only on a second binding, which neither
+            // `new` nor the writer's constructor makes.
+            let _ = self.writer.set(writer);
+        }
+
+        /// The writer, which outlives the queue it owns.
+        fn writer(&self) -> Result<Arc<IndexWriter>> {
+            self.writer.get().and_then(Weak::upgrade).ok_or_else(|| {
+                LuceneError::already_closed("this IndexWriter is closed".to_string())
+            })
         }
 
         /// `acquire()` (`IndexWriter.java:307-315`).
@@ -741,12 +670,26 @@ pub mod event_queue {
         /// `AlreadyClosedException` once the queue is closed, and what an
         /// event raises.
         pub fn process_events(&self) -> Result<()> {
+            let writer = self.writer()?;
+            self.process_events_with(&writer)
+        }
+
+        /// [`process_events`](Self::process_events) against `writer`, the
+        /// writer this queue belongs to: the writer's own calls pass
+        /// themselves, as Java's `event.process(writer)` receives `this`.
+        pub(crate) fn process_events_with(&self, writer: &IndexWriter) -> Result<()> {
             let _permit = self.acquire()?;
-            self.process_events_internal()
+            self.process_events_internal(writer)
         }
 
         /// `processEventsInternal()` (`IndexWriter.java:335-342`).
-        fn process_events_internal(&self) -> Result<()> {
+        fn process_events_internal(&self, writer: &IndexWriter) -> Result<()> {
+            debug_assert!(
+                self.permits
+                    .lock()
+                    .map_or(true, |permits| permits.held > 0 || permits.all_taken),
+                "must acquire a permit before processing events"
+            );
             loop {
                 let event = self
                     .queue
@@ -754,10 +697,19 @@ pub mod event_queue {
                     .unwrap_or_else(PoisonError::into_inner)
                     .pop_front();
                 match event {
-                    Some(event) => event(&self.writer)?,
+                    Some(event) => event(writer)?,
                     None => return Ok(()),
                 }
             }
+        }
+
+        /// Whether no event is queued.
+        #[cfg(test)]
+        pub(crate) fn is_empty(&self) -> bool {
+            self.queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
         }
 
         /// `close()` (`IndexWriter.java:344-365`), `synchronized` "to prevent
@@ -767,12 +719,19 @@ pub mod event_queue {
         ///
         /// What a remaining event raises.
         pub fn close(&self) -> Result<()> {
+            let writer = self.writer()?;
+            self.close_with(&writer)
+        }
+
+        /// [`close`](Self::close) against `writer`, the writer this queue
+        /// belongs to (see [`process_events_with`](Self::process_events_with)).
+        pub(crate) fn close_with(&self, writer: &IndexWriter) -> Result<()> {
             let mut closed = self.closed.lock().unwrap_or_else(PoisonError::into_inner);
             debug_assert!(!*closed, "we should never close this twice");
             *closed = true;
             drop(closed);
             // it's possible that we close this queue while we are in a processEvents call
-            if self.writer.get_tragic_exception().is_some() {
+            if writer.get_tragic_exception().is_some() {
                 // we are already handling a tragic exception let's drop it all on the floor and return
                 self.queue
                     .lock()
@@ -791,7 +750,7 @@ pub mod event_queue {
                 }
                 permits.all_taken = true;
             }
-            let result = self.process_events_internal();
+            let result = self.process_events_internal(writer);
             self.permits
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -814,14 +773,6 @@ struct WriterFlushNotifications {
     /// [`IndexWriter::self_ref`] is.
     writer: OnceLock<Weak<IndexWriter>>,
     info_stream: Arc<dyn InfoStream>,
-    /// Files a flush left behind, to be deleted when the writer next runs its
-    /// events.
-    ///
-    /// Equivalent to the `w -> w.deleteNewFiles(files)` and `w ->
-    /// w.flushFailed(info)` events Java adds to `IndexWriter.eventQueue`
-    /// (`IndexWriter.java:430-438`); adding one fails once the queue is
-    /// closed, exactly as `EventQueue.add` does.
-    orphaned_files: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for WriterFlushNotifications {
@@ -836,7 +787,8 @@ impl FlushNotifications for WriterFlushNotifications {
     /// `IndexWriter`'s `FlushNotifications` (`IndexWriter.java:430-433`):
     /// `eventQueue.add(w -> w.deleteNewFiles(files))`.
     fn delete_unused_files(&self, files: &HashSet<String>) -> Result<()> {
-        self.add_orphaned_files(files.iter().cloned())
+        let files = files.clone();
+        self.add_event(Box::new(move |w: &IndexWriter| w.delete_new_files(files)))
     }
 
     /// Equivalent to `flushFailed(SegmentInfo)` of `IndexWriter`'s
@@ -849,8 +801,12 @@ impl FlushNotifications for WriterFlushNotifications {
     /// event runs, this port when it is queued; nothing changes the files of
     /// a segment whose flush failed in between.
     fn flush_failed(&self, info: &SegmentInfo) -> Result<()> {
-        let files = info.files().unwrap_or_default();
-        self.add_orphaned_files(files)
+        // `IndexWriter.flushFailed(SegmentInfo)` (`IndexWriter.java:6023-6037`).
+        let files = info.files().ok();
+        self.add_event(Box::new(move |w: &IndexWriter| match files {
+            Some(files) => w.delete_new_files(files),
+            None => Ok(()),
+        }))
     }
 
     /// Equivalent to `afterSegmentsFlushed()` of `IndexWriter`'s
@@ -892,56 +848,31 @@ impl FlushNotifications for WriterFlushNotifications {
     /// `publishFlushedSegments(true)`, incrementing `flushCount` in its
     /// `finally`.
     fn on_deletes_applied(&self) -> Result<()> {
-        match self.writer.get().and_then(Weak::upgrade) {
-            Some(writer) => writer
-                .event_queue
-                .add(WriterEvent::PublishFlushedSegments { count_flush: true }),
-            None => Ok(()),
-        }
+        self.add_event(Box::new(|w: &IndexWriter| {
+            let published = w.publish_flushed_segments(true);
+            // `finally { flushCount.incrementAndGet(); }`
+            w.flush_count.fetch_add(1, Ordering::AcqRel);
+            published
+        }))
     }
 
     /// Equivalent to `onTicketBacklog()` of `IndexWriter`'s
     /// `FlushNotifications` (`IndexWriter.java:462-465`): queue
     /// `publishFlushedSegments(true)`.
     fn on_ticket_backlog(&self) -> Result<()> {
-        match self.writer.get().and_then(Weak::upgrade) {
-            Some(writer) => writer
-                .event_queue
-                .add(WriterEvent::PublishFlushedSegments { count_flush: false }),
-            None => Ok(()),
-        }
+        self.add_event(Box::new(|w: &IndexWriter| w.publish_flushed_segments(true)))
     }
 }
 
 impl WriterFlushNotifications {
-    /// Records `files` for deletion, as an event added to the writer's event
-    /// queue.
-    ///
-    /// Equivalent to `EventQueue.add(Event)` (`IndexWriter.java:317-324`):
-    /// the event is refused with [`LuceneError::AlreadyClosed`] once the queue
-    /// is closed. Before the writer exists, and while it is being dropped,
-    /// there is no queue to refuse it.
-    fn add_orphaned_files(&self, files: impl IntoIterator<Item = String>) -> Result<()> {
-        let writer = self.writer.get().and_then(Weak::upgrade);
-        let _permit = match &writer {
-            Some(writer) => Some(writer.event_queue.acquire()?),
-            None => None,
-        };
-        self.orphaned_files
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend(files);
-        Ok(())
-    }
-
-    /// Takes the files recorded so far, leaving the set empty.
-    ///
-    /// Equivalent to draining the `deleteUnusedFiles` events off
-    /// `IndexWriter.eventQueue`.
-    fn take_orphaned_files(&self) -> HashSet<String> {
-        match self.orphaned_files.lock() {
-            Ok(mut guard) => std::mem::take(&mut *guard),
-            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    /// `eventQueue.add(event)` (`IndexWriter.java:317-324`): refused with
+    /// [`LuceneError::AlreadyClosed`] once the queue is closed. Before the
+    /// writer exists, and while it is being dropped, there is no queue, and
+    /// no writer to run the event against.
+    fn add_event(&self, event: event_queue::Event) -> Result<()> {
+        match self.writer.get().and_then(Weak::upgrade) {
+            Some(writer) => writer.event_queue.add(event).map(|_| ()),
+            None => Ok(()),
         }
     }
 }
@@ -975,8 +906,15 @@ impl IndexWriter {
     /// and does not, [`LuceneError::IllegalArgument`] for every configuration
     /// Java rejects with `IllegalArgumentException`, and whatever reading the
     /// index raises.
-    pub fn new(d: Arc<dyn Directory>, config: IndexWriterConfig) -> Result<Arc<Self>> {
-        Self::new_impl(d, config, false)
+    ///
+    /// `config` is shared as Java's writer keeps the configuration object;
+    /// a configuration already attached to a writer is refused with
+    /// `IllegalStateException` (`IndexWriterConfig.java:119-125`).
+    pub fn new(
+        d: Arc<dyn Directory>,
+        config: impl Into<Arc<IndexWriterConfig>>,
+    ) -> Result<Arc<Self>> {
+        Self::new_impl(d, config.into(), false)
     }
 
     /// Creates a writer whose [`is_enable_test_points`](Self::is_enable_test_points)
@@ -991,16 +929,19 @@ impl IndexWriter {
     /// As [`new`](Self::new).
     pub fn new_with_test_points(
         d: Arc<dyn Directory>,
-        config: IndexWriterConfig,
+        config: impl Into<Arc<IndexWriterConfig>>,
     ) -> Result<Arc<Self>> {
-        Self::new_impl(d, config, true)
+        Self::new_impl(d, config.into(), true)
     }
 
     fn new_impl(
         d: Arc<dyn Directory>,
-        config: IndexWriterConfig,
+        config: Arc<IndexWriterConfig>,
         enable_test_points: bool,
     ) -> Result<Arc<Self>> {
+        // `conf.setIndexWriter(this); // prevent reuse by other instances`
+        // (`IndexWriter.java:951`): refused before the write lock is taken.
+        config.live().check_not_attached()?;
         // `infoStream = config.getInfoStream()` (`IndexWriter.java:953`).
         let info_stream = config.info_stream();
         // Obtain the write.lock. If the user configured a timeout, we wrap
@@ -1033,7 +974,7 @@ impl IndexWriter {
     /// lock when this fails or panics.
     fn init(
         directory_orig: Arc<dyn Directory>,
-        config: IndexWriterConfig,
+        shared_config: Arc<IndexWriterConfig>,
         write_lock: Arc<dyn Lock>,
         info_stream: &Arc<dyn InfoStream>,
         enable_test_points: bool,
@@ -1046,7 +987,7 @@ impl IndexWriter {
             Box::new(SharedDirectory(Arc::clone(&directory_orig))),
             Arc::clone(&write_lock),
         ));
-        let config = Arc::new(config.into_live());
+        let config = Arc::clone(shared_config.live());
         // `IndexWriter.java:964-965`.
         config
             .merge_scheduler()
@@ -1214,7 +1155,6 @@ impl IndexWriter {
         let notifications = Arc::new(WriterFlushNotifications {
             writer: OnceLock::new(),
             info_stream: Arc::clone(info_stream),
-            orphaned_files: Mutex::new(HashSet::new()),
         });
         // Java reads `counter` off the `SegmentInfos` every time it names a
         // segment, so the value `IndexFileDeleter`'s `inflateGens` raises it to
@@ -1315,6 +1255,7 @@ impl IndexWriter {
             directory_orig,
             directory,
             config,
+            _shared_config: shared_config,
             info_stream: Arc::clone(info_stream),
             documents_writer,
             reader_pool,
@@ -1357,7 +1298,7 @@ impl IndexWriter {
             flush_notifications: notifications,
             full_flush_lock: Mutex::new(()),
             maybe_merge: AtomicBool::new(false),
-            event_queue: EventQueue::default(),
+            event_queue: event_queue::EventQueue::unbound(),
             #[cfg(test)]
             point_in_time_merge_registered_hook: Mutex::new(None),
             commit_lock: ReentrantLock::default(),
@@ -1371,6 +1312,7 @@ impl IndexWriter {
         // `OnceLock::set` fails only when the cell is already filled, which
         // cannot happen for a writer that has just been moved into this `Arc`.
         let _ = writer.self_ref.set(Arc::downgrade(&writer));
+        writer.event_queue.bind(Arc::downgrade(&writer));
         let _ = writer
             .flush_notifications
             .writer
@@ -7936,9 +7878,7 @@ impl IndexWriter {
         // Java drains the event queue first, and skips it once the writer is
         // tragic (`IndexWriter.java:6136-6144`).
         if self.get_tragic_exception().is_none() {
-            // `EventQueue.processEvents()` (`IndexWriter.java:326-333`).
-            let _permit = self.event_queue.acquire()?;
-            self.process_events_internal()?;
+            self.event_queue.process_events_with(self)?;
         }
         if trigger_merge {
             self.maybe_merge_with(
@@ -7962,88 +7902,16 @@ impl IndexWriter {
         Ok(seq_no)
     }
 
-    /// Runs every queued event; the caller holds a permit of the queue, or
-    /// all of them.
-    ///
-    /// Equivalent to `EventQueue.processEventsInternal()`
-    /// (`IndexWriter.java:335-342`), with the `deleteUnusedFiles` /
-    /// `flushFailed` events the notifications record apart (see
-    /// [`Self::event_queue`]).
-    fn process_events_internal(&self) -> Result<()> {
-        let files = self.flush_notifications.take_orphaned_files();
-        if !files.is_empty() {
-            self.delete_new_files(files)?;
-        }
-        while let Some(event) = self.event_queue.poll() {
-            match event {
-                WriterEvent::TryApply(packet) => {
-                    // We call `tryApply` since we don't want to block if a
-                    // refresh or a flush is already applying the packet; the
-                    // flush will retry it anyway to ensure all of them are
-                    // applied (`IndexWriter.java:2900-2917`).
-                    if let Err(error) = self.try_apply(&packet) {
-                        self.on_tragic_event(&error, "applyUpdatesPacket");
-                        return Err(error);
-                    }
-                    self.flush_deletes_count.fetch_add(1, Ordering::AcqRel);
-                }
-                WriterEvent::PublishFlushedSegments { count_flush } => {
-                    let published = self.publish_flushed_segments(true);
-                    if count_flush {
-                        self.flush_count.fetch_add(1, Ordering::AcqRel);
-                    }
-                    published?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Closes the event queue, running what it still holds unless the writer
     /// is tragic.
     ///
-    /// Equivalent to `EventQueue.close()` (`IndexWriter.java:344-365`): once
-    /// closed, adding or processing an event fails with
-    /// [`LuceneError::AlreadyClosed`]; a tragic writer drops the queued events
-    /// on the floor, any other takes every permit — waiting for the threads
-    /// processing events to finish — and runs them.
+    /// Equivalent to `eventQueue.close()` (`IndexWriter.java:2600`).
     ///
     /// # Errors
     ///
     /// Propagates what running an event raised.
     fn close_event_queue(&self) -> Result<()> {
-        let mut permits = self
-            .event_queue
-            .permits
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        debug_assert!(!permits.closed, "we should never close this twice");
-        permits.closed = true;
-        // It's possible that we close this queue while we are in a
-        // `processEvents` call.
-        if self.get_tragic_exception().is_some() {
-            // We are already handling a tragic exception: drop it all on the
-            // floor and return.
-            drop(permits);
-            while self.event_queue.poll().is_some() {}
-            let _ = self.flush_notifications.take_orphaned_files();
-            return Ok(());
-        }
-        // Now take all the permits, so we are the only one processing the
-        // queue.
-        while permits.held > 0 {
-            permits = self
-                .event_queue
-                .released
-                .wait(permits)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-        // No permit is held and `closed` refuses every new one, so this
-        // thread is the only one processing the queue, as after
-        // `permits.acquire(Integer.MAX_VALUE)`; an event that adds another
-        // one fails with `AlreadyClosed`, as Java's `tryAcquire` does then.
-        drop(permits);
-        self.process_events_internal()
+        self.event_queue.close_with(self)
     }
 
     // -- Field numbers and field infos ---------------------------------------
@@ -9150,7 +9018,17 @@ impl IndexWriter {
         let next_gen = self.buffered_updates_stream.push(Arc::clone(&packet))?;
         // Do this as an event so it applies higher in the stack, when we are
         // not holding the flush queue's purge lock.
-        self.event_queue.add(WriterEvent::TryApply(packet))?;
+        self.event_queue.add(Box::new(move |w: &IndexWriter| {
+            // We call `tryApply` here since we don't want to block if a
+            // refresh or a flush is already applying the packet. The flush
+            // will retry this packet anyway to ensure all of them are applied.
+            if let Err(error) = w.try_apply(&packet) {
+                w.on_tragic_event(&error, "applyUpdatesPacket");
+                return Err(error);
+            }
+            w.flush_deletes_count.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }))?;
         Ok(next_gen)
     }
 
@@ -11602,7 +11480,7 @@ mod tests {
         writer.rollback().unwrap();
         let added = writer
             .event_queue
-            .add(WriterEvent::PublishFlushedSegments { count_flush: false });
+            .add(Box::new(|w: &IndexWriter| w.publish_flushed_segments(true)));
         assert!(matches!(added, Err(LuceneError::AlreadyClosed { .. })));
     }
 
@@ -11699,7 +11577,7 @@ mod tests {
             "{refused:?}"
         );
         assert!(
-            writer.flush_notifications.take_orphaned_files().is_empty(),
+            writer.event_queue.is_empty(),
             "a refused event must not be recorded"
         );
     }
@@ -12377,7 +12255,7 @@ mod tests {
         };
         let writer = IndexWriter::new(Arc::clone(&dir), soft_config()).unwrap();
         writer.add_document(&id_body_doc("a")).unwrap();
-        let mut numeric = FieldType::new();
+        let numeric = FieldType::new();
         numeric.set_doc_values_type(DocValuesType::NUMERIC).unwrap();
         numeric.freeze();
         let soft = Field::new_with_number("soft", NumericValue::Long(1), numeric).unwrap();
@@ -12451,7 +12329,7 @@ mod tests {
 
     /// The numeric doc-values field a soft update marks the old document with.
     fn soft_delete_field() -> Field {
-        let mut numeric = crate::document::FieldType::new();
+        let numeric = crate::document::FieldType::new();
         numeric.set_doc_values_type(DocValuesType::NUMERIC).unwrap();
         numeric.freeze();
         Field::new_with_number("soft", NumericValue::Long(1), numeric).unwrap()
@@ -14014,14 +13892,14 @@ mod tests {
 
     impl IdValueBatch {
         fn new(ids: &[&str], values: &[i64]) -> Self {
-            let mut id_type = crate::document::FieldType::new();
+            let id_type = crate::document::FieldType::new();
             id_type.set_omit_norms(true).unwrap();
             id_type
                 .set_index_options(crate::index::IndexOptions::DOCS)
                 .unwrap();
             id_type.set_tokenized(false).unwrap();
             id_type.freeze();
-            let mut value_type = crate::document::FieldType::new();
+            let value_type = crate::document::FieldType::new();
             value_type
                 .set_doc_values_type(DocValuesType::NUMERIC)
                 .unwrap();
@@ -14373,7 +14251,7 @@ mod tests {
             let mut config = IndexWriterConfig::new();
             config.set_parent_field(Some("_parent".to_string()));
             let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
-            let mut field_type = crate::document::FieldType::new();
+            let field_type = crate::document::FieldType::new();
             if point_dimensions > 0 {
                 field_type.set_dimensions(point_dimensions, 8).unwrap();
             }
@@ -14479,7 +14357,7 @@ mod tests {
     #[test]
     fn an_assertion_error_from_a_batch_is_the_writers_tragedy() {
         let (stream, writer) = recording_writer();
-        let mut value_type = crate::document::FieldType::new();
+        let value_type = crate::document::FieldType::new();
         value_type
             .set_doc_values_type(DocValuesType::NUMERIC)
             .unwrap();
@@ -15011,7 +14889,7 @@ mod tests {
             StringField::new("id", "a".to_string(), Store::YES).unwrap(),
         ));
         // `TextField.TYPE_NOT_STORED` with term vectors.
-        let mut term_vectors = crate::document::FieldType::new();
+        let term_vectors = crate::document::FieldType::new();
         term_vectors.set_tokenized(true).unwrap();
         term_vectors
             .set_index_options(crate::index::IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)

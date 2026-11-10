@@ -846,7 +846,7 @@ impl DataInput for SharedRandomAccessSlice {
         self.resource_description.clone()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         lock_random_access_input(&self.input).read_bytes(b, offset, len)
     }
 
@@ -962,7 +962,7 @@ impl MergingDisiInput {
 }
 
 impl DataInput for MergingDisiInput {
-    fn read_bytes(&mut self, b: &mut [u8], off: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, off: usize, len: usize) -> Result<()> {
         self.read_at(len as i64, |r#in| r#in.read_bytes(b, off, len))
     }
 
@@ -1884,7 +1884,7 @@ mod tests {
             .unwrap();
         let length = input.length() as usize;
         let mut bytes = vec![0u8; length];
-        input.read_bytes(&mut bytes, 0, length).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, length).unwrap();
         // Entries end four bytes (the `-1` marker) before the sixteen-byte
         // footer; there is exactly one, thirty-six bytes long.
         let entry_start = length - 16 - 4 - 36;
@@ -2209,7 +2209,7 @@ mod tests {
                 .unwrap();
             let length = input.length() as usize;
             let mut bytes = vec![0u8; length];
-            input.read_bytes(&mut bytes, 0, length).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, length).unwrap();
             bytes
         };
         let data = read("_0.nvd");

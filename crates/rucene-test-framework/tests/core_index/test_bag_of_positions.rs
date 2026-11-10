@@ -92,7 +92,7 @@ fn test_() -> Result<()> {
         println!("threadCount={thread_count}");
     }
 
-    let mut field_type = FieldType::new_from(TextField::type_not_stored());
+    let field_type = FieldType::new_from(TextField::type_not_stored());
     if random().next_boolean() {
         field_type.set_omit_norms(true)?;
     }

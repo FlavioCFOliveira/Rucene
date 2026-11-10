@@ -353,10 +353,10 @@ fn mmap_class() -> Arc<Class> {
         || DirectoryTestInstance::new(TestMMapDirectory),
         vec![
             directory_test("testAceWithThreads", mmap_test_ace_with_threads),
-            // Not ported: `testNullParamsIndexInput` (`TestMMapDirectory.java:97-108`)
-            // passes a Java `null` array to `readBytes`/`readFloats`/`readLongs`,
-            // which raise `NullPointerException` implicitly (no null check of
-            // their own); Rucene's `&mut [T]` parameters cannot be null.
+            directory_test(
+                "testNullParamsIndexInput",
+                mmap_test_null_params_index_input,
+            ),
             own("testMadviseAvail", mmap_test_madvise_avail),
             own("testWithNormal", mmap_test_with_normal),
             own("testAdviseByContextFunc", mmap_test_advise_by_context_func),
@@ -802,7 +802,7 @@ fn mmap_test_ace_with_threads(case: &dyn BaseDirectoryTestCase) -> Result<()> {
                     for _ in 0..10 {
                         let read = clone
                             .seek(0)
-                            .and_then(|()| clone.read_bytes(&mut accum, 0, n_ints * 4));
+                            .and_then(|()| clone.read_bytes(Some(&mut accum), 0, n_ints * 4));
                         match read {
                             Ok(()) => {}
                             // OK
@@ -827,6 +827,33 @@ fn mmap_test_ace_with_threads(case: &dyn BaseDirectoryTestCase) -> Result<()> {
         Ok(())
     })();
     result.and(dir.close())
+}
+
+/// `TestMMapDirectory.testNullParamsIndexInput()`.
+fn mmap_test_null_params_index_input(case: &dyn BaseDirectoryTestCase) -> Result<()> {
+    let mut mmap_dir = case.get_directory(&LuceneTestCase::create_temp_dir_prefix(
+        "testNullParamsIndexInput",
+    ))?;
+    let result = (|| -> Result<()> {
+        {
+            let mut out =
+                mmap_dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*rnd()))?;
+            let aligned = out.align_file_pointer(16).map(|_| ());
+            aligned.and(out.close())?;
+        }
+        let mut r#in = mmap_dir.open_input("bytes", &*DEFAULT_IO_CONTEXT)?;
+        expect_throws("java.lang.NullPointerException", || {
+            r#in.read_bytes(None, 0, 1)
+        });
+        expect_throws("java.lang.NullPointerException", || {
+            r#in.read_floats(None, 0, 1)
+        });
+        expect_throws("java.lang.NullPointerException", || {
+            r#in.read_longs(None, 0, 1)
+        });
+        r#in.close()
+    })();
+    result.and(mmap_dir.close())
 }
 
 /// `TestMMapDirectory.testMadviseAvail()`.
@@ -856,7 +883,7 @@ fn mmap_test_with_normal() -> Result<()> {
         dir.set_read_advice(Box::new(|_s, _c| Some(ReadAdvice::Normal)));
         let mut r#in = dir.open_input("test", &*DEFAULT_IO_CONTEXT)?;
         let mut read_bytes = vec![0u8; size];
-        r#in.read_bytes(&mut read_bytes, 0, size)?;
+        r#in.read_bytes(Some(&mut read_bytes), 0, size)?;
         assert_array_equals(&jbytes(&bytes), &jbytes(&read_bytes));
         r#in.close()
     })();
@@ -924,7 +951,7 @@ fn mmap_test_with_advise_by_context(contexts: &[Box<dyn IOContext>]) -> Result<(
         for context in contexts {
             let mut r#in = dir.open_input("test", &**context)?;
             let mut read_bytes = vec![0u8; size];
-            r#in.read_bytes(&mut read_bytes, 0, size)?;
+            r#in.read_bytes(Some(&mut read_bytes), 0, size)?;
             assert_array_equals(&jbytes(&bytes), &jbytes(&read_bytes));
             r#in.close()?;
         }
@@ -962,7 +989,7 @@ fn mmap_test_preload() -> Result<()> {
         // the data should be loaded in memory
         Assert::assert_true(r#in.is_loaded().unwrap_or(false));
         let mut read_bytes = vec![0u8; size];
-        r#in.read_bytes(&mut read_bytes, 0, size)?;
+        r#in.read_bytes(Some(&mut read_bytes), 0, size)?;
         assert_array_equals(&jbytes(&bytes), &jbytes(&read_bytes));
         r#in.close()
     })();
@@ -1738,7 +1765,7 @@ fn multi_mmap_test_implementations(case: &dyn BaseDirectoryTestCase) -> Result<(
         let mut ii = mmap_dir.open_input("bytes", &*LuceneTestCase::new_io_context(&*rnd()))?;
         let mut actual = vec![0u8; size as usize]; // first read all bytes
         let len = actual.len();
-        ii.read_bytes(&mut actual, 0, len)?;
+        ii.read_bytes(Some(&mut actual), 0, len)?;
         Assert::assert_equals(BytesRef::new(bytes.clone()), BytesRef::new(actual));
         // reinit:
         ii.seek(0)?;

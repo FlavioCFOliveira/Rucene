@@ -441,7 +441,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
 
         let mut field_ids: Vec<i32> = Vec::new();
 
-        let mut custom_type = FieldType::new_from(TextField::type_stored());
+        let custom_type = FieldType::new_from(TextField::type_stored());
         custom_type.set_tokenized(false)?;
         let id_field = LuceneTestCase::new_field("id", "", &custom_type);
 
@@ -456,7 +456,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             println!("TEST: build index docCount={doc_count}");
         }
 
-        let mut custom_type2 = FieldType::new();
+        let custom_type2 = FieldType::new();
         custom_type2.set_stored(true)?;
         for i in 0..doc_count {
             let mut doc = Document::new();
@@ -549,7 +549,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         )?;
         let mut doc = Document::new();
 
-        let mut custom_type = FieldType::new();
+        let custom_type = FieldType::new();
         custom_type.set_stored(true)?;
         doc.add(Box::new(LuceneTestCase::new_field(
             "zzz",
@@ -703,7 +703,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let mut doc = Document::new();
-        let mut only_stored = FieldType::new();
+        let only_stored = FieldType::new();
         only_stored.set_stored(true)?;
         doc.add(Box::new(Field::new(
             "field",
@@ -742,7 +742,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         iw_conf.set_max_buffered_docs(RandomNumbers::random_int_between(&*random(), 2, 30))?;
         let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_conf)?;
 
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true)?;
         ft.freeze();
 
@@ -1035,7 +1035,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
             data.push(fields);
         }
 
-        let mut ty = FieldType::new_from(StringField::type_stored());
+        let ty = FieldType::new_from(StringField::type_stored());
         ty.set_index_options(IndexOptions::NONE)?;
         ty.freeze();
         for (i, fields) in data.iter().enumerate() {
@@ -1240,7 +1240,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
 
         dir.set_throttling(Throttling::Never);
 
-        let mut only_stored = FieldType::new_from(StringField::type_stored());
+        let only_stored = FieldType::new_from(StringField::type_stored());
         only_stored.set_index_options(IndexOptions::NONE)?;
 
         // The documents, `emptyDoc`, `bigDoc1` (lot of small fields) and
@@ -1443,7 +1443,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         };
         let num_fields = TestUtil::next_int(&*random(), 1, 10);
         let mut stored_fields: Vec<String> = (0..num_fields).map(|i| format!("f-{i}")).collect();
-        let mut store_type = FieldType::new_from(TextField::type_stored());
+        let store_type = FieldType::new_from(TextField::type_stored());
         store_type.set_stored(true)?;
         // `documentFactory`: the document, and the stored fields it holds.
         let mut document_factory = |id: &str| -> Result<(Document, StoredValues)> {

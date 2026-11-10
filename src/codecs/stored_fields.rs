@@ -172,7 +172,7 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
         }
         let length = length as usize;
         let mut bytes = vec![0u8; length];
-        value.data_input().read_bytes(&mut bytes, 0, length)?;
+        value.data_input().read_bytes(Some(&mut bytes), 0, length)?;
         self.write_field_bytes(info, &bytes)
     }
 

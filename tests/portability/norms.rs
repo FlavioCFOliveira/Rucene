@@ -117,7 +117,7 @@ impl Spec {
     }
 
     fn field_type(&self) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_stored(false).expect("stored");
         field_type

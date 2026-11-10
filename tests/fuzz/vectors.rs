@@ -324,7 +324,9 @@ fn read_file(directory: &Arc<dyn Directory>, name: &str) -> Vec<u8> {
         .open_input(name, &*DEFAULT_IO_CONTEXT)
         .expect("open input");
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).expect("read bytes");
+    input
+        .read_bytes(Some(&mut bytes), 0, length)
+        .expect("read bytes");
     bytes
 }
 

@@ -477,7 +477,7 @@ fn the_block_postings_enum_is_reused_exactly_when_lucene_reuses_it() {
 fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
@@ -594,7 +594,7 @@ impl rucene::analysis::TokenStream for PayloadTokens {
 fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
@@ -648,7 +648,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
 fn a_fresh_block_postings_enum_answers_offsets_of_zero_as_lucene_does() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)

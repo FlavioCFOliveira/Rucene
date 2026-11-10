@@ -657,7 +657,7 @@ impl Lz4 {
                         dest.len() - d_off
                     )));
                 }
-                input.read_bytes(dest, d_off, literal_len)?;
+                input.read_bytes(Some(dest), d_off, literal_len)?;
                 d_off += literal_len;
             }
 
@@ -856,7 +856,7 @@ impl LowercaseAsciiCompression {
         let compressed_len = len - saved;
 
         // Copy the packed bytes.
-        input.read_bytes(out, 0, compressed_len)?;
+        input.read_bytes(Some(out), 0, compressed_len)?;
 
         // Restore the leading 2 bits of each packed byte into whole bytes.
         #[allow(clippy::needless_range_loop)]

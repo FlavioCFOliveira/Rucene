@@ -64,8 +64,10 @@ fn test_string_field() -> Result<()> {
         StringField::type_not_stored().clone(),
     )?;
     let ts_identity = identity(&*ts);
-    let ts2 = string_field.token_stream(None, Some(&mut *ts))?;
-    assert_same(ts_identity, identity(&*ts2));
+    // `ts` moves into the call, as Java hands the object over; `ts2` is that
+    // object when it is reused (`assertSame(ts, ts2)`).
+    ts = string_field.token_stream(None, Some(ts))?;
+    assert_same(ts_identity, identity(&*ts));
     BaseTokenStreamTestCase::assert_token_stream_contents_offsets(&mut *ts, &["baz"], &[0], &[3])?;
 
     // pass a bogus stream and ensure it's still ok
@@ -74,9 +76,9 @@ fn test_string_field() -> Result<()> {
         "beer".to_string(),
         StringField::type_not_stored().clone(),
     )?;
-    let mut bogus = CannedTokenStream::new(Vec::new());
-    let bogus_identity = identity(&bogus);
-    ts = string_field.token_stream(None, Some(&mut bogus))?;
+    let bogus: Box<dyn TokenStream> = Box::new(CannedTokenStream::new(Vec::new()));
+    let bogus_identity = identity(&*bogus);
+    ts = string_field.token_stream(None, Some(bogus))?;
     assert_not_same(identity(&*ts), bogus_identity);
     BaseTokenStreamTestCase::assert_token_stream_contents_offsets(&mut *ts, &["beer"], &[0], &[4])?;
     Ok(())
@@ -118,7 +120,7 @@ impl IndexableField for MyField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        reuse: Option<&mut dyn TokenStream>,
+        reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         self.state
             .last_seen

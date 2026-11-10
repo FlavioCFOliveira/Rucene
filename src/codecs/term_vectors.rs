@@ -203,7 +203,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                         })?;
                         payload.bytes.clear();
                         payload.bytes.resize(length, 0);
-                        input.read_bytes(&mut payload.bytes, 0, length)?;
+                        input.read_bytes(Some(&mut payload.bytes), 0, length)?;
                         payload.offset = 0;
                         payload.length = length;
                         has_payload = true;

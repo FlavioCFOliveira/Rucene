@@ -1097,7 +1097,9 @@ impl PointReader for OfflinePointReader {
             let max_point_on_heap = self.buffer.len() / self.config.bytes_per_doc() as usize;
             let to_read = self.count_left.min(max_point_on_heap);
             let bytes = to_read * self.config.bytes_per_doc() as usize;
-            self.in_.as_input().read_bytes(&mut self.buffer, 0, bytes)?;
+            self.in_
+                .as_input()
+                .read_bytes(Some(&mut self.buffer), 0, bytes)?;
             self.points_in_buffer = to_read - 1;
             self.count_left -= to_read;
             self.offset = 0;
@@ -1903,8 +1905,8 @@ impl BKDReader {
         let index_bytes_len = config.packed_index_bytes_length() as usize;
         let mut min_packed_value = vec![0u8; index_bytes_len];
         let mut max_packed_value = vec![0u8; index_bytes_len];
-        meta_in.read_bytes(&mut min_packed_value, 0, index_bytes_len)?;
-        meta_in.read_bytes(&mut max_packed_value, 0, index_bytes_len)?;
+        meta_in.read_bytes(Some(&mut min_packed_value), 0, index_bytes_len)?;
+        meta_in.read_bytes(Some(&mut max_packed_value), 0, index_bytes_len)?;
 
         // `ArrayUtil.getUnsignedComparator(config.bytesPerDim())`
         // (`BKDReader.java:82-83`).
@@ -2321,7 +2323,11 @@ impl BKDReader {
                 let old_byte = child.split_value[start] as i32;
                 child.split_value[start] = (old_byte + first_diff) as u8;
                 if suffix > 1 {
-                    inner_in.read_bytes(&mut child.split_value, start + 1, suffix as usize - 1)?;
+                    inner_in.read_bytes(
+                        Some(&mut child.split_value),
+                        start + 1,
+                        suffix as usize - 1,
+                    )?;
                 }
             }
             let left_num_bytes = if child.node_id * 2 < num_leaves {
@@ -2978,7 +2984,7 @@ fn read_common_prefixes(
         *slot = prefix;
         if prefix > 0 {
             let off = dim * config.bytes_per_dim as usize;
-            in_.read_bytes(scratch_packed, off, prefix)?;
+            in_.read_bytes(Some(scratch_packed), off, prefix)?;
         }
     }
     Ok(())
@@ -3018,8 +3024,8 @@ fn read_min_max(
     {
         let off = dim * config.bytes_per_dim as usize + prefix;
         let suffix = config.bytes_per_dim as usize - prefix;
-        in_.read_bytes(min_packed, off, suffix)?;
-        in_.read_bytes(max_packed, off, suffix)?;
+        in_.read_bytes(Some(min_packed), off, suffix)?;
+        in_.read_bytes(Some(max_packed), off, suffix)?;
     }
     Ok(())
 }
@@ -3068,7 +3074,11 @@ fn visit_sparse_doc_values(
             .take(config.num_dims as usize)
         {
             let off = dim * config.bytes_per_dim as usize + prefix;
-            in_.read_bytes(scratch_packed, off, config.bytes_per_dim as usize - prefix)?;
+            in_.read_bytes(
+                Some(scratch_packed),
+                off,
+                config.bytes_per_dim as usize - prefix,
+            )?;
         }
         for j in 0..length {
             visitor.visit_with_value(doc_ids[i + j], scratch_packed)?;
@@ -3158,7 +3168,11 @@ fn visit_compressed_doc_values(
                 .take(config.num_dims as usize)
             {
                 let off = dim * config.bytes_per_dim as usize + prefix;
-                in_.read_bytes(scratch_packed, off, config.bytes_per_dim as usize - prefix)?;
+                in_.read_bytes(
+                    Some(scratch_packed),
+                    off,
+                    config.bytes_per_dim as usize - prefix,
+                )?;
             }
             visitor.visit_with_value(doc_ids[i], scratch_packed)?;
             i += 1;
@@ -6412,7 +6426,7 @@ mod tests {
         let mut bytes = vec![0u8; length];
         raw.open_input(&name, &*DEFAULT_IO_CONTEXT)
             .unwrap()
-            .read_bytes(&mut bytes, 0, length)
+            .read_bytes(Some(&mut bytes), 0, length)
             .unwrap();
         bytes[13] ^= 0xff;
         raw.delete_file(&name).unwrap();

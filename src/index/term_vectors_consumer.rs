@@ -1555,7 +1555,9 @@ mod tests {
         assert_eq!(input.read_v_int().expect("code"), 1, "(0 << 1) | 1");
         assert_eq!(input.read_v_int().expect("payload length"), 3);
         let mut bytes = [0u8; 3];
-        input.read_bytes(&mut bytes, 0, 3).expect("payload bytes");
+        input
+            .read_bytes(Some(&mut bytes), 0, 3)
+            .expect("payload bytes");
         assert_eq!(&bytes, b"pay");
         assert_eq!(input.read_v_int().expect("code"), 14, "(7 - 0) << 1");
         assert!(input.eof());

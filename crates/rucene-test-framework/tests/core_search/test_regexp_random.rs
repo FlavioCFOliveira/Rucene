@@ -53,7 +53,7 @@ fn fixture_set_up(f: &mut Fixture) -> Result<()> {
     config.set_max_buffered_docs(TestUtil::next_int(&*random(), 50, 1000))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
 
-    let mut custom_type = FieldType::new_from(TextField::type_stored());
+    let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_omit_norms(true)?;
     let mut field = LuceneTestCase::new_field("field", "", &custom_type);
 

@@ -737,7 +737,7 @@ impl Directory for RefusingDirectory {
 /// `WriterTragedyFixture.TV_TYPE`: `TextField.TYPE_NOT_STORED` with term
 /// vectors.
 fn tv_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
@@ -2055,7 +2055,7 @@ impl rucene::store::DataInput for CloseFailingInput {
     fn read_byte(&mut self) -> Result<u8> {
         self.inner.read_byte()
     }
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.inner.read_bytes(b, offset, len)
     }
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
@@ -2744,7 +2744,7 @@ impl rucene::analysis::TokenStream for FreqTokens {
 }
 
 fn chain_field_type(options: IndexOptions, tokenized: bool, vector_positions: bool) -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(tokenized).unwrap();
     field_type.set_index_options(options).unwrap();
     if vector_positions {
@@ -2946,7 +2946,7 @@ impl rucene::index::IndexableField for BinaryInvertedField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn rucene::analysis::Analyzer>,
-        reuse: Option<&mut dyn rucene::analysis::TokenStream>,
+        reuse: Option<Box<dyn rucene::analysis::TokenStream>>,
     ) -> Result<Box<dyn rucene::analysis::TokenStream>> {
         self.0.token_stream(analyzer, reuse)
     }

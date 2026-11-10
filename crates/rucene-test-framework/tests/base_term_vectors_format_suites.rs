@@ -138,7 +138,7 @@ fn lucene90_class() -> Arc<Class> {
 
 /// `new FieldType(TextField.TYPE_NOT_STORED)` with `setStoreTermVectors(true)`.
 fn term_vectors_type() -> Result<FieldType> {
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_store_term_vectors(true)?;
     Ok(ft)
 }

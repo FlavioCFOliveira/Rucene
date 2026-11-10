@@ -1509,7 +1509,7 @@ fn test_hang_on_close() -> Result<()> {
     let writer = IndexWriter::new(d(&dir), c)?;
 
     let mut doc = Document::new();
-    let mut custom_type = FieldType::new_from(TextField::type_stored());
+    let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_store_term_vectors(true)?;
     custom_type.set_store_term_vector_positions(true)?;
     custom_type.set_store_term_vector_offsets(true)?;
@@ -1523,7 +1523,7 @@ fn test_hang_on_close() -> Result<()> {
     }
 
     let mut doc2 = Document::new();
-    let mut custom_type2 = FieldType::new();
+    let custom_type2 = FieldType::new();
     custom_type2.set_stored(true)?;
     for _ in 0..4 {
         doc2.add(Box::new(LuceneTestCase::new_field(
@@ -2000,7 +2000,7 @@ fn test_non_cfs_leftovers() -> Result<()> {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let w = IndexWriter::new(Arc::clone(&dir), plain_iwc())?;
         let mut doc = Document::new();
-        let mut custom_type = FieldType::new_from(TextField::type_stored());
+        let custom_type = FieldType::new_from(TextField::type_stored());
         custom_type.set_store_term_vectors(true)?;
         doc.add(Box::new(Field::new("c", "v".into(), custom_type)?));
         w.add_document(&doc)?;
@@ -2047,7 +2047,7 @@ fn test_add_index_missing_codec() -> Result<()> {
         conf.set_codec(Arc::new(un_registered_codec()))?;
         let w = IndexWriter::new(d(&to_add), conf)?;
         let mut doc = Document::new();
-        let mut custom_type = FieldType::new();
+        let custom_type = FieldType::new();
         custom_type.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
         doc.add(Box::new(LuceneTestCase::new_field(
             "foo",

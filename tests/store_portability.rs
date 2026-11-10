@@ -56,7 +56,7 @@ fn assert_portability_payload(input: &mut dyn IndexInput) -> Result<()> {
     assert_eq!(input.read_v_long()?, 1_000_000_000_000_i64);
     assert_eq!(input.read_string()?, "Rucene portability test");
     let mut tail = [0u8; 4];
-    input.read_bytes(&mut tail, 0, 4)?;
+    input.read_bytes(Some(&mut tail), 0, 4)?;
     assert_eq!(tail, [0x0A, 0x0B, 0x0C, 0x0D]);
     Ok(())
 }
@@ -111,7 +111,7 @@ fn ram_directory_writes_java_compatible_payload() -> Result<()> {
     // Read back the full bytes to prove byte equality with the Java fixture.
     input.seek(0)?;
     let mut rust_bytes = vec![0u8; JAVA_PAYLOAD_LEN];
-    input.read_bytes(&mut rust_bytes, 0, JAVA_PAYLOAD_LEN)?;
+    input.read_bytes(Some(&mut rust_bytes), 0, JAVA_PAYLOAD_LEN)?;
     assert_eq!(rust_bytes, java_payload_bytes());
     Ok(())
 }
@@ -166,7 +166,7 @@ fn rucene_crc32_matches_java_reference_for_known_payloads() -> Result<()> {
     // The on-disk (in-heap) bytes must be identical.
     let mut input = dir.open_input("crc.bin", &*DEFAULT_IO_CONTEXT)?;
     let mut rust_bytes = vec![0u8; payload.len()];
-    input.read_bytes(&mut rust_bytes, 0, payload.len())?;
+    input.read_bytes(Some(&mut rust_bytes), 0, payload.len())?;
     assert_eq!(rust_bytes, payload);
 
     Ok(())

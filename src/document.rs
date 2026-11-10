@@ -505,76 +505,248 @@ impl StoredValue {
     }
 }
 
+/// An enum property of a [`FieldType`], kept in an [`AtomicU8`] so that a
+/// type shared by several fields can change through `&self`, as Java's
+/// mutable `FieldType` object does.
+///
+/// [`AtomicU8`]: std::sync::atomic::AtomicU8
+trait FieldTypeEnum: Copy + 'static {
+    /// Every variant, in declaration order: `VARIANTS[v as usize] == v`.
+    const VARIANTS: &'static [Self];
+    /// The variant's index in [`Self::VARIANTS`].
+    fn ordinal(self) -> u8;
+}
+
+macro_rules! field_type_enum {
+    ($ty:ty, [$($variant:path),+ $(,)?]) => {
+        impl FieldTypeEnum for $ty {
+            const VARIANTS: &'static [Self] = &[$($variant),+];
+            fn ordinal(self) -> u8 {
+                self as u8
+            }
+        }
+    };
+}
+
+field_type_enum!(
+    IndexOptions,
+    [
+        IndexOptions::NONE,
+        IndexOptions::DOCS,
+        IndexOptions::DOCS_AND_FREQS,
+        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS,
+        IndexOptions::DOCS_AND_CUSTOM_FREQS,
+    ]
+);
+field_type_enum!(
+    DocValuesType,
+    [
+        DocValuesType::NONE,
+        DocValuesType::NUMERIC,
+        DocValuesType::BINARY,
+        DocValuesType::SORTED,
+        DocValuesType::SORTED_NUMERIC,
+        DocValuesType::SORTED_SET,
+    ]
+);
+field_type_enum!(
+    DocValuesSkipIndexType,
+    [DocValuesSkipIndexType::NONE, DocValuesSkipIndexType::RANGE]
+);
+field_type_enum!(
+    VectorEncoding,
+    [VectorEncoding::BYTE, VectorEncoding::FLOAT32]
+);
+field_type_enum!(
+    VectorSimilarityFunction,
+    [
+        VectorSimilarityFunction::EUCLIDEAN,
+        VectorSimilarityFunction::DOT_PRODUCT,
+        VectorSimilarityFunction::COSINE,
+        VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+    ]
+);
+
+/// An atomic cell holding a [`FieldTypeEnum`] value.
+struct AtomicEnum<T: FieldTypeEnum> {
+    ordinal: std::sync::atomic::AtomicU8,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T: FieldTypeEnum> AtomicEnum<T> {
+    fn new(value: T) -> Self {
+        Self {
+            ordinal: std::sync::atomic::AtomicU8::new(value.ordinal()),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    fn get(&self) -> T {
+        T::VARIANTS[usize::from(self.ordinal.load(FT_ORDER))]
+    }
+
+    fn set(&self, value: T) {
+        self.ordinal.store(value.ordinal(), FT_ORDER);
+    }
+}
+
+/// The ordering of every [`FieldType`] property access.
+///
+/// Java's `FieldType` fields are plain (non-volatile) fields: a change made
+/// by one thread carries no happens-before edge of its own, and a type is
+/// published to other threads through whatever synchronizes the field holding
+/// it. `Relaxed` gives each property the same per-location coherence and no
+/// more; the atomics exist only so that `&self` setters are sound.
+const FT_ORDER: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
+
 /// Describes the properties of a field.
 ///
 /// Equivalent to `org.apache.lucene.document.FieldType`.
-#[derive(Debug, Clone)]
+///
+/// A [`Field`] holds its type through an [`Arc`], as a Java field holds a
+/// reference to its `FieldType` object (`Field.java:63`): a change made to a
+/// shared, unfrozen type is seen by every field that holds it
+/// (`TestIndexWriter.testIndexStoreCombos` changes the type after creating
+/// the field). The setters therefore take `&self`, on atomic properties and a
+/// lock for the attribute map, and keep Java's `checkIfFrozen()` check.
 pub struct FieldType {
-    stored: bool,
-    tokenized: bool,
-    store_term_vectors: bool,
-    store_term_vector_offsets: bool,
-    store_term_vector_positions: bool,
-    store_term_vector_payloads: bool,
-    omit_norms: bool,
-    index_options: IndexOptions,
-    frozen: bool,
-    doc_values_type: DocValuesType,
-    doc_values_skip_index_type: DocValuesSkipIndexType,
-    dimension_count: i32,
-    index_dimension_count: i32,
-    dimension_num_bytes: i32,
-    vector_dimension: i32,
-    vector_encoding: VectorEncoding,
-    vector_similarity_function: VectorSimilarityFunction,
+    stored: std::sync::atomic::AtomicBool,
+    tokenized: std::sync::atomic::AtomicBool,
+    store_term_vectors: std::sync::atomic::AtomicBool,
+    store_term_vector_offsets: std::sync::atomic::AtomicBool,
+    store_term_vector_positions: std::sync::atomic::AtomicBool,
+    store_term_vector_payloads: std::sync::atomic::AtomicBool,
+    omit_norms: std::sync::atomic::AtomicBool,
+    index_options: AtomicEnum<IndexOptions>,
+    frozen: std::sync::atomic::AtomicBool,
+    doc_values_type: AtomicEnum<DocValuesType>,
+    doc_values_skip_index_type: AtomicEnum<DocValuesSkipIndexType>,
+    dimension_count: std::sync::atomic::AtomicI32,
+    index_dimension_count: std::sync::atomic::AtomicI32,
+    dimension_num_bytes: std::sync::atomic::AtomicI32,
+    vector_dimension: std::sync::atomic::AtomicI32,
+    vector_encoding: AtomicEnum<VectorEncoding>,
+    vector_similarity_function: AtomicEnum<VectorSimilarityFunction>,
     /// A `java.util.HashMap` mutated in place by `putAttribute`
     /// (`FieldType.java`), whose iteration order the `FieldInfo` built from it
     /// inherits and a `.fnm` therefore records.
-    attributes: JavaHashMap<String>,
+    attributes: std::sync::RwLock<JavaHashMap<String>>,
     /// The identity of this type once it is frozen, shared by every clone of
-    /// it; `None` while it is mutable.
+    /// it; `0` while it is mutable.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java fields hold a *reference* to
-    /// their `FieldType`, so every `StoredField` shares the one frozen
-    /// `StoredField.TYPE`, and `IndexingChain` tells two types apart by
-    /// reference (`fieldType == validatedFrozenFieldType`,
-    /// `IndexingChain.java:1806,1816`). A Rust field owns a clone of its type,
-    /// so no reference can identify it. The identity is drawn when the type is
-    /// frozen and copied by `Clone`, so the clones of one frozen type — which
-    /// is how this port shares Java's one object — compare equal, and two
-    /// types frozen separately never do, even when equal by value, exactly as
-    /// two Java objects do not. It takes no part in [`PartialEq`] or
-    /// [`Hash`](std::hash::Hash), which `FieldType.equals` defines by value.
-    frozen_identity: Option<u64>,
+    /// **Divergence from Lucene 10.5.0.** `IndexingChain` tells two types
+    /// apart by reference (`fieldType == validatedFrozenFieldType`,
+    /// `IndexingChain.java:1806,1816`), and every Java `StoredField` shares
+    /// the one frozen `StoredField.TYPE`. The predefined Rucene fields
+    /// (`StringField`, `StoredField`, …) own a clone of their frozen static
+    /// type, so no reference can identify it. The identity is drawn when the
+    /// type is frozen and copied by `Clone`, so the clones of one frozen type
+    /// — which is how those fields share Java's one object — compare equal,
+    /// and two types frozen separately never do, even when equal by value,
+    /// exactly as two Java objects do not. It takes no part in [`PartialEq`]
+    /// or [`Hash`](std::hash::Hash), which `FieldType.equals` defines by value.
+    frozen_identity: std::sync::atomic::AtomicU64,
 }
 
 /// The source of [`FieldType`] frozen identities: each [`FieldType::freeze`]
 /// of a mutable type draws the next one.
 static NEXT_FROZEN_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+impl Clone for FieldType {
+    /// A copy of every property, the frozen flag and identity included (a
+    /// Rust value copy, unlike `new FieldType(ref)`, which is
+    /// [`FieldType::new_from`]).
+    fn clone(&self) -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
+        Self {
+            stored: AtomicBool::new(self.stored()),
+            tokenized: AtomicBool::new(self.tokenized()),
+            store_term_vectors: AtomicBool::new(self.store_term_vectors()),
+            store_term_vector_offsets: AtomicBool::new(self.store_term_vector_offsets()),
+            store_term_vector_positions: AtomicBool::new(self.store_term_vector_positions()),
+            store_term_vector_payloads: AtomicBool::new(self.store_term_vector_payloads()),
+            omit_norms: AtomicBool::new(self.omit_norms()),
+            index_options: AtomicEnum::new(self.index_options()),
+            frozen: AtomicBool::new(self.is_frozen()),
+            doc_values_type: AtomicEnum::new(self.doc_values_type()),
+            doc_values_skip_index_type: AtomicEnum::new(self.doc_values_skip_index_type()),
+            dimension_count: AtomicI32::new(self.point_dimension_count()),
+            index_dimension_count: AtomicI32::new(self.point_index_dimension_count()),
+            dimension_num_bytes: AtomicI32::new(self.point_num_bytes()),
+            vector_dimension: AtomicI32::new(self.vector_dimension()),
+            vector_encoding: AtomicEnum::new(self.vector_encoding()),
+            vector_similarity_function: AtomicEnum::new(self.vector_similarity_function()),
+            attributes: std::sync::RwLock::new(self.attributes()),
+            frozen_identity: AtomicU64::new(self.frozen_identity.load(FT_ORDER)),
+        }
+    }
+}
+
+impl Debug for FieldType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldType")
+            .field("stored", &self.stored())
+            .field("tokenized", &self.tokenized())
+            .field("store_term_vectors", &self.store_term_vectors())
+            .field(
+                "store_term_vector_offsets",
+                &self.store_term_vector_offsets(),
+            )
+            .field(
+                "store_term_vector_positions",
+                &self.store_term_vector_positions(),
+            )
+            .field(
+                "store_term_vector_payloads",
+                &self.store_term_vector_payloads(),
+            )
+            .field("omit_norms", &self.omit_norms())
+            .field("index_options", &self.index_options())
+            .field("frozen", &self.is_frozen())
+            .field("doc_values_type", &self.doc_values_type())
+            .field(
+                "doc_values_skip_index_type",
+                &self.doc_values_skip_index_type(),
+            )
+            .field("dimension_count", &self.point_dimension_count())
+            .field("index_dimension_count", &self.point_index_dimension_count())
+            .field("dimension_num_bytes", &self.point_num_bytes())
+            .field("vector_dimension", &self.vector_dimension())
+            .field("vector_encoding", &self.vector_encoding())
+            .field(
+                "vector_similarity_function",
+                &self.vector_similarity_function(),
+            )
+            .field("attributes", &self.attributes())
+            .finish()
+    }
+}
+
 impl FieldType {
     /// Creates a new mutable `FieldType` with default properties.
     pub fn new() -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
         Self {
-            stored: false,
-            tokenized: true,
-            store_term_vectors: false,
-            store_term_vector_offsets: false,
-            store_term_vector_positions: false,
-            store_term_vector_payloads: false,
-            omit_norms: false,
-            index_options: IndexOptions::NONE,
-            frozen: false,
-            doc_values_type: DocValuesType::NONE,
-            doc_values_skip_index_type: DocValuesSkipIndexType::NONE,
-            dimension_count: 0,
-            index_dimension_count: 0,
-            dimension_num_bytes: 0,
-            vector_dimension: 0,
-            vector_encoding: VectorEncoding::FLOAT32,
-            vector_similarity_function: VectorSimilarityFunction::EUCLIDEAN,
-            attributes: JavaHashMap::new(),
-            frozen_identity: None,
+            stored: AtomicBool::new(false),
+            tokenized: AtomicBool::new(true),
+            store_term_vectors: AtomicBool::new(false),
+            store_term_vector_offsets: AtomicBool::new(false),
+            store_term_vector_positions: AtomicBool::new(false),
+            store_term_vector_payloads: AtomicBool::new(false),
+            omit_norms: AtomicBool::new(false),
+            index_options: AtomicEnum::new(IndexOptions::NONE),
+            frozen: AtomicBool::new(false),
+            doc_values_type: AtomicEnum::new(DocValuesType::NONE),
+            doc_values_skip_index_type: AtomicEnum::new(DocValuesSkipIndexType::NONE),
+            dimension_count: AtomicI32::new(0),
+            index_dimension_count: AtomicI32::new(0),
+            dimension_num_bytes: AtomicI32::new(0),
+            vector_dimension: AtomicI32::new(0),
+            vector_encoding: AtomicEnum::new(VectorEncoding::FLOAT32),
+            vector_similarity_function: AtomicEnum::new(VectorSimilarityFunction::EUCLIDEAN),
+            attributes: std::sync::RwLock::new(JavaHashMap::new()),
+            frozen_identity: AtomicU64::new(0),
         }
     }
 
@@ -582,31 +754,32 @@ impl FieldType {
     ///
     /// The frozen flag is intentionally not copied.
     pub fn new_from(other: &dyn IndexableFieldType) -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
         Self {
-            stored: other.stored(),
-            tokenized: other.tokenized(),
-            store_term_vectors: other.store_term_vectors(),
-            store_term_vector_offsets: other.store_term_vector_offsets(),
-            store_term_vector_positions: other.store_term_vector_positions(),
-            store_term_vector_payloads: other.store_term_vector_payloads(),
-            omit_norms: other.omit_norms(),
-            index_options: other.index_options(),
-            frozen: false,
-            doc_values_type: other.doc_values_type(),
-            doc_values_skip_index_type: other.doc_values_skip_index_type(),
-            dimension_count: other.point_dimension_count(),
-            index_dimension_count: other.point_index_dimension_count(),
-            dimension_num_bytes: other.point_num_bytes(),
-            vector_dimension: other.vector_dimension(),
-            vector_encoding: other.vector_encoding(),
-            vector_similarity_function: other.vector_similarity_function(),
-            attributes: other.attributes().clone(),
-            frozen_identity: None,
+            stored: AtomicBool::new(other.stored()),
+            tokenized: AtomicBool::new(other.tokenized()),
+            store_term_vectors: AtomicBool::new(other.store_term_vectors()),
+            store_term_vector_offsets: AtomicBool::new(other.store_term_vector_offsets()),
+            store_term_vector_positions: AtomicBool::new(other.store_term_vector_positions()),
+            store_term_vector_payloads: AtomicBool::new(other.store_term_vector_payloads()),
+            omit_norms: AtomicBool::new(other.omit_norms()),
+            index_options: AtomicEnum::new(other.index_options()),
+            frozen: AtomicBool::new(false),
+            doc_values_type: AtomicEnum::new(other.doc_values_type()),
+            doc_values_skip_index_type: AtomicEnum::new(other.doc_values_skip_index_type()),
+            dimension_count: AtomicI32::new(other.point_dimension_count()),
+            index_dimension_count: AtomicI32::new(other.point_index_dimension_count()),
+            dimension_num_bytes: AtomicI32::new(other.point_num_bytes()),
+            vector_dimension: AtomicI32::new(other.vector_dimension()),
+            vector_encoding: AtomicEnum::new(other.vector_encoding()),
+            vector_similarity_function: AtomicEnum::new(other.vector_similarity_function()),
+            attributes: std::sync::RwLock::new(other.attributes()),
+            frozen_identity: AtomicU64::new(0),
         }
     }
 
     fn check_if_frozen(&self) -> Result<()> {
-        if self.frozen {
+        if self.is_frozen() {
             Err(LuceneError::illegal_state(
                 "this FieldType is already frozen and cannot be changed".to_string(),
             ))
@@ -619,97 +792,99 @@ impl FieldType {
     ///
     /// Freezing a mutable type also gives it its identity (see
     /// `frozen_identity`); freezing a frozen type changes nothing, as in Java.
-    pub fn freeze(&mut self) {
-        if !self.frozen {
-            self.frozen_identity =
-                Some(NEXT_FROZEN_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    pub fn freeze(&self) {
+        if !self.is_frozen() {
+            self.frozen_identity.store(
+                NEXT_FROZEN_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                FT_ORDER,
+            );
         }
-        self.frozen = true;
+        self.frozen.store(true, FT_ORDER);
     }
 
     /// Returns `true` if this type is frozen against future modifications.
     pub fn is_frozen(&self) -> bool {
-        self.frozen
+        self.frozen.load(FT_ORDER)
     }
 
     /// Set to `true` to store this field.
-    pub fn set_stored(&mut self, value: bool) -> Result<()> {
+    pub fn set_stored(&self, value: bool) -> Result<()> {
         self.check_if_frozen()?;
-        self.stored = value;
+        self.stored.store(value, FT_ORDER);
         Ok(())
     }
 
     /// Set to `true` to tokenize this field's contents via the analyzer.
-    pub fn set_tokenized(&mut self, value: bool) -> Result<()> {
+    pub fn set_tokenized(&self, value: bool) -> Result<()> {
         self.check_if_frozen()?;
-        self.tokenized = value;
+        self.tokenized.store(value, FT_ORDER);
         Ok(())
     }
 
     /// Set to `true` to store term vectors for this field.
-    pub fn set_store_term_vectors(&mut self, value: bool) -> Result<()> {
+    pub fn set_store_term_vectors(&self, value: bool) -> Result<()> {
         self.check_if_frozen()?;
-        self.store_term_vectors = value;
+        self.store_term_vectors.store(value, FT_ORDER);
         Ok(())
     }
 
     /// Set to `true` to store token character offsets in term vectors.
-    pub fn set_store_term_vector_offsets(&mut self, value: bool) -> Result<()> {
+    pub fn set_store_term_vector_offsets(&self, value: bool) -> Result<()> {
         self.check_if_frozen()?;
-        self.store_term_vector_offsets = value;
+        self.store_term_vector_offsets.store(value, FT_ORDER);
         Ok(())
     }
 
     /// Set to `true` to store token positions in term vectors.
-    pub fn set_store_term_vector_positions(&mut self, value: bool) -> Result<()> {
+    pub fn set_store_term_vector_positions(&self, value: bool) -> Result<()> {
         self.check_if_frozen()?;
-        self.store_term_vector_positions = value;
+        self.store_term_vector_positions.store(value, FT_ORDER);
         Ok(())
     }
 
     /// Set to `true` to store token payloads in term vectors.
-    pub fn set_store_term_vector_payloads(&mut self, value: bool) -> Result<()> {
+    pub fn set_store_term_vector_payloads(&self, value: bool) -> Result<()> {
         self.check_if_frozen()?;
-        self.store_term_vector_payloads = value;
+        self.store_term_vector_payloads.store(value, FT_ORDER);
         Ok(())
     }
 
     /// Set to `true` to omit normalization values for the field.
-    pub fn set_omit_norms(&mut self, value: bool) -> Result<()> {
+    pub fn set_omit_norms(&self, value: bool) -> Result<()> {
         self.check_if_frozen()?;
-        self.omit_norms = value;
+        self.omit_norms.store(value, FT_ORDER);
         Ok(())
     }
 
     /// Sets the indexing options for the field.
-    pub fn set_index_options(&mut self, value: IndexOptions) -> Result<()> {
+    pub fn set_index_options(&self, value: IndexOptions) -> Result<()> {
         self.check_if_frozen()?;
-        self.index_options = value;
+        self.index_options.set(value);
         Ok(())
     }
 
     /// Sets the field's DocValuesType.
-    pub fn set_doc_values_type(&mut self, value: DocValuesType) -> Result<()> {
+    pub fn set_doc_values_type(&self, value: DocValuesType) -> Result<()> {
         self.check_if_frozen()?;
-        self.doc_values_type = value;
+        self.doc_values_type.set(value);
         Ok(())
     }
 
     /// Set whether to enable a skip index for doc values on this field.
-    pub fn set_doc_values_skip_index_type(&mut self, value: DocValuesSkipIndexType) -> Result<()> {
+    pub fn set_doc_values_skip_index_type(&self, value: DocValuesSkipIndexType) -> Result<()> {
         self.check_if_frozen()?;
-        self.doc_values_skip_index_type = value;
+        self.doc_values_skip_index_type.set(value);
         Ok(())
     }
 
     /// Enables points indexing.
-    pub fn set_dimensions(&mut self, dimension_count: i32, dimension_num_bytes: i32) -> Result<()> {
+    pub fn set_dimensions(&self, dimension_count: i32, dimension_num_bytes: i32) -> Result<()> {
         self.set_dimensions_with_index_count(dimension_count, dimension_count, dimension_num_bytes)
     }
 
     /// Enables points indexing with selectable dimension indexing.
     pub fn set_dimensions_with_index_count(
-        &mut self,
+        &self,
         dimension_count: i32,
         index_dimension_count: i32,
         dimension_num_bytes: i32,
@@ -770,16 +945,18 @@ impl FieldType {
                 "when dimensionNumBytes is 0, dimensionCount must be 0".to_string(),
             ));
         }
-        self.dimension_count = dimension_count;
-        self.index_dimension_count = index_dimension_count;
-        self.dimension_num_bytes = dimension_num_bytes;
+        self.dimension_count.store(dimension_count, FT_ORDER);
+        self.index_dimension_count
+            .store(index_dimension_count, FT_ORDER);
+        self.dimension_num_bytes
+            .store(dimension_num_bytes, FT_ORDER);
         Ok(())
     }
 
     /// Enable vector indexing with the specified number of dimensions and
     /// distance function.
     pub fn set_vector_attributes(
-        &mut self,
+        &self,
         num_dimensions: i32,
         encoding: VectorEncoding,
         similarity: VectorSimilarityFunction,
@@ -790,16 +967,20 @@ impl FieldType {
                 "vector numDimensions must be > 0; got {num_dimensions}"
             )));
         }
-        self.vector_dimension = num_dimensions;
-        self.vector_encoding = encoding;
-        self.vector_similarity_function = similarity;
+        self.vector_dimension.store(num_dimensions, FT_ORDER);
+        self.vector_encoding.set(encoding);
+        self.vector_similarity_function.set(similarity);
         Ok(())
     }
 
     /// Puts an attribute value, returning the previous value if present.
-    pub fn put_attribute(&mut self, key: String, value: String) -> Result<Option<String>> {
+    pub fn put_attribute(&self, key: String, value: String) -> Result<Option<String>> {
         self.check_if_frozen()?;
-        Ok(self.attributes.insert(key, value))
+        Ok(self
+            .attributes
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, value))
     }
 }
 
@@ -811,75 +992,81 @@ impl Default for FieldType {
 
 impl IndexableFieldType for FieldType {
     fn stored(&self) -> bool {
-        self.stored
+        self.stored.load(FT_ORDER)
     }
 
     fn tokenized(&self) -> bool {
-        self.tokenized
+        self.tokenized.load(FT_ORDER)
     }
 
     fn store_term_vectors(&self) -> bool {
-        self.store_term_vectors
+        self.store_term_vectors.load(FT_ORDER)
     }
 
     fn store_term_vector_offsets(&self) -> bool {
-        self.store_term_vector_offsets
+        self.store_term_vector_offsets.load(FT_ORDER)
     }
 
     fn store_term_vector_positions(&self) -> bool {
-        self.store_term_vector_positions
+        self.store_term_vector_positions.load(FT_ORDER)
     }
 
     fn store_term_vector_payloads(&self) -> bool {
-        self.store_term_vector_payloads
+        self.store_term_vector_payloads.load(FT_ORDER)
     }
 
     fn omit_norms(&self) -> bool {
-        self.omit_norms
+        self.omit_norms.load(FT_ORDER)
     }
 
     fn index_options(&self) -> IndexOptions {
-        self.index_options
+        self.index_options.get()
     }
 
     fn doc_values_type(&self) -> DocValuesType {
-        self.doc_values_type
+        self.doc_values_type.get()
     }
 
     fn doc_values_skip_index_type(&self) -> DocValuesSkipIndexType {
-        self.doc_values_skip_index_type
+        self.doc_values_skip_index_type.get()
     }
 
     fn point_dimension_count(&self) -> i32 {
-        self.dimension_count
+        self.dimension_count.load(FT_ORDER)
     }
 
     fn point_index_dimension_count(&self) -> i32 {
-        self.index_dimension_count
+        self.index_dimension_count.load(FT_ORDER)
     }
 
     fn point_num_bytes(&self) -> i32 {
-        self.dimension_num_bytes
+        self.dimension_num_bytes.load(FT_ORDER)
     }
 
     fn vector_dimension(&self) -> i32 {
-        self.vector_dimension
+        self.vector_dimension.load(FT_ORDER)
     }
 
     fn vector_encoding(&self) -> VectorEncoding {
-        self.vector_encoding
+        self.vector_encoding.get()
     }
 
     fn vector_similarity_function(&self) -> VectorSimilarityFunction {
-        self.vector_similarity_function
+        self.vector_similarity_function.get()
     }
 
-    fn attributes(&self) -> &JavaHashMap<String> {
-        &self.attributes
+    fn attributes(&self) -> JavaHashMap<String> {
+        self.attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn frozen_field_type_identity(&self) -> Option<u64> {
-        self.frozen_identity
+        match self.frozen_identity.load(FT_ORDER) {
+            0 => None,
+            identity => Some(identity),
+        }
     }
 }
 
@@ -985,7 +1172,9 @@ fn string_token_stream(
 #[derive(Debug)]
 pub struct Field {
     name: String,
-    field_type: FieldType,
+    /// The type, shared as Java shares the `FieldType` object a field holds
+    /// a reference to (`Field.java:63`).
+    field_type: Arc<FieldType>,
     fields_data: FieldData,
 }
 
@@ -1000,13 +1189,16 @@ impl Field {
     }
 
     /// Creates a field with a string value.
-    pub fn new(name: &str, value: String, field_type: FieldType) -> Result<Self> {
+    pub fn new(name: &str, value: String, field_type: impl Into<Arc<FieldType>>) -> Result<Self> {
+        let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
-        if value.is_empty() && !field_type.stored && field_type.index_options == IndexOptions::NONE
+        if value.is_empty()
+            && !field_type.stored()
+            && field_type.index_options() == IndexOptions::NONE
         {
             // Lucene allows empty strings; keep the check minimal.
         }
-        if !field_type.stored && field_type.index_options == IndexOptions::NONE {
+        if !field_type.stored() && field_type.index_options() == IndexOptions::NONE {
             return Err(LuceneError::IllegalArgument(
                 "it doesn't make sense to have a field that is neither indexed nor stored"
                     .to_string(),
@@ -1025,15 +1217,16 @@ impl Field {
     pub fn new_with_reader(
         name: &str,
         reader: Box<dyn CharReader>,
-        field_type: FieldType,
+        field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
+        let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
-        if field_type.stored {
+        if field_type.stored() {
             return Err(LuceneError::IllegalArgument(
                 "fields with a Reader value cannot be stored".to_string(),
             ));
         }
-        if field_type.index_options != IndexOptions::NONE && !field_type.tokenized {
+        if field_type.index_options() != IndexOptions::NONE && !field_type.tokenized() {
             return Err(LuceneError::IllegalArgument(
                 "non-tokenized fields must use String values".to_string(),
             ));
@@ -1049,15 +1242,16 @@ impl Field {
     pub fn new_with_token_stream(
         name: &str,
         token_stream: Rc<RefCell<dyn TokenStream>>,
-        field_type: FieldType,
+        field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
+        let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
-        if field_type.index_options == IndexOptions::NONE || !field_type.tokenized {
+        if field_type.index_options() == IndexOptions::NONE || !field_type.tokenized() {
             return Err(LuceneError::IllegalArgument(
                 "TokenStream fields must be indexed and tokenized".to_string(),
             ));
         }
-        if field_type.stored {
+        if field_type.stored() {
             return Err(LuceneError::IllegalArgument(
                 "TokenStream fields cannot be stored".to_string(),
             ));
@@ -1070,7 +1264,12 @@ impl Field {
     }
 
     /// Creates a field with a binary value.
-    pub fn new_with_bytes(name: &str, bytes: BytesRef, field_type: FieldType) -> Result<Self> {
+    pub fn new_with_bytes(
+        name: &str,
+        bytes: BytesRef,
+        field_type: impl Into<Arc<FieldType>>,
+    ) -> Result<Self> {
+        let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
         if field_type
             .index_options()
@@ -1081,12 +1280,12 @@ impl Field {
                 "It doesn't make sense to index offsets on binary fields".to_string(),
             ));
         }
-        if field_type.index_options != IndexOptions::NONE && field_type.tokenized {
+        if field_type.index_options() != IndexOptions::NONE && field_type.tokenized() {
             return Err(LuceneError::IllegalArgument(
                 "cannot set a BytesRef value on a tokenized field".to_string(),
             ));
         }
-        if field_type.index_options == IndexOptions::NONE
+        if field_type.index_options() == IndexOptions::NONE
             && field_type.point_dimension_count() == 0
             && field_type.doc_values_type() == DocValuesType::NONE
             && !field_type.stored()
@@ -1103,7 +1302,12 @@ impl Field {
     }
 
     /// Creates a field with a numeric value.
-    pub fn new_with_number(name: &str, value: NumericValue, field_type: FieldType) -> Result<Self> {
+    pub fn new_with_number(
+        name: &str,
+        value: NumericValue,
+        field_type: impl Into<Arc<FieldType>>,
+    ) -> Result<Self> {
+        let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
         Ok(Self {
             name: name.to_string(),
@@ -1117,8 +1321,9 @@ impl Field {
         name: &str,
         input: Box<dyn DataInput>,
         length: i32,
-        field_type: FieldType,
+        field_type: impl Into<Arc<FieldType>>,
     ) -> Result<Self> {
+        let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
         Ok(Self {
             name: name.to_string(),
@@ -1451,13 +1656,13 @@ impl IndexableField for Field {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         if self.field_type.index_options() == IndexOptions::NONE {
             return Ok(Box::new(
@@ -1466,14 +1671,39 @@ impl IndexableField for Field {
         }
         if !self.field_type.tokenized() {
             if let Some(s) = self.string_value() {
-                return Ok(Box::new(
-                    crate::analysis::StringTokenStream::new(s).unwrap(),
-                ));
+                // `if (!(reuse instanceof StringTokenStream)) reuse = new
+                // StringTokenStream(); ((StringTokenStream) reuse).setValue(..)`
+                // (`Field.java:471-477`): the lazily created stream is reused.
+                let mut reuse = reuse;
+                if let Some(stream) = reuse
+                    .as_mut()
+                    .and_then(|reuse| reuse.as_any_mut())
+                    .and_then(|any| any.downcast_mut::<crate::analysis::StringTokenStream>())
+                    .filter(|stream| stream.is_field_stream())
+                {
+                    stream.set_value(s);
+                    return Ok(reuse.expect("INVARIANT: matched above"));
+                }
+                // The new stream is built while the refused one is still
+                // alive, as in Java, where the caller keeps holding it.
+                let fresh = Box::new(crate::analysis::StringTokenStream::new(s)?);
+                drop(reuse);
+                return Ok(fresh);
             }
             if let Some(b) = self.binary_value() {
-                return Ok(Box::new(
-                    crate::analysis::BinaryTokenStream::new(b).unwrap(),
-                ));
+                // `Field.java:478-485`.
+                let mut reuse = reuse;
+                if let Some(stream) = reuse
+                    .as_mut()
+                    .and_then(|reuse| reuse.as_any_mut())
+                    .and_then(|any| any.downcast_mut::<crate::analysis::BinaryTokenStream>())
+                {
+                    stream.set_value(b);
+                    return Ok(reuse.expect("INVARIANT: matched above"));
+                }
+                let fresh = Box::new(crate::analysis::BinaryTokenStream::new(b)?);
+                drop(reuse);
+                return Ok(fresh);
             }
             return Err(LuceneError::IllegalArgument(
                 "Non-Tokenized Fields must have a String value".to_string(),
@@ -1560,7 +1790,7 @@ impl IndexableField for Field {
                 // it must reach the indexing chain as such so the segment is
                 // aborted, which is what Lucene's `IOException` from
                 // `Field.storedValue()` does.
-                input.borrow_mut().read_bytes(&mut bytes, 0, length)?;
+                input.borrow_mut().read_bytes(Some(&mut bytes), 0, length)?;
                 Ok(Some(StoredValue::DataInput(BytesRef::new(bytes))))
             }
             FieldData::Reader(_) | FieldData::TokenStream(_) => Ok(None),
@@ -1799,7 +2029,7 @@ pub enum Store {
 fn string_field_type_not_stored() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_omit_norms(true).unwrap();
         ft.set_index_options(IndexOptions::DOCS).unwrap();
         ft.set_tokenized(false).unwrap();
@@ -1811,7 +2041,7 @@ fn string_field_type_not_stored() -> &'static FieldType {
 fn string_field_type_stored() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new_from(string_field_type_not_stored());
+        let ft = FieldType::new_from(string_field_type_not_stored());
         ft.set_stored(true).unwrap();
         ft.freeze();
         ft
@@ -1903,7 +2133,7 @@ impl IndexableField for StringField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value
@@ -1949,7 +2179,7 @@ impl IndexableField for StringField {
 fn text_field_type_not_stored() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
             .unwrap();
         ft.set_tokenized(true).unwrap();
@@ -1961,7 +2191,7 @@ fn text_field_type_not_stored() -> &'static FieldType {
 fn text_field_type_stored() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new_from(text_field_type_not_stored());
+        let ft = FieldType::new_from(text_field_type_not_stored());
         ft.set_stored(true).unwrap();
         ft.freeze();
         ft
@@ -2046,7 +2276,7 @@ impl IndexableField for TextField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         match &self.fields_data {
             FieldData::TokenStream(ts) => Ok(Box::new(crate::analysis::SharedTokenStream::new(
@@ -2096,7 +2326,7 @@ impl IndexableField for TextField {
 fn stored_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
         ft.freeze();
         ft
@@ -2218,7 +2448,7 @@ impl IndexableField for StoredField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<&mut dyn TokenStream>,
+        reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         self.0.token_stream(analyzer, reuse)
     }
@@ -2331,7 +2561,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
         // Lucene rebuilds a `TextField.TYPE_STORED` and copies back the three
         // properties the segment's FieldInfo does carry, so that a document
         // round-tripped through the index keeps them.
-        let mut field_type = FieldType::new_from(text_field_type_stored());
+        let field_type = FieldType::new_from(text_field_type_stored());
         field_type.set_store_term_vectors(field_info.has_term_vectors())?;
         field_type.set_omit_norms(field_info.omits_norms())?;
         field_type.set_index_options(field_info.index_options)?;
@@ -2391,7 +2621,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
 fn keyword_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_index_options(IndexOptions::DOCS).unwrap();
         ft.set_omit_norms(true).unwrap();
         ft.set_tokenized(false).unwrap();
@@ -2404,7 +2634,7 @@ fn keyword_field_type() -> &'static FieldType {
 fn keyword_field_type_stored() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new_from(keyword_field_type());
+        let ft = FieldType::new_from(keyword_field_type());
         ft.set_stored(true).unwrap();
         ft.freeze();
         ft
@@ -2629,7 +2859,7 @@ impl IndexableField for KeywordField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value
@@ -2689,7 +2919,7 @@ impl IndexableField for KeywordField {
 /// Propagates [`FieldType::set_dimensions`]' refusal of a dimension count
 /// above the maximum, as Java's `setDimensions` throws.
 fn point_field_type(num_dims: usize, bytes_per_dim: i32) -> Result<FieldType> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_dimensions(num_dims as i32, bytes_per_dim)?;
     ft.freeze();
     Ok(ft)
@@ -2982,7 +3212,7 @@ impl IndexableField for IntPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -3240,7 +3470,7 @@ impl IndexableField for LongPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -3581,7 +3811,7 @@ impl IndexableField for FloatPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -3850,7 +4080,7 @@ impl IndexableField for DoublePoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -3919,7 +4149,7 @@ impl BinaryPoint {
                 ));
             }
         }
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_dimensions(point.len() as i32, bytes_per_dim as i32)
             .unwrap();
         ft.freeze();
@@ -4059,7 +4289,7 @@ impl IndexableField for BinaryPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -4104,7 +4334,7 @@ impl IndexableField for BinaryPoint {
 fn numeric_doc_values_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::NUMERIC).unwrap();
         ft.freeze();
         ft
@@ -4114,7 +4344,7 @@ fn numeric_doc_values_field_type() -> &'static FieldType {
 fn numeric_doc_values_indexed_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new_from(numeric_doc_values_field_type());
+        let ft = FieldType::new_from(numeric_doc_values_field_type());
         ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
             .unwrap();
         ft.freeze();
@@ -4125,7 +4355,7 @@ fn numeric_doc_values_indexed_field_type() -> &'static FieldType {
 fn sorted_numeric_doc_values_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
             .unwrap();
         ft.freeze();
@@ -4136,7 +4366,7 @@ fn sorted_numeric_doc_values_field_type() -> &'static FieldType {
 fn sorted_numeric_doc_values_indexed_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new_from(sorted_numeric_doc_values_field_type());
+        let ft = FieldType::new_from(sorted_numeric_doc_values_field_type());
         ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
             .unwrap();
         ft.freeze();
@@ -4147,7 +4377,7 @@ fn sorted_numeric_doc_values_indexed_field_type() -> &'static FieldType {
 fn sorted_doc_values_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::SORTED).unwrap();
         ft.freeze();
         ft
@@ -4157,7 +4387,7 @@ fn sorted_doc_values_field_type() -> &'static FieldType {
 fn sorted_doc_values_indexed_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new_from(sorted_doc_values_field_type());
+        let ft = FieldType::new_from(sorted_doc_values_field_type());
         ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
             .unwrap();
         ft.freeze();
@@ -4168,7 +4398,7 @@ fn sorted_doc_values_indexed_field_type() -> &'static FieldType {
 fn sorted_set_doc_values_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::SORTED_SET).unwrap();
         ft.freeze();
         ft
@@ -4178,7 +4408,7 @@ fn sorted_set_doc_values_field_type() -> &'static FieldType {
 fn sorted_set_doc_values_indexed_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new_from(sorted_set_doc_values_field_type());
+        let ft = FieldType::new_from(sorted_set_doc_values_field_type());
         ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
             .unwrap();
         ft.freeze();
@@ -4189,7 +4419,7 @@ fn sorted_set_doc_values_indexed_field_type() -> &'static FieldType {
 pub(crate) fn binary_doc_values_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_doc_values_type(DocValuesType::BINARY).unwrap();
         ft.freeze();
         ft
@@ -4288,7 +4518,7 @@ impl IndexableField for NumericDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::StringTokenStream::new("".to_string()).unwrap(),
@@ -4377,7 +4607,7 @@ impl IndexableField for FloatDocValuesField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<&mut dyn TokenStream>,
+        reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         self.inner.token_stream(analyzer, reuse)
     }
@@ -4442,7 +4672,7 @@ impl IndexableField for DoubleDocValuesField {
     fn token_stream(
         &self,
         analyzer: Option<&dyn Analyzer>,
-        reuse: Option<&mut dyn TokenStream>,
+        reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         self.inner.token_stream(analyzer, reuse)
     }
@@ -4565,7 +4795,7 @@ impl IndexableField for SortedDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
@@ -4691,7 +4921,7 @@ impl IndexableField for SortedSetDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap(),
@@ -4799,7 +5029,7 @@ impl IndexableField for SortedNumericDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::StringTokenStream::new("".to_string()).unwrap(),
@@ -4881,7 +5111,7 @@ impl IndexableField for BinaryDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(
@@ -4931,7 +5161,7 @@ fn int_combined_field_type(stored: bool) -> FieldType {
         TYPE_STORED
             .get_or_init(|| {
                 let base = int_combined_field_type(false);
-                let mut ft = FieldType::new_from(&base as &dyn IndexableFieldType);
+                let ft = FieldType::new_from(&base as &dyn IndexableFieldType);
                 ft.set_stored(true).unwrap();
                 ft.freeze();
                 ft
@@ -4939,7 +5169,7 @@ fn int_combined_field_type(stored: bool) -> FieldType {
             .clone()
     } else {
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions(1, 4).unwrap();
             ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
                 .unwrap();
@@ -4957,7 +5187,7 @@ fn long_combined_field_type(stored: bool) -> FieldType {
         TYPE_STORED
             .get_or_init(|| {
                 let base = long_combined_field_type(false);
-                let mut ft = FieldType::new_from(&base as &dyn IndexableFieldType);
+                let ft = FieldType::new_from(&base as &dyn IndexableFieldType);
                 ft.set_stored(true).unwrap();
                 ft.freeze();
                 ft
@@ -4965,7 +5195,7 @@ fn long_combined_field_type(stored: bool) -> FieldType {
             .clone()
     } else {
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions(1, 8).unwrap();
             ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
                 .unwrap();
@@ -4983,7 +5213,7 @@ fn float_combined_field_type(stored: bool) -> FieldType {
         TYPE_STORED
             .get_or_init(|| {
                 let base = float_combined_field_type(false);
-                let mut ft = FieldType::new_from(&base as &dyn IndexableFieldType);
+                let ft = FieldType::new_from(&base as &dyn IndexableFieldType);
                 ft.set_stored(true).unwrap();
                 ft.freeze();
                 ft
@@ -4991,7 +5221,7 @@ fn float_combined_field_type(stored: bool) -> FieldType {
             .clone()
     } else {
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions(1, 4).unwrap();
             ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
                 .unwrap();
@@ -5009,7 +5239,7 @@ fn double_combined_field_type(stored: bool) -> FieldType {
         TYPE_STORED
             .get_or_init(|| {
                 let base = double_combined_field_type(false);
-                let mut ft = FieldType::new_from(&base as &dyn IndexableFieldType);
+                let ft = FieldType::new_from(&base as &dyn IndexableFieldType);
                 ft.set_stored(true).unwrap();
                 ft.freeze();
                 ft
@@ -5017,7 +5247,7 @@ fn double_combined_field_type(stored: bool) -> FieldType {
             .clone()
     } else {
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions(1, 8).unwrap();
             ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
                 .unwrap();
@@ -5147,7 +5377,7 @@ impl IndexableField for IntField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -5381,7 +5611,7 @@ impl IndexableField for LongField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -5539,7 +5769,7 @@ impl IndexableField for FloatField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -5696,7 +5926,7 @@ impl IndexableField for DoubleField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .binary_value()
@@ -5937,7 +6167,7 @@ fn knn_vector_field_type(
             "zero vector not allowed with cosine similarity function".to_string(),
         ));
     }
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_vector_attributes(dimension as i32, encoding, similarity)?;
     field_type.freeze();
     Ok(field_type)
@@ -6072,7 +6302,7 @@ impl KnnFloatVectorField {
         dimension: i32,
         similarity_function: VectorSimilarityFunction,
     ) -> Result<FieldType> {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_vector_attributes(
             dimension,
             VectorEncoding::FLOAT32,
@@ -6156,7 +6386,7 @@ impl IndexableField for KnnFloatVectorField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         // A vector field is never inverted: its `indexOptions` is `NONE`, so
         // `IndexingChain.invertAndStore` skips it and never asks for a stream.
@@ -6284,7 +6514,7 @@ impl KnnByteVectorField {
         dimension: i32,
         similarity_function: VectorSimilarityFunction,
     ) -> Result<FieldType> {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_vector_attributes(dimension, VectorEncoding::BYTE, similarity_function)?;
         field_type.freeze();
         Ok(field_type)
@@ -6360,7 +6590,7 @@ impl IndexableField for KnnByteVectorField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::StringTokenStream::new(String::new()).unwrap(),
@@ -6792,55 +7022,55 @@ impl std::fmt::Display for FieldType {
     /// same as that of the same field without vectors.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut result = String::new();
-        if self.stored {
+        if self.stored() {
             result.push_str("stored");
         }
-        if self.index_options != IndexOptions::NONE {
+        if self.index_options() != IndexOptions::NONE {
             if !result.is_empty() {
                 result.push(',');
             }
             result.push_str("indexed");
-            if self.tokenized {
+            if self.tokenized() {
                 result.push_str(",tokenized");
             }
-            if self.store_term_vectors {
+            if self.store_term_vectors() {
                 result.push_str(",termVector");
             }
-            if self.store_term_vector_offsets {
+            if self.store_term_vector_offsets() {
                 result.push_str(",termVectorOffsets");
             }
-            if self.store_term_vector_positions {
+            if self.store_term_vector_positions() {
                 // Java's spelling: the singular is not a typo in this port.
                 result.push_str(",termVectorPosition");
             }
-            if self.store_term_vector_payloads {
+            if self.store_term_vector_payloads() {
                 result.push_str(",termVectorPayloads");
             }
-            if self.omit_norms {
+            if self.omit_norms() {
                 result.push_str(",omitNorms");
             }
-            if self.index_options != IndexOptions::DOCS_AND_FREQS_AND_POSITIONS {
+            if self.index_options() != IndexOptions::DOCS_AND_FREQS_AND_POSITIONS {
                 result.push_str(",indexOptions=");
-                result.push_str(&format!("{:?}", self.index_options));
+                result.push_str(&format!("{:?}", self.index_options()));
             }
         }
-        if self.dimension_count != 0 {
+        if self.point_dimension_count() != 0 {
             if !result.is_empty() {
                 result.push(',');
             }
             result.push_str("pointDimensionCount=");
-            result.push_str(&self.dimension_count.to_string());
+            result.push_str(&self.point_dimension_count().to_string());
             result.push_str(",pointIndexDimensionCount=");
-            result.push_str(&self.index_dimension_count.to_string());
+            result.push_str(&self.point_index_dimension_count().to_string());
             result.push_str(",pointNumBytes=");
-            result.push_str(&self.dimension_num_bytes.to_string());
+            result.push_str(&self.point_num_bytes().to_string());
         }
-        if self.doc_values_type != DocValuesType::NONE {
+        if self.doc_values_type() != DocValuesType::NONE {
             if !result.is_empty() {
                 result.push(',');
             }
             result.push_str("docValuesType=");
-            result.push_str(&format!("{:?}", self.doc_values_type));
+            result.push_str(&format!("{:?}", self.doc_values_type()));
         }
         f.write_str(&result)
     }
@@ -6851,19 +7081,19 @@ impl PartialEq for FieldType {
     /// properties and deliberately ignores the frozen flag, the vector
     /// attributes and the attribute map.
     fn eq(&self, other: &Self) -> bool {
-        self.dimension_count == other.dimension_count
-            && self.index_dimension_count == other.index_dimension_count
-            && self.dimension_num_bytes == other.dimension_num_bytes
-            && self.doc_values_type == other.doc_values_type
-            && self.doc_values_skip_index_type == other.doc_values_skip_index_type
-            && self.index_options == other.index_options
-            && self.omit_norms == other.omit_norms
-            && self.store_term_vector_offsets == other.store_term_vector_offsets
-            && self.store_term_vector_payloads == other.store_term_vector_payloads
-            && self.store_term_vector_positions == other.store_term_vector_positions
-            && self.store_term_vectors == other.store_term_vectors
-            && self.stored == other.stored
-            && self.tokenized == other.tokenized
+        self.point_dimension_count() == other.point_dimension_count()
+            && self.point_index_dimension_count() == other.point_index_dimension_count()
+            && self.point_num_bytes() == other.point_num_bytes()
+            && self.doc_values_type() == other.doc_values_type()
+            && self.doc_values_skip_index_type() == other.doc_values_skip_index_type()
+            && self.index_options() == other.index_options()
+            && self.omit_norms() == other.omit_norms()
+            && self.store_term_vector_offsets() == other.store_term_vector_offsets()
+            && self.store_term_vector_payloads() == other.store_term_vector_payloads()
+            && self.store_term_vector_positions() == other.store_term_vector_positions()
+            && self.store_term_vectors() == other.store_term_vectors()
+            && self.stored() == other.stored()
+            && self.tokenized() == other.tokenized()
     }
 }
 
@@ -6887,19 +7117,19 @@ impl std::hash::Hash for FieldType {
     /// discriminant equality *is* value equality, so this is consistent with
     /// [`PartialEq`] above.
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.dimension_count.hash(state);
-        self.index_dimension_count.hash(state);
-        self.dimension_num_bytes.hash(state);
-        std::mem::discriminant(&self.doc_values_type).hash(state);
-        std::mem::discriminant(&self.doc_values_skip_index_type).hash(state);
-        std::mem::discriminant(&self.index_options).hash(state);
-        self.omit_norms.hash(state);
-        self.store_term_vector_offsets.hash(state);
-        self.store_term_vector_payloads.hash(state);
-        self.store_term_vector_positions.hash(state);
-        self.store_term_vectors.hash(state);
-        self.stored.hash(state);
-        self.tokenized.hash(state);
+        self.point_dimension_count().hash(state);
+        self.point_index_dimension_count().hash(state);
+        self.point_num_bytes().hash(state);
+        std::mem::discriminant(&self.doc_values_type()).hash(state);
+        std::mem::discriminant(&self.doc_values_skip_index_type()).hash(state);
+        std::mem::discriminant(&self.index_options()).hash(state);
+        self.omit_norms().hash(state);
+        self.store_term_vector_offsets().hash(state);
+        self.store_term_vector_payloads().hash(state);
+        self.store_term_vector_positions().hash(state);
+        self.store_term_vectors().hash(state);
+        self.stored().hash(state);
+        self.tokenized().hash(state);
     }
 }
 
@@ -7343,12 +7573,12 @@ mod tests {
     /// validates the name is covered.
     #[test]
     fn field_accepts_an_empty_name() {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_index_options(IndexOptions::DOCS).unwrap();
         ft.set_tokenized(false).unwrap();
         let field = Field::new("", "something".to_string(), ft.clone()).unwrap();
         assert_eq!(field.name(), "");
-        let mut stored = FieldType::new();
+        let stored = FieldType::new();
         stored.set_stored(true).unwrap();
         assert!(Field::new_with_bytes("", BytesRef::new(vec![1]), stored.clone()).is_ok());
         assert!(Field::new_with_number("", NumericValue::Int(1), stored).is_ok());
@@ -7368,7 +7598,7 @@ mod tests {
 
     #[test]
     fn field_type_freeze_prevents_modification() {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
         ft.freeze();
         assert!(ft.is_frozen());
@@ -7377,7 +7607,7 @@ mod tests {
 
     #[test]
     fn field_type_copy_does_not_copy_frozen() {
-        let mut original = FieldType::new();
+        let original = FieldType::new();
         original.set_stored(true).unwrap();
         original.set_index_options(IndexOptions::DOCS).unwrap();
         original.freeze();
@@ -7391,7 +7621,7 @@ mod tests {
     #[test]
     fn document_adds_and_gets_fields() {
         let mut doc = Document::new();
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
         ft.set_index_options(IndexOptions::DOCS).unwrap();
 
@@ -7406,7 +7636,7 @@ mod tests {
     #[test]
     fn document_removes_first_field() {
         let mut doc = Document::new();
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
 
         doc.add(Box::new(
@@ -7423,7 +7653,7 @@ mod tests {
     #[test]
     fn document_removes_all_fields() {
         let mut doc = Document::new();
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
 
         doc.add(Box::new(
@@ -7440,7 +7670,7 @@ mod tests {
     #[test]
     fn document_returns_binary_values() {
         let mut doc = Document::new();
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
 
         doc.add(Box::new(
@@ -7460,7 +7690,7 @@ mod tests {
 
     #[test]
     fn numeric_field_string_value() {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
         let field = Field::new_with_number("count", NumericValue::Int(42), ft).unwrap();
         assert_eq!(field.string_value(), Some("42".to_string()));
@@ -7469,7 +7699,7 @@ mod tests {
 
     #[test]
     fn field_type_dimensions_validation() {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         assert!(ft.set_dimensions(2, 4).is_ok());
         assert!(ft.set_dimensions(-1, 4).is_err());
         assert!(ft.set_dimensions_with_index_count(2, 3, 4).is_err());
@@ -7477,7 +7707,7 @@ mod tests {
 
     #[test]
     fn field_type_vector_attributes_validation() {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         assert!(ft
             .set_vector_attributes(
                 10,
@@ -7791,7 +8021,7 @@ mod tests {
         // directly. Reporting BINARY for a non-tokenized `Field` sent the
         // indexing chain down the binary path, where `binaryValue()` of a
         // string-valued field is `None`.
-        let mut not_tokenized = FieldType::new();
+        let not_tokenized = FieldType::new();
         not_tokenized.set_tokenized(false).unwrap();
         not_tokenized.set_index_options(IndexOptions::DOCS).unwrap();
         not_tokenized.freeze();
@@ -7801,7 +8031,7 @@ mod tests {
             Some(InvertableType::TOKEN_STREAM)
         );
 
-        let mut tokenized = FieldType::new();
+        let tokenized = FieldType::new();
         tokenized.set_tokenized(true).unwrap();
         tokenized
             .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
@@ -7813,7 +8043,7 @@ mod tests {
             Some(InvertableType::TOKEN_STREAM)
         );
 
-        let mut not_indexed = FieldType::new();
+        let not_indexed = FieldType::new();
         not_indexed.set_stored(true).unwrap();
         not_indexed.freeze();
         let field = Field::new("meta", "value".to_string(), not_indexed).unwrap();
@@ -7905,7 +8135,7 @@ mod tests {
     // -- Field.storedValue() ------------------------------------------------
 
     fn stored_type() -> FieldType {
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_stored(true).unwrap();
         ft.freeze();
         ft

@@ -54,7 +54,8 @@ impl DataInput for ForwardBytesReader<'_> {
         Ok(self.bytes[pos as usize])
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let pos = self.pos;
         let end = pos
             .checked_add(len as i64)

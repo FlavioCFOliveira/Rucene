@@ -152,7 +152,7 @@ impl RandomIndexWriter {
     /// What opening the writer throws.
     pub fn mock_index_writer(
         dir: Arc<dyn Directory>,
-        conf: IndexWriterConfig,
+        conf: impl Into<Arc<IndexWriterConfig>>,
         r: &dyn Random,
     ) -> Result<Arc<IndexWriter>> {
         // Randomly calls Thread.yield so we mixup thread scheduling
@@ -174,9 +174,11 @@ impl RandomIndexWriter {
     pub fn mock_index_writer_with_test_point(
         r: &dyn Random,
         dir: Arc<dyn Directory>,
-        mut conf: IndexWriterConfig,
+        conf: impl Into<Arc<IndexWriterConfig>>,
         test_point: Arc<dyn TestPoint>,
     ) -> Result<Arc<IndexWriter>> {
+        let mut shared = conf.into();
+        let conf = config_mut(&mut shared)?;
         let info_stream = conf.info_stream();
         conf.set_info_stream(Arc::new(TestPointInfoStream::new(
             Some(info_stream),
@@ -195,7 +197,7 @@ impl RandomIndexWriter {
             reader = Some(opened);
         }
 
-        let iw = IndexWriter::new_with_test_points(dir, conf);
+        let iw = IndexWriter::new_with_test_points(dir, shared);
         if let Some(reader) = reader {
             match &iw {
                 Ok(_) => reader.close()?,
@@ -219,7 +221,7 @@ impl RandomIndexWriter {
         let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(r));
         let c = LuceneTestCase::new_index_writer_config_with(r, Some(analyzer));
         let use_soft_deletes = r.next_boolean();
-        Self::new_private(r, dir, c, true, use_soft_deletes)
+        Self::new_private(r, dir, Arc::new(c), true, use_soft_deletes)
     }
 
     /// `new RandomIndexWriter(r, dir, a)`: "create a RandomIndexWriter with a
@@ -242,10 +244,10 @@ impl RandomIndexWriter {
     pub fn new_with_config(
         r: &dyn Random,
         dir: Arc<dyn Directory>,
-        c: IndexWriterConfig,
+        c: impl Into<Arc<IndexWriterConfig>>,
     ) -> Result<Self> {
         let use_soft_deletes = r.next_boolean();
-        Self::new_private(r, dir, c, false, use_soft_deletes)
+        Self::new_private(r, dir, c.into(), false, use_soft_deletes)
     }
 
     /// `new RandomIndexWriter(r, dir, c, useSoftDeletes)`.
@@ -256,10 +258,10 @@ impl RandomIndexWriter {
     pub fn new_with_soft_deletes(
         r: &dyn Random,
         dir: Arc<dyn Directory>,
-        c: IndexWriterConfig,
+        c: impl Into<Arc<IndexWriterConfig>>,
         use_soft_deletes: bool,
     ) -> Result<Self> {
-        Self::new_private(r, dir, c, false, use_soft_deletes)
+        Self::new_private(r, dir, c.into(), false, use_soft_deletes)
     }
 
     /// The private constructor `RandomIndexWriter(r, dir, c, closeAnalyzer,
@@ -267,10 +269,11 @@ impl RandomIndexWriter {
     fn new_private(
         r: &dyn Random,
         dir: Arc<dyn Directory>,
-        mut c: IndexWriterConfig,
+        mut shared: Arc<IndexWriterConfig>,
         close_analyzer: bool,
         use_soft_deletes: bool,
     ) -> Result<Self> {
+        let c = config_mut(&mut shared)?;
         // TODO: this should be solved in a different way; Random should not be shared (!).
         let own_random = JdkRandom::new(r.next_long());
         let soft_deletes_ratio = if use_soft_deletes {
@@ -286,7 +289,7 @@ impl RandomIndexWriter {
             .merge_policy()
             .as_any()
             .is_some_and(|any| any.is::<NoMergePolicy>());
-        let w = Self::mock_index_writer(Arc::clone(&dir), c, r)?;
+        let w = Self::mock_index_writer(Arc::clone(&dir), shared, r)?;
         let config = Arc::clone(w.get_config());
         let flush_at = TestUtil::next_int(r, 10, 1000);
         // `closeAnalyzer ? w.getAnalyzer() : null`; `IOUtils.close` skips a
@@ -467,7 +470,7 @@ impl RandomIndexWriter {
             .config
             .soft_deletes_field()
             .ok_or_else(|| LuceneError::IllegalArgument("name must not be null".to_string()))?;
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_doc_values_type(DocValuesType::NUMERIC)?;
         field_type.freeze();
         Field::new_with_number(name, NumericValue::Long(1), field_type)
@@ -914,4 +917,25 @@ impl DocumentsIterable for SingleDocIterable<'_> {
             done: false,
         })
     }
+}
+
+/// The configuration `RandomIndexWriter` changes before it opens the writer
+/// (`setSoftDeletesField`, `setInfoStream`, `setIndexCommit`), as Java
+/// changes the object the caller passed.
+///
+/// A configuration shared with another holder cannot be changed in Rust. One
+/// shared with a writer is refused first with Java's `IllegalStateException`,
+/// which Java's `IndexWriter` constructor raises after those changes
+/// (`IndexWriterConfig.java:119-125`).
+///
+/// **Divergence.** Java changes a configuration that is shared but not yet
+/// attached to a writer; Rucene refuses it with `IllegalStateException`,
+/// because a value behind a shared `Arc` cannot be changed through `&mut`.
+fn config_mut(shared: &mut Arc<IndexWriterConfig>) -> Result<&mut IndexWriterConfig> {
+    shared.live().check_not_attached()?;
+    Arc::get_mut(shared).ok_or_else(|| {
+        rucene::error::LuceneError::illegal_state(
+            "an IndexWriterConfig shared with another holder cannot be changed",
+        )
+    })
 }

@@ -1122,7 +1122,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
-        let mut ft = FieldType::new_from(TextField::type_not_stored());
+        let ft = FieldType::new_from(TextField::type_not_stored());
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
         doc.add(Box::new(Field::new("foo", "bar bar".to_string(), ft)?));
         iw.add_document(&doc)?;
@@ -1222,7 +1222,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockTokenizerAnalyzer::new())));
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
-        let mut ft = FieldType::new_from(TextField::type_not_stored());
+        let ft = FieldType::new_from(TextField::type_not_stored());
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
         doc.add(Box::new(Field::new("foo", "bar bar".to_string(), ft)?));
         iw.add_document(&doc)?;
@@ -1298,7 +1298,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = IndexWriterConfig::with_analyzer(None);
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut doc = Document::new();
-        let mut ft = FieldType::new_from(TextField::type_not_stored());
+        let ft = FieldType::new_from(TextField::type_not_stored());
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
         let stream: Rc<RefCell<dyn rucene::analysis::TokenStream>> =
             Rc::new(RefCell::new(CannedTokenStream::new(payload_tokens())));
@@ -1484,7 +1484,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             if opts == IndexOptions::NONE || opts == IndexOptions::DOCS_AND_CUSTOM_FREQS {
                 continue;
             }
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_index_options(opts).unwrap_or_else(|e| rethrow(e));
             ft.freeze();
             let num_fields = LuceneTestCase::random().next_int_bound(5);

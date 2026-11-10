@@ -324,7 +324,7 @@ impl BytesRefIterator for ByteSequencesReader {
         }
         let length = input.read_short()? as usize;
         let mut bytes = vec![0u8; length];
-        input.read_bytes(&mut bytes, 0, length)?;
+        input.read_bytes(Some(&mut bytes), 0, length)?;
         Ok(Some(BytesRef::new(bytes)))
     }
 }

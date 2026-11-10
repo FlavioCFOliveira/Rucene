@@ -2,9 +2,6 @@
 //!
 //! * `setIndexWriterMaxDocs(n); try { … } finally { restoreIndexWriterMaxDocs(); }`
 //!   is `MaxDocsGuard`, whose drop restores the limit on every exit.
-//! * `e.addSuppressed(fakeDiskFull)` on the `RuntimeException` of
-//!   `testAddTooManyIndexes*`: `LuceneError::Unchecked` has no suppressed
-//!   list; the disk-full exception is its cause.
 
 use std::sync::Arc;
 
@@ -446,14 +443,12 @@ fn check_add_too_many_indexes(result: Result<i64>) -> Result<()> {
                 .message()
                 .map(str::to_string);
             let e = if message.is_some_and(|m| m.starts_with("fake disk full")) {
-                LuceneError::Unchecked {
-                    class: "java.lang.RuntimeException",
-                    message: Some(
-                        "test failed: IW checks aren't working and we are executing addIndexes"
-                            .to_string(),
-                    ),
-                    cause: Some(Arc::new(fake_disk_full)),
-                }
+                let mut e = LuceneError::unchecked(
+                    "java.lang.RuntimeException",
+                    "test failed: IW checks aren't working and we are executing addIndexes",
+                );
+                e.add_suppressed(fake_disk_full);
+                e
             } else {
                 fake_disk_full
             };

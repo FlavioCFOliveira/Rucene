@@ -132,7 +132,7 @@ fn before_class() -> Result<()> {
     iwc.set_codec(TestUtil::get_default_codec())?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_omit_norms(true)?;
 
     let mut doc = Document::new();

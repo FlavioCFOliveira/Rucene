@@ -117,7 +117,7 @@ fn test_file_is_utf8() -> Result<()> {
                 }
                 let mut bytes = vec![0u8; length as usize];
                 let len = bytes.len();
-                input.read_bytes(&mut bytes, 0, len)?;
+                input.read_bytes(Some(&mut bytes), 0, len)?;
                 let bytes_ref = BytesRef::new(bytes);
                 Assert::assert_true(bytes_ref.to_string() != Term::to_string_bytes_ref(&bytes_ref));
                 input.close()?;

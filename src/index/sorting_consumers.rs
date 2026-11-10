@@ -757,7 +757,7 @@ mod sorted_flush_close_tests {
             )
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
-        let mut vectors = FieldType::new();
+        let vectors = FieldType::new();
         vectors
             .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
             .unwrap();

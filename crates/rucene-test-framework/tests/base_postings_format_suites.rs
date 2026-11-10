@@ -232,7 +232,7 @@ fn do_test_impact_serialization(impacts: &[Impact]) -> Result<()> {
         let mut input = dir.as_directory().open_input("foo", &*DEFAULT_IO_CONTEXT)?;
         let mut b = vec![0u8; to_int_exact(input.length())? as usize];
         let len = b.len();
-        input.read_bytes(&mut b, 0, len)?;
+        input.read_bytes(Some(&mut b), 0, len)?;
         let mut impact_buffer = FreqAndNormBuffer::new();
         impact_buffer
             .grow_no_copy(impacts.len() + LuceneTestCase::random().next_int_bound(3) as usize);

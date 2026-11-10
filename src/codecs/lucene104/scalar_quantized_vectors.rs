@@ -447,7 +447,7 @@ impl OffHeapScalarQuantizedVectorValues {
         let offset = self.entry.vector_data_offset + i64::from(ord) * self.byte_size as i64;
         self.slice.seek(offset)?;
         let len = self.vector.len();
-        self.slice.read_bytes(&mut self.vector, 0, len)?;
+        self.slice.read_bytes(Some(&mut self.vector), 0, len)?;
         self.corrections = QuantizationResult {
             lower_interval: f32::from_bits(self.slice.read_int()? as u32),
             upper_interval: f32::from_bits(self.slice.read_int()? as u32),
@@ -817,8 +817,8 @@ impl FloatVectorValues for OffHeapScalarQuantizedFloatVectorValues {
             let mut slice = self.lock_slice()?;
             slice.seek(i64::from(ord) * self.byte_size as i64)?;
             let len = packed.len();
-            slice.read_bytes(&mut packed, 0, len)?;
-            slice.read_floats(&mut corrective, 0, 3)?;
+            slice.read_bytes(Some(&mut packed), 0, len)?;
+            slice.read_floats(Some(&mut corrective), 0, 3)?;
         }
         let quantized = match self.encoding {
             ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => packed,

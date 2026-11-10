@@ -129,7 +129,7 @@ impl DataInput for CountingPrefetchIndexInput {
     }
 
     /// `FilterIndexInput.readBytes(b, offset, len)`.
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.r#in.read_bytes(b, offset, len)
     }
 

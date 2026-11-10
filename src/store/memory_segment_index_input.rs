@@ -699,8 +699,11 @@ impl DataInput for MemorySegmentIndexInput {
         Ok(value)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let b = crate::store::require_array(b)?;
         check_dst(offset, len, b.len())?;
         let pos = self.cur_position;
         if self
@@ -763,8 +766,11 @@ impl DataInput for MemorySegmentIndexInput {
         Ok((high << 32) | low)
     }
 
-    fn read_ints(&mut self, dst: &mut [i32], offset: usize, length: usize) -> Result<()> {
+    fn read_ints(&mut self, dst: Option<&mut [i32]>, offset: usize, length: usize) -> Result<()> {
         self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let dst = crate::store::require_array(dst)?;
         check_dst(offset, length, dst.len())?;
         let pos = self.cur_position;
         let byte_len = length as i64 * 4;
@@ -786,8 +792,11 @@ impl DataInput for MemorySegmentIndexInput {
         Ok(())
     }
 
-    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(&mut self, dst: Option<&mut [i64]>, offset: usize, length: usize) -> Result<()> {
         self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let dst = crate::store::require_array(dst)?;
         check_dst(offset, length, dst.len())?;
         let pos = self.cur_position;
         let byte_len = length as i64 * 8;
@@ -809,8 +818,16 @@ impl DataInput for MemorySegmentIndexInput {
         Ok(())
     }
 
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(
+        &mut self,
+        floats: Option<&mut [f32]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
         self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let floats = crate::store::require_array(floats)?;
         check_dst(offset, length, floats.len())?;
         let pos = self.cur_position;
         let byte_len = length as i64 * 4;

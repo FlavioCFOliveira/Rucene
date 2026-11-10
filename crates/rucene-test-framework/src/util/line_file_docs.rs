@@ -402,7 +402,7 @@ fn doc_state(title: &str, body: &str, date: &str, id: i32, page_views: i32) -> R
     )?));
 
     let text_stored = TextField::new("", String::new(), Store::YES)?;
-    let mut ft = FieldType::new_from(text_stored.field_type());
+    let ft = FieldType::new_from(text_stored.field_type());
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
     ft.set_store_term_vectors(true)?;
     ft.set_store_term_vector_offsets(true)?;

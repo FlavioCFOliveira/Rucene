@@ -297,6 +297,13 @@ pub trait TokenStream: Debug {
     fn as_any(&self) -> Option<&dyn Any> {
         None
     }
+
+    /// [`as_any`](Self::as_any) for a caller that changes the stream it
+    /// recognizes, as `Field.tokenStream` casts `reuse` to set its value
+    /// (`Field.java:472-485`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
 }
 
 impl AsUnwrappable<dyn TokenStream> for dyn TokenStream {
@@ -824,6 +831,10 @@ pub struct StringTokenStream {
     value: String,
     length: i32,
     used: bool,
+    /// Whether this is `Field.StringTokenStream`, built by [`Self::new`];
+    /// `Analyzer.StringTokenStream` ([`Self::new_with_factory`]) is a
+    /// different Java class, which `Field.tokenStream` does not reuse.
+    field_stream: bool,
 }
 
 impl StringTokenStream {
@@ -833,7 +844,24 @@ impl StringTokenStream {
     /// Equivalent to `Field.StringTokenStream` (`Field.java:592-635`).
     pub fn new(value: String) -> Result<Self> {
         let length = value.encode_utf16().count() as i32;
-        Self::new_with_factory(default_token_attribute_factory(), value, length)
+        let mut stream = Self::new_with_factory(default_token_attribute_factory(), value, length)?;
+        stream.field_stream = true;
+        Ok(stream)
+    }
+
+    /// Whether this is `Field.StringTokenStream` (see [`Self::new`]).
+    pub fn is_field_stream(&self) -> bool {
+        self.field_stream
+    }
+
+    /// Sets the string value, whose `value.length()` is the token's end
+    /// offset.
+    ///
+    /// Equivalent to `Field.StringTokenStream.setValue(String)`
+    /// (`Field.java:559-561`).
+    pub fn set_value(&mut self, value: String) {
+        self.length = value.encode_utf16().count() as i32;
+        self.value = value;
     }
 
     /// Creates a stream over `attribute_factory` that will emit `value` as a
@@ -854,6 +882,7 @@ impl StringTokenStream {
             value,
             length,
             used: true,
+            field_stream: false,
         })
     }
 }
@@ -897,6 +926,14 @@ impl TokenStream for StringTokenStream {
     fn attribute_source_mut(&mut self) -> &mut AttributeSource {
         &mut self.source
     }
+
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -924,6 +961,14 @@ impl BinaryTokenStream {
             value,
             used: true,
         })
+    }
+
+    /// Sets the binary value.
+    ///
+    /// Equivalent to `Field.BinaryTokenStream.setValue(BytesRef)`
+    /// (`Field.java:517-519`).
+    pub fn set_value(&mut self, value: BytesRef) {
+        self.value = value;
     }
 }
 
@@ -958,6 +1003,14 @@ impl TokenStream for BinaryTokenStream {
 
     fn attribute_source_mut(&mut self) -> &mut AttributeSource {
         &mut self.source
+    }
+
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
 }
 

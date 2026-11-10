@@ -66,7 +66,7 @@ impl Decompressor for DummyDecompressor {
         if bytes.bytes.len() < original_length {
             bytes.bytes = vec![0; ArrayUtil::oversize(original_length, 1)];
         }
-        input.read_bytes(&mut bytes.bytes, 0, offset + length)?;
+        input.read_bytes(Some(&mut bytes.bytes), 0, offset + length)?;
         bytes.offset = offset;
         bytes.length = length;
         Ok(())

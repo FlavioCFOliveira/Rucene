@@ -2142,11 +2142,11 @@ fn set_positions_id(doc: &Document, positions: &Rc<RefCell<PositionsTokenStream>
 fn test_random2() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(100);
 
-    let mut positions_type = FieldType::new_from(TextField::type_not_stored());
+    let positions_type = FieldType::new_from(TextField::type_not_stored());
     positions_type.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
     positions_type.freeze();
 
-    let mut term_vectors_type = FieldType::new_from(TextField::type_not_stored());
+    let term_vectors_type = FieldType::new_from(TextField::type_not_stored());
     term_vectors_type.set_store_term_vectors(true)?;
     term_vectors_type.freeze();
 
@@ -3008,7 +3008,7 @@ fn test_sort_docs_and_freqs() -> Result<()> {
     let mut config = LuceneTestCase::new_index_writer_config();
     config.set_index_sort(sort_of(vec![sort_field("sort", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
     ft.set_tokenized(false)?;
     ft.freeze();
@@ -3057,7 +3057,7 @@ fn sort_docs_and_positions(offsets: bool) -> Result<()> {
     )));
     config.set_index_sort(sort_of(vec![sort_field("sort", SortFieldType::Long)?])?)?;
     let w = IndexWriter::new(dir.as_directory(), config)?;
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_index_options(if offsets {
         IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS
     } else {

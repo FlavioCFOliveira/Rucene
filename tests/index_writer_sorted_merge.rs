@@ -167,7 +167,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 

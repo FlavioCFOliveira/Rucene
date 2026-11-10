@@ -994,7 +994,7 @@ impl BlockPostingsEnum {
             } else {
                 let num_longs = (-bits_per_value) as usize;
                 let mut longs = vec![0i64; num_longs];
-                doc_in.read_longs(&mut longs, 0, num_longs)?;
+                doc_in.read_longs(Some(&mut longs), 0, num_longs)?;
                 for (i, &l) in longs.iter().enumerate() {
                     let word = l as u64;
                     for b in 0..64 {
@@ -1108,7 +1108,11 @@ impl BlockPostingsEnum {
                 let skip1_end_fp = doc_in.read_short()? as i64 + doc_in.file_pointer();
                 let num_impact_bytes = doc_in.read_short()? as usize;
                 if self.needs_impacts && self.level1_last_doc_id >= target {
-                    doc_in.read_bytes(&mut self.level1_serialized_impacts, 0, num_impact_bytes)?;
+                    doc_in.read_bytes(
+                        Some(&mut self.level1_serialized_impacts),
+                        0,
+                        num_impact_bytes,
+                    )?;
                     self.level1_serialized_impacts_length = num_impact_bytes;
                 } else {
                     doc_in.skip_bytes(num_impact_bytes as i64)?;
@@ -1165,7 +1169,11 @@ impl BlockPostingsEnum {
             if self.index_has_freq {
                 let num_impact_bytes = doc_in.read_v_int()? as usize;
                 if self.needs_impacts {
-                    doc_in.read_bytes(&mut self.level0_serialized_impacts, 0, num_impact_bytes)?;
+                    doc_in.read_bytes(
+                        Some(&mut self.level0_serialized_impacts),
+                        0,
+                        num_impact_bytes,
+                    )?;
                     self.level0_serialized_impacts_length = num_impact_bytes;
                 } else {
                     doc_in.skip_bytes(num_impact_bytes as i64)?;
@@ -1298,7 +1306,7 @@ impl BlockPostingsEnum {
                         let num_impact_bytes = doc_in.read_v_int()? as usize;
                         if self.needs_impacts && found {
                             doc_in.read_bytes(
-                                &mut self.level0_serialized_impacts,
+                                Some(&mut self.level0_serialized_impacts),
                                 0,
                                 num_impact_bytes,
                             )?;
@@ -1421,7 +1429,7 @@ impl BlockPostingsEnum {
                                 .resize(needed.max(self.payload_bytes.len() * 2).max(128), 0);
                         }
                         pos_in.read_bytes(
-                            &mut self.payload_bytes,
+                            Some(&mut self.payload_bytes),
                             self.payload_byte_upto as usize,
                             payload_length as usize,
                         )?;
@@ -1465,7 +1473,7 @@ impl BlockPostingsEnum {
                 if num_bytes > self.payload_bytes.len() {
                     self.payload_bytes.resize(num_bytes, 0);
                 }
-                pay_in.read_bytes(&mut self.payload_bytes, 0, num_bytes)?;
+                pay_in.read_bytes(Some(&mut self.payload_bytes), 0, num_bytes)?;
             } else if self.pay_in.is_some() {
                 // Needs offsets: skip the payload lengths and bytes
                 // (`Lucene104PostingsReader.java:1230-1235`).
@@ -2378,7 +2386,7 @@ mod tests {
             let mut bytes = vec![0u8; length];
             dir.open_input(&name, &*crate::store::DEFAULT_IO_CONTEXT)
                 .unwrap()
-                .read_bytes(&mut bytes, 0, length)
+                .read_bytes(Some(&mut bytes), 0, length)
                 .unwrap();
             // Walk the first block's level-0 skip data the way
             // `doMoveToNextLevel0Block` reads it

@@ -603,7 +603,7 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `randomFieldType(r, fieldName)` (`private`).
     fn random_field_type(&self, r: &dyn Random, field_name: &str) -> FieldType {
-        let mut ty = FieldType::new();
+        let ty = FieldType::new();
         let ok = |res: Result<()>| res.unwrap_or_else(|e| rethrow(e));
 
         if r.next_boolean() {

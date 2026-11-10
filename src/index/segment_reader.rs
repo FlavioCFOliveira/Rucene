@@ -4051,7 +4051,7 @@ mod core_close_order_tests {
         let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
         let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
         let mut doc = Document::new();
-        let mut term_vectors = crate::document::FieldType::new();
+        let term_vectors = crate::document::FieldType::new();
         term_vectors.set_tokenized(true)?;
         term_vectors.set_index_options(crate::index::IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
         term_vectors.set_store_term_vectors(true)?;

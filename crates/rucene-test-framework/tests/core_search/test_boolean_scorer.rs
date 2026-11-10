@@ -919,7 +919,7 @@ fn test_filter_constant_score() -> Result<()> {
 fn test_collect_no_threshold_when_only_filter() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_index_options(IndexOptions::DOCS)?;
     for i in 0..50 {
         let mut doc = Document::new();

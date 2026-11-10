@@ -63,7 +63,7 @@ pub const FIELD_POINT: &str = "field_point";
 
 /// `new FieldType(TextField.TYPE_STORED)` with `options`.
 fn stored_text_with(options: IndexOptions) -> FieldType {
-    let mut t = FieldType::new_from(TextField::type_stored());
+    let t = FieldType::new_from(TextField::type_stored());
     t.set_index_options(options)
         .unwrap_or_else(|e| rethrow_java(e));
     t

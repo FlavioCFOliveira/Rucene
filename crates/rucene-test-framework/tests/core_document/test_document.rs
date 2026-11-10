@@ -71,7 +71,7 @@ fn random_writer(
 fn test_binary_field() -> Result<()> {
     let mut doc = Document::new();
 
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true)?;
     let string_fld = Field::new("string", BINARY_VAL.to_string(), ft)?;
     let binary_fld =
@@ -161,7 +161,7 @@ fn test_remove_for_new_document() -> Result<()> {
 
 /// Port of `testConstructorExceptions`.
 fn test_constructor_exceptions() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true)?;
     Field::new("name", "value".to_string(), ft.clone())?; // okay
     StringField::new("name", "value".to_string(), Store::NO)?; // okay
@@ -173,7 +173,7 @@ fn test_constructor_exceptions() -> Result<()> {
     let w = random_writer(&dir)?;
     Field::new("name", "value".to_string(), ft)?; // okay
     let mut doc = Document::new();
-    let mut ft2 = FieldType::new();
+    let ft2 = FieldType::new();
     ft2.set_stored(true)?;
     ft2.set_store_term_vectors(true)?;
     doc.add(Box::new(Field::new("name", "value".to_string(), ft2)?));
@@ -275,9 +275,9 @@ fn test_position_increment_multi_fields() -> Result<()> {
 /// `makeDocumentWithFields()`.
 fn make_document_with_fields() -> Result<Document> {
     let mut doc = Document::new();
-    let mut stored = FieldType::new();
+    let stored = FieldType::new();
     stored.set_stored(true)?;
-    let mut indexed_not_tokenized = FieldType::new();
+    let indexed_not_tokenized = FieldType::new();
     indexed_not_tokenized.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
     indexed_not_tokenized.set_tokenized(false)?;
     doc.add(Box::new(StringField::new(

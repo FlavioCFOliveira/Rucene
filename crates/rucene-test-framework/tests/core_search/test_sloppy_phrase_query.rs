@@ -265,7 +265,7 @@ fn check_phrase_query(
 
 /// `new FieldType(TextField.TYPE_NOT_STORED)` with `setOmitNorms(true)`.
 fn omit_norms_type() -> Result<FieldType> {
-    let mut custom_type = FieldType::new_from(TextField::type_not_stored());
+    let custom_type = FieldType::new_from(TextField::type_not_stored());
     custom_type.set_omit_norms(true)?;
     Ok(custom_type)
 }

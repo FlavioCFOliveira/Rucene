@@ -165,7 +165,7 @@ fn as_lmp(mp: &Arc<dyn rucene::index::merge_policy::MergePolicy>) -> &LogMergePo
 /// `new FieldType(TextField.TYPE_STORED)` with term vectors, and term-vector
 /// offsets and positions as asked.
 fn tv_type(offsets: bool, positions: bool) -> Result<FieldType> {
-    let mut ft = FieldType::new_from(TextField::type_stored());
+    let ft = FieldType::new_from(TextField::type_stored());
     ft.set_store_term_vectors(true)?;
     if offsets {
         ft.set_store_term_vector_offsets(true)?;
@@ -178,7 +178,7 @@ fn tv_type(offsets: bool, positions: bool) -> Result<FieldType> {
 
 /// `FieldType customType3 = new FieldType(); customType3.setStored(true);`.
 fn stored_only_type() -> Result<FieldType> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true)?;
     Ok(ft)
 }
@@ -1187,7 +1187,7 @@ fn finish(result: std::thread::Result<Result<()>>) -> Result<()> {
 /// `static Document createDocument(String id)`.
 pub fn create_document(id: &str) -> Result<Document> {
     let mut doc = Document::new();
-    let mut custom_type = FieldType::new_from(TextField::type_stored());
+    let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_tokenized(false)?;
     custom_type.set_omit_norms(true)?;
 

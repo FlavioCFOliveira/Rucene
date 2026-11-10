@@ -1052,7 +1052,7 @@ fn test_disabled_field() -> Result<()> {
 
 /// Port of `testTokenizedBinaryField`.
 fn test_tokenized_binary_field() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_tokenized(true)?;
     ft.set_index_options(IndexOptions::DOCS)?;
     expect_throws(IAE, || {
@@ -1063,7 +1063,7 @@ fn test_tokenized_binary_field() -> Result<()> {
 
 /// Port of `testOffsetsBinaryField`.
 fn test_offsets_binary_field() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_tokenized(false)?;
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
     expect_throws(IAE, || {
@@ -1074,7 +1074,7 @@ fn test_offsets_binary_field() -> Result<()> {
 
 /// Port of `testTermVectorsOffsetsBinaryField`.
 fn test_term_vectors_offsets_binary_field() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_tokenized(false)?;
     ft.set_store_term_vectors(true)?;
     ft.set_store_term_vector_offsets(true)?;

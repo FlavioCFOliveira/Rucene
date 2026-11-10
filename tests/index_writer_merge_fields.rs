@@ -108,7 +108,7 @@ const CASE_COMBINED: Case = Case {
 
 /// The field type of `off`: `MergedFieldsFixture.OFFSETS_TYPE`.
 fn offsets_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
@@ -408,7 +408,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 

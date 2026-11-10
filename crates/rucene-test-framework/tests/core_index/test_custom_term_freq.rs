@@ -263,7 +263,7 @@ fn test_repeated_terms() -> Result<()> {
 
 /// `private static FieldType getTermDocFieldType()`.
 fn get_term_doc_field_type() -> Result<FieldType> {
-    let mut field_type = FieldType::new_from(TextField::type_not_stored());
+    let field_type = FieldType::new_from(TextField::type_not_stored());
     field_type.set_index_options(IndexOptions::DOCS_AND_CUSTOM_FREQS)?;
     Ok(field_type)
 }
@@ -273,7 +273,7 @@ fn get_legacy_field_type() -> Result<FieldType> {
     // It is possible to store custom term frequencies in fields that are *not* labeled as term-doc
     // fields. These will sum term frequencies rather than counts and have more places where they
     // may overflow these aggregates.
-    let mut field_type = FieldType::new_from(TextField::type_not_stored());
+    let field_type = FieldType::new_from(TextField::type_not_stored());
     field_type.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
     Ok(field_type)
 }
@@ -460,7 +460,7 @@ fn test_invalid_prox() -> Result<()> {
 fn test_invalid_docs_only() -> Result<()> {
     let (dir, w) = open()?;
 
-    let mut field_type = FieldType::new_from(TextField::type_not_stored());
+    let field_type = FieldType::new_from(TextField::type_not_stored());
     field_type.set_index_options(IndexOptions::DOCS)?;
     let doc = doc_with(canned_field(
         "field",
@@ -482,7 +482,7 @@ fn test_invalid_docs_only() -> Result<()> {
 fn test_overflow_int() -> Result<()> {
     let (dir, w) = open()?;
 
-    let mut field_type = FieldType::new_from(TextField::type_not_stored());
+    let field_type = FieldType::new_from(TextField::type_not_stored());
     field_type.set_index_options(IndexOptions::DOCS)?;
 
     let doc = doc_with(Field::new(
@@ -550,7 +550,7 @@ fn test_no_overflow_int() -> Result<()> {
 fn test_invalid_term_vector_positions() -> Result<()> {
     let (dir, w) = open()?;
 
-    let mut field_type = get_term_doc_field_type()?;
+    let field_type = get_term_doc_field_type()?;
     field_type.set_store_term_vectors(true)?;
     field_type.set_store_term_vector_positions(true)?;
     let doc = doc_with(canned_field(
@@ -571,7 +571,7 @@ fn test_invalid_term_vector_positions() -> Result<()> {
 fn test_invalid_term_vector_offsets() -> Result<()> {
     let (dir, w) = open()?;
 
-    let mut field_type = get_term_doc_field_type()?;
+    let field_type = get_term_doc_field_type()?;
     field_type.set_store_term_vectors(true)?;
     field_type.set_store_term_vector_offsets(true)?;
     let doc = doc_with(canned_field(
@@ -614,7 +614,7 @@ fn assert_term_vector(r: &Arc<dyn IndexReader>, doc: i32, expected: &[(&str, i32
 fn test_term_vectors() -> Result<()> {
     let (dir, w) = open()?;
 
-    let mut field_type = get_term_doc_field_type()?;
+    let field_type = get_term_doc_field_type()?;
     field_type.set_store_term_vectors(true)?;
     let doc = doc_with(canned_field(
         "field",

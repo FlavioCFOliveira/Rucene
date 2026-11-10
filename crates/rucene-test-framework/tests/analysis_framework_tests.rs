@@ -469,7 +469,7 @@ mod test_mock_analyzer {
         let mut dir = LuceneTestCase::new_directory();
         let writer = RandomIndexWriter::new(&*random(), dir.as_directory(), a)?;
         let mut doc = Document::new();
-        let mut ft = FieldType::new();
+        let ft = FieldType::new();
         ft.set_index_options(IndexOptions::DOCS)?;
         ft.set_tokenized(true)?;
         ft.set_store_term_vectors(true)?;
@@ -1257,8 +1257,7 @@ fn index_and_read_vectors(
 }
 
 fn vectors_type() -> rucene::document::FieldType {
-    let mut ft =
-        rucene::document::FieldType::new_from(rucene::document::TextField::type_not_stored());
+    let ft = rucene::document::FieldType::new_from(rucene::document::TextField::type_not_stored());
     ft.set_store_term_vectors(true).unwrap();
     ft.set_store_term_vector_positions(true).unwrap();
     ft.set_store_term_vector_offsets(true).unwrap();
@@ -1370,7 +1369,7 @@ fn mock_index_writer_enables_test_points() {
 /// read by interface), as in Java. Its `MockTokenizer` draws from the
 /// randomized context, so the check runs as a suite.
 fn mock_bytes_analyzer_indexes_utf16_bytes() -> Result<()> {
-    let mut ft = vectors_type();
+    let ft = vectors_type();
     ft.set_store_term_vector_offsets(false)?;
     let field = rucene::document::Field::new("f", "ab".to_string(), ft)?;
     let vectors = index_and_read_vectors(

@@ -76,7 +76,7 @@ fn test_() -> Result<()> {
     petabyte_max_merge(&w);
 
     let mut doc = Document::new();
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true)?;
     ft.freeze();
     let value_length = RandomNumbers::random_int_between(&*random(), 1 << 13, 1 << 20);

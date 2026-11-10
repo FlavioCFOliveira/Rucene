@@ -4125,7 +4125,7 @@ impl LuceneTestCase {
             return Self::create_field(name, value, prev_type.clone());
         }
 
-        let mut new_type = rucene::document::FieldType::new_from(field_type);
+        let new_type = rucene::document::FieldType::new_from(field_type);
         if !new_type.stored() && random.next_boolean() {
             new_type.set_stored(true).expect(INVARIANT); // randomly store it
         }

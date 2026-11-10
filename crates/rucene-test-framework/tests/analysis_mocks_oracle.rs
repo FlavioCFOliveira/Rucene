@@ -1576,7 +1576,7 @@ fn factories() {
                         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
                         f,
                     });
-                    let qb = QueryBuilder::new(a);
+                    let qb = QueryBuilder::new(Some(a));
                     format!(
                         "{}\t{}\t{}",
                         query_string(qb.create_boolean_query("f", text)),

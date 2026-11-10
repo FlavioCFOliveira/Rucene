@@ -205,7 +205,7 @@ fn test_check_index_all_valid() -> Result<()> {
             // term vector
             let token1 = token_with_payload("bar", 0, 3, "pay1");
             let token2 = token_with_payload("bar", 4, 8, "pay2");
-            let mut ft = FieldType::new_from(TextField::type_not_stored());
+            let ft = FieldType::new_from(TextField::type_not_stored());
             ft.set_store_term_vectors(true)?;
             ft.set_store_term_vector_positions(true)?;
             ft.set_store_term_vector_payloads(true)?;

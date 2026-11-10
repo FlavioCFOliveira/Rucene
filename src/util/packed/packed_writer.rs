@@ -245,7 +245,7 @@ impl PackedIntsReaderIterator for PackedReaderIterator<'_> {
                     .byte_count(self.packed_ints_version, remaining, self.bits_per_value)?;
             let blocks_to_read = std::cmp::min(remaining_blocks as usize, self.next_blocks.len());
             self.input
-                .read_bytes(&mut self.next_blocks, 0, blocks_to_read)?;
+                .read_bytes(Some(&mut self.next_blocks), 0, blocks_to_read)?;
             if blocks_to_read < self.next_blocks.len() {
                 self.next_blocks[blocks_to_read..].fill(0);
             }

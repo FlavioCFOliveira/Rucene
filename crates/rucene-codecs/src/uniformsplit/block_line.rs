@@ -368,7 +368,7 @@ impl Serializer {
         if self.current_term.bytes.len() < end {
             self.current_term.bytes.resize(end, 0);
         }
-        input.read_bytes(&mut self.current_term.bytes, offset, length)
+        input.read_bytes(Some(&mut self.current_term.bytes), offset, length)
     }
 }
 

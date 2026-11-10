@@ -281,7 +281,7 @@ impl Outputs for FSTTermOutputs {
         if bit0 > 0 {
             // bytes exists
             let mut b = vec![0u8; bytes_size as usize];
-            input.read_bytes(&mut b, 0, bytes_size as usize)?;
+            input.read_bytes(Some(&mut b), 0, bytes_size as usize)?;
             bytes = Some(Arc::from(b));
         }
         if bit1 > 0 {

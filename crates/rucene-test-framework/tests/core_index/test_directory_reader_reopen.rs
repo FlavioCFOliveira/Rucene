@@ -248,7 +248,7 @@ fn mock_iwc() -> IndexWriterConfig {
 /// `new FieldType(TextField.TYPE_STORED)`, not tokenized, omitting norms
 /// when asked.
 fn untokenized_stored_type(omit_norms: bool) -> Result<FieldType> {
-    let mut ft = FieldType::new_from(TextField::type_stored());
+    let ft = FieldType::new_from(TextField::type_stored());
     ft.set_tokenized(false)?;
     if omit_norms {
         ft.set_omit_norms(true)?;
@@ -258,7 +258,7 @@ fn untokenized_stored_type(omit_norms: bool) -> Result<FieldType> {
 
 /// `FieldType customType3 = new FieldType(); customType3.setStored(true);`.
 fn stored_only_type() -> Result<FieldType> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true)?;
     Ok(ft)
 }

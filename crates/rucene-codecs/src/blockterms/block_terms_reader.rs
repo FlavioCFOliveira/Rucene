@@ -443,7 +443,7 @@ impl OwnedArrayInput {
         if self.bytes.len() < len {
             self.bytes.resize(len, 0);
         }
-        input.read_bytes(&mut self.bytes, 0, len)?;
+        input.read_bytes(Some(&mut self.bytes), 0, len)?;
         self.limit = len;
         self.pos = 0;
         Ok(())
@@ -471,7 +471,7 @@ impl OwnedArrayInput {
 
     /// `readBytes(term.bytes(), offset, len)`.
     fn read_into(&mut self, term: &mut TermBuilder, offset: usize, len: usize) -> Result<()> {
-        self.with(|i| i.read_bytes(&mut term.bytes, offset, len))
+        self.with(|i| i.read_bytes(Some(&mut term.bytes), offset, len))
     }
 }
 

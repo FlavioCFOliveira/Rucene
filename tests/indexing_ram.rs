@@ -105,7 +105,7 @@ fn bytes(text: &str) -> BytesRef {
 /// `IndexingRamFixture.TV_TYPE`: `TextField.TYPE_NOT_STORED` with term vectors,
 /// positions and offsets.
 fn tv_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
@@ -120,7 +120,7 @@ fn tv_type() -> FieldType {
 /// `IndexingRamFixture.DOCS_FREQS_TYPE`: `TextField.TYPE_NOT_STORED` indexed
 /// with `DOCS_AND_FREQS`.
 fn docs_freqs_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS)

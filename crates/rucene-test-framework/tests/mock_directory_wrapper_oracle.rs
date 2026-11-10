@@ -212,7 +212,7 @@ fn read(dir: &dyn Directory, name: &str) -> Result<Vec<u8>> {
     let mut input = dir.open_input(name, &*READONCE_IO_CONTEXT)?;
     let mut b = vec![0u8; input.length() as usize];
     let len = b.len();
-    input.read_bytes(&mut b, 0, len)?;
+    input.read_bytes(Some(&mut b), 0, len)?;
     input.close()?;
     Ok(b)
 }
@@ -930,7 +930,7 @@ fn serial_io(r: &mut Recorder) {
     });
     r.rec("readBytes@40960x100", || {
         input.seek(40960)?;
-        input.read_bytes(&mut [0u8; 100], 0, 100)?;
+        input.read_bytes(Some(&mut [0u8; 100]), 0, 100)?;
         count(&dir)
     });
     r.rec("readByte@12288 (backwards)", || {
@@ -991,7 +991,7 @@ fn serial_io(r: &mut Recorder) {
     });
     r.rec("slice readBytes@4096x10", || {
         sl.seek(4096)?;
-        sl.read_bytes(&mut [0u8; 10], 0, 10)?;
+        sl.read_bytes(Some(&mut [0u8; 10]), 0, 10)?;
         count(&dir)
     });
     r.rec("slice getFilePointer", || Ok(sl.file_pointer().to_string()));
@@ -1045,7 +1045,7 @@ fn serial_io(r: &mut Recorder) {
     let mut ck = dir.open_checksum_input("s").unwrap();
     r.rec("openChecksumInput", || count(&dir));
     r.rec("checksum reads", || {
-        ck.read_bytes(&mut vec![0u8; 20000], 0, 20000)?;
+        ck.read_bytes(Some(&mut vec![0u8; 20000]), 0, 20000)?;
         ck.read_byte()?;
         count(&dir)
     });
@@ -1161,7 +1161,7 @@ fn raw(r: &mut Recorder) {
     });
     r.rec("openChecksumInput", || {
         let mut input = raw.open_checksum_input("b")?;
-        input.read_bytes(&mut [0u8; 7], 0, 7)?;
+        input.read_bytes(Some(&mut [0u8; 7]), 0, 7)?;
         let checksum = input.get_checksum()?;
         input.close()?;
         Ok(checksum.to_string())

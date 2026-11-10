@@ -90,7 +90,9 @@ impl TermAndBoost {
 /// implements; see the module documentation for why.
 #[derive(Debug)]
 pub struct QueryBuilder {
-    analyzer: Arc<dyn Analyzer>,
+    /// `None` for Java's `null`, which the constructor accepts unchecked
+    /// (`QueryBuilder.java:79-81`).
+    analyzer: Option<Arc<dyn Analyzer>>,
     enable_position_increments: bool,
     enable_graph_queries: bool,
     auto_generate_multi_term_synonyms_phrase_query: bool,
@@ -99,8 +101,9 @@ pub struct QueryBuilder {
 impl QueryBuilder {
     /// Creates a new query builder using the given analyzer.
     ///
-    /// Equivalent to `new QueryBuilder(Analyzer)`.
-    pub fn new(analyzer: Arc<dyn Analyzer>) -> Self {
+    /// Equivalent to `new QueryBuilder(Analyzer)`; `None` is Java's `null`,
+    /// on which analyzing text raises `NullPointerException`.
+    pub fn new(analyzer: Option<Arc<dyn Analyzer>>) -> Self {
         Self {
             analyzer,
             enable_position_increments: true,
@@ -112,14 +115,14 @@ impl QueryBuilder {
     /// Returns the analyzer.
     ///
     /// Equivalent to `getAnalyzer()`.
-    pub fn get_analyzer(&self) -> &Arc<dyn Analyzer> {
-        &self.analyzer
+    pub fn get_analyzer(&self) -> Option<&Arc<dyn Analyzer>> {
+        self.analyzer.as_ref()
     }
 
     /// Sets the analyzer used to tokenize text.
     ///
     /// Equivalent to `setAnalyzer(Analyzer)`.
-    pub fn set_analyzer(&mut self, analyzer: Arc<dyn Analyzer>) {
+    pub fn set_analyzer(&mut self, analyzer: Option<Arc<dyn Analyzer>>) {
         self.analyzer = analyzer;
     }
 
@@ -330,6 +333,8 @@ pub trait QueryBuilderOps {
         let source = self
             .query_builder()
             .get_analyzer()
+            // `analyzer.tokenStream(field, queryText)` on a `null` analyzer.
+            .ok_or_else(crate::error::LuceneError::null_pointer)?
             .token_stream_from_str(field, query_text)?;
         self.create_field_query(
             Box::new(SharedTokenStream::new(source)),

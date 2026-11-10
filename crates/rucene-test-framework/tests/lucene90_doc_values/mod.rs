@@ -917,7 +917,7 @@ fn test_sorted_set_around_block_size(_suite: &CompressingDocValuesSuite) -> Resu
             for _ in 0..num_values {
                 let length = input.read_v_int()? as usize;
                 let mut b = vec![0u8; length];
-                input.read_bytes(&mut b, 0, length)?;
+                input.read_bytes(Some(&mut b), 0, length)?;
                 let ord = values.next_ord()?;
                 Assert::assert_true(BytesRef::new(b) == values.lookup_ord(ord)?);
             }
@@ -1723,7 +1723,7 @@ impl DataInput for NoSliceIndexInput {
         self.r#in.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.r#in.read_bytes(b, offset, len)
     }
 

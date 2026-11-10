@@ -464,7 +464,8 @@ impl DataInput for PooledSliceReader<'_> {
         Ok(self.reader.read_byte(self.pool))
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         self.ensure(len)?;
         self.reader
             .read_bytes(self.pool, &mut b[offset..offset + len]);
@@ -3452,7 +3453,7 @@ impl PostingsEnum for SortingPostingsEnum {
         if token & 1 != 0 {
             let length = input.read_v_int()?.max(0) as usize;
             self.payload.resize(length, 0);
-            input.read_bytes(&mut self.payload, 0, length)?;
+            input.read_bytes(Some(&mut self.payload), 0, length)?;
         } else {
             self.payload.clear();
         }
@@ -4968,7 +4969,7 @@ mod tests {
         assert_eq!(input.read_v_int().expect("v int"), 12_345);
         let mut read_back = vec![0u8; payload.len()];
         input
-            .read_bytes(&mut read_back, 0, payload.len())
+            .read_bytes(Some(&mut read_back), 0, payload.len())
             .expect("bytes");
         assert_eq!(read_back, payload);
         assert!(input.eof());
@@ -5004,7 +5005,7 @@ mod tests {
         let mut input = PooledSliceReader::new(reader, &pool);
         let mut buffer = [0u8; 4];
         let error = input
-            .read_bytes(&mut buffer, 0, 4)
+            .read_bytes(Some(&mut buffer), 0, 4)
             .expect_err("the stream held one byte");
         assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
 

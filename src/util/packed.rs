@@ -2094,7 +2094,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
             if self.blocks.len() < to_skip {
                 self.blocks.resize(to_skip, 0);
             }
-            self.input.read_bytes(&mut self.blocks, 0, to_skip)?;
+            self.input.read_bytes(Some(&mut self.blocks), 0, to_skip)?;
             skipped += to_skip as i64;
         }
         Ok(())
@@ -2136,7 +2136,8 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
                 value_count as i32,
                 bits_per_value,
             )? as usize;
-            self.input.read_bytes(&mut self.blocks, 0, blocks_count)?;
+            self.input
+                .read_bytes(Some(&mut self.blocks), 0, blocks_count)?;
 
             decoder.decode_byte_blocks_to_longs(
                 &self.blocks,

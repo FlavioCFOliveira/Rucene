@@ -196,7 +196,7 @@ fn ndv() -> Arc<dyn IndexableFieldType> {
 
 /// `new FieldType()` with `setStored(true)`, frozen.
 fn stored_only() -> Result<FieldType> {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_stored(true)?;
     t.freeze();
     Ok(t)
@@ -205,7 +205,7 @@ fn stored_only() -> Result<FieldType> {
 /// `new FieldType()` with `setStored(true)` and `setDocValuesType(NUMERIC)`,
 /// frozen.
 fn stored_numeric_type() -> Result<FieldType> {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_stored(true)?;
     t.set_doc_values_type(DocValuesType::NUMERIC)?;
     t.freeze();
@@ -456,7 +456,7 @@ fn test_column_with_none_doc_values_type_and_no_points_throws() -> Result<()> {
     let c = Ctx::open()?;
 
     // FieldType with NONE doc values type and no points
-    let mut bad_type = FieldType::new();
+    let bad_type = FieldType::new();
     bad_type.freeze();
 
     let doc_ids = vec![0];
@@ -603,7 +603,7 @@ fn test_sparse_stored_field_preserves_num_docs() -> Result<()> {
 fn test_sparse_indexed_fields_preserves_num_docs() -> Result<()> {
     let c = Ctx::open()?;
 
-    let mut indexed_type = FieldType::new();
+    let indexed_type = FieldType::new();
     indexed_type.set_index_options(IndexOptions::DOCS)?;
     indexed_type.set_omit_norms(true)?;
     indexed_type.set_tokenized(false)?;
@@ -682,7 +682,7 @@ fn test_sparse_row_mixed_with_dense_doc_values() -> Result<()> {
 
 /// Port of `TestColumnBatchIndexing.testSparseBatchMatchesDocByDoc`.
 fn test_sparse_batch_matches_doc_by_doc() -> Result<()> {
-    let mut stored_indexed = FieldType::new_from(StringField::type_stored());
+    let stored_indexed = FieldType::new_from(StringField::type_stored());
     stored_indexed.freeze();
 
     // 7 docs; only docs 1, 2, and 5 have values for the row column.
@@ -1324,7 +1324,7 @@ fn test_add_batch_interleaved_with_add_document() -> Result<()> {
 
 /// `new FieldType(StringField.TYPE_NOT_STORED)`, frozen.
 fn id_type() -> FieldType {
-    let mut id_type = FieldType::new_from(StringField::type_not_stored());
+    let id_type = FieldType::new_from(StringField::type_not_stored());
     id_type.freeze();
     id_type
 }
@@ -1636,15 +1636,15 @@ fn build_batch_index(
     }
 
     // Field types used on the batch path.
-    let mut bin_stored_type = FieldType::new();
+    let bin_stored_type = FieldType::new();
     bin_stored_type.set_doc_values_type(DocValuesType::BINARY)?;
     bin_stored_type.set_stored(true)?;
     bin_stored_type.freeze();
-    let mut lpoint_type = FieldType::new();
+    let lpoint_type = FieldType::new();
     lpoint_type.set_dimensions(1, 8)?;
     lpoint_type.freeze();
     let tag_type = StringField::type_not_stored();
-    let mut vec_type = FieldType::new();
+    let vec_type = FieldType::new();
     vec_type.set_vector_attributes(
         2,
         VectorEncoding::FLOAT32,

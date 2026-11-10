@@ -1628,7 +1628,7 @@ impl FloatVectorValues for OffHeapFloatVectorValues {
         let mut value = vec![0.0f32; self.dimension as usize];
         let mut slice = self.get_slice()?;
         slice.seek((ord as i64) * self.byte_size as i64)?;
-        slice.read_floats(&mut value, 0, self.dimension as usize)?;
+        slice.read_floats(Some(&mut value), 0, self.dimension as usize)?;
         Ok(value)
     }
 
@@ -1965,7 +1965,7 @@ impl OffHeapByteVectorValues {
     fn read_value(&self, target_ord: i32, value: &mut [u8]) -> Result<()> {
         let mut slice = self.get_slice()?;
         slice.seek((target_ord as i64) * self.byte_size as i64)?;
-        slice.read_bytes(value, 0, self.byte_size as usize)
+        slice.read_bytes(Some(value), 0, self.byte_size as usize)
     }
 }
 
@@ -2297,7 +2297,7 @@ pub(crate) mod tests {
             self.inner.read_byte()
         }
 
-        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
             self.inner.read_bytes(b, offset, len)
         }
 

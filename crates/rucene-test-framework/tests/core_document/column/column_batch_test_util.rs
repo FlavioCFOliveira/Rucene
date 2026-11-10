@@ -36,7 +36,7 @@ pub type ExceptionFactory = Arc<dyn Fn() -> LuceneError>;
 
 /// `floatVectorType(dimension, sim)`.
 pub fn float_vector_type(dimension: i32, sim: VectorSimilarityFunction) -> Result<FieldType> {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_vector_attributes(dimension, VectorEncoding::FLOAT32, sim)?;
     t.freeze();
     Ok(t)
@@ -44,7 +44,7 @@ pub fn float_vector_type(dimension: i32, sim: VectorSimilarityFunction) -> Resul
 
 /// `byteVectorType(dimension, sim)`.
 pub fn byte_vector_type(dimension: i32, sim: VectorSimilarityFunction) -> Result<FieldType> {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_vector_attributes(dimension, VectorEncoding::BYTE, sim)?;
     t.freeze();
     Ok(t)

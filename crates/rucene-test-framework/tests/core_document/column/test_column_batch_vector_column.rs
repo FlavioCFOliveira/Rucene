@@ -419,7 +419,7 @@ fn test_vector_column_schema_consistency_across_batches() -> Result<()> {
 fn test_vector_with_deletes() -> Result<()> {
     let mut c = Ctx::open()?;
     let vector_type = euclid_float(2)?;
-    let mut id_type = FieldType::new_from(StringField::type_not_stored());
+    let id_type = FieldType::new_from(StringField::type_not_stored());
     id_type.freeze();
     let vectors = vec![
         vec![1f32, 1.0],

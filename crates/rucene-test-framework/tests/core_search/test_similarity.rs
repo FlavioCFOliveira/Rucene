@@ -289,7 +289,7 @@ impl CollectorManager for NoTfManager {
 
 /// `new FieldType(TextField.TYPE_STORED)` with `DOCS_AND_CUSTOM_FREQS`.
 fn custom_freqs_type() -> Result<FieldType> {
-    let mut field_type = FieldType::new_from(TextField::type_stored());
+    let field_type = FieldType::new_from(TextField::type_stored());
     field_type.set_index_options(IndexOptions::DOCS_AND_CUSTOM_FREQS)?;
     Ok(field_type)
 }

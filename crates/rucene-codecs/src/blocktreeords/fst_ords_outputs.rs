@@ -224,7 +224,7 @@ impl Outputs for FSTOrdsOutputs {
                 )
             })?;
             let mut bytes = vec![0u8; len];
-            input.read_bytes(&mut bytes, 0, len)?;
+            input.read_bytes(Some(&mut bytes), 0, len)?;
             bytes
         };
 

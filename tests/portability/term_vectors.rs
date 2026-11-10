@@ -123,7 +123,7 @@ impl Spec {
     }
 
     fn field_type(&self) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_stored(false).expect("stored");
         field_type.set_omit_norms(true).expect("omit norms");
@@ -1197,7 +1197,7 @@ fn rucene_reads_the_term_vectors_of_a_compound_file_segment_written_by_lucene() 
 /// Builds a document whose `body` is analysed and stores term vectors with
 /// positions and offsets.
 fn vector_doc(id: &str, body: &str) -> Document {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).expect("tokenized");
     field_type.set_stored(true).expect("stored");
     field_type.set_omit_norms(true).expect("omit norms");

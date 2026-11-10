@@ -1656,7 +1656,7 @@ fn checked_count(what: &str, count: i64, available: i64) -> Result<usize> {
 fn read_block(what: &str, input: &mut dyn IndexInput, length: i64) -> Result<Vec<u8>> {
     let length = checked_block_len(what, length, input)?;
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length)?;
+    input.read_bytes(Some(&mut bytes), 0, length)?;
     Ok(bytes)
 }
 
@@ -3322,7 +3322,7 @@ impl TermsEnum for TVTermsEnum {
         } = self;
         let mut input = ByteArrayDataInput::with_range(&term_bytes.bytes, 0, *input_limit);
         input.set_position(*input_pos);
-        let read = input.read_bytes(&mut term.bytes, prefix, suffix);
+        let read = input.read_bytes(Some(&mut term.bytes), prefix, suffix);
         *input_pos = input.position();
         read?;
         self.term.offset = 0;
@@ -4338,7 +4338,9 @@ mod tests {
             .open_input("_0.tvd", &*DEFAULT_IO_CONTEXT)
             .expect("open .tvd");
         let mut header = vec![0u8; 53];
-        input.read_bytes(&mut header, 0, 53).expect("read header");
+        input
+            .read_bytes(Some(&mut header), 0, 53)
+            .expect("read header");
         // The index header is 4 magic bytes, the codec name as a
         // length-prefixed string, a four-byte version, the sixteen-byte segment
         // id and an empty suffix: 4 + 1 + 23 + 4 + 16 + 1 = 49 bytes. The chunk
@@ -5028,7 +5030,7 @@ mod tests {
             let mut input = dir.open_input(&name, &*DEFAULT_IO_CONTEXT).unwrap();
             let length = input.length() as usize;
             let mut bytes = vec![0u8; length];
-            input.read_bytes(&mut bytes, 0, length).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, length).unwrap();
             files.push((name, bytes));
         }
         files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -5498,7 +5500,7 @@ mod tests {
             self.inner.read_byte()
         }
 
-        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
             self.inner.read_bytes(b, offset, len)
         }
 

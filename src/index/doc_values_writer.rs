@@ -1394,7 +1394,8 @@ impl DocIdSetIterator for BufferedBinary {
             // buffered, a `BytesRef.length`, never negative.
             let length = to_int_exact(self.lengths_iterator.next_value())? as usize;
             self.length = length;
-            self.bytes_iterator.read_bytes(&mut self.value, 0, length)?;
+            self.bytes_iterator
+                .read_bytes(Some(&mut self.value), 0, length)?;
         }
         Ok(doc_id)
     }
@@ -4214,7 +4215,7 @@ mod tests {
 
     impl TestDocValuesField {
         fn numeric(name: &str, doc_values_type: DocValuesType, value: NumericValue) -> Self {
-            let mut field_type = FieldType::new();
+            let field_type = FieldType::new();
             field_type.set_doc_values_type(doc_values_type).unwrap();
             Self {
                 name: name.to_string(),
@@ -4261,7 +4262,7 @@ mod tests {
         fn token_stream(
             &self,
             _analyzer: Option<&dyn Analyzer>,
-            _reuse: Option<&mut dyn TokenStream>,
+            _reuse: Option<Box<dyn TokenStream>>,
         ) -> Result<Box<dyn TokenStream>> {
             Ok(Box::new(
                 crate::analysis::StringTokenStream::new(String::new()).unwrap(),

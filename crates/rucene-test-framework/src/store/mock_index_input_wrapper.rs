@@ -309,14 +309,14 @@ impl DataInput for MockIndexInputWrapper {
         self.r#in.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.ensure_open_and_accessible()?;
         self.r#in.read_bytes(b, offset, len)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
@@ -338,7 +338,7 @@ impl DataInput for MockIndexInputWrapper {
         self.seek(skip_to)
     }
 
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, len: usize) -> Result<()> {
+    fn read_floats(&mut self, floats: Option<&mut [f32]>, offset: usize, len: usize) -> Result<()> {
         self.ensure_open_and_accessible()?;
         self.r#in.read_floats(floats, offset, len)
     }

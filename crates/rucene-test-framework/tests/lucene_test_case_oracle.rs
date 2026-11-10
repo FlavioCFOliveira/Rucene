@@ -718,7 +718,7 @@ fn test_members() -> String {
             f.binary_value().unwrap()
         ));
     }
-    let mut custom = FieldType::new();
+    let custom = FieldType::new();
     custom
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
         .unwrap();

@@ -969,7 +969,7 @@ impl IndexableField for ThrowingTokenStreamField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(ThrowingTokenStream {
             source: AttributeSource::new(),
@@ -1007,7 +1007,7 @@ fn test_exc_indexing_doc_before_doc_values() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
-    let mut ft = FieldType::new_from(StringField::type_not_stored());
+    let ft = FieldType::new_from(StringField::type_not_stored());
     ft.set_doc_values_type(DocValuesType::SORTED)?;
     ft.freeze();
     let field = ThrowingTokenStreamField(Field::new_with_bytes(

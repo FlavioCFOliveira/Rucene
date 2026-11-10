@@ -1301,7 +1301,7 @@ impl DataInput for MockAssertFileExistIndexInput {
         self.delegate.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.check_file_exist()?;
         self.delegate.read_bytes(b, offset, len)
     }

@@ -104,7 +104,7 @@ impl PostingDecodingUtil {
         c_index: usize,
         c_mask: i32,
     ) -> Result<()> {
-        self.input.read_ints(c, c_index, count)?;
+        self.input.read_ints(Some(c), c_index, count)?;
         let max_iter = (b_shift - 1) / dec;
 
         // Process each shift level across all elements (better for vectorization)

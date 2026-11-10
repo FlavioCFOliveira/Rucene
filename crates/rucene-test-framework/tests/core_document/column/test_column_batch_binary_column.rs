@@ -277,8 +277,7 @@ fn test_inverted_with_doc_values() -> Result<()> {
 fn test_inverted_with_stored() -> Result<()> {
     let c = Ctx::open()?;
     // Inverted + stored (like StringField with Store.YES)
-    let mut inverted_stored_type =
-        rucene::document::FieldType::new_from(StringField::type_stored());
+    let inverted_stored_type = rucene::document::FieldType::new_from(StringField::type_stored());
     inverted_stored_type.freeze();
     let values = vec![nbr("aaa"), nbr("bbb"), nbr("ccc")];
     c.add_batch(&simple_batch(

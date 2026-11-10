@@ -138,7 +138,8 @@ impl DataInput for ByteArrayBytesReader<'_> {
         "ByteArrayBytesReader".to_string()
     }
 
-    fn read_bytes(&mut self, _b: &mut [u8], _offset: usize, _len: usize) -> Result<()> {
+    fn read_bytes(&mut self, _b: Option<&mut [u8]>, _offset: usize, _len: usize) -> Result<()> {
+        let _b = rucene::store::require_array(_b)?;
         Err(LuceneError::UnsupportedOperation(String::new()))
     }
 

@@ -174,7 +174,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 
@@ -274,7 +274,7 @@ fn key(i: i32) -> Option<Vec<u8>> {
 
 /// `NestedTypesFixture.fieldType(IndexOptions)`: tokenized, no norms.
 fn no_norms_type(options: IndexOptions) -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type.set_omit_norms(true).unwrap();
     field_type.set_index_options(options).unwrap();
@@ -884,7 +884,7 @@ fn radix_36(k: usize) -> String {
 
 /// The field type of a numeric doc-values field.
 fn numeric_dv_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type
         .set_doc_values_type(DocValuesType::NUMERIC)
         .unwrap();
@@ -1144,7 +1144,7 @@ const FULL_DOCS: i32 = 300;
 /// `NestedTypesFixture.TV_TYPE`: `TextField.TYPE_NOT_STORED` with term vectors,
 /// positions and offsets.
 fn term_vector_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)

@@ -50,7 +50,7 @@ const DOCS: usize = TEXTS.len() + 2;
 
 /// `Utf16OffsetsFixture.bodyType()`.
 fn body_type() -> FieldType {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_tokenized(true).unwrap();
     t.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
         .unwrap();

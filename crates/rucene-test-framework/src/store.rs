@@ -32,7 +32,7 @@ macro_rules! forward_mock_index_input {
             }
             fn read_bytes(
                 &mut self,
-                b: &mut [u8],
+                b: Option<&mut [u8]>,
                 offset: usize,
                 len: usize,
             ) -> rucene::error::Result<()> {
@@ -40,7 +40,7 @@ macro_rules! forward_mock_index_input {
             }
             fn read_bytes_buffered(
                 &mut self,
-                b: &mut [u8],
+                b: Option<&mut [u8]>,
                 offset: usize,
                 len: usize,
                 use_buffer: bool,
@@ -52,7 +52,7 @@ macro_rules! forward_mock_index_input {
             }
             fn read_floats(
                 &mut self,
-                floats: &mut [f32],
+                floats: Option<&mut [f32]>,
                 offset: usize,
                 len: usize,
             ) -> rucene::error::Result<()> {

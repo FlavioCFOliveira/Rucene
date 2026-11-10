@@ -296,6 +296,97 @@ pub enum LuceneError {
         #[source]
         cause: Option<Arc<LuceneError>>,
     },
+
+    /// An error carrying the exceptions `Throwable.addSuppressed` attached
+    /// to it, Java's `getSuppressed()`.
+    ///
+    /// Build it with [`LuceneError::add_suppressed`]; read the list with
+    /// [`LuceneError::get_suppressed`]. It stands for the wrapped error: its
+    /// display, source (Java's `getCause()`),
+    /// [`java_simple_name`](LuceneError::java_simple_name) and the other
+    /// accessors are the wrapped error's.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Every Java `Throwable` holds a
+    /// suppressed list. The other variants are built at thousands of sites,
+    /// so the list cannot become a field of each of them; an error gains
+    /// this wrapper only when something is suppressed into it, and a `match`
+    /// on the wrapped variant must look through it with
+    /// [`LuceneError::unwrap_suppressed`].
+    #[error(transparent)]
+    Suppressing(Box<SuppressingError>),
+}
+
+/// The payload of [`LuceneError::Suppressing`]: an error and the exceptions
+/// suppressed into it, in the order they were added.
+#[derive(Debug)]
+pub struct SuppressingError {
+    error: LuceneError,
+    suppressed: Vec<Arc<LuceneError>>,
+}
+
+impl std::fmt::Display for SuppressingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, f)
+    }
+}
+
+impl std::error::Error for SuppressingError {
+    /// The wrapped error's cause: suppression does not change `getCause()`.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        std::error::Error::source(&self.error)
+    }
+}
+
+impl LuceneError {
+    /// `Throwable.addSuppressed(exception)`: appends `exception` to the
+    /// exceptions suppressed in order to deliver this one.
+    ///
+    /// Java refuses to suppress a throwable into itself
+    /// (`IllegalArgumentException("Self-suppression not permitted")`); a
+    /// Rust value moved in here can never be `self`, so that check has
+    /// nothing to refuse.
+    pub fn add_suppressed(&mut self, exception: LuceneError) {
+        self.add_suppressed_shared(Arc::new(exception));
+    }
+
+    /// [`add_suppressed`](Self::add_suppressed) of an exception that is
+    /// shared, as Java suppresses the same object it may also keep.
+    pub fn add_suppressed_shared(&mut self, exception: Arc<LuceneError>) {
+        if let Self::Suppressing(inner) = self {
+            inner.suppressed.push(exception);
+            return;
+        }
+        let error = std::mem::replace(self, Self::Cancelled);
+        *self = Self::Suppressing(Box::new(SuppressingError {
+            error,
+            suppressed: vec![exception],
+        }));
+    }
+
+    /// `addSuppressed` by value: this error with `exception` suppressed.
+    #[must_use]
+    pub fn with_suppressed(mut self, exception: LuceneError) -> Self {
+        self.add_suppressed(exception);
+        self
+    }
+
+    /// `Throwable.getSuppressed()`: the exceptions suppressed into this one,
+    /// in the order they were added; empty when there are none.
+    pub fn get_suppressed(&self) -> &[Arc<LuceneError>] {
+        match self {
+            Self::Suppressing(inner) => &inner.suppressed,
+            _ => &[],
+        }
+    }
+
+    /// The error itself, seen through a [`LuceneError::Suppressing`]
+    /// wrapper: what a `match` on Java's exception class inspects.
+    pub fn unwrap_suppressed(&self) -> &LuceneError {
+        match self {
+            Self::Suppressing(inner) => &inner.error,
+            other => other,
+        }
+    }
 }
 
 /// `Throwable.toString()` of an [`LuceneError::Unchecked`].
@@ -345,6 +436,7 @@ impl LuceneError {
             Self::Cancelled => "Cancelled",
             Self::Other(_) => "Other",
             Self::Unchecked { class, .. } => class.rsplit('.').next().unwrap_or(class),
+            Self::Suppressing(inner) => inner.error.java_simple_name(),
         }
     }
 
@@ -359,7 +451,7 @@ impl LuceneError {
     /// `MergePolicy.MergeAbortedException`.
     pub fn is_io_exception(&self) -> bool {
         matches!(
-            self,
+            self.unwrap_suppressed(),
             Self::Io(_)
                 | Self::CorruptIndex(_)
                 | Self::IndexFormatTooOld { .. }
@@ -527,6 +619,10 @@ impl LuceneError {
                 message: message.clone(),
                 cause: cause.clone(),
             },
+            Self::Suppressing(inner) => Self::Suppressing(Box::new(SuppressingError {
+                error: inner.error.duplicate(),
+                suppressed: inner.suppressed.clone(),
+            })),
         }
     }
 }
@@ -602,6 +698,7 @@ impl LuceneError {
                 format!("org.apache.lucene.index.MergePolicy$MergeAbortedException: {m}")
             }
             Self::Unchecked { class, message, .. } => unchecked_to_string(class, message),
+            Self::Suppressing(inner) => inner.error.io_exception_to_string(),
             other => format!("{}: {other}", other.java_simple_name()),
         }
     }
@@ -705,7 +802,7 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getResourceDescription`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getResourceDescription`.
     pub fn resource_description(&self) -> Option<&str> {
-        match self {
+        match self.unwrap_suppressed() {
             Self::IndexFormatTooOld {
                 resource_description,
                 ..
@@ -725,7 +822,7 @@ impl LuceneError {
     /// which returns `null` when the version *was* available; this returns
     /// `None` in that case, and `None` for every other error.
     pub fn reason(&self) -> Option<&str> {
-        match self {
+        match self.unwrap_suppressed() {
             Self::IndexFormatTooOld { reason, .. } => reason.as_deref(),
             _ => None,
         }
@@ -741,7 +838,7 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getVersion`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getVersion`.
     pub fn version(&self) -> Option<i32> {
-        match self {
+        match self.unwrap_suppressed() {
             Self::IndexFormatTooOld { version, .. } => *version,
             Self::IndexFormatTooNew { version, .. } => Some(*version),
             _ => None,
@@ -756,7 +853,7 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getMinVersion`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getMinVersion`.
     pub fn min_version(&self) -> Option<i32> {
-        match self {
+        match self.unwrap_suppressed() {
             Self::IndexFormatTooOld { min_version, .. } => *min_version,
             Self::IndexFormatTooNew { min_version, .. } => Some(*min_version),
             _ => None,
@@ -771,7 +868,7 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getMaxVersion`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getMaxVersion`.
     pub fn max_version(&self) -> Option<i32> {
-        match self {
+        match self.unwrap_suppressed() {
             Self::IndexFormatTooOld { max_version, .. } => *max_version,
             Self::IndexFormatTooNew { max_version, .. } => Some(*max_version),
             _ => None,

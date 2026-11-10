@@ -136,7 +136,7 @@ fn register_hierarchy() {
 
 /// The binary name of the Java class `e` stands for.
 pub fn java_class_name(e: &LuceneError) -> String {
-    match e {
+    match e.unwrap_suppressed() {
         LuceneError::Io(io) => java_nio_file::java_class_of(io).to_string(),
         LuceneError::CorruptIndex(_) => "org.apache.lucene.index.CorruptIndexException".into(),
         LuceneError::IndexFormatTooOld { .. } => {
@@ -174,13 +174,18 @@ pub fn java_class_name(e: &LuceneError) -> String {
     }
 }
 
-/// The Java throwable `e` stands for: its class, its message.
+/// The Java throwable `e` stands for: its class, its message, and its
+/// suppressed exceptions (`getSuppressed()`).
 pub fn java_throwable(e: &LuceneError) -> Throwable {
     register_hierarchy();
     let (_, message) = crate::analysis::base_token_stream_test_case::java_class_and_message(e);
     let mut throwable = Throwable::new(java_class_name(e), message);
+    // `getSuppressed()` of an error that `addSuppressed` was called on.
+    for suppressed in e.get_suppressed() {
+        throwable.add_suppressed(java_throwable(suppressed));
+    }
     // `getSuppressed()` of an `IOException` that carries suppressed ones.
-    if let LuceneError::Io(io) = e {
+    if let LuceneError::Io(io) = e.unwrap_suppressed() {
         if let Some(exception) = rucene::store::java_nio_file::java_exception_of(io) {
             for suppressed in exception.get_suppressed() {
                 throwable.add_suppressed(java_io_throwable(suppressed));

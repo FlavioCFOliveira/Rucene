@@ -862,7 +862,7 @@ impl BlockReader {
             self.scratch_block_bytes.resize(n, 0);
         }
         let mut scratch = std::mem::take(&mut self.scratch_block_bytes);
-        let read = self.input()?.read_bytes(&mut scratch, 0, n);
+        let read = self.input()?.read_bytes(Some(&mut scratch), 0, n);
         self.scratch_block_bytes = scratch;
         read?;
         match &self.block_decoder {

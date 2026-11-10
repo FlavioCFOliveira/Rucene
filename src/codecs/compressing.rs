@@ -388,7 +388,7 @@ impl Decompressor for NoCompressionDecompressor {
             bytes.bytes = vec![0; length];
         }
         input.skip_bytes(offset as i64)?;
-        input.read_bytes(&mut bytes.bytes, 0, length)?;
+        input.read_bytes(Some(&mut bytes.bytes), 0, length)?;
         bytes.offset = 0;
         bytes.length = length;
         Ok(())
@@ -798,7 +798,7 @@ fn read_deflate_block(
     let compressed_length = compressed_length as usize;
     compressed.clear();
     compressed.resize(compressed_length + 1, 0);
-    input.read_bytes(compressed, 0, compressed_length)?;
+    input.read_bytes(Some(compressed), 0, compressed_length)?;
     // The extra byte is already zero; raw inflate needs one byte past the end.
     out.reserve(expected.max(1));
     loop {
@@ -1411,7 +1411,7 @@ mod tests {
             ) -> Result<()> {
                 input.skip_bytes(offset as i64)?;
                 let mut raw = vec![0u8; length];
-                input.read_bytes(&mut raw, 0, length)?;
+                input.read_bytes(Some(&mut raw), 0, length)?;
                 *bytes = BytesRef::new(raw.iter().map(|b| !b).collect());
                 Ok(())
             }

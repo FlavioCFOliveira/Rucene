@@ -55,31 +55,31 @@ fn test_equals() -> Result<()> {
     assert_equals(&ft, &ft2);
     assert_equals(&hash_code(&ft), &hash_code(&ft2));
 
-    let mut ft3 = FieldType::new();
+    let ft3 = FieldType::new();
     ft3.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
     Assert::assert_false(ft3 == ft);
 
-    let mut ft4 = FieldType::new();
+    let ft4 = FieldType::new();
     ft4.set_doc_values_type(DocValuesType::BINARY)?;
     Assert::assert_false(ft4 == ft);
 
-    let mut ft5 = FieldType::new();
+    let ft5 = FieldType::new();
     ft5.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
     Assert::assert_false(ft5 == ft);
 
-    let mut ft6 = FieldType::new();
+    let ft6 = FieldType::new();
     ft6.set_stored(true)?;
     Assert::assert_false(ft6 == ft);
 
-    let mut ft7 = FieldType::new();
+    let ft7 = FieldType::new();
     ft7.set_omit_norms(true)?;
     Assert::assert_false(ft7 == ft);
 
-    let mut ft10 = FieldType::new();
+    let ft10 = FieldType::new();
     ft10.set_store_term_vectors(true)?;
     Assert::assert_false(ft10 == ft);
 
-    let mut ft11 = FieldType::new();
+    let ft11 = FieldType::new();
     ft11.set_dimensions(1, 4)?;
     Assert::assert_false(ft11 == ft);
     Ok(())
@@ -87,7 +87,7 @@ fn test_equals() -> Result<()> {
 
 /// Port of `TestFieldType.testPointsToString`.
 fn test_points_to_string() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_dimensions(1, 4)?;
     assert_equals(
         "pointDimensionCount=1,pointIndexDimensionCount=1,pointNumBytes=4",
@@ -100,7 +100,7 @@ fn test_points_to_string() -> Result<()> {
 ///
 /// Port of `TestFieldType.testAttributeMapFrozen`.
 fn test_attribute_map_frozen() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.put_attribute("dummy".to_string(), "d".to_string())?;
     ft.freeze();
     expect_throws("java.lang.IllegalStateException", || {
@@ -113,7 +113,7 @@ fn test_attribute_map_frozen() -> Result<()> {
 ///
 /// Port of `TestFieldType.testAttributeMapNotFrozen`.
 fn test_attribute_map_not_frozen() -> Result<()> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.put_attribute("dummy".to_string(), "d".to_string())?;
     ft.put_attribute("dummy".to_string(), "a".to_string())?;
     assert_equals(&ft.attributes().len(), &1);

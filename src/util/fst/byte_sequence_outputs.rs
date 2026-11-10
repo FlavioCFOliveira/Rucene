@@ -114,7 +114,7 @@ impl Outputs for ByteSequenceOutputs {
                 crate::error::LuceneError::CorruptIndex(format!("invalid output length {len}"))
             })?;
             let mut bytes = vec![0u8; len];
-            input.read_bytes(&mut bytes, 0, len)?;
+            input.read_bytes(Some(&mut bytes), 0, len)?;
             Ok(BytesRef::new(bytes))
         }
     }

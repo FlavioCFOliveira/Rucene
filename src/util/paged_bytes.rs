@@ -116,12 +116,12 @@ impl PagedBytes {
                 .as_mut()
                 .expect("INVARIANT: a block was just allocated");
             if (left as i64) < byte_count {
-                input.read_bytes_buffered(block, self.upto, left, false)?;
+                input.read_bytes_buffered(Some(block), self.upto, left, false)?;
                 self.upto = self.block_size;
                 byte_count -= left as i64;
             } else {
                 let n = byte_count as usize;
-                input.read_bytes_buffered(block, self.upto, n, false)?;
+                input.read_bytes_buffered(Some(block), self.upto, n, false)?;
                 self.upto += n;
                 break;
             }
@@ -546,7 +546,8 @@ impl DataInput for PagedBytesDataInput<'_> {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         debug_assert!(b.len() >= offset + len);
         let offset_end = offset + len;
         let mut offset = offset;

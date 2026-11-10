@@ -51,7 +51,7 @@ pub const COORDINATE_BYTES: usize = 4;
 /// Builds and freezes the type of a two-dimensional point of
 /// [`COORDINATE_BYTES`] bytes per dimension.
 fn new_point_field_type() -> FieldType {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_dimensions(2, COORDINATE_BYTES as i32)
         .expect("INVARIANT: two dimensions of four bytes fit a new, mutable type");
     ft.freeze();
@@ -61,7 +61,7 @@ fn new_point_field_type() -> FieldType {
 /// Builds and freezes the type of a location doc-values field: sorted-numeric
 /// doc values.
 fn new_doc_values_field_type() -> FieldType {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
         .expect("INVARIANT: a new type is mutable");
     ft.freeze();
@@ -604,7 +604,7 @@ impl IndexableField for LatLonPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(point_token_stream(self.packed_value()))
     }
@@ -900,7 +900,7 @@ impl IndexableField for LatLonDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap(),
@@ -1152,7 +1152,7 @@ impl IndexableField for XYPointField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(point_token_stream(self.packed_value()))
     }
@@ -1372,7 +1372,7 @@ impl IndexableField for XYDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap(),
@@ -1433,7 +1433,7 @@ impl InetAddressPoint {
     fn field_type_static() -> &'static FieldType {
         static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions(1, Self::BYTES as i32)
                 .expect("INVARIANT: one dimension of sixteen bytes fits a new, mutable type");
             ft.freeze();
@@ -1728,7 +1728,7 @@ impl IndexableField for InetAddressPoint {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(point_token_stream(self.packed_value()))
     }
@@ -1799,7 +1799,7 @@ impl InetAddressRange {
     fn field_type_static() -> &'static FieldType {
         static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions(2, Self::BYTES as i32)
                 .expect("INVARIANT: two dimensions of sixteen bytes fit a new, mutable type");
             ft.freeze();
@@ -1984,7 +1984,7 @@ impl IndexableField for InetAddressRange {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(point_token_stream(self.packed_value()))
     }

@@ -135,7 +135,7 @@ fn check_args<T: PartialOrd + std::fmt::Debug>(min: &[T], max: &[T], kind: &str)
 /// The point dimension count is twice the range dimension count, because each
 /// dimension stores a minimum and a maximum.
 fn range_field_type(dimensions: usize, bytes: i32) -> Result<FieldType> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_dimensions((dimensions * 2) as i32, bytes)?;
     ft.freeze();
     Ok(ft)
@@ -402,7 +402,7 @@ macro_rules! range_field {
             fn token_stream(
                 &self,
                 _analyzer: Option<&dyn Analyzer>,
-                _reuse: Option<&mut dyn TokenStream>,
+                _reuse: Option<Box<dyn TokenStream>>,
             ) -> Result<Box<dyn TokenStream>> {
                 let value = self
                     .binary_value()
@@ -653,7 +653,7 @@ impl IndexableField for BinaryRangeDocValuesField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: Option<&mut dyn TokenStream>,
+        _reuse: Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(
             crate::analysis::BinaryTokenStream::new(self.binary_value()).unwrap(),

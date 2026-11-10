@@ -303,12 +303,12 @@ impl DataInput for FaultyIndexInput {
 
     fn read_byte(&mut self) -> Result<u8> {
         let mut b = [0u8; 1];
-        self.read_bytes(&mut b, 0, 1)?;
+        self.read_bytes(Some(&mut b), 0, 1)?;
         Ok(b[0])
     }
 
     /// `readInternal(ByteBuffer b)`.
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.sim_outage()?;
         self.delegate.seek(self.pos)?;
         self.delegate.read_bytes(b, offset, len)?;

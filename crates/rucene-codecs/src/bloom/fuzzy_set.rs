@@ -238,7 +238,7 @@ impl FuzzySet {
             ));
         }
         let mut longs = vec![0i64; num_longs as usize];
-        input.read_longs(&mut longs, 0, num_longs as usize)?;
+        input.read_longs(Some(&mut longs), 0, num_longs as usize)?;
         let bits = FixedBitSet::from_bits(
             longs.into_iter().map(|l| l as u64).collect(),
             num_bits(bloom_size),

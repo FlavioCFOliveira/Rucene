@@ -115,7 +115,7 @@ fn check_index_on_clean_and_corrupt_index() {
         let mut bytes = vec![0u8; len];
         {
             let mut input = dir.open_input(&name, &*DEFAULT_IO_CONTEXT).unwrap();
-            input.read_bytes(&mut bytes, 0, len).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, len).unwrap();
         }
         bytes[len / 2] ^= 0x5a;
         dir.delete_file(&name).unwrap();
@@ -1098,7 +1098,7 @@ fn check_index_reports_a_corrupt_terms_index_or_dictionary() {
         let mut bytes = vec![0u8; len];
         {
             let mut input = dir.open_input(&name, &*DEFAULT_IO_CONTEXT).unwrap();
-            input.read_bytes(&mut bytes, 0, len).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, len).unwrap();
         }
         bytes[len / 2] ^= 0x5a;
         dir.delete_file(&name).unwrap();

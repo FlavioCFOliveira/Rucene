@@ -489,7 +489,7 @@ impl MonotonicBlockPackedReader {
                 total_byte_count += byte_count;
                 let mut blocks = vec![0u8; byte_count as usize];
                 let len = blocks.len();
-                input.read_bytes(&mut blocks, 0, len)?;
+                input.read_bytes(Some(&mut blocks), 0, len)?;
                 sub_readers.push(MonotonicSubReader::Packed {
                     blocks,
                     bits_per_value,

@@ -77,7 +77,7 @@ pub trait StoredFieldVisitor {
         }
         let length = length as usize;
         let mut data = vec![0u8; length];
-        value.data_input().read_bytes(&mut data, 0, length)?;
+        value.data_input().read_bytes(Some(&mut data), 0, length)?;
         self.binary_field(field_info, &data)
     }
 
@@ -236,7 +236,9 @@ mod tests {
         ) -> Result<()> {
             let length = value.length() as usize;
             let mut buffer = vec![0u8; length];
-            value.data_input().read_bytes(&mut buffer, 0, length)?;
+            value
+                .data_input()
+                .read_bytes(Some(&mut buffer), 0, length)?;
             self.copied = buffer;
             Ok(())
         }

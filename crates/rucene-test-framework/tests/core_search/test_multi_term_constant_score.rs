@@ -106,7 +106,7 @@ fn before_class() -> Result<()> {
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), small.as_directory(), iwc)?;
 
-    let mut custom_type = FieldType::new_from(TextField::type_stored());
+    let custom_type = FieldType::new_from(TextField::type_stored());
     custom_type.set_tokenized(false)?;
     for (i, d) in data.iter().enumerate() {
         let mut doc = rucene::document::Document::new();

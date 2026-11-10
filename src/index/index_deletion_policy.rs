@@ -1280,7 +1280,7 @@ mod tests {
         let len = dir.file_length(name).unwrap() as usize;
         let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
         let mut bytes = vec![0u8; len];
-        input.read_bytes(&mut bytes, 0, len).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, len).unwrap();
         input.close().unwrap();
         bytes
     }
@@ -2496,7 +2496,7 @@ mod tests {
             self.inner.read_byte()
         }
 
-        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
             self.inner.read_bytes(b, offset, len)
         }
 

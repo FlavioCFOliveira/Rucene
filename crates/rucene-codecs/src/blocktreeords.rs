@@ -87,7 +87,7 @@ impl OwnedArrayInput {
         if self.bytes.len() < len {
             self.bytes.resize(len, 0);
         }
-        input.read_bytes(&mut self.bytes, 0, len)?;
+        input.read_bytes(Some(&mut self.bytes), 0, len)?;
         self.limit = len;
         self.pos = 0;
         Ok(())
@@ -134,7 +134,7 @@ impl OwnedArrayInput {
 
     /// `readBytes(dest, offset, len)`.
     pub(crate) fn read_into(&mut self, dest: &mut [u8], offset: usize, len: usize) -> Result<()> {
-        self.with(|i| i.read_bytes(dest, offset, len))
+        self.with(|i| i.read_bytes(Some(dest), offset, len))
     }
 
     pub(crate) fn position(&self) -> usize {

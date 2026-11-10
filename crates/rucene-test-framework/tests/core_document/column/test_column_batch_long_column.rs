@@ -141,7 +141,7 @@ const DOUBLE_BYTES: i32 = 8;
 /// `new FieldType()` with `setDimensions(dims, bytes)` (when `dims > 0`),
 /// `setStored(stored)` and `setDocValuesType(dv)` (when given), frozen.
 fn field_type(dims: i32, bytes: i32, stored: bool, dv: Option<DocValuesType>) -> Result<FieldType> {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     if stored {
         t.set_stored(true)?;
     }

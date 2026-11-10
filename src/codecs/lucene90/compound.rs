@@ -577,7 +577,7 @@ mod tests {
             .unwrap();
         let mut bytes = vec![0u8; input.length() as usize];
         let len = bytes.len();
-        input.read_bytes(&mut bytes, 0, len).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, len).unwrap();
         bytes
     }
 
@@ -762,14 +762,16 @@ mod tests {
             .unwrap();
         let len = input.length() as usize;
         let mut bytes = vec![0u8; len];
-        input.read_bytes(&mut bytes, 0, len).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, len).unwrap();
 
         let mut original = dir
             .open_input("_0.fdt", &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
         let orig_len = original.length() as usize;
         let mut orig_bytes = vec![0u8; orig_len];
-        original.read_bytes(&mut orig_bytes, 0, orig_len).unwrap();
+        original
+            .read_bytes(Some(&mut orig_bytes), 0, orig_len)
+            .unwrap();
 
         assert_eq!(bytes, orig_bytes);
     }

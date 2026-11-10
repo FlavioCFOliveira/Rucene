@@ -95,6 +95,17 @@ fn double_to_long_bits(value: f64) -> u64 {
     }
 }
 
+/// The array a Java `read*(T[] dst, …)` method dereferences: `None` stands
+/// for Java's `null`, which raises `NullPointerException` where Java first
+/// touches the array (`dst.length`, `System.arraycopy`, `MemorySegment.copy`).
+///
+/// # Errors
+///
+/// `NullPointerException` for `None`.
+pub fn require_array<T>(array: Option<&mut [T]>) -> Result<&mut [T]> {
+    array.ok_or_else(LuceneError::null_pointer)
+}
+
 /// Abstract base trait for reading Lucene's low-level data types.
 ///
 /// Equivalent to `org.apache.lucene.store.DataInput`. Implementations are not
@@ -119,7 +130,11 @@ pub trait DataInput {
     fn to_java_string(&self) -> String;
 
     /// Reads `len` bytes into `b[offset..offset + len]`.
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()>;
+    ///
+    /// Equivalent to `DataInput.readBytes(byte[], int, int)`. `b` is `None`
+    /// for Java's `null` array, which raises `NullPointerException` (see
+    /// [`require_array`]); this holds for every array-taking `read*` method.
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()>;
 
     /// Reads `len` bytes into `b[offset..offset + len]`.
     ///
@@ -128,7 +143,7 @@ pub trait DataInput {
     /// override this method to bypass internal buffers.
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         _use_buffer: bool,
@@ -172,7 +187,8 @@ pub trait DataInput {
     #[deprecated(
         note = "no longer called by Lucene; use GroupVIntUtil::read_group_vints_input instead"
     )]
-    fn read_group_vint(&mut self, dst: &mut [i32], offset: usize) -> Result<()> {
+    fn read_group_vint(&mut self, dst: Option<&mut [i32]>, offset: usize) -> Result<()> {
+        let dst = require_array(dst)?;
         crate::util::GroupVIntUtil::read_group_vint_input(self, dst, offset)
     }
 
@@ -281,7 +297,7 @@ pub trait DataInput {
             let take = remaining.min(CHUNK);
             let filled = bytes.len();
             bytes.resize(filled + take, 0u8);
-            self.read_bytes(&mut bytes, filled, take)?;
+            self.read_bytes(Some(&mut bytes), filled, take)?;
             remaining -= take;
         }
         Ok(crate::util::java_fmt::java_utf8_to_string(&bytes))
@@ -330,7 +346,8 @@ pub trait DataInput {
     }
 
     /// Reads `length` little-endian `i32` values into `dst[offset..]`.
-    fn read_ints(&mut self, dst: &mut [i32], offset: usize, length: usize) -> Result<()> {
+    fn read_ints(&mut self, dst: Option<&mut [i32]>, offset: usize, length: usize) -> Result<()> {
+        let dst = require_array(dst)?;
         check_from_index_size(offset, length, dst.len())?;
         for i in 0..length {
             dst[offset + i] = self.read_int()?;
@@ -339,7 +356,8 @@ pub trait DataInput {
     }
 
     /// Reads `length` little-endian `i64` values into `dst[offset..]`.
-    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(&mut self, dst: Option<&mut [i64]>, offset: usize, length: usize) -> Result<()> {
+        let dst = require_array(dst)?;
         check_from_index_size(offset, length, dst.len())?;
         for i in 0..length {
             dst[offset + i] = self.read_long()?;
@@ -348,7 +366,13 @@ pub trait DataInput {
     }
 
     /// Reads `length` `f32` values into `floats[offset..]`.
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(
+        &mut self,
+        floats: Option<&mut [f32]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let floats = require_array(floats)?;
         check_from_index_size(offset, length, floats.len())?;
         for i in 0..length {
             floats[offset + i] = self.read_float()?;
@@ -615,7 +639,7 @@ pub trait DataOutput {
         let mut buffer = vec![0u8; COPY_BUFFER_SIZE];
         while num_bytes > 0 {
             let to_copy = (num_bytes as usize).min(COPY_BUFFER_SIZE);
-            input.read_bytes(&mut buffer, 0, to_copy)?;
+            input.read_bytes(Some(&mut buffer), 0, to_copy)?;
             self.write_bytes(&buffer, 0, to_copy)?;
             num_bytes -= to_copy as i64;
         }
@@ -840,13 +864,13 @@ impl DataInput for RandomAccessInputAdapter {
         self.input.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.input.read_bytes(b, offset, len)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
@@ -932,7 +956,7 @@ impl RandomAccessInput for RandomAccessInputAdapter {
         len: usize,
     ) -> Result<()> {
         self.input.seek(pos)?;
-        self.input.read_bytes(bytes, offset, len)
+        self.input.read_bytes(Some(bytes), offset, len)
     }
 
     fn read_short_at(&mut self, pos: i64) -> Result<i16> {
@@ -1027,13 +1051,13 @@ impl DataInput for FilterIndexInput {
         self.inner.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.inner.read_bytes(b, offset, len)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
@@ -1272,7 +1296,7 @@ impl BufferedIndexInput {
     /// file Java reports as `EOFException`.
     fn read_internal(&mut self, b: &mut [u8]) -> Result<()> {
         let len = b.len();
-        self.source.read_bytes(b, 0, len)
+        self.source.read_bytes(Some(b), 0, len)
     }
 
     /// Expert: implements seek. Sets the current position in this file, where
@@ -1363,17 +1387,18 @@ impl DataInput for BufferedIndexInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.read_bytes_buffered(b, offset, len, true)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
     ) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let available = self.remaining_in_buffer();
         if len <= available {
             if len > 0 {
@@ -1418,7 +1443,7 @@ impl DataInput for BufferedIndexInput {
                     )));
                 }
                 self.source.seek(self.file_pointer())?;
-                self.source.read_bytes(b, offset, len)?;
+                self.source.read_bytes(Some(b), offset, len)?;
                 self.buffer_start = after;
                 self.buffer_position = 0;
                 self.buffer_limit = 0;
@@ -1475,7 +1500,13 @@ impl DataInput for BufferedIndexInput {
         }
     }
 
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(
+        &mut self,
+        floats: Option<&mut [f32]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let floats = crate::store::require_array(floats)?;
         check_from_index_size(offset, length, floats.len())?;
         let mut remaining = length;
         while remaining > 0 {
@@ -1502,7 +1533,13 @@ impl DataInput for BufferedIndexInput {
         Ok(())
     }
 
-    fn read_longs(&mut self, longs: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(
+        &mut self,
+        longs: Option<&mut [i64]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let longs = crate::store::require_array(longs)?;
         check_from_index_size(offset, length, longs.len())?;
         let mut remaining = length;
         while remaining > 0 {
@@ -1529,7 +1566,8 @@ impl DataInput for BufferedIndexInput {
         Ok(())
     }
 
-    fn read_ints(&mut self, ints: &mut [i32], offset: usize, length: usize) -> Result<()> {
+    fn read_ints(&mut self, ints: Option<&mut [i32]>, offset: usize, length: usize) -> Result<()> {
+        let ints = crate::store::require_array(ints)?;
         check_from_index_size(offset, length, ints.len())?;
         let mut remaining = length;
         while remaining > 0 {
@@ -1771,7 +1809,8 @@ impl SlicedIndexInput {
         }
         // Java's `fileOffset + start` wraps; the base rejects the result.
         self.base.seek(self.file_offset.wrapping_add(start))?;
-        self.base.read_bytes(&mut self.buffer, 0, new_length)?;
+        self.base
+            .read_bytes(Some(&mut self.buffer), 0, new_length)?;
         self.buffer_start = start;
         self.buffer_position = 0;
         self.buffer_limit = new_length;
@@ -1822,17 +1861,18 @@ impl DataInput for SlicedIndexInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.read_bytes_buffered(b, offset, len, true)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
     ) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let available = self.remaining_in_buffer();
         if len <= available {
             if len > 0 {
@@ -1877,7 +1917,7 @@ impl DataInput for SlicedIndexInput {
                     )));
                 }
                 self.base.seek(self.file_offset + self.file_pointer())?;
-                self.base.read_bytes(b, offset, len)?;
+                self.base.read_bytes(Some(b), offset, len)?;
                 self.buffer_start = after;
                 self.buffer_position = 0;
                 self.buffer_limit = 0;
@@ -2513,7 +2553,8 @@ impl DataInput for ByteArrayDataInput<'_> {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
             .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
@@ -2904,7 +2945,8 @@ impl<R: Read> DataInput for InputStreamDataInput<R> {
         Ok(buf[0])
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
             .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
@@ -3092,7 +3134,7 @@ impl DataInput for MockIndexInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.ensure_open()?;
         let mut view = self.view();
         view.read_bytes(b, offset, len)?;
@@ -4953,8 +4995,7 @@ impl std::fmt::Debug for BufferedChecksum {
 /// files with (JLS 14.20.3): the resource is closed on every exit; when the
 /// body succeeded, a failure to close is the statement's failure; when the
 /// body failed, its failure is kept and the one closing raised is suppressed
-/// into it — dropped here, as [`LuceneError`] has no suppressed list (see
-/// `IOUtils::use_or_suppress`).
+/// into it ([`LuceneError::add_suppressed`]).
 ///
 /// # Errors
 ///
@@ -4965,9 +5006,11 @@ pub fn close_after<T, I: IndexInput + ?Sized>(input: &mut I, result: Result<T>) 
             input.close()?;
             Ok(value)
         }
-        Err(error) => {
-            // Java: `error.addSuppressed(closeFailure)`; dropped (see above).
-            let _ = input.close();
+        Err(mut error) => {
+            // `error.addSuppressed(closeFailure)`.
+            if let Err(close_failure) = input.close() {
+                error.add_suppressed(close_failure);
+            }
             Err(error)
         }
     }
@@ -5031,7 +5074,7 @@ pub trait ChecksumIndexInput: IndexInput {
         let result = (|| -> Result<()> {
             while skipped < num_bytes {
                 let step = ((num_bytes - skipped) as usize).min(buf.len());
-                self.read_bytes_buffered(&mut buf, 0, step, false)?;
+                self.read_bytes_buffered(Some(&mut buf), 0, step, false)?;
                 skipped += step as i64;
             }
             Ok(())
@@ -5094,8 +5137,9 @@ impl DataInput for BufferedChecksumIndexInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
-        self.main.read_bytes(b, offset, len)?;
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
+        self.main.read_bytes(Some(b), offset, len)?;
         self.digest.update_bytes(b, offset, len)?;
         Ok(())
     }
@@ -5128,8 +5172,9 @@ impl DataInput for BufferedChecksumIndexInput {
 
     /// Equivalent to `BufferedChecksumIndexInput.readLongs(long[], int, int)`
     /// (`BufferedChecksumIndexInput.java:71-74`).
-    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
-        self.main.read_longs(dst, offset, length)?;
+    fn read_longs(&mut self, dst: Option<&mut [i64]>, offset: usize, length: usize) -> Result<()> {
+        let dst = crate::store::require_array(dst)?;
+        self.main.read_longs(Some(dst), offset, length)?;
         self.digest.update_longs(dst, offset, length)
     }
 
@@ -7171,7 +7216,8 @@ impl DataInput for ByteBuffersDataInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let dst_end = offset
             .checked_add(len)
             .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
@@ -7277,7 +7323,13 @@ impl DataInput for ByteBuffersDataInput {
         }
     }
 
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(
+        &mut self,
+        floats: Option<&mut [f32]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let floats = crate::store::require_array(floats)?;
         check_from_index_size(offset, length, floats.len())?;
         let mut off = offset;
         let mut remaining = length;
@@ -7313,7 +7365,13 @@ impl DataInput for ByteBuffersDataInput {
         Ok(())
     }
 
-    fn read_longs(&mut self, longs: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(
+        &mut self,
+        longs: Option<&mut [i64]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let longs = crate::store::require_array(longs)?;
         check_from_index_size(offset, length, longs.len())?;
         let mut off = offset;
         let mut remaining = length;
@@ -8102,7 +8160,7 @@ impl DataOutput for ByteBuffersDataOutput {
             let chunk = (num_bytes as usize).min(space);
             let off = self.current.len();
             self.current.resize(off + chunk, 0);
-            input.read_bytes(&mut self.current, off, chunk)?;
+            input.read_bytes(Some(&mut self.current), off, chunk)?;
             num_bytes -= chunk as i64;
         }
         Ok(())
@@ -8555,13 +8613,13 @@ impl DataInput for ByteBuffersIndexInput {
         self.input_mut()?.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.input_mut()?.read_bytes(b, offset, len)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
@@ -8614,15 +8672,15 @@ impl DataInput for ByteBuffersIndexInput {
         self.input_mut()?.read_set_of_strings()
     }
 
-    fn read_ints(&mut self, dst: &mut [i32], offset: usize, length: usize) -> Result<()> {
+    fn read_ints(&mut self, dst: Option<&mut [i32]>, offset: usize, length: usize) -> Result<()> {
         self.input_mut()?.read_ints(dst, offset, length)
     }
 
-    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(&mut self, dst: Option<&mut [i64]>, offset: usize, length: usize) -> Result<()> {
         self.input_mut()?.read_longs(dst, offset, length)
     }
 
-    fn read_floats(&mut self, dst: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(&mut self, dst: Option<&mut [f32]>, offset: usize, length: usize) -> Result<()> {
         self.input_mut()?.read_floats(dst, offset, length)
     }
 
@@ -9890,7 +9948,8 @@ impl DataInput for FileIndexInput {
         Ok(buf[0])
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
             .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
@@ -10275,7 +10334,8 @@ impl DataInput for RawNioFsIndexInput {
         Ok(buf[0])
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
             .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
@@ -10485,13 +10545,13 @@ impl DataInput for NIOFSIndexInput {
         self.inner.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.inner.read_bytes(b, offset, len)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
@@ -10942,7 +11002,7 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&input_src);
         let mut decoded = vec![0u8; data.len()];
         let len = decoded.len();
-        input.read_bytes(&mut decoded, 0, len).unwrap();
+        input.read_bytes(Some(&mut decoded), 0, len).unwrap();
         assert_eq!(decoded, data);
     }
 
@@ -10965,12 +11025,14 @@ mod tests {
         let mut decoded_longs = vec![0i64; longs.len()];
         let mut decoded_floats = vec![0f32; floats.len()];
         let mut decoded_doubles = vec![0f64; doubles.len()];
-        input.read_ints(&mut decoded_ints, 0, ints.len()).unwrap();
         input
-            .read_longs(&mut decoded_longs, 0, longs.len())
+            .read_ints(Some(&mut decoded_ints), 0, ints.len())
             .unwrap();
         input
-            .read_floats(&mut decoded_floats, 0, floats.len())
+            .read_longs(Some(&mut decoded_longs), 0, longs.len())
+            .unwrap();
+        input
+            .read_floats(Some(&mut decoded_floats), 0, floats.len())
             .unwrap();
         input
             .read_doubles(&mut decoded_doubles, 0, doubles.len())
@@ -11026,12 +11088,16 @@ mod tests {
         let data = vec![1u8, 2, 3, 4, 5];
         let mut input = ByteArrayDataInput::new(&data);
         let mut buf = vec![0u8; 5];
-        input.read_bytes_buffered(&mut buf, 0, 5, false).unwrap();
+        input
+            .read_bytes_buffered(Some(&mut buf), 0, 5, false)
+            .unwrap();
         assert_eq!(buf, data);
 
         let mut input2 = ByteArrayDataInput::new(&data);
         let mut buf2 = vec![0u8; 5];
-        input2.read_bytes_buffered(&mut buf2, 0, 5, true).unwrap();
+        input2
+            .read_bytes_buffered(Some(&mut buf2), 0, 5, true)
+            .unwrap();
         assert_eq!(buf2, data);
     }
 
@@ -11336,7 +11402,7 @@ mod tests {
         let mut input = out.to_data_input().unwrap();
         let mut decoded = vec![0u8; data.len()];
         let len = decoded.len();
-        input.read_bytes(&mut decoded, 0, len).unwrap();
+        input.read_bytes(Some(&mut decoded), 0, len).unwrap();
         assert_eq!(decoded, data);
     }
 
@@ -11358,12 +11424,14 @@ mod tests {
         let mut decoded_longs = vec![0i64; longs.len()];
         let mut decoded_floats = vec![0f32; floats.len()];
         let mut decoded_doubles = vec![0f64; doubles.len()];
-        input.read_ints(&mut decoded_ints, 0, ints.len()).unwrap();
         input
-            .read_longs(&mut decoded_longs, 0, longs.len())
+            .read_ints(Some(&mut decoded_ints), 0, ints.len())
             .unwrap();
         input
-            .read_floats(&mut decoded_floats, 0, floats.len())
+            .read_longs(Some(&mut decoded_longs), 0, longs.len())
+            .unwrap();
+        input
+            .read_floats(Some(&mut decoded_floats), 0, floats.len())
             .unwrap();
         input
             .read_doubles(&mut decoded_doubles, 0, doubles.len())
@@ -11425,7 +11493,7 @@ mod tests {
         let sliced = input.slice(4, 8).unwrap();
         let mut sub = vec![0u8; 8];
         let mut reader = sliced;
-        reader.read_bytes(&mut sub, 0, 8).unwrap();
+        reader.read_bytes(Some(&mut sub), 0, 8).unwrap();
         assert_eq!(
             sub,
             0x22222222u32
@@ -11531,7 +11599,7 @@ mod tests {
         assert_eq!(input.read_byte().unwrap(), 0xAA);
         let mut prefix = vec![0u8; 1021];
         let len = prefix.len();
-        input.read_bytes(&mut prefix, 0, len).unwrap();
+        input.read_bytes(Some(&mut prefix), 0, len).unwrap();
         assert!(prefix.iter().all(|&b| b == 0));
         assert_eq!(input.read_short().unwrap(), 0x1234);
         assert_eq!(input.read_int().unwrap(), 0x12345678);
@@ -11883,16 +11951,16 @@ mod tests {
         .unwrap();
 
         let mut all = vec![0u8; 256];
-        input.read_bytes(&mut all, 0, 256).unwrap();
+        input.read_bytes(Some(&mut all), 0, 256).unwrap();
         assert_eq!(all, data);
 
         // Reset and read via small chunks that straddle refill boundaries.
         input.seek(0).unwrap();
         let mut piece = [0u8; 3];
-        input.read_bytes(&mut piece, 0, 3).unwrap(); // bytes 0..2
+        input.read_bytes(Some(&mut piece), 0, 3).unwrap(); // bytes 0..2
         assert_eq!(piece, [0, 1, 2]);
         input.seek(6).unwrap();
-        input.read_bytes(&mut piece, 0, 3).unwrap(); // bytes 6..8
+        input.read_bytes(Some(&mut piece), 0, 3).unwrap(); // bytes 6..8
         assert_eq!(piece, [6, 7, 8]);
     }
 
@@ -12081,7 +12149,7 @@ mod tests {
         let mut input = dst.open_input("dest.bin", ctx).unwrap();
         assert_eq!(input.read_int().unwrap(), 0xDEADBEEFu32 as i32);
         let mut buf = [0u8; 5];
-        input.read_bytes(&mut buf, 0, 5).unwrap();
+        input.read_bytes(Some(&mut buf), 0, 5).unwrap();
         assert_eq!(buf, [1, 2, 3, 4, 5]);
     }
 
@@ -12106,7 +12174,12 @@ mod tests {
             fn read_byte(&mut self) -> Result<u8> {
                 self.inner.read_byte()
             }
-            fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+            fn read_bytes(
+                &mut self,
+                b: Option<&mut [u8]>,
+                offset: usize,
+                len: usize,
+            ) -> Result<()> {
                 self.inner.read_bytes(b, offset, len)
             }
             fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
@@ -12305,7 +12378,12 @@ mod tests {
             fn read_byte(&mut self) -> Result<u8> {
                 self.0.read_byte()
             }
-            fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+            fn read_bytes(
+                &mut self,
+                b: Option<&mut [u8]>,
+                offset: usize,
+                len: usize,
+            ) -> Result<()> {
                 self.0.read_bytes(b, offset, len)
             }
             fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
@@ -13751,7 +13829,7 @@ mod tests {
         )));
 
         let mut buf = vec![0u8; payload.len()];
-        input.read_bytes(&mut buf, 0, payload.len()).unwrap();
+        input.read_bytes(Some(&mut buf), 0, payload.len()).unwrap();
         assert_eq!(buf, payload);
 
         assert_eq!(
@@ -13773,7 +13851,7 @@ mod tests {
 
         // Read the first 16 bytes.
         let mut head = [0u8; 16];
-        input.read_bytes(&mut head, 0, 16).unwrap();
+        input.read_bytes(Some(&mut head), 0, 16).unwrap();
         assert_eq!(head, payload[..16]);
 
         // Seek forward far enough to require multiple skip-buffer iterations.
@@ -13783,7 +13861,7 @@ mod tests {
         // Read the rest.
         let remaining = payload.len() - 3000;
         let mut tail = vec![0u8; remaining];
-        input.read_bytes(&mut tail, 0, remaining).unwrap();
+        input.read_bytes(Some(&mut tail), 0, remaining).unwrap();
         assert_eq!(tail, payload[3000..]);
 
         // The checksum must match the full payload, including skipped bytes.
@@ -14469,7 +14547,7 @@ mod tests {
         assert_eq!(input.read_v_long().unwrap(), 1_000_000_000_000);
         assert_eq!(input.read_string().unwrap(), "stream test");
         let mut tail = [0u8; 4];
-        input.read_bytes(&mut tail, 0, 4).unwrap();
+        input.read_bytes(Some(&mut tail), 0, 4).unwrap();
         assert_eq!(tail, [0x0A, 0x0B, 0x0C, 0x0D]);
     }
 
@@ -15153,7 +15231,7 @@ mod tests {
         assert_eq!(input.read_string().expect("read"), "rucene");
         assert_eq!(input.read_byte().expect("read"), 0x7f);
         let mut tail = [0u8; 2];
-        input.read_bytes(&mut tail, 0, 2).expect("read");
+        input.read_bytes(Some(&mut tail), 0, 2).expect("read");
         assert_eq!(tail, [2, 3]);
         assert!(input.eof());
     }
@@ -15190,7 +15268,7 @@ mod tests {
         assert!(!input.eof());
 
         let mut read = [0u8; 4];
-        input.read_bytes(&mut read, 0, 4).expect("read");
+        input.read_bytes(Some(&mut read), 0, 4).expect("read");
         assert_eq!(read, [0x01, 0x02, 0x03, 0x04]);
         assert_eq!(input.position(), 6);
         assert!(input.eof(), "the window ends before the buffer does");
@@ -15302,7 +15380,7 @@ mod tests {
         // port an `UnexpectedEof`.
         assert!(input.read_byte().is_err());
         let mut spill = [0u8; 1];
-        assert!(input.read_bytes(&mut spill, 0, 1).is_err());
+        assert!(input.read_bytes(Some(&mut spill), 0, 1).is_err());
         assert!(input.skip_bytes(1).is_err());
     }
 

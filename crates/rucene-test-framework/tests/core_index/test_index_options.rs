@@ -101,7 +101,7 @@ fn stored() -> FieldType {
 
 /// `new FieldType(TextField.TYPE_STORED)` with `setIndexOptions(options)`.
 fn stored_with(options: IndexOptions) -> Result<FieldType> {
-    let mut ft = stored();
+    let ft = stored();
     ft.set_index_options(options)?;
     Ok(ft)
 }
@@ -159,12 +159,12 @@ fn do_test_change_index_options_via_add_document(
 ) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    let mut ft1 = stored_with(from)?;
+    let ft1 = stored_with(from)?;
     if freeze {
         ft1.freeze();
     }
     w.add_document(&singleton("foo", "bar", &ft1)?)?;
-    let mut ft2 = stored_with(to)?;
+    let ft2 = stored_with(to)?;
     if freeze {
         ft2.freeze();
     }
@@ -326,7 +326,7 @@ fn test_change_index_options_via_add_document_frozen_field_type() -> Result<()> 
 fn test_same_frozen_field_type_across_many_documents() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    let mut ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
+    let ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
     ft.freeze();
     let num_docs = LuceneTestCase::at_least(100);
     for i in 0..num_docs {
@@ -347,7 +347,7 @@ fn test_same_frozen_field_type_across_many_documents() -> Result<()> {
 fn test_multi_valued_field_same_frozen_field_type() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    let mut ft = stored();
+    let ft = stored();
     ft.freeze();
     let mut doc = Document::new();
     doc.add(Box::new(Field::new("foo", "bar1".to_string(), ft.clone())?));
@@ -368,7 +368,7 @@ fn test_multi_valued_field_same_frozen_field_type() -> Result<()> {
 fn test_multi_valued_field_mixed_frozen_and_unfrozen_compatible_types() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    let mut frozen_ft = stored();
+    let frozen_ft = stored();
     frozen_ft.freeze();
     // Unfrozen copy with same settings
     let unfrozen_ft = stored();
@@ -394,9 +394,9 @@ fn test_multi_valued_field_mixed_frozen_and_unfrozen_compatible_types() -> Resul
 fn test_multi_valued_field_mixed_frozen_incompatible_types() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    let mut frozen_ft = stored_with(IndexOptions::DOCS)?;
+    let frozen_ft = stored_with(IndexOptions::DOCS)?;
     frozen_ft.freeze();
-    let mut different_ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
+    let different_ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
     different_ft.freeze();
     let mut doc = Document::new();
     doc.add(Box::new(Field::new("foo", "bar1".to_string(), frozen_ft)?));
@@ -425,11 +425,11 @@ fn test_frozen_field_type_transition_across_documents() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     // First doc uses one frozen type
-    let mut ft1 = stored_with(IndexOptions::DOCS_AND_FREQS)?;
+    let ft1 = stored_with(IndexOptions::DOCS_AND_FREQS)?;
     ft1.freeze();
     w.add_document(&singleton("foo", "bar", &ft1)?)?;
     // Second doc uses a different frozen type with different options — must fail
-    let mut ft2 = stored_with(IndexOptions::DOCS)?;
+    let ft2 = stored_with(IndexOptions::DOCS)?;
     ft2.freeze();
     let message = iae_message(&w, &singleton("foo", "bar", &ft2)?);
     assert_equals(
@@ -449,9 +449,9 @@ fn test_frozen_field_type_cache_restabilizes() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     // Two distinct frozen FieldType instances with identical settings
-    let mut ft_a = stored();
+    let ft_a = stored();
     ft_a.freeze();
-    let mut ft_b = stored();
+    let ft_b = stored();
     ft_b.freeze();
     // First batch with ftA
     for i in 0..10 {
@@ -479,7 +479,7 @@ fn test_frozen_field_type_cache_restabilizes() -> Result<()> {
 fn test_frozen_field_type_across_segments() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    let mut ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
+    let ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
     ft.freeze();
     // Index several docs in the first segment using the frozen fast-path
     for i in 0..10 {
@@ -497,7 +497,7 @@ fn test_frozen_field_type_across_segments() -> Result<()> {
         r.close()?;
     }
     // Different frozen type in a third segment — must fail against global field infos
-    let mut ft2 = stored_with(IndexOptions::DOCS)?;
+    let ft2 = stored_with(IndexOptions::DOCS)?;
     ft2.freeze();
     let message = iae_message(&w, &singleton("foo", "bar", &ft2)?).unwrap_or_default();
     Assert::assert_true_msg(&message, message.contains("index options"));
@@ -509,9 +509,9 @@ fn test_frozen_field_type_across_segments() -> Result<()> {
 fn test_multi_value_forces_deoptimization() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
-    let mut ft_a = stored();
+    let ft_a = stored();
     ft_a.freeze();
-    let mut ft_b = stored(); // same schema, different instance
+    let ft_b = stored(); // same schema, different instance
     ft_b.freeze();
     // Doc 0
     w.add_document(&singleton("foo", "val0", &ft_a)?)?;
@@ -538,7 +538,7 @@ fn test_multi_value_forces_deoptimization() -> Result<()> {
         close_leaf(r)?;
     }
     // Doc 4: multi-valued with incompatible frozen type — must fail
-    let mut ft_c = stored();
+    let ft_c = stored();
     ft_c.set_store_term_vectors(true)?;
     ft_c.freeze();
     let mut doc4 = Document::new();
@@ -560,7 +560,7 @@ fn test_frozen_field_type_in_document_block() -> Result<()> {
     let mut iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_parent_field(Some("__parent".to_string()));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
-    let mut ft = stored();
+    let ft = stored();
     ft.freeze();
     let mut block = Vec::new();
     for i in 0..5 {

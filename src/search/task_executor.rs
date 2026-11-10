@@ -389,11 +389,9 @@ impl<T> TaskGroup<T> {
 
     /// Collects the results in submission order, or the first failure.
     ///
-    /// Equivalent to `TaskExecutor.collectResults`. Java adds the subsequent
-    /// failures to the first one as suppressed exceptions; [`LuceneError`] has
-    /// no suppression channel, so the first failure is returned and the others
-    /// are dropped, exactly as Java's rethrown exception hides them from the
-    /// caller.
+    /// Equivalent to `TaskExecutor.collectResults` (`TaskExecutor.java:120-137`):
+    /// the subsequent failures are added to the first one as suppressed
+    /// exceptions (`IOUtils.useOrSuppress`).
     fn collect_results(&self) -> Result<Vec<T>> {
         debug_assert!(
             self.all_futures_completed(),
@@ -405,11 +403,10 @@ impl<T> TaskGroup<T> {
             let taken = std::mem::replace(&mut *self.lock_slot(id), Slot::Cancelled);
             match taken {
                 Slot::Done(Ok(value)) => results.push(value),
-                Slot::Done(Err(err)) => {
-                    if first_error.is_none() {
-                        first_error = Some(err);
-                    }
-                }
+                Slot::Done(Err(err)) => match &mut first_error {
+                    None => first_error = Some(err),
+                    Some(first) => first.add_suppressed(err),
+                },
                 Slot::Cancelled => {}
                 Slot::Pending(_) | Slot::Running => {
                     if first_error.is_none() {

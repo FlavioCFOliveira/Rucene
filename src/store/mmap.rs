@@ -628,7 +628,7 @@ mod tests {
         // A bulk read across five chunks.
         input.seek(7).unwrap();
         let mut bulk = vec![0u8; 75];
-        input.read_bytes(&mut bulk, 0, 75).unwrap();
+        input.read_bytes(Some(&mut bulk), 0, 75).unwrap();
         assert_eq!(bulk, (7..82).map(|i| i as u8).collect::<Vec<_>>());
 
         // Seeks back and forth across chunks.
@@ -644,7 +644,7 @@ mod tests {
         slice.seek(3).unwrap();
         assert_eq!(slice.read_long().unwrap(), expected_long(13));
         let mut rest = vec![0u8; 79];
-        slice.read_bytes(&mut rest, 0, 79).unwrap();
+        slice.read_bytes(Some(&mut rest), 0, 79).unwrap();
         assert_eq!(rest, (21..100).map(|i| i as u8).collect::<Vec<_>>());
         assert!(slice.read_byte().is_err(), "the slice ends at its length");
 

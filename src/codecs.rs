@@ -1289,7 +1289,7 @@ pub(crate) mod tests {
             self.inner.read_byte()
         }
 
-        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
             self.inner.read_bytes(b, offset, len)
         }
 
@@ -1512,7 +1512,7 @@ pub(crate) mod tests {
             .unwrap();
         let mut bytes = vec![0u8; input.length() as usize];
         let len = bytes.len();
-        input.read_bytes(&mut bytes, 0, len).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, len).unwrap();
         edit(&mut bytes);
         dir.inner.delete_file(name).unwrap();
         let mut output = dir

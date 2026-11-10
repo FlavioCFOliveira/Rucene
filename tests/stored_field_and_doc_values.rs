@@ -260,7 +260,7 @@ fn typed(name: &str, value: &str, field_type: &FieldType) -> Box<dyn IndexableFi
 }
 
 fn stored_type(frozen: bool) -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_stored(true).unwrap();
     if frozen {
         field_type.freeze();

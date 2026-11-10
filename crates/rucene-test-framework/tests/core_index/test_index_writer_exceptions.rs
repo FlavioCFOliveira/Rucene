@@ -8,9 +8,8 @@
 //!   throwable it panics with ([`catching`]).
 //! * The `ThreadLocal<Thread> doFail` field is a thread-local flag, reset on
 //!   the test thread when a test starts (a fresh test instance).
-//! * `DocCopyIterator` (the same document `count` times) is a slice of
-//!   `count` rebuilt documents; a field changed after `doc.add` is rebuilt
-//!   from a copy of the field (guide section 6, `copy_field`).
+//! * A field changed after `doc.add` is reached through
+//!   `Document::get_field_mut`.
 //! * `callStackContains(X.class, "javaName")` names the Rust frame of the
 //!   method (`sync`, `prepare_commit`, `rollback_internal`, …).
 //! * `new Throwable().printStackTrace(System.out)` prints the Rust backtrace.
@@ -45,7 +44,9 @@ use rucene::index::merge_policy::{NoMergePolicy, TieredMergePolicy};
 use rucene::index::merge_scheduler::ConcurrentMergeScheduler;
 use rucene::index::multi_bits::MultiBits;
 use rucene::index::terms::Term;
-use rucene::index::IndexableFieldType;
+use rucene::index::{
+    DocumentsIterable, DocumentsIterator, IndexableFieldIterable, IndexableFieldType,
+};
 use rucene::index::{
     IndexFileDeleter, IndexOptions, IndexReader, SegmentInfos, TermVectorsConsumer, WRITE_LOCK_NAME,
 };
@@ -265,7 +266,7 @@ fn check_index(dir: &TestDirectory) -> Result<()> {
 
 /// The fields of the `DocCopyIterator` static field types.
 static CUSTOM1: LazyLock<FieldType> = LazyLock::new(|| {
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_store_term_vectors(true).expect("not frozen");
     ft.set_store_term_vector_positions(true)
         .expect("not frozen");
@@ -275,7 +276,7 @@ static CUSTOM1: LazyLock<FieldType> = LazyLock::new(|| {
 
 /// `DocCopyIterator.custom2`.
 static CUSTOM2: LazyLock<FieldType> = LazyLock::new(|| {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true).expect("not frozen");
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
         .expect("not frozen");
@@ -284,14 +285,14 @@ static CUSTOM2: LazyLock<FieldType> = LazyLock::new(|| {
 
 /// `DocCopyIterator.custom3`.
 static CUSTOM3: LazyLock<FieldType> = LazyLock::new(|| {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true).expect("not frozen");
     ft
 });
 
 /// `DocCopyIterator.custom4`.
 static CUSTOM4: LazyLock<FieldType> = LazyLock::new(|| {
-    let mut ft = FieldType::new_from(StringField::type_not_stored());
+    let ft = FieldType::new_from(StringField::type_not_stored());
     ft.set_store_term_vectors(true).expect("not frozen");
     ft.set_store_term_vector_positions(true)
         .expect("not frozen");
@@ -301,13 +302,56 @@ static CUSTOM4: LazyLock<FieldType> = LazyLock::new(|| {
 
 /// `DocCopyIterator.custom5`.
 static CUSTOM5: LazyLock<FieldType> = LazyLock::new(|| {
-    let mut ft = FieldType::new_from(TextField::type_stored());
+    let ft = FieldType::new_from(TextField::type_stored());
     ft.set_store_term_vectors(true).expect("not frozen");
     ft.set_store_term_vector_positions(true)
         .expect("not frozen");
     ft.set_store_term_vector_offsets(true).expect("not frozen");
     ft
 });
+
+/// `idField`: the `id` field the indexer thread's document holds.
+fn id_field_of(doc: &mut Document) -> &mut Field {
+    doc.get_field_mut("id")
+        .and_then(|field| field.as_any_mut())
+        .and_then(|any| any.downcast_mut::<Field>())
+        .expect("INVARIANT: the document holds the Field `id`")
+}
+
+/// `record DocCopyIterator(Document doc, int count) implements
+/// Iterable<Document>`: the same document `count` times.
+struct DocCopyIterator<'a> {
+    doc: &'a Document,
+    count: i32,
+}
+
+/// The anonymous `Iterator<Document>` of `DocCopyIterator.iterator()`.
+struct DocCopyIter<'a> {
+    doc: &'a Document,
+    count: i32,
+    upto: i32,
+}
+
+impl<'a> DocumentsIterator<'a> for DocCopyIter<'a> {
+    fn has_next(&mut self) -> Result<bool> {
+        Ok(self.upto < self.count)
+    }
+
+    fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>> {
+        self.upto += 1;
+        Ok(Some(self.doc))
+    }
+}
+
+impl DocumentsIterable for DocCopyIterator<'_> {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        Box::new(DocCopyIter {
+            doc: self.doc,
+            count: self.count,
+            upto: 0,
+        })
+    }
+}
 
 /// A document holding copies of `fields`, in order.
 fn doc_of(fields: &[&Field]) -> Result<Document> {
@@ -396,11 +440,11 @@ impl IndexerThread {
         let id_field =
             LuceneTestCase::new_field_with(r, "id", NewFieldValue::String(String::new()), &CUSTOM2);
 
-        // `doc` with `idField` set to `id`.
-        let make_doc = |id: &str| -> Result<Document> {
-            let mut doc = doc_of(&[
-                &content1, &content6, &content2, &content3, &content4, &content5,
-            ])?;
+        let mut doc = Document::new();
+        for field in [content1, content6, content2, content3, content4, content5] {
+            doc.add(Box::new(field));
+        }
+        {
             doc.add(Box::new(NumericDocValuesField::new("numericdv", 5)));
             doc.add(Box::new(BinaryDocValuesField::new(
                 "binarydv",
@@ -426,12 +470,10 @@ impl IndexerThread {
                 "sortednumericdv",
                 5,
             )));
-            doc.add(Box::new(copy_field(&content7)?));
-            let mut id_copy = copy_field(&id_field)?;
-            id_copy.set_string_value(id.to_string())?;
-            doc.add(Box::new(id_copy));
-            Ok(doc)
-        };
+            doc.add(Box::new(content7));
+            // `final Field idField = ...; doc.add(idField);`
+            doc.add(Box::new(id_field));
+        }
 
         let max_iterations = 250;
         let mut iterations = 0;
@@ -441,17 +483,20 @@ impl IndexerThread {
             }
             set_do_fail(true);
             let id = format!("{}", r.next_int_bound(50));
+            // `idField.setStringValue(id)`.
+            id_field_of(&mut doc)
+                .set_string_value(id.clone())
+                .expect("a String field");
             let id_term = Term::from_text("id", &id);
             let outcome = catching(|| {
                 if r.next_boolean() {
-                    let count = TestUtil::next_int(r, 1, 20);
-                    let docs = (0..count)
-                        .map(|_| make_doc(&id))
-                        .collect::<Result<Vec<_>>>()?;
+                    let docs = DocCopyIterator {
+                        doc: &doc,
+                        count: TestUtil::next_int(r, 1, 20),
+                    };
                     self.writer.update_documents(id_term.clone(), &docs)
                 } else {
-                    self.writer
-                        .update_document(id_term.clone(), &make_doc(&id)?)
+                    self.writer.update_document(id_term.clone(), &doc)
                 }
             });
             match outcome {
@@ -486,10 +531,7 @@ impl IndexerThread {
             // After a possible exception (above) I should be able
             // to add a new document without hitting an
             // exception:
-            if let Err(t) = catching(|| {
-                self.writer
-                    .update_document(id_term.clone(), &make_doc(&id)?)
-            }) {
+            if let Err(t) = catching(|| self.writer.update_document(id_term.clone(), &doc)) {
                 println!("{}: unexpected exception3", current_thread_name());
                 println!("{t}");
                 *self.failure.lock().unwrap_or_else(|p| p.into_inner()) = Some(t);
@@ -2684,7 +2726,7 @@ fn test_too_many_tokens() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(dir.as_directory(), null_analyzer_iwc())?;
     let mut doc = Document::new();
-    let mut ft = FieldType::new_from(TextField::type_not_stored());
+    let ft = FieldType::new_from(TextField::type_not_stored());
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS)?;
     let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
     let term_att = Att::add(&mut source, char_term_id())?;
@@ -3146,7 +3188,7 @@ fn test_exception_on_sync_metadata() -> Result<()> {
                 Store::NO,
             )));
             // ensure we get some vectors
-            let mut ft = FieldType::new_from(TextField::type_not_stored());
+            let ft = FieldType::new_from(TextField::type_not_stored());
             ft.set_store_term_vectors(true)?;
             doc.add(Box::new(LuceneTestCase::new_field(
                 "text_vectors",

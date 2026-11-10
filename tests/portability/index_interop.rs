@@ -125,7 +125,7 @@ fn byte_vector(i: i32) -> Vec<u8> {
 
 /// `IndexInteropFixture.BODY_TYPE`.
 fn body_type() -> FieldType {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_tokenized(true).unwrap();
     t.set_stored(true).unwrap();
     t.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
@@ -136,7 +136,7 @@ fn body_type() -> FieldType {
 
 /// `IndexInteropFixture.TV_TYPE`.
 fn tv_type() -> FieldType {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_tokenized(true).unwrap();
     t.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
         .unwrap();

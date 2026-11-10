@@ -37,7 +37,7 @@ fn test_binary() -> Result<()> {
         bytes.bytes[1] = (255 - i) as u8;
         bytes.length = 2;
         let mut doc = Document::new();
-        let mut custom_type = FieldType::new();
+        let custom_type = FieldType::new();
         custom_type.set_stored(true)?;
         doc.add(Box::new(LuceneTestCase::new_field(
             "id",

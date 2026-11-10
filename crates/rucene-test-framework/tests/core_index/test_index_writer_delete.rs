@@ -227,7 +227,7 @@ fn city_doc(custom1: &FieldType, i: usize) -> Document {
 
 /// `FieldType custom1 = new FieldType(); custom1.setStored(true);`.
 fn stored_type() -> Result<FieldType> {
-    let mut custom1 = FieldType::new();
+    let custom1 = FieldType::new();
     custom1.set_stored(true)?;
     Ok(custom1)
 }

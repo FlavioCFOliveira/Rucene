@@ -149,7 +149,7 @@ pub fn java_to_string(e: &LuceneError) -> String {
 
 /// The binary name of the Java class an error stands for, and its message.
 pub fn java_class_and_message(e: &LuceneError) -> (String, String) {
-    match e {
+    match e.unwrap_suppressed() {
         LuceneError::IllegalState { message, .. } => (
             "java.lang.IllegalStateException".to_string(),
             message.clone(),
@@ -1899,7 +1899,7 @@ impl BaseTokenStreamTestCase {
         let mut indexing: Option<(Document, FieldType, SharedReader)> = None;
         if iw.is_some() {
             let mut doc = Document::new();
-            let mut ft = FieldType::new_from(TextField::type_not_stored());
+            let ft = FieldType::new_from(TextField::type_not_stored());
             if random.next_boolean() {
                 ft.set_store_term_vectors(true)?;
                 ft.set_store_term_vector_offsets(random.next_boolean())?;
