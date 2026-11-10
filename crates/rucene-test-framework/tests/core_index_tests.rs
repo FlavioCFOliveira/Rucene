@@ -208,6 +208,24 @@ mod test_index_writer_nrt_is_current;
 mod test_indexable_field;
 #[path = "core_index/test_indexing_sequence_numbers.rs"]
 mod test_indexing_sequence_numbers;
+#[path = "core_index/test_index_writer_on_disk_full.rs"]
+mod test_index_writer_on_disk_full;
+#[path = "core_index/test_index_writer_on_error.rs"]
+mod test_index_writer_on_error;
+#[path = "core_index/test_index_writer_out_of_file_descriptors.rs"]
+mod test_index_writer_out_of_file_descriptors;
+#[path = "core_index/test_index_writer_reader.rs"]
+mod test_index_writer_reader;
+#[path = "core_index/test_index_writer_threads_to_segments.rs"]
+mod test_index_writer_threads_to_segments;
+#[path = "core_index/test_index_writer_unicode.rs"]
+mod test_index_writer_unicode;
+#[path = "core_index/test_info_stream.rs"]
+mod test_info_stream;
+#[path = "core_index/test_int_block_pool.rs"]
+mod test_int_block_pool;
+#[path = "core_index/test_is_current.rs"]
+mod test_is_current;
 use core_support::run;
 
 #[test]
@@ -707,4 +725,49 @@ fn test_index_writer_nrt_is_current() {
 #[test]
 fn test_index_writer_from_reader() {
     run(test_index_writer_from_reader::class_def);
+}
+
+#[test]
+fn test_index_writer_on_disk_full() {
+    run(test_index_writer_on_disk_full::class_def);
+}
+
+#[test]
+fn test_index_writer_on_error() {
+    run(test_index_writer_on_error::class_def);
+}
+
+#[test]
+fn test_index_writer_out_of_file_descriptors() {
+    run(test_index_writer_out_of_file_descriptors::class_def);
+}
+
+#[test]
+fn test_index_writer_reader() {
+    run(test_index_writer_reader::class_def);
+}
+
+#[test]
+fn test_index_writer_threads_to_segments() {
+    run(test_index_writer_threads_to_segments::class_def);
+}
+
+#[test]
+fn test_index_writer_unicode() {
+    run(test_index_writer_unicode::class_def);
+}
+
+#[test]
+fn test_info_stream() {
+    run(test_info_stream::class_def);
+}
+
+#[test]
+fn test_int_block_pool() {
+    run(test_int_block_pool::class_def);
+}
+
+#[test]
+fn test_is_current() {
+    run(test_is_current::class_def);
 }

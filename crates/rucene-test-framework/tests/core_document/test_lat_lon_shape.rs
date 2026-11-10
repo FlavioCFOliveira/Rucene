@@ -18,7 +18,7 @@ use rucene::geo::tessellator::Tessellator;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::merge_scheduler::SerialMergeScheduler;
-use rucene::index::IndexReader;
+use rucene::index::{IndexReader, IndexableField};
 use rucene::search::Query;
 use rucene_test_framework::geo::geo_test_util;
 use rucene_test_framework::index::RandomIndexWriter;
@@ -26,7 +26,6 @@ use rucene_test_framework::util::lucene_test_case::TEST_NIGHTLY;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_support::{assert_equals, assert_equals_delta, class, random, test, unchecked};
-use crate::shared_field::SharedField;
 
 const FIELDNAME: &str = "field";
 
@@ -1221,8 +1220,14 @@ fn do_test_contains_geometry_collection_intersects(
     contains_fields: Vec<Triangle>,
     intersects_field: Vec<Triangle>,
 ) -> Result<()> {
-    let contains_fields = SharedField::share_all(contains_fields);
-    let intersects_field = SharedField::share_all(intersects_field);
+    let contains_fields = contains_fields
+        .into_iter()
+        .map(|f| Arc::new(f) as Arc<dyn IndexableField>)
+        .collect::<Vec<_>>();
+    let intersects_field = intersects_field
+        .into_iter()
+        .map(|f| Arc::new(f) as Arc<dyn IndexableField>)
+        .collect::<Vec<_>>();
     let mut dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs = random().next_int_bound(1000);
@@ -1230,11 +1235,11 @@ fn do_test_contains_geometry_collection_intersects(
     for _ in 0..num_docs {
         let mut doc = Document::new();
         for f in &contains_fields {
-            doc.add(SharedField::boxed(f));
+            doc.add_shared(Arc::clone(f));
         }
         for _ in 0..10 {
             for f in &intersects_field {
-                doc.add(SharedField::boxed(f));
+                doc.add_shared(Arc::clone(f));
             }
         }
         w.add_document(&doc)?;

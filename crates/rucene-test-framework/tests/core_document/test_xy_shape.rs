@@ -12,14 +12,13 @@ use rucene::error::Result;
 use rucene::geo::geometry::{XYCircle, XYLine, XYPoint, XYPolygon, XYRectangle};
 use rucene::geo::tessellator::Tessellator;
 use rucene::index::directory_reader::DirectoryReader;
-use rucene::index::IndexReader;
+use rucene::index::{IndexReader, IndexableField};
 use rucene::search::Query;
 use rucene_test_framework::geo::shape_test_util;
 use rucene_test_framework::index::RandomIndexWriter;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_support::{assert_equals, assert_equals_delta, class, random, test};
-use crate::shared_field::SharedField;
 
 const FIELDNAME: &str = "field";
 
@@ -304,22 +303,25 @@ fn test_contains_indexed_geometry_collection() -> Result<()> {
         vec![-64.0, -64.0, 64.0, 64.0, -64.0],
         vec![],
     )?;
-    let polygon_fields = SharedField::share_all(XYShape::create_indexable_fields_polygon(
-        FIELDNAME, &polygon,
-    )?);
+    let polygon_fields = XYShape::create_indexable_fields_polygon(FIELDNAME, &polygon)?
+        .into_iter()
+        .map(|f| Arc::new(f) as Arc<dyn IndexableField>)
+        .collect::<Vec<_>>();
     // POINT(5, 5) inside the indexed polygon
-    let point_fields =
-        SharedField::share_all(XYShape::create_indexable_fields_point(FIELDNAME, 5.0, 5.0)?);
+    let point_fields = XYShape::create_indexable_fields_point(FIELDNAME, 5.0, 5.0)?
+        .into_iter()
+        .map(|f| Arc::new(f) as Arc<dyn IndexableField>)
+        .collect::<Vec<_>>();
     let num_docs = random().next_int_bound(1000);
     // index the same multi geometry many times
     for _ in 0..num_docs {
         let mut doc = Document::new();
         for f in &polygon_fields {
-            doc.add(SharedField::boxed(f));
+            doc.add_shared(Arc::clone(f));
         }
         for _ in 0..10 {
             for f in &point_fields {
-                doc.add(SharedField::boxed(f));
+                doc.add_shared(Arc::clone(f));
             }
         }
         w.add_document(&doc)?;

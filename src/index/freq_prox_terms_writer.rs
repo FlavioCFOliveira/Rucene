@@ -1168,7 +1168,7 @@ impl TermsHashPerField {
         if self.stream_count + int_pool.int_upto() > INT_BLOCK_SIZE {
             // Not enough space remaining in this buffer: jump to the next one
             // and lose this remaining piece.
-            int_pool.next_buffer();
+            int_pool.next_buffer()?;
         }
         // Make sure at least one byte per stream fits in the current block, so
         // that the streams of a term stay close together.
@@ -4933,13 +4933,13 @@ mod tests {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = TermsHash::new_int_pool(&bytes_used);
         for _ in 0..3 {
-            pool.next_buffer();
+            pool.next_buffer().unwrap();
         }
         let block = (INT_BLOCK_SIZE * std::mem::size_of::<i32>()) as i64;
         assert_eq!(bytes_used.load(Ordering::Acquire), 3 * block);
         pool.reset(false, true);
         assert_eq!(bytes_used.load(Ordering::Acquire), 0);
-        pool.next_buffer();
+        pool.next_buffer().unwrap();
         pool.reset(false, false);
         assert_eq!(bytes_used.load(Ordering::Acquire), -block);
     }

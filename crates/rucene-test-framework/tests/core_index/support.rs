@@ -736,12 +736,14 @@ impl rucene::index::merge_policy::MergePolicy for KeepFullyDeletedSegmentsMergeP
     }
 }
 
-/// `java.util.concurrent.CyclicBarrier` (no barrier action): `parties`
-/// threads wait for each other at [`await_millis`](Self::await_millis); the
-/// barrier then resets for the next generation. A timed-out wait breaks the
-/// barrier for every waiter of its generation.
+/// `java.util.concurrent.CyclicBarrier`: `parties` threads wait for each
+/// other at [`await_millis`](Self::await_millis) or [`await_`](Self::await_);
+/// the last to arrive runs the barrier action, if any, and the barrier then
+/// resets for the next generation. A timed-out wait, or a barrier action
+/// that throws, breaks the barrier for every waiter of its generation.
 pub struct CyclicBarrier {
     parties: i32,
+    barrier_command: Option<Box<dyn Fn() + Send + Sync>>,
     state: std::sync::Mutex<CyclicBarrierState>,
     cond: std::sync::Condvar,
 }
@@ -776,6 +778,7 @@ impl CyclicBarrier {
     pub fn new(parties: i32) -> Self {
         CyclicBarrier {
             parties,
+            barrier_command: None,
             state: std::sync::Mutex::new(CyclicBarrierState {
                 count: parties,
                 generation: 0,
@@ -785,10 +788,34 @@ impl CyclicBarrier {
         }
     }
 
+    /// `new CyclicBarrier(parties, barrierAction)`.
+    pub fn with_action(parties: i32, barrier_action: impl Fn() + Send + Sync + 'static) -> Self {
+        CyclicBarrier {
+            barrier_command: Some(Box::new(barrier_action)),
+            ..CyclicBarrier::new(parties)
+        }
+    }
+
+    /// `barrier.await()`: the arrival index of the caller, or why the
+    /// barrier failed. A barrier action that throws breaks the barrier and
+    /// its throwable propagates from the tripping thread.
+    pub fn await_(&self) -> std::result::Result<i32, BarrierError> {
+        self.dowait(None)
+    }
+
     /// `barrier.await(millis, TimeUnit.MILLISECONDS)`: the arrival index of
     /// the caller, or why the barrier failed.
     pub fn await_millis(&self, millis: u64) -> std::result::Result<i32, BarrierError> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(millis);
+        self.dowait(Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(millis),
+        ))
+    }
+
+    /// `CyclicBarrier.dowait(timed, nanos)`.
+    fn dowait(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> std::result::Result<i32, BarrierError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.broken {
             return Err(BarrierError::Broken);
@@ -796,16 +823,30 @@ impl CyclicBarrier {
         state.count -= 1;
         let index = state.count;
         if index == 0 {
-            // the last party trips the barrier and starts a new generation
+            // the last party runs the barrier action, then trips the barrier
+            if let Some(command) = &self.barrier_command {
+                if let Err(payload) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(command))
+                {
+                    state.broken = true;
+                    state.count = self.parties;
+                    self.cond.notify_all();
+                    drop(state);
+                    std::panic::resume_unwind(payload);
+                }
+            }
+            // and starts a new generation
             state.count = self.parties;
             state.generation += 1;
             self.cond.notify_all();
             return Ok(0);
         }
         let generation = state.generation;
-        let _waiting = rucene::util::concurrent::enter_thread_wait(
-            rucene::util::concurrent::ThreadWaitState::TimedWaiting,
-        );
+        let _waiting = rucene::util::concurrent::enter_thread_wait(if deadline.is_some() {
+            rucene::util::concurrent::ThreadWaitState::TimedWaiting
+        } else {
+            rucene::util::concurrent::ThreadWaitState::Waiting
+        });
         loop {
             if state.broken {
                 return Err(BarrierError::Broken);
@@ -813,6 +854,10 @@ impl CyclicBarrier {
             if state.generation != generation {
                 return Ok(index);
             }
+            let Some(deadline) = deadline else {
+                state = self.cond.wait(state).unwrap_or_else(|e| e.into_inner());
+                continue;
+            };
             let now = std::time::Instant::now();
             if now >= deadline {
                 state.broken = true;

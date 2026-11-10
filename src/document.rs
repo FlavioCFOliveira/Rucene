@@ -3147,12 +3147,16 @@ impl IntPoint {
         })
     }
 
-    /// Sets new values, keeping the same dimension count.
+    /// Sets new values, keeping the same dimension count; raises Java's
+    /// `IllegalArgumentException` message on a dimension-count mismatch.
     pub fn set_values(&self, point: &[i32]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
-            return Err(LuceneError::IllegalArgument(
-                "dimension count mismatch".to_string(),
-            ));
+            return Err(LuceneError::IllegalArgument(format!(
+                "this field (name={}) uses {} dimensions; cannot change to (incoming) {} dimensions",
+                self.name,
+                self.field_type.point_dimension_count(),
+                point.len()
+            )));
         }
         *self.fields_data.borrow_mut() = FieldData::Bytes(pack_int_point(point)?);
         Ok(())
@@ -3394,12 +3398,16 @@ impl LongPoint {
         })
     }
 
-    /// Sets new values, keeping the same dimension count.
+    /// Sets new values, keeping the same dimension count; raises Java's
+    /// `IllegalArgumentException` message on a dimension-count mismatch.
     pub fn set_values(&self, point: &[i64]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
-            return Err(LuceneError::IllegalArgument(
-                "dimension count mismatch".to_string(),
-            ));
+            return Err(LuceneError::IllegalArgument(format!(
+                "this field (name={}) uses {} dimensions; cannot change to (incoming) {} dimensions",
+                self.name,
+                self.field_type.point_dimension_count(),
+                point.len()
+            )));
         }
         *self.fields_data.borrow_mut() = FieldData::Bytes(pack_long_point(point)?);
         Ok(())
@@ -3762,12 +3770,16 @@ impl FloatPoint {
         })
     }
 
-    /// Sets new values, keeping the same dimension count.
+    /// Sets new values, keeping the same dimension count; raises Java's
+    /// `IllegalArgumentException` message on a dimension-count mismatch.
     pub fn set_values(&self, point: &[f32]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
-            return Err(LuceneError::IllegalArgument(
-                "dimension count mismatch".to_string(),
-            ));
+            return Err(LuceneError::IllegalArgument(format!(
+                "this field (name={}) uses {} dimensions; cannot change to (incoming) {} dimensions",
+                self.name,
+                self.field_type.point_dimension_count(),
+                point.len()
+            )));
         }
         *self.fields_data.borrow_mut() = FieldData::Bytes(pack_float_point(point)?);
         Ok(())
@@ -4039,12 +4051,16 @@ impl DoublePoint {
         })
     }
 
-    /// Sets new values, keeping the same dimension count.
+    /// Sets new values, keeping the same dimension count; raises Java's
+    /// `IllegalArgumentException` message on a dimension-count mismatch.
     pub fn set_values(&self, point: &[f64]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
-            return Err(LuceneError::IllegalArgument(
-                "dimension count mismatch".to_string(),
-            ));
+            return Err(LuceneError::IllegalArgument(format!(
+                "this field (name={}) uses {} dimensions; cannot change to (incoming) {} dimensions",
+                self.name,
+                self.field_type.point_dimension_count(),
+                point.len()
+            )));
         }
         *self.fields_data.borrow_mut() = FieldData::Bytes(pack_double_point(point)?);
         Ok(())

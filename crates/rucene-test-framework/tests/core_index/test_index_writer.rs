@@ -2336,12 +2336,12 @@ fn test_no_unwanted_tv_files() -> Result<()> {
 
 /// `static final class StringSplitAnalyzer extends Analyzer`.
 #[derive(Debug)]
-struct StringSplitAnalyzer {
+pub(crate) struct StringSplitAnalyzer {
     state: AnalyzerState,
 }
 
 impl StringSplitAnalyzer {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         StringSplitAnalyzer {
             state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
         }

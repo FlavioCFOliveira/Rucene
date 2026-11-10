@@ -10,8 +10,6 @@ mod base_shape_encoding_test_case;
 #[path = "core_document/base_spatial_test_case.rs"]
 mod base_spatial_test_case;
 mod core_support;
-#[path = "core_document/shared_field.rs"]
-mod shared_field;
 #[path = "core_document/spatial_shape_queries.rs"]
 mod spatial_shape_queries;
 #[path = "core_document/test_lat_lon_shape.rs"]
