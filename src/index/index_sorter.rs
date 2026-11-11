@@ -1222,12 +1222,6 @@ impl MultiSorter {
         reverse_muls: &[i32],
         readers: &[Arc<dyn LeafReader>],
     ) -> Result<Option<Vec<crate::index::merge::DocMap>>> {
-        if sorters.is_empty() {
-            return Err(LuceneError::IllegalArgument(
-                "cannot sort an index with no sort fields".to_string(),
-            ));
-        }
-
         let leaf_count = readers.len();
 
         // Per-reader parent bitset (used when index sorting with document

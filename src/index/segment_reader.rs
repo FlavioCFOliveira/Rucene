@@ -314,11 +314,12 @@ impl SegmentCoreReaders {
         let guard = self.core_closed_listeners.lock().map_err(|_| {
             LuceneError::illegal_state("core closed listeners lock poisoned".to_string())
         })?;
-        for listener in guard.iter() {
-            // `listener.onClose(coreCacheKey)`.
-            listener.on_close(self.core_cache_key.clone())?;
-        }
-        Ok(())
+        // `IOUtils.applyToAll(coreClosedListeners, l -> l.onClose(cacheHelper.getKey()))`
+        // (`SegmentCoreReaders.java:203-207`): every listener runs; the first
+        // error is returned with the later ones suppressed into it.
+        crate::util::IOUtils::apply_to_all(guard.iter().map(Some).collect(), |listener| {
+            listener.on_close(self.core_cache_key.clone())
+        })
     }
 }
 
@@ -2286,11 +2287,12 @@ impl SegmentReaderCacheHelper {
         let guard = self.listeners.lock().map_err(|_| {
             LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
-        for listener in guard.iter() {
-            // `listener.onClose(cacheKey)`.
-            listener.on_close(self.key.clone())?;
-        }
-        Ok(())
+        // `IOUtils.applyToAll(readerClosedListeners, l -> l.onClose(readerCacheHelper.getKey()))`
+        // (`SegmentReader.java:323-327`): every listener runs; the first error
+        // is returned with the later ones suppressed into it.
+        crate::util::IOUtils::apply_to_all(guard.iter().map(Some).collect(), |listener| {
+            listener.on_close(self.key.clone())
+        })
     }
 }
 

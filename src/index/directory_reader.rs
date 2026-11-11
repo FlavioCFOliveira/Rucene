@@ -1599,11 +1599,12 @@ impl DirectoryReaderCacheHelper {
         let guard = self.listeners.lock().map_err(|_| {
             LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
-        for l in guard.iter() {
-            // `listener.onClose(cacheKey)`.
-            l.on_close(self.key.clone())?;
-        }
-        Ok(())
+        // `IOUtils.applyToAll(readerClosedListeners, l -> l.onClose(cacheHelper.getKey()))`
+        // (`StandardDirectoryReader.java:670-674`): every listener runs; the
+        // first error is returned with the later ones suppressed into it.
+        crate::util::IOUtils::apply_to_all(guard.iter().map(Some).collect(), |l| {
+            l.on_close(self.key.clone())
+        })
     }
 }
 
