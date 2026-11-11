@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 from collections import defaultdict
 
-from kgio import PER_ROW_SCAN_BATCH, client as kg_client, kg_target
+from kgio import PER_ROW_SCAN_BATCH, client as kg_client, kg_target, unwind as kg_unwind
 
 TYPE_LABEL = {
     "struct": "RustStruct",
@@ -73,18 +73,10 @@ def batched(rows, size):
 
 
 def run_unwind(mode, roadmap, rows, body, batch_size, label):
-    """Executa `UNWIND [<rows>] AS row <body>` em lotes."""
-    total = len(rows)
-    if not total:
-        return
-    n = 0
-    for chunk in batched(rows, batch_size):
-        maps = ", ".join(
-            "{" + ", ".join(f"{k}:{esc(v)}" for k, v in r.items()) + "}" for r in chunk
-        )
-        rmp(mode, roadmap, f"UNWIND [{maps}] AS row {body}", label)
-        n += len(chunk)
-    print(f"  {label}: {n}", file=sys.stderr)
+    """`UNWIND [<rows>] AS row <body>` in bulk (`kgio.unwind`): `batch_size`
+    is honoured only as a per-row-scan cap (`PER_ROW_SCAN_BATCH`)."""
+    if rows:
+        kg_unwind(roadmap, mode, rows, body, label, batch_size)
 
 
 # ---------------------------------------------------------------------------
@@ -553,13 +545,22 @@ def phase_nodes(roadmap, s: Survey, batch_size):
             f"{label} update ({kind})",
         )
 
+    # A `MERGE` that misses scans every `RustFn` per row (measured 2026-11-11
+    # at rmp 1.18.0: ~25 ms per created row over 26k nodes, so a 300-row batch
+    # of new functions broke the 5 s budget); only the matching path seeks
+    # `idx_rustfn_qualifiedname`. So read the existing names once and `CREATE`
+    # only the missing ones, which scans nothing.
+    existing = {
+        r["q"]
+        for r in read(roadmap, "MATCH (f:RustFn) RETURN f.qualifiedName AS q")
+        if r["q"] is not None
+    }
+    missing = sorted({f["qualifiedName"] for f in s.fns} - existing)
     run_unwind(
         "create",
         roadmap,
-        [{"qualifiedName": f["qualifiedName"]} for f in s.fns],
-        "MERGE (f:RustFn {qualifiedName:row.qualifiedName})",
-        # An index seek since `idx_rustfn_qualifiedname` (knowledge-model.md),
-        # so the per-row-scan cap no longer applies.
+        [{"qualifiedName": q} for q in missing],
+        "CREATE (f:RustFn {qualifiedName:row.qualifiedName})",
         batch_size,
         "RustFn create",
     )

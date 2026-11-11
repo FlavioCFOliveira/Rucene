@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import enrich_lucene_kg as en
-from kgio import PER_ROW_SCAN_BATCH, client
+from kgio import PER_ROW_SCAN_BATCH, client, unwind as kg_unwind
 
 
 def rmp(mode, roadmap, query, attempts=6):
@@ -41,17 +41,9 @@ def esc(v):
     return "'" + str(v).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def unwind(roadmap, mode, rows, body, label, batch=300):
-    if not rows:
-        print(f"  {label}: 0", file=sys.stderr)
-        return
-    for i in range(0, len(rows), batch):
-        maps = ", ".join(
-            "{" + ", ".join(f"{k}:{esc(v)}" for k, v in r.items()) + "}"
-            for r in rows[i : i + batch]
-        )
-        rmp(mode, roadmap, f"UNWIND [{maps}] AS row\n{body}")
-    print(f"  {label}: {len(rows)}", file=sys.stderr)
+def unwind(roadmap, mode, rows, body, label, batch=None):
+    """In bulk (`kgio.unwind`); `batch` is honoured only as a per-row-scan cap."""
+    kg_unwind(roadmap, mode, rows, body, label, batch)
 
 
 def read(roadmap, query):

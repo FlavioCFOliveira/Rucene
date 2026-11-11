@@ -78,7 +78,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import scipio  # noqa: E402
 from extract_rucene_kg import base_type_name, blank_macro_bodies, mask  # noqa: E402
-from kgio import client, counters_of, esc, format_counters, kg_target, read  # noqa: E402
+from kgio import client, counters_of, esc, format_counters, kg_target, read, unwind_maps  # noqa: E402
 
 EVIDENCE = "rust-analyzer-scip"
 # rust-analyzer emits no occurrence for code a `macro_rules!` body generates,
@@ -671,7 +671,8 @@ def run_scip(source: Path, out: Path, work: Path):
     env = dict(__import__("os").environ, CARGO_TARGET_DIR=str(target))
     t = time.time()
     subprocess.run(["rust-analyzer", "scip", str(source), "--output", str(out),
-                    "--config-path", str(cfg), "--num-threads", "4"],
+                    "--config-path", str(cfg), "--num-threads",
+                    __import__("os").environ.get("KG_SCIP_THREADS", "8")],
                    env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"  rust-analyzer scip: {time.time() - t:.0f}s -> {out}", file=sys.stderr)
 
@@ -719,21 +720,19 @@ def load(roadmap, rows, commit, date, batch=250):
         groups[(src[0], dst[0])].append((src, dst, r["prod"], r["test"], r.get("evidence", EVIDENCE)))
     created = 0
     for (sl, dl), items in sorted(groups.items()):
-        for i in range(0, len(items), batch):
-            chunk = items[i:i + batch]
-            maps = []
-            for src, dst, prod, test, ev in chunk:
-                ms, ps = _match("a", src)
-                md, pd = _match("b", dst)
-                props = {**ps, **pd, "p": prod, "t": test, "ev": ev}
-                maps.append("{" + ", ".join(f"{k}:{esc(v)}" for k, v in props.items()) + "}")
-            q = (f"UNWIND [{', '.join(maps)}] AS row {ms} {md} "
-                 f"CREATE (a)-[:REFERENCES {{evidence: row.ev, prodRefs: row.p, "
-                 f"testRefs: row.t, gitCommit: {esc(commit)}, gitDate: {esc(date)}}}]->(b)")
-            c = counters_of(client(roadmap, q, label=f"REFERENCES {sl}->{dl}"))
-            created += c.get("relationshipsCreated", 0)
-            if c.get("nodesCreated"):
-                raise SystemExit(f"REFERENCES load created nodes: {c}")
+        maps, ms, md = [], "", ""
+        for src, dst, prod, test, ev in items:
+            ms, ps = _match("a", src)
+            md, pd = _match("b", dst)
+            props = {**ps, **pd, "p": prod, "t": test, "ev": ev}
+            maps.append("{" + ", ".join(f"{k}:{esc(v)}" for k, v in props.items()) + "}")
+        body = (f"{ms} {md} "
+                f"CREATE (a)-[:REFERENCES {{evidence: row.ev, prodRefs: row.p, "
+                f"testRefs: row.t, gitCommit: {esc(commit)}, gitDate: {esc(date)}}}]->(b)")
+        c = unwind_maps(roadmap, "create", maps, body, f"REFERENCES {sl}->{dl}")
+        created += c.get("relationshipsCreated", 0)
+        if c.get("nodesCreated"):
+            raise SystemExit(f"REFERENCES load created nodes: {c}")
     print(f"  REFERENCES created: {created} of {len(rows)} rows", file=sys.stderr)
     if created != len(rows):
         raise SystemExit(f"{len(rows) - created} REFERENCES rows matched no node pair")
@@ -754,7 +753,9 @@ def main():
     ap.add_argument("roadmap")
     ap.add_argument("--source-root", default=str(Path(__file__).resolve().parents[2]))
     ap.add_argument("--commit", help="commit to index (default: HEAD of --source-root)")
-    ap.add_argument("--phase", choices=["extract", "load", "all"], default="all")
+    ap.add_argument("--phase", choices=["scip", "extract", "load", "all"], default="all",
+                    help="`scip` only builds the SCIP index (no graph access), so the "
+                         "sync can run it in the background from its start")
     ap.add_argument("--work", default=str(kg_target() / "no_caller"))
     ap.add_argument("--scip", help="an existing SCIP index to read instead of running rust-analyzer")
     ap.add_argument("--refs", help="the extracted references (JSONL)")
@@ -769,6 +770,13 @@ def main():
     date = subprocess.run(["git", "-C", str(root), "show", "-s", "--format=%cs", commit],
                           capture_output=True, text=True, check=True).stdout.strip()
     refs = Path(args.refs) if args.refs else work / f"rust_refs_{commit[:7]}.jsonl"
+
+    if args.phase == "scip":
+        scip = Path(args.scip) if args.scip else work / f"index_{commit[:7]}.scip"
+        tmp = scip.with_suffix(".scip.tmp")
+        run_scip(prepare_source(root, commit, work), tmp, work)
+        tmp.replace(scip)
+        return
 
     if args.phase in ("extract", "all"):
         source = prepare_source(root, commit, work)
