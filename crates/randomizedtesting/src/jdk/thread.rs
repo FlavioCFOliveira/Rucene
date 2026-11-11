@@ -393,12 +393,20 @@ impl Thread {
     /// a [`Thread`] handle keeps it, and its liveness is not changed.
     #[allow(clippy::type_complexity)]
     pub fn start_context() -> Box<dyn FnOnce(Box<dyn FnOnce() + Send>) + Send> {
+        let context = Thread::start_context_scoped();
+        Box::new(move |body: Box<dyn FnOnce() + Send>| context(body))
+    }
+
+    /// [`start_context`](Self::start_context) for a body that borrows from
+    /// its creator — the body of a `std::thread::scope` thread, which a Java
+    /// `new Thread(runnable)` sharing the creator's objects stands for.
+    pub fn start_context_scoped() -> impl for<'b> FnOnce(Box<dyn FnOnce() + Send + 'b>) + Send {
         let creator = Thread::current();
         let group = creator
             .thread_group()
             .unwrap_or_else(|| Arc::clone(ThreadGroup::main()));
         let daemon = creator.is_daemon();
-        Box::new(move |body: Box<dyn FnOnce() + Send>| {
+        move |body: Box<dyn FnOnce() + Send + '_>| {
             let adopted = CURRENT.with(|slot| {
                 let mut slot = slot.borrow_mut();
                 if slot.is_some() {
@@ -437,7 +445,7 @@ impl Thread {
                 std::panic::resume_unwind(payload);
             }
             end(&adopted);
-        })
+        }
     }
 
     /// `new Thread(runnable, name)`: a `NEW` thread in the current thread's

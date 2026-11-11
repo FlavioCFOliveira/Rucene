@@ -343,15 +343,12 @@ impl Lucene90PointsWriter {
         finalizer: Option<BKDFinalizer>,
     ) -> Result<()> {
         if let Some(finalizer) = finalizer {
-            let meta_out = self
-                .meta_out
-                .as_mut()
-                .expect("INVARIANT: open until finish");
+            let meta_out = self.meta_out.as_mut().expect("INVARIANT: open until close");
             meta_out.write_int(field_number)?;
             let index_out = self
                 .index_out
                 .as_mut()
-                .expect("INVARIANT: open until finish");
+                .expect("INVARIANT: open until close");
             finalizer.run(meta_out.as_mut(), index_out.as_mut())?;
         }
         Ok(())
@@ -383,10 +380,7 @@ impl PointsWriter for Lucene90PointsWriter {
             tree.visit_doc_values(&mut AddToBkdWriter {
                 writer: &mut writer,
             })?;
-            let data_out = self
-                .data_out
-                .as_mut()
-                .expect("INVARIANT: open until finish");
+            let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
             let finalizer = writer.finish(data_out.as_mut())?;
             self.write_finalizer(field_info.number, finalizer)?;
             return writer.close();
@@ -400,10 +394,7 @@ impl PointsWriter for Lucene90PointsWriter {
         // this port's `instanceof`: it answers `Some` for the indexing
         // buffer's tree and `None` for every other tree.
         if let Some(mutable) = tree.as_mutable() {
-            let data_out = self
-                .data_out
-                .as_mut()
-                .expect("INVARIANT: open until finish");
+            let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
             let finalizer = writer.write_field(data_out.as_mut(), mutable)?;
             self.write_finalizer(field_info.number, finalizer)?;
             return writer.close();
@@ -415,10 +406,7 @@ impl PointsWriter for Lucene90PointsWriter {
 
         // We could have 0 points on merge since all docs with dimensional
         // fields may be deleted.
-        let data_out = self
-            .data_out
-            .as_mut()
-            .expect("INVARIANT: open until finish");
+        let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
         let finalizer = writer.finish(data_out.as_mut())?;
         self.write_finalizer(field_info.number, finalizer)?;
         writer.close()
@@ -516,10 +504,7 @@ impl PointsWriter for Lucene90PointsWriter {
                 }
             }
             let readers: Vec<&dyn PointValues> = point_values.iter().map(|v| v.as_ref()).collect();
-            let data_out = self
-                .data_out
-                .as_mut()
-                .expect("INVARIANT: open until finish");
+            let data_out = self.data_out.as_mut().expect("INVARIANT: open until close");
             #[cfg(test)]
             merge_path_probe::record(&field_info.name, merge_path_probe::BKD_MERGE);
             let finalizer = writer.merge(data_out.as_mut(), Some(&doc_maps), &readers)?;
@@ -532,15 +517,17 @@ impl PointsWriter for Lucene90PointsWriter {
 
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::illegal_state(
-                "Lucene90PointsWriter already finished".to_string(),
-            ));
+            return Err(LuceneError::illegal_state("already finished".to_string()));
         }
         self.finished = true;
 
-        let mut meta_out = self.meta_out.take().unwrap();
-        let mut index_out = self.index_out.take().unwrap();
-        let mut data_out = self.data_out.take().unwrap();
+        // `finish()` writes the trailers only; the outputs stay open until
+        // `close()` (`Lucene90PointsWriter.java:302-318`), so a failure here
+        // still leaves them to the caller's `close`.
+        let expect = "INVARIANT: the outputs are open until close()";
+        let meta_out = self.meta_out.as_mut().expect(expect);
+        let index_out = self.index_out.as_mut().expect(expect);
+        let data_out = self.data_out.as_mut().expect(expect);
 
         meta_out.write_int(-1)?;
         write_footer(index_out.as_mut())?;
@@ -548,10 +535,6 @@ impl PointsWriter for Lucene90PointsWriter {
         meta_out.write_long(index_out.file_pointer())?;
         meta_out.write_long(data_out.file_pointer())?;
         write_footer(meta_out.as_mut())?;
-
-        meta_out.close()?;
-        index_out.close()?;
-        data_out.close()?;
         Ok(())
     }
 
@@ -1433,6 +1416,7 @@ mod tests {
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_START).unwrap();
         writer.finish().unwrap();
+        writer.close().unwrap();
         for (extension, codec) in [
             (DATA_EXTENSION, DATA_CODEC_NAME),
             (META_EXTENSION, META_CODEC_NAME),

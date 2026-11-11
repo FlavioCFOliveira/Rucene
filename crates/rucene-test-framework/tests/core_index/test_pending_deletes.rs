@@ -45,9 +45,9 @@ pub fn class_def() -> Arc<Class> {
 /// its subclass `PendingSoftDeletes`.
 pub enum AnyPendingDeletes {
     /// `new PendingDeletes(commitInfo)`.
-    Hard(PendingDeletes),
+    Hard(Box<PendingDeletes>),
     /// `new PendingSoftDeletes(field, commitInfo)`.
-    Soft(PendingSoftDeletes),
+    Soft(Box<PendingSoftDeletes>),
 }
 
 impl AnyPendingDeletes {
@@ -96,7 +96,7 @@ impl AnyPendingDeletes {
 
 /// `protected PendingDeletes newPendingDeletes(SegmentCommitInfo commitInfo)`.
 fn new_pending_deletes(commit_info: &SegmentCommitInfo) -> AnyPendingDeletes {
-    AnyPendingDeletes::Hard(PendingDeletes::new(commit_info))
+    AnyPendingDeletes::Hard(Box::new(PendingDeletes::new(commit_info)))
 }
 
 /// The factory a subclass overrides.

@@ -6577,17 +6577,26 @@ impl DocumentsWriter {
                 self.flush_control.is_full_flush()
             );
             // `DocumentsWriter.java:566-578`: the backlog check runs inside
-            // the `try` whose `finally` is `doAfterFlush`.
-            let outcome = self.flush_one(&flushing_dwpt).and_then(|()| {
-                if self.ticket_queue.ticket_count() >= self.per_thread_pool.size() {
-                    // This means there is a backlog: the one thread purging
-                    // the queue can't keep up with all other threads flushing
-                    // segments, so it is forced to publish.
-                    self.flush_notifications.on_ticket_backlog()?;
-                }
-                Ok(())
-            });
+            // the `try` whose `finally` is `doAfterFlush` — which runs on
+            // every exit, a panic (the port's unchecked throwable) included:
+            // a DWPT left in `flushingWriters` blocks every `waitForFlush`.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.flush_one(&flushing_dwpt).and_then(|()| {
+                    if self.ticket_queue.ticket_count() >= self.per_thread_pool.size() {
+                        // This means there is a backlog: the one thread
+                        // purging the queue can't keep up with all other
+                        // threads flushing segments, so it is forced to
+                        // publish.
+                        self.flush_notifications.on_ticket_backlog()?;
+                    }
+                    Ok(())
+                })
+            }));
             self.flush_control.do_after_flush(&flushing_dwpt);
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(payload) => std::panic::resume_unwind(payload),
+            };
             outcome?;
             next = self.flush_control.next_pending_flush();
         }
@@ -6606,7 +6615,20 @@ impl DocumentsWriter {
             .add_ticket(|| Ok(Some(FlushTicket::new(guard.prepare_flush()?, true))))?;
 
         let flushing_docs_in_ram = guard.num_docs_in_ram();
-        let flushed = guard.flush(self.flush_notifications.as_ref());
+        // A panic — the port's unchecked throwable — leaves through the same
+        // `finally` blocks as an exception (`DocumentsWriter.java:537-563`)
+        // and is rethrown after them.
+        let mut thrown: Option<Box<dyn std::any::Any + Send>> = None;
+        let flushed = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            guard.flush(self.flush_notifications.as_ref())
+        })) {
+            Ok(flushed) => flushed,
+            Err(payload) => {
+                let error = crate::util::concurrent::panic_to_error(&*payload);
+                thrown = Some(payload);
+                Err(error)
+            }
+        };
         // The DWPT aborted mid-flush when it returns no segment. Lucene
         // attaches a null segment, which leaves the ticket unpublishable for
         // ever; treating it as a failed flush instead lets the queue keep
@@ -6639,13 +6661,19 @@ impl DocumentsWriter {
             Ok(())
         })();
         if let Err(error) = notified {
+            // An exception thrown by the `finally` replaces the throwable in
+            // flight, a panic included.
             outcome = Err(error);
+            thrown = None;
         }
         // The outer `finally` (`DocumentsWriter.java:556-563`).
         if !(dwpt_success && outcome.is_ok()) {
             if let Some(ticket) = &ticket {
                 self.ticket_queue.mark_ticket_failed(ticket);
             }
+        }
+        if let Some(payload) = thrown {
+            std::panic::resume_unwind(payload);
         }
         outcome
     }

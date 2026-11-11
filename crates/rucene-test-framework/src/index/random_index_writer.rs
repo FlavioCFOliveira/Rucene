@@ -607,26 +607,32 @@ impl RandomIndexWriter {
                 Panic(Box<dyn std::any::Any + Send>),
             }
             let throwable_list: Mutex<Vec<Thrown>> = Mutex::new(Vec::new());
+            // `new Thread(...)` (`RandomIndexWriter.java`): the thread is in
+            // this thread's group, so it runs under the test's randomized
+            // context, as `random()` in a directory failure needs.
+            let context = randomizedtesting::jdk::thread::Thread::start_context_scoped();
             let committed = std::thread::scope(|scope| {
                 let thread = scope.spawn(|| {
-                    let doc_count = self
-                        .counters
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .doc_count;
-                    match catch_unwind(AssertUnwindSafe(|| {
-                        self.flush_all_buffers_sequentially(doc_count)
-                    })) {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => throwable_list
+                    context(Box::new(|| {
+                        let doc_count = self
+                            .counters
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
-                            .push(Thrown::Error(e)),
-                        Err(payload) => throwable_list
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .push(Thrown::Panic(payload)),
-                    }
+                            .doc_count;
+                        match catch_unwind(AssertUnwindSafe(|| {
+                            self.flush_all_buffers_sequentially(doc_count)
+                        })) {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => throwable_list
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .push(Thrown::Error(e)),
+                            Err(payload) => throwable_list
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .push(Thrown::Panic(payload)),
+                        }
+                    }))
                 });
                 let committed = match catch_unwind(AssertUnwindSafe(|| self.w.commit())) {
                     Ok(Ok(seq_no)) => Some(seq_no),

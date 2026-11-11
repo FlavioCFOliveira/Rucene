@@ -9570,14 +9570,17 @@ impl IndexWriter {
         success: bool,
         del_files: &HashSet<String>,
     ) -> Result<()> {
-        let result = self.close_segment_states(seg_states, success)?;
+        let result = self.close_segment_states(seg_states, success);
         {
-            // Matches the reference taken before the packet was applied. It is
-            // released only after the segment states have closed, or the
-            // deleter cannot remove the still-open files.
+            // `finally { deleter.decRef(delFiles); }` (`IndexWriter.java:6514-6519`):
+            // matches the reference taken before the packet was applied,
+            // released only after the segment states have closed — or the
+            // deleter cannot remove the still-open files — and whether or not
+            // closing them failed; a failure here replaces the one in flight.
             let mut state = self.state()?;
             state.deleter.dec_ref_files(del_files.iter())?;
         }
+        let result = result?;
 
         if result.any_deletes {
             let mut state = self.state()?;

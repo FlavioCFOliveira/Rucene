@@ -81,7 +81,7 @@ fn new_pending_deletes(commit_info: &SegmentCommitInfo) -> PendingSoftDeletes {
 
 /// The override, as the superclass's factory sees it.
 fn new_any_pending_deletes(commit_info: &SegmentCommitInfo) -> AnyPendingDeletes {
-    AnyPendingDeletes::Soft(new_pending_deletes(commit_info))
+    AnyPendingDeletes::Soft(Box::new(new_pending_deletes(commit_info)))
 }
 
 /// The writer of the soft-delete tests: `setSoftDeletesField("_soft_deletes")`,
