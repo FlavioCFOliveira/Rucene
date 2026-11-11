@@ -21,8 +21,8 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_commit::IndexCommit;
 use crate::index::index_file_names::SEGMENTS;
 use crate::index::index_reader::{
-    build_composite_context, CacheHelper, CacheKey, ClosedListener, CompositeReader, IndexReader,
-    IndexReaderCore, StoredFields,
+    add_closed_listener_to_set, build_composite_context, CacheHelper, CacheKey, ClosedListener,
+    CompositeReader, IndexReader, IndexReaderCore, StoredFields,
 };
 use crate::index::index_writer_config::LeafComparator;
 use crate::index::leaf_reader::{LeafReader, TermVectors};
@@ -1572,7 +1572,7 @@ impl IndexCommit for ReaderCommit {
 /// `cacheKey` object, created with the reader.
 struct DirectoryReaderCacheHelper {
     key: CacheKey,
-    listeners: Mutex<Vec<Box<dyn ClosedListener>>>,
+    listeners: Mutex<Vec<Arc<dyn ClosedListener>>>,
 }
 
 impl Debug for DirectoryReaderCacheHelper {
@@ -1612,9 +1612,12 @@ impl CacheHelper for DirectoryReaderCacheHelper {
         &self.key
     }
 
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    /// Equivalent to the anonymous helper's `addClosedListener`
+    /// (`StandardDirectoryReader.java:664-667`), which adds to the
+    /// `readerClosedListeners` set.
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         if let Ok(mut listeners) = self.listeners.lock() {
-            listeners.push(listener);
+            add_closed_listener_to_set(&mut listeners, listener);
         }
     }
 }
@@ -1624,7 +1627,7 @@ impl CacheHelper for Arc<DirectoryReaderCacheHelper> {
         self.as_ref().get_key()
     }
 
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         self.as_ref().add_closed_listener(listener);
     }
 }

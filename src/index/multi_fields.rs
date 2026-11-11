@@ -50,6 +50,7 @@ use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, Terms, TermsEnum};
 use crate::index::terms_enum_index::TermsEnumIndex;
 use crate::index::{IndexReader, ReaderSlice};
 use crate::search::DocIdSetIterator;
+use crate::store::java_nio_file::throw_unchecked;
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::BytesRef;
@@ -1538,9 +1539,15 @@ impl std::fmt::Debug for EnumWithSlice {
 /// The `NullPointerException` Java raises when `MultiPostingsEnum` reaches a
 /// sub whose `postingsEnum` is `null`.
 fn null_current_postings(method: &str) -> LuceneError {
-    LuceneError::illegal_state(format!(
+    LuceneError::illegal_state(null_current_postings_message(method))
+}
+
+/// The JVM's helpful message for the `NullPointerException` of
+/// `current.<method>` when `current` is `null`.
+fn null_current_postings_message(method: &str) -> String {
+    format!(
         "Cannot invoke \"org.apache.lucene.index.PostingsEnum.{method}\" because \"this.current\" is null"
-    ))
+    )
 }
 
 /// A [`PostingsEnum`] that concatenates several sub-readers' postings, offset
@@ -1821,17 +1828,35 @@ impl PostingsEnum for MultiPostingsEnum {
         self.current_enum_mut("nextPosition()")?.next_position()
     }
 
+    /// Equivalent to `MultiPostingsEnum.startOffset()`
+    /// (`MultiPostingsEnum.java:151-153`), which dereferences `current`.
+    ///
+    /// # Panics
+    ///
+    /// With Java's `NullPointerException` when `current` is `null`.
     fn start_offset(&self) -> i32 {
         match self.current_enum("startOffset()") {
             Ok(current) => current.start_offset(),
-            Err(_) => -1,
+            Err(_) => throw_unchecked(
+                "java.lang.NullPointerException",
+                Some(&null_current_postings_message("startOffset()")),
+            ),
         }
     }
 
+    /// Equivalent to `MultiPostingsEnum.endOffset()`
+    /// (`MultiPostingsEnum.java:156-158`), which dereferences `current`.
+    ///
+    /// # Panics
+    ///
+    /// With Java's `NullPointerException` when `current` is `null`.
     fn end_offset(&self) -> i32 {
         match self.current_enum("endOffset()") {
             Ok(current) => current.end_offset(),
-            Err(_) => -1,
+            Err(_) => throw_unchecked(
+                "java.lang.NullPointerException",
+                Some(&null_current_postings_message("endOffset()")),
+            ),
         }
     }
 

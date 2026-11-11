@@ -505,7 +505,7 @@ fn sort_test(use_from: bool) -> Result<()> {
         for sd in &merged_docs {
             assert_equals_msg(
                 Some(&format!("doc={} wrong shard", sd.doc)),
-                &(reader_util::sub_index(sd.doc, &doc_starts) as i32),
+                &reader_util::sub_index(sd.doc, &doc_starts),
                 &sd.shard_index,
             );
         }

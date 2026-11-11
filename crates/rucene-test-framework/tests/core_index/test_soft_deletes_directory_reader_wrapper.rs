@@ -359,14 +359,14 @@ fn test_reader_cache_key() -> Result<()> {
         .unwrap_or_else(|| crate::support::npe("getReaderCacheHelper"));
     let leaf_called = Arc::new(AtomicI32::new(0));
     let dir_called = Arc::new(AtomicI32::new(0));
-    reader_cache_helper.add_closed_listener(Box::new(CountingListener {
+    reader_cache_helper.add_closed_listener(Arc::new(CountingListener {
         counter: Arc::clone(&leaf_called),
         helper_key: reader_cache_helper.get_key().clone(),
     }));
     let dir_reader_cache_helper = reader
         .get_reader_cache_helper()
         .unwrap_or_else(|| crate::support::npe("getReaderCacheHelper"));
-    dir_reader_cache_helper.add_closed_listener(Box::new(CountingListener {
+    dir_reader_cache_helper.add_closed_listener(Arc::new(CountingListener {
         counter: Arc::clone(&dir_called),
         helper_key: dir_reader_cache_helper.get_key().clone(),
     }));

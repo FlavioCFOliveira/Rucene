@@ -1484,7 +1484,7 @@ fn test_reader_finished_listener() -> Result<()> {
     reader
         .get_reader_cache_helper()
         .unwrap_or_else(|| npe("getReaderCacheHelper()"))
-        .add_closed_listener(Box::new(CountingListener(Arc::clone(&close_count))));
+        .add_closed_listener(Arc::new(CountingListener(Arc::clone(&close_count))));
 
     reader.close()?;
 
@@ -1496,7 +1496,7 @@ fn test_reader_finished_listener() -> Result<()> {
     reader2
         .get_reader_cache_helper()
         .unwrap_or_else(|| npe("getReaderCacheHelper()"))
-        .add_closed_listener(Box::new(CountingListener(Arc::clone(&close_count))));
+        .add_closed_listener(Arc::new(CountingListener(Arc::clone(&close_count))));
 
     close_count.store(0, Ordering::SeqCst);
     reader2.close()?;

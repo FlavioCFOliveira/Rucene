@@ -3,9 +3,6 @@
 //! * `CacheHelper.addClosedListener` on a closed reader throws Java's
 //!   unchecked `AlreadyClosedException`; Rucene's returns `()`, so the
 //!   expectation is a panic with that throwable (`expect_throws_panic`).
-//! * `testCoreListenerOnWrapperWithDifferentCacheKey` registers 100 more times
-//!   listeners already registered, which Java's listener set ignores; only the
-//!   draws are made (a boxed listener has no identity to register again).
 
 use std::fmt;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -128,17 +125,17 @@ fn test_close_under_exception() -> Result<()> {
         for _ in 0..listener_count {
             if LuceneTestCase::rarely() {
                 faulty_set = true;
-                helper().add_closed_listener(Box::new(FaultyListener));
+                helper().add_closed_listener(Arc::new(FaultyListener));
             } else {
                 count.fetch_add(1, Ordering::SeqCst);
-                helper().add_closed_listener(Box::new(CountListener {
+                helper().add_closed_listener(Arc::new(CountListener {
                     count: Arc::clone(&count),
                     core_cache_key: helper().get_key().clone(),
                 }));
             }
         }
         if !faulty_set && !throw_on_close {
-            helper().add_closed_listener(Box::new(FaultyListener));
+            helper().add_closed_listener(Arc::new(FaultyListener));
         }
 
         let index_reader = Arc::clone(&reader).as_index_reader();
@@ -186,20 +183,21 @@ fn test_core_listener_on_wrapper_with_different_cache_key() -> Result<()> {
     };
 
     let num_listeners = TestUtil::next_int(&*random(), 1, 10);
+    let mut listeners: Vec<Arc<dyn ClosedListener>> = Vec::new();
     let counter = Arc::new(AtomicI32::new(num_listeners));
 
     for _ in 0..num_listeners {
-        core_helper().add_closed_listener(Box::new(CountListener {
+        let listener: Arc<dyn ClosedListener> = Arc::new(CountListener {
             count: Arc::clone(&counter),
             core_cache_key: core_helper().get_key().clone(),
-        }));
+        });
+        listeners.push(Arc::clone(&listener));
+        core_helper().add_closed_listener(listener);
     }
     for _ in 0..100 {
-        // `addClosedListener(listeners.get(random().nextInt(listeners.size())))`
-        // registers a listener that is already registered, which Java's
-        // listener set ignores; a boxed Rust listener has no identity to
-        // register again, so only the draw is made.
-        let _ = random().next_int_bound(num_listeners);
+        core_helper().add_closed_listener(Arc::clone(
+            &listeners[random().next_int_bound(listeners.len() as i32) as usize],
+        ));
     }
     assert_equals(&num_listeners, &counter.load(Ordering::SeqCst));
     // make sure listeners are registered on the wrapped reader and that closing any of them has the
@@ -270,15 +268,15 @@ fn test_register_listener_on_closed_reader() -> Result<()> {
     // The reader is open, everything should work
     r.get_reader_cache_helper()
         .unwrap_or_else(|| npe("getReaderCacheHelper()"))
-        .add_closed_listener(Box::new(NoOpListener));
+        .add_closed_listener(Arc::new(NoOpListener));
     first_leaf()
         .get_reader_cache_helper()
         .unwrap_or_else(|| npe("getReaderCacheHelper()"))
-        .add_closed_listener(Box::new(NoOpListener));
+        .add_closed_listener(Arc::new(NoOpListener));
     first_leaf()
         .get_core_cache_helper()
         .unwrap_or_else(|| npe("getCoreCacheHelper()"))
-        .add_closed_listener(Box::new(NoOpListener));
+        .add_closed_listener(Arc::new(NoOpListener));
     let leaf = first_leaf();
 
     // But now we close
@@ -286,17 +284,17 @@ fn test_register_listener_on_closed_reader() -> Result<()> {
     expect_throws_panic(ACE, || {
         r.get_reader_cache_helper()
             .unwrap_or_else(|| npe("getReaderCacheHelper()"))
-            .add_closed_listener(Box::new(NoOpListener))
+            .add_closed_listener(Arc::new(NoOpListener))
     });
     expect_throws_panic(ACE, || {
         leaf.get_reader_cache_helper()
             .unwrap_or_else(|| npe("getReaderCacheHelper()"))
-            .add_closed_listener(Box::new(NoOpListener))
+            .add_closed_listener(Arc::new(NoOpListener))
     });
     expect_throws_panic(ACE, || {
         leaf.get_core_cache_helper()
             .unwrap_or_else(|| npe("getCoreCacheHelper()"))
-            .add_closed_listener(Box::new(NoOpListener))
+            .add_closed_listener(Arc::new(NoOpListener))
     });
 
     dir.close()

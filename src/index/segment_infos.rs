@@ -817,7 +817,7 @@ impl SegmentInfos {
                 &segment_id,
                 &*crate::store::READONCE_IO_CONTEXT,
             )?;
-            info.set_codec(codec);
+            info.set_codec(Some(codec))?;
 
             let max_doc = info.max_doc()?;
             total_docs += max_doc as i64;

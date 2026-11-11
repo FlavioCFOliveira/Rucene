@@ -140,63 +140,32 @@ pub mod reader_util {
     /// `doc_id`, given the per-sub-reader doc-start table `doc_starts` (where
     /// `doc_starts[i]` is the first global doc ID of sub-reader `i`).
     ///
-    /// Ports `ReaderUtil.subIndex(int n, int[] docStarts)`. The array need not
-    /// carry a trailing sentinel: the binary search returns the last index
-    /// whose start is `<= doc_id`.
-    ///
-    /// # Deliberate divergence from Lucene: the "no such sub-reader" result
-    ///
-    /// Java returns `int` and, when the search falls off the left edge, returns
-    /// the raw `hi`, which is **`-1`** — either because `doc_id` is smaller
-    /// than `docStarts[0]` or because the table is empty. Callers treat that as
-    /// a bug signal rather than an index (`MultiBits.get` asserts
-    /// `reader != -1`, `MultiBits.java:92`).
-    ///
-    /// This port returns `usize`, which cannot represent `-1`, so it clamps to
-    /// `0` instead. The two behaviours differ only on inputs that cannot occur
-    /// in a well-formed reader: document IDs are non-negative and a composite
-    /// reader's `starts[0]` is always `0`, so `doc_id < doc_starts[0]` is
-    /// unreachable, and an empty table means there is no sub-reader to return
-    /// an index for at all. Rucene's callers (this module's private
-    /// `resolve_sub`, and `MultiBits::get`) range-check `doc_id` against
-    /// `max_doc` before calling, so the clamped value is never used to index
-    /// anything.
-    ///
-    /// Changing the signature to `Option<usize>` or `isize` would propagate a
-    /// case that cannot happen into every call site; the clamp is documented
-    /// here instead and pinned by
-    /// `sub_index_clamps_to_zero_where_java_returns_minus_one`.
-    ///
-    /// # Panics
-    ///
-    /// Does not panic. Out-of-range `doc_id` values resolve to the nearest
-    /// boundary index; callers that need strict bounds checking must validate
-    /// `doc_id` first.
-    pub fn sub_index(doc_id: i32, doc_starts: &[i32]) -> usize {
-        // find the sub-reader for doc_id:
-        let size = doc_starts.len();
-        let mut lo: isize = 0; // search starts array
-        let mut hi: isize = size as isize - 1; // for first element less than n, return its index
+    /// Ports `ReaderUtil.subIndex(int n, int[] docStarts)`
+    /// (`ReaderUtil.java:49-69`). The array need not carry a trailing
+    /// sentinel: the binary search returns the last index whose start is
+    /// `<= doc_id`, or `-1` when there is none (an empty table, or `doc_id`
+    /// before `doc_starts[0]`), as Java does.
+    pub fn sub_index(doc_id: i32, doc_starts: &[i32]) -> i32 {
+        // find searcher/reader for doc n:
+        let size = doc_starts.len() as i32;
+        let mut lo: i32 = 0; // search starts array
+        let mut hi: i32 = size - 1; // for first element less than n, return its index
         while hi >= lo {
-            let mid = ((lo + hi) >> 1) as usize;
-            let mid_value = doc_starts[mid];
+            let mut mid = ((lo as u32 + hi as u32) >> 1) as i32;
+            let mid_value = doc_starts[mid as usize];
             if doc_id < mid_value {
-                hi = mid as isize - 1;
+                hi = mid - 1;
             } else if doc_id > mid_value {
-                lo = mid as isize + 1;
+                lo = mid + 1;
             } else {
                 // found a match
-                let mut mid = mid;
-                while mid + 1 < size && doc_starts[mid + 1] == mid_value {
+                while mid + 1 < size && doc_starts[(mid + 1) as usize] == mid_value {
                     mid += 1; // scan to last match
                 }
                 return mid;
             }
         }
-        // hi < lo. Java returns `hi` here, which is -1 when the search fell
-        // off the left edge; `usize` cannot express that, so clamp to 0. See
-        // the deliberate-divergence note on this function.
-        hi.max(0) as usize
+        hi
     }
 
     /// Returns the index of the leaf context that owns the global document ID
@@ -234,30 +203,28 @@ pub mod reader_util {
     ///
     /// This is the `ReaderSlice`-driven counterpart of [`sub_index`]; Lucene
     /// does not expose this exact overload but it is the natural mapping when
-    /// the caller already holds a `&[ReaderSlice]`. It shares [`sub_index`]'s
-    /// deliberate divergence on the "no such slice" case: Java's `subIndex`
-    /// would return `-1`, this port clamps to `0`.
-    pub fn index_of(doc_id: i32, slices: &[ReaderSlice]) -> usize {
-        let size = slices.len();
-        let mut lo: isize = 0;
-        let mut hi: isize = size as isize - 1;
+    /// the caller already holds a `&[ReaderSlice]`. Like Java's `subIndex`
+    /// (`ReaderUtil.java:49-69`), it returns `-1` when no slice starts at or
+    /// before `doc_id`.
+    pub fn index_of(doc_id: i32, slices: &[ReaderSlice]) -> i32 {
+        let size = slices.len() as i32;
+        let mut lo: i32 = 0;
+        let mut hi: i32 = size - 1;
         while hi >= lo {
-            let mid = ((lo + hi) >> 1) as usize;
-            let mid_value = slices[mid].start;
+            let mut mid = ((lo as u32 + hi as u32) >> 1) as i32;
+            let mid_value = slices[mid as usize].start;
             if doc_id < mid_value {
-                hi = mid as isize - 1;
+                hi = mid - 1;
             } else if doc_id > mid_value {
-                lo = mid as isize + 1;
+                lo = mid + 1;
             } else {
-                let mut mid = mid;
-                while mid + 1 < size && slices[mid + 1].start == mid_value {
+                while mid + 1 < size && slices[(mid + 1) as usize].start == mid_value {
                     mid += 1;
                 }
                 return mid;
             }
         }
-        // See sub_index: Java would return -1 here; `usize` clamps to 0.
-        hi.max(0) as usize
+        hi
     }
 
     /// Java's `Arrays.binarySearch(int[] a, int fromIndex, int toIndex, int key)`,
@@ -718,7 +685,8 @@ pub(crate) fn resolve_sub(doc_id: i32, max_doc: i32, starts: &[i32]) -> Result<(
             "docID must be >= 0 and < maxDoc={max_doc} (got docID={doc_id})"
         )));
     }
-    let i = sub_index(doc_id, starts);
+    // `doc_id` is in `0..max_doc` and `starts[0] == 0`, so the index is not -1.
+    let i = sub_index(doc_id, starts) as usize;
     Ok((i, doc_id - starts[i]))
 }
 
@@ -1089,23 +1057,21 @@ mod tests {
     }
 
     #[test]
-    fn sub_index_clamps_to_zero_where_java_returns_minus_one() {
-        // Pins the documented divergence from `ReaderUtil.subIndex`, which
-        // returns the raw `hi` (= -1) in both of these cases. `usize` cannot
-        // express -1, so this port clamps to 0. Neither input is reachable
-        // through a well-formed composite reader: doc IDs are non-negative and
-        // `starts[0]` is always 0. `sub_index_from_leaves` returns -1, as
-        // Java does.
+    fn sub_index_returns_minus_one_when_no_sub_reader_owns_the_doc() {
+        // `ReaderUtil.subIndex` returns the raw `hi` (= -1) in both of these
+        // cases (`ReaderUtil.java:68`).
         let empty: [i32; 0] = [];
-        assert_eq!(sub_index(0, &empty), 0, "empty table: Java returns -1");
-        assert_eq!(index_of(0, &[]), 0, "empty table: Java returns -1");
+        assert_eq!(sub_index(0, &empty), -1, "empty table: -1, as Java");
+        assert_eq!(index_of(0, &[]), -1, "empty table: -1, as Java");
 
         let starts = [4i32, 9];
         assert_eq!(
             sub_index(0, &starts),
-            0,
-            "doc_id below starts[0]: Java returns -1"
+            -1,
+            "doc_id below starts[0]: -1, as Java"
         );
+        let slices = [ReaderSlice::new(4, 5, 0), ReaderSlice::new(9, 1, 1)];
+        assert_eq!(index_of(0, &slices), -1, "doc_id below the first start");
         assert_eq!(
             sub_index_from_leaves(0, &[]),
             -1,

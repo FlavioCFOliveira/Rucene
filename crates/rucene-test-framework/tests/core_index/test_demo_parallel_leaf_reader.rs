@@ -531,7 +531,7 @@ impl ReindexingState {
                         par_leaf_reader
                             .get_reader_cache_helper()
                             .unwrap_or_else(|| crate::support::npe("getReaderCacheHelper()"))
-                            .add_closed_listener(Box::new(ParallelReaderClosed {
+                            .add_closed_listener(Arc::new(ParallelReaderClosed {
                                 seg_id_gen: seg_id_gen.clone(),
                                 dir: Mutex::new(Some(dir)),
                                 state: Arc::downgrade(self),

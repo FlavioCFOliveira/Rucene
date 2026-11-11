@@ -24,8 +24,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use rucene::error::Result;
 use rucene::index::index_reader::{
-    build_composite_context, composite_reader_to_string, CacheHelper, CacheKey, ClosedListener,
-    CompositeReader, IndexReader, IndexReaderCore, StoredFields,
+    add_closed_listener_to_set, build_composite_context, composite_reader_to_string, CacheHelper,
+    CacheKey, ClosedListener, CompositeReader, IndexReader, IndexReaderCore, StoredFields,
 };
 use rucene::index::leaf_reader::TermVectors;
 use rucene::index::reader_context::IndexReaderContext;
@@ -37,10 +37,9 @@ use rucene::util::IOUtils;
 /// hold: the reader's own key and its closed listeners.
 struct OwnCacheKeyState {
     cache_key: CacheKey,
-    /// Java's `CopyOnWriteArraySet<ClosedListener>`: insertion order. A
-    /// `Box` is a distinct listener each time it is added, so the set's
-    /// de-duplication never applies.
-    reader_closed_listeners: Mutex<Vec<Box<dyn ClosedListener>>>,
+    /// Java's `CopyOnWriteArraySet<ClosedListener>`: insertion order, one
+    /// entry per listener object.
+    reader_closed_listeners: Mutex<Vec<Arc<dyn ClosedListener>>>,
 }
 
 /// Port of `org.apache.lucene.tests.index.OwnCacheKeyMultiReader` (`final`,
@@ -90,16 +89,20 @@ impl CacheHelper for OwnCacheHelper {
         &self.state.cache_key
     }
 
-    /// `ensureOpen()`, then the listener is added. The reader's
+    /// `ensureOpen()`, then the listener is added to the
+    /// `readerClosedListeners` set. The reader's
     /// `AlreadyClosedException` is unchecked in Java; this signature cannot
     /// fail, so it is thrown (a panic).
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         super::ensure_open_unchecked(self.reader.core());
-        self.state
-            .reader_closed_listeners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(listener);
+        add_closed_listener_to_set(
+            &mut self
+                .state
+                .reader_closed_listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            listener,
+        );
     }
 }
 

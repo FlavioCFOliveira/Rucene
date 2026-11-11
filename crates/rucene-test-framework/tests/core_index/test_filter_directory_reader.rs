@@ -316,7 +316,7 @@ fn test_delegating_cache_helper() -> Result<()> {
 
     let close_called_counter = Arc::new(AtomicI32::new(0));
 
-    wrapped_helper.add_closed_listener(Box::new(CountingListener {
+    wrapped_helper.add_closed_listener(Arc::new(CountingListener {
         close_called_counter: Arc::clone(&close_called_counter),
         wrapped_key: wrapped
             .get_reader_cache_helper()

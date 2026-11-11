@@ -107,9 +107,36 @@ impl Display for CacheKey {
 /// Listener invoked when a resource guarded by a [`CacheKey`] is closed.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexReader.ClosedListener`.
+///
+/// A listener is an object with identity: it is registered as an
+/// `Arc<dyn ClosedListener>`, and two handles are the same listener when they
+/// point to the same allocation, as two Java references are the same object.
 pub trait ClosedListener: Send + Sync {
     /// Called when the guarded resource is closed.
     fn on_close(&self, key: CacheKey) -> Result<()>;
+}
+
+/// `listeners.add(listener)` on a Java `Set<ClosedListener>` (the
+/// `LinkedHashSet` of `SegmentCoreReaders.java:71-72`, the
+/// `CopyOnWriteArraySet` of `SegmentReader.java:321` and
+/// `StandardDirectoryReader.java:652`): appends `listener` unless the same
+/// listener object is already registered, keeping insertion order.
+/// `ClosedListener` does not override `equals`, so membership is identity.
+///
+/// Returns whether `listener` was added, as `Set.add` does.
+pub fn add_closed_listener_to_set(
+    listeners: &mut Vec<Arc<dyn ClosedListener>>,
+    listener: Arc<dyn ClosedListener>,
+) -> bool {
+    let address = Arc::as_ptr(&listener).cast::<()>();
+    if listeners
+        .iter()
+        .any(|registered| Arc::as_ptr(registered).cast::<()>() == address)
+    {
+        return false;
+    }
+    listeners.push(listener);
+    true
 }
 
 /// Helper used to build caches keyed on the data contained in a reader.
@@ -120,7 +147,11 @@ pub trait CacheHelper: Send + Sync + Debug {
     fn get_key(&self) -> &CacheKey;
 
     /// Registers a listener to be called when the resource is closed.
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>);
+    ///
+    /// Equivalent to `CacheHelper.addClosedListener(ClosedListener)`; a
+    /// listener object already registered is not registered again (see
+    /// [`add_closed_listener_to_set`]).
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>);
 }
 
 // ---------------------------------------------------------------------------
@@ -961,5 +992,29 @@ mod tests {
             text,
             "org.apache.lucene.store.AlreadyClosedException: this IndexReader is closed"
         );
+    }
+
+    struct NoOp;
+
+    impl ClosedListener for NoOp {
+        fn on_close(&self, _key: CacheKey) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `Set<ClosedListener>.add` keeps one entry per listener object, in
+    /// insertion order; distinct objects of the same type are distinct.
+    #[test]
+    fn closed_listener_set_is_keyed_by_identity() {
+        let a: Arc<dyn ClosedListener> = Arc::new(NoOp);
+        let b: Arc<dyn ClosedListener> = Arc::new(NoOp);
+        let mut set = Vec::new();
+        assert!(add_closed_listener_to_set(&mut set, Arc::clone(&a)));
+        assert!(add_closed_listener_to_set(&mut set, Arc::clone(&b)));
+        assert!(!add_closed_listener_to_set(&mut set, Arc::clone(&a)));
+        assert!(!add_closed_listener_to_set(&mut set, Arc::clone(&b)));
+        assert_eq!(set.len(), 2);
+        assert!(Arc::ptr_eq(&set[0], &a));
+        assert!(Arc::ptr_eq(&set[1], &b));
     }
 }

@@ -1836,13 +1836,13 @@ fn delegating_cache_helper_matches_lucene() {
     }
 
     let dir_calls = Arc::new(AtomicUsize::new(0));
-    wrapped_helper.add_closed_listener(Box::new(CountingListener(Arc::clone(&dir_calls))));
+    wrapped_helper.add_closed_listener(Arc::new(CountingListener(Arc::clone(&dir_calls))));
     let leaf_calls = Arc::new(AtomicUsize::new(0));
     wrapped_leaves[0]
         .leaf_reader()
         .get_reader_cache_helper()
         .unwrap()
-        .add_closed_listener(Box::new(CountingListener(Arc::clone(&leaf_calls))));
+        .add_closed_listener(Arc::new(CountingListener(Arc::clone(&leaf_calls))));
     drop(wrapped_leaves);
     drop(inner_leaves);
     wrapped.close().unwrap();
@@ -1892,7 +1892,7 @@ impl CacheHelper for PlainHelper {
         &self.key
     }
 
-    fn add_closed_listener(&self, _listener: Box<dyn ClosedListener>) {}
+    fn add_closed_listener(&self, _listener: Arc<dyn ClosedListener>) {}
 }
 
 /// Java's `cacheKey` is an object: moving the reference that holds the helper

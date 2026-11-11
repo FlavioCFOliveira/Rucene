@@ -2261,12 +2261,12 @@ impl AssertingLeafReader {
                 || reader.num_deleted_docs() > 0 && reader.num_docs() < reader.max_doc()
         );
         if let Some(core_cache_helper) = r#in.get_core_cache_helper() {
-            core_cache_helper.add_closed_listener(Box::new(KeyCheckListener {
+            core_cache_helper.add_closed_listener(Arc::new(KeyCheckListener {
                 expected_key: core_cache_helper.get_key().clone(),
             }));
         }
         if let Some(reader_cache_helper) = r#in.get_reader_cache_helper() {
-            reader_cache_helper.add_closed_listener(Box::new(KeyCheckListener {
+            reader_cache_helper.add_closed_listener(Arc::new(KeyCheckListener {
                 expected_key: reader_cache_helper.get_key().clone(),
             }));
         }

@@ -266,6 +266,8 @@ impl Bits for MultiBits {
 
         // `doc < length` and `length` came from an `i32`, so this is lossless.
         let reader = reader_util::sub_index(doc as i32, &self.starts);
+        debug_assert!(reader != -1);
+        let reader = reader as usize;
         let sub = self
             .subs
             .get(reader)
@@ -294,6 +296,8 @@ impl Bits for MultiBits {
             "doc {doc} out of bounds for reader with maxDoc {length}"
         );
         let reader = reader_util::sub_index(doc as i32, &self.starts);
+        debug_assert!(reader != -1);
+        let reader = reader as usize;
         let sub = self
             .subs
             .get(reader)

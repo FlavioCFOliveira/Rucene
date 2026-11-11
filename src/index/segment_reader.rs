@@ -30,8 +30,8 @@ use crate::codecs::DocValuesSkipper;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::index_reader::{
-    java_object_to_string, CacheHelper, CacheKey, ClosedListener, EnsureOpen, IndexReaderCore,
-    StoredFields,
+    add_closed_listener_to_set, java_object_to_string, CacheHelper, CacheKey, ClosedListener,
+    EnsureOpen, IndexReaderCore, StoredFields,
 };
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::{
@@ -69,7 +69,7 @@ pub struct SegmentCoreReaders {
     ref_count: AtomicI32,
     /// Java's `coreCacheKey`, created with the core.
     core_cache_key: CacheKey,
-    core_closed_listeners: Mutex<Vec<Box<dyn ClosedListener>>>,
+    core_closed_listeners: Mutex<Vec<Arc<dyn ClosedListener>>>,
 }
 
 impl Debug for SegmentCoreReaders {
@@ -386,10 +386,10 @@ impl CacheHelper for SegmentCoreReaders {
     }
 
     /// The `addClosedListener` of the same anonymous `CacheHelper`, which
-    /// appends to `coreClosedListeners`.
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    /// adds to the `coreClosedListeners` set (`SegmentCoreReaders.java:194-196`).
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         if let Ok(mut listeners) = self.core_closed_listeners.lock() {
-            listeners.push(listener);
+            add_closed_listener_to_set(&mut listeners, listener);
         }
     }
 }
@@ -2255,7 +2255,7 @@ impl LiveDocs for SharedLiveDocs {
 #[derive(Clone)]
 struct SegmentReaderCacheHelper {
     key: CacheKey,
-    listeners: Arc<Mutex<Vec<Box<dyn ClosedListener>>>>,
+    listeners: Arc<Mutex<Vec<Arc<dyn ClosedListener>>>>,
     closed: Arc<AtomicBool>,
     /// The owning reader's `ensureOpen()`.
     reader: EnsureOpen,
@@ -2306,10 +2306,10 @@ impl CacheHelper for SegmentReaderCacheHelper {
     /// # Panics
     ///
     /// The unchecked `AlreadyClosedException` once the reader is closed.
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         self.reader.ensure_open_unchecked();
         if let Ok(mut listeners) = self.listeners.lock() {
-            listeners.push(listener);
+            add_closed_listener_to_set(&mut listeners, listener);
         }
     }
 }
@@ -2343,7 +2343,7 @@ impl CacheHelper for SegmentReaderCoreCacheHelper {
     /// # Panics
     ///
     /// The unchecked `AlreadyClosedException` once the reader is closed.
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         self.reader.ensure_open_unchecked();
         self.core.add_closed_listener(listener);
     }
@@ -3966,7 +3966,7 @@ mod core_close_order_tests {
         let seen = Arc::new(std::sync::Mutex::new(None));
         CacheHelper::add_closed_listener(
             reader.core_readers().as_ref(),
-            Box::new(CloseCountAtNotification {
+            Arc::new(CloseCountAtNotification {
                 log: Arc::clone(&log),
                 seen: Arc::clone(&seen),
             }),
@@ -4013,7 +4013,7 @@ mod core_close_order_tests {
         let seen = Arc::new(std::sync::Mutex::new(None));
         CacheHelper::add_closed_listener(
             reader.core_readers().as_ref(),
-            Box::new(CloseCountAtNotification {
+            Arc::new(CloseCountAtNotification {
                 log: Arc::clone(&log),
                 seen: Arc::clone(&seen),
             }),

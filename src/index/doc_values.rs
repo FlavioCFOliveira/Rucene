@@ -21,6 +21,7 @@ use crate::error::{LuceneError, Result};
 use std::fmt::Debug;
 
 use crate::index::automaton_terms_enum::AutomatonTermsEnum;
+use crate::index::index_reader::CacheKey;
 use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::reader_context::LeafReaderContext;
@@ -1764,6 +1765,12 @@ impl DocValuesProducer for EmptyDocValuesProducer {
 /// This is a costly operation that merge-sorts all terms. It is better to operate
 /// in segment-private ordinal space when possible.
 pub struct OrdinalMap {
+    /// Cache key of the reader this map was built for, `None` for Java's
+    /// `null`.
+    ///
+    /// Equivalent to the public final field `OrdinalMap.owner`
+    /// (`OrdinalMap.java:183`).
+    pub owner: Option<CacheKey>,
     value_count: i64,
     global_ord_deltas: Box<dyn LongValues + Send + Sync>,
     first_segments: Box<dyn LongValues + Send + Sync>,
@@ -1788,8 +1795,10 @@ impl OrdinalMap {
     /// Build an ordinal map using the value counts of each [`SortedDocValues`]
     /// instance as weights.
     ///
-    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedDocValues[], float)`.
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedDocValues[], float)`
+    /// (`OrdinalMap.java:127-137`); `owner` is `None` for Java's `null`.
     pub fn build_sorted(
+        owner: Option<CacheKey>,
         values: Vec<Box<dyn SortedDocValues>>,
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
@@ -1800,14 +1809,16 @@ impl OrdinalMap {
             subs.push(SortedDocValuesTermsEnum::new(dv));
             weights.push(weight);
         }
-        Self::build(subs, &weights, acceptable_overhead_ratio)
+        Self::build(owner, subs, &weights, acceptable_overhead_ratio)
     }
 
     /// Build an ordinal map using the value counts of each [`SortedSetDocValues`]
     /// instance as weights.
     ///
-    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedSetDocValues[], float)`.
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedSetDocValues[], float)`
+    /// (`OrdinalMap.java:145-155`); `owner` is `None` for Java's `null`.
     pub fn build_sorted_set(
+        owner: Option<CacheKey>,
         values: Vec<Box<dyn SortedSetDocValues>>,
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
@@ -1818,16 +1829,19 @@ impl OrdinalMap {
             subs.push(SortedSetDocValuesTermsEnum::new(dv));
             weights.push(weight);
         }
-        Self::build(subs, &weights, acceptable_overhead_ratio)
+        Self::build(owner, subs, &weights, acceptable_overhead_ratio)
     }
 
     /// Build an ordinal map that maps ords to/from a merged space from `subs`.
     ///
-    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, TermsEnum[], long[], float)`.
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, TermsEnum[], long[], float)`
+    /// (`OrdinalMap.java:167-177`); `owner`, `None` for Java's `null`, is kept
+    /// in [`owner`](Self::owner).
     ///
     /// `subs` must support [`TermsEnum::ord`]. They need not be dense (for example,
     /// they may be filtered terms enums).
     pub fn build(
+        owner: Option<CacheKey>,
         subs: Vec<Box<dyn TermsEnum>>,
         weights: &[i64],
         acceptable_overhead_ratio: f32,
@@ -2002,6 +2016,7 @@ impl OrdinalMap {
         }
 
         Ok(Self {
+            owner,
             value_count,
             global_ord_deltas,
             first_segments,
@@ -3331,7 +3346,7 @@ mod tests {
             vec![b"b".to_vec(), b"d".to_vec()],
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
-        let map = OrdinalMap::build_sorted(vec![seg0, seg1], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, vec![seg0, seg1], 0.0).unwrap();
 
         let floor = ORDINAL_MAP_BASE_RAM_BYTES_USED + SEGMENT_MAP_BASE_RAM_BYTES_USED;
         assert!(
@@ -3360,7 +3375,7 @@ mod tests {
             vec![b"a".to_vec(), b"b".to_vec()],
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
-        let map = OrdinalMap::build_sorted(vec![only], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, vec![only], 0.0).unwrap();
         let expected = ORDINAL_MAP_BASE_RAM_BYTES_USED
             + map.segment_map.ram_bytes_used()
             + RamUsageEstimator::align_object_size(
@@ -3387,7 +3402,7 @@ mod tests {
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
 
-        let map = OrdinalMap::build_sorted(vec![seg0, seg1, seg2], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, vec![seg0, seg1, seg2], 0.0).unwrap();
         // Global order: a, b, c, d, e -> 5 unique values
         assert_eq!(map.get_value_count(), 5);
 
@@ -3432,7 +3447,7 @@ mod tests {
             vec![vec![0, 1, 2], vec![]],
         )) as Box<dyn SortedSetDocValues>;
 
-        let map = OrdinalMap::build_sorted_set(vec![seg0, seg1], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted_set(None, vec![seg0, seg1], 0.0).unwrap();
         // Global order: a, b, c -> 3 unique values
         assert_eq!(map.get_value_count(), 3);
 
@@ -3483,7 +3498,7 @@ mod ordinal_map_packed_tests {
     #[test]
     fn ram_bytes_used_is_javas() {
         let ram = |values: Vec<Box<dyn SortedDocValues>>, ratio: f32| {
-            let map = OrdinalMap::build_sorted(values, ratio).unwrap();
+            let map = OrdinalMap::build_sorted(None, values, ratio).unwrap();
             (map.ram_bytes_used(), map.get_value_count())
         };
         assert_eq!(
@@ -3524,7 +3539,7 @@ mod ordinal_map_packed_tests {
             (38560, 14371)
         );
         // The mappings still resolve as before.
-        let map = OrdinalMap::build_sorted(big(), PackedInts::DEFAULT).unwrap();
+        let map = OrdinalMap::build_sorted(None, big(), PackedInts::DEFAULT).unwrap();
         let mut seen = 0;
         for (segment, len) in [(0usize, 2000i64), (1, 1000), (2, 1000)] {
             for ord in 0..len {
@@ -3546,8 +3561,9 @@ mod ordinal_map_packed_tests {
     /// two segments.
     #[test]
     fn child_resources_are_javas_named_segment_map() {
-        let map = OrdinalMap::build_sorted(vec![letters(&["a", "c"]), letters(&["b", "d"])], 0.0)
-            .unwrap();
+        let map =
+            OrdinalMap::build_sorted(None, vec![letters(&["a", "c"]), letters(&["b", "d"])], 0.0)
+                .unwrap();
         let children = map.child_resources();
         assert_eq!(children.len(), 1);
         let description = children[0].accountable_to_string();

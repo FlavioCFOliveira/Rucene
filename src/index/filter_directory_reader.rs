@@ -227,7 +227,7 @@ impl std::fmt::Debug for DelegatingCacheHelper {
 /// calls the listener with the delegating helper's key, not the delegate's.
 struct DelegatingClosedListener {
     cache_key: CacheKey,
-    listener: Box<dyn ClosedListener>,
+    listener: Arc<dyn ClosedListener>,
 }
 
 impl ClosedListener for DelegatingClosedListener {
@@ -247,9 +247,9 @@ impl CacheHelper for DelegatingCacheHelper {
     /// the listener is wrapped and registered on the delegate, so that it runs
     /// when the delegate's resource closes, and is called with this helper's
     /// key.
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         self.delegate
-            .add_closed_listener(Box::new(DelegatingClosedListener {
+            .add_closed_listener(Arc::new(DelegatingClosedListener {
                 cache_key: self.cache_key.clone(),
                 listener,
             }));
@@ -261,7 +261,7 @@ impl CacheHelper for Arc<DelegatingCacheHelper> {
         self.as_ref().get_key()
     }
 
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         self.as_ref().add_closed_listener(listener);
     }
 }

@@ -401,6 +401,7 @@ impl IndexSorter for StringSorter {
             map_values.push(sorted_values(reader)?);
         }
         let ordinal_map = Arc::new(crate::index::doc_values::OrdinalMap::build_sorted(
+            None,
             map_values,
             crate::util::packed::PackedInts::DEFAULT,
         )?);

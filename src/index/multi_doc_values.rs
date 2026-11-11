@@ -339,7 +339,11 @@ impl MultiDocValues {
             return Ok(None);
         }
 
+        let owner = reader
+            .get_reader_cache_helper()
+            .map(|cache_helper| cache_helper.get_key().clone());
         let mapping = Arc::new(OrdinalMap::build_sorted(
+            owner,
             map_inputs,
             DEFAULT_ACCEPTABLE_OVERHEAD_RATIO,
         )?);
@@ -445,7 +449,11 @@ impl MultiDocValues {
             return Ok(None);
         }
 
+        let owner = reader
+            .get_reader_cache_helper()
+            .map(|cache_helper| cache_helper.get_key().clone());
         let mapping = Arc::new(OrdinalMap::build_sorted_set(
+            owner,
             map_inputs,
             DEFAULT_ACCEPTABLE_OVERHEAD_RATIO,
         )?);
@@ -860,7 +868,8 @@ impl DocIdSetIterator for MultiSortedNumericDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -892,7 +901,8 @@ impl DocValuesIterator for MultiSortedNumericDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 return Err(out_of_range(target));
             }
@@ -1050,7 +1060,8 @@ impl DocIdSetIterator for MultiSortedDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -1082,7 +1093,8 @@ impl DocValuesIterator for MultiSortedDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 return Err(out_of_range(target));
             }
@@ -1234,7 +1246,8 @@ impl DocIdSetIterator for MultiSortedSetDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -1266,7 +1279,8 @@ impl DocValuesIterator for MultiSortedSetDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 return Err(out_of_range(target));
             }
@@ -2869,7 +2883,7 @@ mod tests {
             ListSorted::boxed(&["b"], &[(0, 0)]),
             ListSorted::boxed(&["a"], &[(0, 0)]),
         ];
-        let mapping = Arc::new(OrdinalMap::build_sorted(map_inputs, 0.25).unwrap());
+        let mapping = Arc::new(OrdinalMap::build_sorted(None, map_inputs, 0.25).unwrap());
         let values = MultiSortedDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);
@@ -2888,7 +2902,7 @@ mod tests {
     fn multi_sorted_doc_values_assert_the_length_of_the_doc_start_table() {
         let leaf_values: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
         let map_inputs: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
-        let mapping = Arc::new(OrdinalMap::build_sorted(map_inputs, 0.25).unwrap());
+        let mapping = Arc::new(OrdinalMap::build_sorted(None, map_inputs, 0.25).unwrap());
         // One leaf needs two doc starts (its docBase plus the maxDoc sentinel).
         let values = MultiSortedDocValues::new(leaf_values, vec![0], mapping, 1);
         assert_eq!(values.doc_starts(), &[0]);
@@ -3048,7 +3062,7 @@ mod tests {
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
         let map_inputs: Vec<Box<dyn SortedSetDocValues>> =
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
-        let mapping = Arc::new(OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap());
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(None, map_inputs, 0.25).unwrap());
         let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 1);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
     }
@@ -3063,7 +3077,7 @@ mod tests {
             ListSortedSet::boxed(&["b"], &[(0, &[0])]),
             ListSortedSet::boxed(&["a"], &[(0, &[0])]),
         ];
-        let mapping = Arc::new(OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap());
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(None, map_inputs, 0.25).unwrap());
         let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);

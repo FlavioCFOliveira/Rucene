@@ -807,11 +807,11 @@ fn core_lifecycle(rows: &mut Rows, c: &str) {
         });
         probe_closed(rows, c, s, "closed", &seg);
         rows.rec(c, s, "closed.coreHelper.add", || {
-            core.add_closed_listener(Box::new(Nothing));
+            core.add_closed_listener(Arc::new(Nothing));
             Ok("added".to_string())
         });
         rows.rec(c, s, "closed.readerHelper.add", || {
-            mine.add_closed_listener(Box::new(Nothing));
+            mine.add_closed_listener(Arc::new(Nothing));
             Ok("added".to_string())
         });
         // registerParentReader calls ensureOpen() on the closed child
@@ -1085,10 +1085,10 @@ fn core_round3(rows: &mut Rows, c: &str) {
         let core_closed = Arc::new(AtomicI32::new(0));
         seg.get_reader_cache_helper()
             .unwrap()
-            .add_closed_listener(Box::new(Counting(Arc::clone(&reader_closed))));
+            .add_closed_listener(Arc::new(Counting(Arc::clone(&reader_closed))));
         seg.get_core_cache_helper()
             .unwrap()
-            .add_closed_listener(Box::new(Counting(Arc::clone(&core_closed))));
+            .add_closed_listener(Arc::new(Counting(Arc::clone(&core_closed))));
         let w: Arc<dyn LeafReader> = Arc::new(
             rucene::index::ParallelLeafReader::with_close_flag(close_subs, vec![Arc::clone(&seg)])
                 .unwrap(),
@@ -1124,10 +1124,10 @@ fn core_round3(rows: &mut Rows, c: &str) {
         let core_closed = Arc::new(AtomicI32::new(0));
         seg.get_reader_cache_helper()
             .unwrap()
-            .add_closed_listener(Box::new(Counting(Arc::clone(&reader_closed))));
+            .add_closed_listener(Arc::new(Counting(Arc::clone(&reader_closed))));
         seg.get_core_cache_helper()
             .unwrap()
-            .add_closed_listener(Box::new(Counting(Arc::clone(&core_closed))));
+            .add_closed_listener(Arc::new(Counting(Arc::clone(&core_closed))));
         let w: Arc<dyn LeafReader> = Arc::new(
             rucene::index::ParallelLeafReader::with_close_flag(false, vec![Arc::clone(&seg)])
                 .unwrap(),
@@ -1212,10 +1212,10 @@ fn own_cache_key(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
     rows.rec(c, "owncachekey", "addListener", || {
         r.get_reader_cache_helper()
             .unwrap()
-            .add_closed_listener(Box::new(Counting(Arc::clone(&calls))));
+            .add_closed_listener(Arc::new(Counting(Arc::clone(&calls))));
         r.get_reader_cache_helper()
             .unwrap()
-            .add_closed_listener(Box::new(Counting(Arc::clone(&calls))));
+            .add_closed_listener(Arc::new(Counting(Arc::clone(&calls))));
         Ok(calls.load(Ordering::SeqCst).to_string())
     });
     rows.rec(c, "owncachekey", "close", || {
@@ -1230,7 +1230,7 @@ fn own_cache_key(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
     rows.rec(c, "owncachekey", "addListenerAfterClose", || {
         r.get_reader_cache_helper()
             .unwrap()
-            .add_closed_listener(Box::new(Counting(Arc::clone(&calls))));
+            .add_closed_listener(Arc::new(Counting(Arc::clone(&calls))));
         Ok(calls.load(Ordering::SeqCst).to_string())
     });
 }

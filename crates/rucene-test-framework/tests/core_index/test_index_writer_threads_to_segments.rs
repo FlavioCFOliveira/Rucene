@@ -485,7 +485,7 @@ fn test_docs_stuck_in_ram_forever() -> Result<()> {
                             &id,
                             &*DEFAULT_IO_CONTEXT,
                         )?;
-                        si.set_codec(Arc::clone(&codec));
+                        si.set_codec(Some(Arc::clone(&codec)))?;
                         let sci = SegmentCommitInfo::new(
                             si,
                             0,

@@ -1298,7 +1298,7 @@ pub fn create_ordinal_map_for_sorted_dv(
             }
         }
     }
-    OrdinalMap::build(live_terms, &weights, COMPACT)
+    OrdinalMap::build(None, live_terms, &weights, COMPACT)
 }
 
 /// Returns each sub-reader's sorted view of `field`, empty where it has none.
@@ -1506,7 +1506,7 @@ pub fn create_ordinal_map_for_sorted_set_dv(
             }
         }
     }
-    OrdinalMap::build(live_terms, &weights, COMPACT)
+    OrdinalMap::build(None, live_terms, &weights, COMPACT)
 }
 
 /// Builds the merged sorted-set view of `field`.

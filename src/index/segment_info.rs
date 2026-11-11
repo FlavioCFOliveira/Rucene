@@ -278,10 +278,22 @@ impl SegmentInfo {
 
     /// Sets the codec for this segment. Can only be called once.
     ///
-    /// Equivalent to `SegmentInfo.setCodec` (`SegmentInfo.java:174-181`).
-    pub fn set_codec(&mut self, codec: Arc<dyn Codec>) {
+    /// Equivalent to `SegmentInfo.setCodec` (`SegmentInfo.java:175-181`);
+    /// `None` stands for Java's `null`.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::IllegalArgument`] `"codec must be non-null"` when
+    /// `codec` is `None`.
+    pub fn set_codec(&mut self, codec: Option<Arc<dyn Codec>>) -> Result<()> {
         debug_assert!(self.codec.is_none());
+        let Some(codec) = codec else {
+            return Err(LuceneError::IllegalArgument(
+                "codec must be non-null".to_string(),
+            ));
+        };
         self.codec = Some(codec);
+        Ok(())
     }
 
     /// Returns the diagnostics map, iteration order included.

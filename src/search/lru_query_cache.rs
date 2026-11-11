@@ -625,7 +625,7 @@ impl CacheState {
                 .fetch_add(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
             // We just created a new leaf cache, so we need to register a close
             // listener.
-            cache_helper.add_closed_listener(Box::new(ClearCoreCacheKey {
+            cache_helper.add_closed_listener(Arc::new(ClearCoreCacheKey {
                 state: Arc::clone(self),
             }));
         }
