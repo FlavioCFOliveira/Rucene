@@ -440,11 +440,13 @@ impl StoredFieldsConsumer {
     pub fn flush(&mut self, segment_info: &SegmentInfo) -> Result<()> {
         let max_doc = segment_info.max_doc()?;
         let Some(mut writer) = self.writer.take() else {
-            return Err(LuceneError::null_pointer_with_message(format!(
-                "no stored-fields writer was created for segment {}: \
-                 finish(maxDoc) must run before flush",
-                self.info.name
-            )));
+            // `writer.finish(state.segmentInfo.maxDoc())` on a `null` writer
+            // (`StoredFieldsConsumer.java:104-106`); `IOUtils.close(null)` in
+            // the `finally` does nothing.
+            return Err(LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.codecs.StoredFieldsWriter.finish(int)\" \
+                 because \"this.writer\" is null",
+            ));
         };
         let finished = writer.finish(max_doc);
         crate::util::IOUtils::close([Some(|| writer.close())])?;

@@ -1438,12 +1438,26 @@ impl ArrayUtil {
 
     /// Returns a size greater than or equal to `min_target_size`, generally
     /// over-allocating exponentially.
+    ///
+    /// Equivalent to `ArrayUtil.oversize(int, int)` (`ArrayUtil.java:134-193`).
+    /// Java's `minTargetSize < 0` check has no counterpart, as a `usize`
+    /// cannot be negative.
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's `IllegalArgumentException` when `min_target_size`
+    /// exceeds [`Self::MAX_ARRAY_LENGTH`].
     pub fn oversize(min_target_size: usize, bytes_per_element: usize) -> usize {
-        if min_target_size > Self::MAX_ARRAY_LENGTH {
-            return Self::MAX_ARRAY_LENGTH;
-        }
         if min_target_size == 0 {
+            // wait until at least one element is requested
             return 0;
+        }
+        if min_target_size > Self::MAX_ARRAY_LENGTH {
+            panic!(
+                "java.lang.IllegalArgumentException: requested array size {min_target_size} \
+                 exceeds maximum array in java ({})",
+                Self::MAX_ARRAY_LENGTH
+            );
         }
         let mut extra = min_target_size >> 3;
         if extra < 3 {

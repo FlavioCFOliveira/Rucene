@@ -53,7 +53,13 @@ impl UnionFieldMetadataBuilder {
     }
 
     /// Port of `UnionFieldMetadataBuilder.addFieldMetadata(FieldMetadata)`.
-    pub fn add_field_metadata(&mut self, field_metadata: &FieldMetadata) -> &mut Self {
+    ///
+    /// # Errors
+    ///
+    /// Java's `NullPointerException` when a maximum last term is already
+    /// recorded and `field_metadata` has none: `maxLastTerm.compareTo(null)`
+    /// reads `other.bytes` (`BytesRef.java:161-168`).
+    pub fn add_field_metadata(&mut self, field_metadata: &FieldMetadata) -> Result<&mut Self> {
         debug_assert!(
             self.dictionary_start_fp == -1
                 || self.dictionary_start_fp == field_metadata.get_dictionary_start_fp()
@@ -69,14 +75,16 @@ impl UnionFieldMetadataBuilder {
         let replace = match (&self.max_last_term, last_term) {
             (None, _) => true,
             (Some(max), Some(last)) => max < last,
-            // Java's `compareTo(null)` raises a NullPointerException; the
-            // reader's metadata always has a last term.
-            (Some(_), None) => false,
+            (Some(_), None) => {
+                return Err(LuceneError::null_pointer_with_message(
+                    "Cannot read field \"bytes\" because \"other\" is null",
+                ))
+            }
         };
         if replace {
             self.max_last_term = last_term.cloned();
         }
-        self
+        Ok(self)
     }
 
     /// Port of `UnionFieldMetadataBuilder.build()`.

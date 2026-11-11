@@ -2088,6 +2088,27 @@ impl KnnVectorsFormatRegistry {
             .ok()
     }
 
+    /// Looks up a KNN-vectors format by name, failing as Lucene does.
+    ///
+    /// Equivalent to `KnnVectorsFormat.forName(String)`, which is
+    /// `NamedSPILoader.lookup(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
+    /// listing the available names, when no format is registered under
+    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    pub fn lookup(&self, name: &str) -> Result<Arc<dyn KnnVectorsFormat>> {
+        self.formats
+            .read()
+            .map_err(|_| {
+                LuceneError::illegal_state(
+                    "KNN-vectors format registry lock was poisoned".to_string(),
+                )
+            })?
+            .lookup(name)
+    }
+
     /// Returns the names of all registered KNN-vectors formats, in registration order.
     ///
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
@@ -2160,6 +2181,19 @@ static GLOBAL_KNN_VECTORS_REGISTRY: LazyLock<KnnVectorsFormatRegistry> =
 /// Returns `None` if no format has been registered under the given name.
 pub fn knn_vectors_for_name(name: &str) -> Option<Arc<dyn KnnVectorsFormat>> {
     GLOBAL_KNN_VECTORS_REGISTRY.for_name(name)
+}
+
+/// Looks up a KNN-vectors format by name from the global registry, failing as Lucene
+/// does.
+///
+/// Equivalent to `KnnVectorsFormat.forName(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message when no
+/// format is registered under `name`.
+pub fn knn_vectors_lookup(name: &str) -> Result<Arc<dyn KnnVectorsFormat>> {
+    GLOBAL_KNN_VECTORS_REGISTRY.lookup(name)
 }
 
 /// Returns the names of all KNN-vectors formats registered in the global

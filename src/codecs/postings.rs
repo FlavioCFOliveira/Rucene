@@ -407,6 +407,25 @@ impl PostingsFormatRegistry {
             .ok()
     }
 
+    /// Looks up a postings format by name, failing as Lucene does.
+    ///
+    /// Equivalent to `PostingsFormat.forName(String)`, which is
+    /// `NamedSPILoader.lookup(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
+    /// listing the available names, when no format is registered under
+    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    pub fn lookup(&self, name: &str) -> Result<Arc<dyn PostingsFormat>> {
+        self.formats
+            .read()
+            .map_err(|_| {
+                LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
+            })?
+            .lookup(name)
+    }
+
     /// Returns the names of all registered postings formats, in registration order.
     ///
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
@@ -485,6 +504,19 @@ static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> =
 /// Returns `None` if no format has been registered under the given name.
 pub fn postings_for_name(name: &str) -> Option<Arc<dyn PostingsFormat>> {
     GLOBAL_POSTINGS_REGISTRY.for_name(name)
+}
+
+/// Looks up a postings format by name from the global registry, failing as Lucene
+/// does.
+///
+/// Equivalent to `PostingsFormat.forName(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message when no
+/// format is registered under `name`.
+pub fn postings_lookup(name: &str) -> Result<Arc<dyn PostingsFormat>> {
+    GLOBAL_POSTINGS_REGISTRY.lookup(name)
 }
 
 /// Returns the names of all postings formats registered in the global

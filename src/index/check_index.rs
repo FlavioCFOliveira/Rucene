@@ -2982,10 +2982,10 @@ fn check_doc_values(
         // Java dereferences the result unchecked (`CheckIndex.java:3910-3912`,
         // `:3397-3400`), so a missing skipper is Java's `NullPointerException`.
         let mut skipper = dv_reader.get_skipper(fi)?.ok_or_else(|| {
-            LuceneError::null_pointer_with_message(format!(
-                "field \"{}\" declares a skip index but its producer returned none",
-                fi.name
-            ))
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.index.DocValuesSkipper.maxDocID(int)\" \
+                 because \"skipper\" is null",
+            )
         })?;
         check_doc_value_skipper(fi, skipper.as_mut())?;
     }

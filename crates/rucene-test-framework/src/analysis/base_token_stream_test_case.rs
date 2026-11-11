@@ -131,48 +131,30 @@ impl AttributeImpl for CheckClearAttributesAttributeImpl {
     }
 }
 
-/// `Throwable.toString()` of an error, as Java's `"" + exception` prints it.
+/// `Throwable.toString()` of an error, as Java's `"" + exception` prints it:
+/// the binary class name, then `": " + getMessage()` unless the message is
+/// `null`.
 pub fn java_to_string(e: &LuceneError) -> String {
-    match e {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        } => {
-            format!("java.lang.IllegalStateException: {message}")
-        }
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => {
-            format!("java.lang.IllegalArgumentException: {message}")
-        }
-        LuceneError {
-            kind: LuceneErrorKind::Io(io),
-            ..
-        } => rucene::store::java_nio_file::java_to_string(io),
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { .. },
-            ..
-        } => e.to_string(),
-        other => format!("{}: {}", other.java_simple_name(), other),
+    if let LuceneErrorKind::Io(io) = e.kind() {
+        return rucene::store::java_nio_file::java_to_string(io);
+    }
+    let class = crate::util::java_exceptions::java_class_name(e);
+    match java_message(e) {
+        Some(message) => format!("{class}: {message}"),
+        None => class,
     }
 }
 
-/// The binary name of the Java class an error stands for, and its message:
-/// Java's `getClass().getName()` and `getMessage()`, `<null>` for a `null`
-/// message.
+/// Java's `getMessage()` of an error, `None` for `null`.
 ///
 /// The message is the bare `getMessage()` of every kind, never the Rust
 /// `Display` of the error, which prefixes some kinds (`merge failed: …`,
 /// `corrupt index: …`). The match is exhaustive so that a new kind states
 /// its message here.
-pub fn java_class_and_message(e: &LuceneError) -> (String, String) {
-    let message = match e.kind() {
-        LuceneErrorKind::Io(io) => rucene::store::java_nio_file::java_message_of(io)
-            .unwrap_or_else(|| "<null>".to_string()),
-        LuceneErrorKind::Unchecked { message, .. } => {
-            message.clone().unwrap_or_else(|| "<null>".to_string())
-        }
+pub fn java_message(e: &LuceneError) -> Option<String> {
+    Some(match e.kind() {
+        LuceneErrorKind::Io(io) => return rucene::store::java_nio_file::java_message_of(io),
+        LuceneErrorKind::Unchecked { message, .. } => return message.clone(),
         // `CorruptIndexException(message, resourceDescription)` has the
         // message `message + " (resource=" + resourceDescription + ")"`,
         // which the payload already holds (`LuceneError::corrupt_index`).
@@ -206,8 +188,17 @@ pub fn java_class_and_message(e: &LuceneError) -> (String, String) {
         | LuceneErrorKind::ThreadInterrupted(_) => e.kind().to_string(),
         // No Java counterpart: the port's own cancellation marker.
         LuceneErrorKind::Cancelled => e.kind().to_string(),
-    };
-    (crate::util::java_exceptions::java_class_name(e), message)
+    })
+}
+
+/// The binary name of the Java class an error stands for, and its message:
+/// Java's `getClass().getName()` and [`java_message`], `<null>` for a `null`
+/// message.
+pub fn java_class_and_message(e: &LuceneError) -> (String, String) {
+    (
+        crate::util::java_exceptions::java_class_name(e),
+        java_message(e).unwrap_or_else(|| "<null>".to_string()),
+    )
 }
 
 /// Whether Java's `catch (RuntimeException e)` catches the error.

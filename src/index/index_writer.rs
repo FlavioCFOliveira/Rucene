@@ -10140,7 +10140,12 @@ impl IndexWriter {
                         debug_assert!(reader.is_some());
                         // Without assertions Java dereferences the null
                         // `remove` (`IndexWriter.java:781`).
-                        let reader = reader.ok_or_else(LuceneError::null_pointer)?;
+                        let reader = reader.ok_or_else(|| {
+                            LuceneError::null_pointer_with_message(
+                                "Cannot invoke \"org.apache.lucene.index.SegmentReader.incRef()\" \
+                                 because \"remove\" is null",
+                            )
+                        })?;
                         // Each of the readers we reuse from the previous reader
                         // needs to be incRef'd since we reuse them but don't
                         // have an implicit incRef in the SDR:open call.
@@ -10242,8 +10247,16 @@ impl IndexWriter {
         }
 
         // Without assertions Java dereferences the null `origInfo` next
-        // (`IndexWriter.java:3973,3996`), before any other side effect.
-        let orig_info = orig_info.ok_or_else(LuceneError::null_pointer)?;
+        // (`IndexWriter.java:3973,3996`), before any other side effect: in
+        // `origInfo.files()` on a commit, else in `origInfo.info`.
+        let orig_info = orig_info.ok_or_else(|| {
+            LuceneError::null_pointer_with_message(if matches!(trigger, MergeTrigger::Commit) {
+                "Cannot invoke \"org.apache.lucene.index.SegmentCommitInfo.files()\" because \
+                 \"this.origInfo\" is null"
+            } else {
+                "Cannot read field \"info\" because \"this.origInfo\" is null"
+            })
+        })?;
 
         let mut infos = merging_segment_infos.lock().map_err(|_| {
             LuceneError::illegal_state("mergingSegmentInfos mutex poisoned".to_string())

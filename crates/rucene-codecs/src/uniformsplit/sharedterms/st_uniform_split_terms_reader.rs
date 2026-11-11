@@ -138,7 +138,7 @@ pub fn create_union_field_metadata(
 ) -> Result<FieldMetadata> {
     let mut builder = UnionFieldMetadataBuilder::new();
     for field_metadata in field_metadata_iterable {
-        builder.add_field_metadata(field_metadata);
+        builder.add_field_metadata(field_metadata)?;
     }
     builder.build()
 }

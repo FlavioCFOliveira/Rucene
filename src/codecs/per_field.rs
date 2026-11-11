@@ -19,16 +19,14 @@ use crate::internal::hppc::IntObjectHashMap;
 use crate::util::java_collections::JavaHashMap;
 use crate::util::IOUtils;
 
-use super::doc_values::{
-    doc_values_for_name, DocValuesConsumer, DocValuesFormat, DocValuesProducer,
-};
+use super::doc_values::{doc_values_lookup, DocValuesConsumer, DocValuesFormat, DocValuesProducer};
 use super::knn_vectors::{
-    knn_vectors_for_name, ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnCollector,
+    knn_vectors_lookup, ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnCollector,
     KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
 use super::norms::NormsProducer;
 use super::postings::{
-    postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat, Terms,
+    postings_lookup, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat, Terms,
 };
 use super::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
@@ -438,11 +436,9 @@ impl FieldsReader {
                             fi.name
                         ))
                             })?;
-                    let format = postings_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "unknown postings format: {format_name}"
-                        ))
-                    })?;
+                    // `PostingsFormat.forName(formatName)`: the loader's
+                    // `IllegalArgumentException` for an unknown name.
+                    let format = postings_lookup(&format_name)?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
                         LuceneError::illegal_state(format!(
                             "invalid postings suffix for field \"{}\": {suffix}",
@@ -734,9 +730,12 @@ impl<'a> DvFieldsWriter<'a> {
             } else {
                 field.get_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY)
             };
-            format_name
-                .and_then(|name| doc_values_for_name(&name))
-                .or_else(|| Some((self.resolver)(&field.name)))
+            // `DocValuesFormat.forName(formatName)` throws for an unknown
+            // name (`PerFieldDocValuesFormat.java:174-177`).
+            match format_name {
+                Some(name) => Some(doc_values_lookup(&name)?),
+                None => Some((self.resolver)(&field.name)),
+            }
         } else {
             Some((self.resolver)(&field.name))
         }
@@ -934,11 +933,9 @@ impl DvFieldsReader {
                             fi.name
                         ))
                         })?;
-                    let format = doc_values_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "unknown doc-values format: {format_name}"
-                        ))
-                    })?;
+                    // `DocValuesFormat.forName(formatName)`: the loader's
+                    // `IllegalArgumentException` for an unknown name.
+                    let format = doc_values_lookup(&format_name)?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
                         LuceneError::illegal_state(format!(
                             "invalid doc-values suffix for field \"{}\": {suffix}",
@@ -1423,11 +1420,9 @@ impl KnnFieldsReader {
                             fi.name
                         ))
                         })?;
-                    let format = knn_vectors_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "unknown KNN-vectors format: {format_name}"
-                        ))
-                    })?;
+                    // `KnnVectorsFormat.forName(formatName)`: the loader's
+                    // `IllegalArgumentException` for an unknown name.
+                    let format = knn_vectors_lookup(&format_name)?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
                         LuceneError::illegal_state(format!(
                             "invalid KNN-vectors suffix for field \"{}\": {suffix}",

@@ -398,6 +398,27 @@ impl DocValuesFormatRegistry {
             .ok()
     }
 
+    /// Looks up a doc-values format by name, failing as Lucene does.
+    ///
+    /// Equivalent to `DocValuesFormat.forName(String)`, which is
+    /// `NamedSPILoader.lookup(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
+    /// listing the available names, when no format is registered under
+    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    pub fn lookup(&self, name: &str) -> Result<Arc<dyn DocValuesFormat>> {
+        self.formats
+            .read()
+            .map_err(|_| {
+                LuceneError::illegal_state(
+                    "doc-values format registry lock was poisoned".to_string(),
+                )
+            })?
+            .lookup(name)
+    }
+
     /// Returns the names of all registered doc-values formats, in registration order.
     ///
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
@@ -466,6 +487,19 @@ static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> =
 /// Returns `None` if no format has been registered under the given name.
 pub fn doc_values_for_name(name: &str) -> Option<Arc<dyn DocValuesFormat>> {
     GLOBAL_DOC_VALUES_REGISTRY.for_name(name)
+}
+
+/// Looks up a doc-values format by name from the global registry, failing as Lucene
+/// does.
+///
+/// Equivalent to `DocValuesFormat.forName(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message when no
+/// format is registered under `name`.
+pub fn doc_values_lookup(name: &str) -> Result<Arc<dyn DocValuesFormat>> {
+    GLOBAL_DOC_VALUES_REGISTRY.lookup(name)
 }
 
 /// Returns the names of all doc-values formats registered in the global
