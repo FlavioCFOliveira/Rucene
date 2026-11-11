@@ -1877,47 +1877,15 @@ pub fn first_difference(a: &[u8], b: &[u8]) -> usize {
         .unwrap_or(a.len().min(b.len()))
 }
 
-/// Java's `getClass().getName()` and `getMessage()` of `e`.
+/// Java's `getClass().getName()` and `String.valueOf(getMessage())` of `e`:
+/// the shared mapping of the test framework, with `null` for a `null`
+/// message.
 pub fn java_error_of(e: &rucene::error::LuceneError) -> (String, String) {
-    use rucene::error::{LuceneError, LuceneErrorKind};
-    match e {
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { class, message, .. },
-            ..
-        } => (
-            class.to_string(),
-            message.clone().unwrap_or_else(|| "null".to_string()),
-        ),
-        LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(m),
-            ..
-        } => (
-            "org.apache.lucene.index.CorruptIndexException".to_string(),
-            m.clone(),
-        ),
-        LuceneError {
-            kind: LuceneErrorKind::AlreadyClosed { message, .. },
-            ..
-        } => (
-            "org.apache.lucene.store.AlreadyClosedException".to_string(),
-            message.clone(),
-        ),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        } => (
-            "java.lang.IllegalStateException".to_string(),
-            message.clone(),
-        ),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message: m, .. },
-            ..
-        } => ("java.lang.IllegalArgumentException".to_string(), m.clone()),
-        other => (
-            format!("rucene::{}", other.java_simple_name()),
-            other.to_string(),
-        ),
-    }
+    use rucene_test_framework::analysis::base_token_stream_test_case::java_message;
+    (
+        rucene_test_framework::util::java_exceptions::java_class_name(e),
+        java_message(e).unwrap_or_else(|| "null".to_string()),
+    )
 }
 
 /// `PostingsFormatOracle`'s masking of the two CRC-32 values of a checksum

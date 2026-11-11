@@ -9093,8 +9093,17 @@ impl IndexWriter {
                     )?;
                     debug_assert!(rld.is_some());
                     // Without assertions Java dereferences the null `rld`
-                    // (`IndexWriter.java:5191-5195`).
-                    let rld = rld.ok_or_else(LuceneError::null_pointer)?;
+                    // (`IndexWriter.java:5191-5195`): the JDK helpful NPE
+                    // names the first call on it.
+                    let rld = rld.ok_or_else(|| {
+                        LuceneError::null_pointer_with_message(if drop {
+                            "Cannot invoke \"org.apache.lucene.index.ReadersAndUpdates.dropChanges()\" \
+                             because \"rld\" is null"
+                        } else {
+                            "Cannot invoke \"org.apache.lucene.index.ReadersAndUpdates.dropMergingUpdates()\" \
+                             because \"rld\" is null"
+                        })
+                    })?;
                     if drop {
                         rld.drop_changes();
                     } else {

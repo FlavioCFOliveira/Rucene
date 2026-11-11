@@ -1239,7 +1239,12 @@ impl SegmentTermsEnum {
                     break;
                 }
                 node = self.nodes[1 + target_upto];
-                debug_assert_eq!(node.label, i32::from(target[target_upto]));
+                debug_assert!(
+                    node.label == i32::from(target[target_upto]),
+                    "node.label={} targetLabel={}",
+                    java_label_char(node.label),
+                    char::from(target[target_upto])
+                );
                 if node.has_output() {
                     last_frame_ord += 1;
                 }
@@ -1567,8 +1572,8 @@ impl SegmentTermsEnum {
                     writeln!(
                         out,
                         "      broken seek state: node.label={} vs term byte={}",
-                        node.label,
-                        self.term[frame_prefix_length - 1]
+                        java_label_char(node.label),
+                        char::from(self.term[frame_prefix_length - 1])
                     )?;
                     return Err(LuceneError::unchecked(
                         "java.lang.RuntimeException",
@@ -1845,7 +1850,12 @@ impl TermsEnum for SegmentTermsEnum {
                     break;
                 }
                 node = self.nodes[1 + target_upto];
-                debug_assert_eq!(node.label, i32::from(target[target_upto]));
+                debug_assert!(
+                    node.label == i32::from(target[target_upto]),
+                    "node.label={} targetLabel={}",
+                    java_label_char(node.label),
+                    char::from(target[target_upto])
+                );
                 if node.has_output() {
                     last_frame_ord += 1;
                 }
@@ -2001,4 +2011,12 @@ impl TermsEnum for SegmentTermsEnum {
         }
         Ok(())
     }
+}
+
+/// Java's `(char) label` of a trie node label, as `SegmentTermsEnum.java`
+/// prints it (lines 315, 574, 827). Labels are byte values (`TrieReader.java`
+/// lines 198, 223 store `targetLabel`, a byte `& 0xFF`; the root keeps `0`),
+/// so the `char` is the Latin-1 character of that byte.
+fn java_label_char(label: i32) -> char {
+    char::from(label as u8)
 }
