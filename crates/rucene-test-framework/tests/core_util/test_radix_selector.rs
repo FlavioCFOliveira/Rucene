@@ -111,7 +111,7 @@ fn do_test(arr: Vec<Arc<BytesRef>>, from: usize, to: usize, max_len: i32) {
     let k = TestUtil::next_int(&*random(), from as i32, to as i32 - 1) as usize;
     let mut expected = arr.clone();
     // `Arrays.sort(Object[], from, to)`: a stable sort over `compareTo`.
-    expected[from..to].sort_by(|a, b| a.cmp(b));
+    expected[from..to].sort();
     let mut actual = arr.clone();
     let enforced_max_len = if random().next_boolean() {
         max_len

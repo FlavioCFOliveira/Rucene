@@ -655,7 +655,7 @@ impl ContiguousDenseBinaryColumn {
     ) -> Result<Self> {
         let column = column(name, field_type, Density::Dense)?;
         assert!(
-            packed.len() % width == 0,
+            packed.len().is_multiple_of(width),
             "packed.length must be a multiple of width"
         );
         let n = packed.len() / width;

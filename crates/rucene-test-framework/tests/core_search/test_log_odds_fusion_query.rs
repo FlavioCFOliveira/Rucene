@@ -333,7 +333,7 @@ fn test_rewrite_filter_match_no_docs_with_alpha(f: &mut LogOddsFusion) -> Result
 }
 
 /// `rewritten instanceof LogOddsFusionQuery`, with the cast.
-fn as_log_odds<'a>(rewritten: &'a Arc<dyn Query>) -> &'a LogOddsFusionQuery {
+fn as_log_odds(rewritten: &Arc<dyn Query>) -> &LogOddsFusionQuery {
     let result = rewritten.as_any().downcast_ref::<LogOddsFusionQuery>();
     Assert::assert_true_msg("should rewrite to LogOddsFusionQuery", result.is_some());
     result.expect("instanceof checked")

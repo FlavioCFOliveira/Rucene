@@ -624,6 +624,7 @@ fn test_relation_vs_top_docs_count(_f: &mut TopDocsCollectorTest) -> Result<()> 
             let reader = directory_reader::open_with_writer(&*w)?;
             let result = (|| -> Result<()> {
                 let searcher = IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>)?;
+                #[allow(clippy::disallowed_names)] // the Java test's variable name
                 let foo =
                     || -> Arc<dyn Query> { Arc::new(TermQuery::new(Term::from_text("f", "foo"))) };
                 let collector_manager = TopScoreDocCollectorManager::with_num_hits(2, 10)?;

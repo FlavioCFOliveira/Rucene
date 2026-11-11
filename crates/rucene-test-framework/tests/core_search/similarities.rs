@@ -866,7 +866,7 @@ fn one_doc_one_hit(
 /// similar to the above, but ORs the query with a real field
 fn test_empty_field(f: &mut Similarity2) -> Result<()> {
     let field = LuceneTestCase::new_text_field("foo", "bar", Store::NO);
-    one_doc_one_hit(f, field.into(), || {
+    one_doc_one_hit(f, field, || {
         should_bq(vec![tq("foo", "bar"), tq("bar", "baz")])
     })
 }
@@ -875,7 +875,7 @@ fn test_empty_field(f: &mut Similarity2) -> Result<()> {
 /// that doesnt exist too
 fn test_empty_term(f: &mut Similarity2) -> Result<()> {
     let field = LuceneTestCase::new_text_field("foo", "bar", Store::NO);
-    one_doc_one_hit(f, field.into(), || {
+    one_doc_one_hit(f, field, || {
         should_bq(vec![tq("foo", "bar"), tq("foo", "baz")])
     })
 }
@@ -1469,7 +1469,7 @@ fn test_ll_for_ib(_f: &mut SimilarityBaseTest) -> Result<()> {
         Box::new(LambdaDF::new()),
         Box::new(NoNormalization::new()),
     ));
-    correctness_test_core(&*sim, 4.178574562072754f32)
+    correctness_test_core(&*sim, 4.178_574_6_f32)
 }
 
 /// Correctness test for the SPL IB model with TTF-based lambda and no
@@ -1480,7 +1480,7 @@ fn test_spl_for_ib(_f: &mut SimilarityBaseTest) -> Result<()> {
         Box::new(LambdaTTF::new()),
         Box::new(NoNormalization::new()),
     ));
-    correctness_test_core(&*sim, 2.2387237548828125f32)
+    correctness_test_core(&*sim, 2.238_723_8_f32)
 }
 
 /// Correctness test for the IneB2 DFR model.
@@ -1490,7 +1490,7 @@ fn test_ine_b2(_f: &mut SimilarityBaseTest) -> Result<()> {
         Box::new(AfterEffectB::new()),
         Box::new(NormalizationH2::default()),
     ));
-    correctness_test_core(&*sim, 5.747603416442871f32)
+    correctness_test_core(&*sim, 5.747_603_4_f32)
 }
 
 /// Correctness test for the GL1 DFR model.
@@ -1500,7 +1500,7 @@ fn test_gl1(_f: &mut SimilarityBaseTest) -> Result<()> {
         Box::new(AfterEffectL::new()),
         Box::new(NormalizationH1::default()),
     ));
-    correctness_test_core(&*sim, 1.6390540599822998f32)
+    correctness_test_core(&*sim, 1.639_054_1_f32)
 }
 
 /// Correctness test for the In2 DFR model with no aftereffect.

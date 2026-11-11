@@ -96,8 +96,7 @@ fn test_index_and_search_bit_vectors() -> Result<()> {
             LuceneTestCase::new_index_writer_config(),
         )?;
         let searched = (|| -> Result<()> {
-            let mut id = 0;
-            for vector in &vectors {
+            for (id, vector) in vectors.iter().enumerate() {
                 let mut doc = Document::new();
                 doc.add(Box::new(KnnByteVectorField::new(
                     "v1",
@@ -109,7 +108,6 @@ fn test_index_and_search_bit_vectors() -> Result<()> {
                     id.to_string(),
                     Store::YES,
                 )?));
-                id += 1;
                 w.add_document(&doc)?;
             }
             w.commit()?;

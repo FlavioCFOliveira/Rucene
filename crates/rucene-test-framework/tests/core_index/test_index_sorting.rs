@@ -1636,7 +1636,7 @@ impl UpdateRunnable {
     fn run(&self) {
         rethrow_as_runtime((|| -> Result<()> {
             self.latch.await_();
-            while self.update_count.fetch_sub(1, Ordering::SeqCst) - 1 >= 0 {
+            while self.update_count.fetch_sub(1, Ordering::SeqCst) > 0 {
                 let id = self.random.next_int_bound(self.num_docs);
                 let value = self.random.next_int_bound(20) as i64;
                 if self.dv_updates {
@@ -2798,7 +2798,7 @@ fn test_wrong_sort_field_type() -> Result<()> {
         Arc::new(SortedNumericDocValuesField::new("field", 42)),
     ];
 
-    let sort_fields = vec![
+    let sort_fields = [
         sort_field("field", SortFieldType::String)?,
         SortedSetSortField::new("field", false)?.into_sort_field(),
         sort_field("field", SortFieldType::Int)?,

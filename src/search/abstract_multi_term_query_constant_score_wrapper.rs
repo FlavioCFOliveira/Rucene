@@ -480,7 +480,13 @@ fn owned_context(
     let candidate = usize::try_from(ord)
         .ok()
         .and_then(|ord| leaves.get(ord))
-        .filter(|leaf| leaf.id() == context.id());
+        // The same leaf reader at the same ordinal: a caller may hold a leaf
+        // of an earlier top-level context of the same reader, which the
+        // weakly cached reader context rebuilt with a new id, where Java's
+        // strongly cached context hands out the same object.
+        .filter(|leaf| {
+            leaf.id() == context.id() || Arc::ptr_eq(&leaf.leaf_reader(), &context.leaf_reader())
+        });
     match candidate {
         Some(leaf) => Ok(Arc::clone(leaf)),
         None => Err(LuceneError::illegal_state(format!(

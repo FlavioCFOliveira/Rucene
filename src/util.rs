@@ -3395,6 +3395,38 @@ impl RamUsageEstimator {
 }
 
 // ---------------------------------------------------------------------------
+// System properties
+// ---------------------------------------------------------------------------
+
+/// Answers `System.getProperty(key)` from a test runner's property table.
+pub type SystemPropertyHook = fn(&str) -> Option<String>;
+
+/// The hook [`set_system_property_hook`] installed, once per process.
+static SYSTEM_PROPERTY_HOOK: std::sync::OnceLock<SystemPropertyHook> = std::sync::OnceLock::new();
+
+/// Installs the hook through which [`system_property`] reads the JVM's system
+/// properties: a test runner installs its own property table, which its
+/// `System.setProperty` writes, as Lucene's tests set
+/// `lucene.cms.override_core_count`.
+///
+/// Returns `false`, leaving the installed hook in place, when one is already
+/// installed.
+pub fn set_system_property_hook(hook: SystemPropertyHook) -> bool {
+    SYSTEM_PROPERTY_HOOK.set(hook).is_ok()
+}
+
+/// `System.getProperty(key)`: the installed [`SystemPropertyHook`]'s answer, or,
+/// without a hook, the process environment variable of the same name — a Rust
+/// process has no `-D` options, and the environment is where its launcher
+/// passes them.
+pub fn system_property(key: &str) -> Option<String> {
+    match SYSTEM_PROPERTY_HOOK.get() {
+        Some(hook) => hook(key),
+        None => env::var(key).ok(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -5559,6 +5591,45 @@ impl std::error::Error for ThreadInterruptedException {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// `Double.compare(a, b)`, the order `Arrays.sort(double[])` sorts in:
+/// numeric, with `-0.0` before `0.0` and every `NaN` equal to every other and
+/// after everything else (the comparison of `doubleToLongBits`).
+pub fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
+    if a < b {
+        return std::cmp::Ordering::Less;
+    }
+    if a > b {
+        return std::cmp::Ordering::Greater;
+    }
+    let bits = |v: f64| -> i64 {
+        if v.is_nan() {
+            0x7ff8_0000_0000_0000
+        } else {
+            v.to_bits() as i64
+        }
+    };
+    bits(a).cmp(&bits(b))
+}
+
+/// `Float.compare(a, b)`, the order `Arrays.sort(float[])` sorts in; see
+/// [`java_double_compare`].
+pub fn java_float_compare(a: f32, b: f32) -> std::cmp::Ordering {
+    if a < b {
+        return std::cmp::Ordering::Less;
+    }
+    if a > b {
+        return std::cmp::Ordering::Greater;
+    }
+    let bits = |v: f32| -> i32 {
+        if v.is_nan() {
+            0x7fc0_0000
+        } else {
+            v.to_bits() as i32
+        }
+    };
+    bits(a).cmp(&bits(b))
+}
 
 #[cfg(test)]
 mod tests {

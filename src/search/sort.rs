@@ -1373,11 +1373,29 @@ impl fmt::Display for SortField {
             SortFieldType::Double => {
                 write!(f, "<double: \"{}\">", self.field.as_deref().unwrap_or(""))?
             }
-            SortFieldType::Custom => write!(
-                f,
-                "<custom:\"{}\": null>",
-                self.field.as_deref().unwrap_or("")
-            )?,
+            SortFieldType::Custom => {
+                // `DoubleValuesSortField.toString()` and
+                // `LongValuesSortField.toString()`: `"<" + getField() + ">"`,
+                // then `!` when reversed (`DoubleValuesSource.java:549-554`,
+                // `LongValuesSource.java:310-315`).
+                let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
+                let values_sort = source.is_some_and(|s| {
+                    s.is::<crate::search::double_values_source::DoubleValuesComparatorSource>()
+                        || s.is::<crate::search::long_values_source::LongValuesComparatorSource>()
+                });
+                if values_sort {
+                    write!(f, "<{}>", self.field.as_deref().unwrap_or(""))?;
+                    if self.reverse {
+                        f.write_str("!")?;
+                    }
+                    return Ok(());
+                }
+                write!(
+                    f,
+                    "<custom:\"{}\": null>",
+                    self.field.as_deref().unwrap_or("")
+                )?
+            }
             SortFieldType::Rewriteable => write!(
                 f,
                 "<rewriteable: \"{}\">",

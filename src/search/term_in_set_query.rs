@@ -74,9 +74,6 @@ pub struct TermInSetQuery {
     term_data: Arc<PrefixCodedTerms>,
     /// Cached hash code of `term_data`, as in Java.
     term_data_hash_code: u64,
-    /// The encoded size of `term_data`, computed once; see
-    /// [`ram_bytes_used`](Accountable::ram_bytes_used).
-    term_data_bytes: i64,
 }
 
 impl TermInSetQuery {
@@ -126,13 +123,12 @@ impl TermInSetQuery {
         field: impl Into<String>,
         term_data: Arc<PrefixCodedTerms>,
     ) -> Result<Self> {
-        let (term_data_hash_code, term_data_bytes) = Self::digest(&term_data)?;
+        let term_data_hash_code = Self::digest(&term_data)?;
         Ok(Self {
             field: field.into(),
             rewrite_method,
             term_data,
             term_data_hash_code,
-            term_data_bytes,
         })
     }
 
@@ -210,19 +206,15 @@ impl TermInSetQuery {
     /// The payload is now reachable through `PrefixCodedTerms::content`, so
     /// this could be made byte-wise; doing so would change the hash these
     /// queries publish and belongs to a task of its own.
-    fn digest(term_data: &PrefixCodedTerms) -> Result<(u64, i64)> {
+    fn digest(term_data: &PrefixCodedTerms) -> Result<u64> {
         let mut hasher = DefaultHasher::new();
-        let mut bytes = 0i64;
         let mut iterator = term_data.iterator();
         while let Some(term) = iterator.next()? {
             iterator.field().unwrap_or_default().hash(&mut hasher);
             term.slice().hash(&mut hasher);
-            // The encoder writes the shared-prefix length, the suffix length
-            // and the suffix bytes.
-            bytes += term.length as i64 + 8;
         }
         term_data.size().hash(&mut hasher);
-        Ok((hasher.finish(), bytes))
+        Ok(hasher.finish())
     }
 
     /// Returns an iterator over the encoded terms, for query inspection.
@@ -277,8 +269,10 @@ impl BytesRefIterator for PackedTermsIterator {
 }
 
 impl Accountable for TermInSetQuery {
+    /// `BASE_RAM_BYTES_USED + termData.ramBytesUsed()`
+    /// (`TermInSetQuery.java:233-235`).
     fn ram_bytes_used(&self) -> i64 {
-        BASE_RAM_BYTES_USED + self.term_data_bytes
+        BASE_RAM_BYTES_USED + self.term_data.ram_bytes_used()
     }
 
     fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {

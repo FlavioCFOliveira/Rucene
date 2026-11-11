@@ -241,16 +241,15 @@ fn test_point_index_and_distance_query() -> Result<()> {
     writer.close()?;
     let s = LuceneTestCase::new_searcher(Arc::clone(&r));
     let circle = shape_test_util::next_circle();
-    let circle_2d = XYGeometryValue::create(&[XYGeometryValue::Circle(circle.clone())])?;
+    let circle_2d = XYGeometryValue::create(&[XYGeometryValue::Circle(circle)])?;
     let (expected, expected_disjoint) = if circle_2d.contains(f64::from(p_x), f64::from(py)) {
         (1, 0)
     } else {
         (0, 1)
     };
 
-    let distance = |relation| {
-        XYShape::new_distance_query(FIELDNAME, relation, vec![circle.clone()])?.into_query()
-    };
+    let distance =
+        |relation| XYShape::new_distance_query(FIELDNAME, relation, vec![circle])?.into_query();
     let q = distance(QueryRelation::Intersects)?;
     assert_equals(&expected, &s.count(q)?);
 

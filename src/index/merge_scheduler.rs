@@ -357,6 +357,12 @@ impl MergeScheduler for NoMergeScheduler {
 /// Default number of merges that may run at once when the count is not derived
 /// from the machine.
 pub const DEFAULT_MAX_MERGE_COUNT: i32 = 6;
+
+/// The system property that overrides the core count the dynamic defaults are
+/// computed from.
+///
+/// Equivalent to `ConcurrentMergeScheduler.DEFAULT_CPU_CORE_COUNT_PROPERTY`.
+pub const DEFAULT_CPU_CORE_COUNT_PROPERTY: &str = "lucene.cms.override_core_count";
 /// Default number of merge threads.
 pub const DEFAULT_MAX_THREAD_COUNT: i32 = 3;
 /// Sentinel telling `set_max_merges_and_threads` to derive both counts from the
@@ -491,8 +497,6 @@ pub type MergeThreadRun = Box<dyn FnOnce(&Arc<MergeThread>) + Send>;
 ///   and [`set_do_stall_override`](Self::set_do_stall_override); a
 ///   `MergeThread` subclass overriding `run()` is
 ///   [`MergeThread::with_run`].
-/// * The `lucene.cms.override_core_count` system property Java's tests use to
-///   override the core count has no counterpart.
 pub struct ConcurrentMergeScheduler {
     shared: Arc<CmsShared>,
 }
@@ -1050,9 +1054,19 @@ impl ConcurrentMergeScheduler {
             state.max_thread_count = 1;
             state.max_merge_count = DEFAULT_MAX_MERGE_COUNT;
         } else {
-            let core_count = std::thread::available_parallelism()
+            let mut core_count = std::thread::available_parallelism()
                 .map(std::num::NonZeroUsize::get)
                 .unwrap_or(1);
+            // Let tests override this to help reproducing a failure on a
+            // machine that has a different core count than the one where the
+            // test originally failed (`ConcurrentMergeScheduler.java:172-182`):
+            // a value that does not parse is ignored, as Java's `catch
+            // (Throwable ignored)` does.
+            if let Some(value) = crate::util::system_property(DEFAULT_CPU_CORE_COUNT_PROPERTY) {
+                if let Ok(parsed) = value.parse::<i32>() {
+                    core_count = usize::try_from(parsed).unwrap_or(0);
+                }
+            }
             // If you are indexing at full throttle, how many merge threads do
             // you need to keep up? Merging costs about as much as
             // indexing/flushing overall for some data structures (kNN vectors),

@@ -201,7 +201,7 @@ fn single_ordinal(doc: i32, query_min: i64, query_max: i64) -> i32 {
 
 fn single_ord_in_range(doc: i32) -> bool {
     let ord = i64::from(single_ordinal(doc, QUERY_MIN, QUERY_MAX));
-    ord >= QUERY_MIN && ord <= QUERY_MAX
+    (QUERY_MIN..=QUERY_MAX).contains(&ord)
 }
 
 fn expected_single_ord_matches() -> Vec<i32> {
@@ -414,7 +414,7 @@ fn ordinal_pair(doc: i32, query_min: i64, query_max: i64) -> [i64; 2] {
 fn multi_ord_in_range(doc: i32) -> bool {
     let ords = ordinal_pair(doc, QUERY_MIN, QUERY_MAX);
     for ord in ords {
-        if ord >= QUERY_MIN && ord <= QUERY_MAX {
+        if (QUERY_MIN..=QUERY_MAX).contains(&ord) {
             return true;
         }
     }

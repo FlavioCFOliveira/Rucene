@@ -199,7 +199,7 @@ fn test_modify_on_unmodifiable() -> Result<()> {
 
     // `add((Object) NOT_IN_SET)`: `add(Object)` stores `toString()`.
     expect_throws(UOE, || {
-        unmodifiable_set.add(not_in_set.to_string());
+        unmodifiable_set.add(not_in_set);
         Ok(())
     });
     Assert::assert_false_msg(

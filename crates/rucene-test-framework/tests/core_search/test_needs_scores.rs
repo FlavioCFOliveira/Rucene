@@ -214,6 +214,7 @@ struct AssertNeedsScores {
 }
 
 impl AssertNeedsScores {
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(r#in: Arc<dyn Query>, value: ScoreMode) -> Arc<dyn Query> {
         Arc::new(AssertNeedsScores { r#in, value })
     }

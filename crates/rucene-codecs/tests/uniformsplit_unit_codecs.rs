@@ -1053,14 +1053,14 @@ fn st_block_reader_set_up(inst: &mut STBlockReaderTest) -> Result<()> {
 
 /// `TestSTBlockReader.tearDown()`.
 fn st_block_reader_tear_down(inst: &mut STBlockReaderTest) -> Result<()> {
-    let result = (|| {
+    let result = {
         // `blockLines.clear()`
         inst.block_lines = Some(Arc::new(Vec::new()));
         match inst.directory.as_mut() {
             Some(directory) => directory.close(),
             None => Err(npe()),
         }
-    })();
+    };
     LuceneTestCase::super_tear_down();
     result
 }
@@ -1135,10 +1135,7 @@ fn st_block_reader_test_seek_exact_ignore_field_f4(inst: &mut STBlockReaderTest)
 /// `blockReader.term().utf8ToString()`: `NullPointerException` for a `null`
 /// term.
 fn term_string(block_reader: &STBlockReader) -> Result<String> {
-    Ok(block_reader
-        .term_bytes()
-        .ok_or_else(npe)?
-        .utf8_to_string()?)
+    block_reader.term_bytes().ok_or_else(npe)?.utf8_to_string()
 }
 
 /// `mockFieldInfos()` (`private static`).
@@ -1219,6 +1216,7 @@ struct MockSTBlockReader {
 
 impl MockSTBlockReader {
     /// `MockSTBlockReader(supplier, lines, directory, fieldInfo, fieldInfos)`.
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(
         supplier: Arc<dyn BrowserSupplier>,
         lines: Arc<Vec<MockSTBlockLine>>,
@@ -1291,7 +1289,7 @@ impl BlockReaderOverrides for MockSTBlockReader {
             .to_string();
         match line.term_states.get(&name) {
             Some(state) => {
-                *reader.scratch_term_state_mut() = state.clone();
+                *reader.scratch_term_state_mut() = *state;
                 Ok(true)
             }
             None => Ok(false),

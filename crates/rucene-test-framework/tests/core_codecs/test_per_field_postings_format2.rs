@@ -317,6 +317,7 @@ fn asserting_default() -> Arc<dyn PostingsFormat> {
 /// Port of `TestPerFieldPostingsFormat2.testSameCodecDifferentInstance`.
 fn test_same_codec_different_instance() -> Result<()> {
     let super_format = asserting_default();
+    #[allow(clippy::if_same_then_else)] // the branches mirror the Java test's per-field choices
     let for_field: PostingsFormatForField = Arc::new(move |field: &str| {
         if "id" == field {
             Arc::new(DirectPostingsFormat::new())

@@ -187,7 +187,7 @@ fn test_same_score() -> Result<()> {
     searcher.set_similarity(similarity);
     let query = cfq("a", &[("f", Some(1.0)), ("g", Some(1.0))])?;
     let collector_manager =
-        TopScoreDocCollectorManager::with_num_hits(reader.num_docs().min(i32::MAX), i32::MAX)?;
+        TopScoreDocCollectorManager::with_num_hits(reader.num_docs(), i32::MAX)?;
     let top_docs = searcher.search_with_manager(query, &collector_manager)?;
     assert_equals(
         &TotalHits::new(11, TotalHitsRelation::EQUAL_TO)?,

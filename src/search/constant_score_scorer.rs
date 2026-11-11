@@ -343,6 +343,15 @@ impl Scorer for ConstantScoreScorer {
         }
     }
 
+    fn iterator_ref(&self) -> Option<&dyn DocIdSetIterator> {
+        match &self.iteration {
+            Iteration::Plain(disi) => Some(&**disi),
+            Iteration::PlainGated(disi) => Some(disi),
+            Iteration::TwoPhase(disi) => Some(disi),
+            Iteration::TwoPhaseGated(disi) => Some(disi),
+        }
+    }
+
     fn two_phase_iterator(&mut self) -> Option<&mut dyn TwoPhaseIterator> {
         match &mut self.iteration {
             Iteration::Plain(_) | Iteration::PlainGated(_) => None,

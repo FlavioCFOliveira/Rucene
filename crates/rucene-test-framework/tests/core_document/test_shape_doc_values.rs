@@ -207,8 +207,11 @@ fn test_xy_polygon_centroid() -> Result<()> {
     Ok(())
 }
 
+/// A pair of `decodeX`/`decodeY` functions.
+type Decoders = (fn(i32) -> f64, fn(i32) -> f64);
+
 /// The `decodeX`/`decodeY` functions of the private helpers.
-fn decoders(p: &Geometry<'_>) -> (fn(i32) -> f64, fn(i32) -> f64) {
+fn decoders(p: &Geometry<'_>) -> Decoders {
     match p {
         Geometry::LatLon(_) => (
             GeoEncodingUtils::decode_longitude,

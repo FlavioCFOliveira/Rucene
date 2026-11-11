@@ -49,7 +49,7 @@ fn random_comparator() -> StringSorterComparator<'static> {
 }
 
 /// `TestUtil.STRING_CODEPOINT_COMPARATOR`.
-fn string_codepoint_comparator(a: &String, b: &String) -> std::cmp::Ordering {
+fn string_codepoint_comparator(a: &str, b: &str) -> std::cmp::Ordering {
     TestUtil::string_codepoint_compare(a, b).cmp(&0)
 }
 
@@ -129,7 +129,7 @@ fn test_sort() -> Result<()> {
             string_list.push(random_realistic_unicode_string);
         }
 
-        string_list.sort_by(string_codepoint_comparator);
+        string_list.sort_by(|a, b| string_codepoint_comparator(a, b));
         let mut iter = list.sorted_iterator(random_comparator())?;
         let mut i = 0;
         while let Some(next) = iter.next()? {
@@ -171,7 +171,7 @@ fn test_stable_sort() -> Result<()> {
             string_list.push(random_realistic_unicode_string);
         }
 
-        string_list.sort_by(string_codepoint_comparator);
+        string_list.sort_by(|a, b| string_codepoint_comparator(a, b));
         let state = list.sort(random_comparator(), true);
         let mut iter = list.iterator_with_sort_state(Some(state));
         let mut i = 0;

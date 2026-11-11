@@ -133,7 +133,7 @@ pub fn as_snapshot_policy(policy: &dyn IndexDeletionPolicy) -> &dyn SnapshotPoli
     }
     Throwable::new(
         "java.lang.ClassCastException",
-        &format!(
+        format!(
             "{} cannot be cast to org.apache.lucene.index.SnapshotDeletionPolicy",
             policy.java_class_name()
         ),
@@ -470,8 +470,8 @@ pub fn test_multi_threaded_snapshotting() -> Result<()> {
     let dp = writer_sdp(&writer);
 
     let num_threads = 10;
-    let snapshots: Arc<std::sync::Mutex<Vec<Option<Arc<dyn IndexCommit>>>>> =
-        Arc::new(std::sync::Mutex::new(vec![None; num_threads]));
+    type Snapshots = Arc<std::sync::Mutex<Vec<Option<Arc<dyn IndexCommit>>>>>;
+    let snapshots: Snapshots = Arc::new(std::sync::Mutex::new(vec![None; num_threads]));
     let starting_gun = Arc::new(CountDownLatch::new(1));
     let mut threads = Vec::with_capacity(num_threads);
     for i in 0..num_threads {

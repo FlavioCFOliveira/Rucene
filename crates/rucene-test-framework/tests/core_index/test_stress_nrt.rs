@@ -295,7 +295,7 @@ fn writer_run(
         let oper = rand.next_int_bound(100);
 
         if oper < p.commit_percent {
-            if num_committing.fetch_add(1, Ordering::SeqCst) + 1 <= p.max_concurrent_commits {
+            if num_committing.fetch_add(1, Ordering::SeqCst) < p.max_concurrent_commits {
                 let new_committed_model;
                 let version;
                 let old_reader;
@@ -494,7 +494,7 @@ fn reader_run(rand: &JdkRandom, shared: &Shared, operations: &AtomicI64, p: Para
     let mut last_reader: Option<Arc<dyn DirectoryReader>> = None;
     let mut last_searcher: Option<Arc<IndexSearcher>> = None;
 
-    while operations.fetch_sub(1, Ordering::SeqCst) - 1 >= 0 {
+    while operations.fetch_sub(1, Ordering::SeqCst) > 0 {
         // bias toward a recently changed doc
         let id = if rand.next_int_bound(100) < 25 {
             shared.last_id.load(Ordering::SeqCst)

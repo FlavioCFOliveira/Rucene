@@ -81,6 +81,11 @@ impl IndexOutput for SharedIndexOutput {
     fn name(&self) -> &str {
         &self.name
     }
+
+    /// Every handle is the one stream Java passes for all three roles.
+    fn output_identity(&self) -> *const () {
+        Arc::as_ptr(&self.inner) as *const ()
+    }
 }
 
 /// A handle on a shared `IndexInput`.

@@ -110,20 +110,20 @@ fn test_bounding_box_opto() -> Result<()> {
         let lon = geo_test_util::next_longitude();
         let radius = 50000000.0 * random().next_double();
         let r#box = Rectangle::from_point_distance(lat, lon, radius)?;
-        let box1;
-        let box2;
-        if r#box.crosses_dateline() {
-            box1 = Rectangle::new(r#box.min_lat(), r#box.max_lat(), -180.0, r#box.max_lon())?;
-            box2 = Some(Rectangle::new(
-                r#box.min_lat(),
-                r#box.max_lat(),
-                r#box.min_lon(),
-                180.0,
-            )?);
+
+        let (box1, box2) = if r#box.crosses_dateline() {
+            (
+                Rectangle::new(r#box.min_lat(), r#box.max_lat(), -180.0, r#box.max_lon())?,
+                Some(Rectangle::new(
+                    r#box.min_lat(),
+                    r#box.max_lat(),
+                    r#box.min_lon(),
+                    180.0,
+                )?),
+            )
         } else {
-            box1 = r#box;
-            box2 = None;
-        }
+            (r#box, None)
+        };
 
         for _j in 0..1000 {
             let point = geo_test_util::next_point_near_rectangle(&r#box);

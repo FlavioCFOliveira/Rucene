@@ -146,6 +146,10 @@ name = "portability_bkd_doc_ids"
 path = "tests/portability/bkd_doc_ids.rs"
 
 [[test]]
+name = "portability_bkd_writer_layout"
+path = "tests/portability/bkd_writer_layout.rs"
+
+[[test]]
 name = "portability_deletion_policy"
 path = "tests/portability/deletion_policy.rs"
 

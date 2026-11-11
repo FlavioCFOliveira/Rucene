@@ -209,6 +209,8 @@ fn test_flush_exceptions() -> Result<()> {
     // Add knn float vectors to test parallel merge
     doc.add(Box::new(knn_field));
 
+    #[allow(clippy::never_loop)]
+    // the Java test loops the same way; `Assert::fail` and `break outer` end every iteration
     'outer: for i in 0..10 {
         if verbose() {
             println!("TEST: iter={i}");

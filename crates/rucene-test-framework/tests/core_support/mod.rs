@@ -486,6 +486,8 @@ pub fn assert_array_equals_delta_msg(
     }
     for (i, (&e, &a)) in expecteds.iter().zip(actuals).enumerate() {
         let same = e.to_bits() == a.to_bits() || (e.is_nan() && a.is_nan());
+        // `!(Math.abs(e - a) <= delta)`: a NaN difference fails, as in Java.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !same && !((e - a).abs() <= delta) {
             Assert::fail(&format!(
                 "{header}arrays first differed at element [{i}]; expected:<{e}> but was:<{a}>"

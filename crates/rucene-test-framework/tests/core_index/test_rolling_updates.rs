@@ -96,6 +96,8 @@ fn test_rolling_updates() -> Result<()> {
 
         let do_update;
         if s.is_some() && update_count < size {
+            #[allow(clippy::unnecessary_unwrap)]
+            // Java's `if (s != null && ...)` then the use of `s`
             let searcher = s.as_ref().expect("checked");
             let hits = searcher.search(Arc::new(TermQuery::new(id_term.clone())), 1)?;
             assert_equals(&1i64, &hits.total_hits.value());

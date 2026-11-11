@@ -28,7 +28,7 @@ pub fn class_def() -> Arc<Class> {
 
 fn test_init_value() -> Result<()> {
     let tl = init_value_thread_local();
-    let str = tl.get().borrow().clone();
+    let str = *tl.get().borrow();
     assert_equals(&Some(TEST_VALUE), &str);
     Ok(())
 }

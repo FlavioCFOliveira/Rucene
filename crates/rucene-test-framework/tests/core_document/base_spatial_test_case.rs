@@ -384,6 +384,8 @@ impl ValidatorBase {
                 }
             }
             Assert::assert_true(contains == intersects || (!contains && intersects));
+            #[allow(clippy::if_same_then_else)]
+            // the branches mirror the Java test's separate relation checks
             if self.query_relation == QueryRelation::Disjoint && intersects {
                 return Ok(false);
             } else if self.query_relation == QueryRelation::Within && !contains {
@@ -673,6 +675,8 @@ impl Validator for MultiValidator {
         }
         for p in shapes {
             let b = self.inner.test_component_query(query, p)?;
+            #[allow(clippy::if_same_then_else)]
+            // the branches mirror the Java test's separate relation checks
             if b && query_relation == QueryRelation::Intersects {
                 return Ok(true);
             } else if b && query_relation == QueryRelation::Contains {
@@ -795,9 +799,9 @@ fn lat_lon_geometries(shapes: &[Shape]) -> Vec<LatLonGeometryValue> {
         .map(|s| match s {
             Shape::Line(l) => LatLonGeometryValue::Line(l.clone()),
             Shape::Polygon(p) => LatLonGeometryValue::Polygon(p.clone()),
-            Shape::Circle(c) => LatLonGeometryValue::Circle(c.clone()),
-            Shape::Rectangle(r) => LatLonGeometryValue::Rectangle(r.clone()),
-            Shape::Point(p) => LatLonGeometryValue::Point(p.clone()),
+            Shape::Circle(c) => LatLonGeometryValue::Circle(*c),
+            Shape::Rectangle(r) => LatLonGeometryValue::Rectangle(*r),
+            Shape::Point(p) => LatLonGeometryValue::Point(*p),
             other => class_cast(other, "org.apache.lucene.geo.LatLonGeometry"),
         })
         .collect()
@@ -810,9 +814,9 @@ fn xy_geometries(shapes: &[Shape]) -> Vec<XYGeometryValue> {
         .map(|s| match s {
             Shape::XYLine(l) => XYGeometryValue::Line(l.clone()),
             Shape::XYPolygon(p) => XYGeometryValue::Polygon(p.clone()),
-            Shape::XYCircle(c) => XYGeometryValue::Circle(c.clone()),
-            Shape::XYRectangle(r) => XYGeometryValue::Rectangle(r.clone()),
-            Shape::XYPoint(p) => XYGeometryValue::Point(p.clone()),
+            Shape::XYCircle(c) => XYGeometryValue::Circle(*c),
+            Shape::XYRectangle(r) => XYGeometryValue::Rectangle(*r),
+            Shape::XYPoint(p) => XYGeometryValue::Point(*p),
             other => class_cast(other, "org.apache.lucene.geo.XYGeometry"),
         })
         .collect()
@@ -1257,29 +1261,23 @@ pub trait SpatialCase: Sized + 'static {
             // `BaseXYShapeDocValueTestCase` casts its `XYCircle` to `Circle`
             // here, as Java does: a `ClassCastException`.
             Family::LatLonShape | Family::LatLonShapeDocValue | Family::XYShapeDocValue => {
-                LatLonShape::new_distance_query(
-                    field,
-                    query_relation,
-                    vec![circle.as_circle().clone()],
-                )?
-                .into_query()
+                LatLonShape::new_distance_query(field, query_relation, vec![*circle.as_circle()])?
+                    .into_query()
             }
             Family::LatLonPoint => LatLonPoint::new_geometry_query(
                 Some(field),
                 query_relation,
-                vec![LatLonGeometryValue::Circle(circle.as_circle().clone())],
+                vec![LatLonGeometryValue::Circle(*circle.as_circle())],
             ),
             Family::LatLonDocValue => LatLonDocValuesField::new_slow_geometry_query(
                 Some(field),
                 query_relation,
-                vec![LatLonGeometryValue::Circle(circle.as_circle().clone())],
+                vec![LatLonGeometryValue::Circle(*circle.as_circle())],
             ),
-            Family::XYShape => XYShape::new_distance_query(
-                field,
-                query_relation,
-                vec![circle.as_xy_circle().clone()],
-            )?
-            .into_query(),
+            Family::XYShape => {
+                XYShape::new_distance_query(field, query_relation, vec![*circle.as_xy_circle()])?
+                    .into_query()
+            }
         }
     }
 
@@ -1330,9 +1328,9 @@ pub trait SpatialCase: Sized + 'static {
     /// `toCircle2D(Object circle)`.
     fn to_circle_2d(&self, circle: &Shape) -> Result<Arc<dyn Component2D>> {
         if self.family().is_xy() {
-            XYGeometryValue::create(&[XYGeometryValue::Circle(circle.as_xy_circle().clone())])
+            XYGeometryValue::create(&[XYGeometryValue::Circle(*circle.as_xy_circle())])
         } else {
-            LatLonGeometryValue::create(&[LatLonGeometryValue::Circle(circle.as_circle().clone())])
+            LatLonGeometryValue::create(&[LatLonGeometryValue::Circle(*circle.as_circle())])
         }
     }
 
@@ -2085,7 +2083,7 @@ pub fn lat_lon_shape_test_bounding_box_queries_equivalence<C: SpatialCase>(case:
     let (searcher, reader, w, dir) = index_for_equivalence(case)?;
 
     let b = geo_test_util::next_box();
-    let rect = || vec![LatLonGeometryValue::Rectangle(b.clone())];
+    let rect = || vec![LatLonGeometryValue::Rectangle(b)];
     let box_query = |relation| {
         LatLonShape::new_box_query(
             FIELD_NAME,

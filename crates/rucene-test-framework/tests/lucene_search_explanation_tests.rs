@@ -156,7 +156,7 @@ impl Weight for BrokenExplainWeight {
         let mut result = self.filter.inner.explain(context, doc)?;
         if result.is_match() {
             if self.break_explain_scores {
-                let value = -1f32 * result.value().double_value() as f32;
+                let value = -(result.value().double_value() as f32);
                 result = Explanation::matched(value, "Broken Explanation Score", vec![result]);
             }
             if self.toggle_explain_match {

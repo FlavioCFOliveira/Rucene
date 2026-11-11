@@ -426,6 +426,7 @@ struct RandomVmFailure {
 }
 
 impl RandomVmFailure {
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(error: FakeError) -> Arc<dyn Failure> {
         Arc::new(RandomVmFailure {
             do_fail: AtomicBool::new(false),

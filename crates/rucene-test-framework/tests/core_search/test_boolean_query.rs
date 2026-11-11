@@ -1434,10 +1434,12 @@ fn test_random_boolean_query_matches_count() -> Result<()> {
         ));
         let boolean_query = bq_of(&builder);
         assert_equals(
-            &(searcher.search_with_manager(
-                Arc::clone(&boolean_query),
-                &DummyTotalHitCountCollector::create_manager(),
-            )? as i32),
+            &{
+                searcher.search_with_manager(
+                    Arc::clone(&boolean_query),
+                    &DummyTotalHitCountCollector::create_manager(),
+                )?
+            },
             &searcher.count(boolean_query)?,
         );
     }

@@ -296,12 +296,15 @@ impl LuceneTestCase {
     /// master seed so it will always be the same on reproduce."
     pub fn setup_cpu_core_count() {
         let num_cores = TestUtil::next_int(&*Self::random(), 1, 4);
-        system::set_property("lucene.cms.override_core_count", &num_cores.to_string());
+        system::set_property(
+            rucene::index::merge_scheduler::DEFAULT_CPU_CORE_COUNT_PROPERTY,
+            &num_cores.to_string(),
+        );
     }
 
     /// `restoreCPUCoreCount()` (`@AfterClass`).
     pub fn restore_cpu_core_count() {
-        system::clear_property("lucene.cms.override_core_count");
+        system::clear_property(rucene::index::merge_scheduler::DEFAULT_CPU_CORE_COUNT_PROPERTY);
     }
 
     /// The declaration of `org.apache.lucene.tests.util.LuceneTestCase` for
@@ -375,6 +378,12 @@ impl LuceneTestCase {
                     let _ = rucene::util::concurrent::set_interrupt_status_hook(
                         randomizedtesting::jdk::thread::Thread::interrupted,
                     );
+                    // The JVM has one system-property table: the shim's,
+                    // which `System.setProperty` writes, answers
+                    // `lucene-core`'s `System.getProperty`.
+                    let _ = rucene::util::set_system_property_hook(|key| {
+                        randomizedtesting::jdk::system::get_property(key)
+                    });
                     // The throwables of this runner are panics carrying a
                     // `Throwable`: `lucene-core` records the one that escapes
                     // a merge with its Java class and message.

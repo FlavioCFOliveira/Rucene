@@ -2005,6 +2005,7 @@ fn test_skipper_all_equal_value_with_gaps(suite: &DocValuesSuite) -> Result<()> 
         let gaps = random().next_int_range(2, 10);
         let mut num_docs = vec![0i32; gaps as usize];
         let mut totaldocs = 0i64;
+        #[allow(clippy::needless_range_loop)] // Java's indexed loop, kept as the test writes it
         for i in 0..gaps as usize {
             num_docs[i] = random().next_int_bound(10) + 16;
             for _ in 0..num_docs[i] {

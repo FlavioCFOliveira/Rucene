@@ -226,10 +226,10 @@ fn with_searcher(docs: &[&[&str]], body: impl FnOnce(&IndexSearcher) -> Result<(
     let result = (|| -> Result<()> {
         index_docs(&dir, docs)?;
         let reader = directory_reader::open(dir.as_directory())?;
-        let result = (|| -> Result<()> {
+        let result = {
             let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
             body(&searcher)
-        })();
+        };
         result.and(reader.close())
     })();
     result.and(dir.close())

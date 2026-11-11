@@ -3302,7 +3302,7 @@ impl IntPoint {
     pub fn new_set_query(field: &str, values: &[i32]) -> Result<Arc<dyn Query>> {
         // Do not unexpectedly change the caller's array.
         let mut sorted_values = values.to_vec();
-        sorted_values.sort_by(|a, b| a.partial_cmp(b).expect("INVARIANT: points are never NaN"));
+        sorted_values.sort_by(|a, b| a.cmp(b));
         let mut stream = PointValueStream::new(
             sorted_values
                 .iter()
@@ -3585,7 +3585,7 @@ impl LongPoint {
     pub fn new_set_query(field: &str, values: &[i64]) -> Result<Arc<dyn Query>> {
         // Do not unexpectedly change the caller's array.
         let mut sorted_values = values.to_vec();
-        sorted_values.sort_by(|a, b| a.partial_cmp(b).expect("INVARIANT: points are never NaN"));
+        sorted_values.sort_by(|a, b| a.cmp(b));
         let mut stream = PointValueStream::new(
             sorted_values
                 .iter()
@@ -3951,7 +3951,7 @@ impl FloatPoint {
     pub fn new_set_query(field: &str, values: &[f32]) -> Result<Arc<dyn Query>> {
         // Do not unexpectedly change the caller's array.
         let mut sorted_values = values.to_vec();
-        sorted_values.sort_by(|a, b| a.partial_cmp(b).expect("INVARIANT: points are never NaN"));
+        sorted_values.sort_by(|a, b| crate::util::java_float_compare(*a, *b));
         let mut stream = PointValueStream::new(
             sorted_values
                 .iter()
@@ -4245,7 +4245,7 @@ impl DoublePoint {
     pub fn new_set_query(field: &str, values: &[f64]) -> Result<Arc<dyn Query>> {
         // Do not unexpectedly change the caller's array.
         let mut sorted_values = values.to_vec();
-        sorted_values.sort_by(|a, b| a.partial_cmp(b).expect("INVARIANT: points are never NaN"));
+        sorted_values.sort_by(|a, b| crate::util::java_double_compare(*a, *b));
         let mut stream = PointValueStream::new(
             sorted_values
                 .iter()
@@ -8989,7 +8989,8 @@ struct FloatPointFormatter;
 
 impl crate::search::DimensionFormatter for FloatPointFormatter {
     fn format(&self, _dimension: i32, value: &[u8]) -> String {
-        FloatPoint::decode_dimension(value, 0).to_string()
+        // `Float.toString` (`FloatPoint.java`'s `toString` overrides).
+        java_fmt::float_to_string(FloatPoint::decode_dimension(value, 0))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -9000,7 +9001,8 @@ impl crate::search::DimensionFormatter for FloatPointFormatter {
 impl crate::search::PointFormatter for FloatPointFormatter {
     fn format(&self, value: &[u8]) -> String {
         debug_assert!(value.len() == std::mem::size_of::<f32>());
-        FloatPoint::decode_dimension(value, 0).to_string()
+        // `Float.toString` (`FloatPoint.java`'s `toString` overrides).
+        java_fmt::float_to_string(FloatPoint::decode_dimension(value, 0))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -9014,7 +9016,8 @@ struct DoublePointFormatter;
 
 impl crate::search::DimensionFormatter for DoublePointFormatter {
     fn format(&self, _dimension: i32, value: &[u8]) -> String {
-        DoublePoint::decode_dimension(value, 0).to_string()
+        // `Double.toString` (`DoublePoint.java`'s `toString` overrides).
+        java_fmt::double_to_string(DoublePoint::decode_dimension(value, 0))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -9025,7 +9028,8 @@ impl crate::search::DimensionFormatter for DoublePointFormatter {
 impl crate::search::PointFormatter for DoublePointFormatter {
     fn format(&self, value: &[u8]) -> String {
         debug_assert!(value.len() == std::mem::size_of::<f64>());
-        DoublePoint::decode_dimension(value, 0).to_string()
+        // `Double.toString` (`DoublePoint.java`'s `toString` overrides).
+        java_fmt::double_to_string(DoublePoint::decode_dimension(value, 0))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

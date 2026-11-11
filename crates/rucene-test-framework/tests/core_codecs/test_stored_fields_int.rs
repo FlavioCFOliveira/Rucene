@@ -42,7 +42,7 @@ fn test_random() -> Result<()> {
 /// Port of `TestStoredFieldsInt.testAllEquals`.
 fn test_all_equals() -> Result<()> {
     let dir = LuceneTestCase::new_directory();
-    let result = (|| -> Result<()> {
+    let result = {
         let mut doc_ids = vec![0i32; (random().next_int_bound(5000) + 1) as usize];
         let bpv = TestUtil::next_int(&*random(), 1, 31);
         doc_ids.fill(TestUtil::next_int(
@@ -51,7 +51,7 @@ fn test_all_equals() -> Result<()> {
             ((1i64 << bpv) - 1) as i32,
         ));
         test_ints(&*dir.as_directory(), &doc_ids)
-    })();
+    };
     result.and(dir.close())
 }
 

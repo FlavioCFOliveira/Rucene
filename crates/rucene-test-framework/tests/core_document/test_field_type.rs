@@ -49,7 +49,7 @@ fn test_equals() -> Result<()> {
     let ft = FieldType::new();
     assert_equals(&ft, &ft);
     // assertFalse(ft.equals(null)): a `FieldType` is never `null`.
-    Assert::assert_false(Option::<&FieldType>::None == Some(&ft));
+    Assert::assert_false(Some(&ft).is_none());
 
     let ft2 = FieldType::new();
     assert_equals(&ft, &ft2);

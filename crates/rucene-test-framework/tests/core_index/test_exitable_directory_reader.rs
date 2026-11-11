@@ -93,6 +93,7 @@ struct TestReader {
 
 impl TestReader {
     /// `new TestReader(reader)`.
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(reader: Arc<dyn LeafReader>) -> Result<Arc<dyn IndexReader>> {
         let r: Arc<dyn LeafReader> = Arc::new(TestReader {
             inner: FilterLeafReader::new(reader)?,
@@ -694,6 +695,8 @@ fn test_doc_values() -> Result<()> {
 
             {
                 let reader = test_reader(exitable_directory_reader)?;
+                #[allow(clippy::redundant_closure_call)]
+                // the Java test's `try`/`finally`, whose body runs here as a closure so the cleanup sees its outcome
                 let r = (|| -> Result<()> {
                     expect_throws(EXITING, || -> Result<()> {
                         let leaf = first_leaf(&reader)?;

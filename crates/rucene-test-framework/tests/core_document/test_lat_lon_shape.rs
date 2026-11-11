@@ -1043,16 +1043,15 @@ fn test_point_index_and_distance_query() -> Result<()> {
         random().next_double() * GeoUtils::EARTH_MEAN_RADIUS_METERS * std::f64::consts::PI / 2.0
             + 1.0;
     let circle = Circle::new(lat, lon, radius_meters)?;
-    let circle_2d = component(LatLonGeometryValue::Circle(circle.clone()))?;
+    let circle_2d = component(LatLonGeometryValue::Circle(circle))?;
     let (expected, expected_disjoint) = if circle_2d.contains(p.lon(), p.lat()) {
         (1, 0)
     } else {
         (0, 1)
     };
 
-    let distance = |relation| {
-        LatLonShape::new_distance_query(FIELDNAME, relation, vec![circle.clone()])?.into_query()
-    };
+    let distance =
+        |relation| LatLonShape::new_distance_query(FIELDNAME, relation, vec![circle])?.into_query();
     let q = distance(QueryRelation::Intersects)?;
     assert_equals(&expected, &s.count(q)?);
 

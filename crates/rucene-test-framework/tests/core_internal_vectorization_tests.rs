@@ -1173,6 +1173,7 @@ mod vector_scorer {
         // `Objects.hash(ord, dims)`: `31 * (31 * 1 + ord) + dims`.
         let random = JdkRandom::new(objects_hash(ord, dims) as i64);
         let mut ba = vec![0u8; dims as usize];
+        #[allow(clippy::needless_range_loop)] // Java's indexed loop, kept as the test writes it
         for i in 0..dims as usize {
             ba[i] =
                 RandomNumbers::random_int_between(&random, i8::MIN as i32, i8::MAX as i32) as u8;

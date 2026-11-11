@@ -396,7 +396,7 @@ fn test_invalid_utf16() -> Result<()> {
         assert_equals_msg(
             Some(&format!("field {i} was not indexed correctly")),
             &1,
-            &ir.doc_freq(&Term::from_text(&format!("f{i}"), &utf8_data(2 * i + 1)))?,
+            &ir.doc_freq(&Term::from_text(format!("f{i}"), &utf8_data(2 * i + 1)))?,
         );
         assert_equals_msg(
             Some(&format!("field {i} is incorrect")),
@@ -432,6 +432,7 @@ fn test_term_utf16_sort_order() -> Result<()> {
 
     let num = LuceneTestCase::at_least(200);
     for i in 0..num {
+        #[allow(clippy::needless_late_init)] // Java's definitely-assigned local, set in each branch
         let s;
         if rnd.next_boolean() {
             // Single char

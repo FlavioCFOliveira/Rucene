@@ -95,9 +95,8 @@ impl HnswCase for FloatCase {
         let mut vectors: Vec<Option<Vec<f32>>> = vec![None; size as usize];
         let random_vectors = create_random_float_vectors(size - pvv.values.len() as i32, dimension);
 
-        for i in 0..pregenerated_offset as usize {
-            vectors[i] = random_vectors[i].clone();
-        }
+        vectors[..pregenerated_offset as usize]
+            .clone_from_slice(&random_vectors[..pregenerated_offset as usize]);
 
         for current_ord in 0..pvv.size() as usize {
             vectors[pregenerated_offset as usize + current_ord] = pvv.values[current_ord].clone();

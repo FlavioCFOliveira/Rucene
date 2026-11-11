@@ -189,10 +189,7 @@ fn test_feature_multiple_missing() -> Result<()> {
 }
 
 fn score_docs(td: &TopFieldDocs) -> Vec<ScoreDoc> {
-    td.score_docs
-        .iter()
-        .map(|fd| fd.score_doc.clone())
-        .collect()
+    td.score_docs.iter().map(|fd| fd.score_doc).collect()
 }
 
 /// Port of `testDuelFloat`: this duel gives `compareBottom` and

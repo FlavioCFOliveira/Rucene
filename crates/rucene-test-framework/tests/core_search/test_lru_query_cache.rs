@@ -2021,6 +2021,7 @@ fn test_on_use_with_random_first_segment_skipping() -> Result<()> {
         let cache = lru(100, 10240, |_| random().next_boolean(), f32::INFINITY)?;
         index_searcher.set_query_cache(as_cache(&cache));
         index_searcher.set_query_caching_policy(Arc::clone(&policy) as Arc<dyn QueryCachingPolicy>);
+        #[allow(clippy::disallowed_names)] // the Java test's variable name
         let foo: Arc<dyn Query> = Arc::new(TermQuery::new(term("f", "foo")));
         let bar: Arc<dyn Query> = Arc::new(TermQuery::new(term("f", "bar")));
         let mut query = BooleanQueryBuilder::new();
@@ -3444,17 +3445,20 @@ impl QueryCachingPolicy for NoTermQueryPolicy {
     }
 }
 
+/// The reader, its searcher, a query and its first sub-query.
+type HobbyIndex = (
+    Arc<dyn DirectoryReader>,
+    IndexSearcher,
+    Arc<dyn Query>,
+    Arc<dyn Query>,
+);
+
 /// The index and query of `testSkipCachingForTermQuery` and
 /// `testSkipCacheFactorWithDynamicValues`: the reader, its searcher, the
 /// query and its first sub-query.
 fn hobby_index(
     dir: &mut rucene_test_framework::util::lucene_test_case::TestDirectory,
-) -> Result<(
-    Arc<dyn DirectoryReader>,
-    IndexSearcher,
-    Arc<dyn Query>,
-    Arc<dyn Query>,
-)> {
+) -> Result<HobbyIndex> {
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let doc1 = stored_doc(&[("name", "tom"), ("hobby", "movie")])?;
     let doc2 = stored_doc(&[("name", "alice"), ("hobby", "book")])?;

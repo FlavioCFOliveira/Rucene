@@ -74,6 +74,7 @@ fn set_up(this: &mut Instance) -> Result<()> {
     config.set_similarity(Some(Arc::new(TestSimilarity) as Arc<dyn Similarity>))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), directory, config)?;
     let mut doc = Document::new();
+    #[allow(clippy::disallowed_names)] // the Java test's variable name
     let foo = LuceneTestCase::new_text_field("foo", "", Store::NO);
     doc.add(Box::new(foo));
     for _ in 0..100 {

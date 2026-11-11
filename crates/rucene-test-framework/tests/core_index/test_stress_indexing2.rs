@@ -543,6 +543,8 @@ fn verify_equals_readers(
                 POSTINGS_ENUM_NONE,
             )?
             .ok_or_else(rucene::error::LuceneError::null_pointer)?;
+            #[allow(clippy::never_loop)]
+            // Java's `while (...) fail(...)`: the loop only asserts there is nothing left
             while next_non_deleted_doc(&mut *d, live_docs.as_deref())? != NO_MORE_DOCS {
                 Assert::fail("r1 is not empty but r2 is");
             }
@@ -647,10 +649,7 @@ fn verify_equals_readers(
             println!("  d2={}", fields_display(tv2.as_deref()));
             print_term_vectors(tv2.as_deref(), false)?;
 
-            match failure {
-                Err(e) => return Err(e),
-                Ok(panic) => std::panic::resume_unwind(panic),
-            }
+            std::panic::resume_unwind(failure?);
         }
     }
 

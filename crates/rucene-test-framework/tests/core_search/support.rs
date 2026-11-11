@@ -218,8 +218,14 @@ pub fn close_dir(
 pub fn score_docs_of(
     field_docs: &[rucene::search::field_doc::FieldDoc],
 ) -> Vec<rucene::search::ScoreDoc> {
-    field_docs.iter().map(|d| d.score_doc.clone()).collect()
+    field_docs.iter().map(|d| d.score_doc).collect()
 }
+
+/// A reader and its leaves.
+pub type ReaderAndLeaves = (
+    Arc<dyn rucene::index::directory_reader::DirectoryReader>,
+    Vec<Arc<rucene::index::reader_context::LeafReaderContext>>,
+);
 
 /// A `LeafReaderContext` standing for the `null` context Java tests pass to
 /// `Collector.getLeafCollector(null)`: the one leaf of a fixed, non-random
@@ -230,10 +236,7 @@ pub fn score_docs_of(
 /// `Collector::get_leaf_collector` takes a context by reference, so a real
 /// context stands for `null`; the collectors these tests exercise only
 /// record and replay it.
-pub fn null_leaf_context() -> Result<(
-    Arc<dyn rucene::index::directory_reader::DirectoryReader>,
-    Vec<Arc<rucene::index::reader_context::LeafReaderContext>>,
-)> {
+pub fn null_leaf_context() -> Result<ReaderAndLeaves> {
     use rucene::index::IndexReader;
     let dir: Arc<dyn rucene::store::Directory> =
         Arc::new(rucene::store::ByteBuffersDirectory::default());

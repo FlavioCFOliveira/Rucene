@@ -45,9 +45,7 @@ fn test_encode_decode() -> Result<()> {
             let mut restored = [0i32; FOR_BLOCK_SIZE];
             pfor_util.decode(&mut pdu, &mut restored)?;
             let mut ints = [0i32; FOR_BLOCK_SIZE];
-            for j in 0..FOR_BLOCK_SIZE {
-                ints[j] = restored[j];
-            }
+            ints[..FOR_BLOCK_SIZE].copy_from_slice(&restored[..FOR_BLOCK_SIZE]);
             assert_array_equals_msg(
                 Some(&arrays_to_string(&ints)),
                 &values[i * FOR_BLOCK_SIZE..(i + 1) * FOR_BLOCK_SIZE],

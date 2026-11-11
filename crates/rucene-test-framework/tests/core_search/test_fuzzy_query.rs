@@ -524,7 +524,7 @@ fn test_giga() -> Result<()> {
     for text in [
         "Lucene in Action",
         "Lucene for Dummies",
-        "Giga",
+        // addDoc("Giga", w);  — commented out in the Java test
         "Giga byte",
         "ManagingGigabytesManagingGigabyte",
         "ManagingGigabytesManagingGigabytes",

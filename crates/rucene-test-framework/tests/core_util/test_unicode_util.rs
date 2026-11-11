@@ -224,7 +224,7 @@ const MAX_LOW_SURROGATE: u16 = 0xDFFF;
 
 /// `Character.toCodePoint(high, low)`.
 fn to_code_point(high: u16, low: u16) -> i32 {
-    ((((high as i32) << 10) + low as i32) + (0x010000 - (0xD800 << 10) - 0xDC00)) as i32
+    (((high as i32) << 10) + low as i32) + (0x010000 - (0xD800 << 10) - 0xDC00)
 }
 
 fn test_new_string() -> Result<()> {

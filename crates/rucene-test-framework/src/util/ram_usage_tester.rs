@@ -1399,7 +1399,7 @@ impl ModelBuilder {
     /// shared node.
     pub fn long_values_identity(&mut self) -> Rc<JavaNode> {
         self.shared(
-            1 as *const (),
+            std::ptr::dangling::<()>(),
             "org.apache.lucene.util.LongValues$1",
             |_| NodeShape::Object {
                 aligned_shallow_size: aligned_shallow_instance_size(&[]),

@@ -1167,7 +1167,12 @@ pub struct TermStates {
     /// port stores [`IndexReaderContext::id`], which is the same identity value
     /// and likewise does not reference the reader.
     top_reader_context_identity: usize,
-    states: Vec<Option<Box<dyn TermState>>>,
+    /// Per leaf: `None` when nothing is known yet (Java's `null`), `Some(None)`
+    /// for Java's `EMPTY_TERMSTATE` — the term was looked up lazily and is
+    /// absent — and `Some(Some(state))` for a registered state. Behind a
+    /// [`Mutex`](std::sync::Mutex) because [`get`](Self::get) fills it lazily
+    /// through `&self`, as Java's `get` assigns `states[ctx.ord]`.
+    states: std::sync::Mutex<Vec<Option<Option<Box<dyn TermState>>>>>,
     /// `None` if the statistics are to be used.
     term: Option<Term>,
     doc_freq: i32,
@@ -1175,6 +1180,21 @@ pub struct TermStates {
 }
 
 impl TermStates {
+    /// The per-leaf states, locked; a poisoned lock is recovered, as a Java
+    /// array has no lock to poison.
+    fn states_guard(&self) -> std::sync::MutexGuard<'_, Vec<Option<Option<Box<dyn TermState>>>>> {
+        self.states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The per-leaf states, through `&mut self`.
+    fn states_mut(&mut self) -> &mut Vec<Option<Option<Box<dyn TermState>>>> {
+        self.states
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn with_term(term: Option<Term>, context: &Arc<dyn IndexReaderContext>) -> Result<Self> {
         debug_assert!(context.is_top_level());
         if !context.is_top_level() {
@@ -1185,7 +1205,7 @@ impl TermStates {
         let num_leaves = Arc::clone(context).leaves().len();
         Ok(Self {
             top_reader_context_identity: context.id(),
-            states: (0..num_leaves).map(|_| None).collect(),
+            states: std::sync::Mutex::new((0..num_leaves).map(|_| None).collect()),
             term,
             doc_freq: 0,
             total_term_freq: 0,
@@ -1285,6 +1305,11 @@ impl TermStates {
             },
             context,
         )?;
+        // `if (needsStats)` (`TermStates.java:101-121`): without statistics
+        // nothing is looked up now; `get` looks each leaf up when asked.
+        if !needs_stats {
+            return Ok(per_reader_term_state);
+        }
         for ctx in searcher.get_leaf_contexts() {
             // `Terms.getTerms(ctx.reader(), term.field())` answers `Terms.EMPTY`
             // when the field is absent.
@@ -1317,7 +1342,7 @@ impl TermStates {
     pub fn clear(&mut self) {
         self.doc_freq = 0;
         self.total_term_freq = 0;
-        for state in &mut self.states {
+        for state in self.states_mut().iter_mut() {
             *state = None;
         }
     }
@@ -1352,12 +1377,13 @@ impl TermStates {
     /// In debug builds, panics when `ord` is out of range or already carries a
     /// state; Java asserts the same two conditions.
     pub fn register_state(&mut self, state: Box<dyn TermState>, ord: usize) {
-        debug_assert!(ord < self.states.len(), "ord {ord} is out of range");
+        let states = self.states_mut();
+        debug_assert!(ord < states.len(), "ord {ord} is out of range");
         debug_assert!(
-            self.states[ord].is_none(),
+            states[ord].is_none(),
             "state for ord: {ord} already registered"
         );
-        self.states[ord] = Some(state);
+        states[ord] = Some(Some(state));
     }
 
     /// Accumulates term statistics.
@@ -1397,16 +1423,35 @@ impl TermStates {
     /// range, which is the condition Java asserts.
     pub fn get(&self, ctx: &LeafReaderContext) -> Result<Option<Box<dyn TermState>>> {
         let ord = ctx.ord();
-        debug_assert!(ord >= 0 && (ord as usize) < self.states.len());
-        if ord < 0 || ord as usize >= self.states.len() {
+        let len = self.states_guard().len();
+        debug_assert!(ord >= 0 && (ord as usize) < len);
+        if ord < 0 || ord as usize >= len {
             return Err(LuceneError::illegal_argument(format!(
-                "leaf ordinal {ord} is out of range for a TermStates over {} leaves",
-                self.states.len()
+                "leaf ordinal {ord} is out of range for a TermStates over {len} leaves"
             )));
         }
-        Ok(self.states[ord as usize]
+        let ord = ord as usize;
+        // `TermStates.java:184-211`: with `needsStats = false` the state is
+        // looked up the first time a leaf asks for it.
+        if let Some(term) = self.term.as_ref() {
+            if self.states_guard()[ord].is_none() {
+                let looked_up = match ctx.leaf_reader().terms(term.field())? {
+                    None => None,
+                    Some(terms) => {
+                        let mut terms_enum = terms.iterator()?;
+                        if terms_enum.seek_exact(term.bytes())? {
+                            Some(terms_enum.term_state()?)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                self.states_guard()[ord] = Some(looked_up);
+            }
+        }
+        Ok(self.states_guard()[ord]
             .as_ref()
-            .map(|state| state.clone_box()))
+            .and_then(|state| state.as_ref().map(|state| state.clone_box())))
     }
 
     /// Returns the accumulated document frequency of every registered
@@ -1450,11 +1495,13 @@ impl std::fmt::Display for TermStates {
     /// Equivalent to `TermStates.toString()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "TermStates")?;
-        for state in &self.states {
+        for state in self.states_guard().iter() {
             // `sb.append(termState)`: the state's `toString()`, or `null`
-            // (`TermStates.java:252-256`).
+            // (`TermStates.java:252-256`); `EMPTY_TERMSTATE` renders as the
+            // empty state it is.
             match state {
-                Some(state) => writeln!(f, "  state={state}")?,
+                Some(Some(state)) => writeln!(f, "  state={state}")?,
+                Some(None) => writeln!(f, "  state={}", EmptyTermState)?,
                 None => writeln!(f, "  state=null")?,
             }
         }

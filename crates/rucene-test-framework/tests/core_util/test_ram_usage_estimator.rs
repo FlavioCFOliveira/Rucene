@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
+use randomizedtesting::junit::Assert;
 use rucene::error::Result;
 use rucene::index::Term;
 use rucene::search::{
@@ -439,9 +440,9 @@ fn test_reference_size() -> Result<()> {
             &4,
             &num_bytes_object_ref,
         );
-        assert!(
-            !RamUsageEstimator::COMPRESSED_REFS_ENABLED,
-            "For 32bit JVMs, compressed references can never be enabled"
+        Assert::assert_false_msg(
+            "For 32bit JVMs, compressed references can never be enabled",
+            RamUsageEstimator::COMPRESSED_REFS_ENABLED,
         );
     }
     Ok(())
@@ -467,9 +468,9 @@ fn test_hotspot_bean() -> Result<()> {
             .unwrap_or_else(|| "Unknown".to_string())
             .starts_with("HotSpot"),
     );
-    assert!(
+    Assert::assert_true_msg(
+        "We should have been able to detect Hotspot's internal settings from the management bean.",
         RamUsageEstimator::JVM_IS_HOTSPOT_64BIT,
-        "We should have been able to detect Hotspot's internal settings from the management bean."
     );
     Ok(())
 }

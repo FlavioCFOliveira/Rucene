@@ -2151,6 +2151,15 @@ pub trait IndexOutput: DataOutput + Send + Sync {
     /// Returns the name used to create this output.
     fn name(&self) -> &str;
 
+    /// The identity Java's `==` compares on an `IndexOutput`: the address of
+    /// this object. A handle that stands for another stream — several handles
+    /// on one stream, where Java passes the same object several times —
+    /// answers the stream's identity instead, so that Lucene's identity tests
+    /// (`metaOut == indexOut` in `BKDWriter.writeIndex`) see one stream.
+    fn output_identity(&self) -> *const () {
+        self as *const Self as *const ()
+    }
+
     /// Returns this output's delegate when it is a [`FilterIndexOutput`], and
     /// `None` otherwise.
     ///

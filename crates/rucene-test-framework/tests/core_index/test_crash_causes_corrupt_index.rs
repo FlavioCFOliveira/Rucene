@@ -115,6 +115,8 @@ fn search_for_fleas(path: &Path, expected_total_hits: i64) -> Result<()> {
         10,
     )?);
     assert_not_null(&top_docs);
+    #[allow(clippy::unnecessary_literal_unwrap)]
+    // Java's `assertNotNull` on the value, then its use
     let top_docs = top_docs.expect("checked by assertNotNull");
     assert_equals(&expected_total_hits, &top_docs.total_hits.value());
     index_reader.close()?;

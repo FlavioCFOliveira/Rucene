@@ -687,10 +687,8 @@ fn filter_collector_to_string_matches_java() {
 #[test]
 fn lat_lon_shape_bounding_box_query_hash_agrees_with_equality() {
     let rect = Rectangle::new(-10.0, 10.0, -20.0, 20.0).unwrap();
-    let a =
-        LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Intersects, rect.clone()).unwrap();
-    let b =
-        LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Intersects, rect.clone()).unwrap();
+    let a = LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Intersects, rect).unwrap();
+    let b = LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Intersects, rect).unwrap();
     assert_eq!(a, b);
     assert_eq!(hash_of(&a), hash_of(&b));
 
@@ -698,12 +696,12 @@ fn lat_lon_shape_bounding_box_query_hash_agrees_with_equality() {
     // field and the relation, and its `hashCode` folds the rectangle into the
     // superclass hash — so each of the three has to move the hash.
     let other_field =
-        LatLonShapeBoundingBoxQuery::new("other", QueryRelation::Intersects, rect.clone()).unwrap();
+        LatLonShapeBoundingBoxQuery::new("other", QueryRelation::Intersects, rect).unwrap();
     assert_ne!(a, other_field);
     assert_ne!(hash_of(&a), hash_of(&other_field));
 
     let other_relation =
-        LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Within, rect.clone()).unwrap();
+        LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Within, rect).unwrap();
     assert_ne!(a, other_relation);
     assert_ne!(hash_of(&a), hash_of(&other_relation));
 

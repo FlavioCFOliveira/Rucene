@@ -59,6 +59,7 @@ struct DummyFilterDirectoryReader;
 
 impl DummyFilterDirectoryReader {
     /// `new DummyFilterDirectoryReader(in)`.
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(r#in: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
         Ok(Arc::new(FilterDirectoryReader::new(
             r#in,
@@ -183,6 +184,7 @@ struct NumDocsCountingFilterDirectoryReader {
 
 impl NumDocsCountingFilterDirectoryReader {
     /// `new NumDocsCountingFilterDirectoryReader(in, numDocsCallCount)`.
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(
         r#in: Arc<dyn DirectoryReader>,
         num_docs_call_count: Arc<AtomicI64>,
@@ -243,6 +245,7 @@ struct DummyLastingFilterDirectoryReader;
 
 impl DummyLastingFilterDirectoryReader {
     /// `new DummyLastingFilterDirectoryReader(in)`.
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(r#in: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
         Ok(Arc::new(FilterDirectoryReader::new(
             r#in,

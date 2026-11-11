@@ -281,8 +281,8 @@ fn test_segment_count_on_flush_random() -> Result<()> {
         let t = Thread::unnamed(move || {
             let run = || -> Result<()> {
                 for _ in 0..iters {
-                    if indexing_count.fetch_add(1, Ordering::SeqCst) + 1
-                        <= max_thread_count.load(Ordering::SeqCst)
+                    if indexing_count.fetch_add(1, Ordering::SeqCst)
+                        < max_thread_count.load(Ordering::SeqCst)
                     {
                         if verbose() {
                             println!("TEST: {}: do index", Thread::current().name());

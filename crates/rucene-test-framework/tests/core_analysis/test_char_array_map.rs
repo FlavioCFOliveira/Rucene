@@ -295,7 +295,7 @@ fn test_modify_on_unmodifiable() -> Result<()> {
 
     // `put((Object) NOT_IN_MAP, 3)`: `put(Object, V)` stores `toString()`.
     expect_throws(UOE, || {
-        unmodifiable_map.put(not_in_map.to_string(), 3);
+        unmodifiable_map.put(not_in_map, 3);
         Ok(())
     });
     Assert::assert_false_msg(

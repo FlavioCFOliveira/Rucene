@@ -429,6 +429,8 @@ fn test_merge_per_field() -> Result<()> {
             }
             writer.force_merge(1)?;
             let reader = directory_reader::open_with_writer(&*writer)?;
+            #[allow(clippy::redundant_closure_call)]
+            // the Java test's `try`/`finally`, whose body runs here as a closure so the cleanup sees its outcome
             let checked = (|| -> Result<()> {
                 assert_equals(&num_docs, &reader.num_docs());
                 Ok(())

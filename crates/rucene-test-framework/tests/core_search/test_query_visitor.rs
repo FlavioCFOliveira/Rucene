@@ -290,9 +290,9 @@ impl QueryNode {
         let mut paired: Vec<(i32, QueryNode)> =
             weights.into_iter().zip(children.drain(..)).collect();
         if reversed {
-            paired.sort_by(|a, b| b.0.cmp(&a.0));
+            paired.sort_by_key(|a| std::cmp::Reverse(a.0));
         } else {
-            paired.sort_by(|a, b| a.0.cmp(&b.0));
+            paired.sort_by_key(|a| a.0);
         }
         children.extend(paired.into_iter().map(|(_, c)| c));
     }

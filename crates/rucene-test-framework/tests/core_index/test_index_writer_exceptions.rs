@@ -3077,6 +3077,8 @@ fn test_only_rollback_once_on_exception() -> Result<()> {
         let conf = LuceneTestCase::new_index_writer_config();
         conf.set_info_stream(stream)?;
         let writer = IndexWriter::new_with_test_points(dir.as_directory(), conf)?;
+        #[allow(clippy::redundant_closure_call)]
+        // the Java test's `try`/`finally`, whose body runs here as a closure so the cleanup sees its outcome
         let inner = (|| -> Result<()> {
             let e = expect_throws(RUNTIME_EXCEPTION, || writer.rollback());
             assert_equals(&Some("boom"), &e.message());

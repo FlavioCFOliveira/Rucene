@@ -4618,6 +4618,18 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         let values: Result<Box<dyn SortedSetDocValues>> = {
             match self.entries.get(&field.number) {
+                // `if (entry.singleValueEntry != null) return
+                // DocValues.singleton(getSorted(entry.singleValueEntry));`
+                // (`Lucene90DocValuesProducer.java:2059-2062`), so that
+                // `DocValues.unwrapSingleton` answers the sorted view.
+                Some(FieldEntry::SortedSet(SortedSetEntry::Single(single))) => Ok(Box::new(
+                    crate::index::DocValues::singleton_sorted(Box::new(LazySortedDocValues::new(
+                        &**self.data.read(),
+                        self.max_doc,
+                        single,
+                        self.merging,
+                    )?)),
+                )),
                 Some(FieldEntry::SortedSet(entry)) => Ok(Box::new(LazySortedSetDocValues::new(
                     &**self.data.read(),
                     self.max_doc,

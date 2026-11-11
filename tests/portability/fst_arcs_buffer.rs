@@ -254,7 +254,7 @@ fn continuous_terms() -> Vec<(Vec<u8>, i64)> {
     let mut terms = Vec::new();
     for a in b'a'..=b'z' {
         for b in b'a'..=b'z' {
-            for c in [b'0', b'5', b'9'] {
+            for c in *b"059" {
                 terms.push((vec![a, b, c], a as i64 * 1000 + b as i64 * 10 + c as i64));
             }
         }

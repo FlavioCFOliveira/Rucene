@@ -76,6 +76,15 @@ pub trait Scorer: Scorable {
     /// rather than as an independent object.
     fn iterator(&mut self) -> &mut dyn DocIdSetIterator;
 
+    /// The object [`iterator`](Self::iterator) returns, lent immutably, for
+    /// the `instanceof` tests Java makes on `scorer.iterator()`
+    /// (`AcceptDocs.createBitSet`'s `instanceof BitSetIterator`, for one).
+    /// `None` when the scorer cannot lend it without `&mut`, which answers
+    /// those tests as a wrapper would.
+    fn iterator_ref(&self) -> Option<&dyn DocIdSetIterator> {
+        None
+    }
+
     /// Optionally returns a [`TwoPhaseIterator`] view of this scorer, or `None`
     /// when two-phase iteration is not supported.
     ///
@@ -274,6 +283,11 @@ impl DocIdSetIterator for ScorerAsIterator {
     fn doc_id_run_end(&mut self) -> Result<i32> {
         self.scorer.iterator().doc_id_run_end()
     }
+
+    /// `scorer.iterator() instanceof X`: the scorer's own iterator answers.
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.scorer.iterator_ref().and_then(|it| it.disi_as_any())
+    }
 }
 
 /// A [`TwoPhaseIterator`] that owns the [`Scorer`] whose two-phase view it
@@ -424,19 +438,32 @@ pub fn into_scorer_iterator(mut scorer: Box<dyn Scorer>) -> ScorerIterator {
 /// data, possibly transforming the data along the way.
 ///
 /// Equivalent to `org.apache.lucene.search.FilterScorer`, whose `docID()`,
-/// `iterator()` and `twoPhaseIterator()` are `final` delegations and whose
-/// `unwrap()` comes from `Unwrappable<Scorer>` — reproduced here as
-/// [`inner`](Self::inner) and [`into_inner`](Self::into_inner).
+/// `iterator()` and `twoPhaseIterator()` are `final` delegations, whose
+/// `score()` delegates, and whose `unwrap()` comes from `Unwrappable<Scorer>`
+/// — reproduced here as [`inner`](Self::inner) and
+/// [`into_inner`](Self::into_inner). Every other method keeps `Scorer`'s
+/// default, as in Java: `FilterScorer` overrides nothing else.
+///
+/// An anonymous Java subclass that overrides `score()` and `getMaxScore(int)`
+/// is a `FilterScorer` built with [`with_overrides`](Self::with_overrides), so
+/// that it still answers `instanceof FilterScorer`.
 ///
 /// **Divergence from Lucene 10.5.0.** Java leaves `getMaxScore(int)` abstract
 /// on purpose, since the point of the class is to change how the score is
-/// computed. Rust has no abstract methods on a concrete struct, so this wrapper
-/// is the identity filter: it delegates `score()` and `getMaxScore()` too. A
-/// "subclass" is a type that holds a `FilterScorer` and overrides those two by
-/// composition.
+/// computed. Rust has no abstract methods on a concrete struct, so a
+/// `FilterScorer` built with [`new`](Self::new) delegates `getMaxScore` too.
 pub struct FilterScorer {
     inner: Box<dyn Scorer>,
+    score_override: Option<FilterScoreFn>,
+    max_score_override: Option<FilterMaxScoreFn>,
 }
+
+/// The `score()` override of a [`FilterScorer`] "subclass": it receives the
+/// wrapped scorer, Java's `in`.
+pub type FilterScoreFn = Box<dyn FnMut(&mut dyn Scorer) -> Result<f32> + Send>;
+
+/// The `getMaxScore(int)` override of a [`FilterScorer`] "subclass".
+pub type FilterMaxScoreFn = Box<dyn FnMut(&mut dyn Scorer, i32) -> Result<f32> + Send>;
 
 impl FilterScorer {
     /// Wraps the given scorer.
@@ -444,7 +471,25 @@ impl FilterScorer {
     /// Equivalent to `new FilterScorer(Scorer)`; Java's null check is not
     /// needed because `Box<dyn Scorer>` cannot be null.
     pub fn new(inner: Box<dyn Scorer>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            score_override: None,
+            max_score_override: None,
+        }
+    }
+
+    /// Wraps the given scorer with the `score()` and `getMaxScore(int)`
+    /// overrides of an anonymous `FilterScorer` subclass.
+    pub fn with_overrides(
+        inner: Box<dyn Scorer>,
+        score: FilterScoreFn,
+        max_score: FilterMaxScoreFn,
+    ) -> Self {
+        Self {
+            inner,
+            score_override: Some(score),
+            max_score_override: Some(max_score),
+        }
     }
 
     /// Returns the wrapped scorer.
@@ -479,19 +524,10 @@ impl std::fmt::Debug for FilterScorer {
 
 impl Scorable for FilterScorer {
     fn score(&mut self) -> Result<f32> {
-        self.inner.score()
-    }
-
-    fn smoothing_score(&mut self, doc_id: i32) -> Result<f32> {
-        self.inner.smoothing_score(doc_id)
-    }
-
-    fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {
-        self.inner.set_min_competitive_score(min_score)
-    }
-
-    fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
-        self.inner.children()
+        match self.score_override.as_mut() {
+            Some(score) => score(&mut *self.inner),
+            None => self.inner.score(),
+        }
     }
 }
 
@@ -513,20 +549,10 @@ impl Scorer for FilterScorer {
         self.inner.two_phase_iterator()
     }
 
-    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
-        self.inner.advance_shallow(target)
-    }
-
     fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
-        self.inner.get_max_score(up_to)
-    }
-
-    fn next_docs_and_scores(
-        &mut self,
-        up_to: i32,
-        live_docs: Option<&dyn Bits>,
-        buffer: &mut DocAndFloatFeatureBuffer,
-    ) -> Result<()> {
-        self.inner.next_docs_and_scores(up_to, live_docs, buffer)
+        match self.max_score_override.as_mut() {
+            Some(max_score) => max_score(&mut *self.inner, up_to),
+            None => self.inner.get_max_score(up_to),
+        }
     }
 }

@@ -121,10 +121,12 @@ fn test_asin() -> Result<()> {
     Assert::assert_true(asin(-2.0).is_nan());
     assert_equals_delta(-PI / 2.0, asin(-1.0), ASIN_DELTA);
     assert_equals_delta(-PI / 3.0, asin(-0.8660254), ASIN_DELTA);
+    #[allow(clippy::approx_constant)] // the Java test's literal input, not the constant
     assert_equals_delta(-PI / 4.0, asin(-0.7071068), ASIN_DELTA);
     assert_equals_delta(-PI / 6.0, asin(-0.5), ASIN_DELTA);
     assert_equals_delta(0.0, asin(0.0), ASIN_DELTA);
     assert_equals_delta(PI / 6.0, asin(0.5), ASIN_DELTA);
+    #[allow(clippy::approx_constant)] // the Java test's literal input, not the constant
     assert_equals_delta(PI / 4.0, asin(0.7071068), ASIN_DELTA);
     assert_equals_delta(PI / 3.0, asin(0.8660254), ASIN_DELTA);
     assert_equals_delta(PI / 2.0, asin(1.0), ASIN_DELTA);
@@ -157,7 +159,7 @@ fn test_haversin() -> Result<()> {
     assert_equals_delta(0.0, haversin_meters(90.0, 180.0, 90.0, 180.0), 0.0);
 
     // Test half a circle on the equator, using WGS84 mean earth radius in meters
-    let earth_radius_ms = 6_371_008.7714;
+    let earth_radius_ms = 6_371_008.771_4;
     let half_circle = earth_radius_ms * PI;
     assert_equals_delta(half_circle, haversin_meters(0.0, 0.0, 0.0, 180.0), 0.0);
 
@@ -169,7 +171,7 @@ fn test_haversin() -> Result<()> {
     let random_lon2 = -73.95 + ((r.next_int_bound(10) - 5) * 360) as f64;
 
     assert_equals_delta(
-        8_572.1137,
+        8_572.113_7,
         haversin_meters(random_lat1, random_lon1, random_lat2, random_lon2),
         0.01,
     );

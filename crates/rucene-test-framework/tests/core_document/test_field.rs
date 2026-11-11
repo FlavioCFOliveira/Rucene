@@ -128,7 +128,7 @@ fn test_double_point() -> Result<()> {
     try_set_byte_value(&mut field);
     try_set_bytes_value(&mut field);
     try_set_bytes_ref_value(&mut field);
-    FieldValueSetters::set_double_value(&mut field, 6.0)?; // ok
+    FieldValueSetters::set_double_value(&field, 6.0)?; // ok
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
     try_set_long_value(&mut field);
@@ -167,7 +167,7 @@ fn test_double_doc_values_field() -> Result<()> {
     try_set_byte_value(&mut field);
     try_set_bytes_value(&mut field);
     try_set_bytes_ref_value(&mut field);
-    FieldValueSetters::set_double_value(&mut field, 6.0)?; // ok
+    FieldValueSetters::set_double_value(&field, 6.0)?; // ok
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
     try_set_long_value(&mut field);
@@ -191,7 +191,7 @@ fn test_float_doc_values_field() -> Result<()> {
     try_set_bytes_ref_value(&mut field);
     try_set_double_value(&mut field);
     try_set_int_value(&mut field);
-    FieldValueSetters::set_float_value(&mut field, 6.0)?; // ok
+    FieldValueSetters::set_float_value(&field, 6.0)?; // ok
     try_set_long_value(&mut field);
     try_set_reader_value(&mut field);
     try_set_short_value(&mut field);
@@ -213,7 +213,7 @@ fn test_float_point() -> Result<()> {
     try_set_bytes_ref_value(&mut field);
     try_set_double_value(&mut field);
     try_set_int_value(&mut field);
-    FieldValueSetters::set_float_value(&mut field, 6.0)?; // ok
+    FieldValueSetters::set_float_value(&field, 6.0)?; // ok
     try_set_long_value(&mut field);
     try_set_reader_value(&mut field);
     try_set_short_value(&mut field);
@@ -251,7 +251,7 @@ fn test_int_point() -> Result<()> {
     try_set_bytes_value(&mut field);
     try_set_bytes_ref_value(&mut field);
     try_set_double_value(&mut field);
-    FieldValueSetters::set_int_value(&mut field, 6)?; // ok
+    FieldValueSetters::set_int_value(&field, 6)?; // ok
     try_set_float_value(&mut field);
     try_set_long_value(&mut field);
     try_set_reader_value(&mut field);
@@ -294,7 +294,7 @@ fn test_int_field() -> Result<()> {
         try_set_bytes_value(&mut field);
         try_set_bytes_ref_value(&mut field);
         try_set_double_value(&mut field);
-        FieldValueSetters::set_int_value(&mut field, 6)?;
+        FieldValueSetters::set_int_value(&field, 6)?;
         try_set_long_value(&mut field);
         try_set_float_value(&mut field);
         try_set_long_value(&mut field);
@@ -329,7 +329,7 @@ fn test_long_field() -> Result<()> {
         try_set_bytes_ref_value(&mut field);
         try_set_double_value(&mut field);
         try_set_int_value(&mut field);
-        FieldValueSetters::set_long_value(&mut field, 6)?;
+        FieldValueSetters::set_long_value(&field, 6)?;
         try_set_float_value(&mut field);
         try_set_reader_value(&mut field);
         try_set_short_value(&mut field);
@@ -375,7 +375,7 @@ fn test_float_field() -> Result<()> {
         try_set_double_value(&mut field);
         try_set_int_value(&mut field);
         try_set_long_value(&mut field);
-        FieldValueSetters::set_float_value(&mut field, -28.8)?;
+        FieldValueSetters::set_float_value(&field, -28.8)?;
         try_set_reader_value(&mut field);
         try_set_short_value(&mut field);
         try_set_string_value(&mut field);
@@ -430,7 +430,7 @@ fn test_double_field() -> Result<()> {
         try_set_int_value(&mut field);
         try_set_long_value(&mut field);
         try_set_float_value(&mut field);
-        FieldValueSetters::set_double_value(&mut field, -28.8)?;
+        FieldValueSetters::set_double_value(&field, -28.8)?;
         try_set_reader_value(&mut field);
         try_set_short_value(&mut field);
         try_set_string_value(&mut field);
@@ -469,7 +469,7 @@ fn test_numeric_doc_values_field() -> Result<()> {
     try_set_double_value(&mut field);
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
-    FieldValueSetters::set_long_value(&mut field, 6)?; // ok
+    FieldValueSetters::set_long_value(&field, 6)?; // ok
     try_set_reader_value(&mut field);
     try_set_short_value(&mut field);
     try_set_string_value(&mut field);
@@ -487,7 +487,7 @@ fn test_long_point() -> Result<()> {
     try_set_double_value(&mut field);
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
-    FieldValueSetters::set_long_value(&mut field, 6)?; // ok
+    FieldValueSetters::set_long_value(&field, 6)?; // ok
     try_set_reader_value(&mut field);
     try_set_short_value(&mut field);
     try_set_string_value(&mut field);
@@ -521,8 +521,8 @@ fn test_long_point_2d() -> Result<()> {
 fn test_sorted_bytes_doc_values_field() -> Result<()> {
     let mut field = SortedDocValuesField::new("foo", nbr("bar"));
     try_set_byte_value(&mut field);
-    FieldValueSetters::set_bytes_value(&mut field, utf8("fubar"))?;
-    FieldValueSetters::set_bytes_value(&mut field, nbr("baz"))?;
+    FieldValueSetters::set_bytes_value(&field, utf8("fubar"))?;
+    FieldValueSetters::set_bytes_value(&field, nbr("baz"))?;
     try_set_double_value(&mut field);
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
@@ -539,8 +539,8 @@ fn test_sorted_bytes_doc_values_field() -> Result<()> {
 fn test_binary_doc_values_field() -> Result<()> {
     let mut field = BinaryDocValuesField::new("foo", nbr("bar"));
     try_set_byte_value(&mut field);
-    FieldValueSetters::set_bytes_value(&mut field, utf8("fubar"))?;
-    FieldValueSetters::set_bytes_value(&mut field, nbr("baz"))?;
+    FieldValueSetters::set_bytes_value(&field, utf8("fubar"))?;
+    FieldValueSetters::set_bytes_value(&field, nbr("baz"))?;
     try_set_double_value(&mut field);
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
@@ -569,7 +569,7 @@ fn test_string_field() -> Result<()> {
         try_set_long_value(&mut field);
         try_set_reader_value(&mut field);
         try_set_short_value(&mut field);
-        FieldValueSetters::set_string_value(&mut field, "baz".to_string())?;
+        FieldValueSetters::set_string_value(&field, "baz".to_string())?;
         try_set_token_stream_value(&mut field);
 
         assert_equals(&Some("baz".to_string()), &field.string_value());
@@ -593,12 +593,12 @@ fn test_binary_string_field() -> Result<()> {
     ];
     for mut field in fields {
         try_set_byte_value(&mut field);
-        FieldValueSetters::set_bytes_value(&mut field, utf8("baz"))?;
+        FieldValueSetters::set_bytes_value(&field, utf8("baz"))?;
         assert_equals(
             &Some(BytesRef::from_char_sequence("baz")),
             &field.binary_value(),
         );
-        FieldValueSetters::set_bytes_value(&mut field, BytesRef::from_char_sequence("baz"))?;
+        FieldValueSetters::set_bytes_value(&field, BytesRef::from_char_sequence("baz"))?;
         try_set_double_value(&mut field);
         try_set_int_value(&mut field);
         try_set_float_value(&mut field);
@@ -640,7 +640,7 @@ fn test_text_field_string() -> Result<()> {
         try_set_long_value(&mut field);
         try_set_reader_value(&mut field);
         try_set_short_value(&mut field);
-        FieldValueSetters::set_string_value(&mut field, "baz".to_string())?;
+        FieldValueSetters::set_string_value(&field, "baz".to_string())?;
         try_set_token_stream_value(&mut field);
 
         assert_equals(&Some("baz".to_string()), &field.string_value());
@@ -667,7 +667,7 @@ fn test_text_field_reader() -> Result<()> {
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
     try_set_long_value(&mut field);
-    FieldValueSetters::set_reader_value(&mut field, Box::new(StringCharReader::new("foobar")))?;
+    FieldValueSetters::set_reader_value(&field, Box::new(StringCharReader::new("foobar")))?;
     try_set_short_value(&mut field);
     try_set_string_value(&mut field);
     try_set_token_stream_value(&mut field);
@@ -697,8 +697,8 @@ fn test_stored_field_bytes() -> Result<()> {
     ];
     for mut field in fields {
         try_set_byte_value(&mut field);
-        FieldValueSetters::set_bytes_value(&mut field, utf8("baz"))?;
-        FieldValueSetters::set_bytes_value(&mut field, nbr("baz"))?;
+        FieldValueSetters::set_bytes_value(&field, utf8("baz"))?;
+        FieldValueSetters::set_bytes_value(&field, nbr("baz"))?;
         try_set_double_value(&mut field);
         try_set_int_value(&mut field);
         try_set_float_value(&mut field);
@@ -725,7 +725,7 @@ fn test_stored_field_string() -> Result<()> {
     try_set_long_value(&mut field);
     try_set_reader_value(&mut field);
     try_set_short_value(&mut field);
-    FieldValueSetters::set_string_value(&mut field, "baz".to_string())?;
+    FieldValueSetters::set_string_value(&field, "baz".to_string())?;
     try_set_token_stream_value(&mut field);
 
     assert_equals(&Some("baz".to_string()), &field.string_value());
@@ -739,7 +739,7 @@ fn test_stored_field_int() -> Result<()> {
     try_set_bytes_value(&mut field);
     try_set_bytes_ref_value(&mut field);
     try_set_double_value(&mut field);
-    FieldValueSetters::set_int_value(&mut field, 5)?;
+    FieldValueSetters::set_int_value(&field, 5)?;
     try_set_float_value(&mut field);
     try_set_long_value(&mut field);
     try_set_reader_value(&mut field);
@@ -756,7 +756,7 @@ fn test_stored_field_double() -> Result<()> {
     try_set_byte_value(&mut field);
     try_set_bytes_value(&mut field);
     try_set_bytes_ref_value(&mut field);
-    FieldValueSetters::set_double_value(&mut field, 5.0)?;
+    FieldValueSetters::set_double_value(&field, 5.0)?;
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
     try_set_long_value(&mut field);
@@ -776,7 +776,7 @@ fn test_stored_field_float() -> Result<()> {
     try_set_bytes_ref_value(&mut field);
     try_set_double_value(&mut field);
     try_set_int_value(&mut field);
-    FieldValueSetters::set_float_value(&mut field, 5.0)?;
+    FieldValueSetters::set_float_value(&field, 5.0)?;
     try_set_long_value(&mut field);
     try_set_reader_value(&mut field);
     try_set_short_value(&mut field);
@@ -795,7 +795,7 @@ fn test_stored_field_long() -> Result<()> {
     try_set_double_value(&mut field);
     try_set_int_value(&mut field);
     try_set_float_value(&mut field);
-    FieldValueSetters::set_long_value(&mut field, 5)?;
+    FieldValueSetters::set_long_value(&field, 5)?;
     try_set_reader_value(&mut field);
     try_set_short_value(&mut field);
     try_set_string_value(&mut field);

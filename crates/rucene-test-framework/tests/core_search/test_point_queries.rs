@@ -1884,7 +1884,7 @@ fn new_multi_dim_int_set_query(
     num_dims: usize,
     values_in: &[i32],
 ) -> Result<Arc<dyn Query>> {
-    if values_in.len() % num_dims != 0 {
+    if !values_in.len().is_multiple_of(num_dims) {
         return Err(LuceneError::illegal_argument(format!(
             "incongruent number of values: valuesIn.length={} but numDims={num_dims}",
             values_in.len()

@@ -454,10 +454,9 @@ fn range_fields_refuse_more_than_four_dimensions() {
     use rucene::document::range_fields::{DoubleRange, FloatRange, IntRange, LongRange};
 
     let err = IntRange::new("r", &[0i32; 5], &[1i32; 5]).unwrap_err();
-    assert_eq!(
+    assert!(
         err.to_string()
             .contains("does not support greater than 4 dimensions"),
-        true,
         "unexpected message: {err}"
     );
     assert!(LongRange::new("r", &[0i64; 5], &[1i64; 5]).is_err());

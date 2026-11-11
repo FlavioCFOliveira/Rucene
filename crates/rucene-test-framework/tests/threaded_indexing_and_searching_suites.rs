@@ -1527,6 +1527,8 @@ mod sm {
             println!("sm created");
         }
         let searcher = searcher_manager.acquire()?;
+        #[allow(clippy::redundant_closure_call)]
+        // the Java test's `try`/`finally`, whose body runs here as a closure so the cleanup sees its outcome
         let checked = (|| -> Result<()> {
             assert_eq_i32(1, searcher.searcher().get_index_reader().num_docs());
             Ok(())

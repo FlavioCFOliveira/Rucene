@@ -99,7 +99,8 @@ fn default_config() -> Result<IndexWriterConfig> {
 }
 
 fn min_value_for_width(num_bytes: i32) -> i64 {
-    -(1i64 << (num_bytes * 8 - 1))
+    // `-(1L << 63)` wraps to `Long.MIN_VALUE` in Java.
+    (1i64 << (num_bytes * 8 - 1)).wrapping_neg()
 }
 
 fn max_value_for_width(num_bytes: i32) -> i64 {

@@ -293,11 +293,7 @@ fn leaves_size(reader: &Arc<dyn DirectoryReader>) -> Result<usize> {
 
 /// `TopFieldDocs.scoreDocs` as the `ScoreDoc[]` `CheckHits.checkEqual` reads.
 fn score_docs(top_docs: &TopFieldDocs) -> Vec<ScoreDoc> {
-    top_docs
-        .score_docs
-        .iter()
-        .map(|fd| fd.score_doc.clone())
-        .collect()
+    top_docs.score_docs.iter().map(|fd| fd.score_doc).collect()
 }
 
 /// `final DirectoryReader reader = DirectoryReader.open(writer); writer.close();`.

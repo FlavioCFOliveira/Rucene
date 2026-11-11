@@ -1065,9 +1065,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                     query_max[dim] = random_big_int(num_bytes_per_dim);
                     if query_min[dim] > query_max[dim] {
                         query_min.swap(dim, dim);
-                        let x = query_min[dim];
-                        query_min[dim] = query_max[dim];
-                        query_max[dim] = x;
+                        std::mem::swap(&mut query_min[dim], &mut query_max[dim]);
                     }
                     if *VERBOSE {
                         println!(
@@ -1383,6 +1381,8 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
                 if *VERBOSE {
                     println!("  ord={ord} id={id}");
+                    #[allow(clippy::needless_range_loop)]
+                    // Java's indexed loop, kept as the test writes it
                     for dim in 0..nd {
                         println!(
                             "    dim={dim} value={}",

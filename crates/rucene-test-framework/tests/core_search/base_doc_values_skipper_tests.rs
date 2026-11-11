@@ -229,7 +229,7 @@ impl DocValuesSkipper for FakeSkipper {
         let range_log = 9 - self.num_levels() + level;
         let block_size = 1 << range_log;
         let min_doc = self.min_doc_id(level);
-        if min_doc < 0 || min_doc >= MAX_DOC {
+        if !(0..MAX_DOC).contains(&min_doc) {
             return 0;
         }
         if min_doc >= DENSE_END {

@@ -407,6 +407,7 @@ fn check_next_set_bit_array(a: &[i32], num_bits: i32) -> Result<()> {
 fn test_next_bit_set() -> Result<()> {
     let mut set_bits: Vec<i32> = vec![0; random().next_int_bound(1000) as usize];
     let len = set_bits.len() as i32;
+    #[allow(clippy::needless_range_loop)] // Java's indexed loop, kept as the test writes it
     for i in 0..set_bits.len() {
         set_bits[i] = random().next_int_bound(len);
     }
@@ -470,6 +471,7 @@ fn test_bits2_words() -> Result<()> {
 fn make_int_array(random: &dyn Random, count: i32, min: i32, max: i32) -> Vec<i32> {
     let mut rv = vec![0; count as usize];
 
+    #[allow(clippy::needless_range_loop)] // Java's indexed loop, kept as the test writes it
     for i in 0..count as usize {
         rv[i] = TestUtil::next_int(random, min, max);
     }

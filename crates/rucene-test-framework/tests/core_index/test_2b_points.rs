@@ -64,7 +64,7 @@ fn config() -> Result<IndexWriterConfig> {
 
 fn test_1d() -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(
-        &LuceneTestCase::create_temp_dir_prefix("2BPoints1D"),
+        LuceneTestCase::create_temp_dir_prefix("2BPoints1D"),
     )?);
 
     let iwc = config()?;
@@ -113,7 +113,7 @@ fn test_1d() -> Result<()> {
 
 fn test_2d() -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(
-        &LuceneTestCase::create_temp_dir_prefix("2BPoints2D"),
+        LuceneTestCase::create_temp_dir_prefix("2BPoints2D"),
     )?);
 
     let iwc = config()?;

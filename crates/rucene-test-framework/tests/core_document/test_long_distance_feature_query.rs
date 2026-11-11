@@ -132,6 +132,8 @@ fn test_basics() -> Result<()> {
     let top_hits = top(&searcher, &query, 2)?;
     assert_equals(&2, &top_hits.len());
     CheckHits::check_explanations(&query, Some(""), &searcher)?;
+    #[allow(clippy::eq_op)]
+    // the expected scores are written as in the Java test, `5. / (5. + 0.)` included
     CheckHits::check_equal(
         query.as_ref(),
         &[
@@ -273,6 +275,8 @@ fn test_multi_valued() -> Result<()> {
     let top_hits = top(&searcher, &query, 2)?;
     assert_equals(&2, &top_hits.len());
     CheckHits::check_explanations(&query, Some(""), &searcher)?;
+    #[allow(clippy::eq_op)]
+    // the expected scores are written as in the Java test, `5. / (5. + 0.)` included
     CheckHits::check_equal(
         query.as_ref(),
         &[

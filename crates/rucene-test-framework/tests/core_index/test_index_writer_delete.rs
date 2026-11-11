@@ -695,7 +695,7 @@ fn test_delete_all_nrt() -> Result<()> {
 /// Port of `TestIndexWriterDelete.testDeleteAllRepeated`.
 fn test_delete_all_repeated() -> Result<()> {
     let breaking_field_count: i64 = 50_000_000;
-    let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&LuceneTestCase::create_temp_dir())?);
+    let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(LuceneTestCase::create_temp_dir())?);
     // Avoid flushing until the end of the test to save time.
     let conf = LuceneTestCase::new_index_writer_config();
     conf.set_max_buffered_docs(1000)?;

@@ -444,7 +444,6 @@ fn test_constant_score_scorer_supplier_uses_into_bit_set() -> Result<()> {
             .score(&mut collector, Some(&live_docs), 0, 9000)
             .map_err(|e| e.into_lucene_error())?,
     );
-    drop(collector);
     assert_array_equals(
         &[1, 8195],
         &ArrayUtil::copy_of_sub_array_int(
@@ -539,7 +538,6 @@ fn test_constant_score_scorer_supplier_bulk_collects_two_phase_with_matcher() ->
             .score(&mut collector, None, 0, 9000)
             .map_err(|e| e.into_lucene_error())?,
     );
-    drop(collector);
     // doc 2 is excluded by matches(), so the matcher is honored even via the bulk path.
     assert_array_equals(
         &[1, 3],
@@ -595,7 +593,6 @@ fn assert_default_bulk_scorer_does_not_use_doc_id_stream_for_scores(
             .score(&mut collector, None, 0, 9000)
             .map_err(|e| e.into_lucene_error())?,
     );
-    drop(collector);
     assert_array_equals(
         &docs,
         &ArrayUtil::copy_of_sub_array_int(

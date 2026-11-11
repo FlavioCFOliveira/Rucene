@@ -241,6 +241,8 @@ fn test_flush_with_no_stored_fields_skips_per_document_seeks() -> Result<()> {
             reader.document(i, &mut visitor)?;
             let document = Some(visitor.into_document());
             assert_not_null(&document);
+            #[allow(clippy::unnecessary_literal_unwrap)]
+            // Java's `assertNotNull` on the value, then its use
             Assert::assert_true(document.expect("checked").get_fields().is_empty());
         }
         reader.close()?;

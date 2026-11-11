@@ -76,9 +76,7 @@ pub struct IndexInputInstance {
 impl IndexInputInstance {
     /// `new TestIndexInput()`.
     pub fn new() -> Self {
-        IndexInputInstance {
-            get_index_input: get_index_input,
-        }
+        IndexInputInstance { get_index_input }
     }
 }
 

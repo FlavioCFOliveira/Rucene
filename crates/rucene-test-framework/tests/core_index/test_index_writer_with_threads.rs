@@ -592,6 +592,7 @@ struct FailOnlyOnAbortOrFlush {
 }
 
 impl FailOnlyOnAbortOrFlush {
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(only_once: bool) -> Arc<dyn Failure> {
         Arc::new(FailOnlyOnAbortOrFlush {
             do_fail: AtomicBool::new(false),
@@ -667,6 +668,7 @@ struct FailOnlyInWriteSegment {
 }
 
 impl FailOnlyInWriteSegment {
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(only_once: bool) -> Arc<dyn Failure> {
         Arc::new(FailOnlyInWriteSegment {
             do_fail: AtomicBool::new(false),

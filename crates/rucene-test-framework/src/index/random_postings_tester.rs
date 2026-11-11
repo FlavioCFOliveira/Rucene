@@ -611,9 +611,7 @@ struct SeedTermsEnum {
 impl SeedTermsEnum {
     fn current(&self) -> Result<&(BytesRef, SeedAndOrd)> {
         // Java dereferences `current` (`NullPointerException` when unset).
-        self.current
-            .as_ref()
-            .ok_or_else(|| LuceneError::null_pointer())
+        self.current.as_ref().ok_or_else(LuceneError::null_pointer)
     }
 }
 
@@ -653,7 +651,7 @@ impl TermsEnum for SeedTermsEnum {
         let after = self
             .iterator_after
             .clone()
-            .ok_or_else(|| LuceneError::null_pointer())?;
+            .ok_or_else(LuceneError::null_pointer)?;
         let next = self
             .terms
             .range((after, Bound::Unbounded))
@@ -1206,7 +1204,7 @@ impl RandomPostingsTester {
             let old_field_info = self
                 .field_infos
                 .field_info_by_number(field_upto)
-                .ok_or_else(|| LuceneError::null_pointer())?;
+                .ok_or_else(LuceneError::null_pointer)?;
 
             // Randomly picked the IndexOptions to index this
             // field with:
@@ -1314,10 +1312,10 @@ impl RandomPostingsTester {
         let current_field_infos = self
             .current_field_infos
             .as_ref()
-            .ok_or_else(|| LuceneError::null_pointer())?;
+            .ok_or_else(LuceneError::null_pointer)?;
         let field_info = current_field_infos
             .field_info(field)
-            .ok_or_else(|| LuceneError::null_pointer())?;
+            .ok_or_else(LuceneError::null_pointer)?;
         let field_index_options = field_info.get_index_options();
 
         // NOTE: can be empty list if we are using liveDocs:
@@ -1325,7 +1323,7 @@ impl RandomPostingsTester {
             .fields
             .get(field)
             .and_then(|terms| terms.get(term))
-            .ok_or_else(|| LuceneError::null_pointer())?
+            .ok_or_else(LuceneError::null_pointer)?
             .seed;
         let mut expected =
             Self::get_seed_postings(&term.utf8_to_string()?, seed, max_index_options, true);
@@ -2411,7 +2409,7 @@ impl RandomPostingsTester {
                 }
                 let terms = fields_source
                     .terms(field)?
-                    .ok_or_else(|| LuceneError::null_pointer())?;
+                    .ok_or_else(LuceneError::null_pointer)?;
                 let mut intersected = terms.intersect(&ca, start_term.as_ref())?;
 
                 let mut intersected_terms = std::collections::HashSet::new();

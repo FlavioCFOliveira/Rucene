@@ -603,7 +603,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         let field_infos_of_reader = one_doc_reader.get_field_infos();
         let proto = field_infos_of_reader
             .field_info("field")
-            .ok_or_else(|| LuceneError::null_pointer())?;
+            .ok_or_else(LuceneError::null_pointer)?;
         let field = FieldInfo::new_full(
             proto.name.clone(),
             proto.number,

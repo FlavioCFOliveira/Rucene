@@ -349,6 +349,7 @@ fn test_intersect_random() -> Result<()> {
         let mut sorted_accept_terms: std::collections::BTreeSet<BytesRef> =
             std::collections::BTreeSet::new();
         let keep_pct = random().next_double();
+        #[allow(clippy::needless_late_init)] // Java's definitely-assigned local, set in each branch
         let a: Automaton;
         if iter == 0 {
             if verbose() {
@@ -693,8 +694,10 @@ fn test_floor_blocks() -> Result<()> {
 
 /// Port of `TestTermsEnum.testZeroTerms`.
 fn test_zero_terms() -> Result<()> {
-    let mut f = Fixture::default();
-    f.d = Some(LuceneTestCase::new_directory());
+    let mut f = Fixture {
+        d: Some(LuceneTestCase::new_directory()),
+        ..Fixture::default()
+    };
     let w = RandomIndexWriter::new_with_mock_analyzer(
         &*random(),
         f.d.as_ref().expect("set").as_directory(),

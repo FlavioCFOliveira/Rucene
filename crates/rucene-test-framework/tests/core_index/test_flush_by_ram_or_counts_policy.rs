@@ -456,6 +456,8 @@ impl FlushPolicy for MockDefaultFlushPolicy {
         let config = self.index_writer_config();
         // `toFlush`: `dwpt` itself, or the largest non-pending writer.
         let largest: Option<Arc<DocumentsWriterPerThread>>;
+        #[allow(clippy::if_same_then_else)]
+        // the branches mirror the Java policy's separate conditions
         let to_flush: Option<&DocumentsWriterPerThread> = if dwpt.is_flush_pending() {
             Some(dwpt)
         } else if self.inner.flush_on_doc_count()

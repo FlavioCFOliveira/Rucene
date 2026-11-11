@@ -421,9 +421,12 @@ fn file_switch_class() -> Arc<Class> {
         .build()
 }
 
+/// A named supplier of `parametersWithCustomName()`.
+type NamedSupplier = (fn() -> OutputToInputFn, &'static str);
+
 /// The suppliers of `TestByteBuffersDirectory.parametersWithCustomName()`,
 /// with their names.
-const BYTE_BUFFERS_SUPPLIERS: [(fn() -> OutputToInputFn, &str); 3] = [
+const BYTE_BUFFERS_SUPPLIERS: [NamedSupplier; 3] = [
     (output_as_many_buffers, "many buffers (heap)"),
     (output_as_one_buffer, "one buffer (heap)"),
     (output_as_byte_array, "byte array (heap)"),

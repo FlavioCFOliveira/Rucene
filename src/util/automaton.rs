@@ -206,6 +206,9 @@ mod tests {
     struct ListTermsEnum {
         terms: Vec<BytesRef>,
         pos: usize,
+        /// Whether `seek_ceil` positioned the enum on `terms[pos]`, so that
+        /// `next` moves past it as `TermsEnum.next()` does after a seek.
+        sought: bool,
         atts: crate::util::attribute::AttributeSource,
     }
 
@@ -214,6 +217,7 @@ mod tests {
             Self {
                 terms,
                 pos: 0,
+                sought: false,
                 atts: crate::util::attribute::AttributeSource::new(),
             }
         }
@@ -253,6 +257,7 @@ mod tests {
             match self.terms.iter().position(|t| t.slice() >= text.slice()) {
                 Some(pos) => {
                     self.pos = pos;
+                    self.sought = true;
                     Ok(if self.terms[pos].slice() == text.slice() {
                         crate::index::SeekStatus::FOUND
                     } else {
@@ -304,6 +309,9 @@ mod tests {
         }
 
         fn next(&mut self) -> crate::error::Result<Option<BytesRef>> {
+            if std::mem::take(&mut self.sought) {
+                self.pos += 1;
+            }
             if self.pos >= self.terms.len() {
                 Ok(None)
             } else {

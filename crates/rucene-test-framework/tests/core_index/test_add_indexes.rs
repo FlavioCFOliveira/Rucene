@@ -1013,6 +1013,8 @@ impl RunShared {
             }
             Variant::CommitAndAddIndexes3 => {
                 let mut report = true;
+                #[allow(clippy::if_same_then_else, clippy::collapsible_if)]
+                // the branches mirror the Java test's separate exception checks
                 if t.is_instance("org.apache.lucene.store.AlreadyClosedException")
                     || t.is_instance("org.apache.lucene.index.MergePolicy$MergeAbortedException")
                     || t.is_instance("java.lang.NullPointerException")

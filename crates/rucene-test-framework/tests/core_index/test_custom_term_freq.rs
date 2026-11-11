@@ -530,6 +530,8 @@ fn test_no_overflow_int() -> Result<()> {
                     .ok_or_else(rucene::error::LuceneError::null_pointer)?,
             );
             assert_not_null(&p);
+            #[allow(clippy::unnecessary_literal_unwrap)]
+            // Java's `assertNotNull` on the value, then its use
             assert_postings(&mut *p.expect("checked by assertNotNull"), &[(0, 3)])?;
 
             Assert::assert_true(te.seek_exact(&LuceneTestCase::new_bytes_ref_str("bar"))?);
@@ -540,6 +542,8 @@ fn test_no_overflow_int() -> Result<()> {
                     .ok_or_else(rucene::error::LuceneError::null_pointer)?,
             );
             assert_not_null(&p);
+            #[allow(clippy::unnecessary_literal_unwrap)]
+            // Java's `assertNotNull` on the value, then its use
             assert_postings(&mut *p.expect("checked by assertNotNull"), &[(0, i32::MAX)])?;
         }
         r.close()?;
@@ -609,6 +613,8 @@ fn assert_term_vector(r: &Arc<dyn IndexReader>, doc: i32, expected: &[(&str, i32
                 .ok_or_else(rucene::error::LuceneError::null_pointer)?,
         );
         assert_not_null(&p);
+        #[allow(clippy::unnecessary_literal_unwrap)]
+        // Java's `assertNotNull` on the value, then its use
         assert_postings(&mut *p.expect("checked by assertNotNull"), &[(0, freq)])?;
     }
     Ok(())

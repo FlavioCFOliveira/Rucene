@@ -33,7 +33,7 @@ impl CopyMock for MockByteVectorValues {
 
 /// `static boolean fitsInByte(float v)`.
 fn fits_in_byte(v: f32) -> bool {
-    v <= 127.0 && v >= -128.0 && v % 1.0 == 0.0
+    (-128.0..=127.0).contains(&v) && v % 1.0 == 0.0
 }
 
 impl HnswCase for ByteCase {
@@ -91,9 +91,8 @@ impl HnswCase for ByteCase {
         let mut vectors: Vec<Option<Vec<u8>>> = vec![None; size as usize];
         let random_vectors = create_random_byte_vectors(size - pvv.values.len() as i32, dimension);
 
-        for i in 0..pregenerated_offset as usize {
-            vectors[i] = random_vectors[i].clone();
-        }
+        vectors[..pregenerated_offset as usize]
+            .clone_from_slice(&random_vectors[..pregenerated_offset as usize]);
 
         for current_ord in 0..pvv.size() as usize {
             vectors[pregenerated_offset as usize + current_ord] = pvv.values[current_ord].clone();

@@ -1109,20 +1109,21 @@ mod tests {
         writer.close().unwrap();
         let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         assert_eq!(infos.size(), 2);
-        let vectors_of = |i: usize| {
+        // The reader stays open while its vectors reader is used: closing the
+        // segment reader closes the core readers it shares.
+        let reader_of = |i: usize| {
             SegmentReader::new(
                 infos.info(i).clone(),
                 infos.index_created_version_major(),
                 &*DEFAULT_IO_CONTEXT,
             )
             .unwrap()
-            .get_vector_reader()
-            .unwrap()
-            .unwrap()
         };
+        let vectors_of = |reader: &SegmentReader| reader.get_vector_reader().unwrap().unwrap();
 
         // Positive control: the segment that has the field answers it.
-        let with_v2 = vectors_of(0);
+        let reader_0 = reader_of(0);
+        let with_v2 = vectors_of(&reader_0);
         assert_eq!(
             with_v2
                 .get_float_vector_values("v2")
@@ -1132,7 +1133,8 @@ mod tests {
             1
         );
 
-        let without_v2 = vectors_of(1);
+        let reader_1 = reader_of(1);
+        let without_v2 = vectors_of(&reader_1);
         let merge_instance = without_v2.get_merge_instance().unwrap();
         for reader in [without_v2.as_ref(), merge_instance.as_ref()] {
             assert!(reader.get_float_vector_values("v2").unwrap().is_none());

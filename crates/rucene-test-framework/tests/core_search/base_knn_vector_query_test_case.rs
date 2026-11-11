@@ -603,9 +603,8 @@ fn test_score_cosine<C: KnnVectorCase>() -> Result<()> {
         /* score0 = ((2,3) * (1, 1) = 5) / (||2, 3|| * ||1, 1|| = sqrt(26)), then
          * normalized by (1 + x) /2.
          */
-        let score0 = ((1.0
-            + f64::from(2 * 1 + 3 * 1) / f64::from((2 * 2 + 3 * 3) * (1 * 1 + 1 * 1)).sqrt())
-            / 2.0) as f32;
+        let score0 =
+            ((1.0 + f64::from(2 + 3) / f64::from((2 * 2 + 3 * 3) * (1 + 1)).sqrt()) / 2.0) as f32;
 
         /* score1 = ((2,3) * (2, 4) = 16) / (||2, 3|| * ||2, 4|| = sqrt(260)), then
          * normalized by (1 + x) /2

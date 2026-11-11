@@ -432,7 +432,7 @@ impl<T: PagedElement> KnnFieldVectorsWriter<T> for PagedFieldVectorsWriter<T> {
         debug_assert!(doc_id > self.last_doc_id);
         self.last_doc_id = doc_id;
 
-        if self.size % VECTORS_PER_PAGE == 0 {
+        if self.size.is_multiple_of(VECTORS_PER_PAGE) {
             self.pages
                 .push(vec![0u8; VECTORS_PER_PAGE * self.bytes_per_vector]);
         }

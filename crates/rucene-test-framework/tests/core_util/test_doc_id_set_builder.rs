@@ -177,7 +177,7 @@ fn test_random() -> Result<()> {
                 for k in 0..l {
                     if budget == 0 || LuceneTestCase::rarely() {
                         budget = TestUtil::next_int(&*random(), 1, l - k + 5);
-                        drop(adder.take());
+                        adder.take();
                         adder = Some(builder.grow(budget));
                     }
                     adder.as_mut().expect("adder").add(array[j]);

@@ -115,7 +115,7 @@ fn value_in_range(doc: i32) -> bool {
             }
         }
     };
-    value >= QUERY_MIN && value <= QUERY_MAX
+    (QUERY_MIN..=QUERY_MAX).contains(&value)
 }
 
 fn doc_has_value(doc: i32) -> bool {

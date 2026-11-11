@@ -243,7 +243,7 @@ fn fake_terms_enum(ordinals: &[i64]) -> FakeTermsEnum {
 }
 
 fn ord_in_set(ord: i64) -> bool {
-    ord >= QUERY_MIN && ord <= QUERY_MAX && ord != GAP_ORD
+    (QUERY_MIN..=QUERY_MAX).contains(&ord) && ord != GAP_ORD
 }
 
 // ---- Shared helpers ----

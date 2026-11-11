@@ -103,6 +103,7 @@ fn test_equals() -> Result<()> {
     let barbar = vec![br("bar"), br("bar")];
     let barbaz = vec![br("bar"), br("baz")];
     let bazbar = vec![br("baz"), br("bar")];
+    #[allow(clippy::disallowed_names)] // the Java test's variable name
     let baz = vec![br("baz")];
 
     let q = |f: &str, v: &Vec<BytesRef>| SortedDocValuesField::new_slow_set_query(f, v.clone());

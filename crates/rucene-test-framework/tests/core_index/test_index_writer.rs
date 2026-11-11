@@ -6146,6 +6146,8 @@ fn test_refresh_and_rollback_concurrently() -> Result<()> {
         })
     };
 
+    #[allow(clippy::redundant_closure_call)]
+    // the Java test's `try`/`finally`, whose body runs here as a closure so the cleanup sees its outcome
     let result = (|| -> Result<()> {
         indexer.start();
         refresher.start();
@@ -6229,6 +6231,9 @@ fn test_closeable_queue() -> Result<()> {
     dir.close()
 }
 
+/// The indexing step `randomOperations` runs, Java's `IOConsumer<...>`.
+type IndexFn = Arc<dyn Fn(&IndexWriter, &str) -> Result<()> + Send + Sync>;
+
 /// The thread body `testRandomOperations` and
 /// `testRandomOperationsWithSoftDeletes` share: `num_operations` random
 /// operations, with `index` choosing how a document is indexed.
@@ -6236,7 +6241,7 @@ fn random_operations(
     writer: Arc<IndexWriter>,
     sm: Arc<SearcherManager>,
     num_operations: i64,
-    index: Arc<dyn Fn(&IndexWriter, &str) -> Result<()> + Send + Sync>,
+    index: IndexFn,
 ) -> Result<()> {
     let num_operations = Arc::new(Semaphore::new(num_operations));
     let single_doc = random().next_boolean();

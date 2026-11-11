@@ -31,7 +31,7 @@ pub fn class_def() -> Arc<Class> {
 fn assertion_error(e: rucene::error::LuceneError) -> ! {
     randomizedtesting::jdk::exception::Throwable::new(
         "java.lang.AssertionError",
-        &java_throwable(&e).to_string(),
+        java_throwable(&e).to_string(),
     )
     .throw()
 }

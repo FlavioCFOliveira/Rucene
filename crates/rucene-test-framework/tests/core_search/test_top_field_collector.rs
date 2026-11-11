@@ -690,10 +690,14 @@ fn test_compute_scores_only_once(_f: &mut TopFieldCollectorTest) -> Result<()> {
     field_mut_as::<StringField>(&mut doc, "text").set_string_value("baz".to_string())?;
     w.add_document(&doc)?;
     let reader = w.get_reader()?;
+    #[allow(clippy::disallowed_names)] // the Java test's variable names
     let foo: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text("text", "foo")));
     let bar: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text("text", "bar")));
+    #[allow(clippy::disallowed_names)] // the Java test's variable names
     let foo: Arc<dyn Query> = Arc::new(BoostQuery::new(foo, 2.0)?);
+    #[allow(clippy::disallowed_names)] // the Java test's variable names
     let baz: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text("text", "baz")));
+    #[allow(clippy::disallowed_names)] // the Java test's variable names
     let baz: Arc<dyn Query> = Arc::new(BoostQuery::new(baz, 3.0)?);
     let mut builder = BooleanQueryBuilder::new();
     builder.add(foo, Occur::SHOULD)?;
@@ -1010,6 +1014,7 @@ fn test_relation_vs_top_docs_count(_f: &mut TopFieldCollectorTest) -> Result<()>
             let reader = directory_reader::open_with_writer(&*w)?;
             let result = (|| -> Result<()> {
                 let searcher = IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>)?;
+                #[allow(clippy::disallowed_names)] // the Java test's variable name
                 let foo =
                     || -> Arc<dyn Query> { Arc::new(TermQuery::new(Term::from_text("f", "foo"))) };
                 let collector_manager = TopFieldCollectorManager::new(sort.clone(), 2, None, 10)?;

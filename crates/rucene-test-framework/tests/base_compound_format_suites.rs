@@ -131,6 +131,7 @@ fn test_file_length_ordering() -> Result<()> {
             let num_entries = entries_stream.read_v_int()?;
             let mut last_offset = 0i64;
             let mut last_length = 0i64;
+            #[allow(clippy::needless_range_loop)] // Java's indexed loop, kept as the test writes it
             for i in 0..num_entries as usize {
                 let id = entries_stream.read_string()?;
                 Assert::assert_equals_str(

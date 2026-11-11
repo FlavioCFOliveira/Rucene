@@ -260,7 +260,7 @@ fn test_sigmoid_properties(_f: &mut Bayesian) -> Result<()> {
     let large = sigmoid(100.0);
     Assert::assert_true_msg("sigmoid(100) near 1", large > 0.99 && large <= 1.0);
     let small = sigmoid(-100.0);
-    Assert::assert_true_msg("sigmoid(-100) near 0", small >= 0.0 && small < 0.01);
+    Assert::assert_true_msg("sigmoid(-100) near 0", (0.0..0.01).contains(&small));
     Ok(())
 }
 

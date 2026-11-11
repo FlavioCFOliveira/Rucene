@@ -122,35 +122,31 @@ fn next_double_internal(low: f64, high: f64) -> f64 {
     }
 
     // first pick a base value.
-    let base_value;
+
     let surprise_me = random().next_int_bound(17);
-    if surprise_me == 0 {
+    let base_value = if surprise_me == 0 {
         // random bits
         let low_bits = NumericUtils::double_to_sortable_long(low);
         let high_bits = NumericUtils::double_to_sortable_long(high);
-        base_value = NumericUtils::sortable_long_to_double(TestUtil::next_long(
-            &*random(),
-            low_bits,
-            high_bits,
-        ));
+        NumericUtils::sortable_long_to_double(TestUtil::next_long(&*random(), low_bits, high_bits))
     } else if surprise_me == 1 {
         // edge case
-        base_value = low;
+        low
     } else if surprise_me == 2 {
         // edge case
-        base_value = high;
+        high
     } else if surprise_me == 3 && low <= 0.0 && high >= 0.0 {
         // may trigger divide by 0
-        base_value = 0.0;
+        0.0
     } else if surprise_me == 4 {
         // divide up space into block of 360
         let delta = (high - low) / 360.0;
         let block = random().next_int_bound(360);
-        base_value = low + delta * f64::from(block);
+        low + delta * f64::from(block)
     } else {
         // distributed ~ evenly
-        base_value = low + (high - low) * random().next_double();
-    }
+        low + (high - low) * random().next_double()
+    };
 
     java_assert(base_value >= low, String::new);
     java_assert(base_value <= high, String::new);

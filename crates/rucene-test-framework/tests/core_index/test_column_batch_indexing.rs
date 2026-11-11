@@ -878,7 +878,7 @@ fn test_vector_across_multiple_batches() -> Result<()> {
     // so compare as a sorted set rather than by doc-ID position.
     let by_first = |a: &Vec<f32>, b: &Vec<f32>| (a[0] as f64).total_cmp(&(b[0] as f64));
     collected.sort_by(by_first);
-    let mut expected = vec![
+    let mut expected = [
         first_batch[0].clone(),
         first_batch[1].clone(),
         second_batch[0].clone(),

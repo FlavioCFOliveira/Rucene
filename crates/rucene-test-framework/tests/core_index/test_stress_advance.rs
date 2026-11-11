@@ -135,6 +135,7 @@ fn test_one(docs: &mut dyn PostingsEnum, expected: &[i32]) -> Result<()> {
         if verbose() {
             println!("  cycle upto={upto} of {len}");
         }
+        #[allow(clippy::needless_late_init)] // Java's definitely-assigned local, set in each branch
         let doc_id;
         if random().next_int_bound(4) == 1 || upto == len - 1 {
             // test nextDoc()

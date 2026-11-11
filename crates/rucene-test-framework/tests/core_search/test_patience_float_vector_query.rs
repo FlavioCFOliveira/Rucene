@@ -76,7 +76,7 @@ impl KnnVectorCase for PatienceFloatCase {
         query: Option<Arc<dyn Query>>,
     ) -> Result<Arc<dyn Query>> {
         Ok(Arc::new(PatienceKnnVectorQuery::from_query(Arc::new(
-            ThrowingKnnVectorQuery::patience(field, &vec.to_vec(), k, query)?,
+            ThrowingKnnVectorQuery::patience(field, vec, k, query)?,
         ))?))
     }
 

@@ -219,7 +219,7 @@ impl Directory for FakeDirectory {
         if !name.ends_with(".fake") {
             return Err(LuceneError::illegal_argument(name.to_string()));
         }
-        let start_index = name.find("_size=").map_or(0, |i| i) + "_size=".len();
+        let start_index = name.find("_size=").unwrap_or(0) + "_size=".len();
         let end_index = name.len() - ".fake".len();
         name[start_index..end_index].parse::<i64>().map_err(|_| {
             LuceneError::from(LuceneErrorKind::Unchecked {

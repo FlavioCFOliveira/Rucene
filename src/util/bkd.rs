@@ -1802,9 +1802,10 @@ impl DocIdsWriter {
         count: usize,
         out: &mut [i32],
     ) -> Result<()> {
-        let mut doc = 0;
+        let mut doc: i32 = 0;
         for slot in out.iter_mut().take(count) {
-            doc += in_.read_v_int()?;
+            // `doc += in.readVInt()`: Java's `int` addition wraps.
+            doc = doc.wrapping_add(in_.read_v_int()?);
             *slot = doc;
         }
         Ok(())
@@ -3665,10 +3666,16 @@ impl BKDWriter {
         let bytes_per_doc = config.bytes_per_doc() as f64;
         let max_points_sort_in_heap =
             ((max_mb_sort_in_heap * 1024.0 * 1024.0) / bytes_per_doc) as usize;
+        // Finally, we must be able to hold at least the leaf node in heap
+        // during build (`BKDWriter.java:197-208`).
         if max_points_sort_in_heap < config.max_points_in_leaf_node as usize {
-            return Err(LuceneError::illegal_argument(
-                "maxMBSortInHeap too small to hold one leaf node".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument(format!(
+                "maxMBSortInHeap={} only allows for maxPointsSortInHeap={max_points_sort_in_heap}, \
+                 but this is less than maxPointsInLeafNode={}; either increase maxMBSortInHeap \
+                 or decrease maxPointsInLeafNode",
+                crate::util::java_fmt::double_to_string(max_mb_sort_in_heap),
+                config.max_points_in_leaf_node
+            )));
         }
         let init_config = config.clone();
         let tracking_dir = Arc::new(TrackingDirectoryWrapper::new(Box::new(SharedDirectory(
@@ -3758,9 +3765,11 @@ impl BKDWriter {
             )));
         }
         if self.point_count >= self.total_point_count {
-            return Err(LuceneError::illegal_state(
-                "totalPointCount exceeded".to_string(),
-            ));
+            return Err(LuceneError::illegal_state(format!(
+                "totalPointCount={} was passed when we were created, but we just hit {} values",
+                self.total_point_count,
+                self.point_count + 1
+            )));
         }
         if self.point_count == 0 {
             self.init_point_writer()?;
@@ -5921,7 +5930,10 @@ fn write_index(
     meta_out.write_v_int(doc_count)?;
     meta_out.write_v_int(packed_index.len() as i32)?;
     meta_out.write_long(data_start_fp)?;
-    let same_file = std::ptr::addr_of!(*meta_out) == std::ptr::addr_of!(*index_out);
+    // If metaOut and indexOut are the same file, we account for the fact that
+    // writing a long makes the index start 8 bytes later: `metaOut == indexOut`
+    // (`BKDWriter.java:1318-1320`), the outputs' identity.
+    let same_file = meta_out.output_identity() == index_out.output_identity();
     meta_out.write_long(index_out.file_pointer() + if same_file { 8 } else { 0 })?;
     index_out.write_bytes(packed_index, 0, packed_index.len())?;
     Ok(())

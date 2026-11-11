@@ -239,18 +239,23 @@ fn commit_op(w: &IndexWriter, commits: &Ops, op: &mut Operation) -> Result<()> {
     Ok(())
 }
 
+/// The recorded commit operations and the directory's commits.
+type FinalCommits = (
+    Vec<Operation>,
+    Vec<Arc<dyn rucene::index::index_commit::IndexCommit>>,
+);
+
 /// The final commit and the listing of the commits, checked against the
 /// recorded ones.
 fn final_commits(
     w: &IndexWriter,
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
     commits: &Ops,
-) -> Result<(
-    Vec<Operation>,
-    Vec<Arc<dyn rucene::index::index_commit::IndexCommit>>,
-)> {
-    let mut commit_op = Operation::default();
-    commit_op.seq_no = w.commit()?;
+) -> Result<FinalCommits> {
+    let commit_op = Operation {
+        seq_no: w.commit()?,
+        ..Operation::default()
+    };
     let mut commits = commits.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if commit_op.seq_no != -1 {
         commits.push(commit_op);

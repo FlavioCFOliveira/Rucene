@@ -178,7 +178,7 @@ fn runs_worst_case(length: i32, min_run: i32) -> VecDeque<i32> {
 /// (resulting in `X`) using only merges on the second-to-last element.
 #[allow(non_snake_case)]
 fn generate_wrong_elem(mut X: i32, min_run: i32, runs: &mut VecDeque<i32>) {
-    while X >= 2 * min_run + 1 {
+    while X > 2 * min_run {
         // Default strategy
         let mut new_total = X / 2 + 1;
 

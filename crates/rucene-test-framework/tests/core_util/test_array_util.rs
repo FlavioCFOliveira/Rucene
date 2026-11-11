@@ -184,6 +184,7 @@ fn test_parse_int() -> Result<()> {
     assert_equal_to(parse_int("-10000")?, -10000);
     assert_equal_to(parse_int("1923")?, 1923);
     assert_equal_to(parse_int("-1")?, -1);
+    #[allow(clippy::disallowed_names)] // the Java test's variable name
     let foo: Vec<char> = "foo 1923 bar".chars().collect();
     assert_equal_to(ArrayUtil::parse_int(&foo, 4, 4)?, 1923);
     Ok(())
@@ -490,7 +491,7 @@ fn test_grow_exact() -> Result<()> {
         &ArrayUtil::grow_exact_generic(&['a', 'b', 'c'], 5),
     );
     expect_throws_panic(IOOBE, || {
-        ArrayUtil::grow_exact(&[b'a', b'b', b'c'], random().next_int_bound(3) as usize);
+        ArrayUtil::grow_exact(b"abc", random().next_int_bound(3) as usize);
     });
 
     // `String[]`, whose new slots are `null`.

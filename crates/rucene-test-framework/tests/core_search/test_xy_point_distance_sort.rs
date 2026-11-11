@@ -86,35 +86,35 @@ fn test_distance_sort() -> Result<()> {
     let mut doc = Document::new();
     doc.add(Box::new(XYDocValuesField::new(
         "location",
-        40.759011f32,
-        -73.9844722f32,
+        40.759_01_f32,
+        -73.984_474_f32,
     )?));
     iw.add_document(&doc)?;
-    let d1 = cartesian_distance_f(40.759011, -73.9844722, 40.7143528, -74.0059731);
+    let d1 = cartesian_distance_f(40.759_01, -73.984_474, 40.714_35, -74.005_974);
 
     let mut doc = Document::new();
     doc.add(Box::new(XYDocValuesField::new(
         "location",
         40.718266f32,
-        -74.007819f32,
+        -74.007_82_f32,
     )?));
     iw.add_document(&doc)?;
-    let d2 = cartesian_distance_f(40.718266, -74.007819, 40.7143528, -74.0059731);
+    let d2 = cartesian_distance_f(40.718266, -74.007_82, 40.714_35, -74.005_974);
 
     let mut doc = Document::new();
     doc.add(Box::new(XYDocValuesField::new(
         "location",
-        40.7051157f32,
-        -74.0088305f32,
+        40.705_116_f32,
+        -74.008_83_f32,
     )?));
     iw.add_document(&doc)?;
-    let d3 = cartesian_distance_f(40.7051157, -74.0088305, 40.7143528, -74.0059731);
+    let d3 = cartesian_distance_f(40.705_116, -74.008_83, 40.714_35, -74.005_974);
 
     let reader = iw.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
     iw.close()?;
 
-    let sort = distance_sort("location", 40.7143528f32, -74.0059731f32)?;
+    let sort = distance_sort("location", 40.714_35_f32, -74.005_974_f32)?;
     let td = searcher.search_with_sort(Arc::new(MatchAllDocsQuery::instance()), 3, &sort)?;
 
     let d = &td.score_docs[0];
@@ -146,25 +146,25 @@ fn test_missing_last() -> Result<()> {
     doc.add(Box::new(XYDocValuesField::new(
         "location",
         40.718266f32,
-        -74.007819f32,
+        -74.007_82_f32,
     )?));
     iw.add_document(&doc)?;
-    let d2 = cartesian_distance_f(40.718266, -74.007819, 40.7143528, -74.0059731);
+    let d2 = cartesian_distance_f(40.718266, -74.007_82, 40.714_35, -74.005_974);
 
     let mut doc = Document::new();
     doc.add(Box::new(XYDocValuesField::new(
         "location",
-        40.7051157f32,
-        -74.0088305f32,
+        40.705_116_f32,
+        -74.008_83_f32,
     )?));
     iw.add_document(&doc)?;
-    let d3 = cartesian_distance_f(40.7051157, -74.0088305, 40.7143528, -74.0059731);
+    let d3 = cartesian_distance_f(40.705_116, -74.008_83, 40.714_35, -74.005_974);
 
     let reader = iw.get_reader()?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
     iw.close()?;
 
-    let sort = distance_sort("location", 40.7143528f32, -74.0059731f32)?;
+    let sort = distance_sort("location", 40.714_35_f32, -74.005_974_f32)?;
     let td = searcher.search_with_sort(Arc::new(MatchAllDocsQuery::instance()), 3, &sort)?;
 
     let d = &td.score_docs[0];

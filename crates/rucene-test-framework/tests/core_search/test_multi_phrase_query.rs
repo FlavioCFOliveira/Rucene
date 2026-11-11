@@ -90,10 +90,9 @@ fn field(text: &str) -> Term {
 
 /// `te.term().utf8ToString()`.
 fn utf8(te: &dyn rucene::index::TermsEnum) -> Result<String> {
-    Ok(te
-        .term()?
+    te.term()?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?
-        .utf8_to_string()?)
+        .utf8_to_string()
 }
 
 /// Port of `TestMultiPhraseQuery.testPhrasePrefix`.

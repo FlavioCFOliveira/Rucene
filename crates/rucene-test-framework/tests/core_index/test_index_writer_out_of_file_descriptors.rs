@@ -86,6 +86,8 @@ fn test_() -> Result<()> {
                     if verbose() {
                         println!("TEST: addIndexes LR[]");
                     }
+                    #[allow(clippy::unnecessary_unwrap)]
+                    // Java's `if (r != null)` then the use of `r`
                     TestUtil::add_indexes_slowly(
                         writer,
                         &[Arc::clone(r.as_ref().expect("checked above"))],

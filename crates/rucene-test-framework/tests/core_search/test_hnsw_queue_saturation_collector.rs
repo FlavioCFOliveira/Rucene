@@ -44,6 +44,7 @@ struct SharedCollector {
 
 impl SharedCollector {
     /// `new TopKnnCollector(k, visitLimit)`, shared.
+    #[allow(clippy::new_ret_no_self)] // Java's constructor, handing the object back as the type its callers use
     fn new(k: i32, visit_limit: i64) -> (Arc<Mutex<TopKnnCollector>>, Box<dyn KnnCollector>) {
         let inner = Arc::new(Mutex::new(TopKnnCollector::new(k, visit_limit)));
         let search_strategy = lock(&inner).get_search_strategy().cloned();

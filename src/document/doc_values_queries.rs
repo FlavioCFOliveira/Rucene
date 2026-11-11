@@ -285,11 +285,18 @@ pub struct SortedNumericDocValuesSetQuery {
 }
 
 impl SortedNumericDocValuesSetQuery {
-    /// Creates the query from `values`, which must be sorted ascending.
+    /// Creates the query from `values`, in any order.
+    ///
+    /// Equivalent to `SortedNumericDocValuesSetQuery(String, long[])`, which
+    /// sorts the numbers before building the set (`Arrays.sort(numbers)`,
+    /// `SortedNumericDocValuesSetQuery.java:47-51`); Java sorts the copy its
+    /// callers pass (`values.clone()`), so this sorts a copy too.
     pub fn new(field: impl Into<String>, values: &[i64]) -> Self {
+        let mut numbers = values.to_vec();
+        numbers.sort_unstable();
         Self {
             field: field.into(),
-            values: DocValuesLongHashSet::new(values),
+            values: DocValuesLongHashSet::new(&numbers),
         }
     }
 
@@ -349,10 +356,10 @@ impl SortedSetDocValuesRangeQuery {
     ) -> Self {
         Self {
             field: field.into(),
-            // An exclusive open bound is the same as an inclusive one, as Java
-            // normalises in its constructor.
-            lower_inclusive: lower_inclusive || lower_value.is_none(),
-            upper_inclusive: upper_inclusive || upper_value.is_none(),
+            // An open bound is exclusive: `lowerInclusive && lowerValue !=
+            // null` (`SortedSetDocValuesRangeQuery.java:61-62`).
+            lower_inclusive: lower_inclusive && lower_value.is_some(),
+            upper_inclusive: upper_inclusive && upper_value.is_some(),
             lower_value,
             upper_value,
         }

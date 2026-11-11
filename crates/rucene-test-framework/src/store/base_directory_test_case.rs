@@ -883,7 +883,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
     /// `testThreadSafetyInListAll()`.
     fn test_thread_safety_in_list_all(&self) -> Result<()> {
         let dir: Arc<dyn Directory> = Arc::from(self.get_directory(&temp_dir("testThreadSafety"))?);
-        let result = (|| -> Result<()> {
+        let result = {
             if let Some(any) = dir.as_any() {
                 if let Some(mock) = any.downcast_ref::<MockDirectoryWrapper>() {
                     // we are not making a real index, just writing, reading files.
@@ -1001,7 +1001,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 std::panic::resume_unwind(payload);
             }
             Ok(())
-        })();
+        };
         let closed = close_shared(dir);
         result.and(closed)
     }
@@ -1333,6 +1333,8 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 let offset = i as i64 * 8;
                 let mut subslice = input.random_access_slice(offset, input.length() - offset)?;
                 Assert::assert_equals(input.length() - offset, subslice.length());
+                #[allow(clippy::needless_range_loop)]
+                // Java's indexed loop, kept as the test writes it
                 for j in i..longs.len() {
                     Assert::assert_equals(longs[j], subslice.read_long_at((j - i) as i64 * 8)?);
                 }
@@ -1387,6 +1389,8 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 let offset = i as i64 * 4;
                 let mut subslice = input.random_access_slice(offset, input.length() - offset)?;
                 Assert::assert_equals(input.length() - offset, subslice.length());
+                #[allow(clippy::needless_range_loop)]
+                // Java's indexed loop, kept as the test writes it
                 for j in i..ints.len() {
                     Assert::assert_equals(ints[j], subslice.read_int_at((j - i) as i64 * 4)?);
                 }
@@ -1440,6 +1444,8 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
                 let offset = i as i64 * 2;
                 let mut subslice = input.random_access_slice(offset, input.length() - offset)?;
                 Assert::assert_equals(input.length() - offset, subslice.length());
+                #[allow(clippy::needless_range_loop)]
+                // Java's indexed loop, kept as the test writes it
                 for j in i..shorts.len() {
                     Assert::assert_equals(shorts[j], subslice.read_short_at((j - i) as i64 * 2)?);
                 }
@@ -1980,9 +1986,11 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
         let mut v_int_out = dir.create_output("vint", &*DEFAULT_IO_CONTEXT)?;
 
         // encode
+        #[allow(clippy::needless_range_loop)] // Java's indexed loop, kept as the test writes it
         for iter in 0..iterations as usize {
             let bpv = TestUtil::next_int(&*random(), min_bpv, max_bpv);
             num_values_array[iter] = TestUtil::next_int(&*random(), 1, max_num_values);
+            #[allow(clippy::needless_range_loop)] // Java's indexed loop, kept as the test writes it
             for j in 0..num_values_array[iter] as usize {
                 values[j] = RandomNumbers::random_int_between(
                     &*random(),
@@ -1999,6 +2007,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
         // decode
         let mut group_v_int_in = dir.open_input("group-varint", &*DEFAULT_IO_CONTEXT)?;
         let mut v_int_in = dir.open_input("vint", &*DEFAULT_IO_CONTEXT)?;
+        #[allow(clippy::needless_range_loop)] // Java's indexed loop, kept as the test writes it
         for iter in 0..iterations as usize {
             GroupVIntUtil::read_group_vints_input(
                 &mut *group_v_int_in,

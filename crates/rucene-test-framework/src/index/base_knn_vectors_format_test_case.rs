@@ -2766,7 +2766,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             let mut iterator = vector_values.iterator()?;
             loop {
                 cur += 1;
-                if cur >= vector_values.size() + 1 {
+                if cur > vector_values.size() {
                     break;
                 }
                 vector_docs[cur as usize] = iterator.next_doc()?;

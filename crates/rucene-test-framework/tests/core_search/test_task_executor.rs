@@ -449,7 +449,7 @@ fn test_invoke_all_catches_multiple_exceptions() -> Result<()> {
     // this test requires multiple threads, while all the other tests in this class rely on a single
     // threaded executor
     let multi_threaded_executor = new_fixed_thread_pool(2);
-    let result = (|| -> Result<()> {
+    let result = {
         let task_executor = TaskExecutor::new(Arc::new(multi_threaded_executor.clone()));
         let mut callables: Vec<VoidCallable> = Vec::new();
         // if we have multiple threads, make sure both are started before an exception is thrown,
@@ -484,7 +484,7 @@ fn test_invoke_all_catches_multiple_exceptions() -> Result<()> {
             assert_equals(&Some("exception B"), &exc.message());
         }
         Ok(())
-    })();
+    };
     TestUtil::shutdown_executor_service(Some(&multi_threaded_executor));
     result
 }

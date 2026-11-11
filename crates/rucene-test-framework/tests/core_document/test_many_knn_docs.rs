@@ -94,7 +94,7 @@ fn test_large_segment() -> Result<()> {
     let similarity_function = VectorSimilarityFunction::DOT_PRODUCT;
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(
-        &LuceneTestCase::create_temp_dir_prefix("ManyKnnVectorDocs"),
+        LuceneTestCase::create_temp_dir_prefix("ManyKnnVectorDocs"),
     )?);
     let iw = IndexWriter::new(Arc::clone(&dir), iwc)?;
     let outcome = (|| -> Result<()> {
