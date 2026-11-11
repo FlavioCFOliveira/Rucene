@@ -1270,11 +1270,11 @@ impl SlowCompositeCodecReaderWrapper {
                         min_version = Some(reader_min);
                     }
                 }
-                // Java's `minVersion.onOrAfter(null)` dereferences null.
+                // Java's `minVersion.onOrAfter(null)` dereferences null
+                // (`SlowCompositeCodecReaderWrapper.java:90`, `Version.java:488-489`).
                 (Some(_), None) => {
-                    return Err(LuceneError::illegal_state(
-                        "cannot combine a reader that has no minimum version with one that has"
-                            .to_string(),
+                    return Err(LuceneError::null_pointer_with_message(
+                        "Cannot read field \"encodedValue\" because \"other\" is null",
                     ))
                 }
             }

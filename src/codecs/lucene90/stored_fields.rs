@@ -1887,12 +1887,12 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
         for i in 0..num_readers {
             merge_state.check_aborted()?;
             let Some(reader) = merge_state.stored_fields_readers[i].as_ref() else {
-                // Java dereferences the reader unconditionally, so a missing
-                // one is a broken merge state either way; this reports it
-                // instead of dropping the segment's documents silently.
-                return Err(LuceneError::illegal_state(format!(
-                    "segment {i} of the merge has no stored-fields reader"
-                )));
+                // `reader.checkIntegrity()` dereferences the missing reader
+                // (`Lucene90CompressingStoredFieldsWriter.java:609-611`).
+                return Err(LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.codecs.StoredFieldsReader.checkIntegrity()\" \
+                     because \"reader\" is null",
+                ));
             };
             reader.check_integrity()?;
             let merge_strategy = self.get_merge_strategy(merge_state, &matching_readers, i);

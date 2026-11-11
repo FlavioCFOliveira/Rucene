@@ -2377,14 +2377,16 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
                 entry.vector_encoding
             )));
         }
-        // Java dereferences the delegate's answer without a `null` check.
+        // Java dereferences the delegate's answer without a `null` check
+        // (`Lucene104ScalarQuantizedVectorsReader.java:245-247`).
         let raw = self
             .raw_vectors_reader
             .get_float_vector_values(field)?
             .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "the raw vectors of field \"{field}\" are missing"
-                ))
+                LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.index.FloatVectorValues.size()\" because \
+                     \"rawFloatVectorValues\" is null",
+                )
             })?;
         if raw.size() == 0 {
             return self.quantized_float_vector_values(field, entry).map(Some);

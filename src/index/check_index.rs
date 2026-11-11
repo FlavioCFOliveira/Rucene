@@ -5737,12 +5737,11 @@ pub fn test_sort(
                 match reader.get_numeric_doc_values(parent_field)? {
                     Some(parents) => parents,
                     // Java hands `iter` the null this returns, and the first
-                    // `nextDoc()` dereferences it.
-                    None => {
-                        return Err(LuceneError::illegal_state(format!(
-                            "the parent field \"{parent_field}\" has no numeric doc values"
-                        )))
-                    }
+                    // `nextDoc()` dereferences it (`CheckIndex.java:1199-1203`).
+                    None => return Err(LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.search.DocIdSetIterator.nextDoc()\" \
+                             because \"iter\" is null",
+                    )),
                 }
             }
             _ => Box::new(crate::search::doc_id_set_iterator::all(reader.max_doc())?),
@@ -5792,15 +5791,16 @@ pub fn test_sort(
     Ok(status)
 }
 
-/// The scorer [`test_sort`] hands its comparators, which Java leaves unset.
+/// The scorer [`test_sort`] hands its comparators, which Java leaves unset:
+/// a score request is the `NullPointerException` of dereferencing that
+/// `null`. Its helpful message names the comparator's own field, so it is not
+/// reproduced.
 #[derive(Debug)]
 struct NoScorer;
 
 impl crate::search::Scorable for NoScorer {
     fn score(&mut self) -> Result<f32> {
-        Err(LuceneError::illegal_state(
-            "CheckIndex.testSort compares documents without a scorer".to_string(),
-        ))
+        Err(LuceneError::null_pointer())
     }
 }
 

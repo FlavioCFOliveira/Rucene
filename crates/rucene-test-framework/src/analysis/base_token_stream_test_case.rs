@@ -158,31 +158,56 @@ pub fn java_to_string(e: &LuceneError) -> String {
     }
 }
 
-/// The binary name of the Java class an error stands for, and its message.
+/// The binary name of the Java class an error stands for, and its message:
+/// Java's `getClass().getName()` and `getMessage()`, `<null>` for a `null`
+/// message.
+///
+/// The message is the bare `getMessage()` of every kind, never the Rust
+/// `Display` of the error, which prefixes some kinds (`merge failed: …`,
+/// `corrupt index: …`). The match is exhaustive so that a new kind states
+/// its message here.
 pub fn java_class_and_message(e: &LuceneError) -> (String, String) {
-    match e.kind() {
-        LuceneErrorKind::IllegalState { message, .. } => (
-            "java.lang.IllegalStateException".to_string(),
-            message.clone(),
-        ),
-        LuceneErrorKind::IllegalArgument { message, .. } => (
-            "java.lang.IllegalArgumentException".to_string(),
-            message.clone(),
-        ),
-        LuceneErrorKind::Io(io) => (
-            rucene::store::java_nio_file::java_class_of(io).to_string(),
-            rucene::store::java_nio_file::java_message_of(io)
-                .unwrap_or_else(|| "<null>".to_string()),
-        ),
-        LuceneErrorKind::Unchecked { class, message, .. } => (
-            class.to_string(),
-            message.clone().unwrap_or_else(|| "<null>".to_string()),
-        ),
-        other => (
-            crate::util::java_exceptions::java_class_name(e),
-            other.to_string(),
-        ),
-    }
+    let message = match e.kind() {
+        LuceneErrorKind::Io(io) => rucene::store::java_nio_file::java_message_of(io)
+            .unwrap_or_else(|| "<null>".to_string()),
+        LuceneErrorKind::Unchecked { message, .. } => {
+            message.clone().unwrap_or_else(|| "<null>".to_string())
+        }
+        // `CorruptIndexException(message, resourceDescription)` has the
+        // message `message + " (resource=" + resourceDescription + ")"`,
+        // which the payload already holds (`LuceneError::corrupt_index`).
+        LuceneErrorKind::CorruptIndex(message)
+        | LuceneErrorKind::IndexFormatNotSupported(message)
+        | LuceneErrorKind::IndexNotFound(message)
+        | LuceneErrorKind::NotFound(message)
+        | LuceneErrorKind::ExitingReader(message)
+        | LuceneErrorKind::MaxBytesLengthExceeded(message)
+        | LuceneErrorKind::ResourceLimit(message)
+        | LuceneErrorKind::StringIndexOutOfBounds(message)
+        | LuceneErrorKind::NoSuchMethod(message)
+        | LuceneErrorKind::Arithmetic(message)
+        | LuceneErrorKind::MergeAborted(message)
+        | LuceneErrorKind::Merge(message)
+        | LuceneErrorKind::AssertionError(message)
+        | LuceneErrorKind::Other(message) => message.clone(),
+        LuceneErrorKind::IllegalArgument { message, .. }
+        | LuceneErrorKind::IllegalState { message, .. }
+        | LuceneErrorKind::CheckIndex { message, .. }
+        | LuceneErrorKind::LockObtainFailed { message, .. }
+        | LuceneErrorKind::LockReleaseFailed { message, .. }
+        | LuceneErrorKind::AlreadyClosed { message, .. }
+        | LuceneErrorKind::UnsupportedOperation { message, .. } => message.clone(),
+        // These kinds display exactly their Java message.
+        LuceneErrorKind::IndexFormatTooOld { .. }
+        | LuceneErrorKind::IndexFormatTooNew { .. }
+        | LuceneErrorKind::TooManyClauses(_)
+        | LuceneErrorKind::TooManyNestedClauses(_)
+        | LuceneErrorKind::TooComplexToDeterminize(_)
+        | LuceneErrorKind::ThreadInterrupted(_) => e.kind().to_string(),
+        // No Java counterpart: the port's own cancellation marker.
+        LuceneErrorKind::Cancelled => e.kind().to_string(),
+    };
+    (crate::util::java_exceptions::java_class_name(e), message)
 }
 
 /// Whether Java's `catch (RuntimeException e)` catches the error.

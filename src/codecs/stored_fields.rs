@@ -197,10 +197,10 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState)
-    /// when a source segment has no stored-fields reader — where Java's
-    /// `storedFieldsReader.checkIntegrity()` throws `NullPointerException` —
-    /// and propagates abort, integrity, read and write errors.
+    /// Returns Java's `NullPointerException` when a source segment has no
+    /// stored-fields reader, where `storedFieldsReader.checkIntegrity()`
+    /// dereferences `null` (`StoredFieldsWriter.java:132-134`), and propagates
+    /// abort, integrity, read and write errors.
     fn merge(&mut self, merge_state: &MergeState) -> Result<i32> {
         // The readers stay outside the merger: the sub carries only the index
         // of the one it walks, and the document is read through the merge
@@ -211,9 +211,10 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
         for (i, reader) in merge_state.stored_fields_readers.iter().enumerate() {
             merge_state.check_aborted()?;
             let Some(reader) = reader.as_deref() else {
-                return Err(crate::error::LuceneError::illegal_state(format!(
-                    "source segment {i} of the merge has no stored-fields reader"
-                )));
+                return Err(crate::error::LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.codecs.StoredFieldsReader.checkIntegrity()\" \
+                     because \"storedFieldsReader\" is null",
+                ));
             };
             reader.check_integrity()?;
             subs.push(StoredFieldsMergeSub {
@@ -499,11 +500,17 @@ mod tests {
         let mut writer = RecordingStoredFieldsWriter::default();
         match writer.merge(&merge_state) {
             Err(crate::error::LuceneError {
-                kind: crate::error::LuceneErrorKind::IllegalState { message, .. },
+                kind:
+                    crate::error::LuceneErrorKind::Unchecked {
+                        class: "java.lang.NullPointerException",
+                        message: Some(message),
+                        ..
+                    },
                 ..
             }) => assert_eq!(
                 message,
-                "source segment 1 of the merge has no stored-fields reader"
+                "Cannot invoke \"org.apache.lucene.codecs.StoredFieldsReader.checkIntegrity()\" \
+                 because \"storedFieldsReader\" is null"
             ),
             other => panic!("a missing reader must fail the merge, got {other:?}"),
         }

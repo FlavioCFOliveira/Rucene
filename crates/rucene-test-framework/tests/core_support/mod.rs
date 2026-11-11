@@ -211,9 +211,10 @@ pub const TOO_COMPLEX_TO_DETERMINIZE: &str =
 
 /// A call Java declares unchecked (`Operations.determinize` and the other
 /// operations that may throw `TooComplexToDeterminizeException`): its value,
-/// or that exception thrown.
+/// or that exception thrown, as the core's
+/// `LuceneErrorKind::TooComplexToDeterminize` maps it.
 pub fn det<T>(r: rucene::util::automaton::DeterminizeResult<T>) -> T {
-    r.unwrap_or_else(|e| Throwable::new(TOO_COMPLEX_TO_DETERMINIZE, e.to_string()).throw())
+    unchecked(r.map_err(rucene::error::LuceneError::from))
 }
 
 /// A Rucene call whose Java counterpart throws an unchecked exception (or

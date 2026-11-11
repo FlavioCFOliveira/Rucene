@@ -38,7 +38,9 @@ impl Scorable for CachedScorable {
 /// **Divergence from Lucene 10.5.0.** Java replays a no-score cache without
 /// ever calling `setScorer`, so the replayed collector's scorer stays `null`
 /// and reading a score raises a `NullPointerException`. The port has no null
-/// scorable, so it hands over one that reports the misuse instead; the
+/// scorable, so it hands over one whose `score()` returns that
+/// `NullPointerException`, without the JDK's helpful message, which names
+/// the replayed collector's own field; the
 /// documented contract — "if this instance does not cache scores, then Scorer
 /// is not set on `other.setScorer` as well as scores are not replayed" — is
 /// unchanged.
@@ -47,10 +49,7 @@ struct NoScorable;
 
 impl Scorable for NoScorable {
     fn score(&mut self) -> Result<f32> {
-        Err(LuceneError::illegal_state(
-            "this CachingCollector did not cache scores, so the replayed collector must not read them"
-                .to_string(),
-        ))
+        Err(LuceneError::null_pointer())
     }
 }
 

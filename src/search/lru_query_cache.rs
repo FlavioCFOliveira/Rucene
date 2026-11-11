@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock, Weak};
 
 use crate::error::{LuceneError, Result};
 use crate::index::{
@@ -123,14 +123,17 @@ impl CacheAndCount {
 
     /// Returns the marker for a query that matches nothing on a leaf.
     ///
-    /// Equivalent to the `CacheAndCount.EMPTY` constant.
+    /// Equivalent to the `CacheAndCount.EMPTY` constant
+    /// (`LRUQueryCache.java:943`): every call hands out the one shared
+    /// singleton, whose `cache` is the same `Arc` each time.
     pub fn empty() -> Self {
-        Self {
+        static EMPTY: LazyLock<CacheAndCount> = LazyLock::new(|| CacheAndCount {
             cache: Arc::new(crate::search::doc_id_set::EmptyDocIdSet),
             count: 0,
             is_empty_marker: true,
             null_iterator: false,
-        }
+        });
+        EMPTY.clone()
     }
 
     /// Returns an iterator over the cached doc IDs.

@@ -174,10 +174,9 @@ impl ConcurrentHnswMerger {
                 .map(|values| values as Box<dyn KnnVectorValues>),
         }
         .ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "the initializing reader has no vectors for field \"{}\"",
-                field_info.name
-            ))
+            // `initReader.get{Byte,Float}VectorValues(fieldInfo.name).iterator()`
+            // (`ConcurrentHnswMerger.java:108-112`).
+            vector_values_iterator_npe(field_info.get_vector_encoding())
         })?;
         let mut initializer_iterator = values.iterator()?;
 
@@ -250,3 +249,17 @@ impl HnswGraphMerger for ConcurrentHnswMerger {
 /// Keeps the default seed reachable from this module, as Lucene reaches
 /// `HnswGraphBuilder.randSeed` from its mergers.
 pub const RAND_SEED: u64 = DEFAULT_RAND_SEED;
+
+/// The `NullPointerException` of `reader.get{Byte,Float}VectorValues(name).iterator()`
+/// on a `KnnVectorsReader` that returns `null` for the field: the JDK's
+/// helpful message for the dereference of that return value.
+pub(crate) fn vector_values_iterator_npe(encoding: VectorEncoding) -> LuceneError {
+    let (values, getter) = match encoding {
+        VectorEncoding::BYTE => ("ByteVectorValues", "getByteVectorValues"),
+        VectorEncoding::FLOAT32 => ("FloatVectorValues", "getFloatVectorValues"),
+    };
+    LuceneError::null_pointer_with_message(format!(
+        "Cannot invoke \"org.apache.lucene.index.{values}.iterator()\" because the return \
+         value of \"org.apache.lucene.codecs.KnnVectorsReader.{getter}(String)\" is null"
+    ))
+}

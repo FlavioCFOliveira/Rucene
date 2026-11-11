@@ -183,8 +183,8 @@ impl TokenStreamToAutomaton {
     ///
     /// # Errors
     ///
-    /// Propagates the stream's errors, and returns
-    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the first token has a position
+    /// Propagates the stream's errors, and returns Java's
+    /// `NullPointerException` when the first token has a position
     /// increment of zero: Java's `assert pos > -1 || posInc > 0` (kept as a
     /// `debug_assert!`) fails first, and without assertions its
     /// `posData.leaving` then dereferences `null`.
@@ -225,8 +225,10 @@ impl TokenStreamToAutomaton {
             }
             debug_assert!(pos > -1 || pos_inc > 0);
             if pos == -1 && pos_inc <= 0 {
-                return Err(LuceneError::illegal_state(
-                    "the first token must have a positive position increment".to_string(),
+                // `int state = posData.leaving` with `posData` still `null`
+                // (`TokenStreamToAutomaton.java:125,193`).
+                return Err(LuceneError::null_pointer_with_message(
+                    "Cannot read field \"leaving\" because \"posData\" is null",
                 ));
             }
 

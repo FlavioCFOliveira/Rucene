@@ -116,24 +116,21 @@ impl IncrementalHnswGraphMerger {
     }
 
     /// Returns the vector values of `reader` for the merged field, following the
-    /// field's encoding.
+    /// field's encoding, or `None` where Java's reader returns `null`.
     ///
-    /// Java dereferences the answer without a `null` check, so a reader without
-    /// vectors for the field fails here, as Java's `NullPointerException` does.
-    fn vector_values(&self, reader: &dyn KnnVectorsReader) -> Result<Box<dyn KnnVectorValues>> {
-        let values: Option<Box<dyn KnnVectorValues>> = match self.field_info.get_vector_encoding() {
+    /// Java dereferences the answer without a `null` check, so each caller
+    /// turns `None` into the `NullPointerException` of its own dereference.
+    fn vector_values(
+        &self,
+        reader: &dyn KnnVectorsReader,
+    ) -> Result<Option<Box<dyn KnnVectorValues>>> {
+        Ok(match self.field_info.get_vector_encoding() {
             VectorEncoding::BYTE => reader
                 .get_byte_vector_values(&self.field_info.name)?
                 .map(|values| values as Box<dyn KnnVectorValues>),
             VectorEncoding::FLOAT32 => reader
                 .get_float_vector_values(&self.field_info.name)?
                 .map(|values| values as Box<dyn KnnVectorValues>),
-        };
-        values.ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "the merged reader has no vectors for field \"{}\"",
-                self.field_info.name
-            ))
         })
     }
 
@@ -211,7 +208,13 @@ impl IncrementalHnswGraphMerger {
         let mut new_doc_id_to_old_ordinals: Vec<HashMap<i32, i32>> = Vec::with_capacity(num_graphs);
         let mut old_to_new_ordinal_map: Vec<Vec<i32>> = Vec::with_capacity(num_graphs);
         for graph_reader in &self.graph_readers {
-            let values = self.vector_values(graph_reader.reader.as_ref())?;
+            // `graphReaders.get(i).reader.get{Byte,Float}VectorValues(fieldInfo.name)
+            // .iterator()` (`IncrementalHnswGraphMerger.java:175-181`).
+            let values = self
+                .vector_values(graph_reader.reader.as_ref())?
+                .ok_or_else(|| {
+                    super::merger::vector_values_iterator_npe(self.field_info.get_vector_encoding())
+                })?;
             let mut vectors_iter = values.iterator()?;
             let mut mapping: HashMap<i32, i32> =
                 HashMap::with_capacity(graph_reader.graph_size.max(0) as usize);
@@ -297,7 +300,20 @@ impl HnswGraphMerger for IncrementalHnswGraphMerger {
             return Ok(());
         }
 
-        let knn_vector_values = self.vector_values(reader.as_ref())?;
+        // `countLiveVectors(liveDocs, knnVectorValues)` dereferences a `null`
+        // `knnVectorValues` first (`IncrementalHnswGraphMerger.java:101-107,
+        // 222-228`): `size()` without live docs, `iterator()` with them.
+        let knn_vector_values = self.vector_values(reader.as_ref())?.ok_or_else(|| {
+            LuceneError::null_pointer_with_message(format!(
+                "Cannot invoke \"org.apache.lucene.index.KnnVectorValues.{}()\" because \
+                 \"knnVectorValues\" is null",
+                if live_docs.is_none() {
+                    "size"
+                } else {
+                    "iterator"
+                }
+            ))
+        })?;
 
         let candidate_vector_count =
             Self::count_live_vectors(live_docs, knn_vector_values.as_ref())?;

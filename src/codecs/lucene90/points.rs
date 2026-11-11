@@ -361,13 +361,15 @@ impl PointsWriter for Lucene90PointsWriter {
     /// Equivalent to `Lucene90PointsWriter.writeField(FieldInfo, PointsReader)`
     /// (`Lucene90PointsWriter.java:137-195`).
     fn write_field(&mut self, field_info: &FieldInfo, reader: &dyn PointsReader) -> Result<()> {
-        // Java dereferences `reader.getValues(fieldInfo.name)` unguarded; every
-        // caller hands it a reader that has values for the field.
+        // Java dereferences `reader.getValues(fieldInfo.name)` unguarded
+        // (`Lucene90PointsWriter.java:140`); every caller hands it a reader
+        // that has values for the field.
         let values = reader.get_values(&field_info.name)?.ok_or_else(|| {
-            LuceneError::illegal_state(format!(
-                "field=\"{}\" has no point values to write",
-                field_info.name
-            ))
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.index.PointValues.getPointTree()\" because \
+                 the return value of \"org.apache.lucene.codecs.PointsReader.getValues(String)\" \
+                 is null",
+            )
         })?;
         let mut tree = values.point_tree()?;
 

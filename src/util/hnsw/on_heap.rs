@@ -220,9 +220,12 @@ impl OnHeapHnswGraph {
             if self.no_growth {
                 panic!("The graph does not expect to grow when an initial size is given");
             }
-            let new_len =
-                crate::util::ArrayUtil::oversize(node_usize + 1, std::mem::size_of::<usize>())
-                    .max(node_usize + 1);
+            // `ArrayUtil.grow(graph, node + 1)` (`ArrayUtil.java:231-237`) sizes
+            // the new array with `oversize(minSize, NUM_BYTES_OBJECT_REF)`.
+            let new_len = crate::util::ArrayUtil::oversize(
+                node_usize + 1,
+                RamUsageEstimator::NUM_BYTES_OBJECT_REF as usize,
+            );
             self.graph.resize_with(new_len, OnceLock::new);
         }
 
