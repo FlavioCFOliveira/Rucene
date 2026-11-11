@@ -19,7 +19,6 @@ Whenever possible, this project aims to provide absolute parity with Apache Luce
 - `src/` — Rust source code, mirroring Lucene Core's package layout.
 - `specs/` — formal specifications for architecture, compatibility, security, testing, and each module.
 - `tests/` — integration and portability tests.
-- `benches/` — performance benchmarks against Java Lucene 10.5.0.
 
 ## Getting started
 

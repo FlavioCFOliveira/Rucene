@@ -44,25 +44,11 @@ use rucene::util::{AttributeSource, BytesRef, NoOutputInfoStream, Version};
 /// The single indexed field every case uses; mirrors `IndexingChainFixture.FIELD`.
 const FIELD: &str = "body";
 
-/// Postings files the indexing chain is responsible for.
+/// Postings files the indexing chain is responsible for, all compared for
+/// every case. `manyterms` is the case whose terms dictionary spans several
+/// blocks, so its term index (`.tip`) is a real prefix trie and `.tmd`
+/// records the trie's file pointers; both are compared like the others.
 const POSTINGS_EXTENSIONS: [&str; 6] = ["doc", "pos", "psm", "tim", "tip", "tmd"];
-
-/// Extensions compared for `case`.
-///
-/// `manyterms` is the only case whose terms dictionary spans several blocks,
-/// and the term index of a multi-block field is a real prefix trie. Rucene's
-/// `TrieBuilder` still serialises a single node — a documented limitation of
-/// the block-tree codec, not of the indexing chain — so for that case the term
-/// index (`.tip`) and the file pointers the trie records in `.tmd` are left
-/// out. The postings (`.doc`, `.pos`, `.psm`) and the terms dictionary
-/// (`.tim`), which are what the indexing chain feeds the codec, are still
-/// compared byte for byte.
-fn compared_extensions(case: &str) -> Vec<&'static str> {
-    POSTINGS_EXTENSIONS
-        .into_iter()
-        .filter(|extension| !(case == "manyterms" && matches!(*extension, "tip" | "tmd")))
-        .collect()
-}
 
 // ---------------------------------------------------------------------------
 // Scripted token stream
@@ -670,7 +656,7 @@ fn write_with_rucene(
 /// Compares the postings files of the two directories byte for byte.
 fn assert_postings_bytes_equal(java_dir: &Path, rust_dir: &Path, segment: &str, case: &str) {
     let mut compared = 0;
-    for extension in compared_extensions(case) {
+    for extension in POSTINGS_EXTENSIONS {
         let file_name = format!("{segment}_Lucene104_0.{extension}");
         let java_file = java_dir.join(&file_name);
         let rust_file = rust_dir.join(&file_name);
