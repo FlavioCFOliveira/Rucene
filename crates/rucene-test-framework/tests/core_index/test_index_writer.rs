@@ -1258,13 +1258,17 @@ fn test_position_increment_gap_empty_field() -> Result<()> {
         .unwrap_or_else(|| npe("tpv"));
     let mut terms_enum = tpv.iterator()?;
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_equals(&1, &dp_enum.freq()?);
     assert_equals(&100, &dp_enum.next_position()?);
 
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(Some(dp_enum), POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(Some(dp_enum), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_equals(&1, &dp_enum.freq()?);
     assert_equals(&101, &dp_enum.next_position()?);
@@ -5905,7 +5909,9 @@ fn assert_hard_live_docs(w: &IndexWriter, unique_docs: &HashSet<i32>) -> Result<
                 for d_id in unique_docs {
                     let must_be_hard_deleted = d_id % 2 == 0;
                     if iterator.seek_exact(&LuceneTestCase::new_bytes_ref_str(&d_id.to_string()))? {
-                        let mut postings = iterator.postings(None, POSTINGS_ENUM_FREQS)?;
+                        let mut postings = iterator
+                            .postings(None, POSTINGS_ENUM_FREQS)?
+                            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                         while postings.next_doc()? != NO_MORE_DOCS {
                             let doc = postings.doc_id() as usize;
                             if live_docs.get(doc) {

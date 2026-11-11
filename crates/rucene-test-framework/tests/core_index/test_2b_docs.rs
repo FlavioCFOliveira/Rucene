@@ -94,7 +94,9 @@ fn test_2b_docs() -> Result<()> {
         for _ in 0..10000 {
             let mut te = terms.iterator()?;
             Assert::assert_true(te.seek_exact(&term)?);
-            let mut docs = te.postings(None, POSTINGS_ENUM_FREQS)?;
+            let mut docs = te
+                .postings(None, POSTINGS_ENUM_FREQS)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
 
             // skip randomly through the term
             let mut target: i32 = -1;

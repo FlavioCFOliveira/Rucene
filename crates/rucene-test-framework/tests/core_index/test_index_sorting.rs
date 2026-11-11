@@ -2952,13 +2952,17 @@ fn test_sort_docs() -> Result<()> {
         .unwrap_or_else(|| npe("terms(\"field\")"))
         .iterator()?;
     assert_equals(&Some(utf8("a")), &field_terms.next()?);
-    let mut postings = field_terms.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut postings = field_terms
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&0, &postings.next_doc()?);
     assert_equals(&1, &postings.next_doc()?);
     assert_equals(&3, &postings.next_doc()?);
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
     assert_equals(&Some(utf8("b")), &field_terms.next()?);
-    let mut postings = field_terms.postings(Some(postings), POSTINGS_ENUM_ALL)?;
+    let mut postings = field_terms
+        .postings(Some(postings), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&2, &postings.next_doc()?);
     assert_equals(&4, &postings.next_doc()?);
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
@@ -3040,13 +3044,17 @@ fn test_sort_docs_and_freqs() -> Result<()> {
         .unwrap_or_else(|| npe("terms(\"field\")"))
         .iterator()?;
     assert_equals(&Some(utf8("a")), &field_terms.next()?);
-    let mut postings = field_terms.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut postings = field_terms
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_doc_freq(&mut *postings, 0, 3)?;
     assert_doc_freq(&mut *postings, 1, 2)?;
     assert_doc_freq(&mut *postings, 3, 1)?;
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
     assert_equals(&Some(utf8("b")), &field_terms.next()?);
-    let mut postings = field_terms.postings(Some(postings), POSTINGS_ENUM_ALL)?;
+    let mut postings = field_terms
+        .postings(Some(postings), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_doc_freq(&mut *postings, 2, 1)?;
     assert_doc_freq(&mut *postings, 4, 3)?;
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
@@ -3094,7 +3102,9 @@ fn sort_docs_and_positions(offsets: bool) -> Result<()> {
         .iterator()?;
     let o = |start: i32, end: i32| if offsets { Some((start, end)) } else { None };
     assert_equals(&Some(utf8("a")), &field_terms.next()?);
-    let mut postings = field_terms.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut postings = field_terms
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_doc_freq(&mut *postings, 0, 1)?;
     assert_position(&mut *postings, 1, o(2, 3))?;
     assert_doc_freq(&mut *postings, 1, 2)?;
@@ -3104,7 +3114,9 @@ fn sort_docs_and_positions(offsets: bool) -> Result<()> {
     assert_position(&mut *postings, 0, o(0, 1))?;
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
     assert_equals(&Some(utf8("b")), &field_terms.next()?);
-    let mut postings = field_terms.postings(Some(postings), POSTINGS_ENUM_ALL)?;
+    let mut postings = field_terms
+        .postings(Some(postings), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_doc_freq(&mut *postings, 0, 3)?;
     assert_position(&mut *postings, 0, o(0, 1))?;
     assert_position(&mut *postings, 2, o(4, 5))?;

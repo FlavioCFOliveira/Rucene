@@ -257,7 +257,8 @@ fn to_docs_array(
         .iterator()?;
     if cterms_enum.seek_exact(&BytesRef::from_char_sequence(&term.text()))? {
         let mut postings_enum =
-            TestUtil::docs_of(&*random(), &mut *cterms_enum, None, POSTINGS_ENUM_NONE)?;
+            TestUtil::docs_of(&*random(), &mut *cterms_enum, None, POSTINGS_ENUM_NONE)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         return Ok(Some(to_array(&mut *postings_enum)?));
     }
     Ok(None)

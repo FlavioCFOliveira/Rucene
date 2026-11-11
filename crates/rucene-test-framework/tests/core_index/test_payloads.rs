@@ -680,8 +680,13 @@ fn test_thread_safety() -> Result<()> {
         .iterator()?;
     let mut tp: Option<Box<dyn PostingsEnum>> = None;
     while terms.next()?.is_some() {
-        let term_text = terms.term()?.utf8_to_string()?;
-        let mut p = terms.postings(tp.take(), POSTINGS_ENUM_PAYLOADS)?;
+        let term_text = terms
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?;
+        let mut p = terms
+            .postings(tp.take(), POSTINGS_ENUM_PAYLOADS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         while p.next_doc()? != NO_MORE_DOCS {
             let freq = p.freq()?;
             for _ in 0..freq {
@@ -901,7 +906,9 @@ fn test_mixup_docs() -> Result<()> {
         .unwrap_or_else(|| npe("MultiTerms.getTerms"))
         .iterator()?;
     Assert::assert_true(te.seek_exact(&BytesRef::from_char_sequence("withPayload"))?);
-    let mut de = te.postings(None, POSTINGS_ENUM_PAYLOADS)?;
+    let mut de = te
+        .postings(None, POSTINGS_ENUM_PAYLOADS)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     de.next_doc()?;
     de.next_position()?;
     assert_equals(

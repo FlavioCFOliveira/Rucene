@@ -148,7 +148,7 @@ impl TermsEnum for STIntersectBlockReader {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.base.term()
     }
 
@@ -168,7 +168,7 @@ impl TermsEnum for STIntersectBlockReader {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.base.postings(reuse, flags)
     }
 

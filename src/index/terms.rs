@@ -339,8 +339,10 @@ pub trait TermsEnum: std::fmt::Display {
         Ok(())
     }
 
-    /// Returns the current term.
-    fn term(&self) -> Result<BytesRef>;
+    /// Returns the current term, or `None` where Java's `term()` returns
+    /// `null` (for example `MultiTermsEnum` before it is positioned or after
+    /// it is exhausted).
+    fn term(&self) -> Result<Option<BytesRef>>;
 
     /// Returns the ordinal position of the current term, if supported.
     fn ord(&self) -> Result<i64>;
@@ -351,12 +353,13 @@ pub trait TermsEnum: std::fmt::Display {
     /// Returns the total number of occurrences of the current term.
     fn total_term_freq(&mut self) -> Result<i64>;
 
-    /// Returns a postings enum for the current term with the given flags.
+    /// Returns a postings enum for the current term with the given flags, or
+    /// `None` where Java's `postings(PostingsEnum, int)` returns `null`.
     fn postings(
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>>;
+    ) -> Result<Option<Box<dyn PostingsEnum>>>;
 
     /// Returns an impacts enum for the current term with the given flags.
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>>;
@@ -510,7 +513,7 @@ impl TermsEnum for FilteredTermsEnum {
         self.tenum.attributes()
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.tenum.term()
     }
 
@@ -526,7 +529,7 @@ impl TermsEnum for FilteredTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.tenum.postings(reuse, flags)
     }
 
@@ -602,7 +605,7 @@ impl TermsEnum for FilteredTermsEnum {
                 {
                     return Ok(None);
                 }
-                self.actual_term = Some(self.tenum.term()?);
+                self.actual_term = self.tenum.term()?;
             } else {
                 self.actual_term = self.tenum.next()?;
                 if self.actual_term.is_none() {
@@ -610,7 +613,13 @@ impl TermsEnum for FilteredTermsEnum {
                 }
             }
 
-            match self.filter.accept(self.actual_term.as_ref().unwrap())? {
+            // `accept(actualTerm)`: a `null` from `tenum.term()` reaches the
+            // filter, whose dereference raises `NullPointerException`.
+            let actual_term = self
+                .actual_term
+                .as_ref()
+                .ok_or_else(LuceneError::null_pointer)?;
+            match self.filter.accept(actual_term)? {
                 AcceptStatus::YesAndSeek => {
                     self.do_seek = true;
                     return Ok(self.actual_term.clone());
@@ -752,7 +761,7 @@ pub trait Terms: Send + Sync {
         if size > 0 {
             let mut it = self.iterator()?;
             if it.seek_ord(size - 1).is_ok() {
-                return Ok(Some(it.term()?));
+                return it.term();
             }
         }
         // Fallback: binary-search for the last term one byte at a time.
@@ -1492,7 +1501,7 @@ impl TermsEnum for EmptyTermsEnum {
         ))
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         Err(LuceneError::illegal_state(
             "term should never be called on EmptyTermsEnum".to_string(),
         ))
@@ -1520,7 +1529,7 @@ impl TermsEnum for EmptyTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         Err(LuceneError::illegal_state(
             "postings should never be called on EmptyTermsEnum".to_string(),
         ))
@@ -1874,8 +1883,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.terms[self.pos].clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.pos].clone()))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -1894,8 +1903,8 @@ mod tests {
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum::new()))
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {

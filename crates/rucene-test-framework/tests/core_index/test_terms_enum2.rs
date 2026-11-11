@@ -190,7 +190,7 @@ fn test_seeking(inst: &mut TestTermsEnum2Instance) -> Result<()> {
                 } else {
                     // seek ceil
                     assert_equals(&SeekStatus::FOUND, &te.seek_ceil(term)?);
-                    assert_equals(term, &te.term()?);
+                    Assert::assert_equals_nullable(Some(term.clone()), te.term()?);
                 }
             }
         }
@@ -213,7 +213,7 @@ fn test_seeking_and_nexting(inst: &mut TestTermsEnum2Instance) -> Result<()> {
                 assert_equals(&Some(term.clone()), &te.next()?);
             } else if c == 1 {
                 assert_equals(&SeekStatus::FOUND, &te.seek_ceil(term)?);
-                assert_equals(term, &te.term()?);
+                Assert::assert_equals_nullable(Some(term.clone()), te.term()?);
             } else {
                 Assert::assert_true(te.seek_exact(term)?);
             }
@@ -248,7 +248,10 @@ fn test_intersect(inst: &mut TestTermsEnum2Instance) -> Result<()> {
         ));
         let mut found: BTreeSet<BytesRef> = BTreeSet::new();
         while te.next()?.is_some() {
-            found.insert(BytesRef::deep_copy_of(&te.term()?));
+            found.insert(BytesRef::deep_copy_of(
+                &te.term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+            ));
         }
 
         let actual = det(Operations::determinize(

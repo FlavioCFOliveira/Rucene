@@ -124,7 +124,13 @@ fn test_prev_term_at_end(inst: &mut TestSegmentTermEnumInstance) -> Result<()> {
         .unwrap_or_else(|| crate::support::npe("terms"))
         .iterator()?;
     assert_not_null(&terms.next()?);
-    assert_equals(&"aaa".to_string(), &terms.term()?.utf8_to_string()?);
+    assert_equals(
+        &"aaa".to_string(),
+        &terms
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?,
+    );
     assert_not_null(&terms.next()?);
     let ord_b = match terms.ord() {
         Ok(ord) => ord,
@@ -134,11 +140,23 @@ fn test_prev_term_at_end(inst: &mut TestSegmentTermEnumInstance) -> Result<()> {
         }
         Err(e) => return Err(e),
     };
-    assert_equals(&"bbb".to_string(), &terms.term()?.utf8_to_string()?);
+    assert_equals(
+        &"bbb".to_string(),
+        &terms
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?,
+    );
     assert_null(&terms.next()?);
 
     terms.seek_ord(ord_b)?;
-    assert_equals(&"bbb".to_string(), &terms.term()?.utf8_to_string()?);
+    assert_equals(
+        &"bbb".to_string(),
+        &terms
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?,
+    );
     reader.as_index_reader().close()
 }
 
@@ -153,24 +171,48 @@ fn verify_doc_freq(inst: &TestSegmentTermEnumInstance) -> Result<()> {
     // go to the first term (aaa)
     term_enum.next()?;
     // assert that term is 'aaa'
-    assert_equals(&"aaa".to_string(), &term_enum.term()?.utf8_to_string()?);
+    assert_equals(
+        &"aaa".to_string(),
+        &term_enum
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?,
+    );
     assert_equals(&200, &term_enum.doc_freq()?);
     // go to the second term (bbb)
     term_enum.next()?;
     // assert that term is 'bbb'
-    assert_equals(&"bbb".to_string(), &term_enum.term()?.utf8_to_string()?);
+    assert_equals(
+        &"bbb".to_string(),
+        &term_enum
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?,
+    );
     assert_equals(&100, &term_enum.doc_freq()?);
 
     // create enumeration of terms after term 'aaa',
     // including 'aaa'
     term_enum.seek_ceil(&BytesRef::new(b"aaa".to_vec()))?;
     // assert that term is 'aaa'
-    assert_equals(&"aaa".to_string(), &term_enum.term()?.utf8_to_string()?);
+    assert_equals(
+        &"aaa".to_string(),
+        &term_enum
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?,
+    );
     assert_equals(&200, &term_enum.doc_freq()?);
     // go to term 'bbb'
     term_enum.next()?;
     // assert that term is 'bbb'
-    assert_equals(&"bbb".to_string(), &term_enum.term()?.utf8_to_string()?);
+    assert_equals(
+        &"bbb".to_string(),
+        &term_enum
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?,
+    );
     assert_equals(&100, &term_enum.doc_freq()?);
     reader.close()
 }

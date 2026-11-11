@@ -88,8 +88,8 @@ fn terms_iterator(r: &Arc<dyn IndexReader>, field: &str) -> Result<Box<dyn Terms
         .iterator()
 }
 
-/// `te.term()`, as the `BytesRef` it returns.
-fn term(te: &dyn TermsEnum) -> Result<BytesRef> {
+/// `te.term()`, `None` for Java's `null`.
+fn term(te: &dyn TermsEnum) -> Result<Option<BytesRef>> {
     te.term()
 }
 
@@ -138,12 +138,17 @@ fn test_() -> Result<()> {
                 if verbose() {
                     println!(
                         "  got term={} expected={}",
-                        term(&*terms_enum)?.utf8_to_string()?,
+                        term(&*terms_enum)?
+                            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                            .utf8_to_string()?,
                         terms[upto as usize].utf8_to_string()?
                     );
                 }
                 Assert::assert_true((upto as usize) < terms.len());
-                assert_equals(&terms[upto as usize], &term(&*terms_enum)?);
+                randomizedtesting::junit::Assert::assert_equals_nullable(
+                    Some(terms[upto as usize].clone()),
+                    term(&*terms_enum)?,
+                );
             }
         } else {
             let target: BytesRef;
@@ -188,11 +193,17 @@ fn test_() -> Result<()> {
                         upto = -1;
                     } else {
                         assert_equals(&SeekStatus::NOT_FOUND, &status);
-                        assert_equals(&terms[upto as usize], &term(&*terms_enum)?);
+                        randomizedtesting::junit::Assert::assert_equals_nullable(
+                            Some(terms[upto as usize].clone()),
+                            term(&*terms_enum)?,
+                        );
                     }
                 } else {
                     assert_equals(&SeekStatus::FOUND, &status);
-                    assert_equals(&terms[upto as usize], &term(&*terms_enum)?);
+                    randomizedtesting::junit::Assert::assert_equals_nullable(
+                        Some(terms[upto as usize].clone()),
+                        term(&*terms_enum)?,
+                    );
                 }
             } else {
                 if verbose() {
@@ -211,7 +222,10 @@ fn test_() -> Result<()> {
                     upto = -1;
                 } else {
                     Assert::assert_true(result);
-                    assert_equals(&target, &term(&*terms_enum)?);
+                    randomizedtesting::junit::Assert::assert_equals_nullable(
+                        Some(target.clone()),
+                        term(&*terms_enum)?,
+                    );
                 }
             }
         }
@@ -465,7 +479,8 @@ fn test_intersect_random() -> Result<()> {
                     &mut *te,
                     postings_enum.take(),
                     POSTINGS_ENUM_NONE,
-                )?;
+                )?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 let doc_id = pe.next_doc()?;
                 Assert::assert_true(doc_id != NO_MORE_DOCS);
                 assert_equals(
@@ -879,7 +894,7 @@ fn test_random_seeks(r: &Arc<dyn IndexReader>, valid_term_strings: &[String]) ->
         }
 
         if loc >= 0 {
-            assert_equals(&t, &term(&*te)?);
+            randomizedtesting::junit::Assert::assert_equals_nullable(Some(t.clone()), term(&*te)?);
         } else if do_seek_exact {
             // TermsEnum is unpositioned if seekExact returns false
             continue;
@@ -887,7 +902,10 @@ fn test_random_seeks(r: &Arc<dyn IndexReader>, valid_term_strings: &[String]) ->
             continue;
         } else {
             loc = -loc - 1;
-            assert_equals(&valid_terms[loc as usize], &term(&*te)?);
+            randomizedtesting::junit::Assert::assert_equals_nullable(
+                Some(valid_terms[loc as usize].clone()),
+                term(&*te)?,
+            );
         }
 
         // Do a bunch of next's after the seek
@@ -935,7 +953,9 @@ fn next_string(te: &mut dyn TermsEnum) -> Result<String> {
 
 /// `te.postings(null, PostingsEnum.NONE).nextDoc()`.
 fn first_doc(te: &mut dyn TermsEnum) -> Result<i32> {
-    te.postings(None, POSTINGS_ENUM_NONE)?.next_doc()
+    te.postings(None, POSTINGS_ENUM_NONE)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?
+        .next_doc()
 }
 
 /// Port of `TestTermsEnum.testIntersectBasic`.
@@ -1084,12 +1104,16 @@ fn test_intersect_empty_string() -> Result<()> {
     let mut te = terms.intersect(&ca, None)?;
 
     assert_equals("", next_string(&mut *te)?.as_str());
-    let mut de = te.postings(None, POSTINGS_ENUM_NONE)?;
+    let mut de = te
+        .postings(None, POSTINGS_ENUM_NONE)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&0, &de.next_doc()?);
     assert_equals(&1, &de.next_doc()?);
 
     assert_equals("abc", next_string(&mut *te)?.as_str());
-    let mut de = te.postings(None, POSTINGS_ENUM_NONE)?;
+    let mut de = te
+        .postings(None, POSTINGS_ENUM_NONE)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&0, &de.next_doc()?);
     assert_equals(&1, &de.next_doc()?);
 
@@ -1099,7 +1123,9 @@ fn test_intersect_empty_string() -> Result<()> {
     let mut te = terms.intersect(&ca, Some(&LuceneTestCase::new_bytes_ref_str("")))?;
 
     assert_equals("abc", next_string(&mut *te)?.as_str());
-    let mut de = te.postings(None, POSTINGS_ENUM_NONE)?;
+    let mut de = te
+        .postings(None, POSTINGS_ENUM_NONE)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&0, &de.next_doc()?);
     assert_equals(&1, &de.next_doc()?);
 
@@ -1174,7 +1200,9 @@ fn test_common_prefix_terms() -> Result<()> {
         let actual_result = terms_enum.seek_exact(&term_bytes_ref)?;
         assert_equals(&should_exist, &actual_result);
         if should_exist {
-            let mut pe = terms_enum.postings(postings_enum.take(), 0)?;
+            let mut pe = terms_enum
+                .postings(postings_enum.take(), 0)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             let doc_id = pe.next_doc()?;
             Assert::assert_true(doc_id != NO_MORE_DOCS);
             assert_equals(&doc_id, &pk_lookup.lookup(&term_bytes_ref)?);

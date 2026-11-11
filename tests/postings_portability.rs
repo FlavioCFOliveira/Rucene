@@ -425,10 +425,13 @@ fn the_block_postings_enum_is_reused_exactly_when_lucene_reuses_it() {
 
     let mut body = leaf0.terms("body").unwrap().unwrap().iterator().unwrap();
     body.next().unwrap();
-    let p1 = body.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+    let p1 = body.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
     let p1_identity = identity(p1.as_ref());
     body.next().unwrap();
-    let mut p2 = body.postings(Some(p1), POSTINGS_ENUM_FREQS).unwrap();
+    let mut p2 = body
+        .postings(Some(p1), POSTINGS_ENUM_FREQS)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         identity(p2.as_ref()),
         p1_identity,
@@ -437,27 +440,39 @@ fn the_block_postings_enum_is_reused_exactly_when_lucene_reuses_it() {
     assert_eq!(drain_docs(p2.as_mut()), vec![0, 1, 2]);
 
     let p2_identity = identity(p2.as_ref());
-    let mut p3 = body.postings(Some(p2), POSTINGS_ENUM_POSITIONS).unwrap();
+    let mut p3 = body
+        .postings(Some(p2), POSTINGS_ENUM_POSITIONS)
+        .unwrap()
+        .unwrap();
     assert_ne!(identity(p3.as_ref()), p2_identity, "other flags");
     assert_eq!(drain_docs(p3.as_mut()), vec![0, 1, 2]);
 
     let mut id = leaf0.terms("id").unwrap().unwrap().iterator().unwrap();
     id.next().unwrap();
-    let q1 = id.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+    let q1 = id.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
     let q1_identity = identity(q1.as_ref());
-    let q2 = body.postings(Some(q1), POSTINGS_ENUM_FREQS).unwrap();
+    let q2 = body
+        .postings(Some(q1), POSTINGS_ENUM_FREQS)
+        .unwrap()
+        .unwrap();
     assert_ne!(identity(q2.as_ref()), q1_identity, "other index options");
 
     let mut body1 = leaf1.terms("body").unwrap().unwrap().iterator().unwrap();
     body1.next().unwrap();
     let q2_identity = identity(q2.as_ref());
-    let mut other = body1.postings(Some(q2), POSTINGS_ENUM_FREQS).unwrap();
+    let mut other = body1
+        .postings(Some(q2), POSTINGS_ENUM_FREQS)
+        .unwrap()
+        .unwrap();
     assert_ne!(identity(other.as_ref()), q2_identity, "other reader");
     assert_eq!(drain_docs(other.as_mut()), vec![0, 1, 2]);
 
     let impacts: Box<dyn PostingsEnum> = body.impacts(POSTINGS_ENUM_FREQS).unwrap();
     let impacts_identity = identity(impacts.as_ref());
-    let after_impacts = body.postings(Some(impacts), POSTINGS_ENUM_FREQS).unwrap();
+    let after_impacts = body
+        .postings(Some(impacts), POSTINGS_ENUM_FREQS)
+        .unwrap()
+        .unwrap();
     assert_ne!(
         identity(after_impacts.as_ref()),
         impacts_identity,
@@ -503,7 +518,10 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
         .iterator()
         .unwrap();
     assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
-    let mut postings = terms.postings(None, POSTINGS_ENUM_OFFSETS).unwrap();
+    let mut postings = terms
+        .postings(None, POSTINGS_ENUM_OFFSETS)
+        .unwrap()
+        .unwrap();
     assert_eq!(postings.next_doc().unwrap(), 0);
     assert_eq!(postings.freq().unwrap(), 1);
     postings.next_position().unwrap();
@@ -513,6 +531,7 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
     assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
     let reused = terms
         .postings(Some(postings), POSTINGS_ENUM_OFFSETS)
+        .unwrap()
         .unwrap();
     assert_eq!(identity(reused.as_ref()), first, "the enum is reused");
     assert_eq!((reused.start_offset(), reused.end_offset()), (0, 3));
@@ -628,7 +647,10 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
         .iterator()
         .unwrap();
     assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
-    let mut postings = terms.postings(None, POSTINGS_ENUM_PAYLOADS).unwrap();
+    let mut postings = terms
+        .postings(None, POSTINGS_ENUM_PAYLOADS)
+        .unwrap()
+        .unwrap();
     assert_eq!(postings.next_doc().unwrap(), 0);
     postings.next_position().unwrap();
     assert_eq!(postings.get_payload().unwrap(), Some(&[1u8, 2][..]));
@@ -637,6 +659,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
     assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
     let reused = terms
         .postings(Some(postings), POSTINGS_ENUM_PAYLOADS)
+        .unwrap()
         .unwrap();
     assert_eq!(identity(reused.as_ref()), first, "the enum is reused");
     assert_eq!(reused.get_payload().unwrap(), Some(&[1u8, 2][..]));
@@ -677,7 +700,10 @@ fn a_fresh_block_postings_enum_answers_offsets_of_zero_as_lucene_does() {
         .iterator()
         .unwrap();
     terms.next().unwrap();
-    let mut postings = terms.postings(None, POSTINGS_ENUM_OFFSETS).unwrap();
+    let mut postings = terms
+        .postings(None, POSTINGS_ENUM_OFFSETS)
+        .unwrap()
+        .unwrap();
     assert_eq!((postings.start_offset(), postings.end_offset()), (0, 0));
     postings.next_doc().unwrap();
     assert_eq!((postings.start_offset(), postings.end_offset()), (0, 0));
@@ -749,7 +775,7 @@ impl TermsEnum for RecordingTermsEnum<'_> {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> rucene::error::Result<BytesRef> {
+    fn term(&self) -> rucene::error::Result<Option<BytesRef>> {
         self.inner.term()
     }
 
@@ -769,16 +795,19 @@ impl TermsEnum for RecordingTermsEnum<'_> {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> rucene::error::Result<Box<dyn PostingsEnum>> {
+    ) -> rucene::error::Result<Option<Box<dyn PostingsEnum>>> {
         let offered = reuse.as_deref().map(identity);
-        let mut postings = self.inner.postings(reuse, flags)?;
+        let mut postings = self
+            .inner
+            .postings(reuse, flags)?
+            .expect("the codec's postings enum is never null");
         self.log.lock().unwrap().push(Offer {
             field: self.field.clone(),
             offered,
             returned: identity(postings.as_ref()),
             kind: kind_of(postings.as_mut()),
         });
-        Ok(postings)
+        Ok(Some(postings))
     }
 
     fn impacts(&mut self, flags: i32) -> rucene::error::Result<Box<dyn ImpactsEnum>> {

@@ -233,16 +233,16 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<BytesRef> {
-            Ok(self.terms[self.pos].clone())
+        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.pos].clone()))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum::new()))
+        ) -> crate::error::Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {
@@ -334,16 +334,16 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<BytesRef> {
-            Ok(BytesRef::new(b"intersect".to_vec()))
+        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::new(b"intersect".to_vec())))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum::new()))
+        ) -> crate::error::Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {
@@ -479,7 +479,7 @@ mod tests {
         // ALL returns the full iterator positioned on the first term.
         let all = CompiledAutomaton::new(Automata::make_any_string(), false, true, false).unwrap();
         let it = all.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term().unwrap(), BytesRef::new(b"alpha".to_vec()));
+        assert_eq!(it.term().unwrap(), Some(BytesRef::new(b"alpha".to_vec())));
 
         // SINGLE returns a SingleTermsEnum reporting the fixed term.
         let single = CompiledAutomaton::new(
@@ -490,7 +490,7 @@ mod tests {
         )
         .unwrap();
         let it = single.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term().unwrap(), BytesRef::new(b"beta".to_vec()));
+        assert_eq!(it.term().unwrap(), Some(BytesRef::new(b"beta".to_vec())));
 
         // NORMAL delegates to Terms::intersect.
         let min = BytesRef::new(b"a".to_vec());
@@ -500,7 +500,10 @@ mod tests {
         assert!(!terms.intersect_called.load(Ordering::SeqCst));
         let it = normal.get_terms_enum(&terms).unwrap();
         assert!(terms.intersect_called.load(Ordering::SeqCst));
-        assert_eq!(it.term().unwrap(), BytesRef::new(b"intersect".to_vec()));
+        assert_eq!(
+            it.term().unwrap(),
+            Some(BytesRef::new(b"intersect".to_vec()))
+        );
     }
 
     #[test]

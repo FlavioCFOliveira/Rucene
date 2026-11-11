@@ -206,7 +206,7 @@ impl TermsEnum for FakeTermsEnum {
         unsupported()
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         unsupported()
     }
 
@@ -222,7 +222,7 @@ impl TermsEnum for FakeTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         unsupported()
     }
 

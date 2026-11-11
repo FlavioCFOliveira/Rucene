@@ -506,7 +506,11 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
                     } else {
                         POSTINGS_ENUM_POSITIONS
                     };
-                    postings.push(terms_enum.postings(None, flags)?);
+                    postings.push(
+                        terms_enum
+                            .postings(None, flags)?
+                            .ok_or_else(LuceneError::null_pointer)?,
+                    );
                     total_match_cost += term_positions_cost(&mut *terms_enum)?;
                 }
             }

@@ -1079,7 +1079,7 @@ impl TestUtil {
         if !terms_enum.seek_exact(term)? {
             return Ok(None);
         }
-        Self::docs_of(random, &mut *terms_enum, reuse, flags).map(Some)
+        Self::docs_of(random, &mut *terms_enum, reuse, flags)
     }
 
     /// `docs(random, termsEnum, reuse, flags)`: a `PostingsEnum` with random
@@ -1095,7 +1095,7 @@ impl TestUtil {
         terms_enum: &mut dyn TermsEnum,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let mut flags = flags;
         if random.next_boolean() {
             if random.next_boolean() {

@@ -116,8 +116,8 @@ impl TermsEnum for STMergingTermsEnum {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.term.clone().unwrap_or_default())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(self.term.clone())
     }
 
     fn ord(&self) -> Result<i64> {
@@ -137,14 +137,14 @@ impl TermsEnum for STMergingTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let mut multi_postings_enum = MultiSegmentsPostingsEnum::new(
             self.field_name.clone(),
             Rc::clone(&self.reusable_postings_enums),
         );
         multi_postings_enum.reset(self.segment_postings_list.clone());
         multi_postings_enum.set_posting_flags(flags);
-        Ok(Box::new(multi_postings_enum))
+        Ok(Some(Box::new(multi_postings_enum)))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {

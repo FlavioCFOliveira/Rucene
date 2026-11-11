@@ -233,8 +233,8 @@ impl TermsEnum for STMergingBlockReader {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.base.term_bytes().unwrap_or_default())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(self.base.term_bytes())
     }
 
     fn ord(&self) -> Result<i64> {
@@ -253,7 +253,7 @@ impl TermsEnum for STMergingBlockReader {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         Err(unsupported())
     }
 

@@ -304,8 +304,10 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                 self.start_term(&term, freq)?;
 
                 if has_positions || has_offsets {
-                    let mut postings = terms_enum
+                    let postings = terms_enum
                         .postings(None, POSTINGS_ENUM_OFFSETS | POSTINGS_ENUM_PAYLOADS)?;
+                    debug_assert!(postings.is_some());
+                    let mut postings = postings.ok_or_else(LuceneError::null_pointer)?;
                     let doc_id = postings.next_doc()?;
                     debug_assert_ne!(doc_id, NO_MORE_DOCS);
                     debug_assert!(postings.freq()? == freq);

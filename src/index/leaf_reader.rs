@@ -390,7 +390,7 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         if let Some(terms) = self.terms(term.field())? {
             let mut iterator = terms.iterator()?;
             if iterator.seek_exact(term.bytes())? {
-                return Ok(Some(iterator.postings(None, flags)?));
+                return iterator.postings(None, flags);
             }
         }
         Ok(None)

@@ -344,7 +344,7 @@ impl TermsEnum for AssertingTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         assert_thread("Terms enums", &self.creation_thread)?;
         java_assert!(
             self.state == TermsEnumState::Positioned,
@@ -359,6 +359,12 @@ impl TermsEnum for AssertingTermsEnum {
             .map(|asserting| asserting.take_in());
         let reused_identity = actual_reuse.as_deref().map(identity);
         let docs = self.r#in.postings(actual_reuse, flags)?;
+        java_assert!(docs.is_some());
+        // `docs == actualReuse` is false for a `null` docs: Java wraps it,
+        // and `FilterPostingsEnum`'s constructor rejects it.
+        let docs = docs.ok_or_else(|| {
+            LuceneError::null_pointer_with_message("incoming PostingsEnum must not be null")
+        })?;
         if reused_identity == Some(identity(&*docs)) {
             // codec reused, reset asserting state
             let mut reuse = reuse.expect("a reused enum comes from `reuse`");
@@ -368,9 +374,9 @@ impl TermsEnum for AssertingTermsEnum {
                 .expect("`reuse` is an AssertingPostingsEnum");
             asserting.r#in = docs;
             asserting.reset();
-            Ok(reuse)
+            Ok(Some(reuse))
         } else {
-            Ok(Box::new(AssertingPostingsEnum::new(docs)))
+            Ok(Some(Box::new(AssertingPostingsEnum::new(docs))))
         }
     }
 
@@ -441,14 +447,17 @@ impl TermsEnum for AssertingTermsEnum {
         Ok(ttf)
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         assert_thread("Terms enums", &self.creation_thread)?;
         java_assert!(
             self.state == TermsEnumState::Positioned,
             "term() called on unpositioned TermsEnum"
         );
         let ret = self.r#in.term()?;
-        assert_valid(&ret)?;
+        // `assert ret == null || ret.isValid()`
+        if let Some(ret) = &ret {
+            assert_valid(ret)?;
+        }
         Ok(ret)
     }
 

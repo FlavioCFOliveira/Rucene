@@ -1171,9 +1171,9 @@ impl TermsEnum for BlockReader {
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        // Java returns `null` when unpositioned; the port's `term()` cannot.
-        Ok(self.term_bytes().unwrap_or_default())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        // `null` when unpositioned, as Java's `term()` returns.
+        Ok(self.term_bytes())
     }
 
     fn ord(&self) -> Result<i64> {
@@ -1192,8 +1192,8 @@ impl TermsEnum for BlockReader {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        self.postings_impl(reuse, flags)
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        Ok(Some(self.postings_impl(reuse, flags)?))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {

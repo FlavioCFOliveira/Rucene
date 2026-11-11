@@ -1013,8 +1013,8 @@ impl TermsEnum for IntersectTermsEnum {
         ))
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(BytesRef::new(self.term.clone()))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(self.term.clone())))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -1057,7 +1057,7 @@ impl TermsEnum for IntersectTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.decode_current_meta_data()?;
         let cur = self
             .current
@@ -1065,7 +1065,7 @@ impl TermsEnum for IntersectTermsEnum {
         let field_info = self.field.field_info().clone();
         let state = self.stack[cur].state_data;
         let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
-        reader.postings(&field_info, &state, reuse, flags)
+        Ok(Some(reader.postings(&field_info, &state, reuse, flags)?))
     }
 
     /// Equivalent to `IntersectTermsEnum.termState()`

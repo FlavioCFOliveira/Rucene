@@ -81,7 +81,9 @@ fn check_with_payload(terms: Option<Box<dyn Terms>>, position: i32) -> Result<()
     let terms = terms.unwrap_or_else(|| npe("terms"));
     let mut terms_enum = terms.iterator()?;
     Assert::assert_true(terms_enum.seek_exact(&BytesRef::from_char_sequence("withPayload"))?);
-    let mut de: Box<dyn PostingsEnum> = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut de: Box<dyn PostingsEnum> = terms_enum
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&0, &de.next_doc()?);
     assert_equals(&position, &de.next_position()?);
     assert_equals(

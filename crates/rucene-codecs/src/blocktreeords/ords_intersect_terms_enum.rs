@@ -483,8 +483,8 @@ impl TermsEnum for OrdsIntersectTermsEnum {
         Ok(Box::new(self.cur().term_state))
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(BytesRef::new(self.term_slice().to_vec()))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(self.term_slice().to_vec())))
     }
 
     // TODO: do we need ord() here?  OrdsIntersectTermsEnumFrame tracks termOrd but it may be buggy!
@@ -505,13 +505,16 @@ impl TermsEnum for OrdsIntersectTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let fr = self.fr.clone();
         self.cur_mut().decode_meta_data(&fr)?;
         let state = self.cur().term_state;
-        fr.parent
-            .postings_reader
-            .postings(&fr.data.field_info, &state, reuse, flags)
+        Ok(Some(fr.parent.postings_reader.postings(
+            &fr.data.field_info,
+            &state,
+            reuse,
+            flags,
+        )?))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {

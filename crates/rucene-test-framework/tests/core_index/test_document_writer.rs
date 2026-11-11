@@ -872,7 +872,9 @@ fn test_index_binary_value_without_token_stream(inst: &Instance) -> Result<()> {
                 }
                 let mut terms_enum = terms.iterator()?;
                 Assert::assert_true(terms_enum.seek_exact(&BytesRef::from_char_sequence("a"))?);
-                let mut pe = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+                let mut pe = terms_enum
+                    .postings(None, POSTINGS_ENUM_ALL)?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 assert_equals(&0, &pe.next_doc()?);
                 if ft.index_options().subsumes(IndexOptions::DOCS_AND_FREQS) {
                     assert_equals(&2, &pe.freq()?);
@@ -894,7 +896,9 @@ fn test_index_binary_value_without_token_stream(inst: &Instance) -> Result<()> {
                 assert_equals(&2, &tv_terms.sum_total_term_freq()?);
                 let mut tv_terms_enum = tv_terms.iterator()?;
                 Assert::assert_true(tv_terms_enum.seek_exact(&BytesRef::from_char_sequence("a"))?);
-                let mut pe = tv_terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+                let mut pe = tv_terms_enum
+                    .postings(None, POSTINGS_ENUM_ALL)?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 assert_equals(&0, &pe.next_doc()?);
                 assert_equals(&2, &pe.freq()?);
                 assert_equals(&-1, &pe.next_position()?);

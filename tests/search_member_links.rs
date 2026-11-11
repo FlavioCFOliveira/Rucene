@@ -581,7 +581,7 @@ impl TermsEnum for RecordingTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
 
@@ -601,7 +601,7 @@ impl TermsEnum for RecordingTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
 

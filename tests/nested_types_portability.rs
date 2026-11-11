@@ -374,7 +374,10 @@ fn id_order(dir: &Arc<dyn Directory>) -> Vec<String> {
     let mut terms_enum = terms.iterator().unwrap();
     let mut order = BTreeMap::new();
     while let Some(term) = terms_enum.next().unwrap() {
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_NONE)
+            .unwrap()
+            .unwrap();
         let doc = postings.next_doc().unwrap();
         order.insert(doc, String::from_utf8(term.slice().to_vec()).unwrap());
     }
@@ -489,7 +492,10 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
     let mut terms_enum = terms.iterator().unwrap();
     let mut order = BTreeMap::new();
     while let Some(term) = terms_enum.next().unwrap() {
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_NONE)
+            .unwrap()
+            .unwrap();
         let doc = postings.next_doc().unwrap();
         let live = live_docs.as_ref().is_none_or(|bits| bits.get(doc as usize));
         order.insert(
@@ -1358,7 +1364,10 @@ fn document_lines(leaf: &Arc<dyn rucene::index::LeafReader>) -> Vec<String> {
     let mut terms_enum = terms.iterator().unwrap();
     while let Some(term) = terms_enum.next().unwrap() {
         let text = String::from_utf8(term.slice().to_vec()).unwrap();
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_NONE)
+            .unwrap()
+            .unwrap();
         loop {
             let doc = postings.next_doc().unwrap();
             if doc == NO_MORE_DOCS {
@@ -1446,7 +1455,7 @@ fn document_lines(leaf: &Arc<dyn rucene::index::LeafReader>) -> Vec<String> {
             let mut te = tv.iterator().unwrap();
             let mut entries = Vec::new();
             while let Some(term) = te.next().unwrap() {
-                let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+                let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
                 pe.next_doc().unwrap();
                 let freq = pe.freq().unwrap();
                 let mut entry = format!("{}:{freq}", std::str::from_utf8(term.slice()).unwrap());
@@ -1961,7 +1970,10 @@ fn dump_fields(fields: &dyn Fields, wrap: bool) -> Vec<String> {
         let terms = fields.terms(&name).unwrap().expect("a listed field");
         let mut terms_enum = terms.iterator().unwrap();
         while let Some(term) = terms_enum.next().unwrap() {
-            let postings = terms_enum.postings(None, POSTINGS_ENUM_ALL).unwrap();
+            let postings = terms_enum
+                .postings(None, POSTINGS_ENUM_ALL)
+                .unwrap()
+                .unwrap();
             let mut postings: Box<dyn PostingsEnum> = if wrap {
                 Box::new(FilterPostingsEnum::new(postings))
             } else {
@@ -2024,10 +2036,17 @@ fn filter_fields_and_filter_postings_enum_forward_everything() {
     let terms = leaf.terms("body").unwrap().unwrap();
     let mut terms_enum = terms.iterator().unwrap();
     assert!(terms_enum.seek_exact(&bytes("rep")).unwrap());
-    let mut plain = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
+    let mut plain = terms_enum
+        .postings(None, POSTINGS_ENUM_NONE)
+        .unwrap()
+        .unwrap();
     assert!(terms_enum.seek_exact(&bytes("rep")).unwrap());
-    let mut filter =
-        FilterPostingsEnum::new(terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap());
+    let mut filter = FilterPostingsEnum::new(
+        terms_enum
+            .postings(None, POSTINGS_ENUM_NONE)
+            .unwrap()
+            .unwrap(),
+    );
     for target in [0, 7, 128, 129, 250, 299, 300] {
         assert_eq!(
             filter.advance(target).unwrap(),

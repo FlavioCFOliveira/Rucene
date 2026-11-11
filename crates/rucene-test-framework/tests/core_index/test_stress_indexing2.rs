@@ -453,25 +453,32 @@ fn print_term_vectors(tv: Option<&dyn Fields>, check_has_positions: bool) -> Res
                     term2.utf8_to_string()?,
                     terms_enum3.total_term_freq()?
                 );
-                let mut dp = terms_enum3.postings(dp_enum.take(), POSTINGS_ENUM_ALL)?;
-                // tv1: `if (terms3.hasPositions())`; tv2: `if (dpEnum != null)`,
-                // and `postings` never returns null.
-                if !check_has_positions || terms3.has_positions() {
+                dp_enum = terms_enum3.postings(dp_enum.take(), POSTINGS_ENUM_ALL)?;
+                // tv1: `if (terms3.hasPositions())`; tv2: `if (dpEnum != null)`.
+                let has_positions = if check_has_positions {
+                    terms3.has_positions()
+                } else {
+                    dp_enum.is_some()
+                };
+                if has_positions {
+                    let dp = dp_enum
+                        .as_mut()
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                     Assert::assert_true(dp.next_doc()? != NO_MORE_DOCS);
                     let freq = dp.freq()?;
                     println!("        doc={} freq={freq}", dp.doc_id());
                     for _ in 0..freq {
                         println!("          pos={}", dp.next_position()?);
                     }
-                    dp_enum = Some(dp);
                 } else {
-                    dp_enum = Some(dp);
-                    let mut d = TestUtil::docs_of(
+                    let d = TestUtil::docs_of(
                         &*random(),
                         &mut *terms_enum3,
                         d_enum.take(),
                         POSTINGS_ENUM_FREQS,
                     )?;
+                    assert_not_null(&d);
+                    let mut d = d.ok_or_else(rucene::error::LuceneError::null_pointer)?;
                     Assert::assert_true(d.next_doc()? != NO_MORE_DOCS);
                     let freq = d.freq()?;
                     println!("        doc={} freq={freq}", d.doc_id());
@@ -534,7 +541,8 @@ fn verify_equals_readers(
                 &mut *terms_enum,
                 docs.take(),
                 POSTINGS_ENUM_NONE,
-            )?;
+            )?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             while next_non_deleted_doc(&mut *d, live_docs.as_deref())? != NO_MORE_DOCS {
                 Assert::fail("r1 is not empty but r2 is");
             }
@@ -558,14 +566,15 @@ fn verify_equals_readers(
             &mut *terms_enum,
             term_docs1.take(),
             POSTINGS_ENUM_NONE,
-        )?;
+        )?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         let mut td2 = if terms_enum2.seek_exact(&term)? {
-            Some(TestUtil::docs_of(
+            TestUtil::docs_of(
                 &*random(),
                 &mut *terms_enum2,
                 term_docs2.take(),
                 POSTINGS_ENUM_NONE,
-            )?)
+            )?
         } else {
             None
         };
@@ -692,7 +701,8 @@ fn verify_equals_readers(
 
             // System.out.println("TEST: term1=" + term1);
             let mut d1 =
-                TestUtil::docs_of(&*random(), &mut **te1, docs1.take(), POSTINGS_ENUM_FREQS)?;
+                TestUtil::docs_of(&*random(), &mut **te1, docs1.take(), POSTINGS_ENUM_FREQS)?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             while d1.next_doc()? != NO_MORE_DOCS {
                 let d = d1.doc_id();
                 if live_docs1.as_ref().is_some_and(|l| !l.get(d as usize)) {
@@ -733,7 +743,8 @@ fn verify_equals_readers(
 
             // System.out.println("TEST: term1=" + term1);
             let mut d2 =
-                TestUtil::docs_of(&*random(), &mut **te2, docs2.take(), POSTINGS_ENUM_FREQS)?;
+                TestUtil::docs_of(&*random(), &mut **te2, docs2.take(), POSTINGS_ENUM_FREQS)?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             while d2.next_doc()? != NO_MORE_DOCS {
                 if live_docs2
                     .as_ref()
@@ -872,11 +883,17 @@ fn verify_equals_fields(d1: Option<&dyn Fields>, d2: Option<&dyn Fields>) -> Res
                 &terms_enum2.total_term_freq()?,
             );
 
-            let mut dp1 = terms_enum1.postings(dp_enum1.take(), POSTINGS_ENUM_ALL)?;
-            let mut dp2 = terms_enum2.postings(dp_enum2.take(), POSTINGS_ENUM_ALL)?;
+            dp_enum1 = terms_enum1.postings(dp_enum1.take(), POSTINGS_ENUM_ALL)?;
+            dp_enum2 = terms_enum2.postings(dp_enum2.take(), POSTINGS_ENUM_ALL)?;
 
             if terms1.has_positions() {
                 Assert::assert_true(terms2.has_positions());
+                let dp1 = dp_enum1
+                    .as_mut()
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
+                let dp2 = dp_enum2
+                    .as_mut()
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 let doc_id1 = dp1.next_doc()?;
                 dp2.next_doc()?;
                 // docIDs are not supposed to be equal
@@ -901,18 +918,22 @@ fn verify_equals_fields(d1: Option<&dyn Fields>, d2: Option<&dyn Fields>) -> Res
                 assert_equals(&NO_MORE_DOCS, &dp1.next_doc()?);
                 assert_equals(&NO_MORE_DOCS, &dp2.next_doc()?);
             } else {
-                let mut de1 = TestUtil::docs_of(
+                let de1 = TestUtil::docs_of(
                     &*random(),
                     &mut *terms_enum1,
                     d_enum1.take(),
                     POSTINGS_ENUM_FREQS,
                 )?;
-                let mut de2 = TestUtil::docs_of(
+                let de2 = TestUtil::docs_of(
                     &*random(),
                     &mut *terms_enum2,
                     d_enum2.take(),
                     POSTINGS_ENUM_FREQS,
                 )?;
+                assert_not_null(&de1);
+                assert_not_null(&de2);
+                let mut de1 = de1.ok_or_else(rucene::error::LuceneError::null_pointer)?;
+                let mut de2 = de2.ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 let doc_id1 = de1.next_doc()?;
                 de2.next_doc()?;
                 // docIDs are not supposed to be equal
@@ -927,8 +948,6 @@ fn verify_equals_fields(d1: Option<&dyn Fields>, d2: Option<&dyn Fields>) -> Res
                 d_enum1 = Some(de1);
                 d_enum2 = Some(de2);
             }
-            dp_enum1 = Some(dp1);
-            dp_enum2 = Some(dp2);
         }
 
         Assert::assert_true(terms_enum2.next()?.is_none());

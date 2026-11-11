@@ -79,7 +79,7 @@ fn into_bit_set_matches_next_doc_over_unary_and_packed_blocks() {
     ] {
         let mut te = terms.iterator().unwrap();
         assert!(te.seek_exact(&BytesRef::from_char_sequence("t")).unwrap());
-        let mut postings = te.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_NONE).unwrap().unwrap();
         postings.advance(start).unwrap();
         let offset = postings.doc_id();
         let mut bits = FixedBitSet::new((max_doc - offset) as usize + 1);
@@ -125,7 +125,7 @@ fn doc_id_run_end_spans_dense_blocks() {
     let terms = leaf.terms("f").unwrap().unwrap();
     let mut te = terms.iterator().unwrap();
     assert!(te.seek_exact(&BytesRef::from_char_sequence("t")).unwrap());
-    let mut postings = te.postings(None, POSTINGS_ENUM_NONE).unwrap();
+    let mut postings = te.postings(None, POSTINGS_ENUM_NONE).unwrap().unwrap();
     assert_eq!(postings.next_doc().unwrap(), 0);
     let run_end = postings.doc_id_run_end().unwrap();
     assert!(run_end > 1, "a dense block runs past doc 0: {run_end}");
@@ -176,9 +176,9 @@ fn seek_exact_by_an_intersect_state_positions_the_terms_enum() {
         // A prior seek, so that the terms input is open and `next()` re-seeks.
         assert!(te.seek_exact(&BytesRef::new(b"t000".to_vec())).unwrap());
         te.seek_term_state(term, state.as_ref()).unwrap();
-        assert_eq!(te.term().unwrap(), *term);
+        assert_eq!(te.term().unwrap(), Some(term.clone()));
         assert_eq!(te.doc_freq().unwrap(), expected.len() as i32);
-        let mut postings = te.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_NONE).unwrap().unwrap();
         let mut got = Vec::new();
         let mut doc = postings.next_doc().unwrap();
         while doc != NO_MORE_DOCS {
@@ -196,7 +196,7 @@ fn seek_exact_by_an_intersect_state_positions_the_terms_enum() {
     let mut te = terms.iterator().unwrap();
     let target = BytesRef::new(b"zzz".to_vec());
     te.seek_term_state(&target, state.as_ref()).unwrap();
-    assert_eq!(te.term().unwrap(), target);
+    assert_eq!(te.term().unwrap(), Some(target));
     // `t050` is in docs 50 and 150.
     assert_eq!(te.doc_freq().unwrap(), 2);
     drop((intersect, terms, leaf));

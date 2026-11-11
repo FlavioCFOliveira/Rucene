@@ -3279,11 +3279,11 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<BytesRef> {
+        fn term(&self) -> Result<Option<BytesRef>> {
             if self.pos == 0 {
-                Ok(BytesRef::default())
+                Ok(Some(BytesRef::default()))
             } else {
-                Ok(self.terms[self.pos - 1].clone())
+                Ok(Some(self.terms[self.pos - 1].clone()))
             }
         }
 
@@ -3329,10 +3329,10 @@ mod tests {
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(
                 crate::index::postings_enum::EmptyPostingsEnum::new(),
-            ))
+            )))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {

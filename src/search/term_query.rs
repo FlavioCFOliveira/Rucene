@@ -395,7 +395,9 @@ impl Weight for TermWeight {
                 else {
                     return Ok(None);
                 };
-                let mut pe = terms_enum.postings(None, POSTINGS_ENUM_OFFSETS)?;
+                let mut pe = terms_enum
+                    .postings(None, POSTINGS_ENUM_OFFSETS)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 if pe.advance(doc)? != doc {
                     return Ok(None);
                 }
@@ -570,7 +572,9 @@ impl TermScorerSupplier {
             } else {
                 POSTINGS_ENUM_NONE
             };
-            let postings: Box<dyn PostingsEnum> = terms_enum.postings(None, flags)?;
+            let postings: Box<dyn PostingsEnum> = terms_enum
+                .postings(None, flags)?
+                .ok_or_else(LuceneError::null_pointer)?;
             Ok(TermScorer::new(postings, sim_scorer, norms))
         }
     }

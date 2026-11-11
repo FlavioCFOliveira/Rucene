@@ -1936,9 +1936,9 @@ impl TermsEnum for SegmentTermsEnum {
         ))
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         debug_assert!(!self.eof);
-        Ok(BytesRef::new(self.term.clone()))
+        Ok(Some(BytesRef::new(self.term.clone())))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -1975,13 +1975,13 @@ impl TermsEnum for SegmentTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         debug_assert!(!self.eof);
         self.decode_meta_data()?;
         let field_info = self.field.field_info().clone();
         let state = self.current_frame().state;
         let reader = Arc::clone(&self.field.shared().postings_reader);
-        reader.postings(&field_info, &state, reuse, flags)
+        Ok(Some(reader.postings(&field_info, &state, reuse, flags)?))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {

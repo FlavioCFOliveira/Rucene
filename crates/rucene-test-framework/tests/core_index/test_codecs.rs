@@ -354,7 +354,8 @@ fn test_fixed_postings() -> Result<()> {
                     &mut *terms_enum,
                     postings_enum.take(),
                     POSTINGS_ENUM_NONE,
-                )?;
+                )?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 assert_equals(&terms[i].docs[0], &pe.next_doc()?);
                 assert_equals(&NO_MORE_DOCS, &pe.next_doc()?);
                 postings_enum = Some(pe);
@@ -571,10 +572,13 @@ impl Verify {
             assert_equals(&(term.docs.len() as i32), &terms_enum.doc_freq()?);
             if field.omit_tf {
                 let mut pe =
-                    TestUtil::docs_of(&*random, &mut *terms_enum, None, POSTINGS_ENUM_NONE)?;
+                    TestUtil::docs_of(&*random, &mut *terms_enum, None, POSTINGS_ENUM_NONE)?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 self.verify_docs(&term.docs, term, &mut *pe, false)?;
             } else {
-                let mut pe = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+                let mut pe = terms_enum
+                    .postings(None, POSTINGS_ENUM_ALL)?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 self.verify_docs(&term.docs, term, &mut *pe, true)?;
             }
 
@@ -587,15 +591,19 @@ impl Verify {
                 Assert::assert_true(
                     terms_enum
                         .term()?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?
                         .bytes_equals(&BytesRef::from_char_sequence(&term.text2)),
                 );
                 assert_equals(&(term.docs.len() as i32), &terms_enum.doc_freq()?);
                 if field.omit_tf {
                     let mut pe =
-                        TestUtil::docs_of(&*random, &mut *terms_enum, None, POSTINGS_ENUM_NONE)?;
+                        TestUtil::docs_of(&*random, &mut *terms_enum, None, POSTINGS_ENUM_NONE)?
+                            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                     self.verify_docs(&term.docs, term, &mut *pe, false)?;
                 } else {
-                    let mut pe = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+                    let mut pe = terms_enum
+                        .postings(None, POSTINGS_ENUM_ALL)?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                     self.verify_docs(&term.docs, term, &mut *pe, true)?;
                 }
             }
@@ -635,6 +643,7 @@ impl Verify {
                     Assert::assert_true(
                         terms_enum
                             .term()?
+                            .ok_or_else(rucene::error::LuceneError::null_pointer)?
                             .bytes_equals(&BytesRef::from_char_sequence(&field.terms[i].text2)),
                     );
                 }
@@ -649,6 +658,7 @@ impl Verify {
             Assert::assert_true(
                 terms_enum
                     .term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
                     .bytes_equals(&BytesRef::from_char_sequence(&field.terms[0].text2)),
             );
 
@@ -661,9 +671,12 @@ impl Verify {
                     let mut postings = if !field.omit_tf {
                         // TODO: we should randomize which postings features are available, but
                         // need to coordinate this with the checks below that rely on such features
-                        terms_enum.postings(None, POSTINGS_ENUM_ALL)?
+                        terms_enum
+                            .postings(None, POSTINGS_ENUM_ALL)?
+                            .ok_or_else(rucene::error::LuceneError::null_pointer)?
                     } else {
                         TestUtil::docs_of(&*random, &mut *terms_enum, None, POSTINGS_ENUM_FREQS)?
+                            .ok_or_else(rucene::error::LuceneError::null_pointer)?
                     };
                     let docs = &term.docs;
                     let mut upto2: i32 = -1;
@@ -852,11 +865,11 @@ impl TermsEnum for DataTermsEnum {
             return Ok(None);
         }
 
-        Ok(Some(self.term()?))
+        self.term()
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.field_data.terms[self.upto as usize].text.clone())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.field_data.terms[self.upto as usize].text.clone()))
     }
 
     fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
@@ -898,13 +911,13 @@ impl TermsEnum for DataTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        Ok(Box::new(DataPostingsEnum {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        Ok(Some(Box::new(DataPostingsEnum {
             terms: Arc::clone(&self.field_data.terms),
             term: self.upto as usize,
             doc_upto: -1,
             pos_upto: 0,
-        }))
+        })))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {

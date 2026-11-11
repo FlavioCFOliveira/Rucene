@@ -6860,7 +6860,8 @@ mod tests {
                 let text = String::from_utf8(term.slice().to_vec()).expect("utf-8 term");
                 let mut postings = iterator
                     .postings(None, crate::index::POSTINGS_ENUM_ALL)
-                    .expect("postings");
+                    .expect("postings")
+                    .unwrap();
                 assert_eq!(postings.next_doc().expect("next doc"), 0);
                 let freq = postings.freq().expect("freq");
                 let mut positions = Vec::new();

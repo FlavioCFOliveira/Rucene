@@ -126,7 +126,11 @@ fn check_ord_api(terms: &dyn Terms) -> usize {
     for i in (0..all.len()).rev().chain(0..all.len()) {
         te.seek_ord(i as i64).unwrap();
         assert_eq!(te.ord().unwrap(), i as i64);
-        assert_eq!(te.term().unwrap().slice(), &all[i].0[..], "seekExact({i})");
+        assert_eq!(
+            te.term().unwrap().unwrap().slice(),
+            &all[i].0[..],
+            "seekExact({i})"
+        );
         // `seekExact(long)` leaves the enum unpositioned; `next()` re-seeks.
         let next = te.next().unwrap();
         assert_eq!(
@@ -140,7 +144,7 @@ fn check_ord_api(terms: &dyn Terms) -> usize {
         assert_eq!(te.ord().unwrap(), i as i64, "ord after seekExact(term)");
         let j = (i * 7 + 3) % all.len();
         te.seek_ord(j as i64).unwrap();
-        assert_eq!(te.term().unwrap().slice(), &all[j].0[..]);
+        assert_eq!(te.term().unwrap().unwrap().slice(), &all[j].0[..]);
         assert_eq!(
             te.seek_ceil(&BytesRef::new(t.clone())).unwrap(),
             SeekStatus::FOUND
@@ -154,7 +158,7 @@ fn check_ord_api(terms: &dyn Terms) -> usize {
             Some((n, _)) if *n == past => assert_eq!(status, SeekStatus::FOUND),
             Some((n, _)) => {
                 assert_eq!(status, SeekStatus::NOT_FOUND);
-                assert_eq!(te.term().unwrap().slice(), &n[..]);
+                assert_eq!(te.term().unwrap().unwrap().slice(), &n[..]);
                 assert_eq!(te.ord().unwrap(), i as i64 + 1);
             }
             None => assert_eq!(status, SeekStatus::END),
@@ -176,7 +180,7 @@ fn check_ord_api(terms: &dyn Terms) -> usize {
             i as i64,
             "ord after seekExact(term, state)"
         );
-        assert_eq!(fresh.term().unwrap().slice(), &t[..]);
+        assert_eq!(fresh.term().unwrap().unwrap().slice(), &t[..]);
     }
     all.len()
 }
@@ -295,7 +299,7 @@ fn test_basic() {
     }
     for (ord, t) in [(1, "b"), (0, "a"), (2, "c")] {
         te.seek_ord(ord).unwrap();
-        assert_eq!(te.term().unwrap().slice(), t.as_bytes());
+        assert_eq!(te.term().unwrap().unwrap().slice(), t.as_bytes());
     }
     check_ord_api(terms.as_ref());
 }
@@ -316,7 +320,7 @@ fn test_two_and_three_blocks() {
         assert!(te.seek_exact(&BytesRef::new(b"mo".to_vec())).unwrap());
         assert_eq!(te.ord().unwrap(), 27);
         te.seek_ord(if blocks == 2 { 54 } else { 90 }).unwrap();
-        assert_eq!(te.term().unwrap().slice(), b"s");
+        assert_eq!(te.term().unwrap().unwrap().slice(), b"s");
         assert_eq!(check_ord_api(t.as_ref()), terms.len());
         check_intersect(t.as_ref(), &INTERSECTIONS);
     }
@@ -333,7 +337,7 @@ fn test_floor_blocks() {
     assert!(te.seek_exact(&BytesRef::new(b"a".to_vec())).unwrap());
     assert_eq!(te.ord().unwrap(), 97);
     te.seek_ord(98).unwrap();
-    assert_eq!(te.term().unwrap().slice(), b"b");
+    assert_eq!(te.term().unwrap().unwrap().slice(), b"b");
     assert!(te.seek_exact(&BytesRef::new(b"z".to_vec())).unwrap());
     assert_eq!(te.ord().unwrap(), 122);
     assert_eq!(check_ord_api(t.as_ref()), 128);
@@ -371,7 +375,7 @@ fn test_several_non_root_blocks() {
     }
     assert_eq!(check_ord_api(t.as_ref()), terms.len());
     te.seek_ord(0).unwrap();
-    assert_eq!(te.term().unwrap().slice(), b"aa");
+    assert_eq!(te.term().unwrap().unwrap().slice(), b"aa");
     check_intersect(t.as_ref(), &INTERSECTIONS);
 }
 
@@ -390,7 +394,7 @@ fn test_seek_ceil_not_found() {
         te.seek_ceil(&BytesRef::new(vec![0x22])).unwrap(),
         SeekStatus::NOT_FOUND
     );
-    assert_eq!(te.term().unwrap().slice(), b"a");
+    assert_eq!(te.term().unwrap().unwrap().slice(), b"a");
     assert_eq!(te.ord().unwrap(), 1);
     check_ord_api(t.as_ref());
 }

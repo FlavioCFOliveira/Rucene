@@ -490,7 +490,9 @@ mod test_mock_analyzer {
         let next = te.next()?;
         Assert::assert_true_msg("expected:<[61]> but was:<null>", next.is_some());
         Assert::assert_equals(LuceneTestCase::new_bytes_ref_str("a"), next.unwrap());
-        let mut dpe = te.postings(None, POSTINGS_ENUM_ALL)?;
+        let mut dpe = te
+            .postings(None, POSTINGS_ENUM_ALL)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         Assert::assert_equals(0, dpe.next_doc()?);
         Assert::assert_equals(2, dpe.freq()?);
         Assert::assert_equals(0, dpe.next_position()?);
@@ -1243,7 +1245,7 @@ fn index_and_read_vectors(
     let mut te = terms.iterator().unwrap();
     let mut out = Vec::new();
     while let Some(term) = te.next().unwrap() {
-        let mut postings = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
         postings.next_doc().unwrap();
         let (mut starts, mut ends) = (Vec::new(), Vec::new());
         for _ in 0..postings.freq().unwrap() {

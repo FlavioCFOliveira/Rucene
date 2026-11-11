@@ -572,10 +572,18 @@ impl DirectField {
 
             let postings_enum2: &mut Box<dyn PostingsEnum> = if has_pos {
                 let reuse = docs_and_positions_enum.take();
-                docs_and_positions_enum.insert(terms_enum.postings(reuse, POSTINGS_ENUM_ALL)?)
+                docs_and_positions_enum.insert(
+                    terms_enum
+                        .postings(reuse, POSTINGS_ENUM_ALL)?
+                        .ok_or_else(LuceneError::null_pointer)?,
+                )
             } else {
                 let reuse = postings_enum.take();
-                postings_enum.insert(terms_enum.postings(reuse, POSTINGS_ENUM_FREQS)?)
+                postings_enum.insert(
+                    terms_enum
+                        .postings(reuse, POSTINGS_ENUM_FREQS)?
+                        .ok_or_else(LuceneError::null_pointer)?,
+                )
             };
 
             let ent = if doc_freq <= low_freq_cutoff {
@@ -1203,8 +1211,8 @@ impl TermsEnum for DirectTermsEnum {
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(scratch_term(&self.field, self.scratch))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(scratch_term(&self.field, self.scratch)))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -1223,13 +1231,16 @@ impl TermsEnum for DirectTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let term = self.field.term(self.term_ord)?;
-        Ok(direct_postings(&self.field, term, reuse, flags))
+        Ok(Some(direct_postings(&self.field, term, reuse, flags)))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Ok(Box::new(SlowImpactsEnum::new(self.postings(None, flags)?)))
+        Ok(Box::new(SlowImpactsEnum::new(
+            self.postings(None, flags)?
+                .ok_or_else(LuceneError::null_pointer)?,
+        )))
     }
 }
 
@@ -1677,8 +1688,8 @@ impl TermsEnum for DirectIntersectTermsEnum {
         Ok(Box::new(state))
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(scratch_term(&self.field, self.scratch))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(scratch_term(&self.field, self.scratch)))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -1697,13 +1708,16 @@ impl TermsEnum for DirectIntersectTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let term = self.field.term(self.term_ord)?;
-        Ok(intersect_postings(&self.field, term, flags))
+        Ok(Some(intersect_postings(&self.field, term, flags)))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Ok(Box::new(SlowImpactsEnum::new(self.postings(None, flags)?)))
+        Ok(Box::new(SlowImpactsEnum::new(
+            self.postings(None, flags)?
+                .ok_or_else(LuceneError::null_pointer)?,
+        )))
     }
 
     fn seek_ceil(&mut self, _term: &BytesRef) -> Result<SeekStatus> {

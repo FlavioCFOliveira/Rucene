@@ -174,7 +174,13 @@ impl<'a> SimpleTextFieldsWriter<'a> {
                 self.competitive_impact_accumulator.clear();
                 self.last_doc_file_pointer = -1;
 
-                let mut postings = terms_enum.postings(postings_enum.take(), flags)?;
+                let postings = terms_enum.postings(postings_enum.take(), flags)?;
+
+                debug_assert!(
+                    postings.is_some(),
+                    "termsEnum={terms_enum} hasPos={has_positions} flags={flags}"
+                );
+                let mut postings = postings.ok_or_else(LuceneError::null_pointer)?;
 
                 let mut wrote_term = false;
 

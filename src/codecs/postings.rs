@@ -116,15 +116,15 @@ impl TermsEnum for SingleTermsEnum {
         &mut self.atts
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.term.clone())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.term.clone()))
     }
 
     fn postings(
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
 
@@ -860,7 +860,9 @@ pub trait PushPostingsWriterBase {
         let write_offsets = self.push_state().write_offsets;
 
         let reuse = self.push_state_mut().postings_enum.take();
-        let mut postings_enum = terms_enum.postings(reuse, enum_flags)?;
+        let postings_enum = terms_enum.postings(reuse, enum_flags)?;
+        debug_assert!(postings_enum.is_some());
+        let mut postings_enum = postings_enum.ok_or_else(LuceneError::null_pointer)?;
         let walked = push_postings(
             self,
             postings_enum.as_mut(),
@@ -1025,16 +1027,16 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(BytesRef::default())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::default()))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(StubPostingsEnum::default()))
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(StubPostingsEnum::default())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
@@ -1745,20 +1747,20 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(BytesRef::default())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::default()))
         }
 
         fn postings(
             &mut self,
             reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
             self.offered.push(reuse.as_deref().map(identity));
             self.kept.extend(reuse);
             let postings: Box<dyn PostingsEnum> = Box::new(StubPostingsEnum::default());
             self.returned.push(identity(postings.as_ref()));
-            Ok(postings)
+            Ok(Some(postings))
         }
 
         fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
@@ -1925,20 +1927,20 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(BytesRef::default())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::default()))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(OneDocPostingsEnum {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(OneDocPostingsEnum {
                 doc: self.doc,
                 current: -1,
                 freq: self.freq,
-            }))
+            })))
         }
 
         fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {

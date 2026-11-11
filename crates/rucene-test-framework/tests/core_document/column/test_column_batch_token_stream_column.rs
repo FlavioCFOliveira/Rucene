@@ -94,7 +94,9 @@ fn positions(leaf: &Arc<dyn LeafReader>, field: &str, term: &str) -> Result<Vec<
     if !te.seek_exact(&BytesRef::from_char_sequence(term))? {
         return Ok(all);
     }
-    let mut pe = te.postings(None, POSTINGS_ENUM_POSITIONS)?;
+    let mut pe = te
+        .postings(None, POSTINGS_ENUM_POSITIONS)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     loop {
         let doc = pe.next_doc()?;
         if doc == NO_MORE_DOCS {
@@ -213,7 +215,9 @@ fn test_multi_valued_accumulates_freq() -> Result<()> {
     // "brown" appears once in each of doc 0's two values → freq 2 in doc 0.
     let mut te = nn(leaf.terms("body")?).iterator()?;
     Assert::assert_true(te.seek_exact(&BytesRef::from_char_sequence("brown"))?);
-    let mut pe = te.postings(None, POSTINGS_ENUM_FREQS)?;
+    let mut pe = te
+        .postings(None, POSTINGS_ENUM_FREQS)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&0, &pe.next_doc()?);
     assert_equals(&2, &pe.freq()?);
     assert_equals(&NO_MORE_DOCS, &pe.next_doc()?);

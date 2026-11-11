@@ -354,7 +354,9 @@ fn test_arbitrary_fields() -> Result<()> {
                         &terms_enum.next()?,
                     );
                     assert_equals(&1, &terms_enum.total_term_freq()?);
-                    let mut dp_enum = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+                    let mut dp_enum = terms_enum
+                        .postings(None, POSTINGS_ENUM_ALL)?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
                     assert_equals(&1, &dp_enum.freq()?);
                     assert_equals(&1, &dp_enum.next_position()?);
@@ -364,7 +366,9 @@ fn test_arbitrary_fields() -> Result<()> {
                         &terms_enum.next()?,
                     );
                     assert_equals(&1, &terms_enum.total_term_freq()?);
-                    let mut dp_enum = terms_enum.postings(Some(dp_enum), POSTINGS_ENUM_ALL)?;
+                    let mut dp_enum = terms_enum
+                        .postings(Some(dp_enum), POSTINGS_ENUM_ALL)?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
                     assert_equals(&1, &dp_enum.freq()?);
                     assert_equals(&0, &dp_enum.next_position()?);

@@ -603,9 +603,9 @@ impl TermsEnum for SegmentTermsEnum {
         &mut self.base.attributes
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        // Java returns `null` when unpositioned; the port's `term()` cannot.
-        Ok(self.term.clone().unwrap_or_default())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        // `null` when unpositioned, as Java's `term()` returns.
+        Ok(self.term.clone())
     }
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -672,9 +672,9 @@ impl TermsEnum for SegmentTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.decode_meta_data()?;
-        self.base.postings(reuse, flags)
+        Ok(Some(self.base.postings(reuse, flags)?))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -1064,9 +1064,9 @@ impl TermsEnum for IntersectTermsEnum {
         &mut self.base.attributes
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        // Java returns `null` when unpositioned; the port's `term()` cannot.
-        Ok(self.term_ref().unwrap_or_default())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        // `null` when unpositioned, as Java's `term()` returns.
+        Ok(self.term_ref())
     }
 
     fn seek_ceil(&mut self, target: &BytesRef) -> Result<SeekStatus> {
@@ -1142,9 +1142,9 @@ impl TermsEnum for IntersectTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.decode_meta_data()?;
-        self.base.postings(reuse, flags)
+        Ok(Some(self.base.postings(reuse, flags)?))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {

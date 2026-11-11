@@ -409,12 +409,14 @@ fn test_docs_enum(inst: &mut TestTermVectorsReaderInstance) -> Result<()> {
             // System.out.println("Term: " + term);
             assert_equals(&inst.test_terms[i], &term);
 
-            let mut pe = TestUtil::docs_of(
+            let pe = TestUtil::docs_of(
                 &*random(),
                 &mut *terms_enum,
                 postings_enum.take(),
                 POSTINGS_ENUM_NONE,
             )?;
+            assert_not_null(&pe);
+            let mut pe = pe.ok_or_else(rucene::error::LuceneError::null_pointer)?;
             let doc = pe.doc_id();
             assert_equals(&-1, &doc);
             Assert::assert_true(pe.next_doc()? != NO_MORE_DOCS);
@@ -440,7 +442,9 @@ fn test_position_reader(inst: &mut TestTermVectorsReaderInstance) -> Result<()> 
         // System.out.println("Term: " + term);
         assert_equals(&inst.test_terms[i], &term);
 
-        let mut dp = terms_enum.postings(dp_enum.take(), POSTINGS_ENUM_ALL)?;
+        let dp = terms_enum.postings(dp_enum.take(), POSTINGS_ENUM_ALL)?;
+        assert_not_null(&dp);
+        let mut dp = dp.ok_or_else(rucene::error::LuceneError::null_pointer)?;
         let doc = dp.doc_id();
         assert_equals(&-1, &doc);
         Assert::assert_true(dp.next_doc()? != NO_MORE_DOCS);
@@ -450,7 +454,9 @@ fn test_position_reader(inst: &mut TestTermVectorsReaderInstance) -> Result<()> 
         }
         assert_equals(&NO_MORE_DOCS, &dp.next_doc()?);
 
-        let mut dp = terms_enum.postings(Some(dp), POSTINGS_ENUM_ALL)?;
+        let mut dp = terms_enum
+            .postings(Some(dp), POSTINGS_ENUM_ALL)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         let doc = dp.doc_id();
         assert_equals(&-1, &doc);
         Assert::assert_true(dp.next_doc()? != NO_MORE_DOCS);
@@ -476,9 +482,9 @@ fn test_position_reader(inst: &mut TestTermVectorsReaderInstance) -> Result<()> 
         let term = next_term(&mut *terms_enum)?;
         // System.out.println("Term: " + term);
         assert_equals(&inst.test_terms[i], &term);
-        // `postings(null)`: `postings(null, PostingsEnum.FREQS)`; never null.
-        terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
-        terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+        // `postings(null)`: `postings(null, PostingsEnum.FREQS)`.
+        assert_not_null(&terms_enum.postings(None, POSTINGS_ENUM_FREQS)?);
+        assert_not_null(&terms_enum.postings(None, POSTINGS_ENUM_ALL)?);
     }
     reader.close()
 }
@@ -496,7 +502,9 @@ fn test_offset_reader(inst: &mut TestTermVectorsReaderInstance) -> Result<()> {
         let term = next_term(&mut *terms_enum)?;
         assert_equals(&inst.test_terms[i], &term);
 
-        let mut dp = terms_enum.postings(dp_enum.take(), POSTINGS_ENUM_ALL)?;
+        let dp = terms_enum.postings(dp_enum.take(), POSTINGS_ENUM_ALL)?;
+        assert_not_null(&dp);
+        let mut dp = dp.ok_or_else(rucene::error::LuceneError::null_pointer)?;
         Assert::assert_true(dp.next_doc()? != NO_MORE_DOCS);
         assert_equals(&(inst.positions[i].len() as i32), &dp.freq()?);
         for j in 0..inst.positions[i].len() {
@@ -504,7 +512,9 @@ fn test_offset_reader(inst: &mut TestTermVectorsReaderInstance) -> Result<()> {
         }
         assert_equals(&NO_MORE_DOCS, &dp.next_doc()?);
 
-        let mut dp = terms_enum.postings(Some(dp), POSTINGS_ENUM_ALL)?;
+        let mut dp = terms_enum
+            .postings(Some(dp), POSTINGS_ENUM_ALL)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         Assert::assert_true(dp.next_doc()? != NO_MORE_DOCS);
         assert_equals(&(inst.positions[i].len() as i32), &dp.freq()?);
         for j in 0..inst.positions[i].len() {

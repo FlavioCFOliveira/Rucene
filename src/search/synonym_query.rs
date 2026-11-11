@@ -363,7 +363,9 @@ impl SynonymWeightState {
                 terms_enum.impacts(POSTINGS_ENUM_FREQS)?
             } else {
                 Box::new(SlowImpactsEnum::new(
-                    terms_enum.postings(None, POSTINGS_ENUM_FREQS)?,
+                    terms_enum
+                        .postings(None, POSTINGS_ENUM_FREQS)?
+                        .ok_or_else(LuceneError::null_pointer)?,
                 ))
             };
             // Java keeps the enum twice, in `iterators` and in `impacts`; a

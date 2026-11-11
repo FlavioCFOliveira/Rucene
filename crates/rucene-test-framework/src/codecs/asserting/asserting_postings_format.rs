@@ -218,7 +218,14 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
                     }
                 }
                 let reuse = postings_enum.take();
-                let postings = postings_enum.insert(terms_enum.postings(reuse, flags)?);
+                let postings = terms_enum.postings(reuse, flags)?;
+
+                java_assert!(
+                    postings.is_some(),
+                    "termsEnum={terms_enum} hasPositions={has_positions}"
+                );
+                let postings = postings_enum
+                    .insert(postings.ok_or_else(rucene::error::LuceneError::null_pointer)?);
 
                 let mut last_doc_id = -1;
 

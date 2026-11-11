@@ -2092,8 +2092,8 @@ impl TermsEnum for FreqProxTermsEnum {
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(BytesRef::new(self.current_term()?.to_vec()))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(self.current_term()?.to_vec())))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2140,7 +2140,7 @@ impl TermsEnum for FreqProxTermsEnum {
         &mut self,
         mut reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         if self.ord < 0 || self.ord as usize >= self.num_terms {
             return Err(LuceneError::illegal_state(
                 "terms enum is not positioned on a term".to_string(),
@@ -2183,7 +2183,7 @@ impl TermsEnum for FreqProxTermsEnum {
                     )
                 })?
                 .reset(term_id);
-            return Ok(pos_enum);
+            return Ok(Some(pos_enum));
         }
 
         // Caller wants freqs but we didn't index them; don't lie
@@ -2215,7 +2215,7 @@ impl TermsEnum for FreqProxTermsEnum {
                 )
             })?
             .reset(term_id);
-        Ok(docs_enum)
+        Ok(Some(docs_enum))
     }
 
     /// Always fails: impacts require the on-disk postings format.
@@ -2980,7 +2980,7 @@ impl TermsEnum for SortingTermsEnum {
         self.base.next()
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.base.term()
     }
 
@@ -3013,7 +3013,7 @@ impl TermsEnum for SortingTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         if self.index_options.subsumes(IndexOptions::DOCS_AND_FREQS)
             && crate::index::feature_requested(flags, POSTINGS_ENUM_FREQS)
         {
@@ -3037,7 +3037,10 @@ impl TermsEnum for SortingTermsEnum {
                     None => (Box::new(SortingPostingsEnum::new()), None),
                 };
 
-            let in_docs_and_positions = self.base.postings(in_reuse, flags)?;
+            let in_docs_and_positions = self
+                .base
+                .postings(in_reuse, flags)?
+                .ok_or_else(LuceneError::null_pointer)?;
             // we ignore the fact that positions/offsets may be stored but not
             // asked for, since this code is expected to be used during
             // addIndexes which will ask for everything. if that assumption
@@ -3064,7 +3067,7 @@ impl TermsEnum for SortingTermsEnum {
                     store_positions,
                     store_offsets,
                 )?;
-            return Ok(wrap_reuse);
+            return Ok(Some(wrap_reuse));
         }
 
         let (mut wrap_reuse, in_reuse): (Box<dyn PostingsEnum>, Option<Box<dyn PostingsEnum>>) =
@@ -3087,7 +3090,10 @@ impl TermsEnum for SortingTermsEnum {
                 None => (Box::new(SortingDocsEnum::new()), None),
             };
 
-        let in_docs = self.base.postings(in_reuse, flags)?;
+        let in_docs = self
+            .base
+            .postings(in_reuse, flags)?
+            .ok_or_else(LuceneError::null_pointer)?;
         wrap_reuse
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<SortingDocsEnum>())
@@ -3098,7 +3104,7 @@ impl TermsEnum for SortingTermsEnum {
                 )
             })?
             .reset(&self.doc_map, in_docs)?;
-        Ok(wrap_reuse)
+        Ok(Some(wrap_reuse))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -3599,7 +3605,9 @@ fn apply_deletes_to(
         if !enumerator.seek_exact(delete.term.bytes())? {
             continue;
         }
-        let mut postings = enumerator.postings(None, 0)?;
+        let mut postings = enumerator
+            .postings(None, 0)?
+            .ok_or_else(LuceneError::null_pointer)?;
         debug_assert!(delete.doc_id_upto < NO_MORE_DOCS);
         loop {
             let doc = postings.next_doc()?;
@@ -3816,7 +3824,7 @@ mod tests {
             } else {
                 crate::index::POSTINGS_ENUM_NONE
             };
-            let mut postings = enumerator.postings(None, flags).expect("postings");
+            let mut postings = enumerator.postings(None, flags).expect("postings").unwrap();
             let mut docs = Vec::new();
             loop {
                 let doc = postings.next_doc().expect("next doc");
@@ -4451,7 +4459,7 @@ mod tests {
                 .expect("seek"),
             SeekStatus::FOUND
         );
-        assert_eq!(enumerator.term().expect("term").slice(), b"delta");
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"delta");
         assert_eq!(enumerator.ord().expect("ord"), 1);
 
         assert_eq!(
@@ -4460,7 +4468,7 @@ mod tests {
                 .expect("seek"),
             SeekStatus::NOT_FOUND
         );
-        assert_eq!(enumerator.term().expect("term").slice(), b"delta");
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"delta");
 
         assert_eq!(
             enumerator
@@ -4537,12 +4545,14 @@ mod tests {
         enumerator.next().expect("alpha");
         let alpha = enumerator
             .postings(None, POSTINGS_ENUM_POSITIONS)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         let alpha_identity = identity(alpha.as_ref());
         enumerator.next().expect("beta");
         let mut beta = enumerator
             .postings(Some(alpha), POSTINGS_ENUM_POSITIONS)
-            .expect("beta");
+            .expect("beta")
+            .unwrap();
         assert_eq!(identity(beta.as_ref()), alpha_identity, "a later term");
         assert_eq!(
             drain_positions(beta.as_mut()),
@@ -4553,13 +4563,15 @@ mod tests {
         again.next().expect("alpha");
         let mut alpha = again
             .postings(Some(beta), POSTINGS_ENUM_POSITIONS)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         assert_eq!(identity(alpha.as_ref()), alpha_identity, "another iterator");
         assert_eq!(drain_positions(alpha.as_mut()), vec![(0, vec![0])]);
 
         let mut docs = again
             .postings(Some(alpha), POSTINGS_ENUM_FREQS)
-            .expect("docs");
+            .expect("docs")
+            .unwrap();
         assert_ne!(identity(docs.as_ref()), alpha_identity, "a docs request");
         assert!(docs
             .as_any_mut()
@@ -4573,11 +4585,13 @@ mod tests {
         other_enumerator.next().expect("alpha");
         let foreign = other_enumerator
             .postings(None, POSTINGS_ENUM_POSITIONS)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         let foreign_identity = identity(foreign.as_ref());
         let mine = again
             .postings(Some(foreign), POSTINGS_ENUM_POSITIONS)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         assert_ne!(
             identity(mine.as_ref()),
             foreign_identity,
@@ -4600,12 +4614,14 @@ mod tests {
         enumerator.next().expect("alpha");
         let alpha = enumerator
             .postings(None, crate::index::POSTINGS_ENUM_NONE)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         let alpha_identity = identity(alpha.as_ref());
         enumerator.next().expect("beta");
         let mut beta = enumerator
             .postings(Some(alpha), crate::index::POSTINGS_ENUM_NONE)
-            .expect("beta");
+            .expect("beta")
+            .unwrap();
         assert_eq!(identity(beta.as_ref()), alpha_identity, "a later term");
         let mut docs = Vec::new();
         loop {
@@ -4626,7 +4642,8 @@ mod tests {
         let beta_identity = identity(beta.as_ref());
         let foreign = other_enumerator
             .postings(Some(beta), crate::index::POSTINGS_ENUM_NONE)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         assert_ne!(
             identity(foreign.as_ref()),
             beta_identity,
@@ -5279,8 +5296,8 @@ mod tests {
             Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.terms[self.pos - 1].0.clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.pos - 1].0.clone()))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -5299,7 +5316,7 @@ mod tests {
             &mut self,
             reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
             self.offered
                 .lock()
                 .unwrap()
@@ -5311,10 +5328,10 @@ mod tests {
                     .and_then(|any| any.downcast_mut::<ListPostings>())
                 {
                     *postings = ListPostings::new(docs);
-                    return Ok(reuse);
+                    return Ok(Some(reuse));
                 }
             }
-            Ok(Box::new(ListPostings::new(docs)))
+            Ok(Some(Box::new(ListPostings::new(docs))))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -5365,7 +5382,10 @@ mod tests {
     fn sorting_postings_enum_is_reused_and_hands_its_wrapped_enum_to_the_delegate() {
         let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
         assert!(terms_enum.next().unwrap().is_some());
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let outer = identity(postings.as_ref());
         assert!(postings
             .as_any_mut()
@@ -5375,6 +5395,7 @@ mod tests {
         assert!(terms_enum.next().unwrap().is_some());
         let mut postings = terms_enum
             .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
             .unwrap();
         assert_eq!(
             identity(postings.as_ref()),
@@ -5396,7 +5417,10 @@ mod tests {
     fn sorting_docs_enum_is_reused_and_hands_its_wrapped_enum_to_the_delegate() {
         let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS);
         assert!(terms_enum.next().unwrap().is_some());
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let outer = identity(postings.as_ref());
         assert!(postings
             .as_any_mut()
@@ -5406,6 +5430,7 @@ mod tests {
         assert!(terms_enum.next().unwrap().is_some());
         let mut postings = terms_enum
             .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
             .unwrap();
         assert_eq!(
             identity(postings.as_ref()),
@@ -5424,7 +5449,10 @@ mod tests {
         // the second call is the very one it got from the first.
         let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
         assert!(terms_enum.next().unwrap().is_some());
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let wrapped = postings
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
@@ -5442,6 +5470,7 @@ mod tests {
         assert!(terms_enum.next().unwrap().is_some());
         let _postings = terms_enum
             .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
             .unwrap();
         assert_eq!(offered.lock().unwrap()[1], Some(wrapped_identity));
     }
@@ -5452,13 +5481,17 @@ mod tests {
         // neither reused nor unwrapped: `inReuse = reuse`.
         let (mut docs_terms_enum, _) = sorting_terms_enum(IndexOptions::DOCS);
         assert!(docs_terms_enum.next().unwrap().is_some());
-        let docs_enum = docs_terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let docs_enum = docs_terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let docs_enum_identity = identity(docs_enum.as_ref());
 
         let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
         assert!(terms_enum.next().unwrap().is_some());
         let mut postings = terms_enum
             .postings(Some(docs_enum), POSTINGS_ENUM_FREQS)
+            .unwrap()
             .unwrap();
         assert_ne!(identity(postings.as_ref()), docs_enum_identity);
         assert!(postings

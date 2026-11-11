@@ -121,7 +121,8 @@ fn check_terms(terms: Option<Box<dyn Terms>>, terms_list: &[&str]) -> Result<()>
         assert_not_null(&b);
         let b = b.unwrap_or_else(|| npe("b"));
         assert_equals(&t.to_string(), &b.utf8_to_string()?);
-        let mut td = TestUtil::docs_of(&*random(), &mut *te, None, POSTINGS_ENUM_NONE)?;
+        let mut td = TestUtil::docs_of(&*random(), &mut *te, None, POSTINGS_ENUM_NONE)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         Assert::assert_true(td.next_doc()? != NO_MORE_DOCS);
         assert_equals(&0, &td.doc_id());
         assert_equals(&td.next_doc()?, &NO_MORE_DOCS);

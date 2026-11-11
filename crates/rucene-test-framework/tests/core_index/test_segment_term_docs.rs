@@ -107,7 +107,8 @@ fn test_term_docs(inst: &mut TestSegmentTermDocsInstance) -> Result<()> {
         .unwrap_or_else(|| crate::support::npe("terms"))
         .iterator()?;
     terms.seek_ceil(&BytesRef::new(b"field".to_vec()))?;
-    let mut term_docs = TestUtil::docs_of(&*random(), &mut *terms, None, POSTINGS_ENUM_FREQS)?;
+    let mut term_docs = TestUtil::docs_of(&*random(), &mut *terms, None, POSTINGS_ENUM_FREQS)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     if term_docs.next_doc()? != NO_MORE_DOCS {
         let doc_id = term_docs.doc_id();
         Assert::assert_true(doc_id == 0);

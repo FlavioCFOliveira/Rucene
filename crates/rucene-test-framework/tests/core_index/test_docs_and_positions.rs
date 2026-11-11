@@ -149,7 +149,7 @@ fn get_docs_and_positions(
     if let Some(terms) = reader.terms(&inst.field_name)? {
         let mut te = terms.iterator()?;
         if te.seek_exact(bytes)? {
-            return Ok(Some(te.postings(None, POSTINGS_ENUM_ALL)?));
+            return te.postings(None, POSTINGS_ENUM_ALL);
         }
     }
     Ok(None)
@@ -467,7 +467,8 @@ fn test_docs_enum_start(_inst: &Instance) -> Result<()> {
         .unwrap_or_else(|| crate::support::npe("r.terms(\"foo\")"))
         .iterator()?;
     Assert::assert_true(te.seek_exact(&LuceneTestCase::new_bytes_ref_str("bar"))?);
-    let mut disi = TestUtil::docs_of(&*random(), &mut *te, Some(disi), POSTINGS_ENUM_NONE)?;
+    let mut disi = TestUtil::docs_of(&*random(), &mut *te, Some(disi), POSTINGS_ENUM_NONE)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     let docid = disi.doc_id();
     assert_equals(&-1, &docid);
     Assert::assert_true(disi.next_doc()? != NO_MORE_DOCS);
@@ -502,7 +503,9 @@ fn test_docs_and_positions_enum_start(_inst: &Instance) -> Result<()> {
         .unwrap_or_else(|| crate::support::npe("r.terms(\"foo\")"))
         .iterator()?;
     Assert::assert_true(te.seek_exact(&LuceneTestCase::new_bytes_ref_str("bar"))?);
-    let mut disi = te.postings(Some(disi), POSTINGS_ENUM_ALL)?;
+    let mut disi = te
+        .postings(Some(disi), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     let docid = disi.doc_id();
     assert_equals(&-1, &docid);
     Assert::assert_true(disi.next_doc()? != NO_MORE_DOCS);

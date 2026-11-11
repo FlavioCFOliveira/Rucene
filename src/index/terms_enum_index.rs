@@ -273,7 +273,7 @@ impl TermsEnumIndex {
         let positioned = if status == SeekStatus::END {
             None
         } else {
-            Some(terms_enum.term()?)
+            terms_enum.term()?
         };
         self.set_term(positioned);
         Ok(status)
@@ -291,11 +291,7 @@ impl TermsEnumIndex {
     pub fn seek_exact(&mut self, term: &BytesRef) -> Result<bool> {
         let terms_enum = self.enum_for("seekExact(org.apache.lucene.util.BytesRef)")?;
         let found = terms_enum.seek_exact(term)?;
-        let positioned = if found {
-            Some(terms_enum.term()?)
-        } else {
-            None
-        };
+        let positioned = if found { terms_enum.term()? } else { None };
         self.set_term(positioned);
         Ok(found)
     }
@@ -314,7 +310,7 @@ impl TermsEnumIndex {
         let terms_enum = self.enum_for("seekExact(long)")?;
         terms_enum.seek_ord(ord)?;
         let positioned = terms_enum.term()?;
-        self.set_term(Some(positioned));
+        self.set_term(positioned);
         Ok(())
     }
 
@@ -500,10 +496,11 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
+        fn term(&self) -> Result<Option<BytesRef>> {
             self.pos
                 .map(|idx| self.terms[idx].clone())
                 .ok_or_else(|| LuceneError::illegal_state("not positioned".to_string()))
+                .map(Some)
         }
 
         fn ord(&self) -> Result<i64> {
@@ -524,7 +521,7 @@ mod tests {
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
             Err(LuceneError::unsupported_operation("postings".to_string()))
         }
 

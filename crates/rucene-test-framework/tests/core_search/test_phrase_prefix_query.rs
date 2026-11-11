@@ -71,7 +71,10 @@ fn test_phrase_prefix() -> Result<()> {
         .iterator()?;
     te.seek_ceil(&BytesRef::from_char_sequence(prefix))?;
     loop {
-        let s = te.term()?.utf8_to_string()?;
+        let s = te
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?;
         if s.starts_with(prefix) {
             terms_with_prefix.push(term("body", &s));
         } else {

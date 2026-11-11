@@ -550,12 +550,16 @@ fn test_store_term_vectors() -> Result<()> {
     let terms = tv.get_field(0, "features")?.expect("terms");
     let mut terms_enum = terms.iterator()?;
     assert_equal_to_bytes(terms_enum.next()?, "pagerank");
-    let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
+    let mut postings = terms_enum
+        .postings(None, POSTINGS_ENUM_FREQS)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equal_to(postings.next_doc()?, 0);
     assert_equal_to(decode_feature_value(postings.freq()? as f32), 10.0);
     assert_equal_to(postings.next_doc()?, NO_MORE_DOCS);
     assert_equal_to_bytes(terms_enum.next()?, "urlLen");
-    postings = terms_enum.postings(Some(postings), POSTINGS_ENUM_FREQS)?;
+    postings = terms_enum
+        .postings(Some(postings), POSTINGS_ENUM_FREQS)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equal_to(postings.next_doc()?, 0);
     assert_equal_to(decode_feature_value(postings.freq()? as f32), 0.5);
     assert_equal_to(postings.next_doc()?, NO_MORE_DOCS);
@@ -566,12 +570,16 @@ fn test_store_term_vectors() -> Result<()> {
     let terms = tv.get_field(2, "features")?.expect("terms");
     let mut terms_enum = terms.iterator()?;
     assert_equal_to_bytes(terms_enum.next()?, "pagerank");
-    postings = terms_enum.postings(Some(postings), POSTINGS_ENUM_FREQS)?;
+    postings = terms_enum
+        .postings(Some(postings), POSTINGS_ENUM_FREQS)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equal_to(postings.next_doc()?, 0);
     assert_equal_to(decode_feature_value(postings.freq()? as f32), 42.0);
     assert_equal_to(postings.next_doc()?, NO_MORE_DOCS);
     assert_equal_to_bytes(terms_enum.next()?, "urlLen");
-    let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
+    let mut postings = terms_enum
+        .postings(None, POSTINGS_ENUM_FREQS)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equal_to(postings.next_doc()?, 0);
     assert_equal_to(decode_feature_value(postings.freq()? as f32), 1.5);
     assert_equal_to(postings.next_doc()?, NO_MORE_DOCS);

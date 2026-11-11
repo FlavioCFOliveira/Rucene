@@ -529,14 +529,20 @@ fn test_no_overflow_int() -> Result<()> {
             assert_equals(&3, &te.total_term_freq()?);
 
             // `termsEnum.postings(null)`: flags `PostingsEnum.FREQS`.
-            let p = Some(te.postings(None, POSTINGS_ENUM_FREQS)?);
+            let p = Some(
+                te.postings(None, POSTINGS_ENUM_FREQS)?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+            );
             assert_not_null(&p);
             assert_postings(&mut *p.expect("checked by assertNotNull"), &[(0, 3)])?;
 
             Assert::assert_true(te.seek_exact(&LuceneTestCase::new_bytes_ref_str("bar"))?);
             assert_equals(&(i32::MAX as i64), &te.total_term_freq()?);
 
-            let p = Some(te.postings(None, POSTINGS_ENUM_FREQS)?);
+            let p = Some(
+                te.postings(None, POSTINGS_ENUM_FREQS)?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+            );
             assert_not_null(&p);
             assert_postings(&mut *p.expect("checked by assertNotNull"), &[(0, i32::MAX)])?;
         }
@@ -602,7 +608,10 @@ fn assert_term_vector(r: &Arc<dyn IndexReader>, doc: i32, expected: &[(&str, i32
         Assert::assert_true(te.seek_exact(&LuceneTestCase::new_bytes_ref_str(term))?);
         assert_equals(&(freq as i64), &te.total_term_freq()?);
         // `termsEnum.postings(null)`: flags `PostingsEnum.FREQS`.
-        let p = Some(te.postings(None, POSTINGS_ENUM_FREQS)?);
+        let p = Some(
+            te.postings(None, POSTINGS_ENUM_FREQS)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+        );
         assert_not_null(&p);
         assert_postings(&mut *p.expect("checked by assertNotNull"), &[(0, freq)])?;
     }

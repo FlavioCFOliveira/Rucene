@@ -3217,7 +3217,7 @@ fn check_terms_intersect(
     let mut term = if let Some(start_term) = start_term {
         match all_terms.seek_ceil(start_term)? {
             SeekStatus::FOUND => all_terms.next()?,
-            SeekStatus::NOT_FOUND => Some(all_terms.term()?),
+            SeekStatus::NOT_FOUND => all_terms.term()?,
             SeekStatus::END => None,
         }
     } else {
@@ -3478,8 +3478,12 @@ fn check_fields(
             }
             sum_doc_freq += doc_freq as i64;
 
-            let mut p = terms_enum.postings(postings.take(), POSTINGS_ENUM_ALL)?;
-            let mut bulk = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+            let mut p = terms_enum
+                .postings(postings.take(), POSTINGS_ENUM_ALL)?
+                .ok_or_else(LuceneError::null_pointer)?;
+            let mut bulk = terms_enum
+                .postings(None, POSTINGS_ENUM_ALL)?
+                .ok_or_else(LuceneError::null_pointer)?;
             bulk.next_doc()?;
             let mut buffer = DocAndFloatFeatureBuffer::new();
             let mut buffer_index = 0usize;
@@ -3707,7 +3711,9 @@ fn check_fields(
             if has_positions {
                 for idx in 0..7i64 {
                     let skip_doc_id = ((idx + 1) * max_doc as i64 / 8) as i32;
-                    p = terms_enum.postings(Some(p), POSTINGS_ENUM_ALL)?;
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_ALL)?
+                        .ok_or_else(LuceneError::null_pointer)?;
                     let doc_id = p.advance(skip_doc_id)?;
                     if doc_id == NO_MORE_DOCS {
                         break;
@@ -3795,7 +3801,9 @@ fn check_fields(
             } else {
                 for idx in 0..7i64 {
                     let skip_doc_id = ((idx + 1) * max_doc as i64 / 8) as i32;
-                    p = terms_enum.postings(Some(p), POSTINGS_ENUM_NONE)?;
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_NONE)?
+                        .ok_or_else(LuceneError::null_pointer)?;
                     let doc_id = p.advance(skip_doc_id)?;
                     if doc_id == NO_MORE_DOCS {
                         break;
@@ -3829,14 +3837,20 @@ fn check_fields(
                 || doc_freq > 1024
                 || (status.term_count + status.del_term_count) % 1024 == 0
             {
-                p = terms_enum.postings(Some(p), POSTINGS_ENUM_NONE)?;
+                p = terms_enum
+                    .postings(Some(p), POSTINGS_ENUM_NONE)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 check_doc_id_runs(p.as_mut())?;
                 if has_freqs {
-                    p = terms_enum.postings(Some(p), POSTINGS_ENUM_FREQS)?;
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_FREQS)?
+                        .ok_or_else(LuceneError::null_pointer)?;
                     check_doc_id_runs(p.as_mut())?;
                 }
                 if has_positions {
-                    p = terms_enum.postings(Some(p), POSTINGS_ENUM_POSITIONS)?;
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_POSITIONS)?
+                        .ok_or_else(LuceneError::null_pointer)?;
                     check_doc_id_runs(p.as_mut())?;
                 }
 
@@ -3846,7 +3860,9 @@ fn check_fields(
                     let mut max = -1i32;
                     let mut max_freq = 0i32;
                     let mut impacts_enum = terms_enum.impacts(POSTINGS_ENUM_FREQS)?;
-                    p = terms_enum.postings(Some(p), POSTINGS_ENUM_FREQS)?;
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_FREQS)?
+                        .ok_or_else(LuceneError::null_pointer)?;
                     loop {
                         let doc = impacts_enum.next_doc()?;
                         if p.next_doc()? != doc {
@@ -3884,7 +3900,9 @@ fn check_fields(
 
                 // Now check advancing.
                 let mut impacts_enum = terms_enum.impacts(POSTINGS_ENUM_FREQS)?;
-                p = terms_enum.postings(Some(p), POSTINGS_ENUM_FREQS)?;
+                p = terms_enum
+                    .postings(Some(p), POSTINGS_ENUM_FREQS)?
+                    .ok_or_else(LuceneError::null_pointer)?;
 
                 let mut max = -1i32;
                 let mut max_freq = 0i32;
@@ -4093,16 +4111,24 @@ fn check_fields(
                         last_term.to_hex_string()
                     )));
                 }
-                if !terms_enum.term()?.bytes_equals(last_term) {
+                if !terms_enum
+                    .term()?
+                    .ok_or_else(LuceneError::null_pointer)?
+                    .bytes_equals(last_term)
+                {
                     return Err(check_index_error(format!(
                         "seek to last term {} returned FOUND but seeked to the wrong term {}",
                         last_term.to_hex_string(),
-                        terms_enum.term()?.to_hex_string()
+                        terms_enum
+                            .term()?
+                            .map_or_else(|| "null".to_string(), |t| t.to_hex_string())
                     )));
                 }
 
                 let expected_doc_freq = terms_enum.doc_freq()?;
-                let mut d = terms_enum.postings(None, POSTINGS_ENUM_NONE)?;
+                let mut d = terms_enum
+                    .postings(None, POSTINGS_ENUM_NONE)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 let mut doc_freq = 0i32;
                 while d.next_doc()? != NO_MORE_DOCS {
                     doc_freq += 1;
@@ -4145,7 +4171,9 @@ fn check_fields(
                                 "seek to ord {ord} returned ord {actual_ord}"
                             )));
                         }
-                        seek_terms[i as usize] = BytesRef::deep_copy_of(&terms_enum.term()?);
+                        seek_terms[i as usize] = BytesRef::deep_copy_of(
+                            &terms_enum.term()?.ok_or_else(LuceneError::null_pointer)?,
+                        );
                     }
 
                     // Seek by term.
@@ -4156,15 +4184,27 @@ fn check_fields(
                                 seek_terms[i].to_hex_string()
                             )));
                         }
-                        if !terms_enum.term()?.bytes_equals(&seek_terms[i]) {
+                        if !terms_enum
+                            .term()?
+                            .ok_or_else(LuceneError::null_pointer)?
+                            .bytes_equals(&seek_terms[i])
+                        {
                             return Err(check_index_error(format!(
                                 "seek to existing term {} returned FOUND but seeked to the wrong term {}",
                                 seek_terms[i].to_hex_string(),
-                                terms_enum.term()?.to_hex_string()
+                                terms_enum
+                        .term()?
+                        .map_or_else(|| "null".to_string(), |t| t.to_hex_string())
                             )));
                         }
 
-                        postings = Some(terms_enum.postings(postings.take(), POSTINGS_ENUM_NONE)?);
+                        postings = terms_enum.postings(postings.take(), POSTINGS_ENUM_NONE)?;
+                        if postings.is_none() {
+                            return Err(check_index_error(format!(
+                                "null DocsEnum from to existing term {}",
+                                seek_terms[i].to_hex_string()
+                            )));
+                        }
                     }
                 }
             }
@@ -6038,7 +6078,9 @@ fn cross_check_vector_field_against_postings(
 
     while let Some(term) = terms_enum.next()? {
         // This is the term vector's own postings.
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+        let postings = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+        debug_assert!(postings.is_some());
+        let mut postings = postings.ok_or_else(LuceneError::null_pointer)?;
 
         // Java alternates every other term between `seekExact(BytesRef)` and
         // `prepareSeekExact(BytesRef)`, so that a codec's deferred-seek path is
@@ -6064,7 +6106,9 @@ fn cross_check_vector_field_against_postings(
         }
 
         // This is the inverted index — the "real" postings.
-        let mut postings_docs = postings_terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+        let postings_docs = postings_terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+        debug_assert!(postings_docs.is_some());
+        let mut postings_docs = postings_docs.ok_or_else(LuceneError::null_pointer)?;
         let advance_doc = postings_docs.advance(doc)?;
         if advance_doc != doc {
             return Err(check_index_error(format!(

@@ -442,7 +442,9 @@ fn test_random(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
         for term in terms {
             // System.out.println("  term=" + term);
             if terms_enum.seek_exact(&BytesRef::new(term.as_bytes().to_vec()))? {
-                let mut d = terms_enum.postings(docs.take(), POSTINGS_ENUM_FREQS)?;
+                let d = terms_enum.postings(docs.take(), POSTINGS_ENUM_FREQS)?;
+                assert_not_null(&d);
+                let mut d = d.ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 // System.out.println("    doc/freq");
                 loop {
                     let doc = d.next_doc()?;
@@ -460,7 +462,9 @@ fn test_random(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
                 docs = Some(d);
 
                 // explicitly exclude offsets here
-                let mut dap = terms_enum.postings(docs_and_positions.take(), POSTINGS_ENUM_ALL)?;
+                let dap = terms_enum.postings(docs_and_positions.take(), POSTINGS_ENUM_ALL)?;
+                assert_not_null(&dap);
+                let mut dap = dap.ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 // System.out.println("    doc/freq/pos");
                 loop {
                     let doc = dap.next_doc()?;
@@ -489,7 +493,9 @@ fn test_random(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
 
                 // `termsEnum.postings(docsAndPositions, PostingsEnum.ALL)`
                 // reuses that enum, so both names then refer to it.
-                let mut dapo = terms_enum.postings(Some(dap), POSTINGS_ENUM_ALL)?;
+                let dapo = terms_enum.postings(Some(dap), POSTINGS_ENUM_ALL)?;
+                assert_not_null(&dapo);
+                let mut dapo = dapo.ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 // System.out.println("    doc/freq/pos/offs");
                 loop {
                     let doc = dapo.next_doc()?;

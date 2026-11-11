@@ -962,8 +962,8 @@ impl TermsEnum for SegmentTermsEnum {
         })
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.term_ref())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.term_ref()))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
@@ -980,11 +980,14 @@ impl TermsEnum for SegmentTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.decode_meta_data()?;
-        self.shared
-            .postings_reader
-            .postings(&self.field.field_info, &self.state, reuse, flags)
+        Ok(Some(self.shared.postings_reader.postings(
+            &self.field.field_info,
+            &self.state,
+            reuse,
+            flags,
+        )?))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {

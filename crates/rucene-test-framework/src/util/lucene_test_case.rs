@@ -4644,60 +4644,82 @@ impl LuceneTestCase {
                     io(right_terms_enum.postings(right_positions.take(), POSTINGS_ENUM_ALL));
                 Self::assert_docs_and_positions_enum_equals(
                     info,
-                    Some(lp.as_mut()),
-                    Some(rp.as_mut()),
+                    lp.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
+                    rp.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
                 );
 
                 let doc_freq = io(left_terms_enum.doc_freq());
-                let mut lp = io(left_terms_enum.postings(Some(lp), POSTINGS_ENUM_ALL));
-                let mut rp = io(right_terms_enum.postings(Some(rp), POSTINGS_ENUM_ALL));
+                let mut lp = io(left_terms_enum.postings(lp, POSTINGS_ENUM_ALL));
+                let mut rp = io(right_terms_enum.postings(rp, POSTINGS_ENUM_ALL));
                 Self::assert_positions_skipping_equals(
                     info,
                     left_reader,
                     doc_freq,
-                    Some(lp.as_mut()),
-                    Some(rp.as_mut()),
+                    lp.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
+                    rp.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
                 );
-                left_positions = Some(lp);
-                right_positions = Some(rp);
+                left_positions = lp;
+                right_positions = rp;
 
                 // with freqs:
                 let mut ld = io(left_terms_enum.postings(left_docs.take(), POSTINGS_ENUM_FREQS));
                 let mut rd = io(right_terms_enum.postings(right_docs.take(), POSTINGS_ENUM_FREQS));
-                Self::assert_docs_enum_equals(info, Some(ld.as_mut()), Some(rd.as_mut()), true);
+                Self::assert_docs_enum_equals(
+                    info,
+                    ld.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
+                    rd.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
+                    true,
+                );
 
                 // w/o freqs:
-                let mut ld = io(left_terms_enum.postings(Some(ld), POSTINGS_ENUM_NONE));
-                let mut rd = io(right_terms_enum.postings(Some(rd), POSTINGS_ENUM_NONE));
-                Self::assert_docs_enum_equals(info, Some(ld.as_mut()), Some(rd.as_mut()), false);
+                let mut ld = io(left_terms_enum.postings(ld, POSTINGS_ENUM_NONE));
+                let mut rd = io(right_terms_enum.postings(rd, POSTINGS_ENUM_NONE));
+                Self::assert_docs_enum_equals(
+                    info,
+                    ld.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
+                    rd.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
+                    false,
+                );
 
                 // with freqs:
                 let doc_freq = io(left_terms_enum.doc_freq());
-                let mut ld = io(left_terms_enum.postings(Some(ld), POSTINGS_ENUM_FREQS));
-                let mut rd = io(right_terms_enum.postings(Some(rd), POSTINGS_ENUM_FREQS));
+                let mut ld = io(left_terms_enum.postings(ld, POSTINGS_ENUM_FREQS));
+                let mut rd = io(right_terms_enum.postings(rd, POSTINGS_ENUM_FREQS));
                 Self::assert_docs_skipping_equals(
                     info,
                     left_reader,
                     doc_freq,
-                    Some(ld.as_mut()),
-                    Some(rd.as_mut()),
+                    ld.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
+                    rd.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
                     true,
                 );
 
                 // w/o freqs:
                 let doc_freq = io(left_terms_enum.doc_freq());
-                let mut ld = io(left_terms_enum.postings(Some(ld), POSTINGS_ENUM_NONE));
-                let mut rd = io(right_terms_enum.postings(Some(rd), POSTINGS_ENUM_NONE));
+                let mut ld = io(left_terms_enum.postings(ld, POSTINGS_ENUM_NONE));
+                let mut rd = io(right_terms_enum.postings(rd, POSTINGS_ENUM_NONE));
                 Self::assert_docs_skipping_equals(
                     info,
                     left_reader,
                     doc_freq,
-                    Some(ld.as_mut()),
-                    Some(rd.as_mut()),
+                    ld.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
+                    rd.as_mut()
+                        .map(|p| &mut **p as &mut dyn rucene::index::postings_enum::PostingsEnum),
                     false,
                 );
-                left_docs = Some(ld);
-                right_docs = Some(rd);
+                left_docs = ld;
+                right_docs = rd;
             }
         }
         assert_null(Some(info), io(right_terms_enum.next()).as_ref());
@@ -4989,7 +5011,11 @@ impl LuceneTestCase {
                     SeekStatusName(right_status),
                 );
                 if left_status != SeekStatus::END {
-                    Assert::assert_equals_msg(i, io(left_enum.term()), io(right_enum.term()));
+                    assert_option_equals(
+                        i,
+                        io(left_enum.term()).as_ref(),
+                        io(right_enum.term()).as_ref(),
+                    );
                     Self::assert_term_stats_equals(info, left_enum.as_mut(), right_enum.as_mut());
                 }
             }

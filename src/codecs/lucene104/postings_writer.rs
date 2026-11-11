@@ -1097,16 +1097,16 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<BytesRef> {
-            Ok(self.terms[self.idx as usize].clone())
+        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.idx as usize].clone()))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(self.postings[self.idx as usize].clone()))
+        ) -> crate::error::Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(self.postings[self.idx as usize].clone())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {

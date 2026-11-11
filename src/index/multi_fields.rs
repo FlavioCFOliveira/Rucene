@@ -446,7 +446,7 @@ impl MultiTerms {
         if let Some(terms) = Self::get_terms(reader, field)? {
             let mut te = terms.iterator()?;
             if te.seek_exact(term)? {
-                return Ok(Some(te.postings(None, flags)?));
+                return te.postings(None, flags);
             }
         }
         Ok(None)
@@ -1087,7 +1087,7 @@ impl MultiTermsEnum {
 
     /// Reads the term `current` refers to: the current term of the enum of
     /// sub `sub`, as it stands now (see [`current`](Self#structfield.current)).
-    fn sub_term(&self, sub: usize) -> Result<BytesRef> {
+    fn sub_term(&self, sub: usize) -> Result<Option<BytesRef>> {
         self.queue.subs()[sub]
             .base
             .terms_enum()
@@ -1279,13 +1279,12 @@ impl TermsEnum for MultiTermsEnum {
 
     /// Equivalent to `MultiTermsEnum.term()`, which answers the `current`
     /// field: the current term of the sub that supplied it, read now (see
-    /// [`MultiTermsEnum`]'s `current`); its `null` is an error here.
-    fn term(&self) -> Result<BytesRef> {
+    /// [`MultiTermsEnum`]'s `current`), or `None` for Java's `null` when the
+    /// enum is not positioned.
+    fn term(&self) -> Result<Option<BytesRef>> {
         match self.current {
             Some(sub) => self.sub_term(sub),
-            None => Err(LuceneError::illegal_state(
-                "MultiTermsEnum.term() called with no current term".to_string(),
-            )),
+            None => Ok(None),
         }
     }
 
@@ -1350,7 +1349,7 @@ impl TermsEnum for MultiTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         // Can only reuse if incoming enum is also a MultiDocsEnum ... and was
         // previously created w/ this MultiTermsEnum:
         let mut docs_enum: Box<dyn PostingsEnum> = match reuse {
@@ -1408,6 +1407,8 @@ impl TermsEnum for MultiTermsEnum {
                     )
                 })?
                 .postings(reuse_sub, flags)?;
+            debug_assert!(sub_postings_enum.is_some());
+            let sub_postings_enum = sub_postings_enum.ok_or_else(LuceneError::null_pointer)?;
             // Java stores the enum both in `subPostingsEnums[subIndex]` and in
             // `subDocs[upto]`; here it lives in the slot, and goes back to
             // `subPostingsEnums` on the next reuse.
@@ -1423,13 +1424,16 @@ impl TermsEnum for MultiTermsEnum {
         multi.reset(sub_docs);
         // Rust-only: the `subPostingsEnums` slot each live enum returns to.
         multi.live_sub_indices = sub_indices.into_iter().map(Some).collect();
-        Ok(docs_enum)
+        Ok(Some(docs_enum))
     }
 
     /// Equivalent to `MultiTermsEnum.impacts(int)`: implemented to not fail
     /// `CheckIndex`, but one shouldn't be using impacts on a slow reader.
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Ok(Box::new(SlowImpactsEnum::new(self.postings(None, flags)?)))
+        Ok(Box::new(SlowImpactsEnum::new(
+            self.postings(None, flags)?
+                .ok_or_else(LuceneError::null_pointer)?,
+        )))
     }
 
     /// Equivalent to `MultiTermsEnum.next()` (`MultiTermsEnum.java:265-293`).
@@ -1458,7 +1462,11 @@ impl TermsEnum for MultiTermsEnum {
                 ));
             };
             // Java passes `current` itself; this is a copy of the same bytes.
-            let current = self.sub_term(current)?;
+            let current = self.sub_term(current)?.ok_or_else(|| {
+                LuceneError::null_pointer_with_message(
+                    "Cannot read field \"bytes\" because \"ref\" is null".to_string(),
+                )
+            })?;
             let status = self.seek_ceil(&current)?;
             debug_assert_eq!(status, SeekStatus::FOUND);
             self.last_seek_exact = false;
@@ -1479,7 +1487,7 @@ impl TermsEnum for MultiTermsEnum {
         }
 
         match self.current {
-            Some(sub) => Ok(Some(self.sub_term(sub)?)),
+            Some(sub) => self.sub_term(sub),
             None => Ok(None),
         }
     }
@@ -2154,8 +2162,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.entries[self.pos as usize].0.clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.entries[self.pos as usize].0.clone()))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -2176,7 +2184,7 @@ mod tests {
             &mut self,
             reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
             let docs = self.entries[self.pos as usize].3.clone();
             if let Some(mut reuse) = reuse {
                 if let Some(postings) = reuse
@@ -2184,10 +2192,10 @@ mod tests {
                     .and_then(|any| any.downcast_mut::<VecPostings>())
                 {
                     *postings = VecPostings::new(docs);
-                    return Ok(reuse);
+                    return Ok(Some(reuse));
                 }
             }
-            Ok(Box::new(VecPostings::new(docs)))
+            Ok(Some(Box::new(VecPostings::new(docs))))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -2464,7 +2472,7 @@ mod tests {
         let mut te = mt.iterator().unwrap();
         assert!(te.seek_exact(&term(b"cherry")).unwrap());
         assert_eq!(te.doc_freq().unwrap(), 4);
-        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         let docs: Vec<i32> = std::iter::from_fn(|| match pe.next_doc().unwrap() {
             crate::search::NO_MORE_DOCS => None,
             d => Some(d),
@@ -2497,7 +2505,7 @@ mod tests {
         .unwrap();
         let mut te = mt.iterator().unwrap();
         assert!(te.seek_exact(&term(b"x")).unwrap());
-        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         // advance(2) skips leaf 0's doc 1 and lands on leaf 1's doc 1 (global 3).
         assert_eq!(pe.advance(2).unwrap(), 3);
         assert_eq!(pe.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
@@ -2585,7 +2593,7 @@ mod tests {
             te.seek_ceil(&term(b"banana")).unwrap(),
             SeekStatus::NOT_FOUND
         );
-        assert_eq!(te.term().unwrap().slice(), b"mango");
+        assert_eq!(te.term().unwrap().unwrap().slice(), b"mango");
 
         // Seek past everything -> END.
         assert_eq!(te.seek_ceil(&term(b"zzz")).unwrap(), SeekStatus::END);
@@ -2623,7 +2631,7 @@ mod tests {
         // have a valid "current" per sub.
         let _ = te.next().unwrap(); // apple
         assert!(te.seek_exact(&term(b"cherry")).unwrap());
-        assert_eq!(te.term().unwrap().slice(), b"cherry");
+        assert_eq!(te.term().unwrap().unwrap().slice(), b"cherry");
         assert_eq!(te.doc_freq().unwrap(), 2);
         // After seek_exact, next() should re-seek and advance past cherry.
         assert!(te.next().unwrap().is_none(), "cherry was the last term");
@@ -2953,7 +2961,10 @@ mod tests {
         let mut enumerator = terms.multi_iterator().unwrap().unwrap();
 
         assert_eq!(enumerator.next().unwrap(), Some(term(b"a")));
-        let mut boxed = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut boxed = enumerator
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let postings = as_multi(&mut boxed);
         assert_eq!(postings.get_num_subs(), 2, "both subs hold 'a'");
         let reader_indexes: Vec<i32> = postings
@@ -2969,7 +2980,10 @@ mod tests {
         assert_eq!(postings.get_subs().len(), 2);
 
         assert_eq!(enumerator.next().unwrap(), Some(term(b"b")));
-        let mut boxed = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut boxed = enumerator
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let postings = as_multi(&mut boxed);
         assert_eq!(postings.get_num_subs(), 1, "only the first sub holds 'b'");
         assert_eq!(postings.get_subs()[0].slice.reader_index, 0);
@@ -2992,7 +3006,10 @@ mod tests {
         let terms = mf.multi_terms("body").unwrap().unwrap();
         let mut enumerator = terms.multi_iterator().unwrap().unwrap();
         assert_eq!(enumerator.next().unwrap(), Some(term(b"a")));
-        let mut postings = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = enumerator
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_eq!(postings.next_doc().unwrap(), 0);
         assert_eq!(postings.next_doc().unwrap(), 7);
         assert_eq!(postings.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
@@ -3067,7 +3084,7 @@ mod tests {
             2,
             "leaf 0 was dropped by the seek optimisation"
         );
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(drain_docs(postings.as_mut()), vec![1, 11]);
     }
 
@@ -3113,7 +3130,7 @@ mod tests {
         // "a" exists only in leaf 0, so leaf 1's seek_exact fails.
         assert!(te.seek_exact(&term(b"a")).unwrap());
         assert!(te.seek_exact(&term(b"c")).unwrap());
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(
             drain_docs(postings.as_mut()),
             vec![1, 11],
@@ -3131,7 +3148,7 @@ mod tests {
         assert_eq!(te.doc_freq().unwrap(), 2);
         assert!(te.seek_exact(&term(b"a")).unwrap());
         assert_eq!(te.doc_freq().unwrap(), 1);
-        assert_eq!(te.term().unwrap(), term(b"a"));
+        assert_eq!(te.term().unwrap(), Some(term(b"a")));
         // ... and forwards again, which is the optimised direction.
         assert!(te.seek_exact(&term(b"b")).unwrap());
         assert_eq!(te.doc_freq().unwrap(), 1);
@@ -3154,7 +3171,7 @@ mod tests {
         let mt = two_leaves_with_a_shared_trailing_term();
         let mut te = mt.multi_iterator().unwrap().unwrap();
         assert!(te.seek_exact(&term(b"c")).unwrap());
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(drain_docs(postings.as_mut()), vec![1, 11]);
         // Exhausted: every further call keeps reporting NO_MORE_DOCS and never
         // rewinds into an earlier sub.
@@ -3524,10 +3541,10 @@ mod tests {
         let mt = two_leaves_with_a_shared_trailing_term();
         let mut te = mt.multi_iterator().unwrap().unwrap();
         assert!(te.seek_exact(&term(b"a")).unwrap());
-        assert_eq!(te.term().unwrap(), term(b"a"));
+        assert_eq!(te.term().unwrap(), Some(term(b"a")));
 
         assert!(!te.seek_exact(&term(b"bb")).unwrap());
-        assert_eq!(te.term().unwrap(), term(b"a"), "leaf 0's term");
+        assert_eq!(te.term().unwrap(), Some(term(b"a")), "leaf 0's term");
         assert_eq!(te.doc_freq().unwrap(), 0, "no sub holds `bb`");
         // `next()` re-seeks to that term first (`MultiTermsEnum.java:267-276`),
         // so iteration resumes after `a`.
@@ -3574,11 +3591,11 @@ mod tests {
         let terms = MultiTerms::get_terms(&reader, "f").unwrap().unwrap();
         let mut te = terms.iterator().unwrap();
         assert!(te.seek_exact(&term(b"aaaa")).unwrap());
-        assert_eq!(te.term().unwrap(), term(b"aaaa"));
+        assert_eq!(te.term().unwrap(), Some(term(b"aaaa")));
         assert!(!te.seek_exact(&term(b"aazz")).unwrap());
         assert_eq!(
             te.term().unwrap(),
-            term(b"cccc"),
+            Some(term(b"cccc")),
             "leaf 0 scanned to `cccc`"
         );
         assert_eq!(te.next().unwrap(), None);
@@ -3595,7 +3612,7 @@ mod tests {
         let mut te = terms.iterator().unwrap();
         assert_eq!(te.seek_ceil(&term(b"aaaa")).unwrap(), SeekStatus::FOUND);
         assert_eq!(te.seek_ceil(&term(b"zzzz")).unwrap(), SeekStatus::END);
-        assert_eq!(te.term().unwrap(), term(b""));
+        assert_eq!(te.term().unwrap(), Some(term(b"")));
     }
 
     /// The JDK's messages for the `NullPointerException`s of a sub with a
@@ -3704,7 +3721,7 @@ mod tests {
         let mut te = terms.iterator().unwrap();
         assert_eq!(te.next().unwrap(), Some(term(b"apple")));
         assert_eq!(te.doc_freq().unwrap(), 3);
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(
             drain_docs(postings.as_mut()),
             vec![0, 2, 4],
@@ -3799,12 +3816,15 @@ mod tests {
         let mut te = mt.multi_iterator().unwrap().unwrap();
 
         assert_eq!(te.next().unwrap(), Some(term(b"a")));
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         let multi = identity(postings.as_ref());
         let leaf0 = sub_identity(&mut postings, 0);
 
         assert_eq!(te.next().unwrap(), Some(term(b"b")));
-        let mut postings = te.postings(Some(postings), POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             identity(postings.as_ref()),
             multi,
@@ -3814,7 +3834,10 @@ mod tests {
         assert_ne!(leaf1, leaf0);
 
         assert_eq!(te.next().unwrap(), Some(term(b"c")));
-        let mut postings = te.postings(Some(postings), POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_eq!(identity(postings.as_ref()), multi);
         assert_eq!(
             (
@@ -3835,9 +3858,12 @@ mod tests {
         assert_eq!(first.next().unwrap(), Some(term(b"a")));
         assert_eq!(second.next().unwrap(), Some(term(b"a")));
 
-        let foreign = first.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let foreign = first.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         let foreign_identity = identity(foreign.as_ref());
-        let mut postings = second.postings(Some(foreign), POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = second
+            .postings(Some(foreign), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_ne!(
             identity(postings.as_ref()),
             foreign_identity,
@@ -3855,7 +3881,10 @@ mod tests {
         assert_eq!(te.next().unwrap(), Some(term(b"a")));
         let other: Box<dyn PostingsEnum> = Box::new(VecPostings::new(vec![3]));
         let other_identity = identity(other.as_ref());
-        let mut postings = te.postings(Some(other), POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te
+            .postings(Some(other), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_ne!(identity(postings.as_ref()), other_identity);
         assert_eq!(drain_docs(postings.as_mut()), vec![0]);
     }
@@ -3908,7 +3937,7 @@ mod tests {
         assert_eq!(match_order(&te), vec![1, 2, 0]);
         // `postings` sorts `top` in place by sub index
         // (`ArrayUtil.timSort(top, 0, numTop, ...)`).
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(match_order(&te), vec![0, 1, 2]);
         assert_eq!(drain_docs(postings.as_mut()), vec![1, 11, 21]);
         assert_eq!(te.next().unwrap(), None);

@@ -223,7 +223,7 @@ impl TermsEnum for TestTermsEnum {
         std::thread::sleep(std::time::Duration::from_millis(100));
         self.inner.next()
     }
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {
@@ -239,7 +239,7 @@ impl TermsEnum for TestTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {

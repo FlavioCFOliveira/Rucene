@@ -26,10 +26,6 @@
 //! * With [`TestOption::Threads`], Java's threads shuffle and read the one
 //!   shared `allTerms` list concurrently (a data race). Here each thread
 //!   shuffles it under a lock and iterates the order it left.
-//! * `SeedTermsEnum.postings` returns `null` for flags the field cannot honour;
-//!   [`TermsEnum::postings`] returns a postings enum or an error, so it fails
-//!   with `IllegalStateException` instead. The writers ask only for what the
-//!   field indexes, so neither is reached by `buildIndex`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -677,8 +673,8 @@ impl TermsEnum for SeedTermsEnum {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.current()?.0.clone())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.current()?.0.clone()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -697,38 +693,37 @@ impl TermsEnum for SeedTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        let null = || LuceneError::illegal_state("SeedTermsEnum.postings returns null");
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         if feature_requested(flags, POSTINGS_ENUM_POSITIONS) {
             if !self
                 .max_allowed
                 .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
             {
-                return Err(null());
+                return Ok(None);
             }
             if feature_requested(flags, POSTINGS_ENUM_OFFSETS)
                 && !self
                     .max_allowed
                     .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
             {
-                return Err(null());
+                return Ok(None);
             }
             if feature_requested(flags, POSTINGS_ENUM_PAYLOADS) && !self.allow_payloads {
-                return Err(null());
+                return Ok(None);
             }
         }
         if feature_requested(flags, POSTINGS_ENUM_FREQS)
             && !self.max_allowed.subsumes(IndexOptions::DOCS_AND_FREQS)
         {
-            return Err(null());
+            return Ok(None);
         }
         let (term, seed_and_ord) = self.current()?;
-        Ok(Box::new(RandomPostingsTester::get_seed_postings(
+        Ok(Some(Box::new(RandomPostingsTester::get_seed_postings(
             &term.utf8_to_string()?,
             seed_and_ord.seed,
             self.max_allowed,
             self.allow_payloads,
-        )))
+        ))))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -897,9 +892,13 @@ fn assert_competitive_impact(impacts_copy: &[Impact], freq: i32, norm: i64) {
 
 /// `assertEquals(message, expected, actual)` on `BytesRef`s, whose
 /// `toString()` is the hex form.
-fn assert_equals_bytes(message: Option<&str>, expected: &BytesRef, actual: &BytesRef) {
-    if expected != actual {
-        Assert::assert_equals_msg(message, expected.to_string(), actual.to_string());
+fn assert_equals_bytes(message: Option<&str>, expected: &BytesRef, actual: Option<&BytesRef>) {
+    if Some(expected) != actual {
+        Assert::assert_equals_msg(
+            message,
+            expected.to_string(),
+            actual.map_or_else(|| "null".to_string(), BytesRef::to_string),
+        );
     }
 }
 
@@ -1310,7 +1309,7 @@ impl RandomPostingsTester {
 
         // Make sure TermsEnum really is positioned on the
         // expected term:
-        assert_equals_bytes(None, term, &terms_enum.term()?);
+        assert_equals_bytes(None, term, terms_enum.term()?.as_ref());
 
         let current_field_infos = self
             .current_field_infos
@@ -1476,7 +1475,7 @@ impl RandomPostingsTester {
         &self,
         random: &dyn Random,
         thread_state: &mut ThreadState,
-        mut postings_enum: Box<dyn PostingsEnum>,
+        postings_enum: Option<Box<dyn PostingsEnum>>,
         had_prev: bool,
         expected: &mut SeedPostings,
         terms_enum: &mut dyn TermsEnum,
@@ -1489,6 +1488,11 @@ impl RandomPostingsTester {
         let max_doc = self.max_doc;
         let field_index_options = field_info.get_index_options();
 
+        crate::index::base_index_file_format_test_case::assert_not_null_msg(
+            "null DocsEnum",
+            postings_enum.is_some(),
+        );
+        let mut postings_enum = postings_enum.ok_or_else(LuceneError::null_pointer)?;
         let initial_doc_id = postings_enum.doc_id();
         Assert::assert_equals_msg(
             Some(&format!("initial docID should be -1: {postings_enum}")),
@@ -1842,12 +1846,18 @@ impl RandomPostingsTester {
 
         if options.contains(TestOption::IntoBitSet) {
             let flags = flags_for_checks;
-            let mut pe1 = terms_enum.postings(None, flags)?;
+            let mut pe1 = terms_enum
+                .postings(None, flags)?
+                .ok_or_else(LuceneError::null_pointer)?;
             if random.next_boolean() {
                 pe1.advance(max_doc / 2)?;
-                pe1 = terms_enum.postings(Some(pe1), flags)?;
+                pe1 = terms_enum
+                    .postings(Some(pe1), flags)?
+                    .ok_or_else(LuceneError::null_pointer)?;
             }
-            let mut pe2 = terms_enum.postings(None, flags)?;
+            let mut pe2 = terms_enum
+                .postings(None, flags)?
+                .ok_or_else(LuceneError::null_pointer)?;
             let mut set1 = FixedBitSet::new(1024);
             let mut set2 = FixedBitSet::new(1024);
 
@@ -1889,15 +1899,21 @@ impl RandomPostingsTester {
                 let mut pe1: Box<dyn PostingsEnum> = if impacts {
                     terms_enum.impacts(flags)?
                 } else {
-                    let mut pe1 = terms_enum.postings(None, flags)?;
+                    let mut pe1 = terms_enum
+                        .postings(None, flags)?
+                        .ok_or_else(LuceneError::null_pointer)?;
                     if random.next_boolean() {
                         // test reuse
                         pe1.advance(max_doc / 2)?;
-                        pe1 = terms_enum.postings(Some(pe1), flags)?;
+                        pe1 = terms_enum
+                            .postings(Some(pe1), flags)?
+                            .ok_or_else(LuceneError::null_pointer)?;
                     }
                     pe1
                 };
-                let mut pe2 = terms_enum.postings(None, flags)?;
+                let mut pe2 = terms_enum
+                    .postings(None, flags)?
+                    .ok_or_else(LuceneError::null_pointer)?;
 
                 pe1.next_doc()?;
                 pe2.next_doc()?;
@@ -1955,7 +1971,9 @@ impl RandomPostingsTester {
         let mut impacts_copy: Vec<Impact> = Vec::new();
 
         let mut impacts_enum = terms_enum.impacts(flags)?;
-        let mut postings = terms_enum.postings(None, flags)?;
+        let mut postings = terms_enum
+            .postings(None, flags)?
+            .ok_or_else(LuceneError::null_pointer)?;
         let mut doc = impacts_enum.next_doc()?;
         loop {
             Assert::assert_equals(postings.next_doc()?, doc);
@@ -2009,7 +2027,9 @@ impl RandomPostingsTester {
 
         // Now check advancing
         impacts_enum = terms_enum.impacts(flags)?;
-        postings = terms_enum.postings(Some(postings), flags)?;
+        postings = terms_enum
+            .postings(Some(postings), flags)?
+            .ok_or_else(LuceneError::null_pointer)?;
 
         max = -1;
         loop {
@@ -2274,7 +2294,7 @@ impl RandomPostingsTester {
             }
 
             // check we really seeked to the right place
-            assert_equals_bytes(None, &field_and_term.term, &terms_enum.term()?);
+            assert_equals_bytes(None, &field_and_term.term, terms_enum.term()?.as_ref());
 
             let term_ord = if supports_ords {
                 match terms_enum.ord() {

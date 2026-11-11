@@ -886,7 +886,11 @@ fn test_realistic_concurrent_minimum_score(_f: &mut TopDocsCollectorTest) -> Res
     let mut terms_enum = terms.iterator()?;
     while terms_enum.next()?.is_some() {
         if random().next_double() <= chance {
-            let term = BytesRef::deep_copy_of(&terms_enum.term()?);
+            let term = BytesRef::deep_copy_of(
+                &terms_enum
+                    .term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+            );
             let query: Arc<dyn Query> = Arc::new(TermQuery::new(Term::new("body", term)));
 
             let tdc = do_concurrent_search_with_threshold(5, 0, &query, &reader)?;

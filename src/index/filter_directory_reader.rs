@@ -1356,7 +1356,7 @@ impl TermsEnum for ExitableTermsEnum {
         self.inner.seek_ord(ord)
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
 
@@ -1376,7 +1376,7 @@ impl TermsEnum for ExitableTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
 

@@ -1326,7 +1326,9 @@ fn misuse(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
     rows.rec(c, "misuse", "nextdoc_after_end", || {
         let mut te = r.terms("body")?.unwrap().iterator()?;
         te.next()?;
-        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS)?;
+        let mut pe = te
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         while pe.next_doc()? != NO_MORE_DOCS {}
         Ok(pe.next_doc()?.to_string())
     });

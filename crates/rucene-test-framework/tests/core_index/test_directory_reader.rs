@@ -283,13 +283,22 @@ fn test_multi_term_docs() -> Result<()> {
         .unwrap_or_else(|| npe("getTerms(mr2, \"body\")"))
         .iterator()?;
     te2.seek_ceil(&BytesRef::from_char_sequence("wow"))?;
-    let td = TestUtil::docs(&*random(), &mr2, "body", &te2.term()?, None, 0)?;
+    let td = TestUtil::docs(
+        &*random(),
+        &mr2,
+        "body",
+        &te2.term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+        None,
+        0,
+    )?;
 
     let mut te3 = MultiTerms::get_terms(&mr3, "body")?
         .unwrap_or_else(|| npe("getTerms(mr3, \"body\")"))
         .iterator()?;
     te3.seek_ceil(&BytesRef::from_char_sequence("wow"))?;
-    let mut td = TestUtil::docs_of(&*random(), &mut *te3, td, 0)?;
+    let mut td = TestUtil::docs_of(&*random(), &mut *te3, td, 0)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
 
     let mut ret = 0;
 
@@ -1052,13 +1061,19 @@ pub fn assert_index_equals(
         let mut enum2 = terms2.unwrap_or_else(|| npe("terms2")).iterator()?;
 
         while enum1.next()?.is_some() {
-            aem("Different terms", &Some(enum1.term()?), &enum2.next()?);
-            let mut tp1 = enum1.postings(None, POSTINGS_ENUM_ALL)?;
-            let mut tp2 = enum2.postings(None, POSTINGS_ENUM_ALL)?;
+            aem("Different terms", &enum1.term()?, &enum2.next()?);
+            let mut tp1 = enum1
+                .postings(None, POSTINGS_ENUM_ALL)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
+            let mut tp2 = enum2
+                .postings(None, POSTINGS_ENUM_ALL)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
 
             while tp1.next_doc()? != NO_MORE_DOCS {
                 Assert::assert_true(tp2.next_doc()? != NO_MORE_DOCS);
-                let term = enum1.term()?;
+                let term = enum1
+                    .term()?
+                    .map_or_else(|| "null".to_string(), |t| t.to_string());
                 aem(
                     &format!("Different doc id in postinglist of term {term}."),
                     &tp1.doc_id(),

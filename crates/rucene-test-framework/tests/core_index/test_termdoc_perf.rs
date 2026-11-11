@@ -208,7 +208,8 @@ fn do_test(iter: i32, ndocs: i32, max_tf: i32, percent_docs: f32) -> Result<i32>
     let random = JdkRandom::new(random().next_long());
     for _ in 0..iter {
         tenum.seek_ceil(&BytesRef::from_char_sequence("val"))?;
-        let mut docs = TestUtil::docs_of(&random, &mut *tenum, tdocs.take(), POSTINGS_ENUM_NONE)?;
+        let mut docs = TestUtil::docs_of(&random, &mut *tenum, tdocs.take(), POSTINGS_ENUM_NONE)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         while docs.next_doc()? != NO_MORE_DOCS {
             ret += docs.doc_id();
         }

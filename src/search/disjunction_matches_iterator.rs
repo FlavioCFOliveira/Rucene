@@ -130,7 +130,9 @@ pub fn from_terms_enum(
     let mut reuse: Option<Box<dyn PostingsEnum>> = None;
     while let Some(term) = terms.next()? {
         if te.seek_exact(&term)? {
-            let mut pe = te.postings(reuse.take(), POSTINGS_ENUM_OFFSETS)?;
+            let mut pe = te
+                .postings(reuse.take(), POSTINGS_ENUM_OFFSETS)?
+                .ok_or_else(LuceneError::null_pointer)?;
             if pe.advance(doc)? == doc {
                 let first = TermMatchesIterator::new(Arc::clone(&query), pe)?;
                 return Ok(Some(Box::new(TermsEnumDisjunctionMatchesIterator {
@@ -173,7 +175,10 @@ impl TermsEnumDisjunctionMatchesIterator {
         let mut reuse: Option<Box<dyn PostingsEnum>> = None;
         while let Some(term) = self.terms.next()? {
             if self.te.seek_exact(&term)? {
-                let mut pe = self.te.postings(reuse.take(), POSTINGS_ENUM_OFFSETS)?;
+                let mut pe = self
+                    .te
+                    .postings(reuse.take(), POSTINGS_ENUM_OFFSETS)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 if pe.advance(self.doc)? == self.doc {
                     mis.push(Box::new(TermMatchesIterator::new(
                         Arc::clone(&self.query),

@@ -3237,8 +3237,8 @@ impl TermsEnum for TVTermsEnum {
         ))
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.term.clone())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.term.clone()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -3264,7 +3264,7 @@ impl TermsEnum for TVTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let mut postings = TVPostingsEnum::new();
         if self.ord < 0 || self.ord >= self.num_terms {
             return Err(LuceneError::illegal_state(
@@ -3280,7 +3280,7 @@ impl TermsEnum for TVTermsEnum {
             self.payload_bytes.clone(),
             self.payload_index.clone(),
         );
-        Ok(Box::new(postings))
+        Ok(Some(Box::new(postings)))
     }
 
     /// Equivalent to `TVTermsEnum.impacts(int)`
@@ -3288,7 +3288,9 @@ impl TermsEnum for TVTermsEnum {
     /// `SlowImpactsEnum` over `postings(null, PostingsEnum.FREQS)`, whatever
     /// `flags` asks.
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        let postings = self.postings(None, crate::index::postings_enum::POSTINGS_ENUM_FREQS)?;
+        let postings = self
+            .postings(None, crate::index::postings_enum::POSTINGS_ENUM_FREQS)?
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok(Box::new(crate::index::SlowImpactsEnum::new(postings)))
     }
 
@@ -3747,7 +3749,7 @@ mod tests {
         let mut it = terms.iterator().unwrap();
         let t1 = it.next().unwrap().expect("first term");
         assert_eq!(t1.slice(), b"hello");
-        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap().unwrap();
         assert_eq!(postings.next_doc().unwrap(), 0);
         assert_eq!(postings.freq().unwrap(), 1);
         assert_eq!(postings.next_position().unwrap(), 0);
@@ -4013,7 +4015,7 @@ mod tests {
 
         let t1 = it.next().unwrap().expect("first term");
         assert_eq!(t1.slice(), b"alpha");
-        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap().unwrap();
         assert_eq!(postings.next_doc().unwrap(), 0);
         assert_eq!(postings.freq().unwrap(), 1);
         assert_eq!(postings.next_position().unwrap(), 0);
@@ -4021,7 +4023,7 @@ mod tests {
 
         let t2 = it.next().unwrap().expect("second term");
         assert_eq!(t2.slice(), b"beta");
-        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap().unwrap();
         assert_eq!(postings.next_doc().unwrap(), 0);
         assert_eq!(postings.freq().unwrap(), 1);
         assert_eq!(postings.next_position().unwrap(), 7);
@@ -4106,15 +4108,15 @@ mod tests {
             "illegal state: DocsEnum not started"
         );
 
-        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap().unwrap();
         assert_eq!(postings.advance(NO_MORE_DOCS).unwrap(), NO_MORE_DOCS);
         assert_eq!(
             postings.freq().unwrap_err().to_string(),
             "illegal state: DocsEnum exhausted"
         );
-        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap().unwrap();
         assert_eq!(postings.advance(1).unwrap(), NO_MORE_DOCS);
-        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap();
+        let mut postings = it.postings(None, POSTINGS_ENUM_POSITIONS).unwrap().unwrap();
         assert_eq!(postings.advance(0).unwrap(), 0);
         assert_eq!(postings.freq().unwrap(), 2);
     }
@@ -4223,7 +4225,8 @@ mod tests {
         iterator.next().expect("next").expect("zeta");
         let mut postings = iterator
             .postings(None, POSTINGS_ENUM_POSITIONS)
-            .expect("postings");
+            .expect("postings")
+            .unwrap();
         postings.next_doc().expect("next doc");
         let mut decoded = Vec::new();
         for _ in 0..4 {
@@ -4286,7 +4289,8 @@ mod tests {
             iterator.next().expect("next").expect("alpha");
             let mut postings = iterator
                 .postings(None, POSTINGS_ENUM_PAYLOADS)
-                .expect("postings");
+                .expect("postings")
+                .unwrap();
             postings.next_doc().expect("next doc");
             postings.next_position().expect("next position");
             assert_eq!(
@@ -4453,7 +4457,10 @@ mod tests {
                 let terms = fields.terms("body").unwrap().expect("body terms");
                 let mut iterator = terms.iterator().unwrap();
                 iterator.next().unwrap().expect("alpha");
-                let mut postings = iterator.postings(None, POSTINGS_ENUM_PAYLOADS).unwrap();
+                let mut postings = iterator
+                    .postings(None, POSTINGS_ENUM_PAYLOADS)
+                    .unwrap()
+                    .unwrap();
                 postings.next_doc().unwrap();
                 postings.next_position().unwrap();
                 assert_eq!(
@@ -4510,7 +4517,8 @@ mod tests {
         assert_eq!(term.slice(), b"hello");
         let mut postings = iterator
             .postings(None, POSTINGS_ENUM_POSITIONS)
-            .expect("postings");
+            .expect("postings")
+            .unwrap();
         assert_eq!(postings.next_doc().expect("next doc"), 0);
         assert_eq!(postings.freq().expect("freq"), 1);
         assert_eq!(postings.next_position().expect("next position"), 0);
@@ -4787,6 +4795,7 @@ mod tests {
                 if positions || offsets {
                     let mut postings = it
                         .postings(None, crate::index::postings_enum::POSTINGS_ENUM_ALL)
+                        .unwrap()
                         .unwrap();
                     assert_eq!(postings.next_doc().unwrap(), 0);
                     for _ in 0..freq {

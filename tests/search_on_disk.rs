@@ -121,7 +121,7 @@ fn a_positioned_term_reports_its_statistics_and_postings() {
     );
     println!("impacts          = {:?}", te.impacts(0).map(|_| "ok"));
     // Does the postings enum actually yield the documents?
-    let mut pe = te.postings(None, 0).expect("postings");
+    let mut pe = te.postings(None, 0).expect("postings").expect("postings");
     let mut docs = Vec::new();
     loop {
         let d = pe.next_doc().expect("next_doc");

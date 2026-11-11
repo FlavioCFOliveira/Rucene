@@ -503,8 +503,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.terms[self.pos].clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.pos].clone()))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -523,8 +523,8 @@ mod tests {
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum::new()))
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {

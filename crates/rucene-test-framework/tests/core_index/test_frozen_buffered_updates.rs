@@ -154,7 +154,7 @@ impl TermsEnum for PreferSeekExactTermsEnum {
     fn next(&mut self) -> Result<Option<BytesRef>> {
         self.inner.next()
     }
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {
@@ -170,7 +170,7 @@ impl TermsEnum for PreferSeekExactTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {

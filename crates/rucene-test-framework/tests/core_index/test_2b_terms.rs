@@ -368,7 +368,12 @@ fn test_saved_terms(
             if result == SeekStatus::END {
                 println!("  FAILED: got END");
             } else {
-                println!("  FAILED: wrong term: got {}", terms_enum.term()?);
+                println!(
+                    "  FAILED: wrong term: got {}",
+                    terms_enum
+                        .term()?
+                        .map_or_else(|| "null".to_string(), |t| t.to_string())
+                );
             }
             failed = true;
         }

@@ -199,7 +199,9 @@ impl RewriteInner for BitSetRewrite {
             let mut terms_enum2 = terms.iterator()?;
             for t in collected_terms {
                 terms_enum2.seek_term_state(&t.term, &*t.state)?;
-                let mut postings = terms_enum2.postings(docs.take(), POSTINGS_ENUM_NONE)?;
+                let mut postings = terms_enum2
+                    .postings(docs.take(), POSTINGS_ENUM_NONE)?
+                    .ok_or_else(crate::error::LuceneError::null_pointer)?;
                 builder.add(&mut *postings)?;
                 docs = Some(postings);
             }
@@ -207,7 +209,9 @@ impl RewriteInner for BitSetRewrite {
 
         // Then keep filling the bit set with the remaining terms.
         loop {
-            let mut postings = terms_enum.postings(docs.take(), POSTINGS_ENUM_NONE)?;
+            let mut postings = terms_enum
+                .postings(docs.take(), POSTINGS_ENUM_NONE)?
+                .ok_or_else(crate::error::LuceneError::null_pointer)?;
             // If a term contains all docs with a value for the specified field,
             // the other terms can be discarded and the dense term's postings
             // used on their own.
@@ -222,7 +226,12 @@ impl RewriteInner for BitSetRewrite {
                 );
                 let q: Arc<dyn Query> =
                     Arc::new(ConstantScoreQuery::new(Arc::new(TermQuery::with_states(
-                        Term::new(state.query.get_field(), terms_enum.term()?),
+                        Term::new(
+                            state.query.get_field(),
+                            terms_enum
+                                .term()?
+                                .ok_or_else(crate::error::LuceneError::null_pointer)?,
+                        ),
                         Arc::new(term_states),
                     ))));
                 let rewritten = state.searcher.rewrite(q)?;

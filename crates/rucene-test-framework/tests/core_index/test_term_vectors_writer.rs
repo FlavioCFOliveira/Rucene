@@ -159,12 +159,21 @@ fn test_double_offset_counting() -> Result<()> {
     assert_not_null(&vector);
     let mut terms_enum = vector.expect("checked").iterator()?;
     assert_not_null(&terms_enum.next()?);
-    assert_equals("", terms_enum.term()?.utf8_to_string()?.as_str());
+    assert_equals(
+        "",
+        terms_enum
+            .term()?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .utf8_to_string()?
+            .as_str(),
+    );
 
     // Token "" occurred once
     assert_equals(&1, &terms_enum.total_term_freq()?);
 
-    let mut dp_enum = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_next_offsets(&mut *dp_enum, 8, 8)?;
     assert_equals(&NO_MORE_DOCS, &dp_enum.next_doc()?);
@@ -174,7 +183,9 @@ fn test_double_offset_counting() -> Result<()> {
         &Some(BytesRef::from_char_sequence("abcd")),
         &terms_enum.next()?,
     );
-    let mut dp_enum = terms_enum.postings(Some(dp_enum), POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(Some(dp_enum), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&3, &terms_enum.total_term_freq()?);
 
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
@@ -213,7 +224,9 @@ fn check_double_field(
     let r: Arc<dyn IndexReader> = directory_reader::open(dir.as_directory())?;
     let mut terms_enum = field_vector_iterator(&r)?;
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&2, &terms_enum.total_term_freq()?);
 
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
@@ -284,7 +297,9 @@ fn test_end_offset_position_with_caching_token_filter() -> Result<()> {
     let r: Arc<dyn IndexReader> = directory_reader::open(dir.as_directory())?;
     let mut terms_enum = field_vector_iterator(&r)?;
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     assert_equals(&2, &terms_enum.total_term_freq()?);
 
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
@@ -333,18 +348,24 @@ fn test_end_offset_position_standard() -> Result<()> {
     let r: Arc<dyn IndexReader> = directory_reader::open(dir.as_directory())?;
     let mut terms_enum = field_vector_iterator(&r)?;
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
 
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_next_offsets(&mut *dp_enum, 0, 4)?;
 
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(Some(dp_enum), POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(Some(dp_enum), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_next_offsets(&mut *dp_enum, 11, 17)?;
 
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(Some(dp_enum), POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(Some(dp_enum), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_next_offsets(&mut *dp_enum, 18, 21)?;
 
@@ -370,14 +391,18 @@ fn test_end_offset_position_standard_empty_field() -> Result<()> {
     let r: Arc<dyn IndexReader> = directory_reader::open(dir.as_directory())?;
     let mut terms_enum = field_vector_iterator(&r)?;
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
 
     assert_equals(&1, &(terms_enum.total_term_freq()? as i32));
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_next_offsets(&mut *dp_enum, 1, 7)?;
 
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(Some(dp_enum), POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(Some(dp_enum), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_next_offsets(&mut *dp_enum, 8, 11)?;
 
@@ -411,14 +436,18 @@ fn test_end_offset_position_standard_empty_field2() -> Result<()> {
     let r: Arc<dyn IndexReader> = directory_reader::open(dir.as_directory())?;
     let mut terms_enum = field_vector_iterator(&r)?;
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
 
     assert_equals(&1, &(terms_enum.total_term_freq()? as i32));
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_next_offsets(&mut *dp_enum, 0, 4)?;
 
     assert_not_null(&terms_enum.next()?);
-    let mut dp_enum = terms_enum.postings(Some(dp_enum), POSTINGS_ENUM_ALL)?;
+    let mut dp_enum = terms_enum
+        .postings(Some(dp_enum), POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     Assert::assert_true(dp_enum.next_doc()? != NO_MORE_DOCS);
     assert_next_offsets(&mut *dp_enum, 6, 12)?;
 

@@ -108,6 +108,34 @@ impl Assert {
         Assert::assert_equals_msg(None, expected, actual)
     }
 
+    /// `assertEquals(message, expected, actual)` for non-`String` objects
+    /// either of which may be `null` (`None`): equal when both are `null` or
+    /// both are present and equal; a `null` side prints as `null`.
+    pub fn assert_equals_nullable_msg<T: PartialEq + Display>(
+        message: Option<&str>,
+        expected: Option<T>,
+        actual: Option<T>,
+    ) {
+        if expected != actual {
+            let show = |v: &Option<T>| v.as_ref().map_or_else(|| "null".to_string(), T::to_string);
+            let prefix = match message {
+                Some(m) if !m.is_empty() => format!("{m} "),
+                _ => String::new(),
+            };
+            Assert::fail(&format!(
+                "{prefix}expected:<{}> but was:<{}>",
+                show(&expected),
+                show(&actual)
+            ))
+        }
+    }
+
+    /// `assertEquals(expected, actual)` for non-`String` objects either of
+    /// which may be `null` (`None`).
+    pub fn assert_equals_nullable<T: PartialEq + Display>(expected: Option<T>, actual: Option<T>) {
+        Assert::assert_equals_nullable_msg(None, expected, actual)
+    }
+
     /// `assertEquals(message, expected, actual)` for two `String`s (`None`
     /// standing for `null`): when they differ, JUnit throws
     /// `org.junit.ComparisonFailure`, whose message brackets the differing

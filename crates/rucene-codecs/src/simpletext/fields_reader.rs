@@ -364,10 +364,10 @@ impl TermsEnum for SimpleTextTermsEnum {
 
     /// `fstEnum.current().input`: empty before the first term, the last term
     /// once the enumeration is exhausted.
-    fn term(&self) -> Result<BytesRef> {
-        Ok(BytesRef::new(
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(
             self.fst_enum.current().input.slice().to_vec(),
-        ))
+        )))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -390,7 +390,7 @@ impl TermsEnum for SimpleTextTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let meta = self.meta;
         if self.has_positions() && feature_requested(flags, POSTINGS_ENUM_POSITIONS) {
             let input = Arc::clone(&self.input);
@@ -402,9 +402,9 @@ impl TermsEnum for SimpleTextTermsEnum {
                         meta.doc_freq,
                         meta.skip_pointer,
                     )?;
-                    Ok(e)
+                    Ok(Some(e))
                 }
-                None => Ok(Box::new(self.new_postings_enum()?)),
+                None => Ok(Some(Box::new(self.new_postings_enum()?))),
             };
         }
 
@@ -417,16 +417,19 @@ impl TermsEnum for SimpleTextTermsEnum {
                     meta.doc_freq,
                     meta.skip_pointer,
                 )?;
-                Ok(e)
+                Ok(Some(e))
             }
-            None => Ok(Box::new(self.new_docs_enum()?)),
+            None => Ok(Some(Box::new(self.new_docs_enum()?))),
         }
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         if self.meta.doc_freq <= BLOCK_SIZE {
             // no skip data
-            return Ok(Box::new(SlowImpactsEnum::new(self.postings(None, flags)?)));
+            return Ok(Box::new(SlowImpactsEnum::new(
+                self.postings(None, flags)?
+                    .ok_or_else(LuceneError::null_pointer)?,
+            )));
         }
         // `(ImpactsEnum) postings(null, flags)`.
         if self.has_positions() && feature_requested(flags, POSTINGS_ENUM_POSITIONS) {

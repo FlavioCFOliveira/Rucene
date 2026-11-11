@@ -73,7 +73,8 @@ fn verify_count(ir: &Arc<dyn IndexReader>) -> Result<()> {
         let mut visited = FixedBitSet::new(ir.max_doc() as usize);
         let mut te = terms.iterator()?;
         while te.next()?.is_some() {
-            let mut de = TestUtil::docs_of(&*random(), &mut *te, None, POSTINGS_ENUM_NONE)?;
+            let mut de = TestUtil::docs_of(&*random(), &mut *te, None, POSTINGS_ENUM_NONE)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             loop {
                 let doc = de.next_doc()?;
                 if doc == NO_MORE_DOCS {

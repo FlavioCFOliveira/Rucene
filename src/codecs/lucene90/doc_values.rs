@@ -3936,8 +3936,8 @@ impl crate::index::TermsEnum for TermsDict {
         self.seek_exact(ord).map(|_| ())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(BytesRef::new(self.term.clone()))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(self.term.clone())))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -3956,7 +3956,7 @@ impl crate::index::TermsEnum for TermsDict {
         &mut self,
         _reuse: Option<Box<dyn crate::index::PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn crate::index::PostingsEnum>> {
+    ) -> Result<Option<Box<dyn crate::index::PostingsEnum>>> {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
@@ -4888,7 +4888,7 @@ mod tests {
             let status = terms
                 .seek_ceil(&BytesRef::new(key.as_bytes().to_vec()))
                 .unwrap();
-            let term = String::from_utf8(terms.term().unwrap().slice().to_vec()).unwrap();
+            let term = String::from_utf8(terms.term().unwrap().unwrap().slice().to_vec()).unwrap();
             seeks.push(format!(
                 "{key} -> {status:?} term={term} ord={}",
                 terms.ord().unwrap()
@@ -4961,7 +4961,7 @@ mod tests {
         assert_eq!(
             (
                 status,
-                terms.term().unwrap().slice().to_vec(),
+                terms.term().unwrap().unwrap().slice().to_vec(),
                 terms.ord().unwrap()
             ),
             (crate::index::SeekStatus::NOT_FOUND, b"t1501".to_vec(), 1501)

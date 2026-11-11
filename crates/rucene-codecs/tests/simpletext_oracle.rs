@@ -1147,7 +1147,13 @@ fn unchecked_exceptions_are_lucenes() {
         ("tvc-term-unpositioned", None, |_, leaf| {
             let reader = segment(leaf).get_term_vectors_reader()?.unwrap();
             let fields = reader.get(0)?.unwrap();
-            Ok(fields.terms("tv")?.unwrap().iterator()?.term()?.to_string())
+            Ok(fields
+                .terms("tv")?
+                .unwrap()
+                .iterator()?
+                .term()?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                .to_string())
         }),
         ("tvc-ttf-unpositioned", None, |_, leaf| {
             let reader = segment(leaf).get_term_vectors_reader()?.unwrap();
@@ -1156,12 +1162,21 @@ fn unchecked_exceptions_are_lucenes() {
             Ok(te.total_term_freq()?.to_string())
         }),
         ("pst-term-unpositioned", None, |_, leaf| {
-            Ok(leaf.terms("body")?.unwrap().iterator()?.term()?.to_string())
+            Ok(leaf
+                .terms("body")?
+                .unwrap()
+                .iterator()?
+                .term()?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                .to_string())
         }),
         ("pst-term-exhausted", None, |_, leaf| {
             let mut te = leaf.terms("body")?.unwrap().iterator()?;
             while te.next()?.is_some() {}
-            Ok(te.term()?.to_string())
+            Ok(te
+                .term()?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                .to_string())
         }),
         (
             "pst-doc-out",

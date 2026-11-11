@@ -730,7 +730,9 @@ fn init_postings(
             )));
         }
         postings.push_back(Rc::new(RefCell::new(PostingsEnumAndOrd {
-            postings: terms_enum.postings(None, POSTINGS_ENUM_NONE)?,
+            postings: terms_enum
+                .postings(None, POSTINGS_ENUM_NONE)?
+                .ok_or_else(LuceneError::null_pointer)?,
             ord: min_ord,
         })));
         for ord in min_ord + 1..=max_ord {
@@ -744,7 +746,9 @@ fn init_postings(
             // the doc values hold `next` at exactly this ordinal.
             debug_assert!(terms_index.lookup_term(&next)? == ord);
             postings.push_back(Rc::new(RefCell::new(PostingsEnumAndOrd {
-                postings: terms_enum.postings(None, POSTINGS_ENUM_NONE)?,
+                postings: terms_enum
+                    .postings(None, POSTINGS_ENUM_NONE)?
+                    .ok_or_else(LuceneError::null_pointer)?,
                 ord,
             })));
         }

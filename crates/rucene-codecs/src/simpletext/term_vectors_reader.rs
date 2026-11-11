@@ -486,8 +486,8 @@ impl TermsEnum for SimpleTVTermsEnum {
         }
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.current("getKey()")?.0.clone())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.current("getKey()")?.0.clone()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -506,7 +506,7 @@ impl TermsEnum for SimpleTVTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         if feature_requested(flags, POSTINGS_ENUM_POSITIONS) {
             let postings = &self.current("getValue()")?.1;
             if postings.positions.is_some() || postings.start_offsets.is_some() {
@@ -518,7 +518,7 @@ impl TermsEnum for SimpleTVTermsEnum {
                     postings.end_offsets.clone(),
                     postings.payloads.clone(),
                 );
-                return Ok(Box::new(e));
+                return Ok(Some(Box::new(e)));
             }
         }
 
@@ -529,12 +529,13 @@ impl TermsEnum for SimpleTVTermsEnum {
         } else {
             self.current("getValue()")?.1.freq
         });
-        Ok(Box::new(e))
+        Ok(Some(Box::new(e)))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         Ok(Box::new(SlowImpactsEnum::new(
-            self.postings(None, POSTINGS_ENUM_FREQS)?,
+            self.postings(None, POSTINGS_ENUM_FREQS)?
+                .ok_or_else(LuceneError::null_pointer)?,
         )))
     }
 }

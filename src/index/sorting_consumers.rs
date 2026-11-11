@@ -694,8 +694,11 @@ impl SortingTermVectorsConsumer {
                 writer.start_term(&term, freq)?;
 
                 if has_positions || has_offsets {
-                    let mut docs_and_positions_enum = terms_enum
+                    let docs_and_positions_enum = terms_enum
                         .postings(None, POSTINGS_ENUM_OFFSETS | POSTINGS_ENUM_PAYLOADS)?;
+                    debug_assert!(docs_and_positions_enum.is_some());
+                    let mut docs_and_positions_enum =
+                        docs_and_positions_enum.ok_or_else(LuceneError::null_pointer)?;
 
                     let doc_id = docs_and_positions_enum.next_doc()?;
                     debug_assert_ne!(doc_id, NO_MORE_DOCS);

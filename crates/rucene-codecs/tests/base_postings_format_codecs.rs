@@ -453,11 +453,11 @@ fn ords_test_basic() -> Result<()> {
 
     // Test seekExact by ord
     te.seek_ord(1)?;
-    Assert::assert_equals(bytes("b"), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("b")), te.term()?);
     te.seek_ord(0)?;
-    Assert::assert_equals(bytes("a"), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("a")), te.term()?);
     te.seek_ord(2)?;
-    Assert::assert_equals(bytes("c"), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("c")), te.term()?);
 
     drop(te);
     r.close()?;
@@ -501,14 +501,22 @@ fn ords_test_two_blocks() -> Result<()> {
     Assert::assert_equals(27i64, te.ord()?);
 
     te.seek_ord(54)?;
-    Assert::assert_equals(bytes("s"), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("s")), te.term()?);
 
     terms.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
 
     for i in (0..terms.len()).rev() {
         te.seek_ord(i as i64)?;
         Assert::assert_equals(i as i64, te.ord()?);
-        Assert::assert_equals_str(None, Some(&terms[i]), Some(&te.term()?.utf8_to_string()?));
+        Assert::assert_equals_str(
+            None,
+            Some(&terms[i]),
+            Some(
+                &te.term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                    .utf8_to_string()?,
+            ),
+        );
     }
 
     let iters = LuceneTestCase::at_least(1000);
@@ -531,7 +539,7 @@ fn ords_test_two_blocks() -> Result<()> {
             te.seek_exact(&term)?;
         }
         Assert::assert_equals(ord as i64, te.ord()?);
-        Assert::assert_equals(term, te.term()?);
+        Assert::assert_equals_nullable(Some(term), te.term()?);
     }
 
     drop(te);
@@ -557,7 +565,13 @@ fn ords_test_three_blocks() -> Result<()> {
 
     if *VERBOSE {
         while te.next()?.is_some() {
-            println!("TERM: {} {}", te.ord()?, te.term()?.utf8_to_string()?);
+            println!(
+                "TERM: {} {}",
+                te.ord()?,
+                te.term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                    .utf8_to_string()?
+            );
         }
     }
 
@@ -565,7 +579,7 @@ fn ords_test_three_blocks() -> Result<()> {
     Assert::assert_equals(27i64, te.ord()?);
 
     te.seek_ord(90)?;
-    Assert::assert_equals(bytes("s"), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("s")), te.term()?);
 
     test_enum(&mut *te, &mut terms)?;
 
@@ -586,7 +600,15 @@ fn test_enum(te: &mut dyn TermsEnum, terms: &mut [String]) -> Result<()> {
         }
         te.seek_ord(i as i64)?;
         Assert::assert_equals(i as i64, te.ord()?);
-        Assert::assert_equals_str(None, Some(&terms[i]), Some(&te.term()?.utf8_to_string()?));
+        Assert::assert_equals_str(
+            None,
+            Some(&terms[i]),
+            Some(
+                &te.term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                    .utf8_to_string()?,
+            ),
+        );
     }
 
     let iters = LuceneTestCase::at_least(1000);
@@ -594,7 +616,15 @@ fn test_enum(te: &mut dyn TermsEnum, terms: &mut [String]) -> Result<()> {
         let ord = LuceneTestCase::random().next_int_bound(terms.len() as i32) as usize;
         if LuceneTestCase::random().next_boolean() {
             te.seek_ord(ord as i64)?;
-            Assert::assert_equals_str(None, Some(&terms[ord]), Some(&te.term()?.utf8_to_string()?));
+            Assert::assert_equals_str(
+                None,
+                Some(&terms[ord]),
+                Some(
+                    &te.term()?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                        .utf8_to_string()?,
+                ),
+            );
         } else {
             te.seek_exact(&bytes(&terms[ord]))?;
             Assert::assert_equals(ord as i64, te.ord()?);
@@ -640,7 +670,7 @@ fn ords_test_floor_blocks() -> Result<()> {
     Assert::assert_equals(97i64, te.ord()?);
 
     te.seek_ord(98)?;
-    Assert::assert_equals(bytes("b"), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("b")), te.term()?);
 
     Assert::assert_true(te.seek_exact(&bytes("z"))?);
     Assert::assert_equals(122i64, te.ord()?);
@@ -735,7 +765,15 @@ fn ords_test_several_non_root_blocks() -> Result<()> {
     test_enum(&mut *te, &mut terms)?;
 
     te.seek_ord(0)?;
-    Assert::assert_equals_str(None, Some("aa"), Some(&te.term()?.utf8_to_string()?));
+    Assert::assert_equals_str(
+        None,
+        Some("aa"),
+        Some(
+            &te.term()?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                .utf8_to_string()?,
+        ),
+    );
 
     drop(te);
     r.close()?;
@@ -777,7 +815,15 @@ fn ords_test_seek_ceil_not_found() -> Result<()> {
         JavaSeekStatus(SeekStatus::NOT_FOUND),
         JavaSeekStatus(te.seek_ceil(&BytesRef::new(vec![0x22]))?),
     );
-    Assert::assert_equals_str(None, Some("a"), Some(&te.term()?.utf8_to_string()?));
+    Assert::assert_equals_str(
+        None,
+        Some("a"),
+        Some(
+            &te.term()?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                .utf8_to_string()?,
+        ),
+    );
     Assert::assert_equals(1i64, te.ord()?);
 
     drop(te);

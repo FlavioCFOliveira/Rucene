@@ -4467,7 +4467,7 @@ mod tests {
         assert!(terms_enum
             .seek_exact(&BytesRef::new(text.as_bytes().to_vec()))
             .unwrap());
-        let mut postings = terms_enum.postings(None, 0).unwrap();
+        let mut postings = terms_enum.postings(None, 0).unwrap().unwrap();
         let mut docs = Vec::new();
         loop {
             let doc = postings.next_doc().unwrap();

@@ -2357,8 +2357,8 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.scratch.get())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.scratch.get()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2381,7 +2381,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         Err(LuceneError::unsupported_operation(
             "postings not supported by SortedDocValuesTermsEnum".to_string(),
         ))
@@ -2510,8 +2510,8 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.scratch.get())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.scratch.get()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2534,7 +2534,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         Err(LuceneError::unsupported_operation(
             "postings not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
@@ -3351,16 +3351,16 @@ mod tests {
         let mut terms = SortedDocValuesTermsEnum::new(values);
         assert_eq!(terms.next().unwrap().unwrap().slice(), b"a");
         assert_eq!(terms.ord().unwrap(), 0);
-        assert_eq!(terms.term().unwrap().slice(), b"a");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"a");
         assert_eq!(
             terms.seek_ceil(&BytesRef::new(b"bb".to_vec())).unwrap(),
             SeekStatus::NOT_FOUND
         );
-        assert_eq!(terms.term().unwrap().slice(), b"c");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"c");
         assert!(terms.seek_exact(&BytesRef::new(b"b".to_vec())).unwrap());
         assert_eq!(terms.ord().unwrap(), 1);
         terms.seek_ord(2).unwrap();
-        assert_eq!(terms.term().unwrap().slice(), b"c");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"c");
         let state = terms.term_state().unwrap();
         terms
             .seek_term_state(&BytesRef::new(Vec::new()), state.as_ref())
@@ -3377,7 +3377,7 @@ mod tests {
         let mut terms = SortedSetDocValuesTermsEnum::new(values);
         assert_eq!(terms.next().unwrap().unwrap().slice(), b"a");
         assert_eq!(terms.ord().unwrap(), 0);
-        assert_eq!(terms.term().unwrap().slice(), b"a");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"a");
         assert!(!terms.seek_exact(&BytesRef::new(b"z".to_vec())).unwrap());
         assert_eq!(
             terms.seek_ceil(&BytesRef::new(b"b".to_vec())).unwrap(),
@@ -3385,7 +3385,7 @@ mod tests {
         );
         assert_eq!(terms.ord().unwrap(), 1);
         terms.seek_ord(2).unwrap();
-        assert_eq!(terms.term().unwrap().slice(), b"c");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"c");
         let state = terms.term_state().unwrap();
         terms
             .seek_term_state(&BytesRef::new(Vec::new()), state.as_ref())

@@ -69,7 +69,11 @@ fn test_same_scores_with_threads() -> Result<()> {
     let mut answers: Vec<(BytesRef, TopDocs)> = Vec::new();
     while terms_enum.next()?.is_some() {
         if random().next_double() <= chance {
-            let term = BytesRef::deep_copy_of(&terms_enum.term()?);
+            let term = BytesRef::deep_copy_of(
+                &terms_enum
+                    .term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+            );
             let top_docs = s.search(
                 Arc::new(TermQuery::new(Term::new("body", term.clone()))),
                 100,

@@ -105,7 +105,9 @@ impl LeafReader for TestReader {
             .iterator()?;
         let mut postings: Option<Box<dyn PostingsEnum>> = None;
         while terms_enum.next()?.is_some() {
-            let mut p = terms_enum.postings(postings.take(), POSTINGS_ENUM_NONE)?;
+            let mut p = terms_enum
+                .postings(postings.take(), POSTINGS_ENUM_NONE)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             docs_with_terms.or(p.as_mut())?;
             postings = Some(p);
         }
@@ -234,7 +236,7 @@ impl TermsEnum for TestTermsEnum {
         }
         Ok(None)
     }
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {
@@ -250,10 +252,15 @@ impl TermsEnum for TestTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        Ok(Box::new(TestPositions {
-            r#in: self.inner.postings(None, flags)?,
-        }))
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        Ok(Some(Box::new(TestPositions {
+            // `FilterPostingsEnum`'s constructor rejects a `null`.
+            r#in: self.inner.postings(None, flags)?.ok_or_else(|| {
+                rucene::error::LuceneError::null_pointer_with_message(
+                    "incoming PostingsEnum must not be null",
+                )
+            })?,
+        })))
     }
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         self.inner.impacts(flags)
@@ -395,7 +402,13 @@ fn test_filter_index_reader() -> Result<()> {
         .unwrap_or_else(|| npe("terms"))
         .iterator()?;
     while terms.next()?.is_some() {
-        Assert::assert_true(terms.term()?.utf8_to_string()?.contains('e'));
+        Assert::assert_true(
+            terms
+                .term()?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                .utf8_to_string()?
+                .contains('e'),
+        );
     }
 
     assert_equals(
@@ -403,7 +416,9 @@ fn test_filter_index_reader() -> Result<()> {
         &terms.seek_ceil(&BytesRef::from_char_sequence("one"))?,
     );
 
-    let mut positions = terms.postings(None, POSTINGS_ENUM_ALL)?;
+    let mut positions = terms
+        .postings(None, POSTINGS_ENUM_ALL)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
     while positions.next_doc()? != NO_MORE_DOCS {
         Assert::assert_true((positions.doc_id() % 2) == 1);
     }

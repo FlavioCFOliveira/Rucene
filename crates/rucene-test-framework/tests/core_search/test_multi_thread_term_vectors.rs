@@ -112,7 +112,12 @@ fn verify_vectors(vectors: &dyn Fields, num: i32) -> Result<()> {
 fn verify_vector(vector: &mut dyn TermsEnum, num: i32) -> Result<()> {
     let mut temp = String::new();
     while vector.next()?.is_some() {
-        temp.push_str(&vector.term()?.utf8_to_string()?);
+        temp.push_str(
+            &vector
+                .term()?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                .utf8_to_string()?,
+        );
     }
     assert_equals(
         &English::int_to_english(num).trim().to_string(),

@@ -237,6 +237,12 @@ fn identity(p: &dyn PostingsEnum) -> *const () {
     p as *const dyn PostingsEnum as *const ()
 }
 
+/// The identity of an enum that may be `null` (`None`): a null pointer then,
+/// which `assertSame` tells apart from any enum.
+fn identity_of(p: Option<&dyn PostingsEnum>) -> *const () {
+    p.map_or(std::ptr::null(), identity)
+}
+
 /// The runtime class name a reuse message names (`getClass().getName()`).
 fn class_name_of(p: &dyn PostingsEnum) -> String {
     p.to_string()
@@ -599,9 +605,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_true(terms.is_some());
         let mut terms_enum = npe(terms).iterator()?;
         Assert::assert_true(terms_enum.next()?.is_some());
-        Assert::assert_equals(
+        Assert::assert_equals_nullable(
             terms_enum.term()?,
-            BytesRef::from_char_sequence("something"),
+            Some(BytesRef::from_char_sequence("something")),
         );
         Assert::assert_true(terms_enum.next()?.is_none());
         drop((terms_enum, ar));
@@ -637,7 +643,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_true(terms.is_some());
         let mut terms_enum = npe(terms).iterator()?;
         Assert::assert_true(terms_enum.next()?.is_some());
-        Assert::assert_equals(terms_enum.term()?, BytesRef::from_char_sequence(""));
+        Assert::assert_equals_nullable(terms_enum.term()?, Some(BytesRef::from_char_sequence("")));
         Assert::assert_true(terms_enum.next()?.is_none());
         drop((terms_enum, ar));
         ir.close()?;
@@ -672,7 +678,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let ar = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ir) as _)?;
         let mut terms_enum = npe(ar.terms("field")?).iterator()?;
         Assert::assert_true(terms_enum.seek_exact(&BytesRef::from_char_sequence("value"))?);
-        let mut docs_enum = terms_enum.postings(None, NONE)?;
+        let mut docs_enum = terms_enum
+            .postings(None, NONE)?
+            .ok_or_else(LuceneError::null_pointer)?;
         Assert::assert_equals(0, docs_enum.next_doc()?);
         Assert::assert_equals(1, docs_enum.freq()?);
         Assert::assert_equals(1, docs_enum.next_doc()?);
@@ -710,7 +718,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let ar = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ir) as _)?;
         let mut terms_enum = npe(ar.terms("field")?).iterator()?;
         Assert::assert_true(terms_enum.seek_exact(&BytesRef::from_char_sequence("value"))?);
-        let mut docs_enum = terms_enum.postings(None, POSITIONS)?;
+        let mut docs_enum = terms_enum
+            .postings(None, POSITIONS)?
+            .ok_or_else(LuceneError::null_pointer)?;
         Assert::assert_equals(0, docs_enum.next_doc()?);
         Assert::assert_equals(1, docs_enum.freq()?);
         Assert::assert_equals(1, docs_enum.next_doc()?);
@@ -755,7 +765,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         if let Some(terms) = ar.terms("ghostField")? {
             let mut terms_enum = terms.iterator()?;
             if terms_enum.next()?.is_some() {
-                let mut postings_enum = terms_enum.postings(None, FREQS)?;
+                let mut postings_enum = terms_enum
+                    .postings(None, FREQS)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 Assert::assert_true(postings_enum.next_doc()? == NO_MORE_DOCS);
             }
         }
@@ -794,13 +806,13 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             let target = BytesRef::from_char_sequence(&n.to_string());
             // seekExact.
             Assert::assert_true(terms_enum.seek_exact(&target)?);
-            Assert::assert_equals(terms_enum.term()?, target.clone());
+            Assert::assert_equals_nullable(terms_enum.term()?, Some(target.clone()));
             // seekCeil.
             Assert::assert_equals(
                 JavaSeekStatus(SeekStatus::FOUND),
                 JavaSeekStatus(terms_enum.seek_ceil(&target)?),
             );
-            Assert::assert_equals(terms_enum.term()?, target);
+            Assert::assert_equals_nullable(terms_enum.term()?, Some(target));
         }
 
         drop((terms_enum, leaf));
@@ -845,7 +857,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             let target = BytesRef::from_char_sequence(&i.to_string());
             if i % 2 == 1 {
                 Assert::assert_true(terms_enum.seek_exact(&target)?);
-                Assert::assert_equals(terms_enum.term()?, target);
+                Assert::assert_equals_nullable(terms_enum.term()?, Some(target));
             } else {
                 Assert::assert_false(terms_enum.seek_exact(&target)?);
             }
@@ -860,7 +872,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
                     JavaSeekStatus(SeekStatus::FOUND),
                     JavaSeekStatus(terms_enum.seek_ceil(&target)?),
                 );
-                Assert::assert_equals(terms_enum.term()?, target);
+                Assert::assert_equals_nullable(terms_enum.term()?, Some(target));
                 if i <= 100397 {
                     Assert::assert_equals(
                         JavaBytesRef(Some(BytesRef::from_char_sequence(&(i + 2).to_string()))),
@@ -872,8 +884,8 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
                     JavaSeekStatus(SeekStatus::NOT_FOUND),
                     JavaSeekStatus(terms_enum.seek_ceil(&target)?),
                 );
-                Assert::assert_equals(
-                    BytesRef::from_char_sequence(&(i + 1).to_string()),
+                Assert::assert_equals_nullable(
+                    Some(BytesRef::from_char_sequence(&(i + 1).to_string())),
                     terms_enum.term()?,
                 );
             }
@@ -1034,7 +1046,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut term_count: i64 = 0;
         let mut supports_ords = true;
         while terms_enum.next()?.is_some() {
-            let term = terms_enum.term()?;
+            let term = npe(terms_enum.term()?);
             let tf = npe(term_freqs.get(&term.utf8_to_string()?));
             Assert::assert_equals(tf.doc_freq, terms_enum.doc_freq()?);
             Assert::assert_equals(tf.total_term_freq, terms_enum.total_term_freq()?);
@@ -1099,19 +1111,25 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut terms_enum = npe(leaf.terms("foo")?).iterator()?;
         terms_enum.seek_exact(&BytesRef::from_char_sequence("bar"))?;
         let p1 = identity(&*postings);
-        let mut postings2 = terms_enum.postings(Some(postings), FREQS)?;
-        self.assert_reused("foo", p1, identity(&*postings2));
+        let postings2 = terms_enum.postings(Some(postings), FREQS)?;
+        crate::index::base_index_file_format_test_case::assert_not_null(postings2.is_some());
+        self.assert_reused("foo", p1, identity_of(postings2.as_deref()));
+        let mut postings2 = postings2.ok_or_else(LuceneError::null_pointer)?;
         // and it had better work
         check_one_doc(&mut *postings2, FreqIs::Eq(1), &[])?;
 
         // asking for any flags: ok
         for flag in [NONE, FREQS, POSITIONS, PAYLOADS, OFFSETS, ALL] {
-            let mut postings = terms_enum.postings(None, flag)?;
+            let mut postings = terms_enum
+                .postings(None, flag)?
+                .ok_or_else(LuceneError::null_pointer)?;
             check_one_doc(&mut *postings, FreqIs::Eq(1), &[])?;
             // reuse that too
             let p1 = identity(&*postings);
-            let mut postings2 = terms_enum.postings(Some(postings), flag)?;
-            self.assert_reused("foo", p1, identity(&*postings2));
+            let postings2 = terms_enum.postings(Some(postings), flag)?;
+            crate::index::base_index_file_format_test_case::assert_not_null(postings2.is_some());
+            self.assert_reused("foo", p1, identity_of(postings2.as_deref()));
+            let mut postings2 = postings2.ok_or_else(LuceneError::null_pointer)?;
             // and it had better work
             check_one_doc(&mut *postings2, FreqIs::Eq(1), &[])?;
         }
@@ -1146,19 +1164,25 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut terms_enum = npe(leaf.terms("foo")?).iterator()?;
         terms_enum.seek_exact(&BytesRef::from_char_sequence("bar"))?;
         let p1 = identity(&*postings);
-        let mut postings2 = terms_enum.postings(Some(postings), FREQS)?;
-        self.assert_reused("foo", p1, identity(&*postings2));
+        let postings2 = terms_enum.postings(Some(postings), FREQS)?;
+        crate::index::base_index_file_format_test_case::assert_not_null(postings2.is_some());
+        self.assert_reused("foo", p1, identity_of(postings2.as_deref()));
+        let mut postings2 = postings2.ok_or_else(LuceneError::null_pointer)?;
         // and it had better work
         check_one_doc(&mut *postings2, FreqIs::Eq(2), &[])?;
 
         // asking for docs only: ok
-        let mut docs_only = terms_enum.postings(None, NONE)?;
+        let mut docs_only = terms_enum
+            .postings(None, NONE)?
+            .ok_or_else(LuceneError::null_pointer)?;
         // we don't define what it is, but if its something else, we should look into it?
         check_one_doc(&mut *docs_only, FreqIs::OneOrTwo, &[])?;
         // reuse that too
         let d1 = identity(&*docs_only);
-        let mut docs_only2 = terms_enum.postings(Some(docs_only), NONE)?;
-        self.assert_reused("foo", d1, identity(&*docs_only2));
+        let docs_only2 = terms_enum.postings(Some(docs_only), NONE)?;
+        crate::index::base_index_file_format_test_case::assert_not_null(docs_only2.is_some());
+        self.assert_reused("foo", d1, identity_of(docs_only2.as_deref()));
+        let mut docs_only2 = docs_only2.ok_or_else(LuceneError::null_pointer)?;
         // and it had better work
         // we don't define what it is, but if its something else, we should look into it?
         check_one_doc(&mut *docs_only2, FreqIs::OneOrTwo, &[])?;
@@ -1170,12 +1194,16 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             } else {
                 FreqIs::Unchecked
             };
-            let mut postings = terms_enum.postings(None, flag)?;
+            let mut postings = terms_enum
+                .postings(None, flag)?
+                .ok_or_else(LuceneError::null_pointer)?;
             check_one_doc(&mut *postings, freq, &[])?;
             // reuse that too
             let p1 = identity(&*postings);
-            let mut postings2 = terms_enum.postings(Some(postings), flag)?;
-            self.assert_reused("foo", p1, identity(&*postings2));
+            let postings2 = terms_enum.postings(Some(postings), flag)?;
+            crate::index::base_index_file_format_test_case::assert_not_null(postings2.is_some());
+            self.assert_reused("foo", p1, identity_of(postings2.as_deref()));
+            let mut postings2 = postings2.ok_or_else(LuceneError::null_pointer)?;
             // and it had better work
             check_one_doc(&mut *postings2, freq, &[])?;
         }
@@ -1533,19 +1561,25 @@ fn check_postings_enum_blocks(
     let mut terms_enum = npe(leaf.terms("foo")?).iterator()?;
     terms_enum.seek_exact(&BytesRef::from_char_sequence("bar"))?;
     let p1 = identity(&*postings);
-    let mut postings2 = terms_enum.postings(Some(postings), FREQS)?;
-    case.assert_reused("foo", p1, identity(&*postings2));
+    let postings2 = terms_enum.postings(Some(postings), FREQS)?;
+    crate::index::base_index_file_format_test_case::assert_not_null(postings2.is_some());
+    case.assert_reused("foo", p1, identity_of(postings2.as_deref()));
+    let mut postings2 = postings2.ok_or_else(LuceneError::null_pointer)?;
     // and it had better work
     check_one_doc(&mut *postings2, FreqIs::Eq(2), &[])?;
 
     // asking for docs only: ok
-    let mut docs_only = terms_enum.postings(None, NONE)?;
+    let mut docs_only = terms_enum
+        .postings(None, NONE)?
+        .ok_or_else(LuceneError::null_pointer)?;
     // we don't define what it is, but if its something else, we should look into it?
     check_one_doc(&mut *docs_only, FreqIs::OneOrTwo, &[])?;
     // reuse that too
     let d1 = identity(&*docs_only);
-    let mut docs_only2 = terms_enum.postings(Some(docs_only), NONE)?;
-    case.assert_reused("foo", d1, identity(&*docs_only2));
+    let docs_only2 = terms_enum.postings(Some(docs_only), NONE)?;
+    crate::index::base_index_file_format_test_case::assert_not_null(docs_only2.is_some());
+    case.assert_reused("foo", d1, identity_of(docs_only2.as_deref()));
+    let mut docs_only2 = docs_only2.ok_or_else(LuceneError::null_pointer)?;
     // and it had better work
     // we don't define what it is, but if its something else, we should look into it?
     check_one_doc(&mut *docs_only2, FreqIs::OneOrTwo, &[])?;
@@ -1562,9 +1596,13 @@ fn check_postings_enum_blocks(
         check_one_doc(&mut *docs_and_positions_enum, FreqIs::Eq(2), expected)?;
         // now reuse the positions
         let e1 = identity(&*docs_and_positions_enum);
+        let docs_and_positions_enum2 = terms_enum.postings(Some(docs_and_positions_enum), flag)?;
+        crate::index::base_index_file_format_test_case::assert_not_null(
+            docs_and_positions_enum2.is_some(),
+        );
+        case.assert_reused("foo", e1, identity_of(docs_and_positions_enum2.as_deref()));
         let mut docs_and_positions_enum2 =
-            terms_enum.postings(Some(docs_and_positions_enum), flag)?;
-        case.assert_reused("foo", e1, identity(&*docs_and_positions_enum2));
+            docs_and_positions_enum2.ok_or_else(LuceneError::null_pointer)?;
         check_one_doc(&mut *docs_and_positions_enum2, FreqIs::Eq(2), expected)?;
     }
     Ok(())
@@ -1581,7 +1619,9 @@ pub fn check_reuse(
     second_flags: i32,
     should_reuse: bool,
 ) -> Result<()> {
-    let postings1 = terms_enum.postings(None, first_flags)?;
+    let postings1 = terms_enum
+        .postings(None, first_flags)?
+        .ok_or_else(LuceneError::null_pointer)?;
     let p1 = identity(&*postings1);
     let class = class_name_of(&*postings1);
     let postings2 = terms_enum.postings(Some(postings1), second_flags)?;
@@ -1590,14 +1630,14 @@ pub fn check_reuse(
             &format!("Expected PostingsEnum {class} to be reused"),
             true,
             p1,
-            identity(&*postings2),
+            identity_of(postings2.as_deref()),
         );
     } else {
         assert_same(
             &format!("Expected PostingsEnum {class} to not be reused"),
             false,
             p1,
-            identity(&*postings2),
+            identity_of(postings2.as_deref()),
         );
     }
     Ok(())
@@ -1722,13 +1762,17 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
         let mut terms_enum = terms.iterator()?;
         let mut docs: Option<Box<dyn PostingsEnum>> = None;
         while terms_enum.next()?.is_some() {
-            let term = terms_enum.term()?;
+            let term = npe(terms_enum.term()?);
             // TODO: also sometimes ask for payloads/offsets?
             let no_positions = LuceneTestCase::random().next_boolean();
             let mut d = if no_positions {
-                terms_enum.postings(docs.take(), FREQS)?
+                terms_enum
+                    .postings(docs.take(), FREQS)?
+                    .ok_or_else(LuceneError::null_pointer)?
             } else {
-                terms_enum.postings(None, POSITIONS)?
+                terms_enum
+                    .postings(None, POSITIONS)?
+                    .ok_or_else(LuceneError::null_pointer)?
             };
             let mut doc_freq = 0;
             let mut total_term_freq: i64 = 0;
@@ -1776,9 +1820,13 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
                 // TODO: also sometimes ask for payloads/offsets?
                 let no_positions = LuceneTestCase::random().next_boolean();
                 let mut d = if no_positions {
-                    terms_enum.postings(docs.take(), FREQS)?
+                    terms_enum
+                        .postings(docs.take(), FREQS)?
+                        .ok_or_else(LuceneError::null_pointer)?
                 } else {
-                    terms_enum.postings(None, POSITIONS)?
+                    terms_enum
+                        .postings(None, POSITIONS)?
+                        .ok_or_else(LuceneError::null_pointer)?
                 };
 
                 let mut doc_freq = 0;
@@ -1822,7 +1870,7 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
             ));
             let status = terms_enum.seek_ceil(&term)?;
             if status == SeekStatus::NOT_FOUND {
-                Assert::assert_true(term < terms_enum.term()?);
+                Assert::assert_true(term < npe(terms_enum.term()?));
             }
         }
         Ok(())

@@ -501,7 +501,7 @@ impl TermsEnum for BloomFilteredTermsEnum {
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.with_delegate(|d| d.term())
     }
 
@@ -521,7 +521,7 @@ impl TermsEnum for BloomFilteredTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.delegate()?.postings(reuse, flags)
     }
 
@@ -633,7 +633,9 @@ impl FieldsConsumer for BloomFilteredFieldsConsumer<'_> {
                     }
                 };
                 // Make sure there's at least one doc for this term:
-                let mut pe = terms_enum.postings(postings_enum.take(), POSTINGS_ENUM_NONE)?;
+                let mut pe = terms_enum
+                    .postings(postings_enum.take(), POSTINGS_ENUM_NONE)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 if pe.next_doc()? != NO_MORE_DOCS {
                     self.bloom_filters[index].1.add_value(&term);
                 }

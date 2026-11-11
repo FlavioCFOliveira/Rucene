@@ -1972,10 +1972,16 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
 
             // seekCeil()
             assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("ha!"))?);
-            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(1, terms_enum.ord()?);
             assert_seek_status(SeekStatus::FOUND, terms_enum.seek_ceil(&nbr("beer"))?);
-            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "beer".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(0, terms_enum.ord()?);
             assert_seek_status(SeekStatus::END, terms_enum.seek_ceil(&nbr("zzz"))?);
             assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("aba"))?);
@@ -1983,29 +1989,44 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
 
             // seekExact()
             Assert::assert_true(terms_enum.seek_exact(&nbr("beer"))?);
-            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "beer".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(0, terms_enum.ord()?);
             Assert::assert_true(terms_enum.seek_exact(&nbr("hello"))?);
             Assert::assert_equals_str(
                 Some(&default_codec_name()),
                 Some("hello"),
-                Some(&terms_enum.term()?.utf8_to_string()?),
+                Some(&npe(terms_enum.term()?).utf8_to_string()?),
             );
             aeq(1, terms_enum.ord()?);
             Assert::assert_true(terms_enum.seek_exact(&nbr("world"))?);
-            Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "world".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(2, terms_enum.ord()?);
             Assert::assert_false(terms_enum.seek_exact(&nbr("bogus"))?);
 
             // seek(ord)
             terms_enum.seek_ord(0)?;
-            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "beer".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(0, terms_enum.ord()?);
             terms_enum.seek_ord(1)?;
-            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(1, terms_enum.ord()?);
             terms_enum.seek_ord(2)?;
-            Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "world".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(2, terms_enum.ord()?);
 
             // NORMAL automaton
@@ -3250,34 +3271,58 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
 
             // seekCeil()
             assert_seek_status(SeekStatus::NOT_FOUND, terms_enum.seek_ceil(&nbr("ha!"))?);
-            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(1, terms_enum.ord()?);
             assert_seek_status(SeekStatus::FOUND, terms_enum.seek_ceil(&nbr("beer"))?);
-            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "beer".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(0, terms_enum.ord()?);
             assert_seek_status(SeekStatus::END, terms_enum.seek_ceil(&nbr("zzz"))?);
 
             // seekExact()
             Assert::assert_true(terms_enum.seek_exact(&nbr("beer"))?);
-            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "beer".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(0, terms_enum.ord()?);
             Assert::assert_true(terms_enum.seek_exact(&nbr("hello"))?);
-            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(1, terms_enum.ord()?);
             Assert::assert_true(terms_enum.seek_exact(&nbr("world"))?);
-            Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "world".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(2, terms_enum.ord()?);
             Assert::assert_false(terms_enum.seek_exact(&nbr("bogus"))?);
 
             // seek(ord)
             terms_enum.seek_ord(0)?;
-            Assert::assert_equals("beer".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "beer".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(0, terms_enum.ord()?);
             terms_enum.seek_ord(1)?;
-            Assert::assert_equals("hello".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "hello".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(1, terms_enum.ord()?);
             terms_enum.seek_ord(2)?;
-            Assert::assert_equals("world".to_string(), terms_enum.term()?.utf8_to_string()?);
+            Assert::assert_equals(
+                "world".to_string(),
+                npe(terms_enum.term()?).utf8_to_string()?,
+            );
             aeq(2, terms_enum.ord()?);
 
             // NORMAL automaton
@@ -4389,8 +4434,8 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         term2.copy_ref(&npe(enum2.next()?));
         term1.copy_ref(&npe(enum1.next()?));
 
-        Assert::assert_equals(term1.get(), enum1.term()?);
-        Assert::assert_equals(term2.get(), enum2.term()?);
+        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?);
+        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?);
 
         // Same for seekCeil
         let mut enum1 = dv()?.terms_enum()?;
@@ -4403,10 +4448,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         seek_term.append_ref(&terms[0]);
         seek_term.append(0);
         enum1.seek_ceil(&seek_term.get())?;
-        term1.copy_ref(&enum1.term()?);
+        term1.copy_ref(&npe(enum1.term()?));
 
-        Assert::assert_equals(term1.get(), enum1.term()?);
-        Assert::assert_equals(term2.get(), enum2.term()?);
+        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?);
+        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?);
 
         // Same for seekCeil on an exact value
         let mut enum1 = dv()?.terms_enum()?;
@@ -4416,10 +4461,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
 
         term2.copy_ref(&npe(enum2.next()?));
         enum1.seek_ceil(&terms[1])?;
-        term1.copy_ref(&enum1.term()?);
+        term1.copy_ref(&npe(enum1.term()?));
 
-        Assert::assert_equals(term1.get(), enum1.term()?);
-        Assert::assert_equals(term2.get(), enum2.term()?);
+        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?);
+        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?);
 
         // Same for seekExact
         let mut enum1 = dv()?.terms_enum()?;
@@ -4430,7 +4475,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         term2.copy_ref(&npe(enum2.next()?));
         let found = enum1.seek_exact(&terms[1])?;
         Assert::assert_true(found);
-        term1.copy_ref(&enum1.term()?);
+        term1.copy_ref(&npe(enum1.term()?));
 
         // Same for seek by ord
         let mut enum1 = dv()?.terms_enum()?;
@@ -4440,10 +4485,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
 
         term2.copy_ref(&npe(enum2.next()?));
         enum1.seek_ord(1)?;
-        term1.copy_ref(&enum1.term()?);
+        term1.copy_ref(&npe(enum1.term()?));
 
-        Assert::assert_equals(term1.get(), enum1.term()?);
-        Assert::assert_equals(term2.get(), enum2.term()?);
+        Assert::assert_equals_nullable(Some(term1.get()), enum1.term()?);
+        Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?);
         Ok(())
     }
 

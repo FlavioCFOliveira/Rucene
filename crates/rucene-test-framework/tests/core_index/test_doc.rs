@@ -300,10 +300,18 @@ fn print_segment(out: &mut String, si: &SegmentCommitInfo) -> Result<()> {
         let terms = terms.expect("checked by assertNotNull");
         let mut tis = terms.iterator()?;
         while tis.next()?.is_some() {
-            let _ = write!(out, "  term={}:{}", field_info.name, tis.term()?);
+            let _ = write!(
+                out,
+                "  term={}:{}",
+                field_info.name,
+                tis.term()?
+                    .map_or_else(|| "null".to_string(), |t| t.to_string())
+            );
             let _ = writeln!(out, "    DF={}", tis.doc_freq()?);
 
-            let mut positions = tis.postings(None, POSTINGS_ENUM_POSITIONS)?;
+            let mut positions = tis
+                .postings(None, POSTINGS_ENUM_POSITIONS)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
 
             let live_docs = reader.get_live_docs();
             while positions.next_doc()? != NO_MORE_DOCS {

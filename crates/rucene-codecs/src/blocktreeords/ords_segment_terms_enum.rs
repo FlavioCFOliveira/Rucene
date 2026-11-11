@@ -919,9 +919,9 @@ impl TermsEnum for OrdsSegmentTermsEnum {
         }
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         java_assert!(!self.eof);
-        Ok(BytesRef::new(self.term.get().to_vec()))
+        Ok(Some(BytesRef::new(self.term.get().to_vec())))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -946,14 +946,16 @@ impl TermsEnum for OrdsSegmentTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         java_assert!(!self.eof);
         self.decode_meta_data()?;
         let state = self.cur().state;
-        self.fr
-            .parent
-            .postings_reader
-            .postings(&self.fr.data.field_info, &state, reuse, flags)
+        Ok(Some(self.fr.parent.postings_reader.postings(
+            &self.fr.data.field_info,
+            &state,
+            reuse,
+            flags,
+        )?))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {

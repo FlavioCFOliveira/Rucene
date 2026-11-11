@@ -132,7 +132,7 @@ fn rucene_dump(path: &Path) -> String {
         };
         let mut te = terms.iterator().unwrap();
         while let Some(text) = te.next().unwrap() {
-            let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+            let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
             let mut d = pe.next_doc().unwrap();
             while d != NO_MORE_DOCS {
                 let id = stored_id(stored.as_ref(), ctx.doc_base() + d);
@@ -161,7 +161,7 @@ fn rucene_dump(path: &Path) -> String {
         .unwrap();
         let mut te = terms.iterator().unwrap();
         while let Some(text) = te.next().unwrap() {
-            let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+            let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
             pe.next_doc().unwrap();
             writeln!(out, " {}{}", hex(&text), positions(&mut *pe)).unwrap();
         }

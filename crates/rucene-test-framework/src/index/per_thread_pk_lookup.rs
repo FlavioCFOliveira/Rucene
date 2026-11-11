@@ -153,7 +153,11 @@ impl PerThreadPKLookup {
             if terms_enum.seek_exact(id)? {
                 let mut slot = self.postings_enums[seg].borrow_mut();
                 let reuse = slot.take();
-                let postings_enum = slot.insert(terms_enum.postings(reuse, 0)?);
+                let postings_enum = slot.insert(
+                    terms_enum
+                        .postings(reuse, 0)?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+                );
                 loop {
                     let doc_id = postings_enum.next_doc()?;
                     if doc_id == NO_MORE_DOCS {

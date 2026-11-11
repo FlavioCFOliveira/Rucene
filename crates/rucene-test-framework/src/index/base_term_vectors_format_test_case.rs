@@ -887,20 +887,22 @@ fn assert_tk_equals(
     for sorted_term in &sorted_terms {
         let next_term = terms_enum.next()?;
         Assert::assert_equals(Boxed(Some(sorted_term.clone())), Boxed(next_term));
-        Assert::assert_equals(sorted_term.clone(), terms_enum.term()?);
+        Assert::assert_equals_nullable(Some(sorted_term.clone()), terms_enum.term()?);
         Assert::assert_equals(1, terms_enum.doc_freq()?);
 
         let postings_enum = terms_enum.postings(None, FREQS)?;
         let reuse = if random().next_boolean() {
             None
         } else {
-            Some(postings_enum)
+            postings_enum
         };
-        let mut postings_enum = terms_enum.postings(reuse, FREQS)?;
+        let postings_enum = terms_enum.postings(reuse, FREQS)?;
+        assert_not_null(postings_enum.is_some());
+        let mut postings_enum = npe(postings_enum);
         Assert::assert_equals(0, postings_enum.next_doc()?);
         Assert::assert_equals(0, postings_enum.doc_id());
         Assert::assert_equals(
-            freq_of(&terms_enum.term()?)?,
+            freq_of(&npe(terms_enum.term()?))?,
             Boxed(Some(postings_enum.freq()?)),
         );
         Assert::assert_equals(NO_MORE_DOCS, postings_enum.next_doc()?);
@@ -910,13 +912,14 @@ fn assert_tk_equals(
         let reuse = if random().next_boolean() {
             None
         } else {
-            Some(docs_and_positions_enum)
+            docs_and_positions_enum
         };
         let mut docs_and_positions_enum = terms_enum.postings(reuse, POSITIONS)?;
         if terms.has_positions() || terms.has_offsets() {
+            let docs_and_positions_enum = npe(docs_and_positions_enum.as_mut());
             Assert::assert_equals(0, docs_and_positions_enum.next_doc()?);
             let freq = docs_and_positions_enum.freq()?;
-            Assert::assert_equals(freq_of(&terms_enum.term()?)?, Boxed(Some(freq)));
+            Assert::assert_equals(freq_of(&npe(terms_enum.term()?))?, Boxed(Some(freq)));
             let current = terms_enum.term()?;
             for _ in 0..freq {
                 let position = docs_and_positions_enum.next_position()?;
@@ -933,13 +936,14 @@ fn assert_tk_equals(
                 };
                 if terms.has_positions() {
                     let found_position = indexes.iter().any(|&index| {
-                        tk.term_bytes[index] == current && tk.positions[index] == position
+                        Some(&tk.term_bytes[index]) == current.as_ref()
+                            && tk.positions[index] == position
                     });
                     Assert::assert_true(found_position);
                 }
                 if terms.has_offsets() {
                     let found_offset = indexes.iter().any(|&index| {
-                        tk.term_bytes[index] == current
+                        Some(&tk.term_bytes[index]) == current.as_ref()
                             && tk.start_offsets[index] == docs_and_positions_enum.start_offset()
                             && tk.end_offsets[index] == docs_and_positions_enum.end_offset()
                     });
@@ -948,7 +952,7 @@ fn assert_tk_equals(
                 if terms.has_payloads() {
                     let payload = docs_and_positions_enum.get_payload()?;
                     let found_payload = indexes.iter().any(|&index| {
-                        tk.term_bytes[index] == current
+                        Some(&tk.term_bytes[index]) == current.as_ref()
                             && payload_equals(tk.payloads[index].as_ref(), payload)
                     });
                     Assert::assert_true(found_payload);
@@ -961,7 +965,7 @@ fn assert_tk_equals(
             );
             Assert::assert_equals(NO_MORE_DOCS, docs_and_positions_enum.next_doc()?);
         }
-        DOCS_ENUM.with(|slot| *slot.borrow_mut() = Some(docs_and_positions_enum));
+        DOCS_ENUM.with(|slot| *slot.borrow_mut() = docs_and_positions_enum);
     }
     assert_null_msg(None, terms_enum.next()?.map(|t| t.to_string()));
     for _ in 0..5 {
@@ -1190,20 +1194,28 @@ fn postings_enum_test(
         Assert::assert_equals(Boxed(Some(bar)), Boxed(terms_enum.next()?));
 
         // simple use (FREQS)
-        let mut postings = terms_enum.postings(None, FREQS)?;
+        let mut postings = terms_enum
+            .postings(None, FREQS)?
+            .ok_or_else(LuceneError::null_pointer)?;
         check_one_doc(&mut *postings, FreqIs::Eq(2), &[])?;
 
         // termsenum reuse (FREQS)
-        let mut postings2 = terms_enum.postings(Some(postings), FREQS)?;
+        let postings2 = terms_enum.postings(Some(postings), FREQS)?;
+        assert_not_null(postings2.is_some());
+        let mut postings2 = postings2.ok_or_else(LuceneError::null_pointer)?;
         // and it had better work
         check_one_doc(&mut *postings2, FreqIs::Eq(2), &[])?;
 
         // asking for docs only: ok
-        let mut docs_only = terms_enum.postings(None, NONE)?;
+        let mut docs_only = terms_enum
+            .postings(None, NONE)?
+            .ok_or_else(LuceneError::null_pointer)?;
         // we don't define what it is, but if its something else, we should look into it?
         check_one_doc(&mut *docs_only, FreqIs::OneOrTwo, &[])?;
         // reuse that too
-        let mut docs_only2 = terms_enum.postings(Some(docs_only), NONE)?;
+        let docs_only2 = terms_enum.postings(Some(docs_only), NONE)?;
+        assert_not_null(docs_only2.is_some());
+        let mut docs_only2 = docs_only2.ok_or_else(LuceneError::null_pointer)?;
         // and it had better work
         // we don't define what it is, but if its something else, we should look into it?
         check_one_doc(&mut *docs_only2, FreqIs::OneOrTwo, &[])?;
@@ -1216,24 +1228,34 @@ fn postings_enum_test(
                 } else {
                     FreqIs::Unchecked
                 };
-                let mut postings = terms_enum.postings(None, flag)?;
+                let mut postings = terms_enum
+                    .postings(None, flag)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 check_one_doc(&mut *postings, freq, &[])?;
                 // reuse that too
-                let mut postings2 = terms_enum.postings(Some(postings), flag)?;
+                let postings2 = terms_enum.postings(Some(postings), flag)?;
+                assert_not_null(postings2.is_some());
+                let mut postings2 = postings2.ok_or_else(LuceneError::null_pointer)?;
                 // and it had better work
                 check_one_doc(&mut *postings2, freq, &[])?;
             }
         } else {
             for flag in [POSITIONS, PAYLOADS, OFFSETS, ALL] {
-                let mut docs_and_positions_enum = terms_enum.postings(None, flag)?;
+                let docs_and_positions_enum = terms_enum.postings(None, flag)?;
+                if flag != POSITIONS {
+                    assert_not_null(docs_and_positions_enum.is_some());
+                }
+                let mut docs_and_positions_enum =
+                    docs_and_positions_enum.ok_or_else(LuceneError::null_pointer)?;
                 check_one_doc(
                     &mut *docs_and_positions_enum,
                     FreqIs::Eq(2),
                     &positions(flag),
                 )?;
                 // now reuse
-                let mut docs_and_positions_enum2 =
-                    terms_enum.postings(Some(docs_and_positions_enum), flag)?;
+                let mut docs_and_positions_enum2 = terms_enum
+                    .postings(Some(docs_and_positions_enum), flag)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 check_one_doc(
                     &mut *docs_and_positions_enum2,
                     FreqIs::Eq(2),

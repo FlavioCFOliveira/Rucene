@@ -998,7 +998,7 @@ impl SimpleFieldComparatorImpl for FeatureComparator {
         };
         let mut terms_enum = terms.iterator()?;
         if terms_enum.seek_exact(&self.feature_name)? {
-            return Ok(Some(terms_enum.postings(None, POSTINGS_ENUM_FREQS)?));
+            return terms_enum.postings(None, POSTINGS_ENUM_FREQS);
         }
         Ok(None)
     }
@@ -1099,7 +1099,9 @@ impl DoubleValuesSource for FeatureDoubleValuesSource {
         if !terms_enum.seek_exact(&feature)? {
             return Ok(Box::new(EmptyDoubleValues));
         }
-        let postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
+        let postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok(Box::new(FeatureDoubleValues { postings }))
     }
 
@@ -1224,7 +1226,9 @@ impl Weight for FeatureWeight {
                 Vec::new(),
             ));
         }
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(LuceneError::null_pointer)?;
         if postings.advance(doc)? != doc {
             return Ok(Explanation::no_match(
                 format!("{desc}. Feature {} isn't set.", self.query.feature),

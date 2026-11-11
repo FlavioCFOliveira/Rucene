@@ -487,7 +487,9 @@ impl CombinedFieldWeightState {
             let mut terms_enum = terms.iterator()?;
             terms_enum.seek_term_state(term.bytes(), &*state)?;
             let postings = SharedPostings::new(Box::new(crate::index::SlowImpactsEnum::new(
-                terms_enum.postings(None, POSTINGS_ENUM_FREQS)?,
+                terms_enum
+                    .postings(None, POSTINGS_ENUM_FREQS)?
+                    .ok_or_else(LuceneError::null_pointer)?,
             )));
             cost += DocIdSetIterator::cost(&postings);
             iterators.push(postings);

@@ -1693,7 +1693,7 @@ impl TermsEnum for BitsFilteredTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
 
@@ -1713,7 +1713,7 @@ impl TermsEnum for BitsFilteredTermsEnum {
         &mut self,
         reuse: Option<Box<dyn crate::index::postings_enum::PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn crate::index::postings_enum::PostingsEnum>> {
+    ) -> Result<Option<Box<dyn crate::index::postings_enum::PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
 

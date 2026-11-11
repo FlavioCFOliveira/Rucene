@@ -571,7 +571,13 @@ fn test_real_terms() -> Result<()> {
                         }
                         if terms_enum.next()?.is_some() {
                             if verbose() {
-                                println!("  term={}", terms_enum.term()?.utf8_to_string()?);
+                                println!(
+                                    "  term={}",
+                                    terms_enum
+                                        .term()?
+                                        .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                                        .utf8_to_string()?
+                                );
                             }
                             assert_not_null(&fst_enum.next()?.map(|_| ()));
                             assert_same(terms_enum.as_mut(), &fst_enum, store_ord)?;
@@ -605,7 +611,20 @@ fn assert_same(
     fst_enum: &BytesRefFSTEnum<'_, PositiveIntOutputs>,
     store_ord: bool,
 ) -> Result<()> {
-    let term = terms_enum.term()?;
+    let Some(term) = terms_enum.term()? else {
+        // `assertNull(fstEnum.current())`: Java's `current()` returns the
+        // enum's one `result` object, which is never `null`, so the
+        // assertion fails, rendering it with `Object.toString()`.
+        let current = fst_enum.current();
+        Assert::fail(&format!(
+            "expected null, but was:<{}>",
+            rucene::index::index_reader::java_object_to_string(
+                "org.apache.lucene.util.fst.BytesRefFSTEnum$InputOutput",
+                current.input,
+            )
+        ));
+    };
+    // `assertNotNull(fstEnum.current())` holds: `current()` is never `null`.
     let current = fst_enum.current();
     assert_equals_msg(
         Some(&format!(
@@ -892,7 +911,9 @@ fn test_primary_keys() -> Result<()> {
 
             if let Some(next_id) = &next_id {
                 assert_equals(&SeekStatus::NOT_FOUND, &status);
-                let term = terms_enum.term()?;
+                let term = terms_enum
+                    .term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 assert_equals_msg(
                     Some(&format!(
                         "expected={next_id} actual={}",

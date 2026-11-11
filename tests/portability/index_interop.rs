@@ -503,7 +503,7 @@ fn print_term_vectors(out: &mut String, reader: &Arc<dyn IndexReader>, doc: i32)
                 utf8(&text),
                 te.total_term_freq().unwrap()
             );
-            let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+            let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
             pe.next_doc().unwrap();
             for _ in 0..pe.freq().unwrap() {
                 let pos = pe.next_position().unwrap();
@@ -540,7 +540,7 @@ fn print_postings(out: &mut String, leaves: &[Arc<LeafReaderContext>], field: &s
         if !te.seek_exact(&bytes(text)).unwrap() {
             continue;
         }
-        let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+        let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
         let mut d = pe.next_doc().unwrap();
         while d != NO_MORE_DOCS {
             let freq = pe.freq().unwrap();

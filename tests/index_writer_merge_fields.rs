@@ -588,6 +588,7 @@ fn assert_every_term_and_document(dir: &Arc<dyn Directory>, case: Case) -> Vec<i
     assert_eq!(terms_enum.doc_freq().unwrap(), live.len() as i32);
     let mut postings = terms_enum
         .postings(None, rucene::index::POSTINGS_ENUM_POSITIONS)
+        .unwrap()
         .unwrap();
     for (doc, &i) in ids.iter().enumerate() {
         assert_eq!(postings.next_doc().unwrap(), doc as i32);
@@ -946,7 +947,7 @@ fn postings_of_no(
     let terms = leaf.terms("del").unwrap().unwrap();
     let mut terms_enum = terms.iterator().unwrap();
     assert!(terms_enum.seek_exact(&bytes("no")).unwrap());
-    terms_enum.postings(None, flags).unwrap()
+    terms_enum.postings(None, flags).unwrap().unwrap()
 }
 
 /// A bit-set postings block whose words no longer hold the documents its
@@ -1045,6 +1046,7 @@ fn advance_into_a_bit_set_block_reads_each_documents_frequency() {
     assert!(terms_enum.seek_exact(&bytes("no")).unwrap());
     let mut postings = terms_enum
         .postings(None, rucene::index::POSTINGS_ENUM_FREQS)
+        .unwrap()
         .unwrap();
     for target in [10, 77, 150, 251, 299, 700, 1500, 2999] {
         let doc = postings.advance(target).unwrap();

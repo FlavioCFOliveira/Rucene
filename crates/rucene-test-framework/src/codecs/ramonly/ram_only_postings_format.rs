@@ -608,7 +608,9 @@ fn write_field(
             total_term_freq: 0,
             docs: Vec::new(),
         };
-        let mut pe = terms_enum.postings(postings_enum.take(), enum_flags)?;
+        let mut pe = terms_enum
+            .postings(postings_enum.take(), enum_flags)?
+            .ok_or_else(LuceneError::null_pointer)?;
 
         let mut doc_freq = 0i32;
         let mut total_term_freq = 0i64;
@@ -791,9 +793,9 @@ impl TermsEnum for RAMTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         // TODO: reuse BytesRef
-        self.current_bytes()
+        self.current_bytes().map(Some)
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
@@ -820,13 +822,16 @@ impl TermsEnum for RAMTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        Ok(Box::new(RAMDocsEnum::new(self.current_term().cloned())))
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        Ok(Some(Box::new(RAMDocsEnum::new(
+            self.current_term().cloned(),
+        ))))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         Ok(Box::new(SlowImpactsEnum::new(
-            self.postings(None, POSTINGS_ENUM_FREQS)?,
+            self.postings(None, POSTINGS_ENUM_FREQS)?
+                .ok_or_else(LuceneError::null_pointer)?,
         )))
     }
 }

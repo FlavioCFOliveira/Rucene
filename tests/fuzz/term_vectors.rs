@@ -365,7 +365,7 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) -> u
                 };
                 while matches!(iterator.next(), Ok(Some(_))) {
                     let _ = iterator.total_term_freq();
-                    let Ok(mut postings) = iterator.postings(None, POSTINGS_ENUM_ALL) else {
+                    let Ok(Some(mut postings)) = iterator.postings(None, POSTINGS_ENUM_ALL) else {
                         continue;
                     };
                     if postings.next_doc().is_err() {

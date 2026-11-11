@@ -1661,7 +1661,7 @@ impl<'a> TermDocsIterator<'a> {
                 std::cmp::Ordering::Greater => match terms_enum.seek_ceil(term)? {
                     SeekStatus::FOUND => return self.get_docs(),
                     SeekStatus::NOT_FOUND => {
-                        self.reader_term = Some(terms_enum.term()?);
+                        self.reader_term = terms_enum.term()?;
                         return Ok(false);
                     }
                     SeekStatus::END => {
@@ -1685,7 +1685,11 @@ impl<'a> TermDocsIterator<'a> {
             .as_mut()
             .expect("INVARIANT: a term was positioned, so the enum exists");
         let reuse = self.postings_enum.take();
-        self.postings_enum = Some(terms_enum.postings(reuse, POSTINGS_ENUM_NONE)?);
+        self.postings_enum = Some(
+            terms_enum
+                .postings(reuse, POSTINGS_ENUM_NONE)?
+                .ok_or_else(LuceneError::null_pointer)?,
+        );
         Ok(true)
     }
 

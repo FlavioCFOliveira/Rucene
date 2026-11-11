@@ -825,7 +825,7 @@ fn assert_equals_terms_enum(
     while let Some(r#ref) = expected.next()? {
         Assert::assert_true(Some(r#ref) == actual.next()?);
         Assert::assert_equals(expected.ord()?, actual.ord()?);
-        Assert::assert_true(expected.term()? == actual.term()?);
+        Assert::assert_equals_nullable(expected.term()?, actual.term()?);
     }
     Assert::assert_true(actual.next()?.is_none());
 
@@ -834,23 +834,36 @@ fn assert_equals_terms_enum(
         expected.seek_ord(i)?;
         actual.seek_ord(i)?;
         Assert::assert_equals(expected.ord()?, actual.ord()?);
-        Assert::assert_true(expected.term()? == actual.term()?);
+        Assert::assert_equals_nullable(expected.term()?, actual.term()?);
     }
 
     // sequential seekExact(BytesRef) through all terms
     for i in 0..num_ords {
         expected.seek_ord(i)?;
-        Assert::assert_true(actual.seek_exact(&expected.term()?)?);
+        Assert::assert_true(
+            actual.seek_exact(
+                &expected
+                    .term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+            )?,
+        );
         Assert::assert_equals(expected.ord()?, actual.ord()?);
-        Assert::assert_true(expected.term()? == actual.term()?);
+        Assert::assert_equals_nullable(expected.term()?, actual.term()?);
     }
 
     // sequential seekCeil(BytesRef) through all terms
     for i in 0..num_ords {
         expected.seek_ord(i)?;
-        Assert::assert_true(SeekStatus::FOUND == actual.seek_ceil(&expected.term()?)?);
+        Assert::assert_true(
+            SeekStatus::FOUND
+                == actual.seek_ceil(
+                    &expected
+                        .term()?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+                )?,
+        );
         Assert::assert_equals(expected.ord()?, actual.ord()?);
-        Assert::assert_true(expected.term()? == actual.term()?);
+        Assert::assert_equals_nullable(expected.term()?, actual.term()?);
     }
 
     // random seekExact(ord)
@@ -859,16 +872,20 @@ fn assert_equals_terms_enum(
         expected.seek_ord(random_ord)?;
         actual.seek_ord(random_ord)?;
         Assert::assert_equals(expected.ord()?, actual.ord()?);
-        Assert::assert_true(expected.term()? == actual.term()?);
+        Assert::assert_equals_nullable(expected.term()?, actual.term()?);
     }
 
     // random seekExact(BytesRef)
     for _ in 0..num_ords {
         let random_ord = TestUtil::next_long(&*random(), 0, num_ords - 1);
         expected.seek_ord(random_ord)?;
-        actual.seek_exact(&expected.term()?)?;
+        actual.seek_exact(
+            &expected
+                .term()?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+        )?;
         Assert::assert_equals(expected.ord()?, actual.ord()?);
-        Assert::assert_true(expected.term()? == actual.term()?);
+        Assert::assert_equals_nullable(expected.term()?, actual.term()?);
     }
 
     // random seekCeil(BytesRef)
@@ -878,7 +895,7 @@ fn assert_equals_terms_enum(
         Assert::assert_true(expected_status == actual.seek_ceil(&target)?);
         if expected_status != SeekStatus::END {
             Assert::assert_equals(expected.ord()?, actual.ord()?);
-            Assert::assert_true(expected.term()? == actual.term()?);
+            Assert::assert_equals_nullable(expected.term()?, actual.term()?);
         }
     }
     Ok(())
@@ -1492,20 +1509,20 @@ fn do_test_terms_dict_lookup_ord(te: &mut dyn TermsEnum) -> Result<()> {
     // iterate in order
     for (i, term) in terms.iter().enumerate() {
         te.seek_ord(i as i64)?;
-        Assert::assert_true(*term == te.term()?);
+        Assert::assert_equals_nullable(Some(term.clone()), te.term()?);
     }
 
     // iterate in reverse order
     for i in (0..terms.len()).rev() {
         te.seek_ord(i as i64)?;
-        Assert::assert_true(terms[i] == te.term()?);
+        Assert::assert_equals_nullable(Some(terms[i].clone()), te.term()?);
     }
 
     // iterate in forward order with random gaps
     let mut i = random().next_int_bound(5) as usize;
     while i < terms.len() {
         te.seek_ord(i as i64)?;
-        Assert::assert_true(terms[i] == te.term()?);
+        Assert::assert_equals_nullable(Some(terms[i].clone()), te.term()?);
         i += random().next_int_bound(5) as usize;
     }
     Ok(())
@@ -1597,7 +1614,7 @@ fn test_terms_enum_consistency(_suite: &CompressingDocValuesSuite) -> Result<()>
     // ... and before any other term in the index
     Assert::assert_equals(0, terms_enum.ord()?);
 
-    Assert::assert_true(bytes(&string_supplier(0)) == terms_enum.term()?);
+    Assert::assert_equals_nullable(Some(bytes(&string_supplier(0))), terms_enum.term()?);
     // read more than one block of terms to trigger next block decompression
     for i in 1..num_terms {
         Assert::assert_true(Some(bytes(&string_supplier(i))) == terms_enum.next()?);

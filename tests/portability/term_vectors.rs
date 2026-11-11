@@ -891,7 +891,8 @@ fn dump(reader: &dyn TermVectorsReader, max_doc: i32) -> Vec<String> {
                 let freq = iterator.total_term_freq().expect("total term freq") as i32;
                 let mut postings = iterator
                     .postings(None, POSTINGS_ENUM_ALL)
-                    .expect("postings");
+                    .expect("postings")
+                    .unwrap();
                 postings.next_doc().expect("next doc");
                 let mut positions = Vec::new();
                 let mut offsets = Vec::new();

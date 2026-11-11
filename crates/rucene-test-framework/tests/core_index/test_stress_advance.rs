@@ -102,7 +102,8 @@ fn test_stress_advance() -> Result<()> {
                 &SeekStatus::FOUND,
                 &te.seek_ceil(&BytesRef::from_char_sequence("a"))?,
             );
-            let mut docs = TestUtil::docs_of(&*random(), &mut *te, de.take(), POSTINGS_ENUM_NONE)?;
+            let mut docs = TestUtil::docs_of(&*random(), &mut *te, de.take(), POSTINGS_ENUM_NONE)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             test_one(&mut *docs, &a_doc_ids)?;
             de = Some(docs);
 
@@ -110,7 +111,8 @@ fn test_stress_advance() -> Result<()> {
                 &SeekStatus::FOUND,
                 &te.seek_ceil(&BytesRef::from_char_sequence("b"))?,
             );
-            let mut docs = TestUtil::docs_of(&*random(), &mut *te, de.take(), POSTINGS_ENUM_NONE)?;
+            let mut docs = TestUtil::docs_of(&*random(), &mut *te, de.take(), POSTINGS_ENUM_NONE)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             test_one(&mut *docs, &b_doc_ids)?;
             de = Some(docs);
         }

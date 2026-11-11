@@ -418,27 +418,36 @@ fn misuses(nocfs: &Path, scratch: &Path) -> Vec<(String, (String, String))> {
     misuse("pe.freq before nextDoc", &|| {
         positioned(leaf, "body")?
             .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
             .freq()
             .map(drop)
     });
     misuse("pe.advance backwards", &|| {
-        let mut pe = positioned(leaf, "body")?.postings(None, POSTINGS_ENUM_FREQS)?;
+        let mut pe = positioned(leaf, "body")?
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         pe.next_doc()?;
         let doc = pe.doc_id();
         pe.advance(doc).map(drop)
     });
     misuse("pe.nextDoc after end", &|| {
-        let mut pe = positioned(leaf, "body")?.postings(None, POSTINGS_ENUM_FREQS)?;
+        let mut pe = positioned(leaf, "body")?
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         while pe.next_doc()? != NO_MORE_DOCS {}
         pe.next_doc().map(drop)
     });
     misuse("pe.advance after end", &|| {
-        let mut pe = positioned(leaf, "body")?.postings(None, POSTINGS_ENUM_FREQS)?;
+        let mut pe = positioned(leaf, "body")?
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         while pe.next_doc()? != NO_MORE_DOCS {}
         pe.advance(1).map(drop)
     });
     misuse("pe.nextPosition beyond freq", &|| {
-        let mut pe = positioned(leaf, "body")?.postings(None, POSTINGS_ENUM_POSITIONS)?;
+        let mut pe = positioned(leaf, "body")?
+            .postings(None, POSTINGS_ENUM_POSITIONS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         pe.next_doc()?;
         let freq = pe.freq()?;
         for _ in 0..freq {
@@ -449,32 +458,43 @@ fn misuses(nocfs: &Path, scratch: &Path) -> Vec<(String, (String, String))> {
     misuse("pe.nextPosition before nextDoc", &|| {
         positioned(leaf, "body")?
             .postings(None, POSTINGS_ENUM_POSITIONS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
             .next_position()
             .map(drop)
     });
     misuse("pe.getPayload before nextPosition", &|| {
-        let mut pe = positioned(leaf, "body")?.postings(None, POSTINGS_ENUM_ALL)?;
+        let mut pe = positioned(leaf, "body")?
+            .postings(None, POSTINGS_ENUM_ALL)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         pe.next_doc()?;
         pe.get_payload().map(drop)
     });
     misuse("pe.startOffset before nextPosition", &|| {
-        let mut pe = positioned(leaf, "body")?.postings(None, POSTINGS_ENUM_OFFSETS)?;
+        let mut pe = positioned(leaf, "body")?
+            .postings(None, POSTINGS_ENUM_OFFSETS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         pe.next_doc()?;
         pe.start_offset();
         Ok(())
     });
     misuse("pe.freq after end", &|| {
-        let mut pe = positioned(leaf, "body")?.postings(None, POSTINGS_ENUM_FREQS)?;
+        let mut pe = positioned(leaf, "body")?
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         while pe.next_doc()? != NO_MORE_DOCS {}
         pe.freq().map(drop)
     });
     misuse("pe.freq after reuse", &|| {
         let mut te = positioned(leaf, "body")?;
-        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS)?;
+        let mut pe = te
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         while pe.next_doc()? != NO_MORE_DOCS {}
         let before = &*pe as *const dyn rucene::index::PostingsEnum as *const ();
         te.next()?;
-        let reused = te.postings(Some(pe), POSTINGS_ENUM_FREQS)?;
+        let reused = te
+            .postings(Some(pe), POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         if &*reused as *const dyn rucene::index::PostingsEnum as *const () != before {
             return Err(LuceneError::illegal_state("not reused".to_string()));
         }
@@ -1661,7 +1681,7 @@ fn ram_only_trace(path: &Path) -> Vec<String> {
                     te.doc_freq().unwrap(),
                     te.total_term_freq().unwrap()
                 ));
-                let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+                let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
                 loop {
                     let d = pe.next_doc().unwrap();
                     if d == NO_MORE_DOCS {
@@ -1699,12 +1719,15 @@ fn ram_only_trace(path: &Path) -> Vec<String> {
                     hex(target.slice()),
                     probe(|| seek.seek_ceil(target).map(status))
                 ));
-                sb.push_str(&format!(":{}", probe(|| seek.term().map(|t| X(Some(t))))));
+                sb.push_str(&format!(":{}", probe(|| seek.term().map(X))));
                 sb.push_str(&format!(":{}", probe(|| seek.doc_freq())));
                 sb.push_str(&format!(":{}", probe(|| seek.total_term_freq())));
                 sb.push_str(&format!(
                     ":{}",
-                    probe(|| seek.postings(None, POSTINGS_ENUM_NONE)?.next_doc())
+                    probe(|| seek
+                        .postings(None, POSTINGS_ENUM_NONE)?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                        .next_doc())
                 ));
                 sb.push_str(&format!(":{}", probe(|| seek.next().map(X))));
             }
@@ -1720,7 +1743,7 @@ fn ram_only_trace(path: &Path) -> Vec<String> {
             }
             out.push(sb);
             let mut fresh = terms.iterator().unwrap();
-            let term = probe(|| fresh.term().map(|t| X(Some(t))));
+            let term = probe(|| fresh.term().map(X));
             let ord = probe(|| fresh.ord());
             let seek_ord = probe(|| fresh.seek_ord(0).map(|()| "null"));
             out.push(format!("  fresh term={term} ord={ord} seekOrd={seek_ord}"));
@@ -1827,7 +1850,9 @@ fn ram_only_matches_lucene() {
         let terms = leaves[0].leaf_reader().terms("rp")?.expect("rp has terms");
         let mut te = terms.iterator()?;
         te.next()?;
-        te.postings(None, POSTINGS_ENUM_FREQS)?.advance(1)?;
+        te.postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .advance(1)?;
         Ok(())
     });
     corpus.push(format!("advance\t{class}\t{message}"));

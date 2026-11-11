@@ -1181,7 +1181,9 @@ pub fn dump_leaf(
                 let mut te = terms.iterator()?;
                 while let Some(t) = te.next()? {
                     let mut sb = format!("   t {} ttf={} ", hex(t.slice()), te.total_term_freq()?);
-                    let mut pe = te.postings(None, POSTINGS_ENUM_ALL)?;
+                    let mut pe = te
+                        .postings(None, POSTINGS_ENUM_ALL)?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                     pe.next_doc()?;
                     positions(pe.as_mut(), &mut sb)?;
                     out.push(sb);
@@ -1236,7 +1238,9 @@ pub fn dump_terms(
             te.doc_freq()?,
             te.total_term_freq()?
         ));
-        let mut pe = te.postings(None, POSTINGS_ENUM_ALL)?;
+        let mut pe = te
+            .postings(None, POSTINGS_ENUM_ALL)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         let mut d = pe.next_doc()?;
         while d != NO_MORE_DOCS {
             let mut sb = format!("   d={d} ");
@@ -1244,7 +1248,9 @@ pub fn dump_terms(
             out.push(sb);
             d = pe.next_doc()?;
         }
-        let mut docs = te.postings(None, POSTINGS_ENUM_NONE)?;
+        let mut docs = te
+            .postings(None, POSTINGS_ENUM_NONE)?
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         let mut sb = "   docs".to_string();
         let mut d = docs.next_doc()?;
         while d != NO_MORE_DOCS {
@@ -1253,7 +1259,9 @@ pub fn dump_terms(
         }
         out.push(sb);
         if te.doc_freq()? > 8 {
-            let mut adv = te.postings(None, POSTINGS_ENUM_FREQS)?;
+            let mut adv = te
+                .postings(None, POSTINGS_ENUM_FREQS)?
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             let mut a = "   adv".to_string();
             let mut doc = -1;
             for target in ADVANCE_TARGETS {
@@ -1330,7 +1338,10 @@ pub fn dump_terms(
         if status != SeekStatus::END {
             sb.push_str(&format!(
                 ":{}:{}",
-                hex(probe.term()?.slice()),
+                hex(probe
+                    .term()?
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                    .slice()),
                 probe.doc_freq()?
             ));
         }
@@ -1970,7 +1981,9 @@ fn error_name(e: &rucene::error::LuceneError) -> String {
 }
 
 fn first_doc(te: &mut dyn rucene::index::TermsEnum) -> rucene::error::Result<i32> {
-    te.postings(None, POSTINGS_ENUM_NONE)?.next_doc()
+    te.postings(None, POSTINGS_ENUM_NONE)?
+        .ok_or_else(rucene::error::LuceneError::null_pointer)?
+        .next_doc()
 }
 
 /// `PostingsFormatOracle.enumTrace`, line for line.
@@ -2013,7 +2026,10 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                     // Appended piece by piece, as Java's `StringBuilder`
                     // chain leaves what precedes a call that throws.
                     sb.push_str(&format!(" {ord}="));
-                    sb.push_str(&hex(te.term()?.slice()));
+                    sb.push_str(&hex(te
+                        .term()?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                        .slice()));
                     sb.push('/');
                     sb.push_str(&te.doc_freq()?.to_string());
                     sb.push('/');
@@ -2052,7 +2068,10 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                 let step = (|sb: &mut String| -> Result<()> {
                     fresh.seek_term_state(&kept[k], states[k].as_ref())?;
                     sb.push(' ');
-                    sb.push_str(&hex(fresh.term()?.slice()));
+                    sb.push_str(&hex(fresh
+                        .term()?
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                        .slice()));
                     sb.push('/');
                     sb.push_str(&fresh.doc_freq()?.to_string());
                     sb.push('/');

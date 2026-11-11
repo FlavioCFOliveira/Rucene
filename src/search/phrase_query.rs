@@ -838,7 +838,10 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
             let postings: Box<dyn ImpactsEnum> = if self.score_mode == ScoreMode::TOP_SCORES {
                 te.impacts(flags)?
             } else {
-                Box::new(SlowImpactsEnum::new(te.postings(None, flags)?))
+                Box::new(SlowImpactsEnum::new(
+                    te.postings(None, flags)?
+                        .ok_or_else(LuceneError::null_pointer)?,
+                ))
             };
             postings_freqs.push(PostingsAndFreq::new(
                 SharedPostings::new(postings),
