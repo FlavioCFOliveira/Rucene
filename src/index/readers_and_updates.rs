@@ -1205,8 +1205,11 @@ impl PendingSoftDeletes {
 /// result in a `PendingDeletes` field. Rust has no implementation inheritance,
 /// so the two are held in an enum that dispatches to whichever is present.
 pub(crate) enum PendingDeletesKind {
-    Hard(PendingDeletes),
-    Soft(PendingSoftDeletes),
+    /// Both trackers are boxed: each holds a `SegmentCommitInfo`, and a
+    /// `PendingSoftDeletes` also embeds a whole `PendingDeletes` (its
+    /// `hardDeletes`), so the variants differ widely in size.
+    Hard(Box<PendingDeletes>),
+    Soft(Box<PendingSoftDeletes>),
 }
 
 impl std::fmt::Display for PendingDeletesKind {
@@ -1347,15 +1350,15 @@ impl LatestReaderDeletes for PendingDeletesKind {
 
     fn live_docs(&mut self) -> Option<Box<dyn Bits>> {
         match self {
-            Self::Hard(pd) => LatestReaderDeletes::live_docs(pd),
-            Self::Soft(pd) => LatestReaderDeletes::live_docs(pd),
+            Self::Hard(pd) => LatestReaderDeletes::live_docs(&mut **pd),
+            Self::Soft(pd) => LatestReaderDeletes::live_docs(&mut **pd),
         }
     }
 
     fn hard_live_docs(&mut self) -> Option<Box<dyn Bits>> {
         match self {
-            Self::Hard(pd) => LatestReaderDeletes::hard_live_docs(pd),
-            Self::Soft(pd) => LatestReaderDeletes::hard_live_docs(pd),
+            Self::Hard(pd) => LatestReaderDeletes::hard_live_docs(&mut **pd),
+            Self::Soft(pd) => LatestReaderDeletes::hard_live_docs(&mut **pd),
         }
     }
 
@@ -1439,8 +1442,10 @@ impl ReadersAndUpdates {
         soft_deletes_field: Option<&str>,
     ) -> Self {
         let pending_deletes = match soft_deletes_field {
-            Some(field) => PendingDeletesKind::Soft(PendingSoftDeletes::new(field, &info)),
-            None => PendingDeletesKind::Hard(PendingDeletes::new(&info)),
+            Some(field) => {
+                PendingDeletesKind::Soft(Box::new(PendingSoftDeletes::new(field, &info)))
+            }
+            None => PendingDeletesKind::Hard(Box::new(PendingDeletes::new(&info))),
         };
         Self {
             ref_count: AtomicI32::new(1),
@@ -3475,8 +3480,8 @@ impl ReaderPool {
     /// soft-deletes field and [`PendingDeletes`] otherwise.
     fn new_pending_deletes(&self, info: &SegmentCommitInfo) -> PendingDeletesKind {
         match self.soft_deletes_field.as_deref() {
-            None => PendingDeletesKind::Hard(PendingDeletes::new(info)),
-            Some(field) => PendingDeletesKind::Soft(PendingSoftDeletes::new(field, info)),
+            None => PendingDeletesKind::Hard(Box::new(PendingDeletes::new(info))),
+            Some(field) => PendingDeletesKind::Soft(Box::new(PendingSoftDeletes::new(field, info))),
         }
     }
 
@@ -3490,10 +3495,10 @@ impl ReaderPool {
         info: &SegmentCommitInfo,
     ) -> PendingDeletesKind {
         match self.soft_deletes_field.as_deref() {
-            None => PendingDeletesKind::Hard(PendingDeletes::from_reader(reader, info)),
-            Some(field) => {
-                PendingDeletesKind::Soft(PendingSoftDeletes::from_reader(field, reader, info))
-            }
+            None => PendingDeletesKind::Hard(Box::new(PendingDeletes::from_reader(reader, info))),
+            Some(field) => PendingDeletesKind::Soft(Box::new(PendingSoftDeletes::from_reader(
+                field, reader, info,
+            ))),
         }
     }
 
