@@ -435,6 +435,14 @@ pub struct OneMerge {
     /// Equivalent to overriding `OneMerge.initMergeReaders(IOFunction)`;
     /// see [`InitMergeReadersHook`].
     init_merge_readers_override: Option<InitMergeReadersHook>,
+    /// The state a Java subclass of `OneMerge` adds, read back through
+    /// [`as_any`](Self::as_any).
+    ///
+    /// Equivalent to declaring a subclass of `MergePolicy.OneMerge` (for
+    /// example `TestOneMergeWrappingMergePolicy.WrappedOneMerge`, whose
+    /// `original` field a test reads after `instanceof`). Rust has no
+    /// subclassing, so the subclass's fields are a value the creator attaches.
+    subclass: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// Replaces [`OneMerge::set_merge_info`].
@@ -518,6 +526,7 @@ impl OneMerge {
             init_merge_readers_once: None,
             set_merge_info_override: None,
             init_merge_readers_override: None,
+            subclass: None,
         })
     }
 
@@ -579,6 +588,7 @@ impl OneMerge {
             init_merge_readers_once: None,
             set_merge_info_override: None,
             init_merge_readers_override: None,
+            subclass: None,
         }
     }
 
@@ -892,6 +902,21 @@ impl OneMerge {
     /// (`ConcurrentMergeScheduler.java:719`), so a paused merge sees the abort.
     pub(crate) fn aborted_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.aborted)
+    }
+
+    /// Attaches the state of a Java subclass of `OneMerge`; see
+    /// [`as_any`](Self::as_any).
+    pub fn set_subclass(&mut self, state: Arc<dyn std::any::Any + Send + Sync>) {
+        self.subclass = Some(state);
+    }
+
+    /// Returns the state of the Java subclass this merge stands for, or
+    /// `None` for a plain `OneMerge`.
+    ///
+    /// Equivalent to `merge instanceof Subclass` followed by the cast: the
+    /// caller downcasts the returned value to the subclass's state type.
+    pub fn as_any(&self) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        self.subclass.as_deref()
     }
 
     /// Returns whether `other` is this very merge — a clone of it, or the

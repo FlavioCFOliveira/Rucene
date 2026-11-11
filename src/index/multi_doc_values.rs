@@ -1019,6 +1019,11 @@ impl DocIdSetIterator for MultiSortedDocValues {
         self.doc_id
     }
 
+    /// Answers `instanceof MultiDocValues.MultiSortedDocValues` (`TestOrdinalMap`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn next_doc(&mut self) -> Result<i32> {
         loop {
             if self.current.is_none() {
@@ -1198,6 +1203,11 @@ impl MultiSortedSetDocValues {
 impl DocIdSetIterator for MultiSortedSetDocValues {
     fn doc_id(&self) -> i32 {
         self.doc_id
+    }
+
+    /// Answers `instanceof MultiDocValues.MultiSortedSetDocValues` (`TestOrdinalMap`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn next_doc(&mut self) -> Result<i32> {

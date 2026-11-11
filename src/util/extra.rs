@@ -40,6 +40,14 @@ pub trait LongValues {
     ///
     /// Equivalent to `org.apache.lucene.util.LongValues#get`.
     fn get(&self, index: i64) -> i64;
+
+    /// Answers `instanceof` and the identity of the shared `LongValues.ZEROES`
+    /// and `LongValues.IDENTITY` instances: the default `None`, overridden by
+    /// [`ZeroesLongValues`] and [`IdentityLongValues`], which stand for those
+    /// two singletons (`LongValues.java:27-44`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// A `LongValues` implementation that returns `index`.
@@ -50,6 +58,10 @@ impl LongValues for IdentityLongValues {
     fn get(&self, index: i64) -> i64 {
         index
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// A `LongValues` implementation that always returns zero.
@@ -59,6 +71,10 @@ pub struct ZeroesLongValues;
 impl LongValues for ZeroesLongValues {
     fn get(&self, _index: i64) -> i64 {
         0
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 

@@ -2035,6 +2035,25 @@ impl OrdinalMap {
     pub fn get_value_count(&self) -> i64 {
         self.value_count
     }
+    /// Returns the map from global ordinal to the index of the first segment
+    /// holding it, in the weight-sorted segment order.
+    ///
+    /// Equivalent to reading the package-private `firstSegments` field
+    /// (`OrdinalMap.java`); public here so the tests of the `index` package
+    /// can read it.
+    pub fn first_segments(&self) -> &(dyn LongValues + Send + Sync) {
+        self.first_segments.as_ref()
+    }
+
+    /// Returns the map from global ordinal to the delta to its first
+    /// segment's ordinal.
+    ///
+    /// Equivalent to reading the package-private `globalOrdDeltas` field
+    /// (`OrdinalMap.java`); public here so the tests of the `index` package
+    /// can read it.
+    pub fn global_ord_deltas(&self) -> &(dyn LongValues + Send + Sync) {
+        self.global_ord_deltas.as_ref()
+    }
 }
 
 /// Segment ordering by descending weight.

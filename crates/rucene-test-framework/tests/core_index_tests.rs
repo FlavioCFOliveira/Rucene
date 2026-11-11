@@ -1140,3 +1140,83 @@ mod test_per_segment_deletes;
 fn test_per_segment_deletes() {
     run(test_per_segment_deletes::class_def);
 }
+#[path = "core_index/test_numeric_doc_values_updates.rs"]
+mod test_numeric_doc_values_updates;
+#[test]
+fn test_numeric_doc_values_updates() {
+    run(test_numeric_doc_values_updates::class_def);
+}
+#[path = "core_index/test_omit_norms.rs"]
+mod test_omit_norms;
+#[test]
+fn test_omit_norms() {
+    run(test_omit_norms::class_def);
+}
+#[path = "core_index/test_omit_positions.rs"]
+mod test_omit_positions;
+#[test]
+fn test_omit_positions() {
+    run(test_omit_positions::class_def);
+}
+#[path = "core_index/test_omit_tf.rs"]
+mod test_omit_tf;
+#[test]
+fn test_omit_tf() {
+    run(test_omit_tf::class_def);
+}
+#[path = "core_index/test_one_merge_wrapping_merge_policy.rs"]
+mod test_one_merge_wrapping_merge_policy;
+#[test]
+fn test_one_merge_wrapping_merge_policy() {
+    run(test_one_merge_wrapping_merge_policy::class_def);
+}
+#[path = "core_index/test_ordinal_map.rs"]
+mod test_ordinal_map;
+#[test]
+fn test_ordinal_map() {
+    run(test_ordinal_map::class_def);
+}
+#[path = "core_index/test_parallel_composite_reader.rs"]
+mod test_parallel_composite_reader;
+#[test]
+fn test_parallel_composite_reader() {
+    run(test_parallel_composite_reader::class_def);
+}
+#[path = "core_index/test_parallel_leaf_reader.rs"]
+mod test_parallel_leaf_reader;
+#[test]
+fn test_parallel_leaf_reader() {
+    run(test_parallel_leaf_reader::class_def);
+}
+#[path = "core_index/test_parallel_reader_empty_index.rs"]
+mod test_parallel_reader_empty_index;
+#[test]
+fn test_parallel_reader_empty_index() {
+    run(test_parallel_reader_empty_index::class_def);
+}
+#[path = "core_index/test_parallel_term_enum.rs"]
+mod test_parallel_term_enum;
+#[test]
+fn test_parallel_term_enum() {
+    run(test_parallel_term_enum::class_def);
+}
+#[path = "core_index/test_payloads.rs"]
+mod test_payloads;
+#[test]
+fn test_payloads() {
+    run(test_payloads::class_def);
+}
+#[path = "core_index/test_payloads_on_vectors.rs"]
+mod test_payloads_on_vectors;
+#[test]
+fn test_payloads_on_vectors() {
+    run(test_payloads_on_vectors::class_def);
+}
+#[path = "core_index/test_index_writer_on_jre_crash.rs"]
+mod test_index_writer_on_jre_crash;
+#[path = "threaded_nrt_threads/mod.rs"]
+mod threaded_nrt_threads;
+#[test]
+fn test_index_writer_on_jre_crash() {
+    run(test_index_writer_on_jre_crash::class_def);
+}

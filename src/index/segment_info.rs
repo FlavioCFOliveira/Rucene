@@ -109,9 +109,12 @@ impl SegmentInfo {
 
     /// Creates a new complete `SegmentInfo`.
     ///
+    /// Like Java's constructor (`SegmentInfo.java:115-144`), it does not
+    /// validate `max_doc`: any value is kept, `-1` meaning "not set yet".
+    ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `max_doc` is negative.
+    /// None today; the `Result` is kept for the callers.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         directory: Arc<dyn Directory>,
@@ -127,11 +130,6 @@ impl SegmentInfo {
         attributes: HashMap<String, String>,
         index_sort: Sort,
     ) -> Result<Self> {
-        if max_doc < UNSET_MAX_DOC {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative or {UNSET_MAX_DOC} (not set yet): {max_doc}"
-            )));
-        }
         Ok(Self {
             directory,
             version,
@@ -155,9 +153,12 @@ impl SegmentInfo {
     /// resolved from the enclosing `SegmentInfos`. The codec must be set later
     /// with [`set_codec`](Self::set_codec).
     ///
+    /// Like Java's constructor (`SegmentInfo.java:115-144`), it does not
+    /// validate `max_doc`.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `max_doc` is negative.
+    /// None today; the `Result` is kept for the callers.
     #[allow(clippy::too_many_arguments)]
     pub fn new_without_codec(
         directory: Arc<dyn Directory>,
@@ -172,11 +173,6 @@ impl SegmentInfo {
         attributes: HashMap<String, String>,
         index_sort: Sort,
     ) -> Result<Self> {
-        if max_doc < UNSET_MAX_DOC {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative or {UNSET_MAX_DOC} (not set yet): {max_doc}"
-            )));
-        }
         Ok(Self {
             directory,
             version,
@@ -200,7 +196,8 @@ impl SegmentInfo {
     ///
     /// Returns `LuceneError::IllegalState` if `max_doc` has not been set.
     pub fn max_doc(&self) -> Result<i32> {
-        if self.max_doc < 0 {
+        // `if (this.maxDoc == -1)` (`SegmentInfo.java:189-194`).
+        if self.max_doc == UNSET_MAX_DOC {
             return Err(LuceneError::illegal_state(
                 "maxDoc isn't set yet".to_string(),
             ));
