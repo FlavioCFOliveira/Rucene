@@ -444,28 +444,44 @@ pub fn check_footer_with_prior(
     input: &mut dyn ChecksumIndexInput,
     mut prior: LuceneError,
 ) -> LuceneError {
-    let remaining = input.length() - input.file_pointer();
-    if remaining < footer_length() as i64 {
-        // corruption caused us to read into the checksum footer already: we can't proceed
-        // (thrown inside the `try`, so `catch (CorruptIndexException)` suppresses
-        // `priorException` into it).
-        let mut corruption = LuceneError::corrupt_index(
-            format!(
-                "checksum status indeterminate: remaining={remaining}; please run \
-                 checkindex for more details"
-            ),
-            input.resource_description(),
-        );
-        corruption.add_suppressed(prior);
-        return corruption;
+    /// What the `try` block ends with.
+    enum Tried {
+        /// `throw new CorruptIndexException("checksum status indeterminate:
+        /// remaining=...")`, caught by `catch (CorruptIndexException)`.
+        Remaining(i64),
+        /// `checkFooter(in)` returned or threw.
+        Checked(Result<i64>),
     }
-    // Java skips the unread bytes rather than seeking, because the digest must
-    // cover them; this input's `seek` is the forward-only, checksum-preserving
-    // one for the same reason.
-    let target = input.length() - footer_length() as i64;
-    let checked = ChecksumIndexInput::seek(input, target).and_then(|()| check_footer(input));
-    match checked {
-        Ok(checksum) => {
+    // `catch (Throwable t)` (`CodecUtil.java:509-511`) also catches the
+    // unchecked throwables the input raises — a panic here, such as the
+    // `RuntimeException` a closed test input throws from `length()`.
+    let tried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let remaining = input.length() - input.file_pointer();
+        if remaining < footer_length() as i64 {
+            // corruption caused us to read into the checksum footer already: we can't proceed
+            return Tried::Remaining(remaining);
+        }
+        // Java skips the unread bytes rather than seeking, because the digest must
+        // cover them; this input's `seek` is the forward-only, checksum-preserving
+        // one for the same reason.
+        let target = input.length() - footer_length() as i64;
+        Tried::Checked(ChecksumIndexInput::seek(input, target).and_then(|()| check_footer(input)))
+    }));
+    match tried {
+        Ok(Tried::Remaining(remaining)) => {
+            // (thrown inside the `try`, so `catch (CorruptIndexException)`
+            // suppresses `priorException` into it).
+            let mut corruption = LuceneError::corrupt_index(
+                format!(
+                    "checksum status indeterminate: remaining={remaining}; please run \
+                     checkindex for more details"
+                ),
+                input.resource_description(),
+            );
+            corruption.add_suppressed(prior);
+            corruption
+        }
+        Ok(Tried::Checked(Ok(checksum))) => {
             if !matches!(prior.kind(), LuceneErrorKind::IndexFormatTooOld { .. }) {
                 // If the index format is too old and no corruption, do not add checksums
                 // matching message since this may tend to unnecessarily alarm people who
@@ -481,12 +497,14 @@ pub fn check_footer_with_prior(
             prior
         }
         // `corruptException.addSuppressed(priorException); throw corruptException;`
-        Err(mut corruption) if matches!(corruption.kind(), LuceneErrorKind::CorruptIndex(_)) => {
+        Ok(Tried::Checked(Err(mut corruption)))
+            if matches!(corruption.kind(), LuceneErrorKind::CorruptIndex(_)) =>
+        {
             corruption.add_suppressed(prior);
             corruption
         }
         // catch-all for things that shouldn't go wrong (e.g. OOM during readInt) but could...
-        Err(_) => {
+        Ok(Tried::Checked(Err(_))) | Err(_) => {
             prior.add_suppressed(LuceneError::corrupt_index(
                 "checksum status indeterminate: unexpected exception",
                 input.to_java_string(),
@@ -1132,6 +1150,69 @@ mod tests {
             }
             other => panic!("expected the corruption, got {other:?}"),
         }
+    }
+
+    /// `catch (Throwable t)` (`CodecUtil.java:509-511`) catches an unchecked
+    /// throwable the input raises — the test framework's closed input throws
+    /// `RuntimeException("Abusing closed IndexInput!")` from `length()` — and
+    /// rethrows the prior exception with the "unexpected exception" note.
+    /// Here the throwable is a panic, the port's unchecked throwable; before
+    /// the catch it escaped (TestIndexWriter.testThreadInterruptDeadlock, an
+    /// interrupted `metaIn.close()` in the stored-fields reader).
+    #[test]
+    fn check_footer_with_prior_catches_an_unchecked_throwable_from_the_input() {
+        #[derive(Debug)]
+        struct ClosedInput;
+        impl crate::store::DataInput for ClosedInput {
+            fn to_java_string(&self) -> String {
+                "closed".to_string()
+            }
+            fn skip_bytes(&mut self, _num_bytes: i64) -> Result<()> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn read_byte(&mut self) -> Result<u8> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn read_bytes(&mut self, _b: Option<&mut [u8]>, _o: usize, _l: usize) -> Result<()> {
+                panic!("Abusing closed IndexInput!")
+            }
+        }
+        impl IndexInput for ClosedInput {
+            fn close(&mut self) -> Result<()> {
+                Ok(())
+            }
+            fn file_pointer(&self) -> i64 {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn length(&self) -> i64 {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn seek(&mut self, _pos: i64) -> Result<()> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn slice(&self, _d: &str, _o: i64, _l: i64) -> Result<Box<dyn IndexInput>> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn resource_description(&self) -> &str {
+                "closed"
+            }
+        }
+        let mut input = BufferedChecksumIndexInput::new(Box::new(ClosedInput));
+        let prior = LuceneError::thread_interrupted(crate::util::concurrent::InterruptedException);
+        let err = check_footer_with_prior(&mut input, prior);
+        assert!(
+            matches!(err.kind(), LuceneErrorKind::ThreadInterrupted(_)),
+            "the prior exception is rethrown: {err:?}"
+        );
+        assert!(
+            err.get_suppressed().iter().any(|s| s
+                .to_string()
+                .contains("checksum status indeterminate: unexpected exception")),
+            "{err:?}"
+        );
     }
 
     #[test]
