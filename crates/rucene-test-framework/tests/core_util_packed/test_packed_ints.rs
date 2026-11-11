@@ -9,11 +9,8 @@
 //!   are read before it.
 //! * The writer of `testPackedInts` borrows the output, so `startFp` is read
 //!   just before the writer is created (the constructor writes nothing).
-//! * `RamUsageTester.ramUsed` over `GrowableWriter`, `PagedGrowableWriter`,
-//!   `PagedMutable` and the `PackedLongValues` builders and values: Rucene has
-//!   no `RamObject` model of them ([`ram_used_unmodelled`]); the
-//!   `IgnoreNullReaderSingletonAccumulator` those measurements use is not
-//!   translated for that reason.
+//! * `RamUsageTester.ramUsed(obj)` measures the Java object graph that
+//!   [`ModelBuilder`] declares for `obj`.
 //! * `buf.add(…)` after `buf.build()` (`IllegalStateException` in Java) is
 //!   not expressible: Rucene's `build` consumes the builder.
 //!
@@ -21,6 +18,7 @@
 //! `testPagedGrowableWriterOverflow` (`@Ignore`) are declared with their
 //! `@Ignore`, so JUnit reports them ignored and never runs them.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::generators::RandomNumbers;
@@ -44,12 +42,14 @@ use rucene::util::packed::{
 use rucene::util::{Accountable, ArrayUtil};
 use rucene_test_framework::util::java_exceptions::expect_throws;
 use rucene_test_framework::util::lucene_test_case::{Nightly, TEST_NIGHTLY};
+use rucene_test_framework::util::ram_usage_tester::{
+    Accumulator, DefaultAccumulator, JavaNode, ModelBuilder, Queue, RamObject, RamUsageTester,
+};
 use rucene_test_framework::util::test_util::TestUtil;
 use rucene_test_framework::util::LuceneTestCase;
 
 use crate::core_support::{
-    assert_array_equals_msg, assert_equals, assert_equals_msg, class, ram_used_unmodelled, random,
-    test, verbose,
+    assert_array_equals_msg, assert_equals, assert_equals_msg, class, random, test, verbose,
 };
 
 /// `TestPackedInts`.
@@ -770,7 +770,7 @@ fn test_growable_writer() -> Result<()> {
     assert_equals(&99, &wrt.get(value_count - 10));
     assert_equals(&(1i64 << 10), &wrt.get(value_count - 1));
     assert_equals(
-        &ram_used_unmodelled("GrowableWriter"),
+        &RamUsageTester::ram_used(&*ModelBuilder::new().growable_writer(&wrt)),
         &wrt.ram_bytes_used(),
     );
     Ok(())
@@ -848,7 +848,7 @@ fn test_paged_growable_writer() -> Result<()> {
     // test ramBytesUsed
     Assert::assert_equals_double_msg(
         None,
-        ram_used_unmodelled("PagedGrowableWriter") as f64,
+        RamUsageTester::ram_used(&*ModelBuilder::new().paged_growable_writer(&writer)) as f64,
         writer.ram_bytes_used() as f64,
         8.0,
     );
@@ -921,8 +921,10 @@ fn test_paged_mutable() -> Result<()> {
 
     // test ramBytesUsed:
     // RamUsageTester.ramUsed(writer) - RamUsageTester.ramUsed(writer.format)
+    let mut model = ModelBuilder::new();
     assert_equals(
-        &ram_used_unmodelled("PagedMutable"),
+        &(RamUsageTester::ram_used(&*model.paged_mutable(&writer))
+            - RamUsageTester::ram_used(&*model.packed_ints_format(writer.format()))),
         &writer.ram_bytes_used(),
     );
 
@@ -1182,6 +1184,40 @@ fn test_packed_long_values_on_zeros() -> Result<()> {
     Ok(())
 }
 
+/// `IgnoreNullReaderSingletonAccumulator`: does not count the shared
+/// `PackedInts.NullReader.forCount(PackedLongValues.DEFAULT_PAGE_SIZE)`.
+struct IgnoreNullReaderSingletonAccumulator {
+    /// The shared `NullReader`, a node of the measured graph.
+    singleton: Rc<JavaNode>,
+}
+
+impl Accumulator for IgnoreNullReaderSingletonAccumulator {
+    fn accumulate_object<'a>(
+        &mut self,
+        o: &'a dyn RamObject,
+        shallow_size: i64,
+        field_values: &[(&'static str, Option<&'a dyn RamObject>)],
+        queue: &mut Queue<'a>,
+    ) -> i64 {
+        if std::ptr::eq(
+            Rc::as_ptr(&self.singleton) as *const (),
+            o as *const dyn RamObject as *const (),
+        ) {
+            return 0;
+        }
+        DefaultAccumulator.accumulate_object(o, shallow_size, field_values, queue)
+    }
+}
+
+/// `RamUsageTester.ramUsed(root, new IgnoreNullReaderSingletonAccumulator())`
+/// over a graph `model` built.
+fn ram_used_ignoring_null_reader_singleton(model: &mut ModelBuilder, root: &Rc<JavaNode>) -> i64 {
+    let mut accumulator = IgnoreNullReaderSingletonAccumulator {
+        singleton: model.null_reader(PackedLongValues::DEFAULT_PAGE_SIZE),
+    };
+    RamUsageTester::ram_used_with(Some(&**root), &mut accumulator)
+}
+
 /// The body of `testPackedLongValues` after the builder is chosen: `buf` is
 /// filled with `arr`, built with `build`, and checked.
 macro_rules! check_packed_long_values {
@@ -1191,7 +1227,11 @@ macro_rules! check_packed_long_values {
         for i in 0..arr.len() {
             buf.add(arr[i])?;
             if LuceneTestCase::rarely() && !*TEST_NIGHTLY {
-                let expected_bytes_used = ram_used_unmodelled("PackedLongValues.Builder");
+                let expected_bytes_used = {
+                    let mut model = ModelBuilder::new();
+                    let root = model.packed_long_values_builder(&buf);
+                    ram_used_ignoring_null_reader_singleton(&mut model, &root)
+                };
                 let computed_bytes_used = buf.ram_bytes_used();
                 assert_equals(&expected_bytes_used, &computed_bytes_used);
             }
@@ -1212,7 +1252,11 @@ macro_rules! check_packed_long_values {
             assert_equals(&arr[i], &it.next_value());
         }
         Assert::assert_false(it.has_next());
-        let expected_bytes_used = ram_used_unmodelled("PackedLongValues");
+        let expected_bytes_used = {
+            let mut model = ModelBuilder::new();
+            let root = model.long_values(&values);
+            ram_used_ignoring_null_reader_singleton(&mut model, &root)
+        };
         let computed_bytes_used = values.ram_bytes_used();
         assert_equals(&expected_bytes_used, &computed_bytes_used);
     }};

@@ -53,13 +53,24 @@ use rucene::search::{
     BooleanClause, BooleanQuery, CacheAndCount, DisjunctionMaxQuery, LRUQueryCache, Occur,
     PhraseQuery, Query, TermQuery,
 };
+use rucene::util::automaton::byte_run_automaton::ByteRunAutomaton;
+use rucene::util::automaton::compiled_automaton::{AutomatonType, CompiledAutomaton};
+use rucene::util::automaton::nfa_run_automaton::DStateView;
+use rucene::util::automaton::{Automaton, NFARunAutomaton};
 use rucene::util::extra::{IdentityLongValues, LongValues, ZeroesLongValues};
 use rucene::util::hnsw::{NeighborArray, OnHeapHnswGraph};
 use rucene::util::packed::{
-    DeltaPackedLongValues, MonotonicLongValues, NullReader, Packed64, Packed64SingleBlock,
-    PackedIntsMutable, PackedIntsReader, PackedLongValues, PackedLongValuesAccess,
+    AbstractPagedMutable, AbstractPagedMutableOps, DeltaPackedLongValues,
+    DeltaPackedLongValuesBuilder, Format, GrowableWriter, MonotonicLongValues,
+    MonotonicLongValuesBuilder, NullReader, Packed64, Packed64SingleBlock, PackedIntsMutable,
+    PackedIntsReader, PackedLongValues, PackedLongValuesAccess, PackedLongValuesBuilder,
+    PackedLongValuesBuilderOps, PagedGrowableWriter, PagedMutable,
 };
-use rucene::util::{ByteBlockPool, BytesRef, BytesRefHash, RamUsageEstimator};
+use rucene::util::ring_buffer::IntBag;
+use rucene::util::{
+    ArrayUtil, ByteBlockPool, BytesRef, BytesRefHash, FixedBitSet, FrequencyTrackingRingBuffer,
+    PagedBytes, PagedBytesReader, RamUsageEstimator,
+};
 
 /// A key and a value of a JDK map, `null` as `None`.
 pub type MapEntry<'a> = (Option<&'a dyn RamObject>, Option<&'a dyn RamObject>);
@@ -1463,6 +1474,9 @@ impl ModelBuilder {
                 }
             });
         }
+        if let Some(writer) = any.and_then(|a| a.downcast_ref::<GrowableWriter>()) {
+            return self.growable_writer(writer);
+        }
         unmodelled("this PackedInts.Reader")
     }
 
@@ -1974,6 +1988,717 @@ impl ModelBuilder {
                         ),
                         ("hitCount", node(long_adder())),
                         ("cache", node(leaf_caches)),
+                    ],
+                }
+            },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Packed writers and builders, ring buffer, paged bytes, automata
+// ---------------------------------------------------------------------------
+
+/// `RamUsageEstimator.shallowSizeOf` of a `PackedInts.Format` constant on
+/// JDK 25 (`id` and `Enum`'s `name`, `ordinal` and `hash`): 32 bytes, as
+/// printed against `lucene-core-10.5.0.jar`.
+const PACKED_INTS_FORMAT_SHALLOW_SIZE: i64 = aligned_shallow_instance_size_const(4);
+
+/// `RamUsageEstimator.shallowSizeOf` of a `CompiledAutomaton.AUTOMATON_TYPE`
+/// constant on JDK 25 (`Enum`'s `name`, `ordinal` and `hash`): 24 bytes.
+const AUTOMATON_TYPE_SHALLOW_SIZE: i64 = aligned_shallow_instance_size_const(3);
+
+/// `RamUsageEstimator.shallowSizeOf` of a `java.util.BitSet` (`long[] words`,
+/// `int wordsInUse`, `boolean sizeIsSticky`): 24 bytes.
+const BIT_SET_SHALLOW_SIZE: i64 = 24;
+
+/// The length of the `keys` and `values` arrays of a fresh hppc
+/// `IntIntHashMap(5)` and of a fresh `IntObjectHashMap()`: a buffer of 8 slots
+/// plus the empty-key slot, 9, as printed against `lucene-core-10.5.0.jar`.
+const FRESH_HPPC_MAP_SLOTS: usize = 9;
+
+/// `Operations.PointTransitionSet`'s initial `new PointTransitions[5]`
+/// (`Operations.java:570`).
+const POINT_TRANSITION_SET_INITIAL_POINTS: usize = 5;
+
+/// `NFARunAutomaton`'s initial `dStates = new DState[10]`
+/// (`NFARunAutomaton.java:78`).
+const NFA_D_STATES_INITIAL_LENGTH: usize = 10;
+
+impl ModelBuilder {
+    /// `org.apache.lucene.util.packed.GrowableWriter`
+    /// (`GrowableWriter.java:32-34`): `long currentMask`, `PackedInts.Mutable
+    /// current` and `float acceptableOverheadRatio`.
+    pub fn growable_writer(&mut self, writer: &GrowableWriter) -> Rc<JavaNode> {
+        self.shared(
+            writer as *const GrowableWriter as *const (),
+            "org.apache.lucene.util.packed.GrowableWriter",
+            |b| {
+                let current = b.packed_ints_reader(writer.mutable().as_packed_ints_reader());
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[8, REF, 4]),
+                    fields: vec![("current", node(current))],
+                }
+            },
+        )
+    }
+
+    /// A `PackedInts.Format` constant: an `Enum`, measured by its shallow size
+    /// alone. Each constant has a body (`PackedInts.java:63-139`), so its class
+    /// is the anonymous `PackedInts$Format$1` (`PACKED`) or `$2`
+    /// (`PACKED_SINGLE_BLOCK`); one node per constant.
+    pub fn packed_ints_format(&mut self, format: Format) -> Rc<JavaNode> {
+        let (address, class_name) = match format {
+            Format::Packed => (1usize, "org.apache.lucene.util.packed.PackedInts$Format$1"),
+            Format::PackedSingleBlock => {
+                (2usize, "org.apache.lucene.util.packed.PackedInts$Format$2")
+            }
+        };
+        self.shared(address as *const (), class_name, |_| NodeShape::Enum {
+            shallow_size: PACKED_INTS_FORMAT_SHALLOW_SIZE,
+        })
+    }
+
+    /// The `PackedInts.Mutable[] subMutables` array of an
+    /// `AbstractPagedMutable`, a `null` slot for a page not allocated.
+    fn sub_mutables(&mut self, base: &AbstractPagedMutable) -> Rc<JavaNode> {
+        let elements: Vec<NodeChild> = (0..base.page_count())
+            .map(|i| match base.page(i) {
+                Some(page) => node(self.packed_ints_reader(page.as_packed_ints_reader())),
+                None => NodeChild::Null,
+            })
+            .collect();
+        JavaNode::new(
+            "[Lorg.apache.lucene.util.packed.PackedInts$Mutable;",
+            NodeShape::Array {
+                shallow_size: array_shallow_size(elements.len(), REF),
+                elements: Some(elements),
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.packed.PagedMutable` (`PagedMutable.java:31`,
+    /// `AbstractPagedMutable.java:38-42`): `PackedInts.Format format` and
+    /// `AbstractPagedMutable`'s `long size`, `int pageShift`, `int pageMask`,
+    /// `PackedInts.Mutable[] subMutables` and `int bitsPerValue`.
+    pub fn paged_mutable(&mut self, mutable: &PagedMutable) -> Rc<JavaNode> {
+        self.shared(
+            mutable as *const PagedMutable as *const (),
+            "org.apache.lucene.util.packed.PagedMutable",
+            |b| {
+                let format = b.packed_ints_format(mutable.format());
+                let sub_mutables = b.sub_mutables(mutable.base());
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, 8, 4, 4, REF, 4]),
+                    fields: vec![
+                        ("format", node(format)),
+                        ("subMutables", node(sub_mutables)),
+                    ],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.packed.PagedGrowableWriter`
+    /// (`PagedGrowableWriter.java:32`): `float acceptableOverheadRatio` and
+    /// the fields of `AbstractPagedMutable`; each page is a `GrowableWriter`.
+    pub fn paged_growable_writer(&mut self, writer: &PagedGrowableWriter) -> Rc<JavaNode> {
+        self.shared(
+            writer as *const PagedGrowableWriter as *const (),
+            "org.apache.lucene.util.packed.PagedGrowableWriter",
+            |b| {
+                let sub_mutables = b.sub_mutables(writer.base());
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[4, 8, 4, 4, REF, 4]),
+                    fields: vec![("subMutables", node(sub_mutables))],
+                }
+            },
+        )
+    }
+
+    /// A `PackedLongValues.Builder`, by its Java class
+    /// (`PackedLongValues.java:176-196`, `DeltaPackedLongValues.java:80`,
+    /// `MonotonicLongValues.java:84`): `int pageShift`, `int pageMask`, `float
+    /// acceptableOverheadRatio`, `long[] pending` (`null` after `build()`),
+    /// `long size`, `PackedInts.Reader[] values` (a `null` slot for a page not
+    /// packed yet), `long ramBytesUsed`, `int valuesOff`, `int pendingOff`;
+    /// `DeltaPackedLongValues.Builder` adds `long[] mins`, and
+    /// `MonotonicLongValues.Builder` adds `float[] averages` to those.
+    pub fn packed_long_values_builder<B>(&mut self, builder: &B) -> Rc<JavaNode>
+    where
+        B: PackedLongValuesBuilderOps + 'static,
+    {
+        let any: &dyn std::any::Any = builder;
+        let address = builder as *const B as *const ();
+        let state = builder.state();
+        let base_fields: &[i64] = &[4, 4, 4, REF, 8, REF, 8, 4, 4];
+        let build_base = |b: &mut Self| {
+            let pending = match state.pending() {
+                Some(pending) => node(b.slice_array(pending, "[J", 8)),
+                None => NodeChild::Null,
+            };
+            let slots = state.values();
+            let elements: Vec<NodeChild> = slots
+                .iter()
+                .map(|slot| match slot {
+                    Some(page) => node(b.packed_ints_reader(page.as_ref())),
+                    None => NodeChild::Null,
+                })
+                .collect();
+            let values = JavaNode::new(
+                "[Lorg.apache.lucene.util.packed.PackedInts$Reader;",
+                NodeShape::Array {
+                    shallow_size: array_shallow_size(elements.len(), REF),
+                    elements: Some(elements),
+                },
+            );
+            (pending, node(values))
+        };
+        if any.is::<PackedLongValuesBuilder>() {
+            return self.shared(
+                address,
+                "org.apache.lucene.util.packed.PackedLongValues$Builder",
+                |b| {
+                    let (pending, values) = build_base(b);
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(base_fields),
+                        fields: vec![("pending", pending), ("values", values)],
+                    }
+                },
+            );
+        }
+        if let Some(delta) = any.downcast_ref::<DeltaPackedLongValuesBuilder>() {
+            return self.shared(
+                address,
+                "org.apache.lucene.util.packed.DeltaPackedLongValues$Builder",
+                |b| {
+                    let (pending, values) = build_base(b);
+                    let mins = b.slice_array(delta.mins(), "[J", 8);
+                    let mut field_sizes = vec![REF];
+                    field_sizes.extend_from_slice(base_fields);
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&field_sizes),
+                        fields: vec![
+                            ("pending", pending),
+                            ("values", values),
+                            ("mins", node(mins)),
+                        ],
+                    }
+                },
+            );
+        }
+        if let Some(monotonic) = any.downcast_ref::<MonotonicLongValuesBuilder>() {
+            return self.shared(
+                address,
+                "org.apache.lucene.util.packed.MonotonicLongValues$Builder",
+                |b| {
+                    let (pending, values) = build_base(b);
+                    let mins = b.slice_array(monotonic.mins(), "[J", 8);
+                    let averages = b.slice_array(monotonic.averages(), "[F", 4);
+                    let mut field_sizes = vec![REF, REF];
+                    field_sizes.extend_from_slice(base_fields);
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&field_sizes),
+                        fields: vec![
+                            ("pending", pending),
+                            ("values", values),
+                            ("mins", node(mins)),
+                            ("averages", node(averages)),
+                        ],
+                    }
+                },
+            );
+        }
+        unmodelled("this PackedLongValues.Builder")
+    }
+
+    /// `org.apache.lucene.util.FrequencyTrackingRingBuffer`
+    /// (`FrequencyTrackingRingBuffer.java:38-41`): `int maxSize`, `int[]
+    /// buffer`, `int position` and `IntBag frequencies` (`int[] keys`, `int[]
+    /// freqs`, `int mask`).
+    pub fn frequency_tracking_ring_buffer(
+        &mut self,
+        buffer: &FrequencyTrackingRingBuffer,
+    ) -> Rc<JavaNode> {
+        self.shared(
+            buffer as *const FrequencyTrackingRingBuffer as *const (),
+            "org.apache.lucene.util.FrequencyTrackingRingBuffer",
+            |b| {
+                let ring = b.slice_array(buffer.buffer(), "[I", 4);
+                let bag: &IntBag = buffer.frequencies();
+                let freqs = b.slice_array(bag.freqs(), "[I", 4);
+                let keys = b.slice_array(bag.keys(), "[I", 4);
+                let frequencies = JavaNode::new(
+                    "org.apache.lucene.util.FrequencyTrackingRingBuffer$IntBag",
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[REF, REF, 4]),
+                        fields: vec![("freqs", node(freqs)), ("keys", node(keys))],
+                    },
+                );
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[4, REF, 4, REF]),
+                    fields: vec![("buffer", node(ring)), ("frequencies", node(frequencies))],
+                }
+            },
+        )
+    }
+
+    /// A page of a `PagedBytes`: a `byte[]` shared, as Java shares it, by the
+    /// `PagedBytes` and every `PagedBytes.Reader` frozen from it.
+    fn paged_bytes_block(&mut self, block: &Arc<Vec<u8>>) -> Rc<JavaNode> {
+        self.primitive_array(Arc::as_ptr(block) as *const (), "[B", block.len(), 1)
+    }
+
+    /// A `byte[][] blocks` array of `length` slots holding `blocks` first.
+    fn paged_bytes_blocks(&mut self, blocks: &[Arc<Vec<u8>>], length: usize) -> Rc<JavaNode> {
+        let mut elements: Vec<NodeChild> = blocks
+            .iter()
+            .map(|block| node(self.paged_bytes_block(block)))
+            .collect();
+        elements.resize_with(length.max(blocks.len()), || NodeChild::Null);
+        JavaNode::new(
+            "[[B",
+            NodeShape::Array {
+                shallow_size: array_shallow_size(elements.len(), REF),
+                elements: Some(elements),
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.PagedBytes` (`PagedBytes.java:35-45`): `byte[][]
+    /// blocks` (an array that grows through `ArrayUtil.grow`, its first
+    /// `numBlocks` slots used), `int numBlocks`, `int blockSize`, `int
+    /// blockBits`, `int blockMask`, `boolean didSkipBytes`, `boolean frozen`,
+    /// `int upto`, `byte[] currentBlock` and `long bytesUsedPerBlock`.
+    pub fn paged_bytes(&mut self, bytes: &PagedBytes) -> Rc<JavaNode> {
+        self.shared(
+            bytes as *const PagedBytes as *const (),
+            "org.apache.lucene.util.PagedBytes",
+            |b| {
+                let current_block = match bytes.current_block() {
+                    Some(block) => node(b.slice_array(block, "[B", 1)),
+                    None => NodeChild::Null,
+                };
+                let blocks = b.paged_bytes_blocks(bytes.blocks(), bytes.blocks_length());
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        REF, 4, 4, 4, 4, 1, 1, 4, REF, 8,
+                    ]),
+                    fields: vec![("currentBlock", current_block), ("blocks", node(blocks))],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.PagedBytes$Reader` (`PagedBytes.java:56-60`):
+    /// `byte[][] blocks` (a copy of the `numBlocks` pages), `int blockBits`,
+    /// `int blockMask`, `int blockSize` and `long bytesUsedPerBlock`.
+    pub fn paged_bytes_reader(&mut self, reader: &PagedBytesReader) -> Rc<JavaNode> {
+        self.shared(
+            reader as *const PagedBytesReader as *const (),
+            "org.apache.lucene.util.PagedBytes$Reader",
+            |b| {
+                let blocks = b.paged_bytes_blocks(reader.blocks(), reader.blocks().len());
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, 4, 4, 4, 8]),
+                    fields: vec![("blocks", node(blocks))],
+                }
+            },
+        )
+    }
+
+    /// A fresh `org.apache.lucene.util.automaton.Transition`
+    /// (`Transition.java:30-42`): five `int`s, no reference.
+    pub fn transition(&mut self) -> Rc<JavaNode> {
+        JavaNode::new(
+            "org.apache.lucene.util.automaton.Transition",
+            NodeShape::Object {
+                aligned_shallow_size: aligned_shallow_instance_size(&[4, 4, 4, 4, 4]),
+                fields: Vec::new(),
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.FixedBitSet`: `long[] bits`, `int numBits`,
+    /// `int numWords`.
+    pub fn fixed_bit_set(&mut self, bits: &FixedBitSet) -> Rc<JavaNode> {
+        self.shared(
+            bits as *const FixedBitSet as *const (),
+            "org.apache.lucene.util.FixedBitSet",
+            |b| {
+                let words = b.slice_array(bits.get_bits(), "[J", 8);
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, 4, 4]),
+                    fields: vec![("bits", node(words))],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.automaton.Automaton` (`Automaton.java:50-80,
+    /// 369-371, 424-426`): `int nextState`, `int nextTransition`, `int
+    /// curState`, `int[] states`, `BitSet isAccept`, `int[] transitions`,
+    /// `boolean deterministic` and the two anonymous `InPlaceMergeSorter`s
+    /// `destMinMaxSorter` (`Automaton$1`) and `minMaxDestSorter`
+    /// (`Automaton$2`), each with `Sorter`'s `int pivotIndex` and the outer
+    /// reference `this$0`.
+    ///
+    /// **Divergence.** The arrays have the lengths Rucene's `Automaton` holds
+    /// — the used entries of `states` and `transitions`, and one `BitSet` word
+    /// per 64 states (at least one) — where Java's have grown through
+    /// `ArrayUtil.grow`; Rucene's automaton does not record Java's
+    /// capacities, and its `ramBytesUsed` charges the same lengths.
+    ///
+    /// A sorter is reachable only through its automaton, so the walk has seen
+    /// the automaton when it reaches `this$0`; the field is declared `null`,
+    /// which adds the same nothing.
+    pub fn automaton(&mut self, automaton: &Automaton) -> Rc<JavaNode> {
+        self.shared(
+            automaton as *const Automaton as *const (),
+            "org.apache.lucene.util.automaton.Automaton",
+            |b| {
+                let words = automaton.get_accept_states().len().div_ceil(64).max(1) as i64;
+                let is_accept = JavaNode::new(
+                    "java.util.BitSet",
+                    NodeShape::Simple {
+                        shallow_size: BIT_SET_SHALLOW_SIZE,
+                        // `BitSet.size() / Byte.SIZE`: 64 bits per word.
+                        estimate: words * 64 / 8,
+                    },
+                );
+                let sorter = |class_name: &'static str| {
+                    JavaNode::new(
+                        class_name,
+                        NodeShape::Object {
+                            aligned_shallow_size: aligned_shallow_instance_size(&[REF, 4]),
+                            fields: vec![("this$0", NodeChild::Null)],
+                        },
+                    )
+                };
+                let dest_min_max_sorter = sorter("org.apache.lucene.util.automaton.Automaton$1");
+                let min_max_dest_sorter = sorter("org.apache.lucene.util.automaton.Automaton$2");
+                let states = b.slice_array(automaton.states_array(), "[I", 4);
+                let transitions = b.slice_array(automaton.transitions_array(), "[I", 4);
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        4, 4, 4, REF, REF, REF, 1, REF, REF,
+                    ]),
+                    fields: vec![
+                        ("isAccept", node(is_accept)),
+                        ("destMinMaxSorter", node(dest_min_max_sorter)),
+                        ("states", node(states)),
+                        ("transitions", node(transitions)),
+                        ("minMaxDestSorter", node(min_max_dest_sorter)),
+                    ],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.automaton.ByteRunAutomaton`, the fields of
+    /// `RunAutomaton` (`RunAutomaton.java:46-53`): `Automaton automaton`, `int
+    /// alphabetSize`, `int size`, `FixedBitSet accept`, `int[] transitions`,
+    /// `int[] points` and `int[] classmap`.
+    pub fn byte_run_automaton(&mut self, run_automaton: &ByteRunAutomaton) -> Rc<JavaNode> {
+        self.shared(
+            run_automaton as *const ByteRunAutomaton as *const (),
+            "org.apache.lucene.util.automaton.ByteRunAutomaton",
+            |b| {
+                let inner = run_automaton.run_automaton();
+                let automaton = b.automaton(inner.automaton());
+                let classmap = b.slice_array(inner.classmap(), "[I", 4);
+                let accept = b.fixed_bit_set(inner.accept());
+                let points = b.slice_array(inner.get_char_intervals(), "[I", 4);
+                let transitions = b.slice_array(inner.transitions(), "[I", 4);
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        REF, 4, 4, REF, REF, REF, REF,
+                    ]),
+                    fields: vec![
+                        ("automaton", node(automaton)),
+                        ("classmap", node(classmap)),
+                        ("accept", node(accept)),
+                        ("points", node(points)),
+                        ("transitions", node(transitions)),
+                    ],
+                }
+            },
+        )
+    }
+
+    /// One `NFARunAutomaton.DState` (`NFARunAutomaton.java:245-253`): `int[]
+    /// nfaStates`, `int[] transitions` (`null` until first used), `int
+    /// hashCode`, `boolean isAccept`, `Transition stepTransition`, `Transition
+    /// minimalTransition`, `int computedTransitions`, `int
+    /// outgoingTransitions` and the outer reference `this$0`. A state is
+    /// reachable only through its automaton, so `this$0` is declared `null`,
+    /// which adds the same nothing.
+    fn nfa_d_state(&mut self, state: &DStateView) -> Rc<JavaNode> {
+        let minimal_transition = if state.has_minimal_transition {
+            node(self.transition())
+        } else {
+            NodeChild::Null
+        };
+        let transitions = match &state.transitions {
+            Some(transitions) => node(self.slice_array(transitions, "[I", 4)),
+            None => NodeChild::Null,
+        };
+        let step_transition = self.transition();
+        let nfa_states = JavaNode::new(
+            "[I",
+            NodeShape::Array {
+                shallow_size: array_shallow_size(state.nfa_states.len(), 4),
+                elements: None,
+            },
+        );
+        JavaNode::new(
+            "org.apache.lucene.util.automaton.NFARunAutomaton$DState",
+            NodeShape::Object {
+                aligned_shallow_size: aligned_shallow_instance_size(&[
+                    REF, REF, 4, 1, REF, REF, 4, 4, REF,
+                ]),
+                fields: vec![
+                    ("minimalTransition", minimal_transition),
+                    ("transitions", transitions),
+                    ("stepTransition", node(step_transition)),
+                    ("this$0", NodeChild::Null),
+                    ("nfaStates", node(nfa_states)),
+                ],
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.automaton.NFARunAutomaton`
+    /// (`NFARunAutomaton.java:46-55`): `Automaton automaton`, `int[] points`,
+    /// `Map<DState, Integer> dStateToOrd` (a `HashMap` from each state to its
+    /// ordinal), `DState[] dStates` (`new DState[10]`, grown through
+    /// `ArrayUtil.grow`), `int alphabetSize`, `int[] classmap`, and the
+    /// reusable scratch `Operations.PointTransitionSet transitionSet` (`int
+    /// count`, `PointTransitions[] points = new PointTransitions[5]`,
+    /// `IntObjectHashMap map`, `boolean useHash`) and `StateSet statesSet =
+    /// new StateSet(5)` (`IntIntHashMap inner`, `long hashCode`, two
+    /// `boolean`s, `int[] arrayCache = new int[0]`).
+    ///
+    /// **Divergence.** The scratch is modelled as Java holds it before any
+    /// state is determinized (every `DState.transitions` still `null`): Rucene
+    /// keeps it in std collections that do not record the capacities Java's
+    /// hppc maps and grown arrays reach. Once a state has been determinized,
+    /// the measurement fails with an `UnsupportedOperationException`, rather
+    /// than report sizes Java would not.
+    pub fn nfa_run_automaton(&mut self, nfa: &NFARunAutomaton) -> Rc<JavaNode> {
+        self.shared(
+            nfa as *const NFARunAutomaton as *const (),
+            "org.apache.lucene.util.automaton.NFARunAutomaton",
+            |b| {
+                let views = nfa.d_state_views();
+                if views
+                    .iter()
+                    .any(|v| v.transitions.is_some() || v.has_minimal_transition)
+                {
+                    unmodelled("an NFARunAutomaton whose DFA states were determinized");
+                }
+
+                // transitionSet
+                let points_slots = JavaNode::new(
+                    "[Lorg.apache.lucene.util.automaton.Operations$PointTransitions;",
+                    NodeShape::Array {
+                        shallow_size: array_shallow_size(POINT_TRANSITION_SET_INITIAL_POINTS, REF),
+                        elements: Some(
+                            (0..POINT_TRANSITION_SET_INITIAL_POINTS)
+                                .map(|_| NodeChild::Null)
+                                .collect(),
+                        ),
+                    },
+                );
+                let map_keys = JavaNode::new(
+                    "[I",
+                    NodeShape::Array {
+                        shallow_size: array_shallow_size(FRESH_HPPC_MAP_SLOTS, 4),
+                        elements: None,
+                    },
+                );
+                let map_values = JavaNode::new(
+                    "[Ljava.lang.Object;",
+                    NodeShape::Array {
+                        shallow_size: array_shallow_size(FRESH_HPPC_MAP_SLOTS, REF),
+                        elements: Some(
+                            (0..FRESH_HPPC_MAP_SLOTS).map(|_| NodeChild::Null).collect(),
+                        ),
+                    },
+                );
+                let map = JavaNode::new(
+                    "org.apache.lucene.internal.hppc.IntObjectHashMap",
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[
+                            REF, REF, 4, 4, 4, 1, 8, 4,
+                        ]),
+                        fields: vec![("keys", node(map_keys)), ("values", node(map_values))],
+                    },
+                );
+                let transition_set = JavaNode::new(
+                    "org.apache.lucene.util.automaton.Operations$PointTransitionSet",
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[4, REF, REF, 1]),
+                        fields: vec![("map", node(map)), ("points", node(points_slots))],
+                    },
+                );
+
+                // dStates and dStateToOrd: the same DState objects.
+                let states: Vec<Rc<JavaNode>> = views.iter().map(|v| b.nfa_d_state(v)).collect();
+                let mut length = NFA_D_STATES_INITIAL_LENGTH;
+                for ord in 0..states.len() {
+                    if ord >= length {
+                        // `ArrayUtil.grow(dStates, ord + 1)`.
+                        length = ArrayUtil::oversize(ord + 1, REF as usize);
+                    }
+                }
+                let mut elements: Vec<NodeChild> =
+                    states.iter().map(|s| node(Rc::clone(s))).collect();
+                elements.resize_with(length, || NodeChild::Null);
+                let d_states = JavaNode::new(
+                    "[Lorg.apache.lucene.util.automaton.NFARunAutomaton$DState;",
+                    NodeShape::Array {
+                        shallow_size: array_shallow_size(length, REF),
+                        elements: Some(elements),
+                    },
+                );
+                let entries: Vec<(NodeChild, NodeChild)> = states
+                    .iter()
+                    .enumerate()
+                    .map(|(ord, s)| {
+                        let ord = i32::try_from(ord).unwrap_or(i32::MAX);
+                        (node(Rc::clone(s)), node(b.integer(ord)))
+                    })
+                    .collect();
+                let d_state_to_ord = b.hash_map(entries);
+
+                let classmap = b.slice_array(nfa.classmap(), "[I", 4);
+                let automaton = b.automaton(nfa.automaton());
+                let points = b.slice_array(nfa.points(), "[I", 4);
+
+                // statesSet
+                let int_array = |len: usize| {
+                    JavaNode::new(
+                        "[I",
+                        NodeShape::Array {
+                            shallow_size: array_shallow_size(len, 4),
+                            elements: None,
+                        },
+                    )
+                };
+                let inner = JavaNode::new(
+                    "org.apache.lucene.internal.hppc.IntIntHashMap",
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[
+                            REF, REF, 4, 4, 4, 1, 8, 4,
+                        ]),
+                        fields: vec![
+                            ("values", node(int_array(FRESH_HPPC_MAP_SLOTS))),
+                            ("keys", node(int_array(FRESH_HPPC_MAP_SLOTS))),
+                        ],
+                    },
+                );
+                let states_set = JavaNode::new(
+                    "org.apache.lucene.util.automaton.StateSet",
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[REF, 8, 1, 1, REF]),
+                        fields: vec![("inner", node(inner)), ("arrayCache", node(int_array(0)))],
+                    },
+                );
+
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        REF, REF, REF, REF, 4, REF, REF, REF,
+                    ]),
+                    fields: vec![
+                        ("transitionSet", node(transition_set)),
+                        ("dStates", node(d_states)),
+                        ("dStateToOrd", node(d_state_to_ord)),
+                        ("classmap", node(classmap)),
+                        ("automaton", node(automaton)),
+                        ("points", node(points)),
+                        ("statesSet", node(states_set)),
+                    ],
+                }
+            },
+        )
+    }
+
+    /// A `CompiledAutomaton.AUTOMATON_TYPE` constant: an `Enum`, measured by
+    /// its shallow size alone; one node per constant.
+    pub fn automaton_type(&mut self, automaton_type: AutomatonType) -> Rc<JavaNode> {
+        let ordinal: usize = match automaton_type {
+            AutomatonType::None => 0,
+            AutomatonType::All => 1,
+            AutomatonType::Single => 2,
+            AutomatonType::Normal => 3,
+        };
+        self.shared(
+            (ordinal + 1) as *const (),
+            "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE",
+            |_| NodeShape::Enum {
+                shallow_size: AUTOMATON_TYPE_SHALLOW_SIZE,
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.automaton.CompiledAutomaton`
+    /// (`CompiledAutomaton.java:53-99, 273`): `AUTOMATON_TYPE type`, `BytesRef
+    /// term`, `ByteRunAutomaton runAutomaton`, `Automaton automaton`,
+    /// `NFARunAutomaton nfaRunAutomaton`, `BytesRef commonSuffixRef`, `boolean
+    /// finite`, `int sinkState` and the scratch `Transition transition = new
+    /// Transition()`.
+    ///
+    /// Java's `automaton` is `runAutomaton.automaton`, the same object
+    /// (`CompiledAutomaton.java:263`), so the field refers to the run
+    /// automaton's node. Rucene creates the scratch `transition` where it is
+    /// used rather than storing it; the model holds the fresh `Transition`
+    /// Java holds.
+    pub fn compiled_automaton(&mut self, compiled: &CompiledAutomaton) -> Rc<JavaNode> {
+        self.shared(
+            compiled as *const CompiledAutomaton as *const (),
+            "org.apache.lucene.util.automaton.CompiledAutomaton",
+            |b| {
+                let transition = b.transition();
+                let automaton_type = b.automaton_type(compiled.automaton_type);
+                let common_suffix_ref = match &compiled.common_suffix_ref {
+                    Some(suffix) => node(b.bytes_ref(suffix)),
+                    None => NodeChild::Null,
+                };
+                let term = match &compiled.term {
+                    Some(term) => node(b.bytes_ref(term)),
+                    None => NodeChild::Null,
+                };
+                let nfa_run_automaton = match &compiled.nfa_run_automaton {
+                    Some(nfa) => node(b.nfa_run_automaton(nfa)),
+                    None => NodeChild::Null,
+                };
+                let (run_automaton, automaton) = match &compiled.run_automaton {
+                    Some(run_automaton) => {
+                        let run = b.byte_run_automaton(run_automaton);
+                        let automaton = b.automaton(run_automaton.automaton());
+                        (node(run), node(automaton))
+                    }
+                    None => (
+                        NodeChild::Null,
+                        match &compiled.automaton {
+                            Some(automaton) => node(b.automaton(automaton)),
+                            None => NodeChild::Null,
+                        },
+                    ),
+                };
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        REF, REF, REF, REF, REF, REF, 1, 4, REF,
+                    ]),
+                    fields: vec![
+                        ("transition", node(transition)),
+                        ("type", node(automaton_type)),
+                        ("commonSuffixRef", common_suffix_ref),
+                        ("term", term),
+                        ("nfaRunAutomaton", nfa_run_automaton),
+                        ("automaton", automaton),
+                        ("runAutomaton", run_automaton),
                     ],
                 }
             },

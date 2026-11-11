@@ -23,12 +23,13 @@ use rucene_test_framework::index::RandomIndexWriter;
 use rucene_test_framework::util::automaton::automaton_test_util::{
     AutomatonTestUtil, RandomAcceptedStrings,
 };
+use rucene_test_framework::util::ram_usage_tester::{ModelBuilder, RamUsageTester};
 use rucene_test_framework::util::test_util::TestUtil;
 use rucene_test_framework::util::LuceneTestCase;
 
 use crate::core_support::{
     arrays_to_string, assert_equals, assert_equals_delta, assert_equals_msg, assert_not_null,
-    class, det, ram_used_unmodelled, random, test, try_catch, JavaHashSet,
+    class, det, random, test, try_catch, JavaHashSet,
 };
 
 /// `TestNFARunAutomaton`.
@@ -52,7 +53,7 @@ fn test_ram_usage_estimation() -> Result<()> {
     let nfa = reg_exp.to_automaton()?;
     let run_automaton = NFARunAutomaton::from_automaton(nfa);
     let estimation = run_automaton.ram_bytes_used();
-    let actual = ram_used_unmodelled("NFARunAutomaton");
+    let actual = RamUsageTester::ram_used(&*ModelBuilder::new().nfa_run_automaton(&run_automaton));
     assert_equals_delta(actual as f64, estimation as f64, actual as f64 * 0.3);
     Ok(())
 }

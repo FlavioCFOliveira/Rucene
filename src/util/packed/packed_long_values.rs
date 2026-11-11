@@ -595,6 +595,24 @@ pub struct PackedLongValuesBuilderState {
 }
 
 impl PackedLongValuesBuilderState {
+    /// Returns the pending values, `None` once `build()` consumed the builder.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `PackedLongValues.Builder.pending`; public so that the test framework
+    /// can model the Java object.
+    pub fn pending(&self) -> Option<&[i64]> {
+        self.pending.as_deref()
+    }
+
+    /// Returns the page slots, `None` for a slot not packed yet.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `PackedLongValues.Builder.values`; public so that the test framework
+    /// can model the Java object.
+    pub fn values(&self) -> &[Option<Box<dyn PackedIntsReader + Send + Sync>>] {
+        &self.values
+    }
+
     fn new(
         page_size: usize,
         acceptable_overhead_ratio: f32,
@@ -1010,6 +1028,15 @@ pub struct DeltaPackedLongValuesBuilder {
 }
 
 impl DeltaPackedLongValuesBuilder {
+    /// Returns the minimum of each page slot.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `DeltaPackedLongValues.Builder.mins`; public so that the test framework
+    /// can model the Java object.
+    pub fn mins(&self) -> &[i64] {
+        &self.mins
+    }
+
     /// Creates a builder with pages of `page_size` values.
     ///
     /// Equivalent to `new DeltaPackedLongValues.Builder(int, float)`.
@@ -1096,6 +1123,24 @@ pub struct MonotonicLongValuesBuilder {
 }
 
 impl MonotonicLongValuesBuilder {
+    /// Returns the minimum of each page slot.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `DeltaPackedLongValues.Builder.mins` this builder inherits; public so
+    /// that the test framework can model the Java object.
+    pub fn mins(&self) -> &[i64] {
+        &self.mins
+    }
+
+    /// Returns the average slope of each page slot.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `MonotonicLongValues.Builder.averages`; public so that the test
+    /// framework can model the Java object.
+    pub fn averages(&self) -> &[f32] {
+        &self.averages
+    }
+
     /// Creates a builder with pages of `page_size` values.
     ///
     /// Equivalent to `new MonotonicLongValues.Builder(int, float)`.

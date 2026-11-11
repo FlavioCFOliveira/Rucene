@@ -84,6 +84,19 @@ impl DState {
     }
 }
 
+/// A copy of the fields of one `NFARunAutomaton.DState` (a private class in
+/// Java), for the test framework's model of the Java object; see
+/// [`NFARunAutomaton::d_state_views`].
+#[derive(Clone, Debug)]
+pub struct DStateView {
+    /// `int[] nfaStates`.
+    pub nfa_states: Vec<i32>,
+    /// `int[] transitions`, `null` until the first transition is added.
+    pub transitions: Option<Vec<i32>>,
+    /// Whether `Transition minimalTransition` is non-`null`.
+    pub has_minimal_transition: bool,
+}
+
 /// Mutable determinization state, kept behind a [`Mutex`] so the read-only
 /// [`ByteRunnable`] and [`TransitionAccessor`] contracts can be honoured by an
 /// automaton shared between enums.
@@ -215,6 +228,35 @@ impl NFARunAutomaton {
     /// Returns the source automaton this NFA runs.
     pub fn automaton(&self) -> &Automaton {
         &self.automaton
+    }
+
+    /// Returns the char interval start points (Java's private field
+    /// `points`); public so that the test framework can model the Java object.
+    pub fn points(&self) -> &[i32] {
+        &self.points
+    }
+
+    /// Returns the map from char number to class (Java's package-private
+    /// field `classmap`); public so that the test framework can model the Java
+    /// object.
+    pub fn classmap(&self) -> &[i32] {
+        &self.classmap
+    }
+
+    /// Returns a copy of the fields of every DFA state found so far, in
+    /// ordinal order (the non-`null` slots of Java's private field `dStates`,
+    /// each of them also a key of `dStateToOrd`); public so that the test
+    /// framework can model the Java object.
+    pub fn d_state_views(&self) -> Vec<DStateView> {
+        self.inner()
+            .d_states
+            .iter()
+            .map(|state| DStateView {
+                nfa_states: state.nfa_states.clone(),
+                transitions: state.transitions.clone(),
+                has_minimal_transition: state.minimal_transition.is_some(),
+            })
+            .collect()
     }
 
     /// Gets the character class of the given codepoint.

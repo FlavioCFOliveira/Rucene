@@ -257,6 +257,24 @@ impl FrequencyTrackingRingBuffer {
     pub fn as_frequency_map(&self) -> HashMap<i32, i32> {
         self.frequencies.as_map()
     }
+
+    /// Returns the ring of items.
+    ///
+    /// Equivalent to reading the private field
+    /// `FrequencyTrackingRingBuffer.buffer`; public so that the test framework
+    /// can model the Java object.
+    pub fn buffer(&self) -> &[i32] {
+        &self.buffer
+    }
+
+    /// Returns the bag of frequencies.
+    ///
+    /// Equivalent to reading the private field
+    /// `FrequencyTrackingRingBuffer.frequencies`; public so that the test
+    /// framework can model the Java object.
+    pub fn frequencies(&self) -> &IntBag {
+        &self.frequencies
+    }
 }
 
 impl Accountable for FrequencyTrackingRingBuffer {
@@ -272,15 +290,26 @@ impl Accountable for FrequencyTrackingRingBuffer {
 /// A bag of integers whose maximum size is known up front, so the backing
 /// storage never has to be resized.
 ///
-/// Port of the nested class `FrequencyTrackingRingBuffer.IntBag`.
+/// Port of the nested class `FrequencyTrackingRingBuffer.IntBag`, private in
+/// Java; public here so that the test framework can model the Java object.
 #[derive(Debug, Clone)]
-struct IntBag {
+pub struct IntBag {
     keys: Vec<i32>,
     freqs: Vec<i32>,
     mask: usize,
 }
 
 impl IntBag {
+    /// Returns the hash table of keys (Java's private field `keys`).
+    pub fn keys(&self) -> &[i32] {
+        &self.keys
+    }
+
+    /// Returns the frequency of each key slot (Java's private field `freqs`).
+    pub fn freqs(&self) -> &[i32] {
+        &self.freqs
+    }
+
     fn new(max_size: usize) -> Self {
         // Load factor of 2/3.
         let mut capacity = (max_size * 3 / 2).max(2);

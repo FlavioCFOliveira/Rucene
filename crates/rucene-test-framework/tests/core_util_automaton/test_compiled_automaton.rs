@@ -10,12 +10,13 @@ use rucene::util::automaton::{
 };
 use rucene::util::{Accountable, BytesRef, BytesRefBuilder};
 use rucene_test_framework::util::lucene_test_case::RANDOM_MULTIPLIER;
+use rucene_test_framework::util::ram_usage_tester::{ModelBuilder, RamUsageTester};
 use rucene_test_framework::util::test_util::TestUtil;
 use rucene_test_framework::util::LuceneTestCase;
 
 use crate::core_support::{
     assert_equals, assert_equals_delta, assert_equals_msg, assert_not_null, assert_null, class,
-    det, ram_used_unmodelled, random, test, unchecked, verbose, JavaHashSet,
+    det, random, test, unchecked, verbose, JavaHashSet,
 };
 
 /// `TestCompiledAutomaton`.
@@ -196,7 +197,7 @@ fn test_ram_bytes_used() -> Result<()> {
     assert_equals(&AutomatonType::Normal, &ca.automaton_type);
     assert_not_null(&ca.run_automaton);
     let reported = ca.ram_bytes_used();
-    let actual = ram_used_unmodelled("CompiledAutomaton");
+    let actual = RamUsageTester::ram_used(&*ModelBuilder::new().compiled_automaton(&ca));
     assert_equals_delta(actual as f64, reported as f64, actual as f64 * 0.10);
     Ok(())
 }

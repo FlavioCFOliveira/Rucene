@@ -6,9 +6,10 @@ use std::sync::Arc;
 use randomizedtesting::jdk::reflect::Class;
 use rucene::error::Result;
 use rucene::util::{Accountable, FrequencyTrackingRingBuffer};
+use rucene_test_framework::util::ram_usage_tester::{ModelBuilder, RamUsageTester};
 use rucene_test_framework::util::LuceneTestCase;
 
-use crate::core_support::{assert_equals, class, ram_used_unmodelled, random, test, unchecked};
+use crate::core_support::{assert_equals, class, random, test, unchecked};
 
 /// `TestFrequencyTrackingRingBuffer`.
 pub fn class_def() -> Arc<Class> {
@@ -85,7 +86,7 @@ fn test_ram_bytes_used() -> Result<()> {
         buffer.add(random().next_int());
     }
     assert_equals(
-        &ram_used_unmodelled("FrequencyTrackingRingBuffer"),
+        &RamUsageTester::ram_used(&*ModelBuilder::new().frequency_tracking_ring_buffer(&buffer)),
         &buffer.ram_bytes_used(),
     );
     Ok(())

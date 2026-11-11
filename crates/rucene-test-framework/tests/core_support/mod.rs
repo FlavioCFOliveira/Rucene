@@ -180,22 +180,6 @@ pub fn assertion_error(message: impl Into<String>) -> LuceneError {
     LuceneError::from(LuceneErrorKind::AssertionError(message.into()))
 }
 
-/// `RamUsageTester.ramUsed(object)` over a Rucene type that has no
-/// [`RamObject`](rucene_test_framework::util::ram_usage_tester::RamObject)
-/// model of its Java object graph yet: the measurement cannot be made, so
-/// the test fails with an `UnsupportedOperationException` naming the type.
-///
-/// **Divergence from Lucene 10.5.0.** Java walks any object by reflection;
-/// the port measures only the types that describe their Java layout, and
-/// `type_name` does not yet.
-pub fn ram_used_unmodelled(type_name: &str) -> i64 {
-    Throwable::new(
-        "java.lang.UnsupportedOperationException",
-        format!("RamUsageTester.ramUsed: no RamObject model of {type_name}"),
-    )
-    .throw()
-}
-
 /// `String.valueOf(int[])`-free rendering of `Arrays.toString(int[])`.
 pub fn arrays_to_string<T: std::fmt::Display>(a: &[T]) -> String {
     let parts: Vec<String> = a.iter().map(|v| v.to_string()).collect();

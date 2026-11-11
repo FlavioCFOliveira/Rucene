@@ -149,6 +149,25 @@ impl RunAutomaton {
         &self.automaton
     }
 
+    /// Returns the accept states (Java's `protected` field `accept`); public
+    /// so that the test framework can model the Java object.
+    pub fn accept(&self) -> &FixedBitSet {
+        &self.accept
+    }
+
+    /// Returns the transition table (Java's `protected` field `transitions`);
+    /// public so that the test framework can model the Java object.
+    pub fn transitions(&self) -> &[i32] {
+        &self.transitions
+    }
+
+    /// Returns the map from char number to class (Java's package-private
+    /// field `classmap`); public so that the test framework can model the Java
+    /// object.
+    pub fn classmap(&self) -> &[i32] {
+        &self.classmap
+    }
+
     /// Gets the character class of the given codepoint.
     pub(crate) fn get_char_class(&self, c: i32) -> i32 {
         // binary search

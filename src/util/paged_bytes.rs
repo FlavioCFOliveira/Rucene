@@ -81,6 +81,25 @@ impl PagedBytes {
         self.block_size
     }
 
+    /// Returns the pages added so far (the first `numBlocks` slots of Java's
+    /// private field `blocks`); public so that the test framework can model
+    /// the Java object.
+    pub fn blocks(&self) -> &[Arc<Vec<u8>>] {
+        &self.blocks
+    }
+
+    /// Returns the length of the `byte[][] blocks` array Java holds; public so
+    /// that the test framework can model the Java object.
+    pub fn blocks_length(&self) -> usize {
+        self.blocks_length
+    }
+
+    /// Returns the page being filled (Java's private field `currentBlock`);
+    /// public so that the test framework can model the Java object.
+    pub fn current_block(&self) -> Option<&[u8]> {
+        self.current_block.as_deref()
+    }
+
     /// Equivalent to the private `PagedBytes.addBlock`: `blocks =
     /// ArrayUtil.grow(blocks, numBlocks + 1)`, then the block is appended.
     fn add_block(&mut self, block: Vec<u8>) {
@@ -390,6 +409,12 @@ pub struct PagedBytesReader {
 }
 
 impl PagedBytesReader {
+    /// Returns the pages (Java's private field `blocks`); public so that the
+    /// test framework can model the Java object.
+    pub fn blocks(&self) -> &[Arc<Vec<u8>>] {
+        &self.blocks
+    }
+
     /// Returns the `length` bytes stored at `start`.
     ///
     /// Equivalent to `PagedBytes.Reader.fillSlice(BytesRef, long, int)`

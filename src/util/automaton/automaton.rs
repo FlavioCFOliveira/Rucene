@@ -237,6 +237,20 @@ impl Automaton {
         &self.is_accept
     }
 
+    /// Returns the per-state transition index and count pairs (Java's private
+    /// field `states`); public so that the test framework can model the Java
+    /// object.
+    pub fn states_array(&self) -> &[i32] {
+        &self.states
+    }
+
+    /// Returns the `dest`, `min`, `max` triples of every transition (Java's
+    /// private field `transitions`); public so that the test framework can
+    /// model the Java object.
+    pub fn transitions_array(&self) -> &[i32] {
+        &self.transitions
+    }
+
     /// Returns true if this state is an accept state.
     pub fn is_accept(&self, state: i32) -> bool {
         if state < 0 {

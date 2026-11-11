@@ -15,10 +15,11 @@ use rucene::store::{DataInput, DataOutput, DEFAULT_IO_CONTEXT};
 use rucene::util::{Accountable, BytesRef, PagedBytes};
 use rucene_test_framework::store::mock_directory_wrapper::Throttling;
 use rucene_test_framework::util::lucene_test_case::TEST_NIGHTLY;
+use rucene_test_framework::util::ram_usage_tester::{ModelBuilder, RamUsageTester};
 use rucene_test_framework::util::test_util::TestUtil;
 use rucene_test_framework::util::LuceneTestCase;
 
-use crate::core_support::{assert_equals, class, ram_used_unmodelled, random, test};
+use crate::core_support::{assert_equals, class, random, test};
 
 /// `TestPagedBytes`.
 pub fn class_def() -> Arc<Class> {
@@ -244,11 +245,17 @@ fn test_ram_bytes_used() -> Result<()> {
             LuceneTestCase::new_bytes_ref_str(&TestUtil::random_simple_string_max(&*random(), 10));
         pointer = b.copy_using_length_prefix(&bytes)?;
     }
-    assert_equals(&ram_used_unmodelled("PagedBytes"), &b.ram_bytes_used());
-    let reader = b.freeze(random().next_boolean())?;
-    assert_equals(&ram_used_unmodelled("PagedBytes"), &b.ram_bytes_used());
     assert_equals(
-        &ram_used_unmodelled("PagedBytes.Reader"),
+        &RamUsageTester::ram_used(&*ModelBuilder::new().paged_bytes(&b)),
+        &b.ram_bytes_used(),
+    );
+    let reader = b.freeze(random().next_boolean())?;
+    assert_equals(
+        &RamUsageTester::ram_used(&*ModelBuilder::new().paged_bytes(&b)),
+        &b.ram_bytes_used(),
+    );
+    assert_equals(
+        &RamUsageTester::ram_used(&*ModelBuilder::new().paged_bytes_reader(&reader)),
         &reader.ram_bytes_used(),
     );
     Ok(())
