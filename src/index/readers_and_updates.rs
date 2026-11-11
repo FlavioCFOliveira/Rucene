@@ -1618,16 +1618,57 @@ impl ReadersAndUpdates {
     /// Returns a `SegmentReader`.  The caller must call `release` when done.
     pub fn get_reader(&self, context: &dyn IOContext) -> Result<Arc<SegmentReader>> {
         let mut state = self.state.lock().expect("state mutex poisoned");
-        if state.reader.is_none() {
-            let reader = SegmentReader::new(
-                state.info.clone(),
-                state.index_created_version_major,
+        Self::get_reader_locked(&mut state, context)
+    }
+
+    /// `getReader(IOContext)` (`ReadersAndUpdates.java:177-187`) for a caller
+    /// holding the state lock: a new reader is stored *before*
+    /// `pendingDeletes.onNewReader(reader, info)` runs, so a failing
+    /// `onNewReader` leaves it owned here, released by `dropReaders`; the
+    /// caller gets a reference of its own.
+    fn get_reader_locked(
+        state: &mut RauState,
+        context: &dyn IOContext,
+    ) -> Result<Arc<SegmentReader>> {
+        let RauState {
+            reader,
+            info,
+            index_created_version_major,
+            pending_deletes,
+            ..
+        } = state;
+        Self::get_reader_parts(
+            reader,
+            info,
+            *index_created_version_major,
+            pending_deletes,
+            context,
+        )
+    }
+
+    /// [`get_reader_locked`](Self::get_reader_locked) over the fields it
+    /// touches, for a caller that holds them apart.
+    fn get_reader_parts<P>(
+        reader: &mut Option<Arc<SegmentReader>>,
+        info: &SegmentCommitInfo,
+        index_created_version_major: i32,
+        pending_deletes: &mut P,
+        context: &dyn IOContext,
+    ) -> Result<Arc<SegmentReader>>
+    where
+        P: LatestReaderDeletes + ?Sized,
+    {
+        if reader.is_none() {
+            // We steal returned ref:
+            let opened = reader.insert(Arc::new(SegmentReader::new(
+                info.clone(),
+                index_created_version_major,
                 context,
-            )?;
-            Self::init_pending_deletes(&mut state, &reader)?;
-            state.reader = Some(Arc::new(reader));
+            )?));
+            Self::init_pending_deletes_parts(info, pending_deletes, opened)?;
         }
-        let reader = state.reader.as_ref().expect("just set");
+        // Ref for caller
+        let reader = reader.as_ref().expect("just set");
         reader.inc_ref()?;
         Ok(Arc::clone(reader))
     }
@@ -1646,15 +1687,9 @@ impl ReadersAndUpdates {
             PendingDeletesKind::Soft(pd) => pd.must_init_on_delete(),
         };
         if state.reader.is_none() && must_init {
-            let reader = SegmentReader::new(
-                state.info.clone(),
-                state.index_created_version_major,
-                &*DEFAULT_IO_CONTEXT,
-            )?;
-            Self::init_pending_deletes(&mut state, &reader)?;
-            state.reader = Some(Arc::new(reader));
-            let r = state.reader.as_ref().expect("just set");
-            r.dec_ref()?;
+            // pass a reader to initialize the pending deletes
+            // (`ReadersAndUpdates.java:195-197`): `getReader(...).decRef()`.
+            Self::get_reader_locked(&mut state, &*DEFAULT_IO_CONTEXT)?.dec_ref()?;
         }
         match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.delete(doc_id),
@@ -1677,13 +1712,8 @@ impl ReadersAndUpdates {
     pub fn get_read_only_clone(&self, context: &dyn IOContext) -> Result<Arc<SegmentReader>> {
         let mut state = self.state.lock().expect("state mutex poisoned");
         if state.reader.is_none() {
-            let reader = SegmentReader::new(
-                state.info.clone(),
-                state.index_created_version_major,
-                context,
-            )?;
-            Self::init_pending_deletes(&mut state, &reader)?;
-            state.reader = Some(Arc::new(reader));
+            // `getReader(context).decRef()` (`ReadersAndUpdates.java:221-224`).
+            Self::get_reader_locked(&mut state, context)?.dec_ref()?;
         }
         let reader = Arc::clone(state.reader.as_ref().expect("just set"));
         let info = state.info.clone();
@@ -2573,14 +2603,15 @@ impl ReadersAndUpdates {
     {
         if reader.is_none() {
             // Get a reader and dec the ref right away; we just make sure we
-            // have a reader.
-            let opened = SegmentReader::new(
-                info.clone(),
+            // have a reader (`ReadersAndUpdates.java:243-246`).
+            Self::get_reader_parts(
+                reader,
+                info,
                 index_created_version_major,
+                pending_deletes,
                 &*DEFAULT_IO_CONTEXT,
-            )?;
-            Self::init_pending_deletes_parts(info, pending_deletes, &opened)?;
-            *reader = Some(Arc::new(opened));
+            )?
+            .dec_ref()?;
         }
         let current = Arc::clone(reader.as_ref().expect("just set"));
         if pending_deletes.needs_refresh_for(&current) {
@@ -2681,18 +2712,8 @@ impl ReadersAndUpdates {
                 .extend(updates);
         }
 
-        // `getReader(context)`, inlined so that the state lock is held once.
-        if state.reader.is_none() {
-            let reader = SegmentReader::new(
-                state.info.clone(),
-                state.index_created_version_major,
-                context,
-            )?;
-            Self::init_pending_deletes(&mut state, &reader)?;
-            state.reader = Some(Arc::new(reader));
-        }
-        let mut reader = Arc::clone(state.reader.as_ref().expect("just set"));
-        reader.inc_ref()?;
+        // `getReader(context)`, under the state lock already held.
+        let mut reader = Self::get_reader_locked(&mut state, context)?;
 
         let needs_refresh = match &mut state.pending_deletes {
             PendingDeletesKind::Hard(pd) => pd.needs_refresh(&reader),
@@ -4759,6 +4780,127 @@ mod needs_refresh_tests {
         )
         .unwrap();
         (info, reader)
+    }
+
+    /// `delete(docID)` initializes soft pending deletes with
+    /// `getReader(IOContext.DEFAULT).decRef()` (`ReadersAndUpdates.java:194-199`):
+    /// the reader `getReader` stores keeps the reference it was created with,
+    /// so the `ReadersAndUpdates` owns an open reader afterwards — not a
+    /// closed one, which a `decRef` without the caller's `incRef` leaves.
+    #[test]
+    fn a_delete_that_initializes_soft_deletes_leaves_an_open_owned_reader() {
+        // A committed segment of two documents, the first soft-deleted: a
+        // soft deletion on record makes `PendingSoftDeletes` initialize its
+        // live docs from a reader on the first delete.
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = IndexWriterConfig::new();
+        config.set_soft_deletes_field(Some("soft".to_string()));
+        config
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let doc = |id: &str| {
+            let mut d = Document::new();
+            d.add(Box::new(
+                StringField::new("id", id.to_string(), Store::NO).unwrap(),
+            ));
+            d
+        };
+        writer.add_document(&doc("a")).unwrap();
+        let numeric = crate::document::FieldType::new();
+        numeric
+            .set_doc_values_type(crate::index::DocValuesType::NUMERIC)
+            .unwrap();
+        numeric.freeze();
+        let soft = crate::document::Field::new_with_number(
+            "soft",
+            crate::document::NumericValue::Long(1),
+            numeric,
+        )
+        .unwrap();
+        writer
+            .soft_update_document(crate::index::Term::from_text("id", "a"), &doc("a"), &[soft])
+            .unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(dir).unwrap();
+        let info = infos.info(0).clone();
+        assert_eq!(info.get_soft_del_count(), 1);
+        let rau = ReadersAndUpdates::new(
+            infos.index_created_version_major(),
+            info.clone(),
+            Some("soft"),
+        );
+        assert!(rau.delete(1).unwrap());
+        {
+            let state = rau.state.lock().unwrap();
+            let owned = state.reader.as_ref().expect("delete stored a reader");
+            assert_eq!(
+                crate::index::IndexReader::get_ref_count(owned.as_ref()),
+                1,
+                "the stored reader keeps its own reference"
+            );
+        }
+        rau.drop_readers().unwrap();
+    }
+
+    /// `getReader` stores a new reader before `pendingDeletes.onNewReader`
+    /// runs (`ReadersAndUpdates.java:178-182`), so the reader is owned — and
+    /// later released by `dropReaders` — however `onNewReader` ends.
+    #[test]
+    fn get_reader_stores_the_reader_before_on_new_reader() {
+        let (info, reader) = segment();
+        crate::index::index_reader::IndexReader::close(&reader).unwrap();
+        let rau = ReadersAndUpdates::new(
+            crate::util::Version::LATEST.major as i32,
+            info.clone(),
+            None,
+        );
+        let mut state = rau.state.lock().unwrap();
+        // A tracker whose `onNewReader` fails, standing for one that hits an
+        // I/O error while it reads the soft-deletes field.
+        struct Failing;
+        impl LatestReaderDeletes for Failing {
+            fn notify_new_reader(
+                &mut self,
+                _reader: &SegmentReader,
+                _info: &SegmentCommitInfo,
+            ) -> Result<()> {
+                Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other("onNewReader failed"),
+                )))
+            }
+            fn needs_refresh_for(&mut self, _reader: &SegmentReader) -> bool {
+                false
+            }
+            fn live_docs(&mut self) -> Option<Box<dyn Bits>> {
+                None
+            }
+            fn hard_live_docs(&mut self) -> Option<Box<dyn Bits>> {
+                None
+            }
+            fn live_num_docs(&self) -> i32 {
+                0
+            }
+        }
+        let state = &mut *state;
+        let info = state.info.clone();
+        let err = ReadersAndUpdates::get_reader_parts(
+            &mut state.reader,
+            &info,
+            state.index_created_version_major,
+            &mut Failing,
+            &*DEFAULT_IO_CONTEXT,
+        )
+        .expect_err("onNewReader failed");
+        assert!(err.to_string().contains("onNewReader failed"), "{err}");
+        let owned = state
+            .reader
+            .as_ref()
+            .expect("the reader is stored before onNewReader");
+        assert_eq!(crate::index::IndexReader::get_ref_count(owned.as_ref()), 1);
+        let owned = state.reader.take().unwrap();
+        owned.dec_ref().unwrap();
     }
 
     /// `PendingDeletes.needsRefresh` compares the reader's live docs by
