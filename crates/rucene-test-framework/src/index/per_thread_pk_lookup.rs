@@ -26,7 +26,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use rucene::error::Result;
-use rucene::index::index_reader::{CacheHelper, CacheKey, IndexReader};
+use rucene::index::index_reader::{CacheKey, IndexReader};
 use rucene::index::{PostingsEnum, TermsEnum};
 use rucene::search::NO_MORE_DOCS;
 use rucene::util::{Bits, BytesRef};
@@ -50,10 +50,8 @@ type SharedPostingsEnum = Rc<RefCell<Option<Box<dyn PostingsEnum>>>>;
 /// objects between the old and the new arrays; the sharing makes the type
 /// neither `Send` nor `Sync` (the port's enums are not `Send` either).
 ///
-/// Java keys the reusable enums on the segments' core `CacheKey`s, whose
-/// identity is the key object; this port's key is identified by its address,
-/// so the lookup keeps each key's [`CacheHelper`] alive with it, which keeps
-/// the address from being reused by another key while the map holds it.
+/// Java keys the reusable enums on the segments' core `CacheKey`s, compared
+/// by identity, as [`CacheKey`] is.
 pub struct PerThreadPKLookup {
     id_field_name: String,
     terms_enums: Vec<Option<SharedTermsEnum>>,
@@ -62,14 +60,7 @@ pub struct PerThreadPKLookup {
     doc_bases: Vec<i32>,
     num_enums: usize,
     has_deletions: bool,
-    enum_indexes: HashMap<usize, usize>,
-    /// The helpers whose keys `enum_indexes` holds.
-    key_holders: Vec<Box<dyn CacheHelper>>,
-}
-
-/// The identity of a cache key: its address.
-fn key_identity(key: &CacheKey) -> usize {
-    key as *const CacheKey as usize
+    enum_indexes: HashMap<CacheKey, usize>,
 }
 
 impl PerThreadPKLookup {
@@ -87,7 +78,7 @@ impl PerThreadPKLookup {
     fn new_reusing(
         reader: &Arc<dyn IndexReader>,
         id_field_name: &str,
-        prev_enum_indexes: &HashMap<usize, usize>,
+        prev_enum_indexes: &HashMap<CacheKey, usize>,
         reusable_terms_enums: &[Option<SharedTermsEnum>],
         reusable_postings_enums: &[SharedPostingsEnum],
     ) -> Result<Self> {
@@ -102,14 +93,16 @@ impl PerThreadPKLookup {
         let mut live_docs: Vec<Option<Box<dyn Bits>>> = (0..n).map(|_| None).collect();
         let mut doc_bases = vec![0i32; n];
         let mut enum_indexes = HashMap::new();
-        let mut key_holders = Vec::new();
         let mut num_enums = 0usize;
         let mut has_deletions = false;
         for context in &leaves {
             let leaf_reader = context.leaf_reader();
             let cache_helper = leaf_reader.get_core_cache_helper();
-            let cache_key = cache_helper.as_ref().map(|h| key_identity(h.get_key()));
-            match cache_key.and_then(|key| prev_enum_indexes.get(&key)) {
+            let cache_key = cache_helper.as_ref().map(|h| h.get_key().clone());
+            match cache_key
+                .as_ref()
+                .and_then(|key| prev_enum_indexes.get(key))
+            {
                 Some(&seg) => {
                     // Reuse termsEnum, postingsEnum.
                     terms_enums[num_enums] = reusable_terms_enums[seg].clone();
@@ -123,9 +116,8 @@ impl PerThreadPKLookup {
                 }
             }
             if terms_enums[num_enums].is_some() {
-                if let (Some(key), Some(helper)) = (cache_key, cache_helper) {
+                if let Some(key) = cache_key {
                     enum_indexes.insert(key, num_enums);
-                    key_holders.push(helper);
                 }
                 doc_bases[num_enums] = context.doc_base();
                 live_docs[num_enums] = leaf_reader.get_live_docs();
@@ -142,7 +134,6 @@ impl PerThreadPKLookup {
             num_enums,
             has_deletions,
             enum_indexes,
-            key_holders,
         })
     }
 
@@ -207,7 +198,6 @@ impl fmt::Debug for PerThreadPKLookup {
             .field("id_field_name", &self.id_field_name)
             .field("num_enums", &self.num_enums)
             .field("has_deletions", &self.has_deletions)
-            .field("key_holders", &self.key_holders.len())
             .finish_non_exhaustive()
     }
 }

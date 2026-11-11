@@ -323,10 +323,7 @@ fn probe(r: &dyn LeafReader) -> String {
 }
 
 fn same_key(a: &dyn CacheHelper, b: &dyn CacheHelper) -> bool {
-    std::ptr::eq(
-        a.get_key() as *const CacheKey,
-        b.get_key() as *const CacheKey,
-    )
+    a.get_key() == b.get_key()
 }
 
 fn helper_relation(

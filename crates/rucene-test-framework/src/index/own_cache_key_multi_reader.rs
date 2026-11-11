@@ -23,7 +23,6 @@ use std::fmt;
 use std::sync::{Arc, Mutex, Weak};
 
 use rucene::error::Result;
-use rucene::index::filter_directory_reader::SharedCacheKey;
 use rucene::index::index_reader::{
     build_composite_context, composite_reader_to_string, CacheHelper, CacheKey, ClosedListener,
     CompositeReader, IndexReader, IndexReaderCore, StoredFields,
@@ -36,12 +35,8 @@ use rucene::util::IOUtils;
 
 /// The state Java's `readerClosedListeners` set and anonymous `cacheHelper`
 /// hold: the reader's own key and its closed listeners.
-///
-/// The key's identity is its address, which must stay put and not be reused
-/// while the reader lives: it is a [`SharedCacheKey`], whose key lies inside
-/// its own heap cell.
 struct OwnCacheKeyState {
-    cache_key: SharedCacheKey,
+    cache_key: CacheKey,
     /// Java's `CopyOnWriteArraySet<ClosedListener>`: insertion order. A
     /// `Box` is a distinct listener each time it is added, so the set's
     /// de-duplication never applies.
@@ -92,7 +87,7 @@ impl fmt::Debug for OwnCacheHelper {
 
 impl CacheHelper for OwnCacheHelper {
     fn get_key(&self) -> &CacheKey {
-        self.state.cache_key.key()
+        &self.state.cache_key
     }
 
     /// `ensureOpen()`, then the listener is added. The reader's
@@ -167,7 +162,7 @@ impl IndexReader for OwnCacheKeyMultiReader {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         IOUtils::apply_to_all(listeners.iter().map(Some).collect(), |l| {
-            l.on_close(self.state.cache_key.key().clone())
+            l.on_close(self.state.cache_key.clone())
         })
     }
 

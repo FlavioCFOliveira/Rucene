@@ -18,7 +18,6 @@ use std::io;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::error::{LuceneError, Result};
-use crate::index::filter_directory_reader::SharedCacheKey;
 use crate::index::index_commit::IndexCommit;
 use crate::index::index_file_names::SEGMENTS;
 use crate::index::index_reader::{
@@ -1569,12 +1568,10 @@ impl IndexCommit for ReaderCommit {
 
 /// Reader-level cache helper for `StandardDirectoryReader`.
 ///
-/// Java's `cacheKey` is an object whose identity neither moves nor is reused
-/// while referenced; the key is a [`SharedCacheKey`], whose key lies inside its
-/// own heap cell. A bare zero-sized field sat at offset 32 of this 32-byte
-/// struct, one past its end, where another object's address can start.
+/// Java's anonymous `CacheHelper` of `StandardDirectoryReader`, with its one
+/// `cacheKey` object, created with the reader.
 struct DirectoryReaderCacheHelper {
-    key: SharedCacheKey,
+    key: CacheKey,
     listeners: Mutex<Vec<Box<dyn ClosedListener>>>,
 }
 
@@ -1593,7 +1590,7 @@ impl Debug for DirectoryReaderCacheHelper {
 impl DirectoryReaderCacheHelper {
     fn new() -> Self {
         Self {
-            key: SharedCacheKey::new(),
+            key: CacheKey::new(),
             listeners: Mutex::new(Vec::new()),
         }
     }
@@ -1603,8 +1600,8 @@ impl DirectoryReaderCacheHelper {
             LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
         for l in guard.iter() {
-            // `CacheKey` is a unit struct, so we can pass a fresh instance.
-            l.on_close(CacheKey)?;
+            // `listener.onClose(cacheKey)`.
+            l.on_close(self.key.clone())?;
         }
         Ok(())
     }
@@ -1612,7 +1609,7 @@ impl DirectoryReaderCacheHelper {
 
 impl CacheHelper for DirectoryReaderCacheHelper {
     fn get_key(&self) -> &CacheKey {
-        self.key.key()
+        &self.key
     }
 
     fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
@@ -2077,28 +2074,20 @@ mod tests {
     use super::*;
     use crate::codecs::segment_info::SegmentInfoFormat;
 
-    /// The reader cache key `PerThreadPKLookup` and the query cache compare by
-    /// address lies strictly inside a heap cell of its own and differs from
-    /// every other live reader's key, as Java's `cacheKey` object's identity
-    /// does. A bare zero-sized field of the helper sat one past its end.
+    /// Each reader's cache key is its own object, as Java's `cacheKey` is:
+    /// distinct from every other live reader's key, and the same key on every
+    /// call.
     #[test]
-    fn reader_cache_keys_are_distinct_and_inside_their_own_cells() {
+    fn reader_cache_keys_are_distinct_objects() {
         let helpers: Vec<Arc<DirectoryReaderCacheHelper>> = (0..64)
             .map(|_| Arc::new(DirectoryReaderCacheHelper::new()))
             .collect();
-        let mut addresses = Vec::new();
+        let keys: std::collections::HashSet<CacheKey> =
+            helpers.iter().map(|h| h.get_key().clone()).collect();
+        assert_eq!(keys.len(), helpers.len());
         for helper in &helpers {
-            let address = helper.get_key() as *const CacheKey as usize;
-            let (start, end) = helper.key.cell_bounds();
-            assert!(
-                (start..end).contains(&address),
-                "key {address:#x} outside its cell [{start:#x}, {end:#x})"
-            );
-            addresses.push(address);
+            assert_eq!(helper.get_key(), helper.get_key());
         }
-        addresses.sort_unstable();
-        addresses.dedup();
-        assert_eq!(addresses.len(), helpers.len());
     }
 
     /// `BaseCompositeReader.docFreq`, `totalTermFreq`, `getSumDocFreq` and

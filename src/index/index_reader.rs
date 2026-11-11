@@ -23,12 +23,86 @@ use crate::index::TermVectors;
 // Cache helpers
 // ---------------------------------------------------------------------------
 
-/// Opaque cache key identifying a resource that can be cached on.
+/// A cache key identifying a resource that is being cached on.
 ///
-/// Equivalent to `org.apache.lucene.index.IndexReader.CacheKey`. Identity
-/// (`==`) is the only meaningful comparison.
-#[derive(Debug, Default, Clone)]
-pub struct CacheKey;
+/// Equivalent to `org.apache.lucene.index.IndexReader.CacheKey`
+/// (`IndexReader.java:131-134`), a `final` class with no state whose
+/// instances are compared by reference: two keys are the same key only if
+/// they are the same object.
+///
+/// The port holds that object behind an [`Arc`]: [`CacheKey::new`] allocates a
+/// new object, [`Clone`] hands out another reference to the *same* object (a
+/// Java reference copy), and [`PartialEq`]/[`Hash`] compare and hash the
+/// object's identity, so a `HashMap<CacheKey, _>` is Java's
+/// `IdentityHashMap<CacheKey, _>` (a Java `HashMap` keyed on a `CacheKey`
+/// behaves the same, as the class overrides neither `equals` nor `hashCode`).
+/// The identity cannot be reused while any clone is alive, as a referenced Java
+/// object's identity cannot.
+#[derive(Clone)]
+pub struct CacheKey(Arc<CacheKeyObject>);
+
+/// The object a [`CacheKey`] refers to. It is not empty, so that its address
+/// lies strictly inside its own allocation rather than one past its end, where
+/// another allocation may start.
+struct CacheKeyObject {
+    _non_empty: u8,
+}
+
+impl CacheKey {
+    /// A new key, distinct from every other key.
+    ///
+    /// Equivalent to the package-private `CacheKey()` constructor ("only
+    /// instantiable by core impls"); public so that the readers of other
+    /// modules and crates that Java places in `org.apache.lucene.index`, or
+    /// reaches through `IndexPackageAccess.newCacheKey()`, can create one.
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self(Arc::new(CacheKeyObject { _non_empty: 0 }))
+    }
+
+    /// The address of the key object: the identity this key compares and
+    /// hashes by, standing for Java's identity hash where a rendering needs one
+    /// (`Object.toString()`).
+    pub fn identity(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+}
+
+impl PartialEq for CacheKey {
+    /// Reference equality, Java's `==` on two `CacheKey`s.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CacheKey {}
+
+impl std::hash::Hash for CacheKey {
+    /// The identity hash, consistent with [`PartialEq`].
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.identity().hash(state);
+    }
+}
+
+impl Debug for CacheKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
+impl Display for CacheKey {
+    /// `CacheKey` does not override `toString()`, so Java renders
+    /// `Object.toString()`: the binary class name, `@`, and the identity hash
+    /// in hexadecimal, for which the port substitutes the key's
+    /// [`identity`](Self::identity) (see [`java_object_to_string`]).
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "org.apache.lucene.index.IndexReader$CacheKey@{:x}",
+            self.identity()
+        )
+    }
+}
 
 /// Listener invoked when a resource guarded by a [`CacheKey`] is closed.
 ///

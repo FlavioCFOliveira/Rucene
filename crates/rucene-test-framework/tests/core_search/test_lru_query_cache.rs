@@ -2,8 +2,8 @@
 //!
 //! A Java subclass of `LRUQueryCache` (`new LRUQueryCache(...) { ... }`) is a
 //! [`LRUQueryCacheOverrides`] installed with [`LRUQueryCache::with_overrides`];
-//! the reader core key Java passes to its callbacks is the identity
-//! [`cache_key_identity`] computes.
+//! the reader core key Java passes to its callbacks is the leaf's core
+//! `CacheKey`.
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -28,7 +28,7 @@ use rucene::index::filter_directory_reader::{
     DirectoryReaderWrapper, FilterDirectoryReader, SubReaderWrapper,
 };
 use rucene::index::filter_reader::FilterLeafReader;
-use rucene::index::index_reader::CacheHelper;
+use rucene::index::index_reader::{CacheHelper, CacheKey};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge_policy::NoMergePolicy;
@@ -57,10 +57,10 @@ use rucene::search::similarities::Explanation;
 use rucene::search::term_query::TermQuery;
 use rucene::search::weight::{FilterWeight, Weight};
 use rucene::search::{
-    cache_key_identity, min_segment_size_predicate, BooleanQuery, BooleanQueryBuilder, BoostQuery,
-    CacheAndCount, CollectionResult, Collector, CollectorManager, LRUQueryCache,
-    LRUQueryCacheOverrides, LeafCollector, Occur, Query, QueryKey, ScoreMode,
-    HASHTABLE_RAM_BYTES_PER_ENTRY, LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY,
+    min_segment_size_predicate, BooleanQuery, BooleanQueryBuilder, BoostQuery, CacheAndCount,
+    CollectionResult, Collector, CollectorManager, LRUQueryCache, LRUQueryCacheOverrides,
+    LeafCollector, Occur, Query, QueryKey, ScoreMode, HASHTABLE_RAM_BYTES_PER_ENTRY,
+    LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY,
 };
 use rucene::util::{Accountable, Bits, BytesRef, RamUsageEstimator};
 use rucene_test_framework::hamcrest::less_than_or_equal_to;
@@ -323,14 +323,13 @@ fn leaves(reader: &Arc<dyn DirectoryReader>) -> Result<Vec<Arc<LeafReaderContext
     (Arc::clone(reader) as Arc<dyn IndexReader>).leaves()
 }
 
-/// `ctx.reader().getCoreCacheHelper().getKey()`, as the identity the cache
-/// keys its leaves on.
-fn core_key(ctx: &LeafReaderContext) -> usize {
+/// `ctx.reader().getCoreCacheHelper().getKey()`.
+fn core_key(ctx: &LeafReaderContext) -> CacheKey {
     let helper = ctx
         .leaf_reader()
         .get_core_cache_helper()
         .expect("a segment reader has a core cache helper");
-    cache_key_identity(helper.as_ref())
+    helper.get_key().clone()
 }
 
 /// A copy of a query the caching policies of these tests receive (term and
@@ -996,7 +995,7 @@ fn test_consistency_with_accountable_queries() -> Result<()> {
     );
     query_cache.assert_consistent()?;
 
-    query_cache.clear_core_cache_key(core_key(&leaves(&reader)?[0]));
+    query_cache.clear_core_cache_key(&core_key(&leaves(&reader)?[0]));
     assert_equals(&0, &query_cache.ram_bytes_used());
     query_cache.assert_consistent()?;
 
@@ -1204,7 +1203,7 @@ fn test_stats() -> Result<()> {
 /// The anonymous `LRUQueryCache` subclass of `testFineGrainedStats`.
 #[derive(Debug)]
 struct FineGrainedStats {
-    index_id: HashMap<usize, i32>,
+    index_id: HashMap<CacheKey, i32>,
     hit_count1: AtomicI64,
     hit_count2: AtomicI64,
     miss_count1: AtomicI64,
@@ -1215,8 +1214,8 @@ struct FineGrainedStats {
 
 impl FineGrainedStats {
     /// `switch (indexId.get(readerCoreKey))`.
-    fn count(&self, reader_core_key: usize, one: &AtomicI64, two: &AtomicI64) {
-        match self.index_id.get(&reader_core_key) {
+    fn count(&self, reader_core_key: &CacheKey, one: &AtomicI64, two: &AtomicI64) {
+        match self.index_id.get(reader_core_key) {
             Some(1) => {
                 one.fetch_add(1, Ordering::SeqCst);
             }
@@ -1231,12 +1230,12 @@ impl FineGrainedStats {
 }
 
 impl LRUQueryCacheOverrides for FineGrainedStats {
-    fn on_hit(&self, cache: &LRUQueryCache, reader_core_key: usize, query: &Arc<dyn Query>) {
+    fn on_hit(&self, cache: &LRUQueryCache, reader_core_key: &CacheKey, query: &Arc<dyn Query>) {
         cache.super_on_hit(reader_core_key, query);
         self.count(reader_core_key, &self.hit_count1, &self.hit_count2);
     }
 
-    fn on_miss(&self, cache: &LRUQueryCache, reader_core_key: usize, query: &Arc<dyn Query>) {
+    fn on_miss(&self, cache: &LRUQueryCache, reader_core_key: &CacheKey, query: &Arc<dyn Query>) {
         cache.super_on_miss(reader_core_key, query);
         self.count(reader_core_key, &self.miss_count1, &self.miss_count2);
     }
@@ -1265,7 +1264,7 @@ impl LRUQueryCacheOverrides for FineGrainedStats {
     fn on_doc_id_set_cache(
         &self,
         cache: &LRUQueryCache,
-        reader_core_key: usize,
+        reader_core_key: &CacheKey,
         ram_bytes_used: i64,
     ) {
         cache.super_on_doc_id_set_cache(reader_core_key, ram_bytes_used);
@@ -1277,7 +1276,7 @@ impl LRUQueryCacheOverrides for FineGrainedStats {
     fn on_doc_id_set_eviction(
         &self,
         cache: &LRUQueryCache,
-        reader_core_key: usize,
+        reader_core_key: &CacheKey,
         num_entries: i32,
         sum_ram_bytes_used: i64,
     ) {
@@ -1326,7 +1325,7 @@ fn test_fine_grained_stats() -> Result<()> {
     let segment_count2 = leaves(&reader2)?.len() as i64;
     let mut searcher2 = IndexSearcher::new(Arc::clone(&reader2) as Arc<dyn IndexReader>)?;
 
-    let mut index_id: HashMap<usize, i32> = HashMap::new();
+    let mut index_id: HashMap<CacheKey, i32> = HashMap::new();
     for ctx in leaves(&reader1)? {
         index_id.insert(core_key(&ctx), 1);
     }
@@ -2117,7 +2116,7 @@ impl LRUQueryCacheOverrides for NonEmptyEvictions {
     fn on_doc_id_set_eviction(
         &self,
         cache: &LRUQueryCache,
-        reader_core_key: usize,
+        reader_core_key: &CacheKey,
         num_entries: i32,
         sum_ram_bytes_used: i64,
     ) {

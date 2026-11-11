@@ -2208,16 +2208,6 @@ use crate::search::asserting_accept_docs::AssertingAcceptDocs;
 /// view exists exactly when the field infos say it does, and wraps the
 /// `AcceptDocs` of a vector search in an [`AssertingAcceptDocs`]. It does not
 /// change the behaviour of the reader: it only validates the API.
-///
-/// **Divergence (closed-listener key check).** Java's constructor registers on
-/// the wrapped reader's core and reader cache helpers a listener that asserts
-/// it is called with the helper's own key (`expectedKey == cacheKey`, an
-/// identity test; `AssertingLeafReader.java:88-112`). This port's
-/// [`ClosedListener::on_close`] receives the [`CacheKey`] by value, a unit
-/// value without identity (the declared divergence of
-/// `rucene::index::filter_directory_reader::DelegatingCacheHelper`), so the
-/// identity cannot be tested: the listeners are registered, as in Java, and
-/// check nothing.
 pub struct AssertingLeafReader {
     /// The `FilterLeafReader` this class extends: the reader state of this
     /// reader (its own core, registered as a parent of `in`) and the members
@@ -2228,11 +2218,24 @@ pub struct AssertingLeafReader {
 }
 
 /// The listener `AssertingLeafReader`'s constructor registers on the wrapped
-/// reader's cache helpers; see the divergence on [`AssertingLeafReader`].
-struct KeyCheckListener;
+/// reader's core and reader cache helpers (`AssertingLeafReader.java:88-112`):
+/// it asserts it is called with the helper's own key, an identity test.
+///
+/// Java's lambda reads `coreCacheHelper.getKey()` when it runs; the listener
+/// holds the key the helper answered when it was registered instead, which is
+/// the same key (a helper answers one key for its life) and keeps the listener
+/// from owning the helper that owns it.
+struct KeyCheckListener {
+    expected_key: CacheKey,
+}
 
 impl ClosedListener for KeyCheckListener {
-    fn on_close(&self, _cache_key: CacheKey) -> Result<()> {
+    fn on_close(&self, cache_key: CacheKey) -> Result<()> {
+        let expected_key = &self.expected_key;
+        debug_assert!(
+            *expected_key == cache_key,
+            "Core closed listener called on a different key {expected_key} <> {cache_key}"
+        );
         Ok(())
     }
 }
@@ -2258,10 +2261,14 @@ impl AssertingLeafReader {
                 || reader.num_deleted_docs() > 0 && reader.num_docs() < reader.max_doc()
         );
         if let Some(core_cache_helper) = r#in.get_core_cache_helper() {
-            core_cache_helper.add_closed_listener(Box::new(KeyCheckListener));
+            core_cache_helper.add_closed_listener(Box::new(KeyCheckListener {
+                expected_key: core_cache_helper.get_key().clone(),
+            }));
         }
         if let Some(reader_cache_helper) = r#in.get_reader_cache_helper() {
-            reader_cache_helper.add_closed_listener(Box::new(KeyCheckListener));
+            reader_cache_helper.add_closed_listener(Box::new(KeyCheckListener {
+                expected_key: reader_cache_helper.get_key().clone(),
+            }));
         }
         Ok(AssertingLeafReader { base, r#in })
     }

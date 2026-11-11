@@ -5,9 +5,8 @@
 //!
 //! * `getReaderCacheHelper()` answers one helper with one key for the life of
 //!   the reader (`SegmentReader.java:330-349`): the key of two calls is the
-//!   same key (`reader=same+stable`). The port handed out a clone holding a
-//!   zero-sized key by value, whose address — the port's key identity —
-//!   changed with every call.
+//!   same key (`reader=same+stable`). The port once handed out a clone holding
+//!   a fresh key value, a different key on every call.
 //! * `getLiveDocs()` returns the `SparseLiveDocs` or `DenseLiveDocs`
 //!   `Lucene90LiveDocsFormat` reads (`Lucene90LiveDocsFormat.java:108-128`),
 //!   which `instanceof LiveDocs` accepts (`deleted=1`). The port's shared
@@ -58,8 +57,9 @@ fn leaf_with_one_deletion() -> (Arc<dyn IndexReader>, Arc<dyn LeafReader>) {
     (reader, leaf)
 }
 
-fn key_address(key: &CacheKey) -> *const CacheKey {
-    key as *const CacheKey
+/// The identity of `key`.
+fn key_address(key: &CacheKey) -> usize {
+    key.identity()
 }
 
 #[test]

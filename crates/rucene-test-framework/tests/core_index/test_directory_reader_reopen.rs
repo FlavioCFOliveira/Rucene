@@ -1274,7 +1274,7 @@ fn assert_same_first_core(
             .unwrap_or_else(|| npe("getCoreCacheHelper()")))
     };
     let (ca, cb) = (core(a)?, core(b)?);
-    Assert::assert_true(std::ptr::eq(ca.get_key(), cb.get_key()));
+    Assert::assert_true(ca.get_key() == cb.get_key());
     Ok(())
 }
 

@@ -1,8 +1,5 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestIndexReaderClose.java`.
 //!
-//! * `CountListener.onClose` cannot `assertSame(this.coreCacheKey,
-//!   coreCacheKey)`: Rucene's `ClosedListener.on_close` receives the key by
-//!   value, a zero-sized `CacheKey` with no identity.
 //! * `CacheHelper.addClosedListener` on a closed reader throws Java's
 //!   unchecked `AlreadyClosedException`; Rucene's returns `()`, so the
 //!   expectation is a panic with that throwable (`expect_throws_panic`).
@@ -15,6 +12,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
+use randomizedtesting::junit::Assert;
 use rucene::document::Document;
 use rucene::error::{LuceneError, Result};
 use rucene::index::directory_reader;
@@ -135,6 +133,7 @@ fn test_close_under_exception() -> Result<()> {
                 count.fetch_add(1, Ordering::SeqCst);
                 helper().add_closed_listener(Box::new(CountListener {
                     count: Arc::clone(&count),
+                    core_cache_key: helper().get_key().clone(),
                 }));
             }
         }
@@ -192,6 +191,7 @@ fn test_core_listener_on_wrapper_with_different_cache_key() -> Result<()> {
     for _ in 0..num_listeners {
         core_helper().add_closed_listener(Box::new(CountListener {
             count: Arc::clone(&counter),
+            core_cache_key: core_helper().get_key().clone(),
         }));
     }
     for _ in 0..100 {
@@ -218,10 +218,13 @@ fn test_core_listener_on_wrapper_with_different_cache_key() -> Result<()> {
 /// IndexReader.ClosedListener`.
 struct CountListener {
     count: Arc<AtomicI32>,
+    core_cache_key: CacheKey,
 }
 
 impl ClosedListener for CountListener {
-    fn on_close(&self, _core_cache_key: CacheKey) -> Result<()> {
+    fn on_close(&self, core_cache_key: CacheKey) -> Result<()> {
+        // `assertSame(this.coreCacheKey, coreCacheKey)`.
+        Assert::assert_true(self.core_cache_key == core_cache_key);
         self.count.fetch_sub(1, Ordering::SeqCst);
         Ok(())
     }

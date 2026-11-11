@@ -5,7 +5,7 @@
 use std::fmt::Debug;
 
 use crate::error::Result;
-use crate::index::filter_directory_reader::SharedCacheKey;
+use crate::index::CacheKey;
 use crate::index::{FieldInfo, FieldInfos, Impacts};
 
 /// Access to `crate::index` internals exposed to the test framework.
@@ -23,12 +23,10 @@ use crate::index::{FieldInfo, FieldInfos, Impacts};
 /// * **`Send + Sync + Debug` bounds.** Needed because
 ///   [`TestSecrets`](super::TestSecrets) keeps the accessor in a `static`.
 pub trait IndexPackageAccess: Send + Sync + Debug {
-    /// Returns a fresh cache key: a handle on a new key whose address, the
-    /// identity holders compare, neither moves nor is reused while the handle
-    /// lives, as a referenced Java object's identity.
+    /// Returns a new cache key.
     ///
     /// Equivalent to `IndexPackageAccess.newCacheKey()`.
-    fn new_cache_key(&self) -> SharedCacheKey;
+    fn new_cache_key(&self) -> CacheKey;
 
     /// Overrides the maximum number of documents an index may hold.
     ///

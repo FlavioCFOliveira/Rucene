@@ -1757,8 +1757,9 @@ fn merge_observer_of_finished_merges_matches_lucene() {
 // #204: FilterDirectoryReader.DelegatingCacheHelper
 // ---------------------------------------------------------------------------
 
+/// The identity of the key `helper` answers.
 fn key_address(helper: &dyn CacheHelper) -> usize {
-    helper.get_key() as *const CacheKey as usize
+    helper.get_key().identity()
 }
 
 /// Counts how often it is called.
@@ -1873,10 +1874,17 @@ fn delegating_cache_helper_matches_lucene() {
 
 /// A delegate with its own key, which a `DelegatingCacheHelper` must never
 /// answer with.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct PlainHelper {
     key: CacheKey,
-    _non_empty: u8,
+}
+
+impl Default for PlainHelper {
+    fn default() -> Self {
+        Self {
+            key: CacheKey::new(),
+        }
+    }
 }
 
 impl CacheHelper for PlainHelper {
@@ -1934,7 +1942,7 @@ fn delegating_cache_helper_key_is_not_reused_while_a_holder_is_alive() {
         );
     }
     assert_eq!(
-        handle.key() as *const CacheKey as usize,
+        handle.identity(),
         address,
         "the handle answers with the dropped helper's key"
     );

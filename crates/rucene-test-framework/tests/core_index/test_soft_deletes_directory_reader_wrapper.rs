@@ -4,13 +4,6 @@
 //! `SoftDeletesDirectoryReaderWrapper::new(field).wrap(in)` in Rucene, and
 //! Java's `getSequentialSubReaders()` of a directory reader, the list of its
 //! leaves, is read through `leaves()`.
-//!
-//! **Divergence.** Java asserts `assertSame(key, cacheHelper.getKey())` in the
-//! closed listeners and `assertNotSame` on two readers' cache keys
-//! (`testReaderCacheKey`); Rucene's `CacheKey` is a zero-sized value handed to
-//! the listener by value, so the identity of two keys has no meaning in Rust
-//! and those two assertions cannot be expressed. The listener calls and the
-//! other assertions are kept.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -323,13 +316,23 @@ fn test_mix_soft_and_hard_deletes() -> Result<()> {
     ])
 }
 
-/// The closed listeners of `testReaderCacheKey`: `counter.incrementAndGet()`
-/// (see the module documentation for the `assertSame` they also make).
-struct CountingListener(Arc<AtomicI32>);
+/// The closed listeners of `testReaderCacheKey`: `counter.incrementAndGet()`,
+/// then `assertSame(key, cacheHelper.getKey())`.
+///
+/// Java's lambda reads `cacheHelper.getKey()` when it runs; the listener holds
+/// the key the helper answered when it was registered, the same key (a helper
+/// answers one key for its life), so that the listener does not own the
+/// helper whose listeners own it.
+struct CountingListener {
+    counter: Arc<AtomicI32>,
+    helper_key: CacheKey,
+}
 
 impl ClosedListener for CountingListener {
-    fn on_close(&self, _key: CacheKey) -> Result<()> {
-        self.0.fetch_add(1, Ordering::SeqCst);
+    fn on_close(&self, key: CacheKey) -> Result<()> {
+        self.counter.fetch_add(1, Ordering::SeqCst);
+        // `assertSame(key, cacheHelper.getKey())`.
+        Assert::assert_true(key == self.helper_key);
         Ok(())
     }
 }
@@ -356,12 +359,17 @@ fn test_reader_cache_key() -> Result<()> {
         .unwrap_or_else(|| crate::support::npe("getReaderCacheHelper"));
     let leaf_called = Arc::new(AtomicI32::new(0));
     let dir_called = Arc::new(AtomicI32::new(0));
-    reader_cache_helper.add_closed_listener(Box::new(CountingListener(Arc::clone(&leaf_called))));
+    reader_cache_helper.add_closed_listener(Box::new(CountingListener {
+        counter: Arc::clone(&leaf_called),
+        helper_key: reader_cache_helper.get_key().clone(),
+    }));
     let dir_reader_cache_helper = reader
         .get_reader_cache_helper()
         .unwrap_or_else(|| crate::support::npe("getReaderCacheHelper"));
-    dir_reader_cache_helper
-        .add_closed_listener(Box::new(CountingListener(Arc::clone(&dir_called))));
+    dir_reader_cache_helper.add_closed_listener(Box::new(CountingListener {
+        counter: Arc::clone(&dir_called),
+        helper_key: dir_reader_cache_helper.get_key().clone(),
+    }));
     assert_equals(&2, &reader.num_docs());
     assert_equals(&2, &reader.max_doc());
     assert_equals(&0, &reader.num_deleted_docs());
@@ -380,8 +388,14 @@ fn test_reader_cache_key() -> Result<()> {
         .unwrap_or_else(|| crate::support::npe("openIfChanged"));
     assert_equals(&0, &leaf_called.load(Ordering::SeqCst));
     assert_equals(&0, &dir_called.load(Ordering::SeqCst));
-    // `assertNotSame(newReader.getReaderCacheHelper().getKey(),
-    // reader.getReaderCacheHelper().getKey())`: see the module documentation.
+    // assertNotSame(newReader.getReaderCacheHelper().getKey(), reader.getReaderCacheHelper().getKey());
+    let key_of = |r: &Arc<dyn DirectoryReader>| -> CacheKey {
+        r.get_reader_cache_helper()
+            .unwrap_or_else(|| crate::support::npe("getReaderCacheHelper"))
+            .get_key()
+            .clone()
+    };
+    Assert::assert_false(key_of(&new_reader) == key_of(&reader));
     Assert::assert_false(same_reader(&new_reader, &reader));
     reader.close()?;
     let reader = new_reader;

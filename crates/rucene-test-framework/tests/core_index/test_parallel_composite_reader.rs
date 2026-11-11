@@ -10,7 +10,7 @@ use randomizedtesting::junit::Assert;
 use rucene::document::{Document, Store};
 use rucene::error::Result;
 use rucene::index::directory_reader;
-use rucene::index::index_reader::{CacheHelper, CacheKey};
+use rucene::index::index_reader::CacheHelper;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::merge_policy::NoMergePolicy;
 use rucene::index::multi_fields::MultiTerms;
@@ -90,10 +90,7 @@ fn terms(pr: &Arc<ParallelCompositeReader>, field: &str) -> Result<Option<&'stat
 fn assert_same_helper(a: Option<Box<dyn CacheHelper>>, b: Option<Box<dyn CacheHelper>>) {
     let same = match (&a, &b) {
         (None, None) => true,
-        (Some(a), Some(b)) => std::ptr::eq(
-            a.get_key() as *const CacheKey,
-            b.get_key() as *const CacheKey,
-        ),
+        (Some(a), Some(b)) => a.get_key() == b.get_key(),
         _ => false,
     };
     if !same {

@@ -323,24 +323,6 @@ impl Accountable for LeafCache {
     }
 }
 
-/// A key of the per-leaf caches as `Accountables.namedAccountables` renders
-/// it: Java's key is the `IndexReader.CacheKey`, which does not override
-/// `toString()`; this port's key is that key's address (see
-/// [`cache_key_identity`]), which is what
-/// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
-/// would render for it.
-struct CacheKeyName(usize);
-
-impl std::fmt::Display for CacheKeyName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "org.apache.lucene.index.IndexReader$CacheKey@{:x}",
-            self.0
-        )
-    }
-}
-
 /// Whether a leaf is worth caching on.
 ///
 /// Equivalent to the `Predicate<LeafReaderContext> leavesToCache` field.
@@ -398,7 +380,7 @@ struct CacheState {
     /// `unique_queries`.
     ///
     /// Equivalent to `cache` plus the `ReentrantReadWriteLock` that guards it.
-    cache: RwLock<HashMap<usize, LeafCache>>,
+    cache: RwLock<HashMap<CacheKey, LeafCache>>,
     /// Equivalent to `uniqueQueries`, which Java wraps in
     /// `Collections.synchronizedMap` because reading an access-ordered
     /// `LinkedHashMap` mutates it.
@@ -443,7 +425,7 @@ impl CacheState {
     }
 
     /// The virtual call `onHit(readerCoreKey, query)`.
-    fn on_hit(&self, reader_core_key: usize, query: &Arc<dyn Query>) {
+    fn on_hit(&self, reader_core_key: &CacheKey, query: &Arc<dyn Query>) {
         match &self.overrides {
             Some(o) => o.on_hit(&self.handle(), reader_core_key, query),
             None => self.base_on_hit(),
@@ -451,7 +433,7 @@ impl CacheState {
     }
 
     /// The virtual call `onMiss(readerCoreKey, query)`.
-    fn on_miss(&self, reader_core_key: usize, query: &Arc<dyn Query>) {
+    fn on_miss(&self, reader_core_key: &CacheKey, query: &Arc<dyn Query>) {
         match &self.overrides {
             Some(o) => o.on_miss(&self.handle(), reader_core_key, query),
             None => self.base_on_miss(),
@@ -475,7 +457,7 @@ impl CacheState {
     }
 
     /// The virtual call `onDocIdSetCache(readerCoreKey, ramBytesUsed)`.
-    fn on_doc_id_set_cache(&self, reader_core_key: usize, ram_bytes_used: i64) {
+    fn on_doc_id_set_cache(&self, reader_core_key: &CacheKey, ram_bytes_used: i64) {
         match &self.overrides {
             Some(o) => o.on_doc_id_set_cache(&self.handle(), reader_core_key, ram_bytes_used),
             None => self.base_on_doc_id_set_cache(ram_bytes_used),
@@ -486,7 +468,7 @@ impl CacheState {
     /// `onDocIdSetEviction(readerCoreKey, numEntries, sumRamBytesUsed)`.
     fn on_doc_id_set_eviction(
         &self,
-        reader_core_key: usize,
+        reader_core_key: &CacheKey,
         num_entries: i32,
         sum_ram_bytes_used: i64,
     ) {
@@ -573,13 +555,13 @@ impl CacheState {
     /// yields an uncached scorer rather than a wait.
     fn get(
         &self,
-        cache: &HashMap<usize, LeafCache>,
+        cache: &HashMap<CacheKey, LeafCache>,
         key: &Arc<dyn Query>,
-        reader_key: usize,
+        reader_key: &CacheKey,
     ) -> Option<CacheAndCount> {
         debug_assert!(!is_boost_query(key.as_ref()));
         debug_assert!(!is_constant_score_query(key.as_ref()));
-        let Some(leaf_cache) = cache.get(&reader_key) else {
+        let Some(leaf_cache) = cache.get(reader_key) else {
             self.on_miss(reader_key, key);
             return None;
         };
@@ -635,9 +617,9 @@ impl CacheState {
                 Some(singleton) => singleton,
             }
         };
-        let key = cache_key_identity(cache_helper);
+        let key = cache_helper.get_key().clone();
         if !cache.contains_key(&key) {
-            let previous = cache.insert(key, LeafCache::new());
+            let previous = cache.insert(key.clone(), LeafCache::new());
             debug_assert!(previous.is_none());
             self.ram_bytes_used
                 .fetch_add(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
@@ -645,7 +627,6 @@ impl CacheState {
             // listener.
             cache_helper.add_closed_listener(Box::new(ClearCoreCacheKey {
                 state: Arc::clone(self),
-                key,
             }));
         }
         let leaf_cache = cache
@@ -659,13 +640,13 @@ impl CacheState {
             let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + cached.ram_bytes_used();
             leaf_cache.cache.insert(query_key, cached);
             leaf_cache.ram_bytes_used += ram;
-            self.on_doc_id_set_cache(key, ram);
+            self.on_doc_id_set_cache(&key, ram);
         }
         self.evict_if_necessary(&mut cache);
     }
 
     /// Equivalent to the private `LRUQueryCache.evictIfNecessary()`.
-    fn evict_if_necessary(&self, cache: &mut HashMap<usize, LeafCache>) {
+    fn evict_if_necessary(&self, cache: &mut HashMap<CacheKey, LeafCache>) {
         loop {
             let query = {
                 let mut queries = self
@@ -685,7 +666,7 @@ impl CacheState {
     }
 
     /// Equivalent to the private `LRUQueryCache.onEviction(Query)`.
-    fn on_eviction(&self, cache: &mut HashMap<usize, LeafCache>, singleton: &Arc<dyn Query>) {
+    fn on_eviction(&self, cache: &mut HashMap<CacheKey, LeafCache>, singleton: &Arc<dyn Query>) {
         self.on_query_eviction(singleton, query_ram_bytes_used(singleton.as_ref()));
         // `LeafCache.remove(Query)` (`LRUQueryCache.java:743-751`), for every
         // leaf.
@@ -696,7 +677,7 @@ impl CacheState {
             if let Some(removed) = leaf_cache.cache.remove(&key) {
                 let ram = HASHTABLE_RAM_BYTES_PER_ENTRY + removed.ram_bytes_used();
                 leaf_cache.ram_bytes_used -= ram;
-                self.on_doc_id_set_eviction(*core_key, 1, ram);
+                self.on_doc_id_set_eviction(core_key, 1, ram);
             }
         }
     }
@@ -721,23 +702,23 @@ fn is_constant_score_query(query: &dyn Query) -> bool {
 /// The listener that drops a leaf's entries when its reader core closes.
 ///
 /// Equivalent to the `this::clearCoreCacheKey` method reference Java registers
-/// with `IndexReader.CacheHelper.addClosedListener`.
+/// with `IndexReader.CacheHelper.addClosedListener`: it clears the key the
+/// listener is called with.
 struct ClearCoreCacheKey {
     state: Arc<CacheState>,
-    key: usize,
 }
 
 impl ClosedListener for ClearCoreCacheKey {
-    fn on_close(&self, _key: CacheKey) -> Result<()> {
-        clear_core_cache_key(&self.state, self.key);
+    fn on_close(&self, key: CacheKey) -> Result<()> {
+        clear_core_cache_key(&self.state, &key);
         Ok(())
     }
 }
 
 /// Equivalent to `LRUQueryCache.clearCoreCacheKey(Object)`.
-fn clear_core_cache_key(state: &Arc<CacheState>, core_key: usize) {
+fn clear_core_cache_key(state: &Arc<CacheState>, core_key: &CacheKey) {
     let mut cache = state.cache.write().unwrap_or_else(PoisonError::into_inner);
-    if let Some(leaf_cache) = cache.remove(&core_key) {
+    if let Some(leaf_cache) = cache.remove(core_key) {
         state
             .ram_bytes_used
             .fetch_sub(HASHTABLE_RAM_BYTES_PER_ENTRY, Ordering::AcqRel);
@@ -763,22 +744,6 @@ fn query_ram_bytes_used(query: &dyn Query) -> i64 {
         }
 }
 
-/// Returns the identity of a cache helper's key.
-///
-/// **Divergence from Lucene 10.5.0.** Java keys the per-leaf caches on an
-/// `IdentityHashMap<IndexReader.CacheKey, LeafCache>`. This port's
-/// [`CacheKey`] carries no data, so identity is the address of the key the
-/// helper hands out. A zero-sized value's address alone identifies nothing —
-/// Rust may place it one past the end of its holder, where another object
-/// starts — so every core key a leaf hands out is held in a
-/// [`SharedCacheKey`](crate::index::filter_directory_reader::SharedCacheKey),
-/// whose key lies strictly inside a heap cell of its own that lives as long as
-/// the core: the address neither moves nor is reused while the core is open,
-/// exactly as Java's instance is (rmp #261).
-pub fn cache_key_identity(cache_helper: &dyn CacheHelper) -> usize {
-    cache_helper.get_key() as *const CacheKey as usize
-}
-
 /// The protected methods of [`LRUQueryCache`] a subclass overrides.
 ///
 /// Equivalent to overriding, in a Java subclass of `LRUQueryCache`, the
@@ -790,19 +755,17 @@ pub fn cache_key_identity(cache_helper: &dyn CacheHelper) -> usize {
 /// override that calls `super` calls that method. Install the overrides with
 /// [`LRUQueryCache::with_overrides`].
 ///
-/// A reader core key is the identity [`cache_key_identity`] computes for a
-/// core cache helper: Java passes the `IndexReader.CacheKey` object, whose
-/// identity this port represents by that address.
+/// A reader core key is the leaf's core [`CacheKey`], as in Java.
 ///
 /// The hooks are called with the cache's locks held, as Java calls them.
 pub trait LRUQueryCacheOverrides: Send + Sync + Debug {
     /// `protected void onHit(Object readerCoreKey, Query query)`.
-    fn on_hit(&self, cache: &LRUQueryCache, reader_core_key: usize, query: &Arc<dyn Query>) {
+    fn on_hit(&self, cache: &LRUQueryCache, reader_core_key: &CacheKey, query: &Arc<dyn Query>) {
         cache.super_on_hit(reader_core_key, query)
     }
 
     /// `protected void onMiss(Object readerCoreKey, Query query)`.
-    fn on_miss(&self, cache: &LRUQueryCache, reader_core_key: usize, query: &Arc<dyn Query>) {
+    fn on_miss(&self, cache: &LRUQueryCache, reader_core_key: &CacheKey, query: &Arc<dyn Query>) {
         cache.super_on_miss(reader_core_key, query)
     }
 
@@ -825,7 +788,7 @@ pub trait LRUQueryCacheOverrides: Send + Sync + Debug {
     fn on_doc_id_set_cache(
         &self,
         cache: &LRUQueryCache,
-        reader_core_key: usize,
+        reader_core_key: &CacheKey,
         ram_bytes_used: i64,
     ) {
         cache.super_on_doc_id_set_cache(reader_core_key, ram_bytes_used)
@@ -836,7 +799,7 @@ pub trait LRUQueryCacheOverrides: Send + Sync + Debug {
     fn on_doc_id_set_eviction(
         &self,
         cache: &LRUQueryCache,
-        reader_core_key: usize,
+        reader_core_key: &CacheKey,
         num_entries: i32,
         sum_ram_bytes_used: i64,
     ) {
@@ -994,12 +957,12 @@ impl LRUQueryCache {
     }
 
     /// The inherited `LRUQueryCache.onHit(Object, Query)`: counts a hit.
-    pub fn super_on_hit(&self, _reader_core_key: usize, _query: &Arc<dyn Query>) {
+    pub fn super_on_hit(&self, _reader_core_key: &CacheKey, _query: &Arc<dyn Query>) {
         self.state.base_on_hit()
     }
 
     /// The inherited `LRUQueryCache.onMiss(Object, Query)`: counts a miss.
-    pub fn super_on_miss(&self, _reader_core_key: usize, _query: &Arc<dyn Query>) {
+    pub fn super_on_miss(&self, _reader_core_key: &CacheKey, _query: &Arc<dyn Query>) {
         self.state.base_on_miss()
     }
 
@@ -1014,14 +977,14 @@ impl LRUQueryCache {
     }
 
     /// The inherited `LRUQueryCache.onDocIdSetCache(Object, long)`.
-    pub fn super_on_doc_id_set_cache(&self, _reader_core_key: usize, ram_bytes_used: i64) {
+    pub fn super_on_doc_id_set_cache(&self, _reader_core_key: &CacheKey, ram_bytes_used: i64) {
         self.state.base_on_doc_id_set_cache(ram_bytes_used)
     }
 
     /// The inherited `LRUQueryCache.onDocIdSetEviction(Object, int, long)`.
     pub fn super_on_doc_id_set_eviction(
         &self,
-        _reader_core_key: usize,
+        _reader_core_key: &CacheKey,
         num_entries: i32,
         sum_ram_bytes_used: i64,
     ) {
@@ -1082,9 +1045,9 @@ impl LRUQueryCache {
 
     /// Removes every cache entry of the given core cache key.
     ///
-    /// Equivalent to `LRUQueryCache.clearCoreCacheKey(Object)`; the key is the
-    /// identity [`cache_key_identity`] computes for a leaf's core cache helper.
-    pub fn clear_core_cache_key(&self, core_key: usize) {
+    /// Equivalent to `LRUQueryCache.clearCoreCacheKey(Object)`; the key is a
+    /// leaf's core cache key.
+    pub fn clear_core_cache_key(&self, core_key: &CacheKey) {
         clear_core_cache_key(&self.state, core_key);
     }
 
@@ -1300,7 +1263,7 @@ impl Accountable for LRUQueryCache {
             "segment",
             cache
                 .iter()
-                .map(|(key, leaf)| (CacheKeyName(*key), leaf as &dyn Accountable)),
+                .map(|(key, leaf)| (key, leaf as &dyn Accountable)),
         )
         .into_iter()
         .map(|named| Box::new(named.detach()) as Box<dyn Accountable>)
@@ -1473,13 +1436,13 @@ impl ConstantScoreWeightImpl for CachingWrapperWeightImpl {
             // This reader has no cache helper.
             return self.inner.scorer_supplier(context);
         };
-        let reader_key = cache_key_identity(cache_helper.as_ref());
+        let reader_key = cache_helper.get_key().clone();
 
         // If the lock is already busy, prefer the uncached version over
         // waiting.
         let cached = match self.state.cache.try_read() {
             Err(_) => return self.inner.scorer_supplier(context),
-            Ok(guard) => self.state.get(&guard, &self.query, reader_key),
+            Ok(guard) => self.state.get(&guard, &self.query, &reader_key),
         };
 
         let max_doc = context.leaf_reader().max_doc();
@@ -1554,13 +1517,13 @@ impl ConstantScoreWeightImpl for CachingWrapperWeightImpl {
             // This reader has no cache helper.
             return self.inner.count(context);
         };
-        let reader_key = cache_key_identity(cache_helper.as_ref());
+        let reader_key = cache_helper.get_key().clone();
 
         // If the lock is already busy, prefer the uncached version over
         // waiting.
         let cached = match self.state.cache.try_read() {
             Err(_) => return self.inner.count(context),
-            Ok(guard) => self.state.get(&guard, &self.query, reader_key),
+            Ok(guard) => self.state.get(&guard, &self.query, &reader_key),
         };
         match cached {
             // Cached.
@@ -1870,12 +1833,13 @@ mod child_resources_tests {
     #[test]
     fn child_resources_are_javas_named_leaf_caches() {
         let cache = LRUQueryCache::new(10, 1 << 20).unwrap();
+        let keys = [CacheKey::new(), CacheKey::new()];
         {
             let mut leaves = cache.state.cache.write().unwrap();
-            for (key, ram) in [(0xbeef_usize, 152), (0xabc_usize, 40)] {
+            for (key, ram) in keys.iter().zip([152, 40]) {
                 let mut leaf = LeafCache::new();
                 leaf.ram_bytes_used = ram;
-                leaves.insert(key, leaf);
+                leaves.insert(key.clone(), leaf);
             }
         }
         let children = cache.child_resources();
@@ -1890,7 +1854,14 @@ mod child_resources_tests {
             })
             .collect();
         assert_eq!(described.len(), 2);
-        for ((description, _, kids), key) in described.iter().zip(["abc", "beef"]) {
+        // Sorted by description, so by the keys' identities in hexadecimal.
+        let mut expected: Vec<(String, i64)> = keys
+            .iter()
+            .zip([152, 40])
+            .map(|(key, ram)| (format!("{:x}", key.identity()), ram))
+            .collect();
+        expected.sort();
+        for ((description, _, kids), (key, _)) in described.iter().zip(&expected) {
             let rest = description
                 .strip_prefix(&format!(
                     "segment 'org.apache.lucene.index.IndexReader$CacheKey@{key}' \
@@ -1901,75 +1872,36 @@ mod child_resources_tests {
             assert!(rest.chars().all(|c| c.is_ascii_hexdigit()));
             assert_eq!(*kids, 0);
         }
-        assert_eq!((described[0].1, described[1].1), (40, 152));
+        assert_eq!(
+            (described[0].1, described[1].1),
+            (expected[0].1, expected[1].1)
+        );
     }
 }
 
 #[cfg(test)]
 mod cache_key_identity_tests {
     use super::*;
-    use crate::index::filter_directory_reader::SharedCacheKey;
 
-    /// rmp #261, the hazard: two distinct zero-sized keys, one at the end of
-    /// its holder and one at the start of the next object, have the same
-    /// address, so an address-keyed map cannot tell them apart. This is why a
-    /// bare `CacheKey` field cannot serve as a cache identity.
+    /// rmp #261: the per-leaf caches are keyed on the [`CacheKey`] object, as
+    /// Java's `IdentityHashMap<CacheKey, LeafCache>` is: a clone is the same
+    /// key, two new keys are two keys, whatever is allocated next to them.
     #[test]
-    fn a_zero_sized_field_does_not_identify_its_holder() {
-        #[repr(C)]
-        struct KeyAtEnd {
-            _payload: u64,
-            key: CacheKey,
-        }
-        #[repr(C)]
-        struct KeyAtStart {
-            key: CacheKey,
-            _payload: u64,
-        }
-        #[repr(C)]
-        struct Adjacent {
-            first: KeyAtEnd,
-            second: KeyAtStart,
-        }
-        let adjacent = Adjacent {
-            first: KeyAtEnd {
-                _payload: 1,
-                key: CacheKey,
-            },
-            second: KeyAtStart {
-                key: CacheKey,
-                _payload: 2,
-            },
-        };
-        assert!(std::ptr::eq(&adjacent.first.key, &adjacent.second.key));
-    }
-
-    /// rmp #261, the guarantee: a [`SharedCacheKey`]'s key lies strictly
-    /// inside its own non-empty heap cell, so live keys never share an
-    /// address, whatever is allocated next to them.
-    #[test]
-    fn shared_cache_keys_lie_inside_their_own_cells() {
+    fn cache_keys_compare_by_identity() {
         let mut keys = Vec::new();
         let mut neighbours = Vec::new();
         for i in 0..256u64 {
-            keys.push(SharedCacheKey::new());
+            keys.push(CacheKey::new());
             neighbours.push(Box::new(i));
         }
-        let mut addresses: Vec<usize> = keys
-            .iter()
-            .map(|key| {
-                let address = key.key() as *const CacheKey as usize;
-                let (start, end) = key.cell_bounds();
-                assert!(
-                    (start..end).contains(&address),
-                    "key {address:#x} outside its cell [{start:#x}, {end:#x})"
-                );
-                address
-            })
-            .collect();
-        addresses.sort_unstable();
-        addresses.dedup();
-        assert_eq!(addresses.len(), keys.len());
+        let mut map: HashMap<CacheKey, usize> = HashMap::new();
+        for (i, key) in keys.iter().enumerate() {
+            assert!(map.insert(key.clone(), i).is_none());
+        }
+        assert_eq!(map.len(), keys.len());
+        for (i, key) in keys.iter().enumerate() {
+            assert_eq!(map.get(&key.clone()), Some(&i));
+        }
         drop(neighbours);
     }
 }

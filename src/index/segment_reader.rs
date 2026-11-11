@@ -29,7 +29,6 @@ use crate::codecs::term_vectors::TermVectorsReader;
 use crate::codecs::DocValuesSkipper;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
-use crate::index::filter_directory_reader::SharedCacheKey;
 use crate::index::index_reader::{
     java_object_to_string, CacheHelper, CacheKey, ClosedListener, EnsureOpen, IndexReaderCore,
     StoredFields,
@@ -68,11 +67,8 @@ pub struct SegmentCoreReaders {
     segment: String,
     core_field_infos: FieldInfos,
     ref_count: AtomicI32,
-    /// Java's `coreCacheKey`, an object whose identity neither moves nor is
-    /// reused while referenced: a [`SharedCacheKey`], whose key lies inside its
-    /// own heap cell rather than at a layout-dependent offset of this struct
-    /// (task #261).
-    core_cache_key: SharedCacheKey,
+    /// Java's `coreCacheKey`, created with the core.
+    core_cache_key: CacheKey,
     core_closed_listeners: Mutex<Vec<Box<dyn ClosedListener>>>,
 }
 
@@ -119,7 +115,7 @@ impl SegmentCoreReaders {
             segment: si.info.name.clone(),
             core_field_infos: FieldInfos::empty(),
             ref_count: AtomicI32::new(1),
-            core_cache_key: SharedCacheKey::new(),
+            core_cache_key: CacheKey::new(),
             core_closed_listeners: Mutex::new(Vec::new()),
         };
 
@@ -319,7 +315,8 @@ impl SegmentCoreReaders {
             LuceneError::illegal_state("core closed listeners lock poisoned".to_string())
         })?;
         for listener in guard.iter() {
-            listener.on_close(CacheKey)?;
+            // `listener.onClose(coreCacheKey)`.
+            listener.on_close(self.core_cache_key.clone())?;
         }
         Ok(())
     }
@@ -385,7 +382,7 @@ impl CacheHelper for SegmentCoreReaders {
     /// object to hold a borrow of it — which is why there is no `get_cache_helper`
     /// to call.
     fn get_key(&self) -> &CacheKey {
-        self.core_cache_key.key()
+        &self.core_cache_key
     }
 
     /// The `addClosedListener` of the same anonymous `CacheHelper`, which
@@ -2253,13 +2250,11 @@ impl LiveDocs for SharedLiveDocs {
 /// Java keeps one anonymous `CacheHelper` per reader, with one `cacheKey`
 /// object (`SegmentReader.java:330-349`), so every `getReaderCacheHelper()`
 /// answers the same key. [`SegmentReader::get_reader_cache_helper`] hands out
-/// clones of this helper, so the key sits behind a [`SharedCacheKey`]: every
-/// clone answers the one key, whose address (this port's key identity) is
-/// stable. A key held by value would be a new zero-sized value in each clone,
-/// at the clone's own address.
+/// clones of this helper; a [`CacheKey`] clone is the same key object, so every
+/// clone answers the one key.
 #[derive(Clone)]
 struct SegmentReaderCacheHelper {
-    key: SharedCacheKey,
+    key: CacheKey,
     listeners: Arc<Mutex<Vec<Box<dyn ClosedListener>>>>,
     closed: Arc<AtomicBool>,
     /// The owning reader's `ensureOpen()`.
@@ -2277,7 +2272,7 @@ impl Debug for SegmentReaderCacheHelper {
 impl SegmentReaderCacheHelper {
     fn new(reader: EnsureOpen) -> Self {
         Self {
-            key: SharedCacheKey::new(),
+            key: CacheKey::new(),
             listeners: Arc::new(Mutex::new(Vec::new())),
             closed: Arc::new(AtomicBool::new(false)),
             reader,
@@ -2292,7 +2287,8 @@ impl SegmentReaderCacheHelper {
             LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
         for listener in guard.iter() {
-            listener.on_close(CacheKey)?;
+            // `listener.onClose(cacheKey)`.
+            listener.on_close(self.key.clone())?;
         }
         Ok(())
     }
@@ -2300,7 +2296,7 @@ impl SegmentReaderCacheHelper {
 
 impl CacheHelper for SegmentReaderCacheHelper {
     fn get_key(&self) -> &CacheKey {
-        self.key.key()
+        &self.key
     }
 
     /// Equivalent to the anonymous helper's `addClosedListener`
@@ -2493,14 +2489,13 @@ mod tests {
         assert_eq!(reader.core_readers().ref_count(), 0);
     }
 
-    /// rmp #261: the core cache key `LRUQueryCache` keys its leaves on is a
-    /// [`SharedCacheKey`], so its address lies strictly inside a heap cell of
-    /// its own and differs from every other live core's key — the identity
-    /// Java's `coreCacheKey` object has. A zero-sized field of
-    /// `SegmentCoreReaders` would sit wherever rustc's unspecified layout put
-    /// it, possibly one past the end of the struct.
+    /// rmp #261: the core cache key `LRUQueryCache` keys its leaves on is the
+    /// core's own object, distinct from every other live core's key, and the
+    /// core cache helper answers that same key — the identity Java's
+    /// `coreCacheKey` object has. Two reader cache helpers of one reader also
+    /// answer one key (`SegmentReader.java:330-349`).
     #[test]
-    fn core_cache_keys_are_distinct_and_inside_their_own_cells() {
+    fn core_cache_keys_are_distinct_objects() {
         let readers: Vec<SegmentReader> = (0..4)
             .map(|i| {
                 SegmentReader::new(
@@ -2511,22 +2506,18 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        let mut addresses = Vec::new();
+        let mut keys = std::collections::HashSet::new();
         for reader in &readers {
             let core = reader.core_readers();
-            let address = core.get_key() as *const CacheKey as usize;
-            let (start, end) = core.core_cache_key.cell_bounds();
-            assert!(
-                (start..end).contains(&address),
-                "key {address:#x} outside its cell [{start:#x}, {end:#x})"
-            );
             let helper = reader.get_core_cache_helper().unwrap();
-            assert_eq!(helper.get_key() as *const CacheKey as usize, address);
-            addresses.push(address);
+            assert_eq!(helper.get_key(), core.get_key());
+            let first = LeafReader::get_reader_cache_helper(reader).unwrap();
+            let second = LeafReader::get_reader_cache_helper(reader).unwrap();
+            assert_eq!(first.get_key(), second.get_key());
+            assert_ne!(first.get_key(), core.get_key());
+            keys.insert(core.get_key().clone());
         }
-        addresses.sort_unstable();
-        addresses.dedup();
-        assert_eq!(addresses.len(), readers.len());
+        assert_eq!(keys.len(), readers.len());
     }
 
     #[test]

@@ -6,9 +6,6 @@
 //!   is the wrapper's `wrap`, and its choice of `getReaderCacheHelper()`
 //!   (`in.getReaderCacheHelper()`, or a `DelegatingCacheHelper` built once) is
 //!   the wrapper's `uses_delegating_cache_helper`.
-//! * `assertSame(key, wrapped.getReaderCacheHelper().getKey())` inside the
-//!   closed listener is not checked: Rucene's `ClosedListener.on_close`
-//!   receives the key by value, a zero-sized `CacheKey` with no identity.
 
 use std::fmt;
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
@@ -270,14 +267,24 @@ impl DirectoryReaderWrapper for DummyLastingFilterDirectoryReader {
     }
 }
 
-/// The closed listener of `testDelegatingCacheHelper`.
+/// The closed listener of `testDelegatingCacheHelper`:
+/// `closeCalledCounter.incrementAndGet()`, then
+/// `assertSame(key, wrapped.getReaderCacheHelper().getKey())`.
+///
+/// Java's lambda reads `wrapped.getReaderCacheHelper().getKey()` when it runs;
+/// the listener holds the key `wrapped`'s helper answered when it was
+/// registered, the same key (the helper is built once), so that the listener
+/// does not own `wrapped`, which owns the reader whose listeners own it.
 struct CountingListener {
     close_called_counter: Arc<AtomicI32>,
+    wrapped_key: CacheKey,
 }
 
 impl ClosedListener for CountingListener {
-    fn on_close(&self, _key: CacheKey) -> Result<()> {
+    fn on_close(&self, key: CacheKey) -> Result<()> {
         self.close_called_counter.fetch_add(1, Ordering::SeqCst);
+        // `assertSame(key, wrapped.getReaderCacheHelper().getKey())`.
+        Assert::assert_true(key == self.wrapped_key);
         Ok(())
     }
 }
@@ -305,15 +312,17 @@ fn test_delegating_cache_helper() -> Result<()> {
         &*reader_helper as *const dyn CacheHelper as *const (),
         &*wrapped_helper as *const dyn CacheHelper as *const (),
     ));
-    Assert::assert_false(std::ptr::eq(
-        reader_helper.get_key(),
-        wrapped_helper.get_key(),
-    ));
+    Assert::assert_false(reader_helper.get_key() == wrapped_helper.get_key());
 
     let close_called_counter = Arc::new(AtomicI32::new(0));
 
     wrapped_helper.add_closed_listener(Box::new(CountingListener {
         close_called_counter: Arc::clone(&close_called_counter),
+        wrapped_key: wrapped
+            .get_reader_cache_helper()
+            .unwrap_or_else(|| crate::support::npe("wrapped cache helper"))
+            .get_key()
+            .clone(),
     }));
 
     reader.close()?;

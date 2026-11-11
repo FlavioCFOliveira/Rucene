@@ -555,19 +555,13 @@ fn test_soft_delete_with_retention() -> Result<()> {
                     let id = random().next_int_bound(10).to_string();
                     let seq_id = seq_ids.fetch_add(1, Ordering::SeqCst) + 1;
                     if update_several_docs {
-                        // `Arrays.asList(doc, doc)`: the same document twice,
-                        // here two documents built alike, as a slice holds
-                        // its documents by value.
-                        let make_doc = || -> Result<Document> {
-                            let mut doc = Document::new();
-                            doc.add(stored_string("id", &id)?);
-                            doc.add(Box::new(IntPoint::new("seq_id", &[seq_id])?));
-                            Ok(doc)
-                        };
-                        let docs = [make_doc()?, make_doc()?];
+                        let mut doc = Document::new();
+                        doc.add(stored_string("id", &id)?);
+                        doc.add(Box::new(IntPoint::new("seq_id", &[seq_id])?));
+                        // `Arrays.asList(doc, doc)`: the same document twice.
                         writer.soft_update_documents(
                             Term::from_text("id", &id),
-                            &docs[..],
+                            &[&doc, &doc],
                             &[ndv("soft_delete", 1)?],
                         )?;
                     } else {
