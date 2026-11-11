@@ -1970,7 +1970,7 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
                 self.doc_starts.to_vec(),
                 map,
                 total_cost,
-            )?)))
+            ))))
         }
     }
 
@@ -2025,7 +2025,7 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
                 self.doc_starts.to_vec(),
                 map,
                 total_cost,
-            )?)))
+            ))))
         }
     }
 

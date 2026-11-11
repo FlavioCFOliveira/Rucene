@@ -257,7 +257,7 @@ fn test_update_document() -> Result<()> {
         iwc.set_max_buffered_docs(20)?;
     }
     // no merging
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     if verbose() {
         println!("TEST: make index");
     }
@@ -393,7 +393,7 @@ fn test_add_indexes() -> Result<()> {
         iwc.set_max_buffered_docs(20)?;
     }
     // no merging
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir1.as_directory(), iwc)?;
 
     // create the index
@@ -1456,7 +1456,7 @@ fn test_nrt_open_exceptions() -> Result<()> {
     }));
 
     let conf = no_wait_iwc()?;
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // prevent merges from getting in the way
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // prevent merges from getting in the way
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     // create a segment and open an NRT reader

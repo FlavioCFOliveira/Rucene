@@ -50,7 +50,7 @@ pub fn class_def() -> Arc<Class> {
 /// `new IndexWriterConfig().setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
     let iwc = IndexWriterConfig::new();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     Ok(iwc)
 }
 

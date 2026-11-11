@@ -57,7 +57,7 @@ fn no_merge_writer(
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     IndexWriter::new(dir.as_directory(), iwc)
 }
 

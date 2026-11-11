@@ -56,7 +56,7 @@ fn doc(value: &str, price: i64) -> Document {
 fn no_merges() -> IndexWriterConfig {
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config
 }

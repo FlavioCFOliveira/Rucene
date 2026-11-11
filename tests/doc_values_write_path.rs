@@ -44,7 +44,7 @@ fn numeric_doc_values_written_by_the_index_writer_are_read_back() {
     let dir = fresh_directory("rucene-183-dv-round-trip");
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("merge policy");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..4i64 {
@@ -85,7 +85,7 @@ fn a_flushed_segment_records_how_many_documents_it_soft_deletes() {
     let dir = fresh_directory("rucene-183-soft-del-count");
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("merge policy");
     config.set_soft_deletes_field(Some(SOFT_DELETES_FIELD.to_string()));
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
@@ -124,7 +124,7 @@ fn a_segment_with_no_soft_deletes_field_configured_records_none() {
     let dir = fresh_directory("rucene-183-soft-del-count-off");
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("merge policy");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..4 {

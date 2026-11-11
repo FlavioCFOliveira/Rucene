@@ -1759,14 +1759,13 @@ impl IndexableField for Field {
     ///
     /// Equivalent to `org.apache.lucene.document.Field.storedValue()`.
     ///
-    /// Java throws `IllegalStateException("Cannot store value of type ...")`
-    /// when a stored field carries a `Reader` or a `TokenStream`; here those
-    /// two combinations are already rejected by [`Field::new_with_reader`] and
-    /// [`Field::new_with_token_stream`], so the arm is unreachable and returns
-    /// `Ok(None)`. The indexing chain turns a `None` on a stored field into
-    /// `IllegalArgument("Cannot store a null value")`, which is exactly the
-    /// error Lucene's `IndexingChain.invertAndStore` raises for a null
-    /// `storedValue()`.
+    /// As Java (`Field.java:607-630`): `None` for a field that is not
+    /// stored, `IllegalArgumentException("fieldsData is unset")` for a stored
+    /// field without a value, and `IllegalStateException("Cannot store value
+    /// of type " + fieldsData.getClass())` for a stored field whose value is a
+    /// `Reader` or a `TokenStream`. Rust has no runtime class of the value, so
+    /// the message names the declared classes `java.io.Reader` and
+    /// `org.apache.lucene.analysis.TokenStream`.
     ///
     /// # Errors
     ///
@@ -1808,9 +1807,17 @@ impl IndexableField for Field {
                 input.borrow_mut().read_bytes(Some(&mut bytes), 0, length)?;
                 Ok(Some(StoredValue::DataInput(BytesRef::new(bytes))))
             }
-            // `fieldsData.getClass()` on a `null` value (`Field.java:628`).
-            FieldData::Null => Err(LuceneError::null_pointer()),
-            FieldData::Reader(_) | FieldData::TokenStream(_) => Ok(None),
+            // `Field.java:611-612`.
+            FieldData::Null => Err(LuceneError::IllegalArgument(
+                "fieldsData is unset".to_string(),
+            )),
+            // `Field.java:628`.
+            FieldData::Reader(_) => Err(LuceneError::illegal_state(
+                "Cannot store value of type class java.io.Reader",
+            )),
+            FieldData::TokenStream(_) => Err(LuceneError::illegal_state(
+                "Cannot store value of type class org.apache.lucene.analysis.TokenStream",
+            )),
         }
     }
 

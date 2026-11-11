@@ -203,7 +203,7 @@ fn do_test_doc_with_extra_schema_options_throws_error(
 fn with_writer(body: impl FnOnce(&Arc<IndexWriter>) -> Result<()>) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let config = IndexWriterConfig::new();
-    config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
     let outcome = body(&writer);
     let closed = writer.close();

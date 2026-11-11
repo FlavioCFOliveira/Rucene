@@ -115,7 +115,7 @@ fn test_delete_leftover_files() -> Result<()> {
 
     // Delete one doc so we get a .del file:
     let iwc = mock_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     iwc.set_use_compound_file(true)?;
     let writer = IndexWriter::new(Arc::clone(&d), iwc)?;
     let search_term = Term::from_text("id", "7");

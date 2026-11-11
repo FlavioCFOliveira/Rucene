@@ -293,7 +293,7 @@ fn test_chunk_cleanup() -> Result<()> {
     let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*LuceneTestCase::random()),
     )));
-    iw_conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iw_conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
 
     // we have to enforce certain things like maxDocsPerChunk to cause dirty chunks to be created
     // by this test.

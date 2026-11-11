@@ -459,7 +459,7 @@ fn test_merge_doc_count0() -> Result<()> {
 
     // delete some docs without merging
     let iwc = mock_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     writer.delete_documents_by_terms(vec![Term::from_text("content", "aaa")])?;
     writer.close()?;
@@ -546,7 +546,7 @@ fn test_setters() -> Result<()> {
 /// `NoMergePolicy` writer, then the five-leaf check.
 fn five_flushed_segments(dir: &TestDirectory) -> Result<()> {
     let iwc = mock_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let first_writer = IndexWriter::new(dir.as_directory(), iwc)?;
     for _ in 0..5 {
         test_index_writer_add_doc(&first_writer)?;
@@ -701,7 +701,7 @@ fn test_carry_over_new_deletes_on_commit() -> Result<()> {
         let wait_for_update = Arc::new(CountDownLatch::new(1));
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(merge_on_x_merge_policy(
-            Arc::new(NoMergePolicy::new()),
+            NoMergePolicy::instance(),
             MergeTrigger::Commit,
         )))?;
         iwc.set_max_full_flush_merge_wait_millis(30 * 1000);
@@ -948,7 +948,7 @@ fn test_fail_after_merge_committed() -> Result<()> {
         let merge_and_fail = Arc::new(AtomicBool::new(false));
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(merge_on_x_merge_policy(
-            Arc::new(NoMergePolicy::new()),
+            NoMergePolicy::instance(),
             MergeTrigger::GetReader,
         )))?;
         iwc.set_max_full_flush_merge_wait_millis(30 * 1000);
@@ -1554,7 +1554,7 @@ fn test_force_merge_dv_update_file_with_concurrent_flush() -> Result<()> {
 /// tests start from, written through `mock_directory`.
 fn two_segments_with_soft_update(mock_directory: &Arc<dyn Directory>) -> Result<()> {
     let iwc = mock_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let first_writer = IndexWriter::new(Arc::clone(mock_directory), iwc)?;
 
     first_writer.add_document(&id_version_doc("1", "1")?)?;

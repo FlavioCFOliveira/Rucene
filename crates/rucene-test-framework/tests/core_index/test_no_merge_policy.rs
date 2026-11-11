@@ -36,7 +36,7 @@ struct NoMergeSuite;
 
 impl BaseMergePolicyTestCase for NoMergeSuite {
     fn merge_policy(&self) -> Arc<dyn MergePolicy> {
-        Arc::new(NoMergePolicy::new())
+        NoMergePolicy::instance()
     }
 
     fn assert_segment_infos(&self, _policy: &dyn MergePolicy, infos: &SegmentInfos) -> Result<()> {
@@ -109,11 +109,9 @@ fn test_no_merge_policy(this: &dyn BaseMergePolicyTestCase) -> Result<()> {
 const NO_MERGE_POLICY_IS_FINAL: bool = true;
 
 /// `NoMergePolicy.class.getDeclaredConstructors()`: name and whether it is
-/// private (`src/index/merge_policy.rs`: `pub fn new()` and `Default`).
-const NO_MERGE_POLICY_CONSTRUCTORS: &[(&str, bool)] = &[
-    ("NoMergePolicy::new()", false),
-    ("NoMergePolicy::default()", false),
-];
+/// private (`src/index/merge_policy.rs`: the private `fn new()`; the single
+/// instance is `NoMergePolicy::instance()`).
+const NO_MERGE_POLICY_CONSTRUCTORS: &[(&str, bool)] = &[("NoMergePolicy::new()", true)];
 
 /// `NoMergePolicy.class.getMethods()` that `MergePolicy` declares, public
 /// and not `final` (`MergePolicy.java:556-822`), `clone` excluded.

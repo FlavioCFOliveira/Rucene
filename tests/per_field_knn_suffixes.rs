@@ -125,7 +125,7 @@ fn rucene_files(shared: bool) -> Vec<String> {
     let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config
         .set_codec(Arc::new(PerFieldCodec {

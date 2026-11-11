@@ -5517,9 +5517,7 @@ impl DocumentsWriterFlushControl {
         per_thread: &DocumentsWriterPerThread,
         inner: &mut FlushControlInner,
     ) {
-        if per_thread.is_flush_pending() {
-            return;
-        }
+        debug_assert!(!per_thread.is_flush_pending());
         if per_thread.num_docs_in_ram() > 0 {
             per_thread.set_flush_pending();
             let bytes = per_thread.last_committed_bytes_used();
@@ -5720,7 +5718,10 @@ impl DocumentsWriterFlushControl {
         {
             if guard.num_docs_in_ram() > 0 {
                 let mut inner = self.lock();
-                self.set_flush_pending_locked(guard.dwpt(), &mut inner);
+                // `DocumentsWriterFlushControl.java:585-587`.
+                if !guard.is_flush_pending() {
+                    self.set_flush_pending_locked(guard.dwpt(), &mut inner);
+                }
                 full_flush_buffer.push(self.check_out_for_flush(&guard, &mut inner));
             } else {
                 let checked_out = self.per_thread_pool.checkout(&guard);

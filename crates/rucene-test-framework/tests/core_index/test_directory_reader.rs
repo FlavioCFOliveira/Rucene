@@ -1897,7 +1897,7 @@ fn create_executor_service_that_fails_one_task() -> Arc<FailsOneTask> {
 fn create_multi_segment_index(dir: &Arc<dyn Directory>, num_segments: i32) -> Result<()> {
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_max_buffered_docs(2)?;
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(Arc::clone(dir), iwc)?;
     for i in 0..num_segments {
         let mut doc = Document::new();

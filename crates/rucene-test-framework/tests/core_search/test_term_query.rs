@@ -93,7 +93,7 @@ fn three_segment_writer(
     dir: &rucene_test_framework::util::lucene_test_case::TestDirectory,
 ) -> Result<RandomIndexWriter> {
     let config = LuceneTestCase::new_index_writer_config();
-    config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     // segment that contains the term
     let mut doc = Document::new();
@@ -338,7 +338,7 @@ impl Query for RecordingTermQuery {
 fn test_with_with_different_score_modes() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config();
-    config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
     // segment that contains the term
     let mut doc = Document::new();

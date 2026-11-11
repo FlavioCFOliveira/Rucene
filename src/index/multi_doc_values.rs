@@ -348,7 +348,7 @@ impl MultiDocValues {
             doc_starts,
             Arc::clone(&mapping),
             total_cost,
-        )?);
+        ));
         Ok(Some((view, Some(mapping))))
     }
 
@@ -454,7 +454,7 @@ impl MultiDocValues {
             doc_starts,
             Arc::clone(&mapping),
             total_cost,
-        )?);
+        ));
         Ok(Some((view, Some(mapping))))
     }
 }
@@ -575,7 +575,8 @@ impl DocIdSetIterator for MultiNumericDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.leaves.len() {
                 self.current_values = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -615,7 +616,8 @@ impl DocValuesIterator for MultiNumericDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.leaves.len() {
                 return Err(out_of_range(target));
             }
@@ -717,7 +719,8 @@ impl DocIdSetIterator for MultiBinaryDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.leaves.len() {
                 self.current_values = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -753,7 +756,8 @@ impl DocValuesIterator for MultiBinaryDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.leaves.len() {
                 return Err(out_of_range(target));
             }
@@ -958,21 +962,16 @@ impl MultiSortedDocValues {
     /// `MultiSortedDocValues(SortedDocValues[], int[], OrdinalMap, long)`.
     ///
     /// `mapping` must have been built over exactly these leaves, in this order.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] unless
-    /// `doc_starts.len() == values.len() + 1`. Java asserts this, which
-    /// production builds skip; a mismatch would silently mis-address leaves, so
-    /// it is checked here.
+    /// As Java (`MultiDocValues.java:704`), only asserts
+    /// `doc_starts.len() == values.len() + 1`.
     pub fn new(
         values: Vec<Box<dyn SortedDocValues>>,
         doc_starts: Vec<i32>,
         mapping: Arc<OrdinalMap>,
         total_cost: i64,
-    ) -> Result<Self> {
-        check_doc_starts(doc_starts.len(), values.len())?;
-        Ok(Self {
+    ) -> Self {
+        debug_assert!(doc_starts.len() == values.len() + 1);
+        Self {
             values,
             doc_starts,
             mapping,
@@ -980,7 +979,7 @@ impl MultiSortedDocValues {
             next_leaf: 0,
             current: None,
             doc_id: -1,
-        })
+        }
     }
 
     /// Returns the per-leaf doc values being merged.
@@ -1154,18 +1153,16 @@ impl MultiSortedSetDocValues {
     /// Equivalent to
     /// `MultiSortedSetDocValues(SortedSetDocValues[], int[], OrdinalMap, long)`.
     ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] unless
+    /// As Java (`MultiDocValues.java:843`), only asserts
     /// `doc_starts.len() == values.len() + 1`.
     pub fn new(
         values: Vec<Box<dyn SortedSetDocValues>>,
         doc_starts: Vec<i32>,
         mapping: Arc<OrdinalMap>,
         total_cost: i64,
-    ) -> Result<Self> {
-        check_doc_starts(doc_starts.len(), values.len())?;
-        Ok(Self {
+    ) -> Self {
+        debug_assert!(doc_starts.len() == values.len() + 1);
+        Self {
             values,
             doc_starts,
             mapping,
@@ -1173,7 +1170,7 @@ impl MultiSortedSetDocValues {
             next_leaf: 0,
             current: None,
             doc_id: -1,
-        })
+        }
     }
 
     /// Returns the per-leaf doc values being merged.
@@ -1342,16 +1339,6 @@ fn no_current(kind: &str) -> String {
 
 /// Validates the `doc_starts` length invariant shared by the two
 /// ordinal-mapping views.
-fn check_doc_starts(doc_starts_len: usize, values_len: usize) -> Result<()> {
-    if doc_starts_len != values_len + 1 {
-        return Err(LuceneError::IllegalArgument(format!(
-            "doc_starts must have one more entry than values: got {doc_starts_len} \
-             doc starts for {values_len} leaves"
-        )));
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -2883,21 +2870,28 @@ mod tests {
             ListSorted::boxed(&["a"], &[(0, 0)]),
         ];
         let mapping = Arc::new(OrdinalMap::build_sorted(map_inputs, 0.25).unwrap());
-        let values = MultiSortedDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2).unwrap();
+        let values = MultiSortedDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);
         assert_eq!(values.mapping().get_value_count(), 2);
         assert_eq!(values.cost(), 2);
     }
 
+    /// Java only asserts the table's length (`MultiDocValues.java:704`):
+    /// with assertions enabled (debug builds) the assert fails; without, the
+    /// view is built.
     #[test]
-    fn multi_sorted_doc_values_reject_a_doc_start_table_of_the_wrong_length() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "doc_starts.len() == values.len() + 1")
+    )]
+    fn multi_sorted_doc_values_assert_the_length_of_the_doc_start_table() {
         let leaf_values: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
         let map_inputs: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
         let mapping = Arc::new(OrdinalMap::build_sorted(map_inputs, 0.25).unwrap());
         // One leaf needs two doc starts (its docBase plus the maxDoc sentinel).
-        let err = MultiSortedDocValues::new(leaf_values, vec![0], mapping, 1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        let values = MultiSortedDocValues::new(leaf_values, vec![0], mapping, 1);
+        assert_eq!(values.doc_starts(), &[0]);
     }
 
     // =======================================================================
@@ -3041,15 +3035,22 @@ mod tests {
         assert_eq!(values.cost(), 3);
     }
 
+    /// Java only asserts the table's length (`MultiDocValues.java:843`):
+    /// with assertions enabled (debug builds) the assert fails; without, the
+    /// view is built.
     #[test]
-    fn multi_sorted_set_doc_values_reject_a_doc_start_table_of_the_wrong_length() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "doc_starts.len() == values.len() + 1")
+    )]
+    fn multi_sorted_set_doc_values_assert_the_length_of_the_doc_start_table() {
         let leaf_values: Vec<Box<dyn SortedSetDocValues>> =
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
         let map_inputs: Vec<Box<dyn SortedSetDocValues>> =
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
         let mapping = Arc::new(OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap());
-        let err = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 1);
+        assert_eq!(values.doc_starts(), &[0, 1, 2]);
     }
 
     #[test]
@@ -3063,7 +3064,7 @@ mod tests {
             ListSortedSet::boxed(&["a"], &[(0, &[0])]),
         ];
         let mapping = Arc::new(OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap());
-        let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2).unwrap();
+        let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);
         assert_eq!(values.mapping().get_value_count(), 2);

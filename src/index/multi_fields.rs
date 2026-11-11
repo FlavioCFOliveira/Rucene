@@ -1813,6 +1813,7 @@ impl PostingsEnum for MultiPostingsEnum {
     /// Equivalent to `MultiPostingsEnum.freq()`, which asserts and then
     /// dereferences `current`.
     fn freq(&self) -> Result<i32> {
+        debug_assert!(self.current.is_some());
         self.current_enum("freq()")?.freq()
     }
 
@@ -3520,9 +3521,7 @@ mod tests {
             Arc::new(crate::store::ByteBuffersDirectory::new());
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for segment in [["aaaa", "cccc"], ["bbbb", "cccc"]] {

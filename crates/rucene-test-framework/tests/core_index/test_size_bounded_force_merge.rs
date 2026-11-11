@@ -71,7 +71,7 @@ fn new_writer_config() -> Result<IndexWriterConfig> {
     // don't use compound files, because the overhead make size checks unreliable.
     conf.set_use_compound_file(false)?;
     // prevent any merges by default.
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
     Ok(conf)
 }
 

@@ -484,7 +484,7 @@ fn test_doc_count() -> Result<()> {
     // delete 40 documents
     let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(KeepFullyDeletedSegmentsMergePolicy::new(
-        Arc::new(NoMergePolicy::new()),
+        NoMergePolicy::instance(),
     ))))?;
     let writer2 = writer(&d, iwc)?;
 
@@ -3485,7 +3485,7 @@ fn test_has_uncommitted_changes() -> Result<()> {
     let iwc = mock_iwc();
     // Disable merging to simplify this test, otherwise a commit might trigger
     // uncommitted merges.
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = writer(&d, iwc)?;
     Assert::assert_true(w.has_uncommitted_changes()?); // this will be true because a commit will create an empty
                                                        // index
@@ -4088,7 +4088,7 @@ fn windows_root() -> Path {
 fn pending_delete_dv_iwc() -> Result<IndexWriterConfig> {
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_use_compound_file(false)?;
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // avoid merging away the randomFile
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?; // avoid merging away the randomFile
     iwc.set_max_buffered_docs(2)?;
     iwc.set_ram_buffer_size_mb(-1.0)?;
     Ok(iwc)
@@ -4870,7 +4870,7 @@ fn test_soft_update_documents() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     iwc.set_soft_deletes_field(Some("soft_delete".to_string()));
     let w = writer(&d, iwc)?;
     expect_throws(IAE, || {
@@ -6594,7 +6594,7 @@ fn test_ensure_max_seq_no_is_accurate_during_flush() -> Result<()> {
 /// `new IndexWriterConfig().setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
     let iwc = IndexWriterConfig::new();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     Ok(iwc)
 }
 

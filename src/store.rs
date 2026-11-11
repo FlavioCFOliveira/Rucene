@@ -1060,18 +1060,19 @@ impl DataInput for FilterIndexInput {
         self.inner.read_bytes(b, offset, len)
     }
 
-    fn read_bytes_buffered(
-        &mut self,
-        b: Option<&mut [u8]>,
-        offset: usize,
-        len: usize,
-        use_buffer: bool,
-    ) -> Result<()> {
-        self.inner.read_bytes_buffered(b, offset, len, use_buffer)
-    }
+    // `readBytes(byte[], int, int, boolean)` is not overridden: `DataInput`'s
+    // routes it through this class's `readBytes`.
 
+    /// `FilterIndexInput` does not override `skipBytes`, so Java runs
+    /// `IndexInput.skipBytes` (`IndexInput.java:86-92`): a seek on this input.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        self.inner.skip_bytes(num_bytes)
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be >= 0, got {num_bytes}"
+            )));
+        }
+        let skip_to = IndexInput::file_pointer(self) + num_bytes;
+        IndexInput::seek(self, skip_to)
     }
 }
 

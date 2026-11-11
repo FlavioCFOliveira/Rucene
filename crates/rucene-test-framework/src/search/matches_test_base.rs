@@ -262,7 +262,7 @@ impl MatchesState {
         global_doc: i32,
     ) -> Result<Option<Arc<dyn Matches>>> {
         let leaf_contexts = self.searcher.get_leaf_contexts();
-        let ctx = &leaf_contexts[sub_index_from_leaves(global_doc, leaf_contexts)];
+        let ctx = &leaf_contexts[sub_index_from_leaves(global_doc, leaf_contexts) as usize];
         let doc = global_doc - ctx.doc_base();
         w.matches(ctx, doc)
     }

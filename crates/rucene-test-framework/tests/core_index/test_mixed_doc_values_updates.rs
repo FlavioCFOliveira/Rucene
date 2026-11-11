@@ -791,7 +791,7 @@ fn test_try_update_multi_threaded() -> Result<()> {
                 assert_equals(&top_docs.total_hits.value(), &1);
                 let mut doc_id = top_docs.score_docs[0].doc;
                 let leaves = (Arc::clone(&reader) as Arc<dyn IndexReader>).leaves()?;
-                let sub_index = sub_index_from_leaves(doc_id, &leaves);
+                let sub_index = sub_index_from_leaves(doc_id, &leaves) as usize;
                 let leaf_reader = leaves[sub_index].leaf_reader();
                 doc_id -= leaves[sub_index].doc_base();
                 let mut numeric_doc_values = leaf_reader
@@ -979,7 +979,7 @@ fn test_reset_value_multiple_docs() -> Result<()> {
                     Throwable::new("java.lang.NumberFormatException", "id").throw()
                 });
             let leaves = Arc::clone(&ir).leaves()?;
-            let i = sub_index_from_leaves(doc.doc, &leaves);
+            let i = sub_index_from_leaves(doc.doc, &leaves) as usize;
             let leaf_reader_context = &leaves[i];
             let seq_id_values = leaf_reader_context
                 .leaf_reader()

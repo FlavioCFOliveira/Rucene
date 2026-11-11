@@ -108,7 +108,7 @@ fn segments_n_lists_doc_values_update_files_in_lucenes_order() {
     {
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
         config.set_use_compound_file(false).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();

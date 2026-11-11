@@ -1541,6 +1541,16 @@ pub(crate) mod tests {
 
     /// Returns a minimal `SegmentInfo` for use in cross-module codec tests.
     pub(crate) fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
+        test_segment_info_with_codec(name, max_doc, std::sync::Arc::new(DummyCodec::new("Dummy")))
+    }
+
+    /// [`test_segment_info`] built with `codec`: `SegmentInfo.setCodec` may
+    /// only be called once (`SegmentInfo.java:174-176`).
+    pub(crate) fn test_segment_info_with_codec(
+        name: &str,
+        max_doc: i32,
+        codec: std::sync::Arc<dyn crate::codecs::Codec>,
+    ) -> SegmentInfo {
         SegmentInfo::new(
             std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
@@ -1549,7 +1559,7 @@ pub(crate) mod tests {
             max_doc,
             false,
             false,
-            std::sync::Arc::new(DummyCodec::new("Dummy")),
+            codec,
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),

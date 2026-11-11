@@ -121,7 +121,7 @@ fn a_retention_policy_keeps_a_fully_soft_deleted_segment_it_still_matches() {
         .set_merge_policy(Some(Arc::new(SoftDeletesRetentionMergePolicy::new(
             "soft",
             Arc::new(|| Arc::new(MatchAllDocsQuery) as Arc<dyn Query>),
-            Arc::new(NoMergePolicy::new()),
+            NoMergePolicy::instance(),
         ))))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -327,7 +327,7 @@ fn forced_merge_cascade(config: IndexWriterConfig) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let initial = IndexWriterConfig::new();
     initial
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
     for i in 0..4 {
@@ -355,7 +355,7 @@ fn flush_counters_move_as_lucene_does() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let counts = |writer: &IndexWriter| {
@@ -395,7 +395,7 @@ fn applied_deletes_publish_and_count_a_flush_as_lucene_does() {
     let config = IndexWriterConfig::new();
     config.set_ram_buffer_size_mb(0.01).unwrap();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config
         .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
@@ -443,7 +443,7 @@ fn segments_flushed_by_add_document_are_published_and_merged_as_lucene_does() {
             .unwrap();
         if case == "none" {
             config
-                .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+                .set_merge_policy(Some(NoMergePolicy::instance()))
                 .unwrap();
         } else {
             let mut policy = LogMergePolicy::by_doc_count();
@@ -482,7 +482,7 @@ fn log_merge_with(case: &str, policy: LogMergePolicy, sizes: &[i32]) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let initial = IndexWriterConfig::new();
     initial
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
     let mut id = 0;
@@ -567,7 +567,7 @@ fn concurrent_merges_on_get_reader_each_keep_their_own_segment() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let initial = IndexWriterConfig::new();
         initial
-            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
         for i in 0..40 {

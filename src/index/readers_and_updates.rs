@@ -1796,14 +1796,14 @@ impl ReadersAndUpdates {
         let mut state = self.state.lock().expect("state mutex poisoned");
         let field = update.field.clone();
         let ram = update.ram_bytes_used();
-        self.ram_bytes_used.fetch_add(ram, Ordering::Relaxed);
 
         {
-            let segment_name = state.info.info.name.clone();
+            let state = &mut *state;
             // `pendingDVUpdates.computeIfAbsent(update.field, key -> new
             // ArrayList<>())` (`ReadersAndUpdates.java:150-151`).
             let updates = state.pending_dv_updates.compute_if_absent(&field, Vec::new);
-            Self::assert_no_dup_gen(updates, &update, &segment_name)?;
+            debug_assert!(Self::assert_no_dup_gen(updates, &update, &state.info));
+            self.ram_bytes_used.fetch_add(ram, Ordering::Relaxed);
             updates.push(update);
         }
 
@@ -2101,15 +2101,15 @@ impl ReadersAndUpdates {
                     // The field is not present in this segment, so we clone the
                     // global field (which is guaranteed to exist) and remap its
                     // field number locally.
-                    let fi = field_numbers
-                        .construct_field_info(&update.field, update.dv_type, max_field_number + 1)?
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(format!(
-                                "field [{}] with doc-values type {:?} is not in the global \
-                                 field numbers",
-                                update.field, update.dv_type
-                            ))
-                        })?;
+                    let fi = field_numbers.construct_field_info(
+                        &update.field,
+                        update.dv_type,
+                        max_field_number + 1,
+                    )?;
+                    debug_assert!(fi.is_some());
+                    // Without assertions Java dereferences the null `fi`
+                    // (`ReadersAndUpdates.java:683`).
+                    let fi = fi.ok_or_else(LuceneError::null_pointer)?;
                     max_field_number += 1;
                     by_name.insert(fi.name.clone(), fi);
                 }
@@ -2234,12 +2234,11 @@ impl ReadersAndUpdates {
             let segment_suffix = radix36(next_dv_gen as u64);
             let flush_context =
                 flush_io_context(FlushInfo::new(state.info.info.max_doc()?, fd.bytes));
-            let field_info = field_infos
-                .field_info(&fd.field)
-                .ok_or_else(|| {
-                    LuceneError::illegal_state(format!("missing FieldInfo for field: {}", fd.field))
-                })?
-                .clone();
+            let field_info = field_infos.field_info(&fd.field);
+            debug_assert!(field_info.is_some());
+            // Without assertions Java dereferences the null `fieldInfo`
+            // (`ReadersAndUpdates.java:328`).
+            let field_info = field_info.ok_or_else(LuceneError::null_pointer)?.clone();
             let mut field_info_mut = field_info;
             field_info_mut.set_doc_values_gen(next_dv_gen);
 
@@ -2404,34 +2403,25 @@ impl ReadersAndUpdates {
     /// Refuses a second doc-values update packet carrying a generation the
     /// segment has already buffered.
     ///
-    /// Equivalent to the private `org.apache.lucene.index.ReadersAndUpdates#assertNoDupGen`.
+    /// Equivalent to the private `org.apache.lucene.index.ReadersAndUpdates#assertNoDupGen`
+    /// (`ReadersAndUpdates.java:130-139`), reached only from an assertion
+    /// (`assert assertNoDupGen(...)`, `ReadersAndUpdates.java:152`).
     ///
-    /// **Divergence from Lucene 10.5.0.** Java reaches this only from
-    /// `assert assertNoDupGen(...)` and raises an `AssertionError`, so the check
-    /// disappears from a build without `-ea`. This port returns
-    /// [`LuceneError::IllegalState`] instead and checks unconditionally: a
-    /// duplicate generation silently replays a packet of deletes against the
-    /// same segment, which corrupts the delete accounting, and the check costs
-    /// one pass over the handful of packets buffered for one field.
+    /// # Panics
     ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalState`] when `update`'s generation is
-    /// already present in `field_updates`.
+    /// Panics with Java's `AssertionError` message when `update`'s generation
+    /// is already present in `field_updates`.
     fn assert_no_dup_gen(
         field_updates: &[DocValuesFieldUpdates],
         update: &DocValuesFieldUpdates,
-        segment_name: &str,
-    ) -> Result<bool> {
+        info: &SegmentCommitInfo,
+    ) -> bool {
         for old_update in field_updates {
             if old_update.del_gen == update.del_gen {
-                return Err(LuceneError::illegal_state(format!(
-                    "duplicate delGen={} for seg={segment_name}",
-                    update.del_gen
-                )));
+                panic!("duplicate delGen={} for seg={info}", update.del_gen);
             }
         }
-        Ok(true)
+        true
     }
 
     /// Copies a field info, renumbering it.
@@ -4824,9 +4814,7 @@ mod needs_refresh_tests {
         // No merge may fold the deleted document away before the reader sees it.
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for id in ["a", "b"] {

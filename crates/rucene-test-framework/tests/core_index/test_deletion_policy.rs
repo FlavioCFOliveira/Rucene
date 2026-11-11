@@ -902,7 +902,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
             conf.set_index_deletion_policy(Some(
                 Arc::clone(&policy) as Arc<dyn IndexDeletionPolicy>
             ))?;
-            conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+            conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
             let writer = IndexWriter::new(dir.as_directory(), conf)?;
             writer.delete_documents_by_terms(vec![Term::from_text(
                 "id",

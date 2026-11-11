@@ -115,7 +115,7 @@ fn test_empty_index_with_vectors() -> Result<()> {
 
         let dont_merge_config =
             IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
-        dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+        dont_merge_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
         if verbose() {
             println!("\nTEST: make 2nd writer");
         }

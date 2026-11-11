@@ -1417,7 +1417,7 @@ fn test_merge_after_copy() -> Result<()> {
     set_up_dirs_with_id(&d(&dir), &d(&aux), true)?;
 
     let dont_merge_config = plain_iwc();
-    dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    dont_merge_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(d(&aux), dont_merge_config)?;
     for i in 0..20 {
         writer.delete_documents_by_terms(vec![Term::from_text("id", &i.to_string())])?;
@@ -1465,7 +1465,7 @@ fn test_more_merges() -> Result<()> {
     writer.close()?;
 
     let dont_merge_config = plain_iwc();
-    dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    dont_merge_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(d(&aux), dont_merge_config)?;
     for i in 0..27 {
         writer.delete_documents_by_terms(vec![Term::from_text("id", &i.to_string())])?;
@@ -1476,7 +1476,7 @@ fn test_more_merges() -> Result<()> {
     reader.close()?;
 
     let dont_merge_config = plain_iwc();
-    dont_merge_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    dont_merge_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(d(&aux2), dont_merge_config)?;
     for i in 0..8 {
         writer.delete_documents_by_terms(vec![Term::from_text("id", &i.to_string())])?;

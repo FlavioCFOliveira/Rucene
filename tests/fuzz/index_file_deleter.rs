@@ -162,7 +162,10 @@ fn file_name_helpers_survive_every_hostile_name() {
         let ext = get_extension(&name);
         let _ = is_codec_file(&name);
         let _ = matches_extension(&name, "si");
-        let _ = parse_generation(&name);
+        // `parseGeneration` asserts its precondition (`IndexFileNames.java:147`).
+        if name.starts_with('_') {
+            let _ = parse_generation(&name);
+        }
 
         // Whatever they return must be a real slice of the input, so that a
         // caller re-slicing it cannot land mid-character.

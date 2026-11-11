@@ -242,7 +242,7 @@ fn test_segment_count_on_flush_random() -> Result<()> {
     iwc.set_ram_buffer_size_mb(-1.0)?;
 
     // Never trigger merges (so we can simplistically count flushed segments):
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
 
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -417,7 +417,7 @@ fn test_docs_stuck_in_ram_forever() -> Result<()> {
     iwc.set_ram_buffer_size_mb(0.2)?;
     let codec = TestUtil::get_default_codec();
     iwc.set_codec(Arc::clone(&codec))?;
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let starting_gun = Arc::new(CountDownLatch::new(1));
     let mut threads = Vec::with_capacity(2);

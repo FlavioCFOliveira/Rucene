@@ -975,7 +975,7 @@ fn test_exception_from_token_stream() -> Result<()> {
         },
     )));
     conf.set_max_buffered_docs(3.max(conf.max_buffered_docs()))?;
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
 
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -1255,7 +1255,7 @@ fn test_documents_writer_exception_fail_one_doc() -> Result<()> {
             i32::MAX as f64
         })?;
         conf.set_merge_policy(Some(Arc::new(KeepFullyDeletedSegmentsMergePolicy::new(
-            Arc::new(NoMergePolicy::new()),
+            NoMergePolicy::instance(),
         ))))?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
         let body = (|| -> Result<()> {
@@ -1318,7 +1318,7 @@ fn test_documents_writer_exception_threads() -> Result<()> {
                                                 // flush the one that has only the failed document the docFreq checks will
                                                 // be off below.
             conf.set_merge_policy(Some(Arc::new(KeepFullyDeletedSegmentsMergePolicy::new(
-                Arc::new(NoMergePolicy::new()),
+                NoMergePolicy::instance(),
             ))))?;
             let writer = IndexWriter::new(dir.as_directory(), conf)?;
 

@@ -154,7 +154,7 @@ fn an_nrt_reader_over_too_many_documents_is_corrupt() {
     let guard = MaxDocsGuard::acquire();
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     writer.add_document(&id_doc("a")).unwrap();

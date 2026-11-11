@@ -634,7 +634,7 @@ fn test_multiple_binary_fields() -> Result<()> {
     with_dir(|dir| {
         let iwc = index_sorted_iwc(sort_of(vec![bsf("a", false)?, bsf("b", false)?])?)?;
         iwc.set_max_buffered_docs(25)?;
-        iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // keep the flush-sorted segments separate
+        iwc.set_merge_policy(Some(NoMergePolicy::instance()))?; // keep the flush-sorted segments separate
         let num_docs = 300;
         with_writer(dir, iwc, |w| {
             for _ in 0..num_docs {
@@ -693,7 +693,7 @@ fn test_mix_custom_and_default_sort_fields() -> Result<()> {
         let iwc = index_sorted_iwc(sort.clone())?;
         iwc.set_max_buffered_docs(25)?;
         if random().next_boolean() {
-            iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+            iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
         } else {
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         }
@@ -968,7 +968,7 @@ fn test_min_value_sort_key() -> Result<()> {
         if merge {
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         } else {
-            iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+            iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
         }
         let num_docs = 400;
         with_writer(dir, iwc, |w| {
@@ -1054,7 +1054,7 @@ fn test_custom_comparator() -> Result<()> {
     with_dir(|dir| {
         let num_docs = LuceneTestCase::at_least(100);
         let iwc = LuceneTestCase::new_index_writer_config();
-        iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+        iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
         with_writer(dir, iwc, |w| {
             for i in 0..num_docs {
                 let mut doc = Document::new();

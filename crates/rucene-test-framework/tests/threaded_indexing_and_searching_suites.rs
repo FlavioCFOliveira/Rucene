@@ -919,7 +919,7 @@ mod crt {
         let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         )));
-        conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+        conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
         let mut d = LuceneTestCase::new_directory();
         let latch = Arc::new(CountDownLatch::new(1));
         let signal = Arc::new(CountDownLatch::new(1));

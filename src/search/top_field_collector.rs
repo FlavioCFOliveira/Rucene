@@ -320,7 +320,7 @@ impl TopFieldCollector {
                     )));
                 }
                 let new_context_index = sub_index_from_leaves(doc, &contexts);
-                let context = Arc::clone(&contexts[new_context_index]);
+                let context = Arc::clone(&contexts[new_context_index as usize]);
                 let scorer_supplier = weight.scorer_supplier(&context)?;
                 let Some(mut scorer_supplier) = scorer_supplier else {
                     return Err(LuceneError::IllegalArgument(format!(

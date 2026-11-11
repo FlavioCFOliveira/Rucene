@@ -88,14 +88,14 @@ fn mock_iwc() -> IndexWriterConfig {
 /// `new IndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn dont_merge_config() -> Result<IndexWriterConfig> {
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     Ok(iwc)
 }
 
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
     let iwc = mock_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     Ok(iwc)
 }
 

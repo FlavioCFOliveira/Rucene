@@ -60,7 +60,7 @@ fn test_random() -> Result<()> {
 
         let iwc = mock_iwc();
         iwc.set_merge_policy(Some(Arc::new(KeepFullyDeletedSegmentsMergePolicy::new(
-            Arc::new(NoMergePolicy::new()),
+            NoMergePolicy::instance(),
         ))))?;
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
         let mut docs: HashMap<BytesRef, Vec<i32>> = HashMap::new();

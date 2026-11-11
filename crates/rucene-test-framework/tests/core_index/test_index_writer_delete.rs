@@ -1446,7 +1446,7 @@ fn test_flush_pushed_deletes_by_ram() -> Result<()> {
     ))));
     iwc.set_ram_buffer_size_mb(0.5f32 as f64)?;
     iwc.set_max_buffered_docs(1000)?;
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     iwc.set_reader_pooling(false);
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     let mut count = 0;
@@ -1529,7 +1529,7 @@ fn test_apply_deletes_on_flush() -> Result<()> {
     ))));
     iwc.set_ram_buffer_size_mb(0.5)?;
     iwc.set_max_buffered_docs(-1)?;
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     iwc.set_reader_pooling(false);
     // always use CFS so we don't use tons of file handles in the test
     iwc.set_use_compound_file(true)?;
@@ -1599,7 +1599,7 @@ fn test_deletes_check_index_output() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = plain_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     iwc.set_max_buffered_docs(2)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     let mut doc = Document::new();
@@ -1656,7 +1656,7 @@ fn test_try_delete_document() -> Result<()> {
     w.close()?;
 
     let iwc = plain_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     iwc.set_open_mode(OpenMode::APPEND)?;
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
     let r = directory_reader::open_with_writer_flags(&*w, false, false)?;

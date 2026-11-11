@@ -613,7 +613,7 @@ fn parallel(composite_composite: bool) -> Result<(IndexSearcher, TestDirectory, 
 fn structured_dir(fields: [&str; 2], commits_after: &[usize]) -> Result<TestDirectory> {
     let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = IndexWriter::new(dir.as_directory(), conf)?;
     for (i, v) in ["v1", "v2", "v3", "v4"].into_iter().enumerate() {
         let mut d = Document::new();

@@ -1402,7 +1402,7 @@ fn test_merge_uses_new_format() -> Result<()> {
     let initial_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*LuceneTestCase::random()),
     )));
-    initial_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    initial_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
 
     {
         let iw = IndexWriter::new(directory.as_directory(), initial_config)?;

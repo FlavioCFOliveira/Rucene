@@ -256,7 +256,7 @@ fn test_force_merge_fully_deleted() -> Result<()> {
 fn test_keep_fully_deleted_segments() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
-    index_writer_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    index_writer_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     let mut doc = Document::new();
@@ -268,7 +268,7 @@ fn test_keep_fully_deleted_segments() -> Result<()> {
     let policy = SoftDeletesRetentionMergePolicy::new(
         "soft_delete",
         supplier(|| Arc::new(FieldExistsQuery::new("keep_around"))),
-        Arc::new(NoMergePolicy::new()),
+        NoMergePolicy::instance(),
     );
     Assert::assert_false(keep_fully_deleted(
         &policy,

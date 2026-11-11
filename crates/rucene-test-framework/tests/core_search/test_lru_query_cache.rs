@@ -1907,7 +1907,7 @@ fn test_on_use_with_random_first_segment_skipping() -> Result<()> {
     let mut directory = LuceneTestCase::new_directory();
     {
         let iwc = LuceneTestCase::new_index_writer_config();
-        iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+        iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
         let index_writer =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), iwc)?;
         let mut doc = Document::new();
@@ -2159,7 +2159,7 @@ fn test_evict_empty_segment_cache() -> Result<()> {
 fn test_min_segment_size_predicate() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::new();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let new_segment = |num_docs: i32| {
         let outcome: Result<()> = (|| {
@@ -2385,7 +2385,7 @@ impl LeafReader for NoCacheHelperLeafReader {
 fn test_reader_not_suited_for_caching() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
     let reader = dummy_directory_reader(w.get_reader()?)?;
@@ -2769,7 +2769,7 @@ impl Query for NoCacheQuery {
 fn test_query_not_suited_for_caching() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
     let reader = w.get_reader()?;
@@ -2894,7 +2894,7 @@ impl Query for DummyQuery2 {
 fn test_propagates_scorer_supplier() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
     let reader = w.get_reader()?;
@@ -3046,7 +3046,7 @@ fn asserting_caching_searcher(
 fn test_doc_values_updates_dont_break_cache() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
     w.commit()?;
@@ -3167,7 +3167,7 @@ fn test_query_cache_soft_update() -> Result<()> {
 fn test_bulk_scorer_locking() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     // the test framework sometimes sets crazy low values, prevent this since
     // we are indexing many docs
     iwc.set_max_buffered_docs(-1)?;
@@ -3435,7 +3435,7 @@ fn test_cache_has_fast_count() -> Result<()> {
 
     let mut dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
     let words_doc = |words: &str, f: Option<&str>| -> Result<Document> {
         let mut doc = Document::new();

@@ -419,7 +419,7 @@ fn print_stored(out: &mut String, stored: &dyn StoredFields, doc: i32) {
 }
 
 fn print_doc_values(out: &mut String, leaves: &[Arc<LeafReaderContext>], doc: i32) {
-    let ctx = &leaves[sub_index_from_leaves(doc, leaves)];
+    let ctx = &leaves[sub_index_from_leaves(doc, leaves) as usize];
     let leaf = ctx.leaf_reader();
     let local = doc - ctx.doc_base();
 

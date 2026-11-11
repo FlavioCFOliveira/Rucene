@@ -1386,7 +1386,7 @@ fn a_rollback_logs_each_pending_merge_as_the_writer_renders_its_segments() {
     let log = Arc::new(IwLog::default());
     let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1466,7 +1466,7 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
     let config = IndexWriterConfig::new();
     config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
-        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     config.set_max_full_flush_merge_wait_millis(0);
     config
@@ -1673,7 +1673,7 @@ fn a_point_in_time_merge_calls_the_hook_of_the_merge_it_wraps() {
         .set_merge_policy(Some(hooked_policy(&finished, Some("_0"), false, 2)))
         .unwrap();
     config
-        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..4 {
@@ -1941,12 +1941,10 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
     let config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     config
-        .set_merge_policy(Some(Arc::new(
-            rucene::index::merge_policy::NoMergePolicy::new(),
-        )))
+        .set_merge_policy(Some(rucene::index::merge_policy::NoMergePolicy::instance()))
         .unwrap();
     config.set_use_compound_file(false).unwrap();
     config
@@ -2016,7 +2014,7 @@ fn merging_segments_survive_a_rollback_as_lucene_reports_them() {
     let config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     config
         .set_merge_policy(Some(hooked_policy(&finished, Some("*"), false, 2)))

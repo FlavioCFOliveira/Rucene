@@ -122,7 +122,7 @@ fn test_drop_fully_deleted_segments() -> Result<()> {
     index_writer_config.set_merge_policy(Some(Arc::new(SoftDeletesRetentionMergePolicy::new(
         soft_deletes_field,
         match_all(),
-        Arc::new(NoMergePolicy::new()),
+        NoMergePolicy::instance(),
     ))))?;
     let mut dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
@@ -195,7 +195,7 @@ fn test_reuse_unchanged_leaf_reader() -> Result<()> {
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     let soft_deletes_field = "soft_delete";
     index_writer_config.set_soft_deletes_field(Some(soft_deletes_field.to_string()));
-    index_writer_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    index_writer_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     writer.add_document(&id_version_doc("1", "1")?)?;
@@ -340,7 +340,7 @@ fn test_reader_cache_key() -> Result<()> {
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     let soft_deletes_field = "soft_delete";
     index_writer_config.set_soft_deletes_field(Some(soft_deletes_field.to_string()));
-    index_writer_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    index_writer_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     writer.add_document(&id_version_doc("1", "1")?)?;

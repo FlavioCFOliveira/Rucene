@@ -44,7 +44,7 @@ fn directory_reader() -> Arc<dyn DirectoryReader> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("no merges");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..6 {

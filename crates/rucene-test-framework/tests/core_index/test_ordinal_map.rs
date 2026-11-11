@@ -129,7 +129,7 @@ fn test_ram_bytes_used() -> Result<()> {
 fn test_one_segment_with_all_values() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let cfg = config()?;
-    cfg.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    cfg.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let iw = IndexWriter::new(dir.as_directory(), cfg)?;
 
     let num_terms = 1000;

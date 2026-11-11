@@ -121,7 +121,7 @@ fn rust_merge() -> Arc<dyn Directory> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let initial = IndexWriterConfig::new();
     initial
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
     let mut i = 0;
@@ -415,7 +415,7 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let initial = IndexWriterConfig::new();
     initial
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
     for i in 0..4 {

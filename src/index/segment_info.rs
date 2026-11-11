@@ -207,19 +207,18 @@ impl SegmentInfo {
 
     /// Sets the number of documents in the segment.
     ///
+    /// Equivalent to `SegmentInfo.setMaxDoc` (`SegmentInfo.java:197-203`),
+    /// package-private in Java.
+    ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if `max_doc` was already set.
+    /// Returns `LuceneError::IllegalState` if `max_doc` was already set (is
+    /// not `-1`).
     pub fn set_max_doc(&mut self, max_doc: i32) -> Result<()> {
-        if self.max_doc >= 0 {
+        if self.max_doc != -1 {
             return Err(LuceneError::illegal_state(format!(
                 "maxDoc was already set: this.maxDoc={} vs maxDoc={max_doc}",
                 self.max_doc
-            )));
-        }
-        if max_doc < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative: {max_doc}"
             )));
         }
         self.max_doc = max_doc;
@@ -277,8 +276,11 @@ impl SegmentInfo {
         self.codec.clone()
     }
 
-    /// Sets the codec for this segment.
+    /// Sets the codec for this segment. Can only be called once.
+    ///
+    /// Equivalent to `SegmentInfo.setCodec` (`SegmentInfo.java:174-181`).
     pub fn set_codec(&mut self, codec: Arc<dyn Codec>) {
+        debug_assert!(self.codec.is_none());
         self.codec = Some(codec);
     }
 

@@ -286,7 +286,7 @@ fn pk_writer(dir: &TestDirectory) -> Arc<IndexWriter> {
         &*LuceneTestCase::random(),
     ))));
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap_or_else(|e| rethrow(e));
     IndexWriter::new(dir.as_directory(), config).unwrap_or_else(|e| rethrow(e))
 }

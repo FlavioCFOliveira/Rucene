@@ -1024,15 +1024,11 @@ pub fn inflate_gens(
     }
 
     for info in infos.iter_mut() {
-        let Some(&gen) = max_per_segment_gen.get(&info.info.name) else {
-            // Java asserts this is non-null. A segment named by the commit but
-            // with no file on disk means the directory listing and the commit
-            // disagree, which is a corrupt index rather than a bug here.
-            return Err(LuceneError::CorruptIndex(format!(
-                "segment \"{}\" is referenced by the commit but has no files in the directory",
-                info.info.name
-            )));
-        };
+        let gen = max_per_segment_gen.get(&info.info.name).copied();
+        debug_assert!(gen.is_some());
+        // Without assertions Java unboxes the null `Long`
+        // (`IndexFileDeleter.java:339`): a `NullPointerException`.
+        let gen = gen.ok_or_else(LuceneError::null_pointer)?;
         let next = gen + 1;
 
         if info.get_next_write_del_gen() < next {
@@ -1087,7 +1083,7 @@ pub fn inflate_gens(
 mod tests {
     use super::*;
     use crate::codecs::lucene99::Lucene99SegmentInfoFormat;
-    use crate::codecs::tests::{test_segment_info, DummyCodec};
+    use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
     use crate::codecs::{register_codec, Codec, FilterCodec, SegmentInfoFormat};
     use crate::index::index_deletion_policy::{
         KeepOnlyLastCommitDeletionPolicy, NoDeletionPolicy, SnapshotDeletionPolicy,
@@ -1279,8 +1275,7 @@ mod tests {
     /// Creates segment `name` with two data files, writes its `.si`, and returns
     /// the commit info.
     fn make_segment(dir: &dyn Directory, name: &str) -> SegmentCommitInfo {
-        let mut info = test_segment_info(name, 10);
-        info.set_codec(codec());
+        let mut info = test_segment_info_with_codec(name, 10, codec());
         // The shared helper defaults to `Sort::default()`, a SCORE sort the
         // segment-info format cannot serialise; give it a writable one.
         info.set_index_sort(
@@ -1768,8 +1763,12 @@ mod tests {
         );
     }
 
+    /// Java asserts `gen != null` (`IndexFileDeleter.java:338`): with
+    /// assertions enabled (debug builds) the assert fails; without, unboxing
+    /// the null throws `NullPointerException`.
     #[test]
-    fn inflate_gens_rejects_a_commit_naming_a_segment_with_no_files() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "gen.is_some()"))]
+    fn inflate_gens_asserts_a_commit_naming_a_segment_with_no_files() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.add(make_segment(dir.as_ref(), "_0")).unwrap();
@@ -1779,8 +1778,9 @@ mod tests {
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
 
         assert!(
-            matches!(err, LuceneError::CorruptIndex(_)),
-            "expected a corrupt-index error, got {err:?}"
+            matches!(&err, LuceneError::Unchecked { class, .. }
+                if *class == "java.lang.NullPointerException"),
+            "expected a NullPointerException, got {err:?}"
         );
     }
 

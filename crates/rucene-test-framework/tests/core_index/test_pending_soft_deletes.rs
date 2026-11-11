@@ -91,7 +91,7 @@ fn soft_writer(dir: &Arc<dyn Directory>, max_buffered_docs: i32) -> Result<Arc<I
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_soft_deletes_field(Some("_soft_deletes".to_string()));
     iwc.set_max_buffered_docs(max_buffered_docs)?;
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     iwc.set_ram_buffer_size_mb(f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH))?;
     IndexWriter::new(Arc::clone(dir), iwc)
 }

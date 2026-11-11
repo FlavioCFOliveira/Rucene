@@ -4152,7 +4152,7 @@ impl IndexWriter {
         };
         // The minimum version is left unset; `SegmentMerger` fills it in. The
         // segment belongs to `directoryOrig` (`IndexWriter.java:5106-5108`).
-        let mut si = SegmentInfo::new_without_codec(
+        let mut si = SegmentInfo::new(
             Arc::clone(&self.directory_orig),
             Version::LATEST,
             None,
@@ -4160,12 +4160,12 @@ impl IndexWriter {
             -1,
             false,
             has_blocks,
+            self.config.codec(),
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
             self.config.index_sort().unwrap_or_default(),
         )?;
-        si.set_codec(self.config.codec());
         let details = HashMap::from([
             (
                 "mergeMaxNumSegments".to_string(),
@@ -8256,7 +8256,7 @@ impl IndexWriter {
         } else {
             // Composite reader: look the sub-reader up and re-base the doc ID.
             let sub_index = crate::index::multi_reader::sub_index_from_leaves(doc_id, &leaves);
-            let context = Arc::clone(&leaves[sub_index]);
+            let context = Arc::clone(&leaves[sub_index as usize]);
             doc_id -= context.doc_base();
             debug_assert!(doc_id >= 0);
             debug_assert!(doc_id < context.leaf_reader().max_doc());
@@ -9029,14 +9029,15 @@ impl IndexWriter {
             let outcome = (|| -> Result<()> {
                 if merge.uses_pooled_readers {
                     // We still hold a ref, so it should not have been removed.
-                    let rld = self
-                        .get_pooled_instance_with(state, sr.get_original_segment_info(), false)?
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(format!(
-                                "seg={} is no longer pooled",
-                                sr.get_segment_name()
-                            ))
-                        })?;
+                    let rld = self.get_pooled_instance_with(
+                        state,
+                        sr.get_original_segment_info(),
+                        false,
+                    )?;
+                    debug_assert!(rld.is_some());
+                    // Without assertions Java dereferences the null `rld`
+                    // (`IndexWriter.java:5191-5195`).
+                    let rld = rld.ok_or_else(LuceneError::null_pointer)?;
                     if drop {
                         rld.drop_changes();
                     } else {
@@ -10078,14 +10079,11 @@ impl IndexWriter {
                     None => {
                         let reader =
                             lock_reader_map(opened_read_only_clones, "openedReadOnlyClones")?
-                                .remove(&sci.info.name)
-                                .ok_or_else(|| {
-                                    LuceneError::illegal_state(format!(
-                                        "segment {} has neither a merged reader nor an opened \
-                                         read-only clone",
-                                        sci.info.name
-                                    ))
-                                })?;
+                                .remove(&sci.info.name);
+                        debug_assert!(reader.is_some());
+                        // Without assertions Java dereferences the null
+                        // `remove` (`IndexWriter.java:781`).
+                        let reader = reader.ok_or_else(LuceneError::null_pointer)?;
                         // Each of the readers we reuse from the previous reader
                         // needs to be incRef'd since we reuse them but don't
                         // have an implicit incRef in the SDR:open call.
@@ -10161,9 +10159,9 @@ impl IndexWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when `onMergeComplete` never
-    /// recorded the merged segment (Java's `assert origInfo != null`), and
-    /// propagates whatever changing the file references or the infos raises.
+    /// Returns Java's `NullPointerException` when `onMergeComplete` never
+    /// recorded the merged segment (Java's `assert origInfo != null`, then
+    /// the dereference of `null`), and propagates whatever changing the file references or the infos raises.
     fn apply_point_in_time_merge(
         merge: &OneMerge,
         orig_info: &Mutex<Option<SegmentCommitInfo>>,
@@ -10176,12 +10174,8 @@ impl IndexWriter {
         let orig_info = orig_info
             .lock()
             .map_err(|_| LuceneError::illegal_state("origInfo mutex poisoned".to_string()))?
-            .clone()
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "onMergeComplete was not called before mergeFinished".to_string(),
-                )
-            })?;
+            .clone();
+        debug_assert!(orig_info.is_some());
 
         if info_stream.is_enabled(IW) {
             info_stream.message(
@@ -10189,6 +10183,10 @@ impl IndexWriter {
                 &format!("now apply merge during commit: {}", merge.seg_string()),
             );
         }
+
+        // Without assertions Java dereferences the null `origInfo` next
+        // (`IndexWriter.java:3973,3996`), before any other side effect.
+        let orig_info = orig_info.ok_or_else(LuceneError::null_pointer)?;
 
         let mut infos = merging_segment_infos.lock().map_err(|_| {
             LuceneError::illegal_state("mergingSegmentInfos mutex poisoned".to_string())
@@ -11856,9 +11854,7 @@ mod tests {
                 ))
                 .unwrap();
             config
-                .set_merge_policy(Some(Arc::new(
-                    crate::index::merge_policy::NoMergePolicy::new(),
-                )))
+                .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
                 .unwrap();
             config
         };
@@ -11933,9 +11929,7 @@ mod tests {
         let no_merges = || {
             let config = IndexWriterConfig::new();
             config
-                .set_merge_policy(Some(Arc::new(
-                    crate::index::merge_policy::NoMergePolicy::new(),
-                )))
+                .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
                 .unwrap();
             config
         };
@@ -11989,9 +11983,7 @@ mod tests {
         let no_merges = || {
             let config = IndexWriterConfig::new();
             config
-                .set_merge_policy(Some(Arc::new(
-                    crate::index::merge_policy::NoMergePolicy::new(),
-                )))
+                .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
                 .unwrap();
             config
         };
@@ -12271,9 +12263,7 @@ mod tests {
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(dir, config).unwrap();
         for id in ["a", "b", "c"] {
@@ -12321,9 +12311,7 @@ mod tests {
             let config = IndexWriterConfig::new();
             config.set_soft_deletes_field(Some("soft".to_string()));
             config
-                .set_merge_policy(Some(Arc::new(
-                    crate::index::merge_policy::NoMergePolicy::new(),
-                )))
+                .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
                 .unwrap();
             config
         };
@@ -12394,9 +12382,7 @@ mod tests {
         let config = IndexWriterConfig::new();
         config.set_soft_deletes_field(soft_field.map(str::to_string));
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         config
     }
@@ -12596,14 +12582,12 @@ mod tests {
         let config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
-            .set_merge_scheduler(Some(Arc::new(
-                crate::index::merge_scheduler::NoMergeScheduler,
-            )))
+            .set_merge_scheduler(Some(
+                crate::index::merge_scheduler::NoMergeScheduler::instance(),
+            ))
             .unwrap();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..3 {
@@ -12648,14 +12632,12 @@ mod tests {
         let config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
-            .set_merge_scheduler(Some(Arc::new(
-                crate::index::merge_scheduler::NoMergeScheduler,
-            )))
+            .set_merge_scheduler(Some(
+                crate::index::merge_scheduler::NoMergeScheduler::instance(),
+            ))
             .unwrap();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..2 {
@@ -13618,9 +13600,9 @@ mod tests {
         let stream = Arc::new(RecordingInfoStream::default());
         let config = IndexWriterConfig::new();
         config
-            .set_merge_scheduler(Some(Arc::new(
-                crate::index::merge_scheduler::NoMergeScheduler,
-            )))
+            .set_merge_scheduler(Some(
+                crate::index::merge_scheduler::NoMergeScheduler::instance(),
+            ))
             .unwrap();
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
@@ -14356,22 +14338,23 @@ mod tests {
     /// `try` that calls `mergeFinished` (`MergePolicy.java:277-291`), so a
     /// failure of the consumer replaces the hook's, which is lost. Here the
     /// consumer fails because a merged segment left the reader pool: Java's
-    /// `assert rld != null` (`IndexWriter.java:5188-5190`), this port's
-    /// `IllegalState`.
+    /// `assert rld != null` (`IndexWriter.java:5188-5190`), then the
+    /// dereference of `null`: a `NullPointerException`.
+    /// With assertions enabled (debug builds, Java's `-ea`) the assert
+    /// itself fails.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "rld.is_some()"))]
     fn a_reader_failure_closing_a_merge_replaces_the_hooks_failure() {
         crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new()).ok();
         let config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
-            .set_merge_scheduler(Some(Arc::new(
-                crate::index::merge_scheduler::NoMergeScheduler,
-            )))
+            .set_merge_scheduler(Some(
+                crate::index::merge_scheduler::NoMergeScheduler::instance(),
+            ))
             .unwrap();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
         for id in 0..2 {
@@ -14414,8 +14397,8 @@ mod tests {
         ReaderPool::drop(&writer.reader_pool, &segments[0]).unwrap();
         let error = writer.close_merge_readers(&merge, true, false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::IllegalState { message, .. }
-                if message == "seg=_0 is no longer pooled"),
+            matches!(&error, LuceneError::Unchecked { class, .. }
+                if *class == "java.lang.NullPointerException"),
             "{error:?}"
         );
     }
@@ -14525,14 +14508,12 @@ mod tests {
         let stream = Arc::new(RecordingInfoStream::default());
         let config = IndexWriterConfig::new();
         config
-            .set_merge_scheduler(Some(Arc::new(
-                crate::index::merge_scheduler::NoMergeScheduler,
-            )))
+            .set_merge_scheduler(Some(
+                crate::index::merge_scheduler::NoMergeScheduler::instance(),
+            ))
             .unwrap();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
@@ -14793,9 +14774,7 @@ mod tests {
         let dir: Arc<dyn Directory> = tracking;
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         config.set_reader_pooling(false);
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -14847,9 +14826,7 @@ mod tests {
         let dir: Arc<dyn Directory> = tracking;
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         config.set_reader_pooling(false);
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();

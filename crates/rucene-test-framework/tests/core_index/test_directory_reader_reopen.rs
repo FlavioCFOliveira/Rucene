@@ -236,7 +236,7 @@ fn plain_iwc() -> IndexWriterConfig {
 /// `new IndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
     let iwc = plain_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     Ok(iwc)
 }
 
@@ -786,7 +786,7 @@ pub fn create_index(
     multi_segment: bool,
 ) -> Result<()> {
     let mp: Arc<dyn MergePolicy> = if multi_segment {
-        Arc::new(NoMergePolicy::new())
+        NoMergePolicy::instance()
     } else {
         Arc::new(LogMergePolicy::by_doc_count())
     };
@@ -1597,7 +1597,7 @@ fn assert_not_same(a: &Option<Arc<dyn DirectoryReader>>, b: &Arc<dyn DirectoryRe
 fn reuse_unchanged_leaf_reader_on_dv_update(executor: &Exec) -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
-    index_writer_config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    index_writer_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
 
     let mut doc = Document::new();

@@ -510,7 +510,7 @@ fn two_segments(
     if deletable {
         // No merge runs before the test drives one itself.
         config
-            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
     }
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -1475,7 +1475,7 @@ fn flush_vectors(format: &str, sorted: bool) -> Arc<dyn Directory> {
         .unwrap();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     if sorted {
         config

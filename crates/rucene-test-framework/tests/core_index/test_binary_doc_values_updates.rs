@@ -302,7 +302,7 @@ fn test_update_few_segments() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_max_buffered_docs(2)?; // generate few segments
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // prevent merges for this test
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // prevent merges for this test
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let num_docs = 10;
     let mut expected_values = vec![0i64; num_docs];
@@ -396,7 +396,7 @@ fn test_updates_and_deletes() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_max_buffered_docs(10)?; // control segment flushing
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // prevent merges for this test
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // prevent merges for this test
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     for i in 0..6 {
@@ -441,7 +441,7 @@ fn test_updates_with_deletes() -> Result<()> {
     // update and delete different documents in the same commit session
     let mut dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // otherwise the delete might force a merge
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // otherwise the delete might force a merge
     conf.set_max_buffered_docs(10)?; // control segment flushing
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -1144,7 +1144,7 @@ fn test_update_segment_with_no_doc_values() -> Result<()> {
     // prevent merges, otherwise by the time updates are applied
     // (writer.close()), the segments might have merged and that update becomes
     // legit.
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     // first segment with BDV
@@ -1195,7 +1195,7 @@ fn test_update_segment_with_posting_but_no_doc_values() -> Result<()> {
     // prevent merges, otherwise by the time updates are applied
     // (writer.close()), the segments might have merged and that update becomes
     // legit.
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     // first segment with BDV
@@ -1510,7 +1510,7 @@ fn test_update_different_docs_in_different_gens() -> Result<()> {
 fn test_change_codec() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // disable merges to simplify test assertions.
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // disable merges to simplify test assertions.
     conf.set_codec(Arc::new(asserting_codec_with_dv_format(
         TestUtil::get_default_doc_values_format,
     )))?;
@@ -1524,7 +1524,7 @@ fn test_change_codec() -> Result<()> {
 
     // change format
     let conf = new_iwc();
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?; // disable merges to simplify test assertions.
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // disable merges to simplify test assertions.
     conf.set_codec(Arc::new(asserting_codec_with_dv_format(|| {
         Arc::new(AssertingDocValuesFormat::new()) as Arc<dyn DocValuesFormat>
     })))?;
@@ -1831,7 +1831,7 @@ fn test_update_two_nonexisting_terms() -> Result<()> {
 fn io_context_config() -> Result<IndexWriterConfig> {
     let conf = new_iwc();
     // we want a single large enough segment so that a doc-values update writes a large file
-    conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
     conf.set_max_buffered_docs(i32::MAX)?; // manually flush
     conf.set_ram_buffer_size_mb(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH as f64)?;
     Ok(conf)

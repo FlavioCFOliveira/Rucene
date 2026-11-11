@@ -70,7 +70,7 @@ fn test_likely_fixed_bits() -> Result<()> {
     let mut dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
     let iwc = IndexWriterConfig::new();
     iwc.set_codec(TestUtil::get_default_codec())?;
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = IndexWriter::new(Arc::clone(&dir), iwc)?;
     let result = (|| -> Result<()> {
         let mut doc = Document::new();

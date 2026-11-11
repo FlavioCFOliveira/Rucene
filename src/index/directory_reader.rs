@@ -2118,9 +2118,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         for text in ["a b c", "a a", "b"] {
@@ -2167,9 +2165,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         for text in ["a b c", "a a"] {
@@ -2191,7 +2187,7 @@ mod tests {
             Err(LuceneError::AlreadyClosed { ref message, .. }) if message == "this IndexReader is closed"
         ));
     }
-    use crate::codecs::tests::{test_segment_info, DummyCodec};
+    use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
     use crate::codecs::{register_codec, FilterCodec, Lucene99SegmentInfoFormat};
     use crate::index::index_file_names::SEGMENTS;
     use crate::index::segment_infos::OLD_SEGMENTS_GEN;
@@ -2233,8 +2229,7 @@ mod tests {
         name: &str,
         max_doc: i32,
     ) -> crate::index::SegmentInfo {
-        let mut info = test_segment_info(name, max_doc);
-        info.set_codec(test_codec());
+        let mut info = test_segment_info_with_codec(name, max_doc, test_codec());
         info.set_index_sort(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
@@ -2651,9 +2646,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         config.set_leaf_sorter(Some(Arc::new(ByMaxDocDescending)));
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -2711,9 +2704,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         let add = |id: &str| {

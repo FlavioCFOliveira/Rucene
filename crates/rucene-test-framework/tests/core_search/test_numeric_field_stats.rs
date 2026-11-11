@@ -367,7 +367,7 @@ fn test_get_stats_multi_valued_field() -> Result<()> {
 fn test_get_stats_multiple_segments() -> Result<()> {
     let config = || -> Result<IndexWriterConfig> {
         let config = LuceneTestCase::new_index_writer_config();
-        config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+        config.set_merge_policy(Some(NoMergePolicy::instance()))?;
         Ok(config)
     };
     with_writer(config, |w| {

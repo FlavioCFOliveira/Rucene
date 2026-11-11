@@ -411,7 +411,7 @@ fn test_prior_broken_commit_point() -> Result<()> {
     // indices:
     set_check_index_on_close(&dir, false);
     let iwc = IndexWriterConfig::new();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?
         .set_index_deletion_policy(Some(Arc::new(DeleteNothingIndexDeletionPolicy)))?;
     {
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;

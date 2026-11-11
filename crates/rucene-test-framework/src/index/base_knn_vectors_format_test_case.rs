@@ -2040,7 +2040,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_directory();
         {
             let iwc = LuceneTestCase::new_index_writer_config();
-            iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+            iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
             iwc.set_max_buffered_docs(3)?;
             iwc.set_ram_buffer_size_mb(-1.0)?;
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -2990,7 +2990,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 iwc.set_ram_buffer_size_mb(f64::from(
                     rucene::index::index_writer_config::LiveIndexWriterConfig::DISABLE_AUTO_FLUSH,
                 ))?;
-                iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+                iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
                 iwc.set_use_compound_file(false)?;
                 iwc.set_codec(self.get_codec_for_float_vector_fallback_test())?;
                 let w = IndexWriter::new(dir.as_directory(), iwc)?;

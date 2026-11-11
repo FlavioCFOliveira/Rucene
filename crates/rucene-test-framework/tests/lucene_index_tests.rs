@@ -60,7 +60,7 @@ fn test_asserting_leaf_reader() {
                         let mut dir = LuceneTestCase::new_directory();
                         let config = LuceneTestCase::new_index_writer_config();
                         config
-                            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+                            .set_merge_policy(Some(NoMergePolicy::instance()))
                             .unwrap_or_else(|e| rethrow(e));
                         let w = IndexWriter::new(dir.as_directory(), config)
                             .unwrap_or_else(|e| rethrow(e));
@@ -161,7 +161,7 @@ fn test_force_merge_policy() {
                 Method::new("testForceMergePolicy")
                     .throws(&["java.lang.Exception"])
                     .body_any(|| {
-                        let mp = ForceMergePolicy::new(Arc::new(NoMergePolicy::new()));
+                        let mp = ForceMergePolicy::new(NoMergePolicy::instance());
                         let infos = SegmentInfos::new(Version::LATEST.major as i32)
                             .unwrap_or_else(|e| rethrow(e));
                         let merges = mp

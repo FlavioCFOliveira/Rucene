@@ -289,9 +289,27 @@ impl MergeScheduler for SerialMergeScheduler {
 
 /// A scheduler that never runs a merge.
 ///
-/// Equivalent to `org.apache.lucene.index.NoMergeScheduler`.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoMergeScheduler;
+/// Equivalent to `org.apache.lucene.index.NoMergeScheduler`: a singleton,
+/// reachable through [`NoMergeScheduler::instance`] (Java's `INSTANCE`), whose
+/// constructor is private (`NoMergeScheduler.java:34-39`).
+#[derive(Debug)]
+pub struct NoMergeScheduler {
+    /// Prevents construction outside this module, as Java's private
+    /// constructor does.
+    _private: (),
+}
+
+static NO_MERGE_SCHEDULER: std::sync::LazyLock<Arc<NoMergeScheduler>> =
+    std::sync::LazyLock::new(|| Arc::new(NoMergeScheduler { _private: () }));
+
+impl NoMergeScheduler {
+    /// Returns the single instance of this scheduler.
+    ///
+    /// Equivalent to `NoMergeScheduler.INSTANCE`.
+    pub fn instance() -> Arc<NoMergeScheduler> {
+        Arc::clone(&NO_MERGE_SCHEDULER)
+    }
+}
 
 impl MergeScheduler for NoMergeScheduler {
     fn merge(&self, _merge_source: Arc<dyn MergeSource>, _trigger: MergeTrigger) -> Result<()> {

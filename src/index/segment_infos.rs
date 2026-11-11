@@ -1425,7 +1425,9 @@ fn radix_36(value: u64) -> String {
 mod tests {
     use super::*;
     use crate::codecs::lucene99::Lucene99SegmentInfoFormat;
-    use crate::codecs::tests::{test_segment_commit_info, test_segment_info, DummyCodec};
+    use crate::codecs::tests::{
+        test_segment_commit_info, test_segment_info_with_codec, DummyCodec,
+    };
     use crate::codecs::{Codec, FilterCodec, SegmentInfoFormat};
     use crate::index::index_file_names::{file_name_from_generation, SEGMENTS};
     use crate::index::SegmentCommitInfo;
@@ -1614,8 +1616,7 @@ mod tests {
     #[test]
     fn round_trip_single_segment() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
-        let mut info = test_segment_info("_0", 42);
-        info.set_codec(test_codec());
+        let mut info = test_segment_info_with_codec("_0", 42, test_codec());
         info.set_index_sort(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
@@ -1714,8 +1715,7 @@ mod tests {
     /// the bytes of its `segments_1`.
     fn committed_single_segment() -> (Arc<dyn Directory>, Vec<u8>) {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
-        let mut info = test_segment_info("_0", 42);
-        info.set_codec(test_codec());
+        let info = test_segment_info_with_codec("_0", 42, test_codec());
         info.set_files(HashSet::from(["_0.fnm".to_string()]))
             .unwrap();
         write_segment_info_file(dir.as_ref(), &info).unwrap();

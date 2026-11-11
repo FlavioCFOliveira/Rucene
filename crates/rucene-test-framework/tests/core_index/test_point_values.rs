@@ -865,7 +865,7 @@ fn test_merged_stats_empty_reader() -> Result<()> {
 fn test_merged_stats_one_segment_without_points() -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let iwc = IndexWriterConfig::with_analyzer(None);
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = IndexWriter::new(Arc::clone(&dir), iwc)?;
     w.add_document(&Document::new())?;
     directory_reader::open_with_writer(&*w)?.close()?;

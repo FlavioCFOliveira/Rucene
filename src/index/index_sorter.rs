@@ -1241,14 +1241,15 @@ impl MultiSorter {
             if meta_data.has_blocks() {
                 match field_infos.get_parent_field() {
                     Some(parent_field) => {
-                        let mut parent_docs = reader
-                            .get_numeric_doc_values(parent_field)?
-                            .ok_or_else(|| {
-                                LuceneError::illegal_state(format!(
-                                    "parent field: {parent_field} must be present if index \
-                                     sorting is used with blocks"
-                                ))
-                            })?;
+                        let parent_docs = reader.get_numeric_doc_values(parent_field)?;
+                        debug_assert!(
+                            parent_docs.is_some(),
+                            "parent field: {parent_field} must be present if index sorting is \
+                             used with blocks"
+                        );
+                        // Without assertions Java hands the null to `BitSet.of`,
+                        // which dereferences it (`BitSet.java:34`).
+                        let mut parent_docs = parent_docs.ok_or_else(LuceneError::null_pointer)?;
                         // `BitSet.of(parentDocs, codecReader.maxDoc())`
                         // (`MultiSorter.java:62`): a sparse set when the
                         // values are fewer than `maxDoc >>> 7`, a fixed one

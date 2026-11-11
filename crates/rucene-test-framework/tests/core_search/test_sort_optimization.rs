@@ -1465,7 +1465,7 @@ fn prunes_on_segment_entry(
     let dir = LuceneTestCase::new_directory();
     let config = IndexWriterConfig::new();
     config.set_codec(codec)?;
-    config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
 
     let num_hits = 5;
@@ -1621,7 +1621,7 @@ fn string_sort_optimization_field_missing_in_segment(
     let dir = LuceneTestCase::new_directory();
     // Use NoMergePolicy to ensure we have deterministic segment geometry
     let config = IndexWriterConfig::new();
-    config.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;
 
     // First segment: a small number of docs with the keyword field, enough to fill the top-N queue.

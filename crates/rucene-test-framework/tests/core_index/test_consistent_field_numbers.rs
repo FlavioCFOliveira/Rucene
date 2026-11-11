@@ -42,7 +42,7 @@ fn mock_iwc() -> IndexWriterConfig {
 /// `newIndexWriterConfig(new MockAnalyzer(random())).setMergePolicy(NoMergePolicy.INSTANCE)`.
 fn no_merge_iwc() -> Result<IndexWriterConfig> {
     let iwc = mock_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     Ok(iwc)
 }
 

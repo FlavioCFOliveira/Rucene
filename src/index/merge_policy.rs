@@ -489,17 +489,25 @@ impl std::fmt::Debug for OneMerge {
 impl OneMerge {
     /// Creates a merge over `segments`.
     ///
-    /// Returns an error when `segments` is empty, where Java throws
-    /// `RuntimeException`.
+    /// Equivalent to `OneMerge(List<SegmentCommitInfo>)`
+    /// (`MergePolicy.java:218-228`).
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `RuntimeException` when `segments` is empty, and the
+    /// `IllegalStateException` of a segment whose `maxDoc` is not set. The
+    /// document total is summed with Java's wrapping `int` arithmetic
+    /// (`IntStream.sum`).
     pub fn new(segments: Vec<SegmentCommitInfo>) -> Result<Self> {
         if segments.is_empty() {
-            return Err(crate::error::LuceneError::IllegalArgument(
-                "segments must include at least one segment".to_string(),
+            return Err(crate::error::LuceneError::unchecked(
+                "java.lang.RuntimeException",
+                "segments must include at least one segment",
             ));
         }
         let mut total_max_doc = 0i32;
         for segment in &segments {
-            total_max_doc += segment.info.max_doc()?;
+            total_max_doc = total_max_doc.wrapping_add(segment.info.max_doc()?);
         }
         Ok(Self {
             segments,
@@ -1963,31 +1971,34 @@ pub fn mp_verbose(merge_context: &dyn MergeContext) -> bool {
 
 /// A policy that never merges.
 ///
-/// Equivalent to `org.apache.lucene.index.NoMergePolicy`.
-#[derive(Debug, Clone)]
+/// Equivalent to `org.apache.lucene.index.NoMergePolicy`: a singleton,
+/// reachable through [`NoMergePolicy::instance`] (Java's `INSTANCE`), whose
+/// constructor is private (`NoMergePolicy.java:31-37`). As in Java, the
+/// compound-file settings belong to that one instance.
+#[derive(Debug)]
 pub struct NoMergePolicy {
     /// The compound-file settings Java's `NoMergePolicy` inherits from
     /// `MergePolicy` and whose setters it overrides to call `super`.
     cfs: CfsSettings,
 }
 
-impl Default for NoMergePolicy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+static NO_MERGE_POLICY: std::sync::LazyLock<Arc<NoMergePolicy>> =
+    std::sync::LazyLock::new(|| Arc::new(NoMergePolicy::new()));
 
 impl NoMergePolicy {
-    /// Creates the policy, with the compound-file defaults of the base class.
-    ///
-    /// Equivalent to `NoMergePolicy.INSTANCE`, which Java exposes as a
-    /// singleton; here each holder owns its own settings, because the settings
-    /// are writable and a shared singleton would let one writer's configuration
-    /// reach another's.
-    pub fn new() -> Self {
+    /// The private constructor (`NoMergePolicy.java:35-37`), with the
+    /// compound-file defaults of the base class.
+    fn new() -> Self {
         Self {
             cfs: CfsSettings::default(),
         }
+    }
+
+    /// Returns the single instance of this policy.
+    ///
+    /// Equivalent to `NoMergePolicy.INSTANCE`.
+    pub fn instance() -> Arc<NoMergePolicy> {
+        Arc::clone(&NO_MERGE_POLICY)
     }
 }
 
@@ -6206,7 +6217,7 @@ mod merge_policy_setting_tests {
     /// `NoMergePolicy` answers `instanceof NoMergePolicy` through `as_any`.
     #[test]
     fn no_merge_policy_is_an_instance_of_itself() {
-        let policy: Arc<dyn MergePolicy> = Arc::new(NoMergePolicy::new());
+        let policy: Arc<dyn MergePolicy> = NoMergePolicy::instance();
         assert!(policy.as_any().is_some_and(|any| any.is::<NoMergePolicy>()));
     }
 

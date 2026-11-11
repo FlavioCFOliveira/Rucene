@@ -822,7 +822,7 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         self.apply_created_version_major(&*dir.as_directory())?;
         let analyzer = whitespace_analyzer();
         let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
-        conf.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+        conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
         conf.set_similarity(Some(Arc::new(CannedNormSimilarity::new(norms.clone()))))?;
         let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), conf)?;
         add_norms_documents(&writer, num_docs, &docs_with_field, &norms)?;

@@ -666,9 +666,7 @@ mod tests {
         let config = IndexWriterConfig::new();
         // Keep the deletions in the segment instead of merging them away.
         config
-            .set_merge_policy(Some(Arc::new(
-                crate::index::merge_policy::NoMergePolicy::new(),
-            )))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for d in 0..4096i32 {

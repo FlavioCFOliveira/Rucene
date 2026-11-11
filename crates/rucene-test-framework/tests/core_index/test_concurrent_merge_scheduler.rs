@@ -1177,7 +1177,7 @@ fn test_no_stall_merge_threads() -> Result<()> {
     let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
 
     let iwc = mock_iwc();
-    iwc.set_merge_policy(Some(Arc::new(NoMergePolicy::new())))?;
+    iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     iwc.set_max_buffered_docs(2)?;
     iwc.set_use_compound_file(true)?; // reduce open files
     let w = IndexWriter::new(dir.as_directory(), iwc)?;

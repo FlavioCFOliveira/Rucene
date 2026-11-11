@@ -202,30 +202,31 @@ pub mod reader_util {
     /// Returns the index of the leaf context that owns the global document ID
     /// `doc_id`, using each leaf's `doc_base()` as the start table.
     ///
-    /// Ports `ReaderUtil.subIndex(int n, List<LeafReaderContext> leaves)`, and
-    /// shares [`sub_index`]'s deliberate divergence on the "no such leaf" case:
-    /// Java returns `-1`, this port clamps to `0`.
-    pub fn sub_index_from_leaves(doc_id: i32, leaves: &[Arc<LeafReaderContext>]) -> usize {
-        let size = leaves.len();
-        let mut lo: isize = 0;
-        let mut hi: isize = size as isize - 1;
+    /// Ports `ReaderUtil.subIndex(int n, List<LeafReaderContext> leaves)`
+    /// (`ReaderUtil.java:75-95`): the index of the last leaf whose `docBase`
+    /// is not greater than `doc_id`, or `-1` when there is none (an empty
+    /// list, or `doc_id` before the first leaf's `docBase`).
+    pub fn sub_index_from_leaves(doc_id: i32, leaves: &[Arc<LeafReaderContext>]) -> i32 {
+        // find searcher/reader for doc n:
+        let size = leaves.len() as i32;
+        let mut lo: i32 = 0; // search starts array
+        let mut hi: i32 = size - 1; // for first element less than n, return its index
         while hi >= lo {
-            let mid = ((lo + hi) >> 1) as usize;
-            let mid_value = leaves[mid].doc_base();
+            let mut mid = ((lo as u32 + hi as u32) >> 1) as i32;
+            let mid_value = leaves[mid as usize].doc_base();
             if doc_id < mid_value {
-                hi = mid as isize - 1;
+                hi = mid - 1;
             } else if doc_id > mid_value {
-                lo = mid as isize + 1;
+                lo = mid + 1;
             } else {
-                let mut mid = mid;
-                while mid + 1 < size && leaves[mid + 1].doc_base() == mid_value {
-                    mid += 1;
+                // found a match
+                while mid + 1 < size && leaves[(mid + 1) as usize].doc_base() == mid_value {
+                    mid += 1; // scan to last match
                 }
                 return mid;
             }
         }
-        // See sub_index: Java would return -1 here; `usize` clamps to 0.
-        hi.max(0) as usize
+        hi
     }
 
     /// Returns the index of the slice in `slices` that owns the global document
@@ -1093,7 +1094,8 @@ mod tests {
         // returns the raw `hi` (= -1) in both of these cases. `usize` cannot
         // express -1, so this port clamps to 0. Neither input is reachable
         // through a well-formed composite reader: doc IDs are non-negative and
-        // `starts[0]` is always 0.
+        // `starts[0]` is always 0. `sub_index_from_leaves` returns -1, as
+        // Java does.
         let empty: [i32; 0] = [];
         assert_eq!(sub_index(0, &empty), 0, "empty table: Java returns -1");
         assert_eq!(index_of(0, &[]), 0, "empty table: Java returns -1");
@@ -1106,8 +1108,8 @@ mod tests {
         );
         assert_eq!(
             sub_index_from_leaves(0, &[]),
-            0,
-            "empty leaf list: Java returns -1"
+            -1,
+            "empty leaf list: -1, as Java"
         );
     }
 

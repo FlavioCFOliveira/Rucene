@@ -512,7 +512,7 @@ fn test_multiple_fields(inst: &mut Inst) -> Result<()> {
         .create_weight(s.searcher.rewrite(q)?, ScoreMode::COMPLETE, 1.0)?;
 
     let leaf_contexts = s.searcher.get_leaf_contexts();
-    let ctx = &leaf_contexts[sub_index_from_leaves(1, leaf_contexts)];
+    let ctx = &leaf_contexts[sub_index_from_leaves(1, leaf_contexts) as usize];
     let m = w.matches(ctx, 1 - ctx.doc_base())?;
     let m = m.unwrap_or_else(|| Assert::fail_without_message());
     let mut id = m.get_matches("id")?.expect("matches of id");

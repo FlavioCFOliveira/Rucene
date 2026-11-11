@@ -421,7 +421,7 @@ fn writer_configs(m: &Measured) {
         )
         .expect("a sortable field type");
     tuned
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("a merge policy");
     tuned.set_open_mode(OpenMode::CREATE).expect("an open mode");
     assert_eq!(
@@ -929,7 +929,7 @@ fn index(m: &Measured) {
     assert_eq!(ord.to_string(), m.get("OrdTermState.toString/987654321"));
 
     assert_eq!(
-        NoMergePolicy::default().to_string(),
+        NoMergePolicy::instance().to_string(),
         m.get("NoMergePolicy.toString")
     );
     assert_eq!(
@@ -971,7 +971,7 @@ fn index(m: &Measured) {
         m.get("LogDocMergePolicy.toString/default")
     );
 
-    let no_merge: Arc<dyn MergePolicy> = Arc::new(NoMergePolicy::default());
+    let no_merge: Arc<dyn MergePolicy> = NoMergePolicy::instance();
     assert_eq!(
         UpgradeIndexMergePolicy::new(Arc::clone(&no_merge)).to_string(),
         m.get("FilterMergePolicy.toString/UpgradeIndexMergePolicy-over-NoMergePolicy"),

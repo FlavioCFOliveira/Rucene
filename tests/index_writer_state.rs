@@ -155,7 +155,7 @@ fn writer_state_queries_match_lucene() {
         pooling.set_reader_pooling(true);
         // No merge may fold the deletion away before the question is asked.
         pooling
-            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
         let w = IndexWriter::new(Arc::clone(&dir), pooling).unwrap();
         w.add_document(&doc(0)).unwrap();

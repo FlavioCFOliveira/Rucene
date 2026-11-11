@@ -987,12 +987,9 @@ impl PrefixCodedTermsBuilder {
 
     /// Adds a term from its field and bytes.
     pub fn add_bytes(&mut self, field: &str, bytes: &BytesRef) -> Result<()> {
-        assert!(
-            self.size == 0 || {
-                let candidate = Term::new(field, bytes.clone());
-                candidate > self.last_term
-            },
-            "terms must be added in ascending order"
+        // `PrefixCodedTerms.java:74`.
+        debug_assert!(
+            self.last_term == Term::empty("") || Term::new(field, bytes.clone()) > self.last_term
         );
 
         let bytes_slice = bytes.slice();

@@ -6349,7 +6349,7 @@ mod segment_check_pool_tests {
         let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..segments {

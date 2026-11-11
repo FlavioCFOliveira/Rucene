@@ -350,7 +350,7 @@ fn rust_sorted_flush(variant: &str) -> Arc<dyn Directory> {
     let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field(variant)]).unwrap())
@@ -461,7 +461,7 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
     let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field("asc")]).unwrap())
@@ -672,7 +672,7 @@ fn feature_sort_orders_and_pages_as_lucene() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let mut i = 0;
@@ -907,7 +907,7 @@ fn rust_dv_update(variant: &str) -> Arc<dyn Directory> {
     let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..50 {
@@ -1037,7 +1037,7 @@ fn rust_dv_update_multi_field() -> Arc<dyn Directory> {
     let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..50i64 {
@@ -1262,7 +1262,7 @@ fn rust_sorted_full(variant: &str, merge: bool) -> Arc<dyn Directory> {
             .unwrap();
     } else {
         config
-            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
     }
     config
@@ -1666,7 +1666,7 @@ fn rust_merge_observer(variant: &str) -> Vec<String> {
     let config = IndexWriterConfig::new();
     if variant == "pending" {
         config
-            .set_merge_scheduler(Some(Arc::new(NoMergeScheduler)))
+            .set_merge_scheduler(Some(NoMergeScheduler::instance()))
             .unwrap();
     } else {
         config
@@ -1779,7 +1779,7 @@ fn delegating_cache_helper_matches_lucene() {
     let config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     // Document c3 carries the soft-deletes field, so the first segment has one

@@ -644,7 +644,7 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     let config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::APPEND).unwrap();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let reopened = IndexWriter::new(Arc::clone(&reopened_dir), config)
         .expect("the write lock was released by the tragic rollback");
@@ -920,7 +920,7 @@ fn the_warmer_runs_once_per_merged_segment_when_readers_are_pooled() {
         {
             let config = IndexWriterConfig::new();
             config
-                .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+                .set_merge_policy(Some(NoMergePolicy::instance()))
                 .unwrap();
             let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
             for i in 0..4 {
@@ -1128,7 +1128,7 @@ fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
         // Four one-document segments, written without merging.
         let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..4 {

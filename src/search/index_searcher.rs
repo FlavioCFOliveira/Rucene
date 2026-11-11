@@ -2015,7 +2015,7 @@ impl IndexSearcher {
     /// Propagates any I/O error raised while explaining.
     pub fn explain_weight(&self, weight: &Arc<dyn Weight>, doc: i32) -> Result<Explanation> {
         let n = sub_index_from_leaves(doc, &self.leaf_contexts);
-        let ctx = &self.leaf_contexts[n];
+        let ctx = &self.leaf_contexts[n as usize];
         let de_based_doc = doc - ctx.doc_base();
         let live_docs = ctx.leaf_reader().get_live_docs();
         if let Some(live_docs) = live_docs.as_ref() {

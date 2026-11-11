@@ -78,12 +78,10 @@ impl MergeSource for NullMergeSource {
 const NO_MERGE_SCHEDULER_IS_FINAL: bool = true;
 
 /// `NoMergeScheduler.class.getDeclaredConstructors()`: name and whether it
-/// is private. `pub struct NoMergeScheduler;` is publicly constructible,
-/// and `Default` is a second constructor.
-const NO_MERGE_SCHEDULER_CONSTRUCTORS: &[(&str, bool)] = &[
-    ("NoMergeScheduler", false),
-    ("NoMergeScheduler::default()", false),
-];
+/// is private (`src/index/merge_scheduler.rs`: the private `_private` field
+/// makes the struct literal the only, module-private, constructor; the single
+/// instance is `NoMergeScheduler::instance()`).
+const NO_MERGE_SCHEDULER_CONSTRUCTORS: &[(&str, bool)] = &[("NoMergeScheduler { _private }", true)];
 
 /// The public methods of `MergeScheduler` (`MergeScheduler.java:49-75`)
 /// with the `clone()` `NoMergeScheduler` declares.
@@ -107,7 +105,7 @@ const NO_MERGE_SCHEDULER_METHODS: &[&str] = &[
 
 /// Port of `TestNoMergeScheduler.testNoMergeScheduler`.
 fn test_no_merge_scheduler() -> Result<()> {
-    let ms: Arc<dyn MergeScheduler> = Arc::new(NoMergeScheduler);
+    let ms: Arc<dyn MergeScheduler> = NoMergeScheduler::instance();
     ms.close()?;
     ms.merge(
         Arc::new(NullMergeSource),

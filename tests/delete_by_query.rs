@@ -96,7 +96,7 @@ fn run(case: &str) -> Outcome {
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(tmp.path()).expect("open directory"));
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("set merge policy");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("open writer");
 

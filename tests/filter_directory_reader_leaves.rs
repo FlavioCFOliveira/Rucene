@@ -73,7 +73,7 @@ fn build_index(name: &str, count: i32, soft_delete_odd: bool) -> Arc<dyn Directo
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).expect("open the directory"));
     let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Some(Arc::new(NoMergePolicy::new())))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("no merges, so the segment layout is the one written");
     if soft_delete_odd {
         // Naming the field is what makes the flush record the segment's
