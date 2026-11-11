@@ -958,38 +958,58 @@ fn postings_of_no(
 /// (`Lucene104PostingsReader.java:590`).
 #[test]
 fn a_corrupt_bit_set_postings_block_is_an_error_not_a_panic() {
-    // Every word cleared: the block has no document at all.
+    // Every word cleared: the block has no document at all. Java asserts
+    // the bit set has a next document (`Lucene104PostingsReader.java:916,
+    // 946`): under `-ea` — a debug build — that `AssertionError` is thrown;
+    // without assertions the port reports the corruption.
     let cleared = index_with_patched_bit_set_block(|words| words.fill(0));
-    let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_NONE);
-    let error = loop {
-        match postings.next_doc() {
-            Ok(NO_MORE_DOCS) => panic!("a cleared block cannot be iterated to the end"),
-            Ok(_) => continue,
-            Err(error) => break error,
-        }
+    let is_corrupt = |error: &rucene::error::LuceneError| {
+        matches!(
+            error,
+            rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        )
     };
-    assert!(
-        matches!(
-            error,
-            rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
-                ..
+    let assert_lucene_assertion_or =
+        |outcome: std::thread::Result<rucene::error::LuceneError>| match outcome {
+            Ok(error) => {
+                if cfg!(debug_assertions) {
+                    panic!("Java's assertion must fire: {error:?}");
+                }
+                assert!(is_corrupt(&error), "{error:?}");
             }
-        ),
-        "{error:?}"
-    );
-    let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_FREQS);
-    let error = postings.advance(100).unwrap_err();
-    assert!(
-        matches!(
-            error,
-            rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
-                ..
+            Err(payload) => {
+                let message = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                assert!(
+                    cfg!(debug_assertions) && message == "assertion failed: next.is_some()",
+                    "unexpected panic: {message}"
+                );
             }
-        ),
-        "{error:?}"
-    );
+        };
+    assert_lucene_assertion_or(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || {
+            let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_NONE);
+            loop {
+                match postings.next_doc() {
+                    Ok(NO_MORE_DOCS) => panic!("a cleared block cannot be iterated to the end"),
+                    Ok(_) => continue,
+                    Err(error) => break error,
+                }
+            }
+        },
+    )));
+    assert_lucene_assertion_or(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || {
+            let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_FREQS);
+            postings.advance(100).unwrap_err()
+        },
+    )));
 
     // Every word set: more documents than a block holds.
     let filled = index_with_patched_bit_set_block(|words| words.fill(0xff));

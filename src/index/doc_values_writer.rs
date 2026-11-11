@@ -899,7 +899,7 @@ impl DocIdSetIterator for BufferedNumeric {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
@@ -1416,7 +1416,7 @@ impl DocIdSetIterator for BufferedBinary {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
@@ -2277,7 +2277,7 @@ impl<V: PackedLongValuesAccess> DocIdSetIterator for BufferedSorted<V> {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
@@ -3067,7 +3067,7 @@ impl DocIdSetIterator for BufferedSortedNumeric {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
@@ -3739,7 +3739,7 @@ impl DocIdSetIterator for BufferedSortedSet {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
@@ -4004,7 +4004,11 @@ mod tests {
     /// (`SortedSetDocValuesWriter.java:411-416`): without assertions an
     /// ordinal past the `int` range is Java's `ArithmeticException("integer
     /// overflow")`.
+    ///
+    /// Under `-ea` (debug builds) `assert ord >= 0 && ord < ordMap.length`
+    /// (`SortedSetDocValuesWriter.java:412-413`) fails first.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "is out of bounds 0 .. -1"))]
     fn sorted_set_dictionary_lookup_ord_past_an_int_is_an_arithmetic_error() {
         let pool = test_pool();
         let mut hash = Arc::new(crate::util::bytes_ref_hash::BytesRefHash::new(counter()));
@@ -4731,7 +4735,13 @@ mod tests {
         );
     }
 
+    /// `SortedNumericDocValuesWriter.addValue` asserts `docID >= currentDoc`
+    /// (`SortedNumericDocValuesWriter.java:63`): a debug build fails it.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "doc_id >= self.current_doc")
+    )]
     fn a_sorted_numeric_writer_refuses_a_backwards_document() {
         // Java only asserts `docID >= currentDoc`; with assertions off the
         // backwards id is refused later, when `finishCurrentDoc` adds it to the
@@ -4821,7 +4831,13 @@ mod tests {
         assert_eq!(docs_ords, &vec![(0, vec![0]), (1, vec![1]), (3, vec![0])]);
     }
 
+    /// `SortedSetDocValuesWriter.addValue` asserts `docID >= currentDoc`
+    /// (`SortedSetDocValuesWriter.java:85`): a debug build fails it.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "doc_id >= self.current_doc")
+    )]
     fn a_sorted_set_writer_refuses_a_backwards_document() {
         let mut pool = test_pool();
         let mut writer =

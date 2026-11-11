@@ -265,12 +265,11 @@ fn test_new_string() -> Result<()> {
         let rc = t[3];
 
         // try { ... } catch (IndexOutOfBoundsException | IllegalArgumentException e1)
-        // Java's `int` offset and count, passed where Rucene takes `usize`
-        // (a negative count becomes a huge one).
-        match UnicodeUtil::new_string(&code_points, s as usize, c as i64 as usize) {
-            Ok(str_) => {
+        // `newString` returns a Java `String`, whose UTF-16 code units may hold
+        // lone surrogates.
+        match UnicodeUtil::new_string_utf16(&code_points, s, c) {
+            Ok(actual) => {
                 Assert::assert_false(rc == -1);
-                let actual: Vec<u16> = str_.encode_utf16().collect();
                 let expected = &cp_string[rs as usize..(rs + rc) as usize];
                 assert_equals(&expected.to_vec(), &actual);
                 continue;

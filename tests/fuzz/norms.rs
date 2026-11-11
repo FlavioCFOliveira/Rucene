@@ -90,6 +90,8 @@
 //! * **A corrupt `.si`.** `maxDoc` reaches the reader from the segment info,
 //!   not from the norms files, so it is trusted here.
 
+mod lucene_assertion;
+
 use std::collections::HashMap;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
@@ -280,6 +282,15 @@ fn write_file(directory: &Arc<dyn Directory>, name: &str, bytes: &[u8]) {
     output.close().expect("close");
 }
 
+/// [`visit_all_unguarded`], where a Lucene `assert` the decoder fails on the
+/// corrupt input — Java's `AssertionError` under `-ea` — ends the walk, as
+/// Java's exception would, and counts as survived; any other panic still
+/// fails the test (see [`lucene_assertion`]).
+fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -> usize {
+    lucene_assertion::survive_lucene_assertions(|| visit_all_unguarded(directory, info, max_doc))
+        .unwrap_or(0)
+}
+
 /// Walks every norm of every field, reporting only whether it panicked.
 ///
 /// The reader is expected to answer corruption with an `Err`, or with whatever
@@ -289,7 +300,7 @@ fn write_file(directory: &Arc<dyn Directory>, name: &str, bytes: &[u8]) {
 /// Returns how many norms it managed to decode, which the sweeps use to prove
 /// that they are actually reaching the decoder rather than being turned away at
 /// the file header.
-fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -> usize {
+fn visit_all_unguarded(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -> usize {
     let infos = field_infos();
     let read_state = SegmentReadState::new(directory.as_ref(), info, &infos, &*DEFAULT_IO_CONTEXT);
     let producer = match codec().norms_format().norms_producer(&read_state) {
@@ -308,22 +319,25 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
             };
             // A corrupt entry can describe a run far longer than the segment,
             // so the walk is bounded by what the segment can hold rather than
-            // by what the file claims.
-            let mut steps = 0;
-            loop {
-                match norms.next_doc() {
-                    Ok(NO_MORE_DOCS) | Err(_) => break,
-                    Ok(_) => {}
+            // by what the file claims. A Lucene `assert` ends this field's
+            // walk, as Java's `AssertionError` would.
+            let _ = lucene_assertion::survive_lucene_assertions(|| {
+                let mut steps = 0;
+                loop {
+                    match norms.next_doc() {
+                        Ok(NO_MORE_DOCS) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let _ = norms.doc_id();
+                    if norms.long_value().is_ok() {
+                        decoded += 1;
+                    }
+                    steps += 1;
+                    if steps > max_doc as i64 + 16 {
+                        break;
+                    }
                 }
-                let _ = norms.doc_id();
-                if norms.long_value().is_ok() {
-                    decoded += 1;
-                }
-                steps += 1;
-                if steps > max_doc as i64 + 16 {
-                    break;
-                }
-            }
+            });
             if pass == 1 {
                 // The random-access entry points take their own path through
                 // the ordinal arithmetic, including the shifts.
@@ -332,11 +346,15 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
                         Ok(Some(fresh)) => fresh,
                         _ => continue,
                     };
-                    let _ = fresh.advance(target);
-                    let _ = fresh.long_value();
-                    let _ = fresh.advance_exact(target);
-                    let _ = fresh.long_value();
-                    let _ = fresh.cost();
+                    // Reading a value off an exhausted iterator is a Lucene
+                    // `assert`; each probe stands alone.
+                    let _ = lucene_assertion::survive_lucene_assertions(|| {
+                        let _ = fresh.advance(target);
+                        let _ = fresh.long_value();
+                        let _ = fresh.advance_exact(target);
+                        let _ = fresh.long_value();
+                        let _ = fresh.cost();
+                    });
                 }
             }
         }
@@ -347,18 +365,20 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
             let Ok(Some(mut norms)) = merge.get_norms(field) else {
                 continue;
             };
-            let mut steps = 0;
-            loop {
-                match norms.next_doc() {
-                    Ok(NO_MORE_DOCS) | Err(_) => break,
-                    Ok(_) => {}
+            let _ = lucene_assertion::survive_lucene_assertions(|| {
+                let mut steps = 0;
+                loop {
+                    match norms.next_doc() {
+                        Ok(NO_MORE_DOCS) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let _ = norms.long_value();
+                    steps += 1;
+                    if steps > max_doc as i64 + 16 {
+                        break;
+                    }
                 }
-                let _ = norms.long_value();
-                steps += 1;
-                if steps > max_doc as i64 + 16 {
-                    break;
-                }
-            }
+            });
         }
     }
     decoded
@@ -749,11 +769,18 @@ fn a_document_id_outside_the_segment_is_never_answered_with_a_value() {
                         "[{}] advance({doc}) past the segment must be exhausted",
                         fixture.name
                     );
-                    assert!(
-                        norms.long_value().is_err(),
-                        "[{}] an exhausted iterator must not answer with a value",
-                        fixture.name
-                    );
+                    // An error, or a Lucene `assert` (the empty norms'
+                    // `longValue()` is `assert false`, `DocValues.java:100-101`):
+                    // never a value.
+                    if let Some(value) =
+                        lucene_assertion::survive_lucene_assertions(|| norms.long_value())
+                    {
+                        assert!(
+                            value.is_err(),
+                            "[{}] an exhausted iterator must not answer with a value",
+                            fixture.name
+                        );
+                    }
                 }
             }
         }

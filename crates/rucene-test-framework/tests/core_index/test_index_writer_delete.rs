@@ -23,7 +23,7 @@ use rucene::index::check_index::CheckIndex;
 use rucene::index::directory_reader;
 use rucene::index::index_writer::{IndexWriter, IndexWriterOverrides};
 use rucene::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
-use rucene::index::merge_policy::{LogDocSize, LogMergePolicy, NoMergePolicy};
+use rucene::index::merge_policy::{LogMergePolicy, NoMergePolicy};
 use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, SerialMergeScheduler};
 use rucene::index::multi_bits::MultiBits;
 use rucene::index::terms::Term;
@@ -1726,7 +1726,7 @@ fn test_nrt_is_current_after_delete() -> Result<()> {
 fn log_doc_iwc() -> Result<IndexWriterConfig> {
     let iwc = plain_iwc();
     iwc.set_max_buffered_docs(2)?;
-    let mut mp = LogMergePolicy::new(Arc::new(LogDocSize));
+    let mut mp = LogMergePolicy::by_doc_count();
     mp.set_min_merge_docs(1);
     iwc.set_merge_policy(Some(Arc::new(mp)))?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;

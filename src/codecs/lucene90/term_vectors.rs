@@ -1794,8 +1794,18 @@ impl Lucene90CompressingTermVectorsReader {
         let mut meta_in: Option<Box<crate::store::BufferedChecksumIndexInput>> = None;
         let opened = (|| -> Result<_> {
             let vectors_file = segment_file_name(&segment, segment_suffix, VECTORS_EXTENSION);
-            let vectors_stream =
-                vectors_stream.insert(directory.open_input(&vectors_file, context)?);
+            let vectors_stream = vectors_stream.insert(
+                directory.open_input(
+                    &vectors_file,
+                    /* withHints, `Lucene90CompressingTermVectorsReader.java:151` */
+                    context
+                        .with_hints(&[
+                            std::sync::Arc::new(crate::store::FileTypeHint::Data),
+                            std::sync::Arc::new(crate::store::DataAccessHint::Random),
+                        ])
+                        .as_ref(),
+                )?,
+            );
             let version = check_index_header(
                 vectors_stream.as_mut(),
                 format_name,
@@ -4171,6 +4181,13 @@ mod tests {
                         occurrences.len() as i32,
                     )
                     .expect("start term");
+                // `TermVectorsWriter` calls `addPosition` only when positions
+                // and/or offsets are enabled (`TermVectorsWriter.java:49, 87`);
+                // the compressing writer asserts it (`curField.flags != 0`).
+                if !(*positions || *offsets) {
+                    writer.finish_term().expect("finish term");
+                    continue;
+                }
                 for (position, start, end, payload) in occurrences {
                     let payload = payload.map(|bytes| BytesRef::new(bytes.to_vec()));
                     writer

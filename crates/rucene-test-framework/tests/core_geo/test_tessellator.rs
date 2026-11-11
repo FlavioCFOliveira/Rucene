@@ -141,7 +141,7 @@ fn from_geo_json(geo_json: &str) -> Result<Vec<Polygon>> {
 /// `(Polygon) SimpleWKTShapeParser.parse(wkt)`: any other shape is Java's
 /// `ClassCastException`.
 fn parse_polygon(wkt: &str) -> Result<Polygon> {
-    match SimpleWKTShapeParser::parse(wkt).map_err(checked)? {
+    match SimpleWKTShapeParser::parse(wkt)? {
         Some(WktGeometry::Polygon(p)) => Ok(p),
         _ => Err(LuceneError::unchecked(
             "java.lang.ClassCastException",
@@ -153,7 +153,7 @@ fn parse_polygon(wkt: &str) -> Result<Polygon> {
 /// `(Polygon[]) SimpleWKTShapeParser.parse(wkt)`: any other shape is
 /// Java's `ClassCastException`.
 fn parse_multi_polygon(wkt: &str) -> Result<Vec<Polygon>> {
-    match SimpleWKTShapeParser::parse(wkt).map_err(checked)? {
+    match SimpleWKTShapeParser::parse(wkt)? {
         Some(WktGeometry::MultiPolygon(p)) => Ok(p
             .into_iter()
             .map(|p| p.expect("a MULTIPOLYGON member of this test is never EMPTY"))

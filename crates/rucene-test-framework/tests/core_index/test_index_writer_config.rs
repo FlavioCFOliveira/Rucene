@@ -21,7 +21,7 @@ use rucene::error::Result;
 use rucene::index::index_deletion_policy::SnapshotDeletionPolicy;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
-use rucene::index::merge_policy::{LogDocSize, LogMergePolicy, MergePolicy, TieredMergePolicy};
+use rucene::index::merge_policy::{LogMergePolicy, MergePolicy, TieredMergePolicy};
 use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, SerialMergeScheduler};
 use rucene::search::index_searcher::IndexSearcher;
 use rucene::search::similarities::{
@@ -210,7 +210,9 @@ fn test_defaults() -> Result<()> {
     Ok(())
 }
 
-/// The getters `impl IndexWriterConfig` defines, under their Java names.
+/// The getters `IndexWriterConfig.java` itself declares — Java filters
+/// `getDeclaredMethods()` on `m.getDeclaringClass() == IndexWriterConfig.class`,
+/// so the ones inherited from `LiveIndexWriterConfig` are not listed.
 const IWC_GETTERS: &[&str] = &[
     "getAnalyzer",
     "getRAMBufferSizeMB",
@@ -218,7 +220,6 @@ const IWC_GETTERS: &[&str] = &[
     "getMergePolicy",
     "getMergedSegmentWarmer",
     "getOpenMode",
-    "getIndexCreatedVersionMajor",
     "getIndexDeletionPolicy",
     "getIndexCommit",
     "getSimilarity",
@@ -227,16 +228,7 @@ const IWC_GETTERS: &[&str] = &[
     "getInfoStream",
     "getReaderPooling",
     "getRAMPerThreadHardLimitMB",
-    "getUseCompoundFile",
-    "getCommitOnClose",
-    "getIndexSort",
-    "getIndexSortFields",
-    "getLeafSorter",
-    "isCheckPendingFlushOnUpdate",
-    "getSoftDeletesField",
-    "getMaxFullFlushMergeWaitMillis",
-    "getIndexWriterEventListener",
-    "getParentField",
+    "getFlushPolicy",
 ];
 
 /// The getters `impl LiveIndexWriterConfig` defines, under their Java names.
@@ -481,7 +473,7 @@ fn test_invalid_values() -> Result<()> {
 
     // Test MergePolicy
     Assert::assert_true(is_tiered(&conf.merge_policy()));
-    conf.set_merge_policy(Some(Arc::new(LogMergePolicy::new(Arc::new(LogDocSize)))))?;
+    conf.set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))?;
     Assert::assert_true(is_log_doc(&conf.merge_policy()));
     expect_throws(IAE, || conf.set_merge_policy(None).map(|_| ()));
     Ok(())

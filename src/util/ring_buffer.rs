@@ -278,10 +278,15 @@ impl FrequencyTrackingRingBuffer {
 }
 
 impl Accountable for FrequencyTrackingRingBuffer {
+    /// `BASE_RAM_BYTES_USED + frequencies.ramBytesUsed() + sizeOf(buffer)`
+    /// (`FrequencyTrackingRingBuffer.java:62-64`), where the shallow size
+    /// covers all four fields (`FrequencyTrackingRingBuffer.java:36-39`): the
+    /// `int maxSize` and `int position` and the two references.
     fn ram_bytes_used(&self) -> i64 {
         RamUsageEstimator::align_object_size(
             RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-                + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+                + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                + 2 * 4,
         ) + self.frequencies.ram_bytes_used()
             + RamUsageEstimator::size_of_int(&self.buffer)
     }

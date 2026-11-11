@@ -963,6 +963,23 @@ fn component(ord: usize, j: usize) -> f32 {
     ((ord * 7 + j * 3) % 9) as f32 / 2.0 - 1.0
 }
 
+/// Stored vector `ord` as the quantizer receives it; mirrors
+/// `KnnScorerFixture.storedVector`. For `COSINE` it is scaled to unit length
+/// in `f64`, as the fixture does: Lucene's writer normalises `COSINE` vectors
+/// before quantizing them, and `ScalarQuantizer.quantize` asserts
+/// `VectorUtil.isUnitVector` for `COSINE` (`ScalarQuantizer.java:118`).
+fn stored_vector(ord: usize, similarity: VectorSimilarityFunction) -> Vec<f32> {
+    let mut raw: Vec<f32> = (0..DIMENSION).map(|j| component(ord, j)).collect();
+    if similarity == VectorSimilarityFunction::COSINE {
+        let sum_squares: f64 = raw.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+        let length = sum_squares.sqrt();
+        for x in &mut raw {
+            *x = (f64::from(*x) / length) as f32;
+        }
+    }
+    raw
+}
+
 /// Quantized vectors held in memory, counting how many vectors are read;
 /// ordinal `ord` belongs to document `2 * ord + 1`, as in the fixture. When
 /// `slice` is present the four-bit components are also stored packed two to a
@@ -984,7 +1001,7 @@ impl MemoryValues {
         let mut vectors = Vec::new();
         let mut offsets = Vec::new();
         for ord in 0..SIZE {
-            let raw: Vec<f32> = (0..DIMENSION).map(|j| component(ord, j)).collect();
+            let raw = stored_vector(ord, similarity);
             let mut quantized = vec![0u8; DIMENSION];
             offsets.push(
                 quantizer

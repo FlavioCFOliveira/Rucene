@@ -691,11 +691,13 @@ mod scorer_tests {
             // same similarity must give the same corrections. `OptimizedScalar\
             // Quantizer` has no equality, and comparing addresses would prove
             // nothing about which similarity it was built for.
-            let mut a = vec![1.0f32, -2.0];
-            let mut b = vec![1.0f32, -2.0];
+            // Unit vector and centroid: `scalarQuantize` asserts both are unit
+            // vectors for `COSINE` (`OptimizedScalarQuantizer.java:189-190`).
+            let mut a = vec![0.6f32, -0.8];
+            let mut b = vec![0.6f32, -0.8];
             let mut dst_a = vec![0u8; 2];
             let mut dst_b = vec![0u8; 2];
-            let centroid = [0.5f32, 0.5];
+            let centroid = [0.6f32, 0.8];
             let from_trait = quantizer
                 .scalar_quantize(&mut a, &mut dst_a, 8, &centroid)
                 .expect("quantize");

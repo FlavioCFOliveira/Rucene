@@ -307,6 +307,28 @@ impl ShapeField {
             }
         }
 
+        // change orientation if CW (`ShapeField.java:214-228`)
+        if crate::geo::GeoUtils::orient(
+            f64::from(a_x),
+            f64::from(a_y),
+            f64::from(b_x),
+            f64::from(b_y),
+            f64::from(c_x),
+            f64::from(c_y),
+        ) == -1
+        {
+            // swap b with c
+            let (temp_x, temp_y, temp_bool) = (b_x, b_y, ab);
+            // a_x and a_y do not change, ab becomes bc
+            ab = bc;
+            b_x = c_x;
+            b_y = c_y;
+            // bc does not change, ca becomes ab
+            c_x = temp_x;
+            c_y = temp_y;
+            ca = temp_bool;
+        }
+
         let min_x = a_x;
         let min_y = a_y.min(b_y).min(c_y);
         let max_x = a_x.max(b_x).max(c_x);

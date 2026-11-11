@@ -331,6 +331,25 @@ pub enum SortFieldKind {
         /// The name of the feature whose value is sorted on.
         feature_name: String,
     },
+    /// `org.apache.lucene.document.LatLonPointSortField`: the haversine
+    /// distance of a `LatLonDocValuesField` from an origin. The coordinates
+    /// are held as `Double.doubleToLongBits`, which is what the subclass's
+    /// `equals` and `hashCode` compare (`LatLonPointSortField.java:61-82`).
+    LatLonDistance {
+        /// `Double.doubleToLongBits(latitude)`.
+        latitude_bits: u64,
+        /// `Double.doubleToLongBits(longitude)`.
+        longitude_bits: u64,
+    },
+    /// `org.apache.lucene.document.XYPointSortField`: the euclidean distance
+    /// of an `XYDocValuesField` from an origin. The coordinates are held as
+    /// `Float.floatToIntBits` (`XYPointSortField.java:58-78`).
+    XYDistance {
+        /// `Float.floatToIntBits(x)`.
+        x_bits: u32,
+        /// `Float.floatToIntBits(y)`.
+        y_bits: u32,
+    },
 }
 
 /// Describes how to sort documents by terms in an individual field.
@@ -437,25 +456,22 @@ impl SortField {
         reverse: bool,
         missing_value: Option<MissingValue>,
     ) -> Result<Self> {
+        // `SortField(String, Type, boolean, Object)` (`SortField.java:170-176`)
+        // stores the missing value as given and runs only `validateField`
+        // (`SortField.java:371-383`); the per-type checks belong to
+        // `setMissingValue`, which this constructor does not call — so
+        // `LatLonPointSortField`'s `CUSTOM` type with a `Double` missing value
+        // is legal here.
         validate_field(&field, field_type, missing_value)?;
-        let mut sort_field = Self {
+        Ok(Self {
             field,
             field_type,
             reverse,
-            missing_value: None,
+            missing_value,
             comparator_source: None,
             optimize_sort_with_indexed_data: true,
             kind: SortFieldKind::Plain,
-        };
-        // Route the missing value through `set_missing_value`, which carries
-        // the per-type checks `SortField.setMissingValue(Object)` performs.
-        // Validating it here as well would duplicate them, and duplicating them
-        // is how they came to disagree: a `Long` missing value on an `INT`
-        // field was accepted by this constructor and rejected by the setter.
-        if missing_value.is_some() {
-            sort_field.set_missing_value(missing_value)?;
-        }
-        Ok(sort_field)
+        })
     }
 
     /// The name this sort field's `SortFieldProvider` is registered under.
@@ -577,7 +593,24 @@ impl SortField {
     }
 
     /// Returns true if the relevance score is needed to sort documents.
+    ///
+    /// The sort fields `DoubleValuesSource.getSortField` and
+    /// `LongValuesSource.getSortField` build — Java's `DoubleValuesSortField`
+    /// and `LongValuesSortField`, recognised here by their comparator source —
+    /// answer their producer's `needsScores()`, as those subclasses' overrides
+    /// do (`DoubleValuesSource.java:543-546`, `LongValuesSource.java:304-307`).
     pub fn needs_scores(&self) -> bool {
+        let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
+        if let Some(source) = source.and_then(|s| {
+            s.downcast_ref::<crate::search::double_values_source::DoubleValuesComparatorSource>()
+        }) {
+            return source.producer_needs_scores();
+        }
+        if let Some(source) = source.and_then(|s| {
+            s.downcast_ref::<crate::search::long_values_source::LongValuesComparatorSource>()
+        }) {
+            return source.producer_needs_scores();
+        }
         self.field_type == SortFieldType::Score
     }
 
@@ -657,6 +690,24 @@ impl SortField {
                 return Err(LuceneError::illegal_argument(
                     "Missing value not supported for FeatureSortField".to_string(),
                 ));
+            }
+            // `LatLonPointSortField.setMissingValue(Object)` and
+            // `XYPointSortField.setMissingValue(Object)`: only positive
+            // infinity, missing values last (`LatLonPointSortField.java:51-58`).
+            SortFieldKind::LatLonDistance { .. } | SortFieldKind::XYDistance { .. } => {
+                if missing_value != Some(MissingValue::Double(f64::INFINITY)) {
+                    let got = match missing_value {
+                        None => "null".to_string(),
+                        Some(MissingValue::Double(v)) => crate::util::java_fmt::double_to_string(v),
+                        Some(MissingValue::Float(v)) => crate::util::java_fmt::float_to_string(v),
+                        Some(other) => other.to_string(),
+                    };
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Missing value can only be Double.POSITIVE_INFINITY (missing values last), but got {got}"
+                    )));
+                }
+                self.missing_value = missing_value;
+                return Ok(());
             }
             SortFieldKind::Binary { .. } | SortFieldKind::Plain => {}
         }
@@ -794,6 +845,32 @@ impl SortField {
                         ),
                     ),
                 ));
+            }
+            // `LatLonPointSortField.getComparator(int, Pruning)` and
+            // `XYPointSortField.getComparator(int, Pruning)` return the
+            // distance comparator directly (`LatLonPointSortField.java:40-43`).
+            SortFieldKind::LatLonDistance {
+                latitude_bits,
+                longitude_bits,
+            } => {
+                return Ok(Box::new(SharedFieldComparator::new(
+                    crate::document::LatLonPointDistanceComparator::new(
+                        field,
+                        f64::from_bits(*latitude_bits),
+                        f64::from_bits(*longitude_bits),
+                        num_hits,
+                    ),
+                )));
+            }
+            SortFieldKind::XYDistance { x_bits, y_bits } => {
+                return Ok(Box::new(SharedFieldComparator::new(
+                    crate::document::XYPointDistanceComparator::new(
+                        field,
+                        f32::from_bits(*x_bits),
+                        f32::from_bits(*y_bits),
+                        num_hits,
+                    ),
+                )));
             }
             SortFieldKind::SortedNumeric {
                 selector,
@@ -1176,6 +1253,24 @@ impl SortField {
     }
 }
 
+impl SortField {
+    /// The ` missingValue=...>` tail of the distance sort fields' `toString`:
+    /// written only when the missing value is not positive infinity.
+    fn write_distance_missing(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.missing_value {
+            Some(MissingValue::Double(v)) if v == f64::INFINITY => {}
+            Some(MissingValue::Double(v)) => write!(
+                f,
+                " missingValue={}",
+                crate::util::java_fmt::double_to_string(v)
+            )?,
+            Some(other) => write!(f, " missingValue={other}")?,
+            None => f.write_str(" missingValue=null")?,
+        }
+        f.write_str(">")
+    }
+}
+
 impl fmt::Display for SortField {
     /// Equivalent to `SortField.toString()` and to the overrides in
     /// `SortedNumericSortField`, `SortedSetSortField` and `BinarySortField`.
@@ -1219,6 +1314,31 @@ impl fmt::Display for SortField {
                     "<feature:\"{}\" featureName={feature_name}>",
                     self.field.as_deref().unwrap_or("")
                 );
+            }
+            // `LatLonPointSortField.toString()` (`LatLonPointSortField.java:84-100`).
+            SortFieldKind::LatLonDistance {
+                latitude_bits,
+                longitude_bits,
+            } => {
+                write!(
+                    f,
+                    "<distance:\"{}\" latitude={} longitude={}",
+                    self.field.as_deref().unwrap_or(""),
+                    crate::util::java_fmt::double_to_string(f64::from_bits(*latitude_bits)),
+                    crate::util::java_fmt::double_to_string(f64::from_bits(*longitude_bits))
+                )?;
+                return self.write_distance_missing(f);
+            }
+            // `XYPointSortField.toString()` (`XYPointSortField.java:80-95`).
+            SortFieldKind::XYDistance { x_bits, y_bits } => {
+                write!(
+                    f,
+                    "<distance:\"{}\" x={} y={}",
+                    self.field.as_deref().unwrap_or(""),
+                    crate::util::java_fmt::float_to_string(f32::from_bits(*x_bits)),
+                    crate::util::java_fmt::float_to_string(f32::from_bits(*y_bits))
+                )?;
+                return self.write_distance_missing(f);
             }
             SortFieldKind::Binary { .. } => {
                 write!(f, "<binary: \"{}\">", self.field.as_deref().unwrap_or(""))?;
@@ -1578,6 +1698,10 @@ mod tests {
     }
 
     #[test]
+    /// `SortField(String, Type, boolean, Object)` runs only `validateField`
+    /// (`SortField.java:170-176, 371-383`), which refuses a `STRING` missing
+    /// value other than the two sentinels; the per-type checks of
+    /// `setMissingValue` (`SortField.java:337-366`) belong to the setter.
     fn sortfield_validation_rejects_bad_missing_value() {
         assert!(SortField::new_with_missing(
             Some("f".to_string()),
@@ -1586,13 +1710,16 @@ mod tests {
             Some(MissingValue::Int(0))
         )
         .is_err());
-        assert!(SortField::new_with_missing(
+        let mut sort_field = SortField::new_with_missing(
             Some("f".to_string()),
             SortFieldType::Int,
             false,
-            Some(MissingValue::Long(0))
+            Some(MissingValue::Long(0)),
         )
-        .is_err());
+        .expect("the constructor does not check the missing value's type");
+        assert!(sort_field
+            .set_missing_value(Some(MissingValue::Long(0)))
+            .is_err());
     }
 
     #[test]

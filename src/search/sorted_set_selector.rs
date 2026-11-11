@@ -182,7 +182,7 @@ impl DocIdSetIterator for SelectedValue {
         self.inner.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.inner.doc_id_run_end()
     }
 }

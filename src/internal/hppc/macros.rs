@@ -4025,7 +4025,12 @@ macro_rules! define_max_sized_array_list {
             /// size, where Java throws `IllegalStateException`.
             pub fn ensure_buffer_space(&mut self, expected_additions: i32) {
                 if self.list.elements_count + expected_additions > self.max_size {
-                    panic!("Cannot grow beyond maxSize: {}", self.max_size);
+                    // `throw new IllegalStateException("Cannot grow beyond
+                    // maxSize: " + maxSize)` (`MaxSizedFloatArrayList.java:63-66`).
+                    $crate::store::java_nio_file::throw_unchecked(
+                        "java.lang.IllegalStateException",
+                        Some(&format!("Cannot grow beyond maxSize: {}", self.max_size)),
+                    );
                 }
                 if self.list.elements_count + expected_additions > self.list.buffer.len() as i32 {
                     grow_in_range(

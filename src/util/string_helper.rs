@@ -96,7 +96,11 @@ impl IntsRef {
     ///
     /// Equivalent to `org.apache.lucene.util.IntsRef#deepCopyOf`.
     pub fn deep_copy_of(other: &IntsRef) -> Self {
-        Self::with_offset_length(other.slice().to_vec(), 0, other.length)
+        // `ArrayUtil.copyOfSubArray(other.ints, other.offset, other.offset +
+        // other.length)` (`IntsRef.java:136-140`).
+        let ints =
+            crate::util::java_copy_of_sub_array(&other.ints, other.offset, other.length, "int");
+        Self::with_offset_length(ints, 0, other.length)
     }
 
     /// Java's `hashCode()`, reproduced exactly so that values hash the same way
@@ -212,30 +216,32 @@ impl StringHelper {
     /// Compares two [`BytesRef`] values element by element and returns the number
     /// of common elements from the start of each.
     ///
+    /// Equivalent to `StringHelper.bytesDifference(BytesRef, BytesRef)`
+    /// (`StringHelper.java:42-56`), which is `Arrays.mismatch` over the two
+    /// slices: the first differing index, or the shorter length when one is a
+    /// prefix of the other, and `-1` only when the slices are equal.
+    ///
     /// # Errors
     ///
-    /// Returns `LuceneErrorKind::IllegalArgument` if `current_term` is not strictly
-    /// after `prior_term` (i.e., they are equal or out of order).
+    /// Returns `LuceneErrorKind::IllegalArgument` (`terms out of order: …`)
+    /// when the two slices are equal, the only case `Arrays.mismatch` answers
+    /// `-1`.
     pub fn bytes_difference(
         prior_term: &BytesRef,
         current_term: &BytesRef,
     ) -> Result<i32, LuceneError> {
         let a = prior_term.slice();
         let b = current_term.slice();
-        let min_len = a.len().min(b.len());
-        let mut mismatch = min_len;
-        for i in 0..min_len {
-            if a[i] != b[i] {
-                mismatch = i;
-                break;
-            }
-        }
-        if mismatch == min_len && a.len() > b.len() {
+        if a == b {
             return Err(LuceneError::illegal_argument(format!(
-                "terms out of order: priorTerm={:?}, currentTerm={:?}",
-                prior_term, current_term
+                "terms out of order: priorTerm={prior_term},currentTerm={current_term}"
             )));
         }
+        let mismatch = a
+            .iter()
+            .zip(b)
+            .position(|(x, y)| x != y)
+            .unwrap_or(a.len().min(b.len()));
         mismatch
             .try_into()
             .map_err(|_| LuceneError::illegal_state("mismatch index overflow".to_string()))
@@ -944,11 +950,22 @@ mod tests {
         assert_eq!(StringHelper::sort_key_length(&prior, &current).unwrap(), 3);
     }
 
+    /// `Arrays.mismatch` answers `-1` only for equal slices, so only a
+    /// duplicate term is refused (`StringHelper.java:51-54`); a prior term that
+    /// extends the current one answers the shorter length.
     #[test]
-    fn bytes_difference_rejects_out_of_order() {
+    fn bytes_difference_rejects_only_equal_terms() {
+        let prior = BytesRef::new(vec![b'a', b'b']);
+        let current = BytesRef::new(vec![b'a', b'b']);
+        let error = StringHelper::bytes_difference(&prior, &current).unwrap_err();
+        assert!(
+            matches!(&error.kind, crate::error::LuceneErrorKind::IllegalArgument { message, .. }
+                if message == "terms out of order: priorTerm=[61 62],currentTerm=[61 62]"),
+            "{error:?}"
+        );
         let prior = BytesRef::new(vec![b'a', b'b', b'c']);
         let current = BytesRef::new(vec![b'a', b'b']);
-        assert!(StringHelper::bytes_difference(&prior, &current).is_err());
+        assert_eq!(StringHelper::bytes_difference(&prior, &current).unwrap(), 2);
     }
 
     #[test]

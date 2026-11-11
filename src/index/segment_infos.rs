@@ -292,17 +292,15 @@ impl SegmentInfos {
     /// [`parse_segment_infos`](Self::parse_segment_infos), Java's `DataInput`
     /// is always the commit's `ChecksumIndexInput`, whose `toString()` is the
     /// exception's resource; this takes that input.
-    ///
-    /// **Divergence from Lucene 10.5.0.** For a name that does not start with
-    /// `Lucene`, Java rethrows `Codec.forName`'s `IllegalArgumentException`
-    /// (`SegmentInfos.java:539`); this port still reports
-    /// `IndexFormatNotSupported("Could not load codec '<name>'.")`.
+    /// For a name that does not start with `Lucene`, Java rethrows
+    /// `Codec.forName`'s `IllegalArgumentException` (`SegmentInfos.java:539`),
+    /// as this does.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IndexFormatTooOld`] when a `Lucene` codec cannot
-    /// be resolved, [`LuceneErrorKind::IndexFormatNotSupported`] when another
-    /// codec cannot be, and propagates any I/O error.
+    /// be resolved, `Codec.forName`'s [`LuceneErrorKind::IllegalArgument`] when
+    /// another codec cannot be, and propagates any I/O error.
     fn read_codec(
         input: &mut dyn crate::store::ChecksumIndexInput,
     ) -> Result<std::sync::Arc<dyn crate::codecs::Codec>> {
@@ -320,12 +318,8 @@ impl SegmentInfos {
                          lucene-backward-codecs.jar?"
                 ),
             )),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }) => Err(LuceneError::from(LuceneErrorKind::IndexFormatNotSupported(
-                format!("Could not load codec '{name}'."),
-            ))),
+            // `throw e;` (`SegmentInfos.java:539`): any other name rethrows
+            // `Codec.forName`'s own `IllegalArgumentException`.
             Err(error) => Err(error),
         }
     }

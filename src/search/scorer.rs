@@ -221,13 +221,7 @@ impl Scorable for ScorerAsScorable<'_> {
 /// the result to a `ConstantScoreScorer`, because the scorer stays alive
 /// independently of the iterator it lent out. Rust needs whoever iterates to own
 /// the iteration, so this adapter takes the scorer and forwards every call to
-/// `scorer.iterator()`. The one behaviour it cannot forward is
-/// [`DocIdSetIterator::doc_id_run_end`], which the port declares on `&self`
-/// while [`Scorer::iterator`] needs `&mut self`; it therefore falls back to the
-/// trait's default, `doc_id() + 1`. That is always a legal answer — the contract
-/// only requires the end of *a* run of matching doc IDs containing the current
-/// one — so it can cost a bulk scorer a larger window, never a different set of
-/// matches.
+/// `scorer.iterator()`, [`DocIdSetIterator::doc_id_run_end`] included.
 pub struct ScorerAsIterator {
     scorer: Box<dyn Scorer>,
     cost: i64,
@@ -275,6 +269,10 @@ impl DocIdSetIterator for ScorerAsIterator {
         offset: i32,
     ) -> Result<()> {
         self.scorer.iterator().into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        self.scorer.iterator().doc_id_run_end()
     }
 }
 

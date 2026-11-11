@@ -177,10 +177,9 @@ pub fn get_sort_field(source: Arc<dyn DoubleValuesSource>, reverse: bool) -> Res
 /// and `rewrite`. This port has no `SortField` subclassing, so the sort field
 /// is a plain [`SortFieldType::Custom`] sort over the
 /// [`DoubleValuesComparatorSource`] Java installs, which is what decides the
-/// order; the source's own `needsScores` is not reflected in
-/// `SortField::needs_scores`, so a caller that sorts on a scoring source has
-/// to request scores itself. `rewrite` is Java's: [`SortField::rewrite`]
-/// recognises the comparator source and rewrites the producer
+/// order. `needsScores` and `rewrite` are Java's: [`SortField::needs_scores`]
+/// and [`SortField::rewrite`] recognise the comparator source and answer the
+/// producer's `needsScores()` and rewrite the producer
 /// ([`DoubleValuesComparatorSource::rewrite_sort_field`]).
 ///
 /// # Errors
@@ -892,6 +891,14 @@ impl DoubleValuesComparatorSource {
             field.reverse(),
             self.missing_value,
         )?))
+    }
+}
+
+impl DoubleValuesComparatorSource {
+    /// `producer.needsScores()`, which `DoubleValuesSortField.needsScores()`
+    /// answers (`DoubleValuesSource.java:543-546`).
+    pub(crate) fn producer_needs_scores(&self) -> bool {
+        self.producer.needs_scores()
     }
 }
 

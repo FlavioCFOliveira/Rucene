@@ -4644,10 +4644,11 @@ mod tests {
     /// `SortingCodecReader.wrap(CodecReader, Sorter.DocMap, Sort)` asserts
     /// `Sorter.isConsistent(docMap)` once the sizes agree
     /// (`SortingCodecReader.java:434`); a map whose directions do not invert
-    /// each other trips it.
+    /// each other trips the assertion inside `isConsistent` first
+    /// (`Sorter.java:76-77`).
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "the doc map must be consistent")]
+    #[should_panic(expected = "mapping is inconsistent: 1 --oldToNew--> 0 --newToOld--> 0")]
     fn wrapping_with_an_inconsistent_doc_map_trips_the_is_consistent_assertion() {
         let composite = SlowCompositeCodecReaderWrapper::wrap(two_segments()).unwrap();
         let doc_map = Arc::new(

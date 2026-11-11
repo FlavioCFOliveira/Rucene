@@ -1211,8 +1211,10 @@ mod tests {
         hash.clear();
         assert_eq!(hash.size(), 0);
         assert!(hash.is_empty());
-        assert_eq!(hash.find(&pool, b"x"), -1);
+        // No `find` here: `findHash` asserts `bytesStart != null`
+        // (`BytesRefHash.java:370`), which `clear()` nulled.
         hash.reinit();
+        assert_eq!(hash.find(&pool, b"x"), -1);
         assert_eq!(hash.add(&mut pool, b"x").expect("x again"), 0);
     }
 

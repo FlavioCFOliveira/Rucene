@@ -19,6 +19,8 @@
 //! negative length from non-monotonic chunk offsets — each of which panicked in
 //! a debug build on bytes Lucene itself reads without incident.
 
+mod lucene_assertion;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -134,12 +136,21 @@ fn write_file(directory: &Arc<dyn Directory>, name: &str, bytes: &[u8]) {
     output.close().expect("close");
 }
 
+/// [`visit_all_unguarded`], where a Lucene `assert` the decoder fails on the
+/// corrupt input — Java's `AssertionError` under `-ea` — ends the walk, as
+/// Java's exception would, and counts as survived; any other panic still
+/// fails the test (see [`lucene_assertion`]).
+fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) {
+    let _ =
+        lucene_assertion::survive_lucene_assertions(|| visit_all_unguarded(directory, info, docs));
+}
+
 /// Reads every document of a segment, reporting only whether it panicked.
 ///
 /// The reader is expected to answer corruption with an `Err`, or with whatever
 /// value Java's wrapping arithmetic would produce; the one outcome this asserts
 /// against is an abort.
-fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) {
+fn visit_all_unguarded(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) {
     let reader = match codec().stored_fields_format().fields_reader(
         directory.as_ref(),
         info,

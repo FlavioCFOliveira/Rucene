@@ -54,6 +54,8 @@
 //! every file, because a short read is the cheapest corruption to produce and
 //! the one most likely to reach an unchecked subtraction.
 
+mod lucene_assertion;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -407,11 +409,26 @@ fn resigned_copy(original: &Arc<dyn Directory>, file: &str, body: &[u8]) -> Arc<
     corrupt
 }
 
+/// [`read_everything_unguarded`], where a Lucene `assert` the decoder fails on
+/// the corrupt input — Java's `AssertionError` under `-ea` — ends the walk, as
+/// Java's exception would, and counts as survived; any other panic still fails
+/// the test (see [`lucene_assertion`]).
+fn read_everything(
+    directory: &Arc<dyn Directory>,
+    info: &SegmentInfo,
+    field_infos: &FieldInfos,
+    fixture: &Fixture,
+) {
+    let _ = lucene_assertion::survive_lucene_assertions(|| {
+        read_everything_unguarded(directory, info, field_infos, fixture)
+    });
+}
+
 /// Drives the reader over every field: integrity, every value, and a search.
 ///
 /// Every failure is swallowed; the assertion this whole file makes is that
 /// none of them is a panic or an abort.
-fn read_everything(
+fn read_everything_unguarded(
     directory: &Arc<dyn Directory>,
     info: &SegmentInfo,
     field_infos: &FieldInfos,

@@ -1579,9 +1579,13 @@ impl LatLonPointDistanceQuery {
             sb.push_str(&self.field);
             sb.push(':');
         }
+        // `StringBuilder.append(double)` (`LatLonPointDistanceQuery.java:370-383`):
+        // Java's `Double.toString`.
         sb.push_str(&format!(
             "{},{} +/- {} meters",
-            self.latitude, self.longitude, self.radius_meters
+            crate::util::java_fmt::double_to_string(self.latitude),
+            crate::util::java_fmt::double_to_string(self.longitude),
+            crate::util::java_fmt::double_to_string(self.radius_meters)
         ));
         sb
     }

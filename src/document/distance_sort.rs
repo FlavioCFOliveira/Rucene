@@ -807,11 +807,18 @@ impl LatLonPointSortField {
         GeoUtils::check_latitude(latitude)?;
         GeoUtils::check_longitude(longitude)?;
         Ok(Self {
-            sort_field: SortField::new_with_missing(
+            // The subclass identity travels with the sort field, so a `Sort`
+            // holding it builds the distance comparator
+            // (`LatLonPointSortField.java:40-43`).
+            sort_field: SortField::with_kind(
                 Some(field.to_string()),
                 SortFieldType::Custom,
                 false,
                 Some(MissingValue::Double(f64::INFINITY)),
+                crate::search::SortFieldKind::LatLonDistance {
+                    latitude_bits: latitude.to_bits(),
+                    longitude_bits: longitude.to_bits(),
+                },
             )?,
             latitude,
             longitude,
@@ -879,34 +886,29 @@ impl LatLonPointSortField {
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for anything but positive
     /// infinity, which is what Java rejects.
     pub fn set_missing_value(&mut self, missing_value: f64) -> Result<()> {
-        if missing_value != f64::INFINITY {
-            return Err(LuceneError::illegal_argument(format!(
-                "Missing value can only be Double.POSITIVE_INFINITY (missing values last), but \
-                 got {missing_value}"
-            )));
-        }
-        self.sort_field = SortField::new_with_missing(
-            self.sort_field.field().map(str::to_string),
-            self.sort_field.field_type(),
-            self.sort_field.reverse(),
-            Some(MissingValue::Double(missing_value)),
-        )?;
-        Ok(())
+        self.sort_field
+            .set_missing_value(Some(MissingValue::Double(missing_value)))
     }
 }
 
 impl std::fmt::Display for LatLonPointSortField {
     /// Equivalent to `LatLonPointSortField.toString()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `StringBuilder.append(double)`: Java's `Double.toString`
+        // (`LatLonPointSortField.java:85-99`).
         write!(
             f,
             "<distance:\"{}\" latitude={} longitude={}",
             self.get_field().unwrap_or_default(),
-            self.latitude,
-            self.longitude
+            crate::util::java_fmt::double_to_string(self.latitude),
+            crate::util::java_fmt::double_to_string(self.longitude)
         )?;
         if self.get_missing_value() != f64::INFINITY {
-            write!(f, " missingValue={}", self.get_missing_value())?;
+            write!(
+                f,
+                " missingValue={}",
+                crate::util::java_fmt::double_to_string(self.get_missing_value())
+            )?;
         }
         f.write_str(">")
     }
@@ -933,11 +935,16 @@ impl XYPointSortField {
     /// Propagates whatever [`SortField`] construction raises.
     pub fn new(field: &str, x: f32, y: f32) -> Result<Self> {
         Ok(Self {
-            sort_field: SortField::new_with_missing(
+            // See `LatLonPointSortField::new` (`XYPointSortField.java:39-42`).
+            sort_field: SortField::with_kind(
                 Some(field.to_string()),
                 SortFieldType::Custom,
                 false,
                 Some(MissingValue::Double(f64::INFINITY)),
+                crate::search::SortFieldKind::XYDistance {
+                    x_bits: x.to_bits(),
+                    y_bits: y.to_bits(),
+                },
             )?,
             x,
             y,
@@ -1001,34 +1008,29 @@ impl XYPointSortField {
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for anything but positive
     /// infinity.
     pub fn set_missing_value(&mut self, missing_value: f64) -> Result<()> {
-        if missing_value != f64::INFINITY {
-            return Err(LuceneError::illegal_argument(format!(
-                "Missing value can only be Double.POSITIVE_INFINITY (missing values last), but \
-                 got {missing_value}"
-            )));
-        }
-        self.sort_field = SortField::new_with_missing(
-            self.sort_field.field().map(str::to_string),
-            self.sort_field.field_type(),
-            self.sort_field.reverse(),
-            Some(MissingValue::Double(missing_value)),
-        )?;
-        Ok(())
+        self.sort_field
+            .set_missing_value(Some(MissingValue::Double(missing_value)))
     }
 }
 
 impl std::fmt::Display for XYPointSortField {
     /// Equivalent to `XYPointSortField.toString()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `StringBuilder.append(float)` and `append(double)`: Java's
+        // `Float.toString` and `Double.toString` (`XYPointSortField.java:82-96`).
         write!(
             f,
             "<distance:\"{}\" x={} y={}",
             self.get_field().unwrap_or_default(),
-            self.x,
-            self.y
+            crate::util::java_fmt::float_to_string(self.x),
+            crate::util::java_fmt::float_to_string(self.y)
         )?;
         if self.get_missing_value() != f64::INFINITY {
-            write!(f, " missingValue={}", self.get_missing_value())?;
+            write!(
+                f,
+                " missingValue={}",
+                crate::util::java_fmt::double_to_string(self.get_missing_value())
+            )?;
         }
         f.write_str(">")
     }

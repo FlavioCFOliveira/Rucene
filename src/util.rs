@@ -202,6 +202,57 @@ pub struct BytesRef {
     pub length: usize,
 }
 
+/// Java's `NumberFormatException` with `message` (`null` for `None`), which
+/// `ArrayUtil.parseInt` throws (`ArrayUtil.java:66-110`).
+fn number_format_exception(message: Option<&str>) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.NumberFormatException",
+        message: message.map(str::to_string),
+        cause: None,
+    })
+}
+
+/// The name `System.arraycopy`'s messages give the component type of an array
+/// of `T`: the Java primitive a Rust primitive stands for, `object array`
+/// otherwise.
+pub(crate) fn java_array_element_type<T>() -> &'static str {
+    match std::any::type_name::<T>() {
+        "u8" | "i8" => "byte",
+        "i16" => "short",
+        "u16" => "char",
+        "i32" => "int",
+        "i64" => "long",
+        "f32" => "float",
+        "f64" => "double",
+        "bool" => "boolean",
+        _ => "object array",
+    }
+}
+
+/// `ArrayUtil.copyOfSubArray(array, offset, offset + length)` for the
+/// `deepCopyOf` methods of the `*Ref` classes (`ArrayUtil.java:654-658` and
+/// its overloads): `System.arraycopy` throws `ArrayIndexOutOfBoundsException`
+/// (`arraycopy: last source index N out of bounds for T[len]`) when the range
+/// runs past the array, which is thrown here as that unchecked exception.
+pub(crate) fn java_copy_of_sub_array<T: Clone>(
+    array: &[T],
+    offset: usize,
+    length: usize,
+    element_type: &str,
+) -> Vec<T> {
+    let end = offset as u64 + length as u64;
+    if end > array.len() as u64 {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            Some(&format!(
+                "arraycopy: last source index {end} out of bounds for {element_type}[{}]",
+                array.len()
+            )),
+        );
+    }
+    array[offset..offset + length].to_vec()
+}
+
 impl BytesRef {
     /// Creates a `BytesRef` referencing the entire provided byte vector.
     pub fn new(bytes: Vec<u8>) -> Self {
@@ -257,12 +308,17 @@ impl BytesRef {
 
     /// Returns a `BytesRef` whose content is a copy of `other`'s active slice,
     /// with offset zero.
+    ///
+    /// Equivalent to `BytesRef.deepCopyOf(BytesRef)` (`BytesRef.java:176-181`),
+    /// which copies through `ArrayUtil.copyOfSubArray`: an `other` whose
+    /// `offset + length` is past its array throws `System.arraycopy`'s
+    /// `ArrayIndexOutOfBoundsException`.
     pub fn deep_copy_of(other: &BytesRef) -> Self {
-        let slice = other.slice();
+        let bytes = java_copy_of_sub_array(&other.bytes, other.offset, other.length, "byte");
         Self {
-            bytes: slice.to_vec(),
+            bytes,
             offset: 0,
-            length: slice.len(),
+            length: other.length,
         }
     }
 
@@ -567,8 +623,17 @@ pub struct NumericUtils;
 
 impl NumericUtils {
     /// Converts a `double` to a sortable signed `long`.
+    ///
+    /// Equivalent to `NumericUtils.doubleToSortableLong` (`NumericUtils.java:47-49`),
+    /// which reads the bits with `Double.doubleToLongBits`: every NaN collapses
+    /// to the canonical `0x7ff8000000000000`.
     pub fn double_to_sortable_long(value: f64) -> i64 {
-        Self::sortable_double_bits(value.to_bits() as i64)
+        let bits = if value.is_nan() {
+            0x7ff8_0000_0000_0000_i64
+        } else {
+            value.to_bits() as i64
+        };
+        Self::sortable_double_bits(bits)
     }
 
     /// Converts a sortable `long` back to a `double`.
@@ -577,8 +642,17 @@ impl NumericUtils {
     }
 
     /// Converts a `float` to a sortable signed `int`.
+    ///
+    /// Equivalent to `NumericUtils.floatToSortableInt` (`NumericUtils.java:69-71`),
+    /// which reads the bits with `Float.floatToIntBits`: every NaN collapses to
+    /// the canonical `0x7fc00000`.
     pub fn float_to_sortable_int(value: f32) -> i32 {
-        Self::sortable_float_bits(value.to_bits() as i32)
+        let bits = if value.is_nan() {
+            0x7fc0_0000_i32
+        } else {
+            value.to_bits() as i32
+        };
+        Self::sortable_float_bits(bits)
     }
 
     /// Converts a sortable `int` back to a `float`.
@@ -840,7 +914,7 @@ impl BitUtil {
 
     /// Returns true if `x` (treated as unsigned) is zero or a power of two.
     pub fn is_zero_or_power_of_two(x: i32) -> bool {
-        (x & (x - 1)) == 0
+        (x & x.wrapping_sub(1)) == 0
     }
 
     /// Reads a little-endian `i16` from `src` at `offset`.
@@ -1515,38 +1589,40 @@ impl ArrayUtil {
 
     /// Returns a new `Vec<u8>` of exactly `new_length` containing a copy of `array`.
     pub fn grow_exact(array: &[u8], new_length: usize) -> Vec<u8> {
-        let mut copy = vec![0u8; new_length];
-        copy[..array.len()].copy_from_slice(array);
-        copy
+        Self::grow_exact_generic(array, new_length)
     }
 
     /// Returns a new `Vec<i32>` of exactly `new_length` containing a copy of `array`.
     pub fn grow_exact_int(array: &[i32], new_length: usize) -> Vec<i32> {
-        let mut copy = vec![0i32; new_length];
-        copy[..array.len()].copy_from_slice(array);
-        copy
+        Self::grow_exact_generic(array, new_length)
     }
 
     /// Returns a new `Vec<i64>` of exactly `new_length` containing a copy of `array`.
     pub fn grow_exact_long(array: &[i64], new_length: usize) -> Vec<i64> {
-        let mut copy = vec![0i64; new_length];
-        copy[..array.len()].copy_from_slice(array);
-        copy
+        Self::grow_exact_generic(array, new_length)
     }
 
     /// Copies a sub-range of a byte array into a new vector.
+    ///
+    /// Equivalent to `ArrayUtil.copyOfSubArray(byte[], int, int)`; see
+    /// [`copy_of_sub_array_generic`](Self::copy_of_sub_array_generic) for the
+    /// exceptions.
     pub fn copy_of_sub_array(array: &[u8], from: usize, to: usize) -> Vec<u8> {
-        array[from..to].to_vec()
+        Self::copy_of_sub_array_generic(array, from, to)
     }
 
     /// Copies a sub-range of an `i32` array into a new vector.
+    ///
+    /// Equivalent to `ArrayUtil.copyOfSubArray(int[], int, int)`.
     pub fn copy_of_sub_array_int(array: &[i32], from: usize, to: usize) -> Vec<i32> {
-        array[from..to].to_vec()
+        Self::copy_of_sub_array_generic(array, from, to)
     }
 
     /// Copies a sub-range of an `i64` array into a new vector.
+    ///
+    /// Equivalent to `ArrayUtil.copyOfSubArray(long[], int, int)`.
     pub fn copy_of_sub_array_long(array: &[i64], from: usize, to: usize) -> Vec<i64> {
-        array[from..to].to_vec()
+        Self::copy_of_sub_array_generic(array, from, to)
     }
 
     /// Grows `array` to hold at least `min_length` elements, without exceeding
@@ -1593,6 +1669,14 @@ impl ArrayUtil {
         max_length: usize,
         bytes_per_element: usize,
     ) -> Result<Vec<T>, LuceneError> {
+        // `assert minLength >= 0 : "length must be positive (got " + minLength +
+        // "): likely integer overflow?"` (`ArrayUtil.java:330-331`): a length
+        // past `i32::MAX` is a negative Java `int`.
+        debug_assert!(
+            i32::try_from(min_length).is_ok(),
+            "length must be positive (got {}): likely integer overflow?",
+            min_length as i32
+        );
         if min_length > max_length {
             return Err(LuceneError::illegal_argument(format!(
                 "requested minimum array length {min_length} is larger than requested maximum array length {max_length}"
@@ -1612,9 +1696,24 @@ impl ArrayUtil {
 
     /// Returns a copy of `array` grown to exactly `new_length` elements.
     ///
-    /// Equivalent to the `ArrayUtil.growExact` overloads. Java declares one per
-    /// primitive plus a generic one; Rust needs only the generic form.
+    /// Equivalent to the `ArrayUtil.growExact` overloads
+    /// (`ArrayUtil.java:242-246` and the others). Java declares one per
+    /// primitive plus a generic one; Rust needs only the generic form. A
+    /// `new_length` below the array's length makes Java's
+    /// `System.arraycopy(array, 0, copy, 0, array.length)` throw
+    /// `ArrayIndexOutOfBoundsException`, thrown here as that unchecked
+    /// exception.
     pub fn grow_exact_generic<T: Copy + Default>(array: &[T], new_length: usize) -> Vec<T> {
+        if new_length < array.len() {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                Some(&format!(
+                    "arraycopy: last destination index {} out of bounds for {}[{new_length}]",
+                    array.len(),
+                    java_array_element_type::<T>()
+                )),
+            );
+        }
         let mut grown = array.to_vec();
         grown.resize(new_length, T::default());
         grown
@@ -1646,9 +1745,19 @@ impl ArrayUtil {
 
     /// Returns a copy of the elements of `array` in `[from, to)`.
     ///
-    /// Equivalent to the `ArrayUtil.copyOfSubArray` overloads.
-    pub fn copy_of_sub_array_generic<T: Copy>(array: &[T], from: usize, to: usize) -> Vec<T> {
-        array[from..to].to_vec()
+    /// Equivalent to the `ArrayUtil.copyOfSubArray` overloads
+    /// (`ArrayUtil.java:654-658` and the others): `new T[to - from]` throws
+    /// `NegativeArraySizeException` when `to < from`, and `System.arraycopy`
+    /// throws `ArrayIndexOutOfBoundsException` when `to` is past the array;
+    /// both are thrown here as those unchecked exceptions.
+    pub fn copy_of_sub_array_generic<T: Clone>(array: &[T], from: usize, to: usize) -> Vec<T> {
+        if to < from {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.NegativeArraySizeException",
+                Some(&format!("-{}", from - to)),
+            );
+        }
+        java_copy_of_sub_array(array, from, to - from, java_array_element_type::<T>())
     }
 
     /// Parses the UTF-16 code units of `chars[offset..offset + len]` as a signed
@@ -1671,21 +1780,17 @@ impl ArrayUtil {
         // Character.MIN_RADIX / Character.MAX_RADIX: `throw new
         // NumberFormatException()`, whose message is `null`.
         if !(2..=36).contains(&radix) {
-            return Err(LuceneError::illegal_argument(String::new()));
+            return Err(number_format_exception(None));
         }
         if len == 0 {
-            return Err(LuceneError::illegal_argument(
-                "chars length is 0".to_string(),
-            ));
+            return Err(number_format_exception(Some("chars length is 0")));
         }
         let mut i = 0usize;
         let negative = chars[offset] == '-';
         if negative {
             i += 1;
             if i == len {
-                return Err(LuceneError::illegal_argument(
-                    "can't convert to an int".to_string(),
-                ));
+                return Err(number_format_exception(Some("can't convert to an int")));
             }
             offset += 1;
             len -= 1;
@@ -1718,7 +1823,7 @@ impl ArrayUtil {
         radix: u32,
         negative: bool,
     ) -> Result<i32, LuceneError> {
-        let unparsable = || LuceneError::illegal_argument("Unable to parse".to_string());
+        let unparsable = || number_format_exception(Some("Unable to parse"));
         let max = i32::MIN / radix as i32;
         let mut result: i32 = 0;
         for i in 0..len {
@@ -5487,7 +5592,8 @@ mod tests {
         );
         assert!(matches!(
             super::ArrayUtil::parse_int_radix(&['1'], 0, 1, 1),
-            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
+            Err(super::LuceneError { kind: super::LuceneErrorKind::Unchecked { class, message: None, .. }, .. })
+                if class == "java.lang.NumberFormatException"
         ));
     }
 
@@ -5845,8 +5951,19 @@ mod tests {
     fn info_stream_no_op() {
         let stream = NoOutputInfoStream;
         assert!(!stream.is_enabled("component"));
-        stream.message("component", "should be ignored");
         stream.close();
+    }
+
+    /// `NoOutputInfoStream.message` is
+    /// `assert false : "message() should not be called when isEnabled returns false"`
+    /// (`InfoStream.java:36-38`): a debug build fails it.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "message() should not be called when isEnabled returns false")
+    )]
+    fn no_output_info_stream_message_asserts() {
+        NoOutputInfoStream.message("component", "should be ignored");
     }
 
     /// `os.arch` is the JVM's name for the architecture (JDK 25
@@ -6545,10 +6662,16 @@ mod fixed_bit_set_copy_of_tests {
             let set = random_set(num_bits, 0x9E37_79B9 + num_bits as u64);
             let from_set = FixedBitSet::copy_of(&set);
             let from_view = FixedBitSet::copy_of(&set.as_read_only_bits());
-            let from_plain = FixedBitSet::copy_of(&PlainBits(&set));
             assert_same_bits(&set, &from_set);
             assert_same_bits(&set, &from_view);
-            assert_same_bits(&set, &from_plain);
+            // The bit-by-bit path starts with `bitSet.set(0, length)`, whose
+            // `assert startIndex >= 0 && startIndex < numBits`
+            // (`FixedBitSet.java:777-778`) fails for an empty set under `-ea`;
+            // `copy_of_an_empty_plain_bits_asserts_as_java` pins that case.
+            if num_bits > 0 {
+                let from_plain = FixedBitSet::copy_of(&PlainBits(&set));
+                assert_same_bits(&set, &from_plain);
+            }
             let words = |s: &FixedBitSet| -> Vec<u64> {
                 s.get_bits()
                     .iter()
@@ -6558,6 +6681,16 @@ mod fixed_bit_set_copy_of_tests {
             assert_eq!(words(&from_set), words(&set));
             assert_eq!(words(&from_view), words(&set));
         }
+    }
+
+    /// `FixedBitSet.copyOf` of an empty plain `Bits` calls `set(0, 0)`, which
+    /// asserts `startIndex < numBits` (`FixedBitSet.java:777-778`).
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "startIndex=0, numBits=0"))]
+    fn copy_of_an_empty_plain_bits_asserts_as_java() {
+        let set = FixedBitSet::new(0);
+        let copy = FixedBitSet::copy_of(&PlainBits(&set));
+        assert_eq!(copy.length(), 0);
     }
 
     /// rmp #253 measurement: the word copy of a `FixedBitSet` against the

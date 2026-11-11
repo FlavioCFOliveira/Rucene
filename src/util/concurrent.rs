@@ -539,6 +539,34 @@ fn intern_class_name(class: &str) -> &'static str {
     name
 }
 
+/// Whether a panic stands for a Java `java.lang.Error`, which `catch (Error
+/// tragedy)` catches: an `AssertionError` (a failed `assert`, or any panic
+/// [`panic_to_error`] cannot name) or one of the `Error` subclasses the JDK
+/// throws (`OutOfMemoryError`, `StackOverflowError`, ...).
+pub fn panic_is_java_error(payload: &(dyn std::any::Any + Send)) -> bool {
+    const ERRORS: &[&str] = &[
+        "java.lang.Error",
+        "java.lang.VirtualMachineError",
+        "java.lang.OutOfMemoryError",
+        "java.lang.StackOverflowError",
+        "java.lang.InternalError",
+        "java.lang.UnknownError",
+        "java.lang.LinkageError",
+        "java.lang.ThreadDeath",
+    ];
+    match panic_to_error(payload) {
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(_),
+            ..
+        } => true,
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { class, .. },
+            ..
+        } => ERRORS.contains(&class),
+        _ => false,
+    }
+}
+
 /// The error a panic stands for, where Lucene records the throwable it
 /// caught (`OneMerge.setException`, `IndexWriter.tragicEvent`).
 ///

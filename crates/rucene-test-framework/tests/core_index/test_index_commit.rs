@@ -85,15 +85,18 @@ impl IndexCommit for AnonymousCommit {
 fn test_equals_hash_code() -> Result<()> {
     // LUCENE-2417: equals and hashCode() impl was inconsistent
     let mut dir = LuceneTestCase::new_directory();
+    // Both commits answer the same `dir` object, as Java's anonymous classes
+    // capture the one local.
+    let directory = dir.as_directory();
 
     let ic1 = AnonymousCommit {
         segments_file_name: "a",
-        dir: dir.as_directory(),
+        dir: Arc::clone(&directory),
     };
 
     let ic2 = AnonymousCommit {
         segments_file_name: "b",
-        dir: dir.as_directory(),
+        dir: Arc::clone(&directory),
     };
 
     Assert::assert_true_msg(
@@ -105,6 +108,6 @@ fn test_equals_hash_code() -> Result<()> {
         &ic1.commit_hash(),
         &ic2.commit_hash(),
     );
-    drop((ic1, ic2));
+    drop((ic1, ic2, directory));
     dir.close()
 }

@@ -348,7 +348,10 @@ fn next_clear_bit_in_range_words(
         "upperBound={upper_bound}, numBits={num_bits}"
     );
     let mut i = (start >> 6) as usize;
-    let word = !(bits[i].load(Relaxed) >> (start & 63));
+    // Java's `~(bits[i] >> start)` shifts the signed `long` arithmetically
+    // (`FixedBitSet.java:391`): the sign bit fills the vacated high bits, so a
+    // run of set bits reaching bit 63 does not read as clear past it.
+    let word = !((bits[i].load(Relaxed) as i64) >> (start & 63)) as u64;
 
     if word != 0 {
         return start + word.trailing_zeros() as i32;
@@ -627,7 +630,7 @@ impl DocIdSetIterator for BitSetIterator {
         self.cost
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc != NO_MORE_DOCS);
         let next = self.doc + 1;
         if next >= self.length as i32 {

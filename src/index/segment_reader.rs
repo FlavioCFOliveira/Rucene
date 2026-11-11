@@ -2044,7 +2044,10 @@ impl SegmentReader {
             debug_assert!(
                 match (hard_live_docs, live_docs) {
                     (None, None) => true,
-                    (Some(hard), Some(live)) => Arc::ptr_eq(&hard.0, &live.0),
+                    // Java's `hardLiveDocs == liveDocs`: the identity of the
+                    // shared bits, which a reopen hands in through two
+                    // handles (`SegmentReader.java:170-176`).
+                    (Some(hard), Some(live)) => hard.identity() == live.identity(),
                     _ => false,
                 },
                 "non-nrt case must have identical liveDocs"
@@ -3700,7 +3703,10 @@ mod tests {
             Some(Box::new(del_docs)),
             Some(Box::new(FixedBitSet::new(max_doc as usize))),
             max_doc - del_count,
-            false,
+            // Distinct live-docs and hard-live-docs instances are only legal
+            // for an NRT reader: the non-NRT case asserts they are the same
+            // object (`SegmentReader.java:170-176`).
+            true,
         )
         .unwrap();
 

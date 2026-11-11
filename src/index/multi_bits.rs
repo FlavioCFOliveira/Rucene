@@ -725,8 +725,12 @@ mod tests {
         let _ = slice.get(0);
     }
 
+    /// `BitsSlice(Bits, ReaderSlice)` asserts `length >= 0`
+    /// (`BitsSlice.java:37`): a debug build fails it; without assertions this
+    /// port refuses the slice.
     #[test]
-    fn bits_slice_rejects_negative_bounds() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "length=-1"))]
+    fn bits_slice_asserts_a_negative_length() {
         let negative_length = BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(0, -1, 0));
         assert!(matches!(
             negative_length,
@@ -735,7 +739,10 @@ mod tests {
                 ..
             })
         ));
+    }
 
+    #[test]
+    fn bits_slice_rejects_a_negative_start() {
         let negative_start = BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(-1, 1, 0));
         assert!(matches!(
             negative_start,

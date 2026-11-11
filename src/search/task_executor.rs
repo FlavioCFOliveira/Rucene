@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::SameThreadExecutorService;
 
 /// A unit of work handed to an [`Executor`].
@@ -418,9 +418,38 @@ impl<T> TaskGroup<T> {
             }
         }
         match first_error {
-            Some(err) => Err(err),
+            // `throw IOUtils.rethrowAlways(exc)` (`TaskExecutor.java:133-135`).
+            Some(err) => Err(rethrow_always(err)),
             None => Ok(results),
         }
+    }
+}
+
+/// `IOUtils.rethrowAlways(Throwable)` (`IOUtils.java:429-447`): an
+/// `IOException`, a `RuntimeException` or an `Error` is thrown as it is; any
+/// other (checked) throwable is wrapped in `new RuntimeException(th)`.
+///
+/// Every [`LuceneErrorKind`] variant but [`LuceneErrorKind::Unchecked`] stands
+/// for an `IOException`, a `RuntimeException` or an `Error`; an unchecked
+/// error carries its Java class, and the checked classes among the ones the
+/// port raises are wrapped.
+fn rethrow_always(error: LuceneError) -> LuceneError {
+    const CHECKED: &[&str] = &[
+        "java.lang.Exception",
+        "java.lang.Throwable",
+        "java.lang.InterruptedException",
+        "java.lang.CloneNotSupportedException",
+        "java.lang.ReflectiveOperationException",
+        "java.lang.ClassNotFoundException",
+        "java.text.ParseException",
+        "java.util.concurrent.TimeoutException",
+        "java.util.concurrent.ExecutionException",
+    ];
+    match &error.kind {
+        LuceneErrorKind::Unchecked { class, .. } if CHECKED.contains(class) => {
+            LuceneError::runtime_exception(error)
+        }
+        _ => error,
     }
 }
 

@@ -62,22 +62,11 @@ impl AbstractAnalysisFactory {
         let lucene_match_version = match Self::get(args, LUCENE_MATCH_VERSION_PARAM) {
             None => Version::LATEST,
             // `catch (ParseException pe) { throw new IllegalArgumentException(pe); }`
-            // (`AbstractAnalysisFactory.java:101-105`): the message is the
-            // `ParseException`'s `toString()`, and it is the cause.
-            // `parse_leniently` reports the `ParseException` as an
-            // `IllegalArgument` with a cause, carrying its message.
+            // (`AbstractAnalysisFactory.java:101-105`): `Throwable(Throwable)`
+            // takes `cause.toString()` as the message, and the cause is the
+            // `ParseException` `parse_leniently` raised.
             Some(version) => Version::parse_leniently(&version).map_err(|pe| {
-                let message = match &pe {
-                    LuceneError {
-                        kind: LuceneErrorKind::IllegalArgument { message, .. },
-                        ..
-                    } => message.clone(),
-                    other => other.to_string(),
-                };
-                LuceneError::illegal_argument_with_cause(
-                    format!("java.text.ParseException: {message}"),
-                    std::sync::Arc::new(pe),
-                )
+                LuceneError::illegal_argument_with_cause(pe.to_string(), std::sync::Arc::new(pe))
             })?,
         };
         args.remove(CLASS_NAME); // consume the class arg
@@ -1811,10 +1800,14 @@ mod parse_exception_tests {
                 ..
             }) => {
                 assert_eq!(message, format!("java.text.ParseException: {expected}"));
-                assert!(matches!(
-                    cause.as_ref(),
-                    LuceneError { kind: LuceneErrorKind::IllegalArgument { message, cause: Some(_), .. }, .. } if message == expected
-                ));
+                assert!(
+                    matches!(
+                        cause.as_ref(),
+                        LuceneError { kind: LuceneErrorKind::Unchecked { class, message: Some(message), .. }, .. }
+                            if *class == crate::util::extra::PARSE_EXCEPTION && message == expected
+                    ),
+                    "{cause:?}"
+                );
             }
             other => panic!("expected the wrapped ParseException, got {other:?}"),
         }

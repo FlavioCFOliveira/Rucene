@@ -521,7 +521,13 @@ impl FieldsIndexReader {
         let max_pointer = meta_in.read_long()?;
 
         let index_file = segment_file_name(segment, suffix, extension);
-        let mut index_input = directory.open_input(&index_file, io_context)?;
+        let mut index_input = directory.open_input(
+            &index_file,
+            /* withHints, `FieldsIndexReader.java:72` */
+            io_context
+                .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Index)])
+                .as_ref(),
+        )?;
 
         let header_name = format!("{codec_name}Idx");
         let checked = check_index_header(
@@ -2018,11 +2024,13 @@ pub struct Lucene90CompressingStoredFieldsReader {
     num_chunks: i64,
     num_dirty_chunks: i64,
     num_dirty_docs: i64,
-    /// The `.fdt` file, kept open exactly as Lucene keeps `fieldsStream`. Every
-    /// read clones it, so the reader works on whatever directory it was opened
-    /// from — including a compound-file directory, whose files no `SegmentInfo`
-    /// can point at.
-    fields_stream: Box<dyn IndexInput>,
+    /// The `.fdt` file, kept open exactly as Lucene keeps `fieldsStream`: the
+    /// document reads seek and read this one input, as Java's
+    /// `serializedDocument` does (`Lucene90CompressingStoredFieldsReader.java:
+    /// 645-652`), so that the pages [`prefetch`](StoredFieldsReader::prefetch)
+    /// asked it for are the pages read. Behind a [`Mutex`] because the reader
+    /// is shared where Java clones it per thread.
+    fields_stream: Mutex<Box<dyn IndexInput>>,
     merging: bool,
     state: Mutex<BlockState>,
     /// The last [`PREFETCH_CACHE_SIZE`] blocks
@@ -2404,8 +2412,18 @@ impl Lucene90CompressingStoredFieldsReader {
         let mut meta_in: Option<Box<crate::store::BufferedChecksumIndexInput>> = None;
         let opened = (|| -> Result<_> {
             let fields_file = segment_file_name(&segment, segment_suffix, FIELDS_EXTENSION);
-            let fields_stream =
-                fields_stream.insert(directory.open_input(&fields_file, io_context)?);
+            let fields_stream = fields_stream.insert(
+                directory.open_input(
+                    &fields_file,
+                    /* withHints, `Lucene90CompressingStoredFieldsReader.java:146` */
+                    io_context
+                        .with_hints(&[
+                            std::sync::Arc::new(crate::store::FileTypeHint::Data),
+                            std::sync::Arc::new(crate::store::DataAccessHint::Random),
+                        ])
+                        .as_ref(),
+                )?,
+            );
             let version = check_index_header(
                 fields_stream.as_mut(),
                 format_name,
@@ -2530,7 +2548,7 @@ impl Lucene90CompressingStoredFieldsReader {
             num_chunks,
             num_dirty_chunks,
             num_dirty_docs,
-            fields_stream: fields_stream.expect(expect),
+            fields_stream: Mutex::new(fields_stream.expect(expect)),
             merging: false,
             state: Mutex::new(BlockState::new()),
             prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
@@ -2591,7 +2609,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
 
     fn check_integrity(&self) -> Result<()> {
         self.index_reader.check_integrity()?;
-        let mut input = self.fields_stream.clone_input()?;
+        let mut input = self.fields_stream.lock().unwrap().clone_input()?;
         input.seek(0)?;
         checksum_entire_file(input.as_mut())?;
         Ok(())
@@ -2614,7 +2632,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
-            fields_stream: self.fields_stream.clone_input()?,
+            fields_stream: Mutex::new(self.fields_stream.lock().unwrap().clone_input()?),
             merging: false,
             state: Mutex::new(BlockState::new()),
             prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
@@ -2639,7 +2657,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
-            fields_stream: self.fields_stream.clone_input()?,
+            fields_stream: Mutex::new(self.fields_stream.lock().unwrap().clone_input()?),
             merging: true,
             state: Mutex::new(BlockState::new()),
             prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
@@ -2660,7 +2678,12 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         }
         IOUtils::close([
             IOUtils::closeable(|| self.index_reader.close()),
-            IOUtils::closeable(|| self.fields_stream.close()),
+            IOUtils::closeable(|| {
+                self.fields_stream
+                    .get_mut()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .close()
+            }),
         ])?;
         self.closed = true;
         Ok(())
@@ -2688,6 +2711,8 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         let block_start_pointer = self.index_reader.get_block_start_pointer(block_id)?;
         let block_length = self.index_reader.get_block_length(block_id)?;
         self.fields_stream
+            .lock()
+            .unwrap()
             .prefetch(block_start_pointer, block_length)?;
 
         let index = self
@@ -2798,7 +2823,7 @@ impl Lucene90CompressingStoredFieldsReader {
     ///
     /// Propagates the I/O error raised while cloning the input.
     fn fields_stream(&self) -> Result<Box<dyn IndexInput>> {
-        self.fields_stream.clone_input()
+        self.fields_stream.lock().unwrap().clone_input()
     }
 
     /// Returns whether the chunk that holds `doc_id` is the one already
@@ -2841,13 +2866,13 @@ impl Lucene90CompressingStoredFieldsReader {
     /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsReader#serializedDocument`.
     fn serialized_document(&self, doc_id: i32) -> Result<SerializedDocument> {
         let mut state = self.state.lock().unwrap();
+        let mut fields_stream = self.fields_stream.lock().unwrap();
         if !state.contains(doc_id) {
-            let mut input = self.fields_stream.clone_input()?;
             let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
-            input.seek(start_pointer)?;
+            fields_stream.seek(start_pointer)?;
             state.reset(
                 doc_id,
-                input.as_mut(),
+                fields_stream.as_mut(),
                 self.num_docs,
                 self.chunk_size,
                 &mut **self.decompressor.lock().unwrap(),
@@ -2860,12 +2885,9 @@ impl Lucene90CompressingStoredFieldsReader {
         if self.merging {
             state.document(doc_id, None, self.chunk_size, &mut **decompressor, true)
         } else {
-            let mut inp = self.fields_stream.clone_input()?;
-            let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
-            inp.seek(start_pointer)?;
             state.document(
                 doc_id,
-                Some(inp.as_mut()),
+                Some(fields_stream.as_mut()),
                 self.chunk_size,
                 &mut **decompressor,
                 false,
@@ -5678,11 +5700,11 @@ mod tests {
         let source = write_merge_source(&dir, "_p", 0, 17 * per_block + 1);
         let mut reader = concrete_merge_source(&dir, &source);
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let inner = reader.fields_stream.clone_input().unwrap();
-        reader.fields_stream = Box::new(PrefetchRecordingInput {
+        let inner = reader.fields_stream.lock().unwrap().clone_input().unwrap();
+        reader.fields_stream = Mutex::new(Box::new(PrefetchRecordingInput {
             inner,
             requests: Arc::clone(&requests),
-        });
+        }));
 
         let index = reader.index_reader();
         let block = |b: i64| {

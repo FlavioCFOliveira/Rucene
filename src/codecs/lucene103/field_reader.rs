@@ -243,7 +243,7 @@ impl Terms for FieldReader {
         use crate::util::automaton::AutomatonType;
         if compiled.automaton_type != AutomatonType::Normal {
             return Err(LuceneError::illegal_argument(
-                "please use CompiledAutomaton.get_terms_enum instead".to_string(),
+                "please use CompiledAutomaton.getTermsEnum instead".to_string(),
             ));
         }
         // `compiled.getTransitionAccessor()` and `compiled.getByteRunnable()`

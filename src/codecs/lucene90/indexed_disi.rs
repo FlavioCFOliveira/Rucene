@@ -770,17 +770,21 @@ impl DocIdSetIterator for IndexedDISI {
 
     /// Equivalent to `IndexedDISI.docIDRunEnd()`, `Method.docIDRunEnd` of
     /// the current block's method.
-    fn doc_id_run_end(&self) -> Result<i32> {
+    ///
+    /// Java's `int` additions wrap (`IndexedDISI.java:645-647, 757-762,
+    /// 792-794`): on an exhausted iterator (`doc == NO_MORE_DOCS`) the run end
+    /// is `Integer.MIN_VALUE`.
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         Ok(match self.method {
-            Method::Sparse => self.doc + 1,
+            Method::Sparse => self.doc.wrapping_add(1),
             Method::Dense => {
                 if self.word == u64::MAX {
-                    (self.doc | 0x3F) + 1
+                    (self.doc | 0x3F).wrapping_add(1)
                 } else {
-                    self.doc + 1
+                    self.doc.wrapping_add(1)
                 }
             }
-            Method::All => (self.doc | 0xFFFF) + 1,
+            Method::All => (self.doc | 0xFFFF).wrapping_add(1),
         })
     }
 }

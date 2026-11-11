@@ -2340,7 +2340,15 @@ impl Lucene103BlockTreeTermsReader {
 
         let terms_name = segment_file_name(&segment, &segment_suffix, TERMS_EXTENSION);
         let terms_in = inputs[1].insert(Arc::from(
-            state.directory.open_input(&terms_name, state.context)?,
+            // `state.context.withHints(FileTypeHint.DATA)`
+            // (`Lucene103BlockTreeTermsReader.java:117`).
+            state.directory.open_input(
+                &terms_name,
+                state
+                    .context
+                    .with_hints(&[Arc::new(crate::store::FileTypeHint::Data)])
+                    .as_ref(),
+            )?,
         ));
         let version = codec_util::check_index_header(
             Arc::get_mut(terms_in).expect("INVARIANT: not shared yet"),
@@ -2353,7 +2361,15 @@ impl Lucene103BlockTreeTermsReader {
 
         let index_name = segment_file_name(&segment, &segment_suffix, TERMS_INDEX_EXTENSION);
         let index_in = inputs[0].insert(Arc::from(
-            state.directory.open_input(&index_name, state.context)?,
+            // `state.context.withHints(FileTypeHint.INDEX)`
+            // (`Lucene103BlockTreeTermsReader.java:129`).
+            state.directory.open_input(
+                &index_name,
+                state
+                    .context
+                    .with_hints(&[Arc::new(crate::store::FileTypeHint::Index)])
+                    .as_ref(),
+            )?,
         ));
         codec_util::check_index_header(
             Arc::get_mut(index_in).expect("INVARIANT: not shared yet"),
@@ -3346,6 +3362,17 @@ mod tests {
         }
     }
 
+    /// The `body` field the writer tests index. `Lucene103BlockTreeTermsWriter`
+    /// only ever sees indexed fields: `TermsWriter` asserts
+    /// `fieldInfo.getIndexOptions() != IndexOptions.NONE`
+    /// (`Lucene103BlockTreeTermsWriter.java:1086`), so the field carries
+    /// postings with frequencies, as the counting writer below reports.
+    fn indexed_body_field() -> FieldInfo {
+        let mut field = FieldInfo::new("body", 0);
+        field.index_options = IndexOptions::DOCS_AND_FREQS;
+        field
+    }
+
     /// A postings writer stub that returns a synthetic [`BlockTermState`] for
     /// every term so that the blocktree writer actually writes blocks.
     #[derive(Debug, Default, Clone)]
@@ -3397,7 +3424,7 @@ mod tests {
     fn writer_writes_nonempty_terms_file_for_small_field() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
-        let field = FieldInfo::new("body", 0);
+        let field = indexed_body_field();
         let field_infos = FieldInfos::new(vec![field.clone()]).expect("valid field infos");
         let state = test_write_state(&dir, &segment_info, &field_infos);
 
@@ -3508,8 +3535,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
-        let field_infos =
-            FieldInfos::new(vec![FieldInfo::new("body", 0)]).expect("valid field infos");
+        let field_infos = FieldInfos::new(vec![indexed_body_field()]).expect("valid field infos");
         {
             let state = test_write_state(&dir, &segment_info, &field_infos);
             let fields = TestFields {
@@ -3563,8 +3589,7 @@ mod tests {
 
     /// Writes `a`, `ab`, `b` into field `body` and opens its `FieldReader`.
     fn three_term_field(dir: &Arc<dyn Directory>, segment_info: &SegmentInfo) -> FieldReader {
-        let field_infos =
-            FieldInfos::new(vec![FieldInfo::new("body", 0)]).expect("valid field infos");
+        let field_infos = FieldInfos::new(vec![indexed_body_field()]).expect("valid field infos");
         {
             let state = test_write_state(dir, segment_info, &field_infos);
             let fields = TestFields {

@@ -29,15 +29,27 @@
 //!   character differs, and both implementations classify it as alphabetic.
 //! * **`ShapeType::for_name` returns a `Result`.** Java throws the unchecked
 //!   `IllegalArgumentException`; Rust has no unchecked exceptions, so the same
-//!   message travels in [`crate::error::LuceneErrorKind::IllegalArgument`]. Inside
-//!   the parser it is converted to a [`ParseException`] at the current line, so
-//!   a malformed WKT string is still one error channel for the caller.
+//!   message travels in [`crate::error::LuceneErrorKind::IllegalArgument`] and
+//!   leaves `parse` as it is, as do the `IllegalArgumentException`s of the
+//!   `Line`, `Polygon` and `Rectangle` constructors. A `java.text.ParseException`
+//!   is the unchecked error of class
+//!   [`PARSE_EXCEPTION`](crate::util::extra::PARSE_EXCEPTION).
 //! * **There is no `IOException`.** Java reads through a `StringReader`, whose
 //!   `read` is declared to throw; reading a `Vec<char>` cannot fail.
 
 use crate::error::LuceneError;
 use crate::geo::geometry::{Line, Polygon, Rectangle};
-use crate::geo::simple_geojson_polygon_parser::ParseException;
+
+/// `new ParseException(message, errorOffset)`: the
+/// [`PARSE_EXCEPTION`](crate::util::extra::PARSE_EXCEPTION) the parser throws.
+/// The offset Java keeps is the line number, which the message names too.
+fn parse_exception(message: impl Into<String>, _error_offset: usize) -> LuceneError {
+    LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+        class: crate::util::extra::PARSE_EXCEPTION,
+        message: Some(message.into()),
+        cause: None,
+    })
+}
 
 /// The literal `EMPTY` keyword.
 pub const EMPTY: &str = "EMPTY";
@@ -210,7 +222,7 @@ impl SimpleWKTShapeParser {
     ///
     /// Returns a [`ParseException`] naming the offending token and the line it
     /// was found on.
-    pub fn parse(wkt: &str) -> Result<Option<WktGeometry>, ParseException> {
+    pub fn parse(wkt: &str) -> Result<Option<WktGeometry>, LuceneError> {
         Self::parse_expected_type(wkt, None)
     }
 
@@ -225,7 +237,7 @@ impl SimpleWKTShapeParser {
     pub fn parse_expected_type(
         wkt: &str,
         shape_type: Option<ShapeType>,
-    ) -> Result<Option<WktGeometry>, ParseException> {
+    ) -> Result<Option<WktGeometry>, LuceneError> {
         // set up the tokenizer; configured to read words w/o numbers
         let mut tokenizer = StreamTokenizer::new(wkt);
         let geometry = parse_geometry(&mut tokenizer, shape_type)?;
@@ -238,13 +250,12 @@ impl SimpleWKTShapeParser {
 fn parse_geometry(
     stream: &mut StreamTokenizer,
     shape_type: Option<ShapeType>,
-) -> Result<Option<WktGeometry>, ParseException> {
+) -> Result<Option<WktGeometry>, LuceneError> {
     let word = next_word(stream)?;
-    let type_ = ShapeType::for_name(&word)
-        .map_err(|e| ParseException::new(e.to_string(), stream.lineno()))?;
+    let type_ = ShapeType::for_name(&word)?;
     if let Some(expected) = shape_type {
         if expected != ShapeType::GeometryCollection && type_.wkt_name() != expected.wkt_name() {
-            return Err(ParseException::new(
+            return Err(parse_exception(
                 format!("Expected geometry type: [{expected}], but found: [{type_}]"),
                 stream.lineno(),
             ));
@@ -266,7 +277,7 @@ fn parse_geometry(
 }
 
 /// Parses a point as a `{lon, lat}` pair.
-fn parse_point(stream: &mut StreamTokenizer) -> Result<Option<[f64; 2]>, ParseException> {
+fn parse_point(stream: &mut StreamTokenizer) -> Result<Option<[f64; 2]>, LuceneError> {
     if next_empty_or_open(stream)? == EMPTY {
         return Ok(None);
     }
@@ -283,7 +294,7 @@ fn parse_coordinates(
     stream: &mut StreamTokenizer,
     lats: &mut Vec<f64>,
     lons: &mut Vec<f64>,
-) -> Result<(), ParseException> {
+) -> Result<(), LuceneError> {
     let mut is_open_paren = false;
     if is_number_next(stream) || {
         is_open_paren = next_word(stream)? == LPAREN;
@@ -301,7 +312,7 @@ fn parse_coordinates(
             parse_coordinate(stream, lats, lons)?;
         }
         if is_open_paren && next_closer(stream)? != RPAREN {
-            return Err(ParseException::new(
+            return Err(parse_exception(
                 format!("expected: [{RPAREN}] but found: [{}]", token_string(stream)),
                 stream.lineno(),
             ));
@@ -309,7 +320,7 @@ fn parse_coordinates(
     }
 
     if is_open_paren && next_closer(stream)? != RPAREN {
-        return Err(ParseException::new(
+        return Err(parse_exception(
             format!("expected: [{RPAREN}] but found: [{}]", token_string(stream)),
             stream.lineno(),
         ));
@@ -322,7 +333,7 @@ fn parse_coordinate(
     stream: &mut StreamTokenizer,
     lats: &mut Vec<f64>,
     lons: &mut Vec<f64>,
-) -> Result<(), ParseException> {
+) -> Result<(), LuceneError> {
     lons.push(next_number(stream)?);
     lats.push(next_number(stream)?);
     if is_number_next(stream) {
@@ -332,9 +343,7 @@ fn parse_coordinate(
 }
 
 /// Parses a `MULTIPOINT`.
-fn parse_multi_point(
-    stream: &mut StreamTokenizer,
-) -> Result<Option<Vec<[f64; 2]>>, ParseException> {
+fn parse_multi_point(stream: &mut StreamTokenizer) -> Result<Option<Vec<[f64; 2]>>, LuceneError> {
     let token = next_empty_or_open(stream)?;
     if token == EMPTY {
         return Ok(None);
@@ -351,7 +360,7 @@ fn parse_multi_point(
 }
 
 /// Parses a `LINESTRING`.
-fn parse_line(stream: &mut StreamTokenizer) -> Result<Option<Line>, ParseException> {
+fn parse_line(stream: &mut StreamTokenizer) -> Result<Option<Line>, LuceneError> {
     let token = next_empty_or_open(stream)?;
     if token == EMPTY {
         return Ok(None);
@@ -359,15 +368,14 @@ fn parse_line(stream: &mut StreamTokenizer) -> Result<Option<Line>, ParseExcepti
     let mut lats = Vec::new();
     let mut lons = Vec::new();
     parse_coordinates(stream, &mut lats, &mut lons)?;
-    let line =
-        Line::new(lats, lons).map_err(|e| ParseException::new(e.to_string(), stream.lineno()))?;
+    let line = Line::new(lats, lons)?;
     Ok(Some(line))
 }
 
 /// Parses a `MULTILINESTRING`.
 fn parse_multi_line(
     stream: &mut StreamTokenizer,
-) -> Result<Option<Vec<Option<Line>>>, ParseException> {
+) -> Result<Option<Vec<Option<Line>>>, LuceneError> {
     let token = next_empty_or_open(stream)?;
     if token == EMPTY {
         return Ok(None);
@@ -381,16 +389,15 @@ fn parse_multi_line(
 }
 
 /// Parses the hole of a polygon.
-fn parse_polygon_hole(stream: &mut StreamTokenizer) -> Result<Polygon, ParseException> {
+fn parse_polygon_hole(stream: &mut StreamTokenizer) -> Result<Polygon, LuceneError> {
     let mut lats = Vec::new();
     let mut lons = Vec::new();
     parse_coordinates(stream, &mut lats, &mut lons)?;
     Polygon::new(lats, lons, Vec::new())
-        .map_err(|e| ParseException::new(e.to_string(), stream.lineno()))
 }
 
 /// Parses a `POLYGON`.
-fn parse_polygon(stream: &mut StreamTokenizer) -> Result<Option<Polygon>, ParseException> {
+fn parse_polygon(stream: &mut StreamTokenizer) -> Result<Option<Polygon>, LuceneError> {
     if next_empty_or_open(stream)? == EMPTY {
         return Ok(None);
     }
@@ -403,15 +410,14 @@ fn parse_polygon(stream: &mut StreamTokenizer) -> Result<Option<Polygon>, ParseE
         holes.push(parse_polygon_hole(stream)?);
     }
 
-    let polygon = Polygon::new(lats, lons, holes)
-        .map_err(|e| ParseException::new(e.to_string(), stream.lineno()))?;
+    let polygon = Polygon::new(lats, lons, holes)?;
     Ok(Some(polygon))
 }
 
 /// Parses a `MULTIPOLYGON`.
 fn parse_multi_polygon(
     stream: &mut StreamTokenizer,
-) -> Result<Option<Vec<Option<Polygon>>>, ParseException> {
+) -> Result<Option<Vec<Option<Polygon>>>, LuceneError> {
     let token = next_empty_or_open(stream)?;
     if token == EMPTY {
         return Ok(None);
@@ -425,7 +431,7 @@ fn parse_multi_polygon(
 }
 
 /// Parses an `ENVELOPE`.
-fn parse_bbox(stream: &mut StreamTokenizer) -> Result<Option<Rectangle>, ParseException> {
+fn parse_bbox(stream: &mut StreamTokenizer) -> Result<Option<Rectangle>, LuceneError> {
     if next_empty_or_open(stream)? == EMPTY {
         return Ok(None);
     }
@@ -437,15 +443,14 @@ fn parse_bbox(stream: &mut StreamTokenizer) -> Result<Option<Rectangle>, ParseEx
     next_comma(stream)?;
     let min_lat = next_number(stream)?;
     next_closer(stream)?;
-    let rectangle = Rectangle::new(min_lat, max_lat, min_lon, max_lon)
-        .map_err(|e| ParseException::new(e.to_string(), stream.lineno()))?;
+    let rectangle = Rectangle::new(min_lat, max_lat, min_lon, max_lon)?;
     Ok(Some(rectangle))
 }
 
 /// Parses a `GEOMETRYCOLLECTION`.
 fn parse_geometry_collection(
     stream: &mut StreamTokenizer,
-) -> Result<Option<Vec<Option<WktGeometry>>>, ParseException> {
+) -> Result<Option<Vec<Option<WktGeometry>>>, LuceneError> {
     if next_empty_or_open(stream)? == EMPTY {
         return Ok(None);
     }
@@ -458,7 +463,7 @@ fn parse_geometry_collection(
 }
 
 /// Reads the next word in the stream.
-fn next_word(stream: &mut StreamTokenizer) -> Result<String, ParseException> {
+fn next_word(stream: &mut StreamTokenizer) -> Result<String, LuceneError> {
     match stream.next_token() {
         Token::Word(word) => {
             if word.eq_ignore_ascii_case(EMPTY) {
@@ -470,7 +475,7 @@ fn next_word(stream: &mut StreamTokenizer) -> Result<String, ParseException> {
         Token::Ordinary('(') => Ok(LPAREN.to_string()),
         Token::Ordinary(')') => Ok(RPAREN.to_string()),
         Token::Ordinary(',') => Ok(COMMA.to_string()),
-        _ => Err(ParseException::new(
+        _ => Err(parse_exception(
             format!("expected word but found: {}", token_string(stream)),
             stream.lineno(),
         )),
@@ -478,20 +483,20 @@ fn next_word(stream: &mut StreamTokenizer) -> Result<String, ParseException> {
 }
 
 /// Reads the next number in the stream.
-fn next_number(stream: &mut StreamTokenizer) -> Result<f64, ParseException> {
+fn next_number(stream: &mut StreamTokenizer) -> Result<f64, LuceneError> {
     if let Token::Word(word) = stream.next_token() {
         if word.eq_ignore_ascii_case(NAN) {
             return Ok(f64::NAN);
         }
         return match parse_java_double(&word) {
             Some(value) => Ok(value),
-            None => Err(ParseException::new(
+            None => Err(parse_exception(
                 format!("invalid number found: {word}"),
                 stream.lineno(),
             )),
         };
     }
-    Err(ParseException::new(
+    Err(parse_exception(
         format!("expected number but found: {}", token_string(stream)),
         stream.lineno(),
     ))
@@ -525,12 +530,12 @@ fn is_number_next(stream: &mut StreamTokenizer) -> bool {
 }
 
 /// Checks that the next token is `EMPTY` or an opening parenthesis.
-fn next_empty_or_open(stream: &mut StreamTokenizer) -> Result<String, ParseException> {
+fn next_empty_or_open(stream: &mut StreamTokenizer) -> Result<String, LuceneError> {
     let next = next_word(stream)?;
     if next == EMPTY || next == LPAREN {
         return Ok(next);
     }
-    Err(ParseException::new(
+    Err(parse_exception(
         format!(
             "expected {EMPTY} or {LPAREN} but found: {}",
             token_string(stream)
@@ -540,45 +545,45 @@ fn next_empty_or_open(stream: &mut StreamTokenizer) -> Result<String, ParseExcep
 }
 
 /// Checks that the next token is a closing parenthesis.
-fn next_closer(stream: &mut StreamTokenizer) -> Result<String, ParseException> {
+fn next_closer(stream: &mut StreamTokenizer) -> Result<String, LuceneError> {
     if next_word(stream)? == RPAREN {
         return Ok(RPAREN.to_string());
     }
-    Err(ParseException::new(
+    Err(parse_exception(
         format!("expected {RPAREN} but found: {}", token_string(stream)),
         stream.lineno(),
     ))
 }
 
 /// Expects a comma as the next token.
-fn next_comma(stream: &mut StreamTokenizer) -> Result<String, ParseException> {
+fn next_comma(stream: &mut StreamTokenizer) -> Result<String, LuceneError> {
     if next_word(stream)? == COMMA {
         return Ok(COMMA.to_string());
     }
-    Err(ParseException::new(
+    Err(parse_exception(
         format!("expected {COMMA} but found: {}", token_string(stream)),
         stream.lineno(),
     ))
 }
 
 /// Expects an opening parenthesis as the next token.
-fn next_opener(stream: &mut StreamTokenizer) -> Result<String, ParseException> {
+fn next_opener(stream: &mut StreamTokenizer) -> Result<String, LuceneError> {
     if next_word(stream)? == LPAREN {
         return Ok(LPAREN.to_string());
     }
-    Err(ParseException::new(
+    Err(parse_exception(
         format!("expected {LPAREN} but found: {}", token_string(stream)),
         stream.lineno(),
     ))
 }
 
 /// Expects either a closing parenthesis or a comma as the next token.
-fn next_closer_or_comma(stream: &mut StreamTokenizer) -> Result<String, ParseException> {
+fn next_closer_or_comma(stream: &mut StreamTokenizer) -> Result<String, LuceneError> {
     let token = next_word(stream)?;
     if token == COMMA || token == RPAREN {
         return Ok(token);
     }
-    Err(ParseException::new(
+    Err(parse_exception(
         format!(
             "expected {COMMA} or {RPAREN} but found: {}",
             token_string(stream)
@@ -588,9 +593,9 @@ fn next_closer_or_comma(stream: &mut StreamTokenizer) -> Result<String, ParseExc
 }
 
 /// Checks that the stream holds nothing but the geometry just parsed.
-fn check_eof(stream: &mut StreamTokenizer) -> Result<(), ParseException> {
+fn check_eof(stream: &mut StreamTokenizer) -> Result<(), LuceneError> {
     if stream.next_token() != Token::Eof {
-        return Err(ParseException::new(
+        return Err(parse_exception(
             format!(
                 "expected end of WKT string but found additional text: {}",
                 token_string(stream)

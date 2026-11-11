@@ -144,6 +144,7 @@ static CLASS_PARENTS: LazyLock<RwLock<HashMap<String, String>>> = LazyLock::new(
             "java.lang.IndexOutOfBoundsException",
         ),
         ("java.lang.SecurityException", RUNTIME_EXCEPTION),
+        ("java.lang.IllegalCallerException", RUNTIME_EXCEPTION),
         ("java.util.NoSuchElementException", RUNTIME_EXCEPTION),
         (
             "java.util.ConcurrentModificationException",

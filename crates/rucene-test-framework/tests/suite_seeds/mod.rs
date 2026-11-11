@@ -68,6 +68,7 @@ impl RunListener for Listener {
 /// failure; prints `<class> seed=<s>: run=<r> pass=<p> assume=<a>
 /// ignore=<i>` per seed.
 pub fn run_suite(class: fn() -> Arc<Class>) {
+    rucene_test_framework::util::lucene_test_case::enable_error_backtraces();
     let seeds: Vec<Option<&str>> = match std::env::var("RUCENE_SUITE_SEEDS") {
         Ok(n) => SEEDS
             .iter()

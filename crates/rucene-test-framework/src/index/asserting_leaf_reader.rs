@@ -773,7 +773,7 @@ impl<P: ?Sized + PostingsEnum + 'static> DocIdSetIterator for AssertingPostingsE
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         assert_thread("Docs enums", &self.creation_thread)?;
         java_assert!(
             self.state != DocsEnumState::Start,
@@ -1177,7 +1177,7 @@ impl DocIdSetIterator for AssertingNumericDocValues {
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         dv_doc_id_run_end!(self, "Numeric doc values")
     }
 }
@@ -1315,7 +1315,7 @@ impl DocIdSetIterator for AssertingBinaryDocValues {
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         dv_doc_id_run_end!(self, "Binary doc values")
     }
 }
@@ -1411,7 +1411,7 @@ impl DocIdSetIterator for AssertingSortedDocValues {
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         dv_doc_id_run_end!(self, "Sorted doc values")
     }
 }
@@ -1551,7 +1551,7 @@ impl DocIdSetIterator for AssertingSortedNumericDocValues {
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         dv_doc_id_run_end!(self, "Sorted numeric doc values")
     }
 }
@@ -1698,7 +1698,7 @@ impl DocIdSetIterator for AssertingSortedSetDocValues {
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         dv_doc_id_run_end!(self, "Sorted set doc values")
     }
 }

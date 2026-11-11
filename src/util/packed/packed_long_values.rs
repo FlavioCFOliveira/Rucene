@@ -42,7 +42,13 @@ const PACKED_LONG_VALUES_BUILDER_BASE_RAM_BYTES_USED: i64 = 56;
 /// The heap cost of a `DeltaPackedLongValues.Builder` instance itself.
 const DELTA_BUILDER_BASE_RAM_BYTES_USED: i64 = 64;
 /// The heap cost of a `MonotonicLongValues.Builder` instance itself.
-const MONOTONIC_BUILDER_BASE_RAM_BYTES_USED: i64 = 72;
+///
+/// `RamUsageEstimator.shallowSizeOfInstance(MonotonicLongValues.Builder.class)`
+/// (`RamUsageEstimator.java:535-561`): the header, then every declared field
+/// up the hierarchy summed without per-field alignment — `averages` and
+/// `mins` (two references) and `PackedLongValues.Builder`'s 44 bytes — which
+/// is 64 once aligned.
+const MONOTONIC_BUILDER_BASE_RAM_BYTES_USED: i64 = 64;
 
 /// The number of pages a builder starts with.
 ///

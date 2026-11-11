@@ -1320,7 +1320,10 @@ mod tests {
         );
     }
 
+    /// `TermVectorsConsumer.finishDocument` asserts `lastDocID == docState.docID`
+    /// (`TermVectorsConsumer.java:137`): a debug build fails it.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "lastDocID=5 docID=2"))]
     fn a_document_written_out_of_order_is_rejected() {
         let (mut consumer, _tracking) = consumer();
         let term_pool = ByteBlockPool::new(Arc::new(AtomicI64::new(0)));

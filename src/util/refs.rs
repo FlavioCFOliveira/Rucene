@@ -97,8 +97,12 @@ impl LongsRef {
     /// Returns a `LongsRef` whose content is a copy of `other`'s active slice,
     /// with offset zero. Equivalent to `LongsRef.deepCopyOf`.
     pub fn deep_copy_of(other: &LongsRef) -> Self {
+        // `ArrayUtil.copyOfSubArray(other.longs, other.offset, other.offset +
+        // other.length)` (`LongsRef.java:136-140`).
+        let longs =
+            crate::util::java_copy_of_sub_array(&other.longs, other.offset, other.length, "long");
         Self {
-            longs: other.slice().to_vec(),
+            longs,
             offset: 0,
             length: other.length,
         }

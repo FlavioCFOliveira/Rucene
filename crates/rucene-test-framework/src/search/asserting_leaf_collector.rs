@@ -372,7 +372,7 @@ impl DocIdSetIterator for AssertingCompetitiveIterator {
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         java_assert!(self.doc_id() != -1);
         java_assert!(self.doc_id() != NO_MORE_DOCS);
         let next_non_matching_doc_id = self.inner.doc_id_run_end()?;

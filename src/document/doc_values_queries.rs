@@ -1355,11 +1355,22 @@ trait SkipperRangeSource: Debug {
 /// a boundary interval is not exact for the range, the supplier scans forward
 /// from it to the first document that really satisfies the comparison, so the
 /// interval it hands out is tight.
+///
+/// Java computes the skipper bounds lazily, on the first `cost()`, `get` or
+/// `bulkScorer()` (`SortedSkipperScorerSupplier.java`); `cost` takes `&self`
+/// here, so the skipper, the source and the bounds sit behind a [`Mutex`] that
+/// every one of them locks.
 struct SortedSkipperScorerSupplier {
-    skipper: Box<dyn DocValuesSkipper>,
-    reverse: bool,
+    state: std::sync::Mutex<SkipperRangeState>,
     score_mode: ScoreMode,
     score: f32,
+}
+
+/// The mutable part of a [`SortedSkipperScorerSupplier`]: the skipper, the
+/// query's value source and the bounds `computeSkipperDocIds` derives.
+struct SkipperRangeState {
+    skipper: Box<dyn DocValuesSkipper>,
+    reverse: bool,
     source: Box<dyn SkipperRangeSource>,
     skipper_min_doc_id: i32,
     skipper_max_doc_id: i32,
@@ -1370,7 +1381,7 @@ struct SortedSkipperScorerSupplier {
 impl Debug for SortedSkipperScorerSupplier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SortedSkipperScorerSupplier")
-            .field("reverse", &self.reverse)
+            .field("score", &self.score)
             .finish_non_exhaustive()
     }
 }
@@ -1390,10 +1401,34 @@ impl SortedSkipperScorerSupplier {
         source: Box<dyn SkipperRangeSource>,
     ) -> Self {
         Self {
-            skipper,
-            reverse,
+            state: std::sync::Mutex::new(SkipperRangeState::new(skipper, reverse, source)),
             score_mode,
             score,
+        }
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, SkipperRangeState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Equivalent to the private `SortedSkipperScorerSupplier.range()`.
+    fn range(&self) -> Result<DocIdRange> {
+        self.lock_state().range()
+    }
+}
+
+impl SkipperRangeState {
+    /// The state of a fresh supplier: no bounds computed yet.
+    fn new(
+        skipper: Box<dyn DocValuesSkipper>,
+        reverse: bool,
+        source: Box<dyn SkipperRangeSource>,
+    ) -> Self {
+        Self {
+            skipper,
+            reverse,
             source,
             skipper_min_doc_id: -1,
             skipper_max_doc_id: -1,
@@ -1561,7 +1596,7 @@ impl ScorerSupplier for SortedSkipperScorerSupplier {
     fn bulk_scorer(&mut self) -> Result<Box<dyn BulkScorer>> {
         let range = self.range()?;
         if range.min_doc_id == range.max_doc_id {
-            return Ok(Self::empty_bulk_scorer());
+            return Ok(SkipperRangeState::empty_bulk_scorer());
         }
         let iterator = Box::new(crate::search::doc_id_set_iterator::range(
             range.min_doc_id,
@@ -1575,18 +1610,23 @@ impl ScorerSupplier for SortedSkipperScorerSupplier {
         )?))
     }
 
+    /// Equivalent to `SortedSkipperScorerSupplier.cost()`: the skipper bounds
+    /// are computed on first use, and an `IOException` doing so is thrown as
+    /// `UncheckedIOException`.
     fn cost(&self) -> i64 {
-        // Java computes the skipper bounds lazily here; this port cannot,
-        // because `cost` takes `&self` while `computeSkipperDocIds` mutates.
-        // The supplier's users — `get` and `bulk_scorer` — compute them first,
-        // and until they have, the whole field is the honest upper bound.
-        if self.skipper_min_doc_id == -1 {
-            return i64::from(self.skipper.global_doc_count());
+        let mut state = self.lock_state();
+        if state.skipper_min_doc_id == -1 {
+            if let Err(e) = state.compute_skipper_doc_ids() {
+                crate::store::java_nio_file::throw_unchecked(
+                    "java.io.UncheckedIOException",
+                    Some(&e.to_string()),
+                );
+            }
         }
-        if self.skipper_max_doc_id_exact {
-            return i64::from(self.skipper_max_doc_id - self.skipper_min_doc_id);
+        if state.skipper_max_doc_id_exact {
+            return i64::from(state.skipper_max_doc_id - state.skipper_min_doc_id);
         }
-        i64::from(self.skipper_max_doc_id - self.skipper_min_doc_id + self.skipper.doc_count(0))
+        i64::from(state.skipper_max_doc_id - state.skipper_min_doc_id + state.skipper.doc_count(0))
     }
 }
 

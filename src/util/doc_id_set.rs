@@ -433,7 +433,7 @@ impl DocIdSetIterator for NotDocIdSetIterator {
         }
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc != NO_MORE_DOCS);
         debug_assert!(self.next_skipped_doc > self.doc);
         Ok(self.next_skipped_doc.min(self.max_doc))

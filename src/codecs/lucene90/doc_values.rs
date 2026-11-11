@@ -28,8 +28,7 @@ use crate::codecs::codec_util::{
 };
 use crate::codecs::doc_values::{
     BinaryDocValues, DocValuesConsumer, DocValuesFormat, DocValuesProducer, DocValuesSkipper,
-    EmptyBinaryDocValues, EmptyNumericDocValues, EmptySortedDocValues, EmptySortedNumericDocValues,
-    EmptySortedSetDocValues, NumericDocValues, SortedDocValues, SortedNumericDocValues,
+    EmptyBinaryDocValues, NumericDocValues, SortedDocValues, SortedNumericDocValues,
     SortedSetDocValues,
 };
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
@@ -1977,7 +1976,14 @@ impl Lucene90DocValuesProducer {
             &state.segment_suffix,
             DATA_EXTENSION,
         );
-        let mut data = state.directory.open_input(&data_name, state.context)?;
+        let mut data = state.directory.open_input(
+            &data_name,
+            /* withHints, `Lucene90DocValuesProducer.java:126` */
+            state
+                .context
+                .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                .as_ref(),
+        )?;
         if let Err(error) = check_index_header(
             &mut *data,
             DATA_CODEC,
@@ -2004,9 +2010,14 @@ impl Lucene90DocValuesProducer {
                     SKIP_INDEX_EXTENSION,
                 );
                 let skip_in = skip_in.insert(
-                    state
-                        .directory
-                        .open_input(&skip_index_name, state.context)?,
+                    state.directory.open_input(
+                        &skip_index_name,
+                        /* withHints, `Lucene90DocValuesProducer.java:162` */
+                        state
+                            .context
+                            .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Index)])
+                            .as_ref(),
+                    )?,
                 );
                 let skip_version = check_index_header(
                     &mut **skip_in,
@@ -4502,6 +4513,14 @@ impl SortedSetDocValues for LazySortedSetDocValues {
 // The producer's public surface
 // -----------------------------------------------------------------------------
 
+/// The JDK's `NullPointerException` for reading `field` off the `null` entry
+/// a type-specific map answers for a field it does not hold.
+fn null_entry(field: &str) -> LuceneError {
+    LuceneError::null_pointer_with_message(format!(
+        "Cannot read field \"{field}\" because \"entry\" is null"
+    ))
+}
+
 impl DocValuesProducer for Lucene90DocValuesProducer {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
@@ -4512,7 +4531,10 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                     entry,
                     self.merging,
                 )?)),
-                _ => Ok(Box::new(EmptyNumericDocValues::new())),
+                // `numerics.get(field.number)` is `null` for a field without
+                // a numeric entry, and `getNumeric(entry)` dereferences it
+                // (`Lucene90DocValuesProducer.java:671-674, 783-784`).
+                _ => Err(null_entry("docsWithFieldOffset")),
             }
         };
         Ok(Some(values?))
@@ -4535,7 +4557,9 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                     self.max_doc,
                     entry,
                 )?)),
-                _ => Ok(Box::new(EmptyBinaryDocValues::new())),
+                // `binaries.get(field.number)` is `null`
+                // (`Lucene90DocValuesProducer.java:1210-1213`).
+                _ => Err(null_entry("docsWithFieldOffset")),
             }
         };
         Ok(Some(values?))
@@ -4550,7 +4574,9 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                     entry,
                     self.merging,
                 )?)),
-                _ => Ok(Box::new(EmptySortedDocValues::new())),
+                // `sorted.get(field.number)` is `null`, and `getSorted(entry)`
+                // reads `entry.ordsEntry` (`Lucene90DocValuesProducer.java:1311-1318`).
+                _ => Err(null_entry("ordsEntry")),
             }
         };
         Ok(Some(values?))
@@ -4579,7 +4605,10 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                         self.merging,
                     )?))
                 }
-                _ => Ok(Box::new(EmptySortedNumericDocValues::new())),
+                // `sortedNumerics.get(field.number)` is `null`, and
+                // `getSortedNumeric(entry, ...)` reads `entry.numValues`
+                // (`Lucene90DocValuesProducer.java:1821-1828`).
+                _ => Err(null_entry("numValues")),
             }
         };
         Ok(Some(values?))
@@ -4594,7 +4623,9 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                     entry,
                     self.merging,
                 )?)),
-                _ => Ok(Box::new(EmptySortedSetDocValues::new())),
+                // `sortedSets.get(field.number)` is `null`
+                // (`Lucene90DocValuesProducer.java:2056-2058`).
+                _ => Err(null_entry("singleValueEntry")),
             }
         };
         Ok(Some(values?))
@@ -4729,6 +4760,10 @@ mod tests {
     }
 
     use super::*;
+    use crate::codecs::doc_values::{
+        EmptyNumericDocValues, EmptySortedDocValues, EmptySortedNumericDocValues,
+        EmptySortedSetDocValues,
+    };
 
     /// An empty field's iterator stands on the target after `advanceExact`,
     /// as `DocValues.emptyNumeric().advanceExact` sets `doc = target`

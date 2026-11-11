@@ -138,6 +138,24 @@ pub struct RegExp {
 
 // -----  Syntax flags ( <= 0xff )  ------
 
+/// Frees the expression tree iteratively.
+///
+/// Java's garbage collector frees a deep tree (such as the one
+/// `testRegExpNoStackOverflow` parses) without recursion; Rust's generated drop
+/// glue would recurse once per level and overflow the thread's stack. This
+/// changes no observable behaviour.
+impl Drop for RegExp {
+    fn drop(&mut self) {
+        let mut stack: Vec<Box<RegExp>> = Vec::new();
+        stack.extend(self.exp1.take());
+        stack.extend(self.exp2.take());
+        while let Some(mut e) = stack.pop() {
+            stack.extend(e.exp1.take());
+            stack.extend(e.exp2.take());
+        }
+    }
+}
+
 impl RegExp {
     /// Syntax flag, enables intersection (`&`).
     pub const INTERSECTION: i32 = 0x0001;
@@ -246,10 +264,9 @@ impl RegExp {
             }
             e
         };
-        Ok(Self {
-            original_string: Some(s.to_string()),
-            ..e
-        })
+        let mut e = e;
+        e.original_string = Some(s.to_string());
+        Ok(e)
     }
 
     #[allow(clippy::too_many_arguments)]

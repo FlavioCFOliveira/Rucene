@@ -349,6 +349,27 @@ pub struct LuceneError {
     pub kind: LuceneErrorKind,
     /// `getSuppressed()`, in the order the exceptions were added.
     suppressed: Vec<Arc<LuceneError>>,
+    /// The stack at creation, Java's `fillInStackTrace()`: captured with
+    /// [`Backtrace::capture`](std::backtrace::Backtrace::capture), which costs
+    /// nothing unless `RUST_LIB_BACKTRACE` (or `RUST_BACKTRACE`) enables it.
+    /// `None` when capture is disabled, so that no allocation is made then.
+    backtrace: Option<Arc<std::backtrace::Backtrace>>,
+}
+
+/// One frame of [`LuceneError::get_stack_trace`]: Java's
+/// `StackTraceElement`, with the Rust path in place of the class.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackFrame {
+    /// The function's path without its last segment, as the backtrace
+    /// resolves it (`rucene::search::scoring_rewrite::...`).
+    pub path: String,
+    /// The function's own name, the last path segment
+    /// (`check_max_clause_count`).
+    pub function: String,
+    /// The source file, when the backtrace resolved it.
+    pub file: Option<String>,
+    /// The line number, or `-1` when unknown, as `getLineNumber()` answers.
+    pub line: i32,
 }
 
 impl From<LuceneErrorKind> for LuceneError {
@@ -356,6 +377,11 @@ impl From<LuceneErrorKind> for LuceneError {
         Self {
             kind,
             suppressed: Vec::new(),
+            backtrace: {
+                let backtrace = std::backtrace::Backtrace::capture();
+                (backtrace.status() == std::backtrace::BacktraceStatus::Captured)
+                    .then(|| Arc::new(backtrace))
+            },
         }
     }
 }
@@ -401,6 +427,32 @@ impl LuceneError {
     /// The Java exception class this error stands for, with its fields.
     pub fn kind(&self) -> &LuceneErrorKind {
         &self.kind
+    }
+
+    /// `getStackTrace()`: the frames of the stack captured when the error was
+    /// created, innermost first, empty when capture is disabled.
+    ///
+    /// Java's `fillInStackTrace` leaves out the frames of the throwable's own
+    /// construction (`Throwable.<init>`, the subclass constructors); the
+    /// counterpart here drops the leading frames of the backtrace machinery,
+    /// of this module, and of the constructors and conversions that built the
+    /// error (functions named `new`, `from` or `into`, and `with_*` builders).
+    pub fn get_stack_trace(&self) -> Vec<StackFrame> {
+        let Some(backtrace) = self.backtrace.as_ref() else {
+            return Vec::new();
+        };
+        let frames = parse_backtrace(&format!("{backtrace:?}"));
+        let construction = |frame: &StackFrame| {
+            let path = frame.path.as_str();
+            path.starts_with("std::")
+                || path.starts_with("core::")
+                || path.starts_with("alloc::")
+                || path.starts_with("rucene::error")
+                || path.starts_with("<rucene::error")
+                || matches!(frame.function.as_str(), "new" | "from" | "into" | "capture")
+                || frame.function.starts_with("with_")
+        };
+        frames.into_iter().skip_while(construction).collect()
     }
 
     /// The kind, by value; the suppressed exceptions are dropped.
@@ -460,6 +512,7 @@ impl LuceneError {
         Self {
             kind: self.kind.duplicate(),
             suppressed: self.suppressed.clone(),
+            backtrace: self.backtrace.clone(),
         }
     }
 
@@ -1038,9 +1091,118 @@ pub fn to_int_exact(value: i64) -> Result<i32> {
     i32::try_from(value).map_err(|_| LuceneError::integer_overflow())
 }
 
+/// Parses the `Debug` form of a captured [`std::backtrace::Backtrace`], a list
+/// of `{ fn: "...", file: "...", line: N }` entries; the frames API is not
+/// stable, and the `Debug` form is its documented textual rendering.
+fn parse_backtrace(text: &str) -> Vec<StackFrame> {
+    fn quoted_after<'a>(entry: &'a str, key: &str) -> Option<&'a str> {
+        let start = entry.find(key)? + key.len();
+        let rest = &entry[start..];
+        let rest = rest.strip_prefix('"')?;
+        let end = rest.find('"')?;
+        Some(&rest[..end])
+    }
+    let mut frames = Vec::new();
+    for entry in text.split("{ fn: ").skip(1) {
+        let entry_text = format!("fn: {entry}");
+        let Some(function_path) = quoted_after(&entry_text, "fn: ") else {
+            continue;
+        };
+        let file = quoted_after(&entry_text, "file: ").map(str::to_string);
+        let line = entry_text
+            .find("line: ")
+            .map(|i| &entry_text[i + 6..])
+            .and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse::<i32>().ok()
+            })
+            .unwrap_or(-1);
+        let (path, function) = split_function_path(function_path);
+        frames.push(StackFrame {
+            path,
+            function,
+            file,
+            line,
+        });
+    }
+    frames
+}
+
+/// Splits a demangled function path into its prefix and its last segment,
+/// ignoring the `::` inside `<...>` and the trailing `{{closure}}` segments.
+fn split_function_path(function_path: &str) -> (String, String) {
+    let mut segments: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    let mut chars = function_path.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '<' => {
+                depth += 1;
+                current.push(c);
+            }
+            '>' => {
+                depth -= 1;
+                current.push(c);
+            }
+            ':' if depth == 0 && chars.peek() == Some(&':') => {
+                chars.next();
+                segments.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    segments.push(current);
+    while segments.len() > 1
+        && segments
+            .last()
+            .is_some_and(|s| s.starts_with("{{") || s.starts_with('{'))
+    {
+        segments.pop();
+    }
+    let function = segments.pop().unwrap_or_default();
+    (segments.join("::"), function)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LuceneError, LuceneErrorKind};
+
+    /// The `Debug` rendering of a captured backtrace is parsed into frames,
+    /// the last path segment outside `<...>` being the function and the
+    /// trailing closure segments being dropped.
+    #[test]
+    fn a_backtrace_debug_rendering_is_parsed_into_frames() {
+        let text = r#"Backtrace [{ fn: "std::backtrace::Backtrace::capture", file: "/rustc/x/library/std/src/backtrace.rs", line: 296 }, { fn: "rucene::error::<impl core::convert::From<rucene::error::LuceneErrorKind> for rucene::error::LuceneError>::from", file: "./src/error.rs", line: 380 }, { fn: "<rucene::search::scoring_rewrite::ScoringRewrite as rucene::search::scoring_rewrite::Check>::check_max_clause_count", file: "./src/search/scoring_rewrite.rs", line: 252 }, { fn: "rucene::search::Foo::bar::{{closure}}", file: "./src/search.rs", line: 7 }]"#;
+        let frames = parse_backtrace(text);
+        assert_eq!(frames.len(), 4);
+        assert_eq!(frames[0].function, "capture");
+        assert_eq!(frames[1].function, "from");
+        assert_eq!(frames[2].function, "check_max_clause_count");
+        assert_eq!(frames[2].line, 252);
+        assert_eq!(
+            frames[2].file.as_deref(),
+            Some("./src/search/scoring_rewrite.rs")
+        );
+        assert_eq!(frames[3].function, "bar");
+        assert_eq!(frames[3].path, "rucene::search::Foo");
+    }
+
+    /// Without `RUST_LIB_BACKTRACE`/`RUST_BACKTRACE` the capture is disabled and
+    /// the stack trace is empty; with it, the first frame is the function that
+    /// created the error, past the constructors.
+    #[test]
+    fn the_stack_trace_starts_at_the_creating_function() {
+        fn creating_function() -> LuceneError {
+            LuceneError::illegal_state("boom")
+        }
+        let error = creating_function();
+        let frames = error.get_stack_trace();
+        match error.backtrace {
+            Some(_) => assert_eq!(frames[0].function, "creating_function", "{frames:?}"),
+            None => assert!(frames.is_empty()),
+        }
+    }
+    use super::{parse_backtrace, LuceneError, LuceneErrorKind};
 
     /// `IndexFormatTooOldException.getReason()` returns the free-form reason
     /// when the version could not be read off the file, and `null` when the

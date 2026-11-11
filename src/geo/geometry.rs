@@ -528,7 +528,12 @@ impl Polygon {
     pub fn vertices_to_geojson(lats: &[f64], lons: &[f64]) -> String {
         let mut sb = String::from("[");
         for i in 0..lats.len() {
-            sb.push_str(&format!("[{}, {}]", lons[i], lats[i]));
+            // `StringBuilder.append(double)`: Java's `Double.toString`.
+            sb.push_str(&format!(
+                "[{}, {}]",
+                crate::util::java_fmt::double_to_string(lons[i]),
+                crate::util::java_fmt::double_to_string(lats[i])
+            ));
             if i != lats.len() - 1 {
                 sb.push_str(", ");
             }
@@ -631,7 +636,8 @@ impl Circle {
         GeoUtils::check_longitude(lon)?;
         if radius_meters <= 0.0 || !radius_meters.is_finite() {
             return Err(LuceneError::illegal_argument(format!(
-                "radiusMeters: '{radius_meters}' is invalid"
+                "radiusMeters: '{}' is invalid",
+                crate::util::java_fmt::double_to_string(radius_meters)
             )));
         }
         Ok(Self {
@@ -1091,7 +1097,12 @@ impl XYPolygon {
     pub fn vertices_to_geojson(xs: &[f32], ys: &[f32]) -> String {
         let mut sb = String::from("[");
         for i in 0..xs.len() {
-            sb.push_str(&format!("[{}, {}]", xs[i], ys[i]));
+            // `StringBuilder.append(float)`: Java's `Float.toString`.
+            sb.push_str(&format!(
+                "[{}, {}]",
+                crate::util::java_fmt::float_to_string(xs[i]),
+                crate::util::java_fmt::float_to_string(ys[i])
+            ));
             if i != xs.len() - 1 {
                 sb.push_str(", ");
             }
@@ -1399,12 +1410,14 @@ impl XYRectangle {
         XYEncodingUtils::check_val(y)?;
         if radius < 0.0 {
             return Err(LuceneError::illegal_argument(format!(
-                "radius must be bigger than 0, got {radius}"
+                "radius must be bigger than 0, got {}",
+                crate::util::java_fmt::float_to_string(radius)
             )));
         }
         if !radius.is_finite() {
             return Err(LuceneError::illegal_argument(format!(
-                "radius must be finite, got {radius}"
+                "radius must be finite, got {}",
+                crate::util::java_fmt::float_to_string(radius)
             )));
         }
         // LUCENE-9243: We round up the bounding box to avoid numerical errors.

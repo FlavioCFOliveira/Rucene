@@ -637,7 +637,7 @@ impl TwoPhaseIterator for DocValuesRangeIterator {
     }
 
     fn doc_id_run_end(&mut self) -> Result<i32> {
-        match self.block_iterator.as_ref() {
+        match self.block_iterator.as_mut() {
             None => Ok(self.approximation_ref().doc_id()),
             Some(block_iterator) => {
                 if self.bulk {
@@ -668,7 +668,7 @@ impl TwoPhaseIterator for DocValuesRangeIterator {
             let (block_start, r#match, block_end) = {
                 let block_iterator = self
                     .block_iterator
-                    .as_ref()
+                    .as_mut()
                     .expect("INVARIANT: the block iterator was just observed to be present");
                 let block_start = block_iterator.doc_id();
                 if block_start >= up_to {

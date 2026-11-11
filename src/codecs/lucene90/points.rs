@@ -692,7 +692,16 @@ impl Lucene90PointsReader {
             &state.segment_suffix,
             INDEX_EXTENSION,
         );
-        let index_in = index_in.insert(state.directory.open_input(&index_name, state.context)?);
+        let index_in = index_in.insert(
+            state.directory.open_input(
+                &index_name,
+                /* withHints, `Lucene90PointsReader.java:64` */
+                state
+                    .context
+                    .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Index)])
+                    .as_ref(),
+            )?,
+        );
         check_index_header(
             &mut **index_in,
             INDEX_CODEC_NAME,
@@ -708,7 +717,16 @@ impl Lucene90PointsReader {
             &state.segment_suffix,
             DATA_EXTENSION,
         );
-        let data_in = data_in.insert(state.directory.open_input(&data_name, state.context)?);
+        let data_in = data_in.insert(
+            state.directory.open_input(
+                &data_name,
+                /* withHints, `Lucene90PointsReader.java:78` */
+                state
+                    .context
+                    .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                    .as_ref(),
+            )?,
+        );
         check_index_header(
             &mut **data_in,
             DATA_CODEC_NAME,

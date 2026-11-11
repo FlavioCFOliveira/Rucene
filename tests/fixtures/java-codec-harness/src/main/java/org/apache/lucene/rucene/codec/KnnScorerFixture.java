@@ -320,6 +320,32 @@ public final class KnnScorerFixture {
     return ((ord * 7 + j * 3) % 9) / 2f - 1f;
   }
 
+  /**
+   * Stored vector {@code ord} as the quantizer receives it; mirrored in the Rust
+   * test. For {@code COSINE} it is scaled to unit length, in {@code double} so
+   * that the Rust mirror computes the same bits: Lucene's writer normalises
+   * {@code COSINE} vectors before quantizing them, and
+   * {@code ScalarQuantizer.quantize} asserts {@code VectorUtil.isUnitVector}
+   * for {@code COSINE} ({@code ScalarQuantizer.java:118}).
+   */
+  static float[] storedVector(int ord, VectorSimilarityFunction similarity) {
+    float[] raw = new float[DIMENSION];
+    for (int j = 0; j < DIMENSION; j++) {
+      raw[j] = component(ord, j);
+    }
+    if (similarity == VectorSimilarityFunction.COSINE) {
+      double sumSquares = 0;
+      for (float x : raw) {
+        sumSquares += (double) x * x;
+      }
+      double length = Math.sqrt(sumSquares);
+      for (int j = 0; j < DIMENSION; j++) {
+        raw[j] = (float) (raw[j] / length);
+      }
+    }
+    return raw;
+  }
+
   static final float[] QUERY = {0.75f, -0.5f, 1.25f, 0.25f};
 
   private static void legacy() throws IOException {
@@ -334,10 +360,7 @@ public final class KnnScorerFixture {
         byte[][] vectors = new byte[SIZE][DIMENSION];
         float[] offsets = new float[SIZE];
         for (int ord = 0; ord < SIZE; ord++) {
-          float[] raw = new float[DIMENSION];
-          for (int j = 0; j < DIMENSION; j++) {
-            raw[j] = component(ord, j);
-          }
+          float[] raw = storedVector(ord, similarity);
           offsets[ord] = quantizer.quantize(raw, vectors[ord], similarity);
         }
         score(name, "", bits, similarity, scorer, new MemoryValues(quantizer, vectors, offsets, null));
@@ -379,10 +402,7 @@ public final class KnnScorerFixture {
           byte[][] vectors = new byte[SIZE][DIMENSION];
           float[] offsets = new float[SIZE];
           for (int ord = 0; ord < SIZE; ord++) {
-            float[] raw = new float[DIMENSION];
-            for (int j = 0; j < DIMENSION; j++) {
-              raw[j] = component(ord, j);
-            }
+            float[] raw = storedVector(ord, similarity);
             offsets[ord] = quantizer.quantize(raw, vectors[ord], similarity);
           }
           for (boolean packed : bits == 4 ? new boolean[] {false, true} : new boolean[] {false}) {

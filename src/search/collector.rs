@@ -87,6 +87,12 @@ pub trait Collector {
 }
 
 impl<T: Collector + ?Sized> Collector for Box<T> {
+    /// The box is a Rust handle Java does not have: the boxed collector is the
+    /// object Java's `instanceof` and casts test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        (**self).as_any()
+    }
+
     fn get_leaf_collector<'a>(
         &'a mut self,
         context: &LeafReaderContext,

@@ -44,7 +44,9 @@ use rucene::index::check_index::{CheckIndex, Level};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::documents_writer::MAX_STORED_STRING_LENGTH;
-use rucene::index::documents_writer::{DocumentsWriterPerThread, FlushControlHandle, FlushPolicy};
+use rucene::index::documents_writer::{
+    DocumentsWriterPerThread, DwptGuard, FlushControlHandle, FlushPolicy,
+};
 use rucene::index::filter_reader::FilterCodecReader;
 use rucene::index::index_commit::IndexCommit;
 use rucene::index::index_deletion_policy::NoDeletionPolicy;
@@ -58,7 +60,6 @@ use rucene::index::index_writer::event_queue::{Event, EventQueue};
 use rucene::index::index_writer::DocStats;
 use rucene::index::index_writer::{IndexWriter, IndexWriterOverrides, MAX_TERM_LENGTH};
 use rucene::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
-use rucene::index::merge_policy::LogDocSize;
 use rucene::index::merge_policy::{
     CodecReaderSupplier, MergeContext, MergeSpecification, MergeTrigger, OneMerge,
     OneMergeWrappingMergePolicy, SoftDeletesRetentionMergePolicy,
@@ -3731,7 +3732,7 @@ fn test_close_while_merge_is_running() -> Result<()> {
         Some(Arc::new(MockAnalyzer::new(&*random()))),
     );
     iwc.set_commit_on_close(false);
-    let mp = LogMergePolicy::new(Arc::new(LogDocSize));
+    let mp = LogMergePolicy::by_doc_count();
     mp.set_merge_factor(2)?;
     iwc.set_merge_policy(Some(Arc::new(mp)))?;
     iwc.set_info_stream(Arc::new(RollbackInfoStream {
@@ -4703,7 +4704,10 @@ struct FlushingThreadsFailure {
 
 impl Failure for FlushingThreadsFailure {
     fn eval(&self, _dir: &MockDirectoryWrapper) -> Result<()> {
-        if LuceneTestCase::call_stack_contains_method::<DocumentsWriterPerThread>("flush") {
+        // `callStackContains(DocumentsWriterPerThread.class, "flush")`: the
+        // port's `DocumentsWriterPerThread.flush` is `DwptGuard::flush`, the
+        // checked-out DWPT that owns the per-segment state.
+        if LuceneTestCase::call_stack_contains_method::<DwptGuard>("flush") {
             self.flushing_threads
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -6720,10 +6724,9 @@ fn test_segment_commit_info_id() -> Result<()> {
 /// Port of `TestIndexWriter.testMergeZeroDocsMergeIsClosedOnce`.
 fn test_merge_zero_docs_merge_is_closed_once() -> Result<()> {
     // `new LogDocMergePolicy() { keepFullyDeletedSegment(...) { return true; } }`.
-    let keep_all_segments: Arc<dyn MergePolicy> =
-        Arc::new(KeepFullyDeletedSegmentsMergePolicy::new(Arc::new(
-            LogMergePolicy::new(Arc::new(LogDocSize)),
-        )));
+    let keep_all_segments: Arc<dyn MergePolicy> = Arc::new(
+        KeepFullyDeletedSegmentsMergePolicy::new(Arc::new(LogMergePolicy::by_doc_count())),
+    );
     let mut dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {

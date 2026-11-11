@@ -235,6 +235,13 @@ impl BKDConfig {
                 max_points_in_leaf_node
             )));
         }
+        // `BKDConfig.java:77-83`.
+        let max_array_length = crate::util::ArrayUtil::MAX_ARRAY_LENGTH;
+        if i64::from(max_points_in_leaf_node) > max_array_length as i64 {
+            return Err(LuceneError::illegal_argument(format!(
+                "maxPointsInLeafNode must be <= ArrayUtil.MAX_ARRAY_LENGTH (= {max_array_length}); got {max_points_in_leaf_node}"
+            )));
+        }
         Ok(Self {
             num_dims,
             num_index_dims,
@@ -1590,9 +1597,19 @@ impl DocIdsWriter {
             if doc_id == NO_MORE_DOCS {
                 break;
             }
-            // Java's `docIDs[pos++] = docId`: an index past the array is
-            // its `ArrayIndexOutOfBoundsException`, here the slice bound check.
-            out[pos] = doc_id;
+            // Java's `docIDs[pos++] = docId`: an index past the array throws
+            // `ArrayIndexOutOfBoundsException`.
+            let Some(slot) = out.get_mut(pos) else {
+                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                    class: "java.lang.ArrayIndexOutOfBoundsException",
+                    message: Some(format!(
+                        "Index {pos} out of bounds for length {}",
+                        out.len()
+                    )),
+                    cause: None,
+                }));
+            };
+            *slot = doc_id;
             pos += 1;
         }
         debug_assert!(pos == count, "pos: {pos}, count: {count}");
@@ -2020,8 +2037,11 @@ impl BKDReader {
     ) -> Result<()> {
         leaf_in.seek(block_fp)?;
         let count = read_leaf_count(leaf_in.as_mut(), config)?;
-        let mut doc_ids = vec![0i32; count];
+        // Java decodes into `scratchIterator.docIDs`, an
+        // `int[maxPointsInLeafNode]` (`BKDReader.java:1042-1046`).
+        let mut doc_ids = vec![0i32; count.max(config.max_points_in_leaf_node.max(0) as usize)];
         DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut doc_ids, version)?;
+        let doc_ids = &doc_ids[..count];
         let mut common_prefix_lengths = vec![0usize; config.num_dims as usize];
         let mut scratch_packed = vec![0u8; config.packed_bytes_length() as usize];
         read_common_prefixes(
@@ -2037,7 +2057,7 @@ impl BKDReader {
                 version,
                 &mut common_prefix_lengths,
                 &mut scratch_packed,
-                &doc_ids,
+                doc_ids,
                 visitor,
             )
         } else {
@@ -2047,7 +2067,7 @@ impl BKDReader {
                 version,
                 &mut common_prefix_lengths,
                 &mut scratch_packed,
-                &doc_ids,
+                doc_ids,
                 visitor,
             )
         }
@@ -2757,8 +2777,13 @@ impl BKDPointTree {
             let block_fp = self.current().leaf_block_fp;
             self.leaf.seek(block_fp)?;
             let count = read_leaf_count(self.leaf.as_mut(), &self.config)?;
+            // Java's `scratchIterator.docIDs` is an `int[maxPointsInLeafNode]`
+            // (`BKDReader.java:1042-1046`).
             self.scratch_doc_ids.clear();
-            self.scratch_doc_ids.resize(count, 0);
+            self.scratch_doc_ids.resize(
+                count.max(self.config.max_points_in_leaf_node.max(0) as usize),
+                0,
+            );
             DocIdsWriter::read_doc_ids(
                 self.leaf.as_mut(),
                 count,

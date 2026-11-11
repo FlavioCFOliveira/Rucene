@@ -324,7 +324,7 @@ impl NeighborArray {
         let sorted_node_size = self.sorted_node_size.load(Ordering::Relaxed);
         debug_assert_eq!(
             size, sorted_node_size,
-            "cannot call add_in_order after add_out_of_order"
+            "cannot call addInOrder after addOutOfOrder"
         );
         if size == self.max_size {
             return Err(LuceneError::illegal_state(
@@ -333,10 +333,17 @@ impl NeighborArray {
         }
         if size > 0 {
             let previous_score = self.score_at(size - 1);
+            // `NeighborArray.java:75-80`: the message renders the scores with
+            // `Arrays.toString(float[])`, Java's `Float.toString` each.
             debug_assert!(
                 (self.scores_desc_order && previous_score >= new_score)
                     || (!self.scores_desc_order && previous_score <= new_score),
-                "nodes are added in incorrect order"
+                "Nodes are added in the incorrect order! Comparing {} to [{}]",
+                crate::util::java_fmt::float_to_string(new_score),
+                (0..size)
+                    .map(|i| crate::util::java_fmt::float_to_string(self.score_at(i)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
         self.append(size, new_node, new_score);

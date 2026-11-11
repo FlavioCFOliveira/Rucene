@@ -489,7 +489,8 @@ fn fill(name: &str, packed_int: &mut dyn PackedIntsMutable, bits_per_value: i32,
     let max_value = if bits_per_value == 64 {
         i64::MAX
     } else {
-        (1i64 << bits_per_value) - 1
+        // Java's `(1L << bitsPerValue) - 1` wraps at 63 bits.
+        (1i64 << bits_per_value).wrapping_sub(1)
     };
     for i in 0..packed_int.size() {
         let value = if bits_per_value == 64 {
@@ -1556,7 +1557,11 @@ fn test_block_packed_reader_writer() -> Result<()> {
             } else if bpv == 64 {
                 random.next_long()
             } else {
-                min_value.wrapping_add(TestUtil::next_long(&*random, 0, (1i64 << bpv) - 1))
+                min_value.wrapping_add(TestUtil::next_long(
+                    &*random,
+                    0,
+                    (1i64 << bpv).wrapping_sub(1),
+                ))
             };
         }
 

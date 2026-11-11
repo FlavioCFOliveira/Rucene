@@ -99,12 +99,13 @@ impl SkipBlockRangeIterator {
     /// Returns the exclusive end of the current skip block — the block boundary
     /// the skipper reports — regardless of the match state.
     ///
-    /// Equivalent to `SkipBlockRangeIterator.blockEnd()`. Unlike
+    /// Equivalent to `SkipBlockRangeIterator.blockEnd()`, whose `int`
+    /// addition wraps (`SkipBlockRangeIterator.java:120-122`). Unlike
     /// [`doc_id_run_end`](DocIdSetIterator::doc_id_run_end), which returns
     /// `doc + 1` for a [`Match::Maybe`] block, this always returns the full
     /// block boundary so that callers can bulk-evaluate the whole block at once.
     pub fn block_end(&self) -> i32 {
-        self.skipper.max_doc_id(0) + 1
+        self.skipper.max_doc_id(0).wrapping_add(1)
     }
 }
 
@@ -114,7 +115,7 @@ impl DocIdSetIterator for SkipBlockRangeIterator {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.base.doc + 1)
+        self.advance(self.base.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -145,9 +146,9 @@ impl DocIdSetIterator for SkipBlockRangeIterator {
         i64::from(NO_MORE_DOCS)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         if self.r#match != Match::Yes {
-            return Ok(self.base.doc + 1);
+            return Ok(self.base.doc.wrapping_add(1));
         }
         let mut max_doc = self.skipper.max_doc_id(0);
         let mut next_level = 1;
@@ -160,7 +161,7 @@ impl DocIdSetIterator for SkipBlockRangeIterator {
             max_doc = self.skipper.max_doc_id(next_level);
             next_level += 1;
         }
-        Ok(max_doc + 1)
+        Ok(max_doc.wrapping_add(1))
     }
 
     fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {

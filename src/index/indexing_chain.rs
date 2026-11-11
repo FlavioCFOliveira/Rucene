@@ -1404,6 +1404,14 @@ impl DefaultIndexingChain {
             // sorted ones, the numeric sorters numeric ones.
             let expected = match (sort_field.kind(), sort_field.field_type()) {
                 (crate::search::SortFieldKind::Binary { .. }, _) => DocValuesType::BINARY,
+                // `SortedSetSortField` reads `DocValues.getSortedSet` and
+                // `SortedNumericSortField` `DocValues.getSortedNumeric`, whose
+                // first call is the reader's `getSortedSetDocValues` /
+                // `getSortedNumericDocValues` (`IndexingChain.java:1620-1648`).
+                (crate::search::SortFieldKind::SortedSet { .. }, _) => DocValuesType::SORTED_SET,
+                (crate::search::SortFieldKind::SortedNumeric { .. }, _) => {
+                    DocValuesType::SORTED_NUMERIC
+                }
                 (_, crate::search::SortFieldType::String) => DocValuesType::SORTED,
                 (
                     _,
@@ -3933,6 +3941,377 @@ impl Accountable for DefaultIndexingChain {
     }
 }
 
+impl DefaultIndexingChain {
+    /// The body of [`process_document`](IndexingChain::process_document);
+    /// `panicked` receives the payload of a panic raised by `invert`.
+    fn process_document_body(
+        &mut self,
+        doc_id: i32,
+        doc: Option<&dyn IndexableFieldIterable>,
+        is_last_doc: bool,
+        field_infos: &mut FieldInfosBuilder,
+        panicked: &mut Option<Box<dyn std::any::Any + Send>>,
+    ) -> Result<()> {
+        let analyzer = self.config.analyzer_arc();
+        let info_stream = self.config.info_stream();
+        let field_gen = self.next_field_gen;
+        self.next_field_gen += 1;
+        // The unique fields of the document whose `FieldInfo` must be
+        // initialized or whose schema must be validated
+        // (`IndexingChain.java:592-593`).
+        let mut fields_need_init_or_validate: Vec<usize> = Vec::new();
+
+        // Handle the parent field first, before the document's own fields: only
+        // the last document of a block carries it. Its schema was set up when
+        // its per-field state was created, so only the doc id moves on, and its
+        // `FieldInfo` is initialized the first time the segment needs it
+        // (`IndexingChain.java:607-614`).
+        let parent_pf = if is_last_doc {
+            self.get_or_add_parent_per_field()?
+        } else {
+            None
+        };
+        if let Some(parent_pf) = parent_pf {
+            self.per_fields[parent_pf].schema.reset_just_doc_id(doc_id);
+            if self.per_fields[parent_pf].field_info.is_none() {
+                fields_need_init_or_validate.push(parent_pf);
+            }
+        }
+
+        // `termsHash.startDocument()` and `startStoredFields(docID)` run before
+        // the `try` block that holds both passes (`IndexingChain.java:604-605`):
+        // the stored-fields writer of a segment is created by its first
+        // document before any field of that document initializes its own
+        // writer, which fixes the order in which a segment's files are created
+        // and so the iteration order of the file set its `.si` records. For the
+        // term-vectors half it only drops whatever the previous document left
+        // pending.
+        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+            consumer.start_document();
+        }
+
+        // Lucene opens a stored-fields frame for every document, before any
+        // field is processed, and closes it in a `finally` block: a document
+        // that stores nothing still occupies its own frame, so the stream stays
+        // aligned with the doc ids.
+        self.start_stored_fields(doc_id)?;
+
+        let mut indexed: Vec<usize> = Vec::new();
+        let mut outcome: Result<()> = Ok(());
+
+        // Two passes, as in Lucene: every instance of a multi-valued field must
+        // be inverted together, because the analyzer may reuse one TokenStream
+        // across fields.
+        //
+        // 1st pass over doc fields – verify that doc schema matches the index
+        // schema; build schema for each unique doc field
+        // (`IndexingChain.java:617-644`). It runs inside Java's `try`, so a
+        // failure is recorded as the outcome and the `finally` tail below
+        // still closes the stored-fields frame.
+        //
+        // `for (IndexableField field : document)` dereferences a `null`
+        // document, and an exception the iterator throws leaves the pass
+        // there.
+        let mut doc_fields: Vec<usize> = Vec::new();
+        'first_pass: for item in doc
+            .map(IndexableFieldIterable::iterator)
+            .unwrap_or_else(|| Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
+        {
+            let field = match item {
+                Ok(field) => field,
+                Err(error) => {
+                    outcome = Err(error);
+                    break 'first_pass;
+                }
+            };
+            let field_name = field.name();
+            let field_type = field.field_type();
+            if let Err(error) = self.reject_reserved_parent_field(field_name) {
+                outcome = Err(error);
+                break 'first_pass;
+            }
+            let pf = self.get_or_add_per_field(field_name);
+            let per_field = &mut self.per_fields[pf];
+            if per_field.field_gen != field_gen {
+                // first time we see this field in this document
+                per_field.field_gen = field_gen;
+                per_field.reset(doc_id, field_type);
+                if per_field.validated_frozen_field_type.is_none() {
+                    fields_need_init_or_validate.push(pf);
+                }
+            } else if per_field.multi_value_forces_deoptimize(field_type) {
+                // Multi-valued field with a different field type than the
+                // cached frozen type. Drop the validated frozen field type to
+                // force the validation path.
+                per_field.validated_frozen_field_type = None;
+                fields_need_init_or_validate.push(pf);
+            }
+            doc_fields.push(pf);
+            if per_field.validated_frozen_field_type.is_none() {
+                if let Err(error) =
+                    Self::update_doc_field_schema(field_name, &mut per_field.schema, field_type)
+                {
+                    outcome = Err(error);
+                    break 'first_pass;
+                }
+            }
+        }
+
+        if outcome.is_ok() && !fields_need_init_or_validate.is_empty() {
+            if let Err(error) =
+                self.init_and_validate_fields(&fields_need_init_or_validate, field_infos)
+            {
+                outcome = Err(error);
+            }
+        }
+
+        // 2nd pass — index the parent field first (`IndexingChain.java:650-657`).
+        // `parent_field` is currently a `NumericDocValuesField`, so
+        // `process_field` always returns `false` here, but the result is checked
+        // defensively in case the parent field's representation changes.
+        if let Some(parent_pf) = parent_pf.filter(|_| outcome.is_ok()) {
+            let parent_field = self
+                .parent_field
+                .take()
+                .expect("INVARIANT: the per-field only exists when the parent field does");
+            let result = self.process_field(
+                doc_id,
+                &parent_field,
+                parent_pf,
+                analyzer.as_deref(),
+                info_stream.as_ref(),
+                field_infos,
+            );
+            self.parent_field = Some(parent_field);
+            match result {
+                Ok(true) => indexed.push(parent_pf),
+                Ok(false) => {}
+                // Java lets the exception leave the `try` block, so the
+                // `finally` tail below still closes the stored-fields frame this
+                // document opened; recording it as the outcome does the same.
+                Err(error) => outcome = Err(error),
+            }
+        }
+
+        // 2nd pass – document fields (`IndexingChain.java:659-667`): a new
+        // iteration over the document, whose failure leaves the pass too.
+        let second_pass = match (&outcome, doc) {
+            (Ok(()), Some(doc)) => Some(doc.iterator()),
+            _ => None,
+        };
+        let mut doc_field_idx = 0;
+        for item in second_pass.into_iter().flatten() {
+            if outcome.is_err() {
+                break;
+            }
+            let field = match item {
+                Ok(field) => field,
+                Err(error) => {
+                    outcome = Err(error);
+                    break;
+                }
+            };
+            let index = doc_fields[doc_field_idx];
+            doc_field_idx += 1;
+            // `IndexingChain.invertAndStore` inverts first and stores second,
+            // for every field instance, in document order.
+            if field.field_type().index_options() != IndexOptions::NONE {
+                let first = self.per_fields[index].first;
+                let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Self::invert(
+                        analyzer.as_deref(),
+                        info_stream.as_ref(),
+                        &mut self.terms_writer,
+                        self.term_vectors_consumer.as_deref_mut(),
+                        &mut self.per_fields[index],
+                        doc_id,
+                        field,
+                        first,
+                        &mut self.aborting_error,
+                    )
+                })) {
+                    Ok(result) => result,
+                    Err(payload) => {
+                        // Stands in for the thrown panic in the control flow
+                        // below; the panic itself is rethrown by
+                        // `process_document`.
+                        *panicked = Some(payload);
+                        Err(LuceneError::null_pointer())
+                    }
+                };
+                // `pf.first = false` and `indexedField = true` run *after*
+                // `pf.invert(...)` returns normally
+                // (`IndexingChain.java:1411-1418`), so a field that threw is
+                // never finished: its partial term vector is not queued and its
+                // `sawPayloads` flag never reaches the field infos. Marking it
+                // first would put bytes on disk for a document both engines
+                // then delete.
+                if result.is_ok() && first {
+                    self.per_fields[index].first = false;
+                    indexed.push(index);
+                }
+                if let Err(error) = result {
+                    // Lucene distinguishes a document-level problem (the
+                    // document is dropped, indexing continues) from a corrupt
+                    // terms hash (the whole DWPT must be aborted). The only
+                    // aborting failures of `invert` are the ones the `catch
+                    // (Throwable th)` around `termsHashPerField.add` hands to
+                    // `onAbortingException` (`IndexingChain.java:2025-2027`),
+                    // which `invert` has already recorded.
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            if field.field_type().stored() {
+                if let Err(error) = self.store_field(index, field) {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            // `processField` runs `indexDocValue` for every instance of a
+            // field that declares doc values, after the invert-and-store half
+            // (`IndexingChain.java:1386-1391`); a validation failure is a
+            // document-level problem exactly like the ones `invert` raises.
+            if field.field_type().doc_values_type() != DocValuesType::NONE {
+                let result = self.per_fields[index].doc_values.as_mut().expect(
+                    "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
+                ).add_value(doc_id, field, &mut self.doc_values_byte_pool);
+                // `indexDocValue` runs outside any `catch`
+                // (`IndexingChain.java:1386-1391, 1660-1693`): whatever it
+                // throws is a document-level failure, never an aborting one.
+                if let Err(error) = result {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            // `processField` then buffers the packed point value of every
+            // instance of a field that declares point dimensions
+            // (`IndexingChain.java:1393-1395`). Java reads
+            // `field.binaryValue()` and lets `addPackedValue` reject a null
+            // with "point value must not be null"; here the absent value is an
+            // `Option`, and the same message is raised for it.
+            if field.field_type().point_dimension_count() != 0 {
+                let result = match field.binary_value() {
+                    Some(value) => self.per_fields[index]
+                        .point_values
+                        .as_mut()
+                        .expect(
+                            "INVARIANT: every field with point dimensions gets a writer in get_or_add_per_field",
+                        )
+                        .add_packed_value(doc_id, &value),
+                    None => Err(LuceneError::illegal_argument(format!(
+                        "field=\"{}\": point value must not be null",
+                        field.name()
+                    ))),
+                };
+                // `pf.pointValuesWriter.addPackedValue(...)` runs outside any
+                // `catch` (`IndexingChain.java:1393-1395`): a failure is a
+                // document-level one, never an aborting one.
+                if let Err(error) = result {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            // `processField` ends with `indexVectorValue` for every instance of
+            // a field that declares vector dimensions
+            // (`IndexingChain.java:1396-1398`). Java switches on the encoding
+            // and downcasts the field to `KnnByteVectorField` or
+            // `KnnFloatVectorField` to read its array
+            // (`IndexingChain.java:1695-1707`); this reads the matching sibling
+            // accessor, and an absent value is the `ClassCastException` Java
+            // would raise for a field whose type promises a vector its class
+            // cannot produce.
+            if field.field_type().vector_dimension() != 0 {
+                let result = Self::index_vector_value(doc_id, &mut self.per_fields[index], field);
+                // `indexVectorValue` runs outside any `catch`
+                // (`IndexingChain.java:1396-1398, 1695-1707`): a failure is a
+                // document-level one, never an aborting one.
+                if let Err(error) = result {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+        }
+
+        // Lucene's `finally` runs the whole tail — finishing every indexed
+        // field, closing the stored-fields frame and finishing the term
+        // vectors — only when no aborting exception was recorded, because in
+        // that case the whole segment is discarded and none of it matters
+        // (`IndexingChain.java:669-686`).
+        if self.aborting_error.is_none() {
+            // `PerField.finish(docID)`: `FreqProxTermsWriterPerField.finish`
+            // records that the field stores payloads, which the field infos
+            // must carry into the segment, and
+            // `TermVectorsConsumerPerField.finish` queues the field's vector.
+            let similarity = self.config.similarity();
+            for index in indexed {
+                // `PerField.finish(docID)` computes the norm *before*
+                // `termsHashPerField.finish()` (`IndexingChain.java:1853-1870`).
+                if let Err(error) =
+                    Self::finish_norms(similarity.as_ref(), &mut self.per_fields[index], doc_id)
+                {
+                    // A norm failure is a document-level problem, exactly like
+                    // the validation errors `invert` raises: the document is
+                    // dropped and indexing continues. Java propagates it out of
+                    // its `finally` and so skips the rest of the tail; this port
+                    // keeps running it, because the stored-fields stream must
+                    // stay aligned with the doc ids for the documents that did
+                    // succeed. The error is still returned to the caller, and
+                    // the first failure is the one reported.
+                    if outcome.is_ok() {
+                        outcome = Err(error);
+                    }
+                }
+                let per_field = &self.per_fields[index];
+                if let Some(writer_index) = per_field.writer_index {
+                    if self.terms_writer.field(writer_index).saw_payloads() {
+                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
+                            info.set_store_payloads();
+                        }
+                    }
+                }
+                if let (Some(consumer), Some(vectors_index)) = (
+                    self.term_vectors_consumer.as_deref_mut(),
+                    per_field.vectors_index,
+                ) {
+                    consumer.finish_field(vectors_index);
+                }
+            }
+
+            self.finish_stored_fields()?;
+
+            // `termsHash.finishDocument(docID)`: a failure here may have left
+            // the on-disk term vectors corrupt, so Lucene routes it straight to
+            // the aborting-exception consumer.
+            if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+                if let Err(error) = consumer.finish_document(doc_id, self.terms_writer.pool()) {
+                    // Java hands the throwable itself to `onAbortingException`.
+                    self.on_aborting_exception(error.duplicate());
+                    return Err(error);
+                }
+                // `TermVectorsConsumerPerField.finishDocument` ends with
+                // `fieldInfo.setStoreTermVectors()`; the field infos this port
+                // writes live in the builder, so the flag is set here instead.
+                for per_field in &self.per_fields {
+                    let Some(vectors_index) = per_field.vectors_index else {
+                        continue;
+                    };
+                    if consumer.field(vectors_index).wrote_vectors() {
+                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
+                            info.set_store_term_vectors()?;
+                        }
+                    }
+                }
+            }
+        }
+        outcome
+    }
+}
+
 impl IndexingChain for DefaultIndexingChain {
     /// Returns an iterator over the documents of this segment that have a
     /// doc-values value for `field`, or `None` when the field has no doc values
@@ -4192,350 +4571,16 @@ impl IndexingChain for DefaultIndexingChain {
         is_last_doc: bool,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()> {
-        let analyzer = self.config.analyzer_arc();
-        let info_stream = self.config.info_stream();
-        let field_gen = self.next_field_gen;
-        self.next_field_gen += 1;
-        // The unique fields of the document whose `FieldInfo` must be
-        // initialized or whose schema must be validated
-        // (`IndexingChain.java:592-593`).
-        let mut fields_need_init_or_validate: Vec<usize> = Vec::new();
-
-        // Handle the parent field first, before the document's own fields: only
-        // the last document of a block carries it. Its schema was set up when
-        // its per-field state was created, so only the doc id moves on, and its
-        // `FieldInfo` is initialized the first time the segment needs it
-        // (`IndexingChain.java:607-614`).
-        let parent_pf = if is_last_doc {
-            self.get_or_add_parent_per_field()?
-        } else {
-            None
-        };
-        if let Some(parent_pf) = parent_pf {
-            self.per_fields[parent_pf].schema.reset_just_doc_id(doc_id);
-            if self.per_fields[parent_pf].field_info.is_none() {
-                fields_need_init_or_validate.push(parent_pf);
-            }
-        }
-
-        // `termsHash.startDocument()` and `startStoredFields(docID)` run before
-        // the `try` block that holds both passes (`IndexingChain.java:604-605`):
-        // the stored-fields writer of a segment is created by its first
-        // document before any field of that document initializes its own
-        // writer, which fixes the order in which a segment's files are created
-        // and so the iteration order of the file set its `.si` records. For the
-        // term-vectors half it only drops whatever the previous document left
-        // pending.
-        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-            consumer.start_document();
-        }
-
-        // Lucene opens a stored-fields frame for every document, before any
-        // field is processed, and closes it in a `finally` block: a document
-        // that stores nothing still occupies its own frame, so the stream stays
-        // aligned with the doc ids.
-        self.start_stored_fields(doc_id)?;
-
-        let mut indexed: Vec<usize> = Vec::new();
-        let mut outcome: Result<()> = Ok(());
-
-        // Two passes, as in Lucene: every instance of a multi-valued field must
-        // be inverted together, because the analyzer may reuse one TokenStream
-        // across fields.
-        //
-        // 1st pass over doc fields – verify that doc schema matches the index
-        // schema; build schema for each unique doc field
-        // (`IndexingChain.java:617-644`). It runs inside Java's `try`, so a
-        // failure is recorded as the outcome and the `finally` tail below
-        // still closes the stored-fields frame.
-        //
-        // `for (IndexableField field : document)` dereferences a `null`
-        // document, and an exception the iterator throws leaves the pass
-        // there.
-        let mut doc_fields: Vec<usize> = Vec::new();
-        'first_pass: for item in doc
-            .map(IndexableFieldIterable::iterator)
-            .unwrap_or_else(|| Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
-        {
-            let field = match item {
-                Ok(field) => field,
-                Err(error) => {
-                    outcome = Err(error);
-                    break 'first_pass;
-                }
-            };
-            let field_name = field.name();
-            let field_type = field.field_type();
-            if let Err(error) = self.reject_reserved_parent_field(field_name) {
-                outcome = Err(error);
-                break 'first_pass;
-            }
-            let pf = self.get_or_add_per_field(field_name);
-            let per_field = &mut self.per_fields[pf];
-            if per_field.field_gen != field_gen {
-                // first time we see this field in this document
-                per_field.field_gen = field_gen;
-                per_field.reset(doc_id, field_type);
-                if per_field.validated_frozen_field_type.is_none() {
-                    fields_need_init_or_validate.push(pf);
-                }
-            } else if per_field.multi_value_forces_deoptimize(field_type) {
-                // Multi-valued field with a different field type than the
-                // cached frozen type. Drop the validated frozen field type to
-                // force the validation path.
-                per_field.validated_frozen_field_type = None;
-                fields_need_init_or_validate.push(pf);
-            }
-            doc_fields.push(pf);
-            if per_field.validated_frozen_field_type.is_none() {
-                if let Err(error) =
-                    Self::update_doc_field_schema(field_name, &mut per_field.schema, field_type)
-                {
-                    outcome = Err(error);
-                    break 'first_pass;
-                }
-            }
-        }
-
-        if outcome.is_ok() && !fields_need_init_or_validate.is_empty() {
-            if let Err(error) =
-                self.init_and_validate_fields(&fields_need_init_or_validate, field_infos)
-            {
-                outcome = Err(error);
-            }
-        }
-
-        // 2nd pass — index the parent field first (`IndexingChain.java:650-657`).
-        // `parent_field` is currently a `NumericDocValuesField`, so
-        // `process_field` always returns `false` here, but the result is checked
-        // defensively in case the parent field's representation changes.
-        if let Some(parent_pf) = parent_pf.filter(|_| outcome.is_ok()) {
-            let parent_field = self
-                .parent_field
-                .take()
-                .expect("INVARIANT: the per-field only exists when the parent field does");
-            let result = self.process_field(
-                doc_id,
-                &parent_field,
-                parent_pf,
-                analyzer.as_deref(),
-                info_stream.as_ref(),
-                field_infos,
-            );
-            self.parent_field = Some(parent_field);
-            match result {
-                Ok(true) => indexed.push(parent_pf),
-                Ok(false) => {}
-                // Java lets the exception leave the `try` block, so the
-                // `finally` tail below still closes the stored-fields frame this
-                // document opened; recording it as the outcome does the same.
-                Err(error) => outcome = Err(error),
-            }
-        }
-
-        // 2nd pass – document fields (`IndexingChain.java:659-667`): a new
-        // iteration over the document, whose failure leaves the pass too.
-        let second_pass = match (&outcome, doc) {
-            (Ok(()), Some(doc)) => Some(doc.iterator()),
-            _ => None,
-        };
-        let mut doc_field_idx = 0;
-        for item in second_pass.into_iter().flatten() {
-            if outcome.is_err() {
-                break;
-            }
-            let field = match item {
-                Ok(field) => field,
-                Err(error) => {
-                    outcome = Err(error);
-                    break;
-                }
-            };
-            let index = doc_fields[doc_field_idx];
-            doc_field_idx += 1;
-            // `IndexingChain.invertAndStore` inverts first and stores second,
-            // for every field instance, in document order.
-            if field.field_type().index_options() != IndexOptions::NONE {
-                let first = self.per_fields[index].first;
-                let result = Self::invert(
-                    analyzer.as_deref(),
-                    info_stream.as_ref(),
-                    &mut self.terms_writer,
-                    self.term_vectors_consumer.as_deref_mut(),
-                    &mut self.per_fields[index],
-                    doc_id,
-                    field,
-                    first,
-                    &mut self.aborting_error,
-                );
-                // `pf.first = false` and `indexedField = true` run *after*
-                // `pf.invert(...)` returns normally
-                // (`IndexingChain.java:1411-1418`), so a field that threw is
-                // never finished: its partial term vector is not queued and its
-                // `sawPayloads` flag never reaches the field infos. Marking it
-                // first would put bytes on disk for a document both engines
-                // then delete.
-                if result.is_ok() && first {
-                    self.per_fields[index].first = false;
-                    indexed.push(index);
-                }
-                if let Err(error) = result {
-                    // Lucene distinguishes a document-level problem (the
-                    // document is dropped, indexing continues) from a corrupt
-                    // terms hash (the whole DWPT must be aborted). The only
-                    // aborting failures of `invert` are the ones the `catch
-                    // (Throwable th)` around `termsHashPerField.add` hands to
-                    // `onAbortingException` (`IndexingChain.java:2025-2027`),
-                    // which `invert` has already recorded.
-                    outcome = Err(error);
-                    break;
-                }
-            }
-
-            if field.field_type().stored() {
-                if let Err(error) = self.store_field(index, field) {
-                    outcome = Err(error);
-                    break;
-                }
-            }
-
-            // `processField` runs `indexDocValue` for every instance of a
-            // field that declares doc values, after the invert-and-store half
-            // (`IndexingChain.java:1386-1391`); a validation failure is a
-            // document-level problem exactly like the ones `invert` raises.
-            if field.field_type().doc_values_type() != DocValuesType::NONE {
-                let result = self.per_fields[index].doc_values.as_mut().expect(
-                    "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
-                ).add_value(doc_id, field, &mut self.doc_values_byte_pool);
-                // `indexDocValue` runs outside any `catch`
-                // (`IndexingChain.java:1386-1391, 1660-1693`): whatever it
-                // throws is a document-level failure, never an aborting one.
-                if let Err(error) = result {
-                    outcome = Err(error);
-                    break;
-                }
-            }
-
-            // `processField` then buffers the packed point value of every
-            // instance of a field that declares point dimensions
-            // (`IndexingChain.java:1393-1395`). Java reads
-            // `field.binaryValue()` and lets `addPackedValue` reject a null
-            // with "point value must not be null"; here the absent value is an
-            // `Option`, and the same message is raised for it.
-            if field.field_type().point_dimension_count() != 0 {
-                let result = match field.binary_value() {
-                    Some(value) => self.per_fields[index]
-                        .point_values
-                        .as_mut()
-                        .expect(
-                            "INVARIANT: every field with point dimensions gets a writer in get_or_add_per_field",
-                        )
-                        .add_packed_value(doc_id, &value),
-                    None => Err(LuceneError::illegal_argument(format!(
-                        "field=\"{}\": point value must not be null",
-                        field.name()
-                    ))),
-                };
-                // `pf.pointValuesWriter.addPackedValue(...)` runs outside any
-                // `catch` (`IndexingChain.java:1393-1395`): a failure is a
-                // document-level one, never an aborting one.
-                if let Err(error) = result {
-                    outcome = Err(error);
-                    break;
-                }
-            }
-
-            // `processField` ends with `indexVectorValue` for every instance of
-            // a field that declares vector dimensions
-            // (`IndexingChain.java:1396-1398`). Java switches on the encoding
-            // and downcasts the field to `KnnByteVectorField` or
-            // `KnnFloatVectorField` to read its array
-            // (`IndexingChain.java:1695-1707`); this reads the matching sibling
-            // accessor, and an absent value is the `ClassCastException` Java
-            // would raise for a field whose type promises a vector its class
-            // cannot produce.
-            if field.field_type().vector_dimension() != 0 {
-                let result = Self::index_vector_value(doc_id, &mut self.per_fields[index], field);
-                // `indexVectorValue` runs outside any `catch`
-                // (`IndexingChain.java:1396-1398, 1695-1707`): a failure is a
-                // document-level one, never an aborting one.
-                if let Err(error) = result {
-                    outcome = Err(error);
-                    break;
-                }
-            }
-        }
-
-        // Lucene's `finally` runs the whole tail — finishing every indexed
-        // field, closing the stored-fields frame and finishing the term
-        // vectors — only when no aborting exception was recorded, because in
-        // that case the whole segment is discarded and none of it matters
-        // (`IndexingChain.java:669-686`).
-        if self.aborting_error.is_none() {
-            // `PerField.finish(docID)`: `FreqProxTermsWriterPerField.finish`
-            // records that the field stores payloads, which the field infos
-            // must carry into the segment, and
-            // `TermVectorsConsumerPerField.finish` queues the field's vector.
-            let similarity = self.config.similarity();
-            for index in indexed {
-                // `PerField.finish(docID)` computes the norm *before*
-                // `termsHashPerField.finish()` (`IndexingChain.java:1853-1870`).
-                if let Err(error) =
-                    Self::finish_norms(similarity.as_ref(), &mut self.per_fields[index], doc_id)
-                {
-                    // A norm failure is a document-level problem, exactly like
-                    // the validation errors `invert` raises: the document is
-                    // dropped and indexing continues. Java propagates it out of
-                    // its `finally` and so skips the rest of the tail; this port
-                    // keeps running it, because the stored-fields stream must
-                    // stay aligned with the doc ids for the documents that did
-                    // succeed. The error is still returned to the caller, and
-                    // the first failure is the one reported.
-                    if outcome.is_ok() {
-                        outcome = Err(error);
-                    }
-                }
-                let per_field = &self.per_fields[index];
-                if let Some(writer_index) = per_field.writer_index {
-                    if self.terms_writer.field(writer_index).saw_payloads() {
-                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
-                            info.set_store_payloads();
-                        }
-                    }
-                }
-                if let (Some(consumer), Some(vectors_index)) = (
-                    self.term_vectors_consumer.as_deref_mut(),
-                    per_field.vectors_index,
-                ) {
-                    consumer.finish_field(vectors_index);
-                }
-            }
-
-            self.finish_stored_fields()?;
-
-            // `termsHash.finishDocument(docID)`: a failure here may have left
-            // the on-disk term vectors corrupt, so Lucene routes it straight to
-            // the aborting-exception consumer.
-            if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-                if let Err(error) = consumer.finish_document(doc_id, self.terms_writer.pool()) {
-                    // Java hands the throwable itself to `onAbortingException`.
-                    self.on_aborting_exception(error.duplicate());
-                    return Err(error);
-                }
-                // `TermVectorsConsumerPerField.finishDocument` ends with
-                // `fieldInfo.setStoreTermVectors()`; the field infos this port
-                // writes live in the builder, so the flag is set here instead.
-                for per_field in &self.per_fields {
-                    let Some(vectors_index) = per_field.vectors_index else {
-                        continue;
-                    };
-                    if consumer.field(vectors_index).wrote_vectors() {
-                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
-                            info.set_store_term_vectors()?;
-                        }
-                    }
-                }
-            }
+        // A panic raised while a field is inverted — this port's carrier of
+        // Java's unchecked throwables, an `IndexOutOfBoundsException` of a
+        // token stream for one — leaves the field as Java's exception leaves
+        // `invert`: the `finally` tail still runs (`IndexingChain.java:
+        // 669-686`), and the panic is rethrown afterwards.
+        let mut panicked: Option<Box<dyn std::any::Any + Send>> = None;
+        let outcome =
+            self.process_document_body(doc_id, doc, is_last_doc, field_infos, &mut panicked);
+        if let Some(payload) = panicked {
+            std::panic::resume_unwind(payload);
         }
         outcome
     }

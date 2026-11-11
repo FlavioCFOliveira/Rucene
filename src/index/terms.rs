@@ -90,9 +90,13 @@ impl Term {
         }
     }
 
-    /// Returns the term text, best-effort UTF-8 decoding.
+    /// Returns the term text.
+    ///
+    /// Equivalent to `Term.text()`, which is `toString(bytes)`
+    /// (`Term.java:100-102, 108-124`): the UTF-8 text, or the raw bytes in
+    /// `BytesRef.toString()` form when they are not valid UTF-8.
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(self.bytes.slice()).into_owned()
+        Self::to_string_bytes_ref(&self.bytes)
     }
 
     /// Replaces the field and bytes in place (bytes are not copied).
@@ -184,6 +188,9 @@ impl Ord for Term {
 }
 
 impl fmt::Display for Term {
+    /// Equivalent to `Term.toString()`, `field + ":" + text()`, where `text()`
+    /// is `Term.toString(BytesRef)`: the strictly decoded UTF-8 text, or the
+    /// raw bytes when they are not valid UTF-8 (`Term.java:108-124`).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.field, self.text())
     }
@@ -343,6 +350,22 @@ pub trait TermsEnum: std::fmt::Display {
     /// `null` (for example `MultiTermsEnum` before it is positioned or after
     /// it is exhausted).
     fn term(&self) -> Result<Option<BytesRef>>;
+
+    /// Returns the bytes of this enum's current-term buffer as they are now,
+    /// without the preconditions [`term`](Self::term) asserts.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java's `term()` hands
+    /// out the enum's own `BytesRef`, and a caller that keeps it — as
+    /// `MultiTermsEnum.current` does (`MultiTermsEnum.java:208, 249`) — later
+    /// reads whatever the enum has since written there, without calling
+    /// `term()` again. This port returns owned copies, so such a caller reads
+    /// the buffer through this method instead; an enum whose `term()` asserts
+    /// a state (`SegmentTermsEnum.term()` asserts `!eof`,
+    /// `SegmentTermsEnum.java:968-971`) overrides it to skip the assertion,
+    /// exactly as the Java alias does. The default answers `term()`.
+    fn term_buffer(&self) -> Result<Option<BytesRef>> {
+        self.term()
+    }
 
     /// Returns the ordinal position of the current term, if supported.
     fn ord(&self) -> Result<i64>;

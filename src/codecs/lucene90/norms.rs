@@ -484,7 +484,14 @@ impl Lucene90NormsProducer {
             &state.segment_suffix,
             NORMS_EXTENSION,
         );
-        let mut data = state.directory.open_input(&data_name, state.context)?;
+        let mut data = state.directory.open_input(
+            &data_name,
+            /* withHints, `Lucene90NormsProducer.java:85` */
+            state
+                .context
+                .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                .as_ref(),
+        )?;
         let checked = (|| -> Result<()> {
             let version2 = codec_util::check_index_header(
                 data.as_mut(),

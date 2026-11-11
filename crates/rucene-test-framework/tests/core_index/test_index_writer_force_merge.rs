@@ -25,7 +25,7 @@ use rucene::error::Result;
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
-use rucene::index::merge_policy::{LogDocSize, LogMergePolicy};
+use rucene::index::merge_policy::LogMergePolicy;
 use rucene::index::merge_scheduler::ConcurrentMergeScheduler;
 use rucene::index::{FieldInfo, Fields, IndexReader, SegmentInfos};
 use rucene::store::Directory;
@@ -81,7 +81,7 @@ fn test_partial_merge() -> Result<()> {
     let incr_min = if *TEST_NIGHTLY { 15 } else { 40 };
     let mut num_docs = 10;
     while num_docs < 500 {
-        let mut ldmp = LogMergePolicy::new(Arc::new(LogDocSize));
+        let mut ldmp = LogMergePolicy::by_doc_count();
         ldmp.set_min_merge_docs(1);
         ldmp.set_merge_factor(5)?;
         let conf = mock_iwc();
@@ -96,7 +96,7 @@ fn test_partial_merge() -> Result<()> {
 
         let seg_count = segment_count(&dir)?;
 
-        let ldmp = LogMergePolicy::new(Arc::new(LogDocSize));
+        let ldmp = LogMergePolicy::by_doc_count();
         ldmp.set_merge_factor(5)?;
         let conf = mock_iwc();
         conf.set_merge_policy(Some(Arc::new(ldmp)))?;
@@ -127,7 +127,7 @@ fn test_max_num_segments2() -> Result<()> {
         Store::NO,
     )));
 
-    let mut ldmp = LogMergePolicy::new(Arc::new(LogDocSize));
+    let mut ldmp = LogMergePolicy::by_doc_count();
     ldmp.set_min_merge_docs(1);
     ldmp.set_merge_factor(4)?;
     let conf = mock_iwc();

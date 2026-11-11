@@ -814,6 +814,24 @@ mod tests {
     /// (`FieldUpdatesBuffer.java:99-105`): the buffer is binary, takes binary
     /// updates and refuses numeric ones, and iterates the reset without a
     /// value; a numeric reset (the positive control) stays numeric.
+    /// `addUpdate(Term, long, int)` asserts `isNumeric`
+    /// (`FieldUpdatesBuffer.java:172`): a binary buffer fails it in a debug
+    /// build; without assertions this port refuses the update.
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "self.is_numeric"))]
+    fn a_binary_buffer_asserts_on_a_numeric_update() {
+        let reset = DocValuesUpdate {
+            doc_values_type: DocValuesType::BINARY,
+            term: term("id", "a"),
+            field: "payload".to_string(),
+            doc_id_up_to: 3,
+            value: DocValuesUpdateValue::None,
+        };
+        let mut buffer =
+            FieldUpdatesBuffer::new(Arc::new(Counter::new_counter()), reset, 3).unwrap();
+        assert!(buffer.add_numeric_update(&term("id", "c"), 1, 3).is_err());
+    }
+
     #[test]
     fn a_binary_reset_starts_a_binary_buffer() {
         let reset = DocValuesUpdate {
@@ -828,7 +846,6 @@ mod tests {
         assert!(!buffer.is_numeric());
         assert!(buffer.numeric_values.is_none());
         assert!(buffer.byte_values.is_some());
-        assert!(buffer.add_numeric_update(&term("id", "c"), 1, 3).is_err());
         buffer
             .add_binary_update(&term("id", "b"), BytesRef::new(b"xy".to_vec()), 3)
             .unwrap();

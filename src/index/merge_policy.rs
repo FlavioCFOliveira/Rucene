@@ -5926,8 +5926,7 @@ impl SoftDeletesRetentionMergePolicy {
         query: Arc<dyn crate::search::Query>,
         reader: Arc<R>,
     ) -> Result<Option<Box<dyn crate::search::Scorer>>> {
-        let index_reader: Arc<dyn crate::index::IndexReader> = Arc::clone(&reader) as _;
-        let leaf_reader: Arc<dyn crate::index::LeafReader> = reader as _;
+        let index_reader: Arc<dyn crate::index::IndexReader> = reader as _;
         let mut searcher = crate::search::IndexSearcher::new(Arc::clone(&index_reader))?;
         searcher.set_query_cache(None);
         let rewritten = searcher.rewrite(query)?;
@@ -5936,17 +5935,14 @@ impl SoftDeletesRetentionMergePolicy {
             crate::search::score_mode::ScoreMode::COMPLETE_NO_SCORES,
             1.0,
         )?;
-        // `reader.getContext()` for a leaf is a top-level `LeafReaderContext`
-        // with ordinal and doc base zero.
-        let context = crate::index::reader_context::LeafReaderContext::new(
-            index_reader,
-            leaf_reader,
-            None,
-            0,
-            0,
-            0,
-            0,
-        );
+        // `weight.scorer(reader.getContext())`: the searcher holds the
+        // reader's context, so this is the same top-level `LeafReaderContext`
+        // the weight was built for, as `TermQuery`'s `wasBuiltFor` assertion
+        // requires (`TermQuery.java:121, 207`).
+        let context = index_reader
+            .get_context()?
+            .as_leaf()
+            .expect("a leaf reader's top-level context is a LeafReaderContext");
         weight.scorer(&context)
     }
 }

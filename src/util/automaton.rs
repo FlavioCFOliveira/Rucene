@@ -249,11 +249,18 @@ mod tests {
             Ok(false)
         }
 
-        fn seek_ceil(
-            &mut self,
-            _text: &BytesRef,
-        ) -> crate::error::Result<crate::index::SeekStatus> {
-            Ok(crate::index::SeekStatus::END)
+        fn seek_ceil(&mut self, text: &BytesRef) -> crate::error::Result<crate::index::SeekStatus> {
+            match self.terms.iter().position(|t| t.slice() >= text.slice()) {
+                Some(pos) => {
+                    self.pos = pos;
+                    Ok(if self.terms[pos].slice() == text.slice() {
+                        crate::index::SeekStatus::FOUND
+                    } else {
+                        crate::index::SeekStatus::NOT_FOUND
+                    })
+                }
+                None => Ok(crate::index::SeekStatus::END),
+            }
         }
 
         fn seek_ord(&mut self, ord: i64) -> crate::error::Result<()> {
@@ -481,7 +488,8 @@ mod tests {
         let it = all.get_terms_enum(&terms).unwrap();
         assert_eq!(it.term().unwrap(), Some(BytesRef::new(b"alpha".to_vec())));
 
-        // SINGLE returns a SingleTermsEnum reporting the fixed term.
+        // SINGLE returns a SingleTermsEnum, which seeks to the fixed term and
+        // enumerates exactly it (`CompiledAutomaton.java:354-355`).
         let single = CompiledAutomaton::new(
             Automata::make_binary(&BytesRef::new(b"beta".to_vec())),
             true,
@@ -489,8 +497,9 @@ mod tests {
             true,
         )
         .unwrap();
-        let it = single.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term().unwrap(), Some(BytesRef::new(b"beta".to_vec())));
+        let mut it = single.get_terms_enum(&terms).unwrap();
+        assert_eq!(it.next().unwrap(), Some(BytesRef::new(b"beta".to_vec())));
+        assert_eq!(it.next().unwrap(), None);
 
         // NORMAL delegates to Terms::intersect.
         let min = BytesRef::new(b"a".to_vec());

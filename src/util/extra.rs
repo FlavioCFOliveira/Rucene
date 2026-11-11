@@ -201,7 +201,8 @@ impl LongBitSet {
         if (self.num_bits & 0x3f) == 0 {
             return true;
         }
-        let mask = (-1i64 as u64) << self.num_bits;
+        // Java's `-1L << numBits` uses only the low six bits of the count.
+        let mask = (-1i64 as u64).wrapping_shl(self.num_bits as u32);
         let last = self.bits[(self.num_words - 1) as usize] as u64;
         (last & mask) == 0
     }
@@ -648,15 +649,35 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
 
     /// Adds all elements to the queue in bulk, building the heap in a single
     /// pass.
+    ///
+    /// Equivalent to `PriorityQueue.addAll(Collection)`
+    /// (`PriorityQueue.java:125-139`): an element past the heap array throws
+    /// `ArrayIndexOutOfBoundsException`, and the `finally` block still
+    /// re-heapifies the elements added before it.
     pub fn add_all<I: IntoIterator<Item = T>>(&mut self, elements: I) {
+        let mut overflow = None;
         for element in elements {
-            self.heap[self.size + 1] = Some(element);
+            let index = self.size + 1;
+            if index >= self.heap.len() {
+                overflow = Some(index);
+                break;
+            }
+            self.heap[index] = Some(element);
             self.size += 1;
         }
         if self.size > 0 {
             for i in (1..=(self.size / 2)).rev() {
                 self.down_heap(i);
             }
+        }
+        if let Some(index) = overflow {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                Some(&format!(
+                    "Index {index} out of bounds for length {}",
+                    self.heap.len()
+                )),
+            );
         }
     }
 

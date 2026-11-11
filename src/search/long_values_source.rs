@@ -473,6 +473,14 @@ impl LongValuesComparatorSource {
     }
 }
 
+impl LongValuesComparatorSource {
+    /// `producer.needsScores()`, which `LongValuesSortField.needsScores()`
+    /// answers (`LongValuesSource.java:304-307`).
+    pub(crate) fn producer_needs_scores(&self) -> bool {
+        self.producer.needs_scores()
+    }
+}
+
 impl FieldComparatorSource for LongValuesComparatorSource {
     fn as_any(&self) -> Option<&dyn Any> {
         Some(self)

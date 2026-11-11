@@ -1433,7 +1433,6 @@ mod tests {
     use crate::codecs::state::{SegmentReadState, SegmentWriteState};
     use crate::codecs::tests::DummyCodec;
     use crate::codecs::FilterCodec;
-    use crate::error::LuceneErrorKind;
     use crate::index::FieldInfos;
     use crate::store::{ByteBuffersDirectory, DefaultIOContext, Directory};
     use crate::util::Version;
@@ -1470,7 +1469,7 @@ mod tests {
     /// as `DocumentsWriterPerThread`'s Java constructor passes `-1`. Rejecting
     /// that value made the whole indexing pipeline impossible to construct.
     #[test]
-    fn segment_info_accepts_an_unset_max_doc_and_rejects_smaller_values() {
+    fn segment_info_accepts_an_unset_max_doc_and_any_other_value() {
         let mut info = test_segment_info("_0", UNSET_MAX_DOC);
         assert!(
             info.max_doc().is_err(),
@@ -1480,8 +1479,10 @@ mod tests {
         assert_eq!(info.max_doc().unwrap(), 7);
         assert!(info.set_max_doc(8).is_err(), "maxDoc may only be set once");
 
+        // Java's constructor does not validate `maxDoc` at all
+        // (`SegmentInfo.java:115-144`): a value below `-1` is stored as given.
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
-        let error = SegmentInfo::new(
+        let info = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
             Some(Version::LUCENE_10_5_0),
@@ -1495,14 +1496,8 @@ mod tests {
             HashMap::new(),
             Sort::default(),
         )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        .unwrap();
+        assert_eq!(info.max_doc().unwrap(), -2);
     }
 
     #[test]
@@ -1597,8 +1592,8 @@ mod tests {
 
     #[test]
     fn segment_info_max_doc_validation() {
-        // `-1` is Lucene's "not set yet" sentinel and must be accepted; only
-        // values below it are illegal.
+        // `-1` is Lucene's "not set yet" sentinel; Java's constructor
+        // validates nothing else (`SegmentInfo.java:115-144`).
         let info = test_segment_info("_0", UNSET_MAX_DOC);
         assert!(info.max_doc().is_err());
 
@@ -1617,7 +1612,7 @@ mod tests {
             HashMap::new(),
             Sort::default(),
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().max_doc().unwrap(), -3);
     }
 
     #[test]
@@ -1657,6 +1652,21 @@ mod tests {
         assert!(sci.set_soft_del_count(12).is_err());
         assert!(sci.set_del_count(6).is_ok());
         assert!(sci.set_soft_del_count(5).is_ok());
+    }
+
+    /// `setSoftDelCount` asserts `softDelCount + delCount <= info.maxDoc()`
+    /// (`SegmentCommitInfo.java:345-346`): a debug build fails it; without
+    /// assertions this port refuses the count.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "maxDoc=11,delCount=6,softDelCount=6")
+    )]
+    fn segment_commit_info_soft_del_count_past_max_doc_asserts() {
+        let info = test_segment_info("_0", 11);
+        let mut sci =
+            SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, StringHelper::random_id()).unwrap();
+        assert!(sci.set_del_count(6).is_ok());
         assert!(sci.set_soft_del_count(6).is_err());
     }
 

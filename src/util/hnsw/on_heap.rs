@@ -213,12 +213,17 @@ impl OnHeapHnswGraph {
     ///
     /// # Panics
     ///
-    /// Panics when `node` is beyond the size the graph was created with.
+    /// Throws Java's `IllegalStateException` (as a panic) when `node` is
+    /// beyond the size the graph was created with.
     pub fn add_node(&mut self, level: i32, node: i32) {
         let node_usize = node as usize;
         if node_usize >= self.graph.len() {
             if self.no_growth {
-                panic!("The graph does not expect to grow when an initial size is given");
+                // `throw new IllegalStateException(...)` (`OnHeapHnswGraph.java:140-144`).
+                crate::store::java_nio_file::throw_unchecked(
+                    "java.lang.IllegalStateException",
+                    Some("The graph does not expect to grow when an initial size is given"),
+                );
             }
             // `ArrayUtil.grow(graph, node + 1)` (`ArrayUtil.java:231-237`) sizes
             // the new array with `oversize(minSize, NUM_BYTES_OBJECT_REF)`.

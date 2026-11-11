@@ -981,7 +981,10 @@ mod tests {
         assert_eq!(log.calls().len(), before);
     }
 
+    /// `StoredFieldsConsumer.startDocument` asserts `lastDoc < docID`
+    /// (`StoredFieldsConsumer.java:56`): a debug build fails it.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "self.last_doc < doc_id"))]
     fn documents_must_be_written_in_increasing_order() {
         let (mut consumer, _log, _dir) = logging_consumer(false);
         consumer.start_document(2).expect("start");
@@ -1118,17 +1121,20 @@ mod tests {
             "no second writer may be created after an abort"
         );
 
+        // The abort released the writer, so `flush` reaches
+        // `writer.finish(...)` on a `null` writer: Java's
+        // `NullPointerException` (`StoredFieldsConsumer.java:104-106`).
         let flushed = make_segment_info(&directory, 2);
         let error = consumer
             .flush(&flushed)
             .expect_err("an aborted segment has nothing to flush");
         assert!(
             matches!(
-                error,
+                &error,
                 LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
+                    kind: LuceneErrorKind::Unchecked { class, .. },
                     ..
-                }
+                } if *class == "java.lang.NullPointerException"
             ),
             "{error:?}"
         );

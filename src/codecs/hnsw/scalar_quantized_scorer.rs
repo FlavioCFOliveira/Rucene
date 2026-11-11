@@ -357,6 +357,13 @@ impl RandomVectorScorerSupplier for ScalarQuantizedRandomVectorScorerSupplier {
             self.values.copy_legacy()?,
         )))
     }
+
+    /// Equivalent to `ScalarQuantizedRandomVectorScorerSupplier.toString()`
+    /// (`ScalarQuantizedVectorScorer.java:178-183`), the override of the
+    /// trait's `Object.toString()` default.
+    fn to_string(&self) -> String {
+        format!("{self}")
+    }
 }
 
 impl std::fmt::Display for ScalarQuantizedRandomVectorScorerSupplier {

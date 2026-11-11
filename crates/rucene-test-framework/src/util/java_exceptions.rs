@@ -245,6 +245,35 @@ pub fn java_throwable(e: &LuceneError) -> Throwable {
     register_hierarchy();
     let (_, message) = crate::analysis::base_token_stream_test_case::java_class_and_message(e);
     let mut throwable = Throwable::new(java_class_name(e), message);
+    // `getStackTrace()`: the frames captured when the error was created, each
+    // function named as Java names the method (`check_max_clause_count` is
+    // `checkMaxClauseCount`).
+    let frames = e.get_stack_trace();
+    if !frames.is_empty() {
+        throwable.set_stack_trace(
+            frames
+                .iter()
+                .map(
+                    |frame| randomizedtesting::jdk::exception::StackTraceElement {
+                        declaring_class: frame.path.clone(),
+                        method_name: java_method_name(&frame.function),
+                        file_name: frame.file.clone(),
+                        line_number: frame.line,
+                    },
+                )
+                .collect(),
+        );
+    }
+    // `getCause()`: the kind's cause, held as an `Arc<LuceneError>`.
+    if let Some(source) = std::error::Error::source(e) {
+        let cause = source
+            .downcast_ref::<std::sync::Arc<LuceneError>>()
+            .map(|cause| &**cause)
+            .or_else(|| source.downcast_ref::<LuceneError>());
+        if let Some(cause) = cause {
+            throwable.set_cause(java_throwable(cause));
+        }
+    }
     // `getSuppressed()` of an error that `addSuppressed` was called on.
     for suppressed in e.get_suppressed() {
         throwable.add_suppressed(java_throwable(suppressed));
@@ -258,6 +287,24 @@ pub fn java_throwable(e: &LuceneError) -> Throwable {
         }
     }
     throwable
+}
+
+/// The Java method name of the Rust function `function`: snake_case becomes
+/// lowerCamelCase (`check_max_clause_count` → `checkMaxClauseCount`).
+pub fn java_method_name(function: &str) -> String {
+    let mut name = String::with_capacity(function.len());
+    let mut upper = false;
+    for c in function.chars() {
+        if c == '_' && !name.is_empty() {
+            upper = true;
+        } else if upper {
+            name.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            name.push(c);
+        }
+    }
+    name
 }
 
 /// The Java throwable a [`JavaIoException`] stands for, with its suppressed

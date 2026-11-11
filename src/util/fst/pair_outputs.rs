@@ -56,11 +56,16 @@ impl<O1: Outputs, O2: Outputs> PairOutputs<O1, O2> {
     ///
     /// Equivalent to `PairOutputs.newPair`.
     pub fn new_pair(&self, a: O1::Output, b: O2::Output) -> Pair<O1::Output, O2::Output> {
+        let both_no_output = self.outputs1.equals(&a, &self.outputs1.no_output())
+            && self.outputs2.equals(&b, &self.outputs2.no_output());
         let p = Pair {
             output1: a,
             output2: b,
         };
-        debug_assert!(self.valid(&p));
+        // Java returns `NO_OUTPUT` here without asserting `valid`.
+        if !both_no_output {
+            debug_assert!(self.valid(&p));
+        }
         p
     }
 
@@ -82,7 +87,12 @@ impl<O1: Outputs, O2: Outputs> PairOutputs<O1, O2> {
             .outputs2
             .equals(&pair.output2, &self.outputs2.no_output());
         if no_output1 && no_output2 {
-            let no_output = self.no_output();
+            // `NO_OUTPUT`, built directly: `no_output()` goes through
+            // `new_pair`, which asserts `valid`.
+            let no_output = Pair {
+                output1: self.outputs1.no_output(),
+                output2: self.outputs2.no_output(),
+            };
             return self.outputs1.equals(&pair.output1, &no_output.output1)
                 && self.outputs2.equals(&pair.output2, &no_output.output2);
         }

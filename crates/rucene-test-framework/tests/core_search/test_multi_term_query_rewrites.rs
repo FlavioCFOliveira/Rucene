@@ -430,7 +430,14 @@ impl MultiTermQuery for BoostingQuery {
         _atts: &mut AttributeSource,
     ) -> Result<Box<dyn TermsEnum>> {
         Ok(Box::new(BoostingTermsEnum {
-            inner: FilteredTermsEnum::new(terms.iterator()?, Box::new(BoostFilter)),
+            // `new FilteredTermsEnum(terms.iterator())`, which is
+            // `this(tenum, true)` (`FilteredTermsEnum.java:78-80`): the first
+            // step seeks to the null initial seek term and ends the enum.
+            inner: FilteredTermsEnum::with_start_with_seek(
+                terms.iterator()?,
+                Box::new(BoostFilter),
+                true,
+            ),
         }))
     }
 

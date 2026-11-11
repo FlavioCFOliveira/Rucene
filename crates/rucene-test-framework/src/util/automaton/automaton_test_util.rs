@@ -467,7 +467,12 @@ impl AutomatonTestUtil {
         level: i32,
     ) -> bool {
         if level > Self::MAX_RECURSION_LEVEL {
-            panic!("input automaton is too large: {level}");
+            // `throw new IllegalArgumentException("input automaton is too large: " + level)`
+            // (`AutomatonTestUtil.java:557-558`).
+            rucene::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!("input automaton is too large: {level}")),
+            );
         }
         path[state as usize] = true;
         let num_transitions = a.init_transition(state, scratch);

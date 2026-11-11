@@ -671,7 +671,7 @@ impl DocIdSetIterator for AssertingScorer<'_> {
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         java_assert!(self.core().state == IteratorState::Iterating);
         // See the module divergences: the wrapped iterator's run end is not
         // reachable from `&self`; `docID() + 1` is the default run end.

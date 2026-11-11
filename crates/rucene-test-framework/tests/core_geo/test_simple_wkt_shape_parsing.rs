@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
-use rucene::error::{LuceneError, LuceneErrorKind, Result};
+use rucene::error::Result;
 use rucene::geo::simple_wkt_shape_parser::{EMPTY, SPACE};
-use rucene::geo::{ParseException, Polygon, ShapeType, SimpleWKTShapeParser, WktGeometry};
+use rucene::geo::{Polygon, ShapeType, SimpleWKTShapeParser, WktGeometry};
 
 use crate::core_support::{
     assert_contains, assert_equals, assert_equals_delta, class, iae_message, test,
@@ -42,19 +42,9 @@ pub fn class_def() -> Arc<Class> {
     )
 }
 
-/// `java.text.ParseException` as the checked exception the test methods
-/// declare.
-fn checked(e: ParseException) -> LuceneError {
-    LuceneError::from(LuceneErrorKind::Unchecked {
-        class: rucene::util::extra::PARSE_EXCEPTION,
-        message: Some(e.message().to_string()),
-        cause: None,
-    })
-}
-
 /// `SimpleWKTShapeParser.parse(wkt)`.
 fn parse(wkt: &str) -> Result<Option<WktGeometry>> {
-    SimpleWKTShapeParser::parse(wkt).map_err(checked)
+    SimpleWKTShapeParser::parse(wkt)
 }
 
 /// `assertTrue(shape instanceof X)` failing with no message.

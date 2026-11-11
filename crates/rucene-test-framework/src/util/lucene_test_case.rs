@@ -451,6 +451,7 @@ impl StaticEnvironment {
     /// `systemPropertyAsInt` for a property that does not parse (Java's
     /// `ExceptionInInitializerError` carries it).
     pub fn from_system_properties() -> StaticEnvironment {
+        enable_error_backtraces();
         let as_boolean = RandomizedTest::system_property_as_boolean;
         let property = |key: &str, default: &str| {
             system::get_property(key).unwrap_or_else(|| default.to_string())
@@ -522,6 +523,20 @@ fn default_random_multiplier_of(test_nightly: bool) -> i32 {
     } else {
         1
     }
+}
+
+/// Turns on the stack capture of every `LuceneError`, so that
+/// `Throwable.getStackTrace()` has frames as it has in Java: sets
+/// `RUST_LIB_BACKTRACE=1` unless the variable is already set. `Backtrace`
+/// reads the variable once, at the first capture, so this runs as early as
+/// the test framework can: the static initializer of `LuceneTestCase`.
+pub fn enable_error_backtraces() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var_os("RUST_LIB_BACKTRACE").is_none() {
+            std::env::set_var("RUST_LIB_BACKTRACE", "1");
+        }
+    });
 }
 
 static ENVIRONMENT: LazyLock<StaticEnvironment> =

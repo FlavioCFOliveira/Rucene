@@ -1941,6 +1941,11 @@ impl TermsEnum for SegmentTermsEnum {
         Ok(Some(BytesRef::new(self.term.clone())))
     }
 
+    /// The `term` buffer `term()` returns, read without its `assert !eof`.
+    fn term_buffer(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(self.term.clone())))
+    }
+
     fn ord(&self) -> Result<i64> {
         Err(LuceneError::unsupported_operation(
             "the block-tree terms dictionary does not track term ordinals".to_string(),

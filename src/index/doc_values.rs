@@ -1261,6 +1261,12 @@ impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
 /// `dyn Trait` is expected. This mirrors Java's polymorphic references and
 /// avoids manual unboxing at every call site.
 impl<T: DocIdSetIterator + ?Sized> DocIdSetIterator for Box<T> {
+    /// Forwarded: `TwoPhaseIterator.unwrap` tests the boxed iterator itself
+    /// (`ConstantScoreBulkScorer.java:54-56` among its callers).
+    fn wraps_two_phase_iterator(&self) -> bool {
+        (**self).wraps_two_phase_iterator()
+    }
+
     fn doc_id(&self) -> i32 {
         (&**self).doc_id()
     }
@@ -1285,7 +1291,7 @@ impl<T: DocIdSetIterator + ?Sized> DocIdSetIterator for Box<T> {
     /// own `docIDRunEnd()` (`BlockPostingsEnum` overrides it,
     /// `Lucene104PostingsReader.java:1100-1128`), which the trait default
     /// would hide behind the box.
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         (**self).doc_id_run_end()
     }
 
@@ -3115,7 +3121,11 @@ mod tests {
         assert_eq!(values.next_ord().unwrap(), 1);
     }
 
+    /// Java's empty doc values `longValue()` body is `assert false`
+    /// (`DocValues.java:100-101`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_numeric_doc_values_returns_no_docs() {
         let mut values = EmptyNumericDocValues::new();
         assert_eq!(values.doc_id(), -1);
@@ -3126,14 +3136,22 @@ mod tests {
         assert!(values.long_value().is_err());
     }
 
+    /// Java's empty doc values `binaryValue()` body is `assert false`
+    /// (`DocValues.java:61-62`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_binary_doc_values_returns_no_docs() {
         let mut values = EmptyBinaryDocValues::new();
         assert_eq!(values.advance(10).unwrap(), NO_MORE_DOCS);
         assert!(values.binary_value().is_err());
     }
 
+    /// Java's empty doc values `ordValue()` body is `assert false`
+    /// (`DocValues.java:141-142`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_sorted_doc_values_has_empty_dictionary() {
         let values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);

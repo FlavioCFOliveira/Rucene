@@ -103,7 +103,7 @@ pub trait DocIdSetIterator {
     ///
     /// The returned value is greater than [`Self::doc_id`], and every doc ID in
     /// `[doc_id(), doc_id_run_end())` matches the iterator.
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc_id() != NO_MORE_DOCS);
         Ok(self.doc_id() + 1)
     }
@@ -180,7 +180,7 @@ impl DocIdSetIterator for EmptyDocIdSetIterator {
         self.range.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.range.doc_id_run_end()
     }
 }
@@ -233,7 +233,7 @@ impl DocIdSetIterator for AllDocIdSetIterator {
         self.range.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.range.doc_id_run_end()
     }
 }
@@ -308,7 +308,7 @@ impl DocIdSetIterator for RangeDocIdSetIterator {
         (self.max_doc - self.min_doc) as i64
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc != NO_MORE_DOCS);
         Ok(self.max_doc)
     }

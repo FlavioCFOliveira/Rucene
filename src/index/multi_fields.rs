@@ -1088,6 +1088,9 @@ impl MultiTermsEnum {
     /// Reads the term `current` refers to: the current term of the enum of
     /// sub `sub`, as it stands now (see [`current`](Self#structfield.current)).
     fn sub_term(&self, sub: usize) -> Result<Option<BytesRef>> {
+        // Java's `current` is the `BytesRef` the sub's `term()` returned; it is
+        // read as it stands, without calling `term()` again
+        // (`MultiTermsEnum.java:208, 249, 279-281`).
         self.queue.subs()[sub]
             .base
             .terms_enum()
@@ -1096,7 +1099,7 @@ impl MultiTermsEnum {
                     "INVARIANT: a sub that supplied a term holds an enum".to_string(),
                 )
             })?
-            .term()
+            .term_buffer()
     }
 
     /// Extracts every sub that sits on the top term out of the queue into

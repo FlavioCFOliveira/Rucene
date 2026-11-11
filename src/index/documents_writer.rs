@@ -1284,25 +1284,20 @@ impl FrozenBufferedUpdates {
                 continue;
             }
 
-            // Java writes `segState.reader.getContext()`, which for a leaf is a
-            // top-level `LeafReaderContext` with ordinal and doc base zero, and
-            // then builds the searcher over `readerContext.reader()` — the same
-            // reader — so the context handed to the weight is the searcher's
-            // own. Rust cannot widen `Arc<SegmentReader>` into
-            // `Arc<dyn IndexReader>` and `Arc<dyn LeafReader>` at once, so the
-            // context carries one handle per view.
+            // Java writes `final LeafReaderContext readerContext =
+            // segState.reader.getContext()` and builds the searcher over
+            // `readerContext.reader()` (`FrozenBufferedUpdates.java:477-499`),
+            // so the weight is created and scored against the same top-level
+            // context — `TermQuery`'s `termStates.wasBuiltFor` assertion
+            // (`TermQuery.java:121, 207`) depends on it. Holding `context`
+            // keeps the reader's cached context alive, so every
+            // `IndexSearcher::new` below answers this same context.
             let index_reader: Arc<dyn crate::index::IndexReader> =
                 Arc::clone(&seg_state.reader) as _;
-            let leaf_reader: Arc<dyn LeafReader> = Arc::clone(&seg_state.reader) as _;
-            let context = crate::index::reader_context::LeafReaderContext::new(
-                Arc::clone(&index_reader),
-                leaf_reader,
-                None,
-                0,
-                0,
-                0,
-                0,
-            );
+            let context = Arc::clone(&index_reader)
+                .get_context()?
+                .as_leaf()
+                .expect("a leaf reader's top-level context is a LeafReaderContext");
 
             for (query, query_limit) in &delete_queries {
                 let limit = if del_gen == seg_state.del_gen {
@@ -1611,7 +1606,9 @@ impl<'a> TermDocsIterator<'a> {
                     let mut terms_enum = terms.iterator()?;
                     self.reader_term = if self.sorted_terms {
                         // need to reset, otherwise the sortedness check below
-                        // fails, since we sort per field
+                        // fails, since we sort per field: `assert (lastTerm =
+                        // null) == null;` (`FrozenBufferedUpdates.java:577-578`)
+                        self.last_term = None;
                         terms_enum.next()?
                     } else {
                         None
@@ -2604,11 +2601,16 @@ impl DocumentsWriterDeleteQueue {
         }
         self.closed.store(true, Ordering::Release);
         let max = self.max_seq_no.load(Ordering::Acquire);
+        let seq_no = self.next_seq_no.load(Ordering::Acquire);
         debug_assert!(
-            self.next_seq_no.load(Ordering::Acquire) <= max,
-            "maxSeqNo must be greater or equal to nextSeqNo"
+            seq_no <= max,
+            "maxSeqNo must be greater or equal to {seq_no} but was {max}"
         );
-        self.next_seq_no.store(max + 1, Ordering::Release);
+        // `nextSeqNo.set(maxSeqNo + 1)` (`DocumentsWriterDeleteQueue.java:327`):
+        // a queue that was never advanced has `maxSeqNo == Long.MAX_VALUE`, and
+        // Java's `long` addition wraps.
+        self.next_seq_no
+            .store(max.wrapping_add(1), Ordering::Release);
         Ok(())
     }
 
@@ -4135,10 +4137,16 @@ impl DwptGuard {
     where
         F: Fn(),
     {
-        let outcome = self.update_documents_inner(docs, del_node, on_new_doc_on_ram);
-        // The `finally`: a failure to abort replaces the outcome.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.update_documents_inner(docs, del_node, on_new_doc_on_ram)
+        }));
+        // The `finally`: a failure to abort replaces the outcome, a thrown
+        // panic included.
         self.maybe_abort("updateDocuments", notifications)?;
-        outcome
+        match outcome {
+            Ok(outcome) => outcome,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     /// Indexes a column-oriented batch of documents, optionally deleting first.
@@ -4247,6 +4255,7 @@ impl DwptGuard {
 
         let docs_in_ram_before = self.dwpt.num_docs_in_ram();
         let has_index_sort = self.dwpt.index_writer_config.index_sort().is_some();
+        let mut panicked: Option<Box<dyn std::any::Any + Send>> = None;
         let result = (|| -> Result<()> {
             // `docs.iterator()` dereferences a `null` block; `hasNext()`,
             // `next()` and the `hasNext()` that tells the last document run in
@@ -4272,19 +4281,40 @@ impl DwptGuard {
                     .state
                     .as_mut()
                     .expect("INVARIANT: state is only taken in Drop");
-                let processed = state.indexing_chain.process_document(
-                    doc_id,
-                    doc,
-                    is_last_doc,
-                    &mut state.field_infos,
-                );
+                // `try { consumer.processDocument(..) } finally {
+                // onNewDocOnRAM.run(); }` (`DocumentsWriterPerThread.java:
+                // 281-285`): a panic — this port's carrier of Java's unchecked
+                // throwables — runs the `finally` too, so the writer's count of
+                // documents in RAM stays equal to the DWPT's.
+                let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    state.indexing_chain.process_document(
+                        doc_id,
+                        doc,
+                        is_last_doc,
+                        &mut state.field_infos,
+                    )
+                }));
                 on_new_doc_on_ram();
-                processed?;
+                match processed {
+                    Ok(processed) => processed?,
+                    Err(payload) => {
+                        panicked = Some(payload);
+                        return Ok(());
+                    }
+                }
             }
             Ok(())
         })();
 
         let num_docs = self.dwpt.num_docs_in_ram() - docs_in_ram_before;
+        if let Some(payload) = panicked {
+            // `catch (Throwable t) { if (isAborted() == false) deleteLastDocs(..);
+            // throw t; }` (`DocumentsWriterPerThread.java:287-295`).
+            if !self.dwpt.is_aborted() {
+                self.delete_last_docs(num_docs);
+            }
+            std::panic::resume_unwind(payload);
+        }
         match result {
             Ok(()) => {
                 if num_docs > 1 {
@@ -6224,6 +6254,7 @@ impl DocumentsWriter {
         flush_notifications: Arc<dyn FlushNotifications>,
         index_created_version_major: i32,
         pending_num_docs: Arc<AtomicI64>,
+        enable_test_points: bool,
         segment_name_supplier: SegmentNameSupplier,
         config: Arc<LiveIndexWriterConfig>,
         directory_orig: Arc<dyn Directory>,
@@ -6234,7 +6265,7 @@ impl DocumentsWriter {
             flush_notifications,
             index_created_version_major,
             pending_num_docs,
-            false,
+            enable_test_points,
             segment_name_supplier,
             config,
             directory_orig,
@@ -7044,6 +7075,41 @@ mod tests {
         INIT.call_once(|| {
             let _ = register_codec("Lucene104", Lucene104Codec::new());
         });
+    }
+
+    /// Delete terms are sorted per field, so a term of the next field may sort
+    /// before the last term of the previous one. `setField` resets the
+    /// assert-only `lastTerm` with each new field (`assert (lastTerm = null)
+    /// == null;`, `FrozenBufferedUpdates.java:577-578`); without the reset the
+    /// sortedness assert fails with `boom: 0 last: z`.
+    #[test]
+    fn term_docs_iterator_resets_the_sorted_check_per_field() {
+        use crate::document::StringField;
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::{IndexReader, IndexWriterConfig};
+        ensure_default_codec();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("a", "z".to_string(), Store::NO).unwrap(),
+        ));
+        doc.add(Box::new(
+            StringField::new("b", "0".to_string(), Store::NO).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(dir).unwrap();
+        let reader = Arc::clone(&reader) as Arc<dyn IndexReader>;
+        let leaves = reader.leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let mut term_docs = TermDocsIterator::new(leaf.as_ref(), true);
+        assert!(term_docs
+            .next_term("a", &BytesRef::new(b"z".to_vec()))
+            .unwrap());
+        assert!(term_docs
+            .next_term("b", &BytesRef::new(b"0".to_vec()))
+            .unwrap());
     }
 
     /// Builds a live config with auto-flush fully under the test's control.

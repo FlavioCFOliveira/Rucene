@@ -336,7 +336,7 @@ impl ParallelLeafReader {
                         if existing != leaf_sort {
                             return Err(LuceneError::illegal_argument(format!(
                                 "cannot combine LeafReaders that have different index sorts: saw \
-                                 both sort={existing:?} and {leaf_sort:?}"
+                                 both sort={existing} and {leaf_sort}"
                             )));
                         }
                     }

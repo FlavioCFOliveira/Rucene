@@ -31,6 +31,10 @@ pub struct CharArrayMap<V> {
     /// [`is_unmodifiable`](Self::is_unmodifiable) stands in for Java's
     /// `instanceof UnmodifiableCharArrayMap` test.
     unmodifiable: bool,
+    /// Whether this map is `CharArrayMap.EMPTY_MAP`, the `EmptyCharArrayMap`
+    /// singleton [`empty_map`](Self::empty_map) stands for: Java's `copy`
+    /// answers that same instance for it (`CharArrayMap.java:538`).
+    empty_map: bool,
 }
 
 impl<V> CharArrayMap<V> {
@@ -46,6 +50,7 @@ impl<V> CharArrayMap<V> {
             keys: (0..size).map(|_| None).collect(),
             values: (0..size).map(|_| None).collect(),
             unmodifiable: false,
+            empty_map: false,
         }
     }
 
@@ -112,6 +117,10 @@ impl<V> CharArrayMap<V> {
     where
         V: Clone,
     {
+        // `if (map == EMPTY_MAP) return emptyMap();` (`CharArrayMap.java:538`).
+        if self.empty_map {
+            return Self::empty_map();
+        }
         Self {
             ignore_case: self.ignore_case,
             count: self.count,
@@ -120,6 +129,7 @@ impl<V> CharArrayMap<V> {
             // Java's copy builds a plain `CharArrayMap`, so a copy of an
             // unmodifiable map can be written to again.
             unmodifiable: false,
+            empty_map: false,
         }
     }
 
@@ -131,6 +141,7 @@ impl<V> CharArrayMap<V> {
     pub fn empty_map() -> Self {
         let mut map = Self::new(0, false);
         map.unmodifiable = true;
+        map.empty_map = true;
         map
     }
 
@@ -358,16 +369,17 @@ impl<V> CharArrayMap<V> {
 
     /// Refuses a write to an unmodifiable map.
     ///
-    /// Divergence: Java raises `UnsupportedOperationException`, an unchecked
-    /// exception, from the overrides in `UnmodifiableCharArrayMap`. The port's
-    /// write methods do not return `Result`, so the unchecked exception becomes
-    /// a panic, which is how this crate carries Java's unchecked exceptions
-    /// through a method whose signature cannot report an error.
+    /// Java's `UnmodifiableCharArrayMap` overrides throw
+    /// `new UnsupportedOperationException()` (`CharArrayMap.java:562-601`).
+    /// The port's write methods do not return `Result`, so that unchecked
+    /// exception is thrown as a panic carrying the Java class.
     fn assert_modifiable(&self) {
-        assert!(
-            !self.unmodifiable,
-            "CharArrayMap is unmodifiable and cannot be written to"
-        );
+        if self.unmodifiable {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.UnsupportedOperationException",
+                None,
+            );
+        }
     }
 
     /// Returns the table slot for `text`, whether occupied or not.

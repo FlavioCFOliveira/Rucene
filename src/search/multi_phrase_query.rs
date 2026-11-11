@@ -777,6 +777,40 @@ impl UnionPostingsEnum {
         Ok(())
     }
 
+    /// The document move of `UnionPostingsEnum.nextDoc()`
+    /// (`MultiPhraseQuery.java`), without the positions merge this port runs
+    /// eagerly (see [`merge_positions`](Self::merge_positions)):
+    /// `UnionFullPostingsEnum` inherits `nextDoc()` but reads the subs'
+    /// positions itself, so it must find them unconsumed.
+    fn next_doc_without_positions(&mut self) -> Result<i32> {
+        let mut top = self.docs_queue.top();
+        let doc = self.subs[top].doc_id();
+
+        loop {
+            self.subs[top].next_doc()?;
+            top = self.docs_queue.update_top(&self.subs);
+            if self.subs[top].doc_id() != doc {
+                break;
+            }
+        }
+        Ok(self.subs[self.docs_queue.top()].doc_id())
+    }
+
+    /// The document move of `UnionPostingsEnum.advance(int)`, without the
+    /// positions merge; see [`next_doc_without_positions`](Self::next_doc_without_positions).
+    fn advance_without_positions(&mut self, target: i32) -> Result<i32> {
+        let mut top = self.docs_queue.top();
+
+        loop {
+            self.subs[top].advance(target)?;
+            top = self.docs_queue.update_top(&self.subs);
+            if self.subs[top].doc_id() >= target {
+                break;
+            }
+        }
+        Ok(self.subs[self.docs_queue.top()].doc_id())
+    }
+
     /// Returns the subs, unordered.
     ///
     /// Equivalent to reading the `final PostingsEnum[] subs` field, which
@@ -804,34 +838,15 @@ impl DocIdSetIterator for UnionPostingsEnum {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        let mut top = self.docs_queue.top();
-        let doc = self.subs[top].doc_id();
-
-        loop {
-            self.subs[top].next_doc()?;
-            top = self.docs_queue.update_top(&self.subs);
-            if self.subs[top].doc_id() != doc {
-                break;
-            }
-        }
-
+        let doc = self.next_doc_without_positions()?;
         self.merge_positions()?;
-        Ok(self.subs[self.docs_queue.top()].doc_id())
+        Ok(doc)
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        let mut top = self.docs_queue.top();
-
-        loop {
-            self.subs[top].advance(target)?;
-            top = self.docs_queue.update_top(&self.subs);
-            if self.subs[top].doc_id() >= target {
-                break;
-            }
-        }
-
+        let doc = self.advance_without_positions(target)?;
         self.merge_positions()?;
-        Ok(self.subs[self.docs_queue.top()].doc_id())
+        Ok(doc)
     }
 
     fn cost(&self) -> i64 {
@@ -1079,13 +1094,13 @@ impl DocIdSetIterator for UnionFullPostingsEnum {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        let doc = self.base.next_doc()?;
+        let doc = self.base.next_doc_without_positions()?;
         self.rebuild_positions()?;
         Ok(doc)
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        let doc = self.base.advance(target)?;
+        let doc = self.base.advance_without_positions(target)?;
         self.rebuild_positions()?;
         Ok(doc)
     }

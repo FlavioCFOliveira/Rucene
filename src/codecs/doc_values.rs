@@ -634,7 +634,11 @@ mod tests {
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use std::sync::Arc;
 
+    /// Java's empty doc values `longValue()` body is `assert false`
+    /// (`DocValues.java:100-101`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_numeric_doc_values_returns_no_docs() {
         let mut values = EmptyNumericDocValues::new();
         assert_eq!(values.doc_id(), -1);
@@ -643,14 +647,22 @@ mod tests {
         assert!(values.long_value().is_err());
     }
 
+    /// Java's empty doc values `binaryValue()` body is `assert false`
+    /// (`DocValues.java:61-62`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_binary_doc_values_returns_no_docs() {
         let mut values = EmptyBinaryDocValues::new();
         assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
         assert!(values.binary_value().is_err());
     }
 
+    /// Java's empty doc values `ordValue()` body is `assert false`
+    /// (`DocValues.java:141-142`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_sorted_doc_values_has_no_values() {
         let values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);

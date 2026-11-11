@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Instant;
 
 use crate::analysis::Analyzer;
@@ -1192,6 +1192,7 @@ impl IndexWriter {
             Arc::clone(&notifications) as Arc<dyn FlushNotifications>,
             segment_infos.index_created_version_major(),
             Arc::clone(&pending_num_docs),
+            enable_test_points,
             segment_name_supplier,
             Arc::clone(&config),
             Arc::clone(&directory_orig),
@@ -1968,9 +1969,12 @@ impl IndexWriter {
     }
 
     fn state(&self) -> Result<MutexGuard<'_, WriterState>> {
-        let mut state = self.state.lock().map_err(|_| {
-            LuceneError::illegal_state("IndexWriter state lock poisoned".to_string())
-        })?;
+        // `synchronized (this)`: a Java monitor is released when an exception
+        // leaves the block and is never poisoned (JLS 14.19), so the next
+        // thread simply enters. A panic — the port's carrier of Java's
+        // unchecked throwables, an `InfoStream` test point's included — that
+        // unwound through a holder is recovered from in the same way.
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         // Absorb the `segmentInfos.changed()` calls the segment-name supplier
         // made since the last lock; see `pending_segment_infos_changes`.
         let pending = self.pending_segment_infos_changes.swap(0, Ordering::AcqRel);
@@ -2519,8 +2523,14 @@ impl IndexWriter {
     /// such a field would invalidate the order the segments are stored in.
     fn reject_index_sort_field(&self, field: &str) -> Result<()> {
         if self.config.index_sort_fields().contains(field) {
+            // `"..., field=" + field + ", sort=" + config.getIndexSort()`
+            // (`IndexWriter.java:1976-1981, 2061-2066`).
+            let sort = self
+                .config
+                .index_sort()
+                .map_or_else(|| "null".to_string(), |sort| sort.to_string());
             return Err(LuceneError::illegal_argument(format!(
-                "cannot update docvalues field involved in the index sort, field={field}"
+                "cannot update docvalues field involved in the index sort, field={field}, sort={sort}"
             )));
         }
         Ok(())
@@ -2920,91 +2930,106 @@ impl IndexWriter {
         let mut any_changes = false;
         let stop_adding_merged_segments = Arc::new(AtomicBool::new(false));
         let max_commit_merge_wait_millis = self.config.max_full_flush_merge_wait_millis();
+        let mut prepare_panic: Option<Box<dyn std::any::Any + Send>> = None;
         let prepared = {
             let _full_flush = self.lock_full_flush()?;
             let mut flush_success = false;
             type Prepared = (i64, Arc<Mutex<SegmentInfos>>, Option<MergeSpecification>);
-            let outcome = (|| -> Result<Prepared> {
-                let mut seq_no = self.documents_writer.flush_all_threads()?;
-                if seq_no < 0 {
-                    any_changes = true;
-                    seq_no = -seq_no;
-                }
-                if !any_changes {
-                    // Prevent double increment since docWriter#doFlush
-                    // increments the flushcount if we flushed anything.
-                    self.flush_count.fetch_add(1, Ordering::AcqRel);
-                }
-                self.publish_flushed_segments(true)?;
-                // Cannot pass triggerMerges=true here, else it can lead to
-                // deadlock.
-                self.process_events(false)?;
-                flush_success = true;
+            // A panic — the port's carrier of Java's unchecked throwables, the
+            // `OutOfMemoryError` an `InfoStream` raises for one — runs the
+            // `finally` below too, and is rethrown after it
+            // (`IndexWriter.java:3846-3863`).
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Prepared> {
+                    let mut seq_no = self.documents_writer.flush_all_threads()?;
+                    if seq_no < 0 {
+                        any_changes = true;
+                        seq_no = -seq_no;
+                    }
+                    if !any_changes {
+                        // Prevent double increment since docWriter#doFlush
+                        // increments the flushcount if we flushed anything.
+                        self.flush_count.fetch_add(1, Ordering::AcqRel);
+                    }
+                    self.publish_flushed_segments(true)?;
+                    // Cannot pass triggerMerges=true here, else it can lead to
+                    // deadlock.
+                    self.process_events(false)?;
+                    flush_success = true;
 
-                self.apply_all_deletes_and_updates()?;
-                let mut state = self.state()?;
-                self.write_reader_pool_with(&mut state, true)?;
-                if self.change_count.load(Ordering::Acquire)
-                    != self.last_commit_change_count.load(Ordering::Acquire)
-                {
-                    // There are changes to commit, so we will write a new
-                    // segments_N in startCommit. The act of committing is itself
-                    // an NRT-visible change (an NRT reader that was just opened
-                    // before this should see it on reopen), so we increment
-                    // changeCount and the segments version so a future NRT
-                    // reopen will see the change.
-                    self.change_count.fetch_add(1, Ordering::AcqRel);
-                    state.segment_infos.changed();
-                }
-                // `IndexWriter.prepareCommitInternal` copies the live commit data
-                // into a fresh `HashMap` before handing it to `setUserData`
-                // (`IndexWriter.java:3814-3820`), so the map `segments_N` walks
-                // is a `java.util.HashMap` filled in the live data's iteration
-                // order.
-                let user_data: JavaStringMap = JavaStringMap::Hash(
-                    state
-                        .commit_user_data
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect(),
-                );
-                state.segment_infos.set_user_data(user_data, false);
-                self.publish_segment_counter(&mut state.segment_infos);
+                    self.apply_all_deletes_and_updates()?;
+                    let mut state = self.state()?;
+                    self.write_reader_pool_with(&mut state, true)?;
+                    if self.change_count.load(Ordering::Acquire)
+                        != self.last_commit_change_count.load(Ordering::Acquire)
+                    {
+                        // There are changes to commit, so we will write a new
+                        // segments_N in startCommit. The act of committing is itself
+                        // an NRT-visible change (an NRT reader that was just opened
+                        // before this should see it on reopen), so we increment
+                        // changeCount and the segments version so a future NRT
+                        // reopen will see the change.
+                        self.change_count.fetch_add(1, Ordering::AcqRel);
+                        state.segment_infos.changed();
+                    }
+                    // `IndexWriter.prepareCommitInternal` copies the live commit data
+                    // into a fresh `HashMap` before handing it to `setUserData`
+                    // (`IndexWriter.java:3814-3820`), so the map `segments_N` walks
+                    // is a `java.util.HashMap` filled in the live data's iteration
+                    // order.
+                    let user_data: JavaStringMap = JavaStringMap::Hash(
+                        state
+                            .commit_user_data
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
+                    );
+                    state.segment_infos.set_user_data(user_data, false);
+                    self.publish_segment_counter(&mut state.segment_infos);
 
-                // Must clone the segmentInfos while we still hold
-                // fullFlushLock and while sync'd so that no partial changes (eg
-                // a delete w/o corresponding add from an updateDocument) can
-                // sneak into the commit point.
-                let to_commit = clone_infos(&state.segment_infos)?;
-                self.pending_commit_change_count
-                    .store(self.change_count.load(Ordering::Acquire), Ordering::Release);
-                // This protects the segmentInfos we are now going to commit.
-                // This is important in case, eg, while we are trying to sync all
-                // referenced files, a merge completes which would otherwise have
-                // removed the files we are now syncing.
-                let files = to_commit.files(false)?;
-                state.deleter.inc_ref_files(files.iter());
-                state.files_to_commit = Some(files);
-                // `IndexWriter.java:3848-3855`: we can safely prepare the
-                // point-in-time merges since `writeReaderPool(true)` above wrote
-                // all necessary files to disk and checkpointed them. Still
-                // under the hold that cloned `toCommit`: the merges must be
-                // registered and their readers opened before any merge thread
-                // can take them (`IndexWriter.java:3822-3855`).
-                let to_commit = Arc::new(Mutex::new(to_commit));
-                let point_in_time_merges = if max_commit_merge_wait_millis > 0 {
-                    self.prepare_point_in_time_merge(
-                        &mut state,
-                        Arc::clone(&to_commit),
-                        Arc::clone(&stop_adding_merged_segments),
-                        MergeTrigger::Commit,
-                        Arc::new(|_: &SegmentCommitInfo| Ok(())),
-                    )?
-                } else {
-                    None
-                };
-                Ok((seq_no, to_commit, point_in_time_merges))
-            })();
+                    // Must clone the segmentInfos while we still hold
+                    // fullFlushLock and while sync'd so that no partial changes (eg
+                    // a delete w/o corresponding add from an updateDocument) can
+                    // sneak into the commit point.
+                    let to_commit = clone_infos(&state.segment_infos)?;
+                    self.pending_commit_change_count
+                        .store(self.change_count.load(Ordering::Acquire), Ordering::Release);
+                    // This protects the segmentInfos we are now going to commit.
+                    // This is important in case, eg, while we are trying to sync all
+                    // referenced files, a merge completes which would otherwise have
+                    // removed the files we are now syncing.
+                    let files = to_commit.files(false)?;
+                    state.deleter.inc_ref_files(files.iter());
+                    state.files_to_commit = Some(files);
+                    // `IndexWriter.java:3848-3855`: we can safely prepare the
+                    // point-in-time merges since `writeReaderPool(true)` above wrote
+                    // all necessary files to disk and checkpointed them. Still
+                    // under the hold that cloned `toCommit`: the merges must be
+                    // registered and their readers opened before any merge thread
+                    // can take them (`IndexWriter.java:3822-3855`).
+                    let to_commit = Arc::new(Mutex::new(to_commit));
+                    let point_in_time_merges = if max_commit_merge_wait_millis > 0 {
+                        self.prepare_point_in_time_merge(
+                            &mut state,
+                            Arc::clone(&to_commit),
+                            Arc::clone(&stop_adding_merged_segments),
+                            MergeTrigger::Commit,
+                            Arc::new(|_: &SegmentCommitInfo| Ok(())),
+                        )?
+                    } else {
+                        None
+                    };
+                    Ok((seq_no, to_commit, point_in_time_merges))
+                }));
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(payload) => {
+                    prepare_panic = Some(payload);
+                    Err(LuceneError::illegal_state(
+                        "prepareCommit panicked".to_string(),
+                    ))
+                }
+            };
             if outcome.is_err() && self.info_stream.is_enabled(IW) {
                 self.info_stream
                     .message(IW, "hit exception during prepareCommit");
@@ -3018,6 +3043,18 @@ impl IndexWriter {
                 .and_then(|()| self.do_after_flush())
                 .and(outcome)
         };
+        if let Some(payload) = prepare_panic {
+            // `catch (Error tragedy) { tragicEvent(tragedy, "prepareCommit");
+            // throw tragedy; } finally { maybeCloseOnTragicEvent(); }`
+            // (`IndexWriter.java:3858-3863`); any other throwable leaves
+            // through the `finally` only.
+            if crate::util::concurrent::panic_is_java_error(&*payload) {
+                let tragedy = crate::util::concurrent::panic_to_error(&*payload);
+                self.tragic_event(&tragedy, "prepareCommit")?;
+            }
+            self.maybe_close_on_tragic_event()?;
+            std::panic::resume_unwind(payload);
+        }
         // `catch (Error tragedy)` (`IndexWriter.java:3858-3860`).
         let prepared = self.catch_error_as_tragedy(prepared, "prepareCommit");
         // Java's `finally { maybeCloseOnTragicEvent(); }`
@@ -3701,19 +3738,36 @@ impl IndexWriter {
         }
         // Ensure that only one thread actually gets to do the closing.
         if self.should_close(true)? {
-            let outcome = (|| -> Result<()> {
-                if self.info_stream.is_enabled(IW) {
-                    self.info_stream.message(IW, "now flush at close");
+            // `catch (Throwable t)` (`IndexWriter.java:1333-1341`): an error,
+            // or a panic — this port's carrier of Java's unchecked throwables
+            // (an `OutOfMemoryError` raised by an `InfoStream`, for one) —
+            // rolls the writer back, so it always ends up closed, and is
+            // rethrown with the rollback's failure suppressed.
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+                    if self.info_stream.is_enabled(IW) {
+                        self.info_stream.message(IW, "now flush at close");
+                    }
+                    self.flush_with(true, true)?;
+                    self.wait_for_merges()?;
+                    self.commit_internal()?;
+                    Ok(())
+                }));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(mut error)) => {
+                    // Be certain to close the index on any exception.
+                    if let Err(rollback_error) = self.rollback_internal() {
+                        error.add_suppressed(rollback_error);
+                    }
+                    return Err(error);
                 }
-                self.flush_with(true, true)?;
-                self.wait_for_merges()?;
-                self.commit_internal()?;
-                Ok(())
-            })();
-            if let Err(error) = outcome {
-                // Be certain to close the index on any exception.
-                let _ = self.rollback_internal();
-                return Err(error);
+                Err(payload) => {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.rollback_internal()
+                    }));
+                    std::panic::resume_unwind(payload);
+                }
             }
             // If we got that far, let's roll back and close.
             self.rollback_internal()?;
@@ -5977,12 +6031,16 @@ impl IndexWriter {
                 }
             }
             // If no merge hit an exception, and merge was not aborted, but we
-            // still failed to add indexes, fail the API. Java throws a
-            // `RuntimeException`, which [`LuceneErrorKind::Other`] stands for.
-            Err(LuceneError::from(LuceneErrorKind::Other(
-                "failed to successfully merge all provided readers in addIndexes(CodecReader...)"
-                    .to_string(),
-            )))
+            // still failed to add indexes, fail the API: Java's
+            // `RuntimeException` (`IndexWriter.java:3376-3377`).
+            Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.RuntimeException",
+                message: Some(
+                    "failed to successfully merge all provided readers in addIndexes(CodecReader...)"
+                        .to_string(),
+                ),
+                cause: None,
+            }))
         }
     }
 
@@ -6220,6 +6278,8 @@ impl IndexWriter {
     /// As [`merge`](Self::merge).
     pub fn super_merge(&self, merge: OneMerge) -> Result<()> {
         let mut merge = merge;
+        // `final long t0 = System.currentTimeMillis();` (`IndexWriter.java:4846`).
+        let t0 = crate::index::merge_scheduler::current_time_millis();
         let merge_policy = self.config.merge_policy();
 
         // `catch (Throwable t) { handleMergeException(t, merge); }`
@@ -6323,7 +6383,25 @@ impl IndexWriter {
             // `throw t`: the original throwable, a panic, is rethrown.
             std::panic::resume_unwind(payload);
         }
-        result
+        result?;
+        // `IndexWriter.java:4894-4905`.
+        if !merge.is_aborted() && self.info_stream.is_enabled(IW) {
+            if let Some(info) = merge.get_merge_info() {
+                self.info_stream.message(
+                    IW,
+                    &format!("merged new segment {}", info.to_string_verbose()),
+                );
+                let max_doc = info.info.max_doc()?;
+                self.info_stream.message(
+                    IW,
+                    &format!(
+                        "merge time {} ms for {max_doc} docs",
+                        crate::index::merge_scheduler::current_time_millis() - t0
+                    ),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// The rest of `merge`'s `synchronized` `finally` once the readers are
@@ -8912,12 +8990,13 @@ impl IndexWriter {
         &'a self,
         state: MutexGuard<'a, WriterState>,
     ) -> Result<MutexGuard<'a, WriterState>> {
+        // A monitor is never poisoned (JLS 14.19); see `state`.
         let (state, waited) = crate::util::wait_interruptibly(
             &self.state_changed,
             state,
             Some(std::time::Duration::from_secs(1)),
         )
-        .map_err(|_| LuceneError::illegal_state("IndexWriter state lock poisoned".to_string()))?;
+        .unwrap_or_else(PoisonError::into_inner);
         waited.map_err(LuceneError::thread_interrupted)?;
         Ok(state)
     }
@@ -9268,6 +9347,13 @@ impl IndexWriter {
         // map. Lock order IW -> BDS.
         let mut state = self.state()?;
         self.ensure_open_with(false)?;
+        if self.info_stream.is_enabled(IW) {
+            // `IndexWriter.java:2936-2938`.
+            self.info_stream.message(
+                IW,
+                &format!("publishFlushedSegment {}", new_segment.to_string_verbose()),
+            );
+        }
         let packet_any = packet.as_ref().is_some_and(|packet| !packet.is_empty());
 
         if let Some(global_packet) = global_packet {
@@ -9842,9 +9928,11 @@ impl IndexWriter {
     ///
     /// Returns [`LuceneErrorKind::IllegalState`] when the lock is poisoned.
     fn lock_full_flush(&self) -> Result<MutexGuard<'_, ()>> {
-        self.full_flush_lock
+        // `synchronized (fullFlushLock)`: never poisoned (JLS 14.19).
+        Ok(self
+            .full_flush_lock
             .lock()
-            .map_err(|_| LuceneError::illegal_state("full flush lock poisoned".to_string()))
+            .unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Opens the read-only clone of `sci` a near-real-time reader is built from.

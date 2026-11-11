@@ -82,7 +82,7 @@ impl DocIdSetIterator for DisjunctionIterator {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.base.doc + 1)
+        self.advance(self.base.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -178,7 +178,7 @@ impl DocIdSetIterator for AdaptiveSkipIterator {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.base.doc + 1)
+        self.advance(self.base.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -188,7 +188,7 @@ impl DocIdSetIterator for AdaptiveSkipIterator {
             SkipState::Warming => {
                 let result = self.inner.advance(target)?;
                 if target > self.block_end_doc {
-                    self.block_end_doc = self.inner.block_end() - 1;
+                    self.block_end_doc = self.inner.block_end().wrapping_sub(1);
                     self.boundary_crossings += 1;
                     if result > target {
                         // Skipping has happened, so switch to permanently
@@ -213,7 +213,7 @@ impl DocIdSetIterator for AdaptiveSkipIterator {
         self.inner.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         if self.state.get() == SkipState::Disabled {
             return Ok(NO_MORE_DOCS);
         }

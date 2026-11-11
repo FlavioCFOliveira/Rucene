@@ -31,9 +31,9 @@ use rucene::index::filter_directory_reader::{
 use rucene::index::index_writer::{IndexWriter, IndexWriterOverrides, SOURCE, SOURCE_MERGE};
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
 use rucene::index::merge_policy::{
-    CfsSettings, LogDocSize, LogMergePolicy, MergeContext, MergePolicy, MergeSpecification,
-    MergeTrigger, NoMergePolicy, OneMerge, OneMergeWrappingMergePolicy,
-    SoftDeletesRetentionMergePolicy, TieredMergePolicy,
+    CfsSettings, LogMergePolicy, MergeContext, MergePolicy, MergeSpecification, MergeTrigger,
+    NoMergePolicy, OneMerge, OneMergeWrappingMergePolicy, SoftDeletesRetentionMergePolicy,
+    TieredMergePolicy,
 };
 use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, SerialMergeScheduler};
 use rucene::index::terms::Term;
@@ -1480,7 +1480,7 @@ fn test_force_merge_dv_update_file_with_concurrent_flush() -> Result<()> {
             Arc::new(SoftDeletesRetentionMergePolicy::new(
                 "soft_delete",
                 Arc::new(|| Arc::new(MatchAllDocsQuery::instance()) as Arc<dyn Query>),
-                only_force_merge(Arc::new(LogMergePolicy::new(Arc::new(LogDocSize)))),
+                only_force_merge(Arc::new(LogMergePolicy::by_doc_count())),
             )),
             Arc::new(move |merge: OneMerge| {
                 let mut wrapped =

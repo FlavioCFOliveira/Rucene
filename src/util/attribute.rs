@@ -130,6 +130,12 @@ pub trait AttributeImpl: Attribute + Debug + Send + Sync + 'static {
     /// Returns a boxed deep clone of this attribute.
     fn clone_box(&self) -> Box<dyn AttributeImpl>;
 
+    /// Returns the Rust name of the concrete implementation, standing in for
+    /// `getClass().getName()` in messages.
+    fn impl_type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Returns the [`TypeId`] of the concrete implementation.
     fn impl_type_id(&self) -> TypeId {
         TypeId::of::<Self>()
@@ -755,9 +761,14 @@ pub struct AttributeSource {
 }
 
 impl AttributeSource {
-    /// Creates an empty source using an empty default factory.
+    /// Creates an empty source using Lucene's default attribute factory.
+    ///
+    /// Equivalent to `AttributeSource()`, which is
+    /// `this(AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY)`
+    /// (`AttributeSource.java:74-76`); see
+    /// [`default_attribute_factory`](crate::analysis::default_attribute_factory).
     pub fn new() -> Self {
-        Self::new_with_factory(Arc::new(DefaultAttributeFactory::new()))
+        Self::new_with_factory(crate::analysis::default_attribute_factory())
     }
 
     /// Creates an empty source using the supplied factory.
@@ -837,7 +848,17 @@ impl AttributeSource {
                             shared.attributes.entry(interface_id)
                         {
                             slot.insert(Arc::clone(&rc));
-                            shared.interface_order.push(interface_id);
+                            // Java's `attributes` map is keyed by the
+                            // `Attribute` interfaces only
+                            // (`AttributeSource.java:193-200`); the
+                            // implementation's own `TypeId`, which this port
+                            // also maps for adding by implementation, is not
+                            // one of the classes `getAttributeClassesIterator`
+                            // walks — unless it is the only key the
+                            // implementation has.
+                            if interface_id != type_id || attribute_interfaces.is_empty() {
+                                shared.interface_order.push(interface_id);
+                            }
                         }
                     }
                     shared.impls.push((type_id, rc));
@@ -884,8 +905,26 @@ impl AttributeSource {
         attribute_type: TypeId,
     ) -> Result<AttributeCell, LuceneError> {
         self.sync_view();
+        // `addAttribute(Class)` accepts only an interface extending
+        // `Attribute` (`AttributeSource.java:218-225`); Java's `attributes`
+        // map holds no implementation class, so an implementation is always
+        // refused. Here an implementation is a `TypeId` that names an
+        // `AttributeImpl` declaring other attribute interfaces; one whose only
+        // key is its own type is this port's interface-less attribute, which
+        // Java has no counterpart of.
+        let registered = self
+            .shared
+            .borrow()
+            .impl_of(attribute_type)
+            .map(|cell| Self::implementation_class_name(&**cell.borrow(), attribute_type));
+        if let Some(Some(name)) = registered {
+            return Err(Self::not_an_interface(name));
+        }
         if !self.attributes.contains_key(&attribute_type) {
             let new_impl = self.factory.create_attribute_instance(attribute_type)?;
+            if let Some(name) = Self::implementation_class_name(&*new_impl, attribute_type) {
+                return Err(Self::not_an_interface(name));
+            }
             self.add_attribute_impl(new_impl);
         }
         Ok(Arc::clone(
@@ -895,6 +934,30 @@ impl AttributeSource {
                     attribute_type
                 ))
             })?,
+        ))
+    }
+
+    /// The name of `att` when `attribute_type` is its own implementation type
+    /// and it declares other attribute interfaces: what Java's
+    /// `attClass.isInterface()` refuses.
+    fn implementation_class_name(
+        att: &dyn AttributeImpl,
+        attribute_type: TypeId,
+    ) -> Option<&'static str> {
+        (att.impl_type_id() == attribute_type
+            && att
+                .attribute_interfaces()
+                .iter()
+                .any(|interface| *interface != attribute_type))
+        .then(|| att.impl_type_name())
+    }
+
+    /// `new IllegalArgumentException("addAttribute() only accepts an interface
+    /// that extends Attribute, but " + attClass.getName() + " does not fulfil
+    /// this contract.")` (`AttributeSource.java:220-224`).
+    fn not_an_interface(name: &str) -> LuceneError {
+        LuceneError::illegal_argument(format!(
+            "addAttribute() only accepts an interface that extends Attribute, but {name} does not fulfil this contract."
         ))
     }
 

@@ -711,7 +711,7 @@ impl DocIdSetIterator for NoIntoBitSetIterator {
         self.filter.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.filter.inner.doc_id_run_end()
     }
 

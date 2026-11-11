@@ -85,6 +85,8 @@
 //!   counts reach the reader from the segment info and the field infos, not
 //!   from the points files, so they are trusted here.
 
+mod lucene_assertion;
+
 use std::collections::HashMap;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
@@ -413,6 +415,15 @@ impl IntersectVisitor for InsideVisitor {
     }
 }
 
+/// [`visit_all_unguarded`], where a Lucene `assert` the decoder fails on the
+/// corrupt input — Java's `AssertionError` under `-ea` — ends the walk, as
+/// Java's exception would, and counts as survived; any other panic still
+/// fails the test (see [`lucene_assertion`]).
+fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) -> usize {
+    lucene_assertion::survive_lucene_assertions(|| visit_all_unguarded(directory, info, fixture))
+        .unwrap_or(0)
+}
+
 /// Opens the segment and walks every point of every field, reporting only
 /// whether it panicked.
 ///
@@ -423,7 +434,11 @@ impl IntersectVisitor for InsideVisitor {
 /// Returns how many points it managed to decode, which the sweeps use to prove
 /// that they are actually reaching the decoder rather than being turned away at
 /// the file header.
-fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) -> usize {
+fn visit_all_unguarded(
+    directory: &Arc<dyn Directory>,
+    info: &SegmentInfo,
+    fixture: &Fixture,
+) -> usize {
     let infos = field_infos();
     let read_state = SegmentReadState::new(directory.as_ref(), info, &infos, &*DEFAULT_IO_CONTEXT);
     let reader = match codec().points_format().fields_reader(&read_state) {

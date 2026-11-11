@@ -44,7 +44,7 @@ use crate::internal::tests_hooks::{
 /// * **`Result` instead of exceptions.** A missing accessor is
 ///   Java's `NullPointerException` from `Objects.requireNonNull`
 ///   ([`LuceneError::null_pointer`]); a second registration is
-///   [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) where Java throws `IllegalCallerException`.
+///   Java's `IllegalCallerException`.
 /// * **`Arc` instead of a bare reference.** The accessors are shared, immutable
 ///   singletons; `Arc` is how this crate shares them across threads.
 #[derive(Debug, Clone, Copy)]
@@ -68,9 +68,13 @@ fn missing(_accessor: &str) -> LuceneError {
     LuceneError::null_pointer()
 }
 
-/// Builds the message Java uses in `ensureCallerForSetter`.
+/// The `IllegalCallerException` Java's `ensureCallerForSetter` throws.
 fn already_set(owner: &str) -> LuceneError {
-    LuceneError::illegal_state(format!("The accessor can only be set once by {owner}."))
+    LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+        class: "java.lang.IllegalCallerException",
+        message: Some(format!("The accessor can only be set once by {owner}.")),
+        cause: None,
+    })
 }
 
 /// Stands in for the `Class<?>` Lucene hands to `ensureCallerForSetter` and to
@@ -122,13 +126,21 @@ const FILTER_INDEX_INPUT: Owner = Owner {
     init: crate::store::register_test_secrets,
 };
 
-/// The directories a getter's caller may live in, standing in for the
-/// `org.apache.lucene.tests.` package prefix of Lucene's test framework: the
-/// test framework crate itself (`crates/rucene-test-framework/`, the port of
-/// `lucene/test-framework`, whose classes all live under that package — for
-/// example `MockIndexInputWrapper`'s static initializer, which calls
-/// `getFilterInputIndexAccess()`), and this crate's own `tests/`.
-const TEST_FRAMEWORK_DIRS: &[&str] = &["tests/", "crates/rucene-test-framework/"];
+/// The source paths a getter's caller may live in, standing in for the
+/// callers `ensureCallerForGetter` accepts (`TestSecrets.java:152-169`): the
+/// `org.apache.lucene.tests.` package — the test framework crate's sources,
+/// `crates/rucene-test-framework/src/`, the port of `lucene/test-framework`
+/// (for example `MockIndexInputWrapper`'s static initializer, which calls
+/// `getFilterInputIndexAccess()`) — and the one named class
+/// `org.apache.lucene.index.TestClassloadingDeadlock`; plus this crate's own
+/// `tests/`. The ported core tests under
+/// `crates/rucene-test-framework/tests/` are not test-framework classes, so
+/// `TestTestSecrets.testCallerOfGetter` is refused as Java refuses it.
+const TEST_FRAMEWORK_DIRS: &[&str] = &[
+    "tests/",
+    "crates/rucene-test-framework/src/",
+    "crates/rucene-test-framework/tests/core_index/test_classloading_deadlock.rs",
+];
 
 /// Normalises the path `Location::caller()` reports so that a host which spells
 /// it with backslashes compares equal to the forward-slash paths recorded above.
@@ -165,8 +177,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] — the crate's stand-in for Java's
-    /// `IllegalCallerException` — when the call did not come from `owner`'s
+    /// Returns Java's `IllegalCallerException` when the call did not come from `owner`'s
     /// source file or when an accessor is already registered.
     #[track_caller]
     fn ensure_caller_for_setter(owner: Owner, already_registered: bool) -> Result<()> {
@@ -182,13 +193,12 @@ impl TestSecrets {
     /// Equivalent to `TestSecrets.ensureCallerForGetter()`. Java accepts a
     /// caller whose class name starts with `org.apache.lucene.tests.`, plus the
     /// single class `org.apache.lucene.index.TestClassloadingDeadlock`; this
-    /// port accepts a call site under one of [`TEST_FRAMEWORK_DIRS`], and has no
-    /// counterpart for that one named test class.
+    /// port accepts a call site under one of [`TEST_FRAMEWORK_DIRS`], which
+    /// names that class's port too.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`] — the crate's stand-in for Java's
-    /// `IllegalCallerException` — when the caller is outside the test
+    /// Returns Java's `IllegalCallerException` when the caller is outside the test
     /// framework.
     #[track_caller]
     fn ensure_caller_for_getter() -> Result<()> {
@@ -197,8 +207,14 @@ impl TestSecrets {
             .iter()
             .any(|dir| caller.starts_with(dir));
         if !valid_caller {
-            return Err(LuceneError::illegal_state(
-                "Lucene TestSecrets can only be used by the test-framework.".to_string(),
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::Unchecked {
+                    class: "java.lang.IllegalCallerException",
+                    message: Some(
+                        "Lucene TestSecrets can only be used by the test-framework.".to_string(),
+                    ),
+                    cause: None,
+                },
             ));
         }
         Ok(())
@@ -314,7 +330,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
+    /// Returns Java's `IllegalCallerException` when an accessor is already
     /// registered; Java allows exactly one registration too.
     #[track_caller]
     pub fn set_index_writer_access(access: Option<Arc<dyn IndexWriterAccess>>) -> Result<()> {
@@ -335,7 +351,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
+    /// Returns Java's `IllegalCallerException` when an accessor is already
     /// registered.
     #[track_caller]
     pub fn set_index_package_access(access: Option<Arc<dyn IndexPackageAccess>>) -> Result<()> {
@@ -356,7 +372,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
+    /// Returns Java's `IllegalCallerException` when an accessor is already
     /// registered.
     #[track_caller]
     pub fn set_concurrent_merge_scheduler_access(
@@ -379,7 +395,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
+    /// Returns Java's `IllegalCallerException` when an accessor is already
     /// registered.
     #[track_caller]
     pub fn set_segment_reader_access(access: Option<Arc<dyn SegmentReaderAccess>>) -> Result<()> {
@@ -401,7 +417,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
+    /// Returns Java's `IllegalCallerException` when an accessor is already
     /// registered.
     #[track_caller]
     pub fn set_filter_input_index_access(

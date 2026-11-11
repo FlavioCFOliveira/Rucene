@@ -174,10 +174,12 @@ pub trait CharTermAttribute: Attribute {
         end: usize,
     ) {
         let csq_length = csq.length();
-        assert!(
-            start <= end && end <= csq_length,
-            "Range [{start}, {end}) out of bounds for length {csq_length}"
-        );
+        if !(start <= end && end <= csq_length) {
+            throw_index_out_of_bounds(&format!(
+                "Range [{}, {}) out of bounds for length {}",
+                start as i32, end as i32, csq_length as i32
+            ));
+        }
         let len = end - start;
         if len == 0 {
             return;
@@ -284,13 +286,17 @@ impl CharTermAttribute for CharTermAttributeImpl {
         &mut self.term_buffer
     }
 
+    /// `Objects.checkFromIndexSize(0, length, termBuffer.length)`
+    /// (`CharTermAttributeImpl.java:77-81`): the JDK's
+    /// `IndexOutOfBoundsException`, with Java's `int` length.
     fn set_length(&mut self, length: usize) {
-        assert!(
-            length <= self.term_buffer.len(),
-            "length {} out of buffer bounds {}",
-            length,
-            self.term_buffer.len()
-        );
+        if length > self.term_buffer.len() {
+            throw_index_out_of_bounds(&format!(
+                "Range [0, 0 + {}) out of bounds for length {}",
+                length as i32,
+                self.term_buffer.len() as i32
+            ));
+        }
         self.term_length = length;
     }
 
@@ -306,11 +312,12 @@ impl CharTermAttribute for CharTermAttributeImpl {
     /// an index past the term panics with the JDK's `IndexOutOfBoundsException`
     /// message.
     fn char_at(&self, index: usize) -> char {
-        assert!(
-            index < self.term_length,
-            "Index {index} out of bounds for length {}",
-            self.term_length
-        );
+        if index >= self.term_length {
+            throw_index_out_of_bounds(&format!(
+                "Index {} out of bounds for length {}",
+                index as i32, self.term_length as i32
+            ));
+        }
         self.term_buffer[index]
     }
 
@@ -318,11 +325,12 @@ impl CharTermAttribute for CharTermAttributeImpl {
     /// (`CharTermAttributeImpl.java:110-113`): a range outside the term panics
     /// with the JDK's `IndexOutOfBoundsException` message.
     fn sub_sequence(&self, start: usize, end: usize) -> String {
-        assert!(
-            start <= end && end <= self.term_length,
-            "Range [{start}, {end}) out of bounds for length {}",
-            self.term_length
-        );
+        if !(start <= end && end <= self.term_length) {
+            throw_index_out_of_bounds(&format!(
+                "Range [{}, {}) out of bounds for length {}",
+                start as i32, end as i32, self.term_length as i32
+            ));
+        }
         self.term_buffer[start..end].iter().collect()
     }
 
@@ -608,10 +616,16 @@ impl OffsetAttribute for OffsetAttributeImpl {
     }
 
     fn set_offset(&mut self, start_offset: i32, end_offset: i32) {
-        assert!(
-            start_offset >= 0 && end_offset >= start_offset,
-            "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset}, endOffset={end_offset}"
-        );
+        // `throw new IllegalArgumentException(...)` (`OffsetAttributeImpl.java:44-51`,
+        // `PackedTokenAttributeImpl.java:125-132`).
+        if start_offset < 0 || end_offset < start_offset {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset},endOffset={end_offset}"
+                )),
+            );
+        }
         self.start_offset = start_offset;
         self.end_offset = end_offset;
     }
@@ -1205,10 +1219,16 @@ impl OffsetAttribute for PackedTokenAttributeImpl {
     }
 
     fn set_offset(&mut self, start_offset: i32, end_offset: i32) {
-        assert!(
-            start_offset >= 0 && end_offset >= start_offset,
-            "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset}, endOffset={end_offset}"
-        );
+        // `throw new IllegalArgumentException(...)` (`OffsetAttributeImpl.java:44-51`,
+        // `PackedTokenAttributeImpl.java:125-132`).
+        if start_offset < 0 || end_offset < start_offset {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset},endOffset={end_offset}"
+                )),
+            );
+        }
         self.start_offset = start_offset;
         self.end_offset = end_offset;
     }
@@ -2251,6 +2271,15 @@ impl AttributeImpl for SentenceAttributeImpl {
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+/// Throws the JDK's `IndexOutOfBoundsException` (from `Objects.checkIndex`
+/// and `Objects.checkFromToIndex`) with `message`.
+fn throw_index_out_of_bounds(message: &str) -> ! {
+    crate::store::java_nio_file::throw_unchecked(
+        "java.lang.IndexOutOfBoundsException",
+        Some(message),
+    )
+}
 
 #[cfg(test)]
 mod tests {

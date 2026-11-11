@@ -6,6 +6,7 @@ use crate::error::{LuceneError, Result};
 use crate::geo::component2d::Component2D;
 use crate::geo::geometry::Rectangle;
 use crate::index::point_values::Relation;
+use crate::util::java_fmt::{double_to_string, float_to_string};
 use crate::util::{NumericUtils, SloppyMath};
 
 /// Bounds and constants every geo coordinate is checked against.
@@ -50,10 +51,13 @@ impl GeoUtils {
     /// Equivalent to `GeoUtils.checkLatitude(double)`.
     pub fn check_latitude(latitude: f64) -> Result<()> {
         if latitude.is_nan() || !(Self::MIN_LAT_INCL..=Self::MAX_LAT_INCL).contains(&latitude) {
+            // `"invalid latitude " + latitude + ...` (`GeoUtils.java:85-106`):
+            // Java's `Double.toString`.
             return Err(LuceneError::illegal_argument(format!(
-                "invalid latitude {latitude}; must be between {} and {}",
-                Self::MIN_LAT_INCL,
-                Self::MAX_LAT_INCL
+                "invalid latitude {}; must be between {} and {}",
+                double_to_string(latitude),
+                double_to_string(Self::MIN_LAT_INCL),
+                double_to_string(Self::MAX_LAT_INCL)
             )));
         }
         Ok(())
@@ -65,9 +69,10 @@ impl GeoUtils {
     pub fn check_longitude(longitude: f64) -> Result<()> {
         if longitude.is_nan() || !(Self::MIN_LON_INCL..=Self::MAX_LON_INCL).contains(&longitude) {
             return Err(LuceneError::illegal_argument(format!(
-                "invalid longitude {longitude}; must be between {} and {}",
-                Self::MIN_LON_INCL,
-                Self::MAX_LON_INCL
+                "invalid longitude {}; must be between {} and {}",
+                double_to_string(longitude),
+                double_to_string(Self::MIN_LON_INCL),
+                double_to_string(Self::MAX_LON_INCL)
             )));
         }
         Ok(())
@@ -420,10 +425,14 @@ impl XYEncodingUtils {
     /// Equivalent to `XYEncodingUtils.checkVal(float)`.
     pub fn check_val(x: f32) -> Result<f32> {
         if !x.is_finite() {
+            // `"invalid value " + x + "; must be between " + MIN_VAL_INCL + " and "
+            // + MAX_VAL_INCL` (`XYEncodingUtils.java:34-40`): a `float` and two
+            // `double`s, rendered by Java's `toString`.
             return Err(LuceneError::illegal_argument(format!(
-                "invalid value {x}; must be between {} and {}",
-                Self::MIN_VAL_INCL,
-                Self::MAX_VAL_INCL
+                "invalid value {}; must be between {} and {}",
+                float_to_string(x),
+                double_to_string(Self::MIN_VAL_INCL),
+                double_to_string(Self::MAX_VAL_INCL)
             )));
         }
         Ok(x)

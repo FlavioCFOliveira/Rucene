@@ -49,8 +49,22 @@ fn test_minimal_compound_codec() -> Result<()> {
     run_minimal_codec_test(true)
 }
 
+/// Lucene's core test jar declares both codecs in its
+/// `META-INF/services/org.apache.lucene.codecs.Codec`
+/// (`TestMinimalCodec$MinimalCodec` and `TestMinimalCodec$MinimalCompoundCodec`),
+/// so `Codec.forName` resolves the names the segments record when the index is
+/// read back; this registers them in the global codec registry once.
+fn install_test_codecs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rucene::codecs::register_codec("MinimalCodec", MinimalCodec::new());
+        let _ = rucene::codecs::register_codec("MinimalCompoundCodec", MinimalCodec::compound());
+    });
+}
+
 /// Port of `TestMinimalCodec.runMinimalCodecTest`.
 fn run_minimal_codec_test(use_compound_file: bool) -> Result<()> {
+    install_test_codecs();
     let mut dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let writer_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(

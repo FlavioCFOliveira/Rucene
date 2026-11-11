@@ -52,7 +52,11 @@ fn test_random() -> Result<()> {
             let mut doc_ids = vec![0i32; count as usize];
             let bpv = TestUtil::next_int(&*random(), 1, 32);
             for d in doc_ids.iter_mut() {
-                *d = TestUtil::next_int(&*random(), 0, (1i32 << bpv).wrapping_sub(1));
+                *d = TestUtil::next_int(
+                    &*random(),
+                    0,
+                    1i32.wrapping_shl(bpv as u32).wrapping_sub(1),
+                );
             }
             test_ints(dir, &doc_ids)?;
         }
@@ -67,7 +71,11 @@ fn test_sorted() -> Result<()> {
             let mut doc_ids = vec![0i32; 1 + random().next_int_bound(5000) as usize];
             let bpv = TestUtil::next_int(&*random(), 1, 32);
             for d in doc_ids.iter_mut() {
-                *d = TestUtil::next_int(&*random(), 0, (1i32 << bpv).wrapping_sub(1));
+                *d = TestUtil::next_int(
+                    &*random(),
+                    0,
+                    1i32.wrapping_shl(bpv as u32).wrapping_sub(1),
+                );
             }
             doc_ids.sort();
             test_ints(dir, &doc_ids)?;

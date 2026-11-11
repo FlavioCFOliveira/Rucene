@@ -14,7 +14,8 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::error::Result;
 use rucene::util::sorter::{
-    MSBRadixSorter, MSBRadixSorterOps, StableMSBRadixSorter, StableMSBRadixSorterOps,
+    stable_fallback_sort, stable_reorder, MSBRadixSorter, MSBRadixSorterOps, StableMSBRadixSorter,
+    StableMSBRadixSorterOps,
 };
 use rucene::util::{BytesRef, BytesRefBuilder};
 use rucene_test_framework::util::test_util::TestUtil;
@@ -93,16 +94,50 @@ impl MSBRadixSorterOps for Ops<'_> {
     }
 }
 
-impl StableMSBRadixSorterOps for Ops<'_> {
+/// The anonymous `StableMSBRadixSorter` of `TestStableMSBRadixSorter.test`:
+/// [`Ops`] plus `save` and `restore`, with the `reorder` and
+/// `getFallbackSorter` overrides `StableMSBRadixSorter` declares
+/// (`StableMSBRadixSorter.java:40-87`), which a Rust implementor forwards to
+/// [`stable_reorder`] and [`stable_fallback_sort`].
+struct StableOps<'o, 'a>(&'o mut Ops<'a>);
+
+impl MSBRadixSorterOps for StableOps<'_, '_> {
+    fn byte_at(&self, i: usize, k: usize) -> i32 {
+        self.0.byte_at(i, k)
+    }
+
+    fn swap(&mut self, i: usize, j: usize) {
+        self.0.swap(i, j);
+    }
+
+    fn reorder(
+        &mut self,
+        from: usize,
+        to: usize,
+        start_offsets: &mut [i32],
+        end_offsets: &[i32],
+        k: usize,
+    ) {
+        stable_reorder(self, from, to, start_offsets, end_offsets, k);
+    }
+
+    fn fallback_sort(&mut self, from: usize, to: usize, k: usize, max_length: usize) {
+        stable_fallback_sort(self, from, to, k, max_length);
+    }
+}
+
+impl StableMSBRadixSorterOps for StableOps<'_, '_> {
     fn save(&mut self, i: usize, j: usize) {
-        let len = self.refs.len();
-        let temp = self.temp.get_or_insert_with(|| vec![None; len]);
-        temp[j] = self.refs[i].clone();
+        let ops = &mut *self.0;
+        let len = ops.refs.len();
+        let temp = ops.temp.get_or_insert_with(|| vec![None; len]);
+        temp[j] = ops.refs[i].clone();
     }
 
     fn restore(&mut self, i: usize, j: usize) {
-        if let Some(temp) = &self.temp {
-            self.refs[i..j].clone_from_slice(&temp[i..j]);
+        let ops = &mut *self.0;
+        if let Some(temp) = &ops.temp {
+            ops.refs[i..j].clone_from_slice(&temp[i..j]);
         }
     }
 }
@@ -138,7 +173,7 @@ fn test_refs(stable: bool, mut refs: Refs, len: usize) {
             temp: None,
         };
         if stable {
-            StableMSBRadixSorter::new(max_length as usize).sort(&mut ops, 0, len);
+            StableMSBRadixSorter::new(max_length as usize).sort(&mut StableOps(&mut ops), 0, len);
         } else {
             MSBRadixSorter::new(max_length as usize).sort(&mut ops, 0, len);
         }

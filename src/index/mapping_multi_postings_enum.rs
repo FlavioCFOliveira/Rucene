@@ -917,22 +917,18 @@ mod tests {
             ReaderSlice::new(0, 3, 0),
         )];
         let mut postings = mapping(state, subs).unwrap();
-        assert!(matches!(
-            postings.freq(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
+        // `current.postings` with `current == null`: Java's
+        // `NullPointerException` (`MappingMultiPostingsEnum.java:81, 110`).
+        let is_npe = |result: Result<i32>| {
+            matches!(result, Err(LuceneError {
+                kind: LuceneErrorKind::Unchecked { class, .. },
                 ..
-            })
-        ));
+            }) if class == "java.lang.NullPointerException")
+        };
+        assert!(is_npe(postings.freq()));
         assert_eq!(postings.start_offset(), -1);
         assert_eq!(postings.end_offset(), -1);
-        assert!(matches!(
-            postings.next_position(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            })
-        ));
+        assert!(is_npe(postings.next_position()));
     }
 
     #[test]

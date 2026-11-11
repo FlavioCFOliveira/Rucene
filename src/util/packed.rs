@@ -597,9 +597,10 @@ impl<'a> DirectWriter<'a> {
     }
 
     pub fn finish(&mut self) -> Result<()> {
+        // `DirectWriter.java:146-149`.
         if self.count != self.num_values {
             return Err(LuceneError::illegal_state(format!(
-                "wrong number of values added: expected {}, got {}",
+                "Wrong number of values added, expected: {}, got: {}",
                 self.num_values, self.count
             )));
         }
@@ -1043,16 +1044,28 @@ impl<'a> DirectMonotonicWriter<'a> {
         num_values: i64,
         block_shift: i32,
     ) -> Result<Self> {
+        // `DirectMonotonicWriter.java:46-68`.
         if !(Self::MIN_BLOCK_SHIFT..=Self::MAX_BLOCK_SHIFT).contains(&block_shift) {
             return Err(LuceneError::illegal_argument(format!(
-                "blockShift must be in [{}, {}], got {block_shift}",
+                "blockShift must be in [{}-{}], got {block_shift}",
                 Self::MIN_BLOCK_SHIFT,
                 Self::MAX_BLOCK_SHIFT
             )));
         }
         if num_values < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "numValues must be non-negative, got {num_values}"
+                "numValues can't be negative, got {num_values}"
+            )));
+        }
+        let num_blocks = if num_values == 0 {
+            0
+        } else {
+            (((num_values - 1) as u64) >> block_shift) as i64 + 1
+        };
+        if num_blocks > crate::util::ArrayUtil::MAX_ARRAY_LENGTH as i64 {
+            return Err(LuceneError::illegal_argument(format!(
+                "blockShift is too low for the provided number of values: blockShift={block_shift}, numValues={num_values}, MAX_ARRAY_LENGTH={}",
+                crate::util::ArrayUtil::MAX_ARRAY_LENGTH
             )));
         }
 
@@ -1093,20 +1106,22 @@ impl<'a> DirectMonotonicWriter<'a> {
     fn flush(&mut self) -> Result<()> {
         debug_assert!(self.buffer_size != 0);
 
-        let avg_inc = (self.buffer[self.buffer_size - 1] - self.buffer[0]) as f64
+        // Java's `long` arithmetic wraps throughout (`DirectMonotonicWriter.java:77-97`,
+        // "working fine with negative values too (in case of overflow)").
+        let avg_inc = (self.buffer[self.buffer_size - 1].wrapping_sub(self.buffer[0])) as f64
             / cmp::max(1, self.buffer_size - 1) as f64;
         let avg_inc = avg_inc as f32;
 
         let mut min = i64::MAX;
         for i in 0..self.buffer_size {
             let expected = (avg_inc * i as f32) as i64;
-            self.buffer[i] -= expected;
+            self.buffer[i] = self.buffer[i].wrapping_sub(expected);
             min = cmp::min(min, self.buffer[i]);
         }
 
         let mut max_delta: i64 = 0;
         for i in 0..self.buffer_size {
-            self.buffer[i] -= min;
+            self.buffer[i] = self.buffer[i].wrapping_sub(min);
             max_delta |= self.buffer[i];
         }
 
@@ -1132,16 +1147,18 @@ impl<'a> DirectMonotonicWriter<'a> {
     }
 
     pub fn finish(&mut self) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "DirectMonotonicWriter is already finished".to_string(),
-            ));
-        }
+        // `DirectMonotonicWriter.java:138-144`: the count first, then the
+        // second call.
         if self.count != self.num_values {
             return Err(LuceneError::illegal_state(format!(
-                "wrong number of values added: expected {}, got {}",
+                "Wrong number of values added, expected: {}, got: {}",
                 self.num_values, self.count
             )));
+        }
+        if self.finished {
+            return Err(LuceneError::illegal_state(
+                "#finish has been called already".to_string(),
+            ));
         }
         if self.buffer_size > 0 {
             self.flush()?;

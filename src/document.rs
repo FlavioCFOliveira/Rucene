@@ -890,59 +890,59 @@ impl FieldType {
     ) -> Result<()> {
         self.check_if_frozen()?;
         if dimension_count < 0 {
-            return Err(LuceneError::illegal_argument(
-                "dimensionCount must be >= 0".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument(format!(
+                "dimensionCount must be >= 0; got {dimension_count}"
+            )));
         }
         if dimension_count > MAX_DIMENSIONS {
-            return Err(LuceneError::illegal_argument(
-                "dimensionCount exceeds MAX_DIMENSIONS".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument(format!(
+                "dimensionCount must be <= {MAX_DIMENSIONS}; got {dimension_count}"
+            )));
         }
         if index_dimension_count < 0 {
-            return Err(LuceneError::illegal_argument(
-                "indexDimensionCount must be >= 0".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument(format!(
+                "indexDimensionCount must be >= 0; got {index_dimension_count}"
+            )));
         }
         if index_dimension_count > dimension_count {
             return Err(LuceneError::illegal_argument(
-                "indexDimensionCount must be <= dimensionCount".to_string(),
+                format!("indexDimensionCount must be <= dimensionCount: {dimension_count}; got {index_dimension_count}"),
             ));
         }
         if index_dimension_count > MAX_INDEX_DIMENSIONS {
             return Err(LuceneError::illegal_argument(
-                "indexDimensionCount exceeds MAX_INDEX_DIMENSIONS".to_string(),
+                format!("indexDimensionCount must be <= {MAX_INDEX_DIMENSIONS}; got {index_dimension_count}"),
             ));
         }
         if dimension_num_bytes < 0 {
-            return Err(LuceneError::illegal_argument(
-                "dimensionNumBytes must be >= 0".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument(format!(
+                "dimensionNumBytes must be >= 0; got {dimension_num_bytes}"
+            )));
         }
         if dimension_num_bytes > MAX_NUM_BYTES {
-            return Err(LuceneError::illegal_argument(
-                "dimensionNumBytes exceeds MAX_NUM_BYTES".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument(format!(
+                "dimensionNumBytes must be <= {MAX_NUM_BYTES}; got {dimension_num_bytes}"
+            )));
         }
         if dimension_count == 0 {
             if index_dimension_count != 0 {
                 return Err(LuceneError::illegal_argument(
-                    "when dimensionCount is 0, indexDimensionCount must be 0".to_string(),
+                    format!("when dimensionCount is 0, indexDimensionCount must be 0; got {index_dimension_count}"),
                 ));
             }
             if dimension_num_bytes != 0 {
                 return Err(LuceneError::illegal_argument(
-                    "when dimensionCount is 0, dimensionNumBytes must be 0".to_string(),
+                    format!("when dimensionCount is 0, dimensionNumBytes must be 0; got {dimension_num_bytes}"),
                 ));
             }
         } else if index_dimension_count == 0 {
             return Err(LuceneError::illegal_argument(
-                "when dimensionCount is > 0, indexDimensionCount must be > 0".to_string(),
+                format!("when dimensionCount is > 0, indexDimensionCount must be > 0; got {index_dimension_count}"),
             ));
         } else if dimension_num_bytes == 0 {
-            return Err(LuceneError::illegal_argument(
-                "when dimensionNumBytes is 0, dimensionCount must be 0".to_string(),
-            ));
+            return Err(LuceneError::illegal_argument(format!(
+                "when dimensionNumBytes is 0, dimensionCount must be 0; got {dimension_count}"
+            )));
         }
         self.dimension_count.store(dimension_count, FT_ORDER);
         self.index_dimension_count
@@ -4387,8 +4387,10 @@ impl BinaryPoint {
             }
         }
         let ft = FieldType::new();
-        ft.set_dimensions(point.len() as i32, bytes_per_dim as i32)
-            .unwrap();
+        // `getType(point.length, bytesPerDim)` (`BinaryPoint.java:76`), whose
+        // `setDimensions` throws its `IllegalArgumentException` for too many
+        // dimensions among others.
+        ft.set_dimensions(point.len() as i32, bytes_per_dim as i32)?;
         ft.freeze();
         Ok(ft)
     }
@@ -6465,18 +6467,14 @@ impl DateTools {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] when the string is not a valid
-    /// date string, standing in for Java's `ParseException`.
+    /// Java's `java.text.ParseException` (`DateTools.java:115-123`) when the
+    /// string is not a valid date string.
     pub fn string_to_date(date_string: &str) -> Result<chrono::DateTime<chrono::Utc>> {
         let millis = Self::string_to_time(date_string)?;
         chrono::Utc
             .timestamp_millis_opt(millis)
             .single()
-            .ok_or_else(|| {
-                LuceneError::illegal_argument(format!(
-                    "Input is not a valid date string: {date_string}"
-                ))
-            })
+            .ok_or_else(|| invalid_date_string(date_string))
     }
 
     /// Converts a timestamp to a GMT string with the given resolution.
@@ -6495,27 +6493,77 @@ impl DateTools {
     }
 
     /// Converts a GMT date string back to a timestamp.
+    ///
+    /// Equivalent to `DateTools.stringToTime(String)` (`DateTools.java:103-123`),
+    /// which parses with the `SimpleDateFormat` of the resolution whose
+    /// `formatLen` is the string's length — `"yyyyMMddHHmmssSSS"` cut to that
+    /// length (`DateTools.java:194-200`). The formats are lenient (Java's
+    /// default), so the fields a pattern omits take their first value
+    /// (January, day one, midnight) and a field past its range rolls into the
+    /// next one. Any failure — a length no resolution has, a non-digit — is
+    /// `ParseException("Input is not a valid date string: " + dateString)`.
+    /// As in [`time_to_string`](Self::time_to_string), the calendar is the
+    /// proleptic Gregorian one; Java's `GregorianCalendar` counts dates before
+    /// 1582-10-15 in the Julian calendar.
+    ///
+    /// # Errors
+    ///
+    /// Java's `java.text.ParseException` with its message.
     pub fn string_to_time(date_string: &str) -> Result<i64> {
-        let dt = chrono::NaiveDateTime::parse_from_str(
-            date_string,
-            Self::pattern_for_len(date_string.len()),
-        )
-        .map_err(|e| LuceneError::illegal_argument(format!("invalid date string: {e}")))?;
-        Ok(chrono::Utc.from_utc_datetime(&dt).timestamp_millis())
-    }
-
-    fn pattern_for_len(len: usize) -> &'static str {
-        match len {
-            4 => "%Y",
-            6 => "%Y%m",
-            8 => "%Y%m%d",
-            10 => "%Y%m%d%H",
-            12 => "%Y%m%d%H%M",
-            14 => "%Y%m%d%H%M%S",
-            17 => "%Y%m%d%H%M%S%3f",
-            _ => "%Y%m%d%H%M%S%3f",
+        let invalid = || invalid_date_string(date_string);
+        const WIDTHS: [usize; 7] = [4, 2, 2, 2, 2, 2, 3];
+        let field_count = match date_string.len() {
+            4 => 1,
+            6 => 2,
+            8 => 3,
+            10 => 4,
+            12 => 5,
+            14 => 6,
+            17 => 7,
+            _ => return Err(invalid()),
+        };
+        if !date_string.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(invalid());
         }
+        // year, month, day, hour, minute, second, millisecond, with the
+        // defaults of an unset field.
+        let mut fields = [0i64, 1, 1, 0, 0, 0, 0];
+        let mut pos = 0;
+        for (i, width) in WIDTHS.iter().take(field_count).enumerate() {
+            fields[i] = date_string[pos..pos + width]
+                .parse::<i64>()
+                .map_err(|_| invalid())?;
+            pos += width;
+        }
+        let [year, month, day, hour, minute, second, millis] = fields;
+        // Lenient month roll-over, then days counted from the first of it.
+        let year = year + (month - 1).div_euclid(12);
+        let month = (month - 1).rem_euclid(12) + 1;
+        let days = days_from_civil(year, month, 1) + (day - 1);
+        Ok(days * 86_400_000 + hour * 3_600_000 + minute * 60_000 + second * 1_000 + millis)
     }
+}
+
+/// `new ParseException("Input is not a valid date string: " + dateString, 0)`
+/// (`DateTools.java:119`).
+fn invalid_date_string(date_string: &str) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: crate::util::extra::PARSE_EXCEPTION,
+        message: Some(format!("Input is not a valid date string: {date_string}")),
+        cause: None,
+    })
+}
+
+/// Days from 1970-01-01 to the proleptic Gregorian date `year-month-day`
+/// (Howard Hinnant's `days_from_civil`), for [`DateTools::string_to_time`].
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 // ---------------------------------------------------------------------------

@@ -120,11 +120,15 @@ impl CharsRef {
     /// `IndexOutOfBoundsException` Java's `Objects.checkIndex(index, length)`
     /// throws: `Index <index> out of bounds for length <length>`.
     pub fn char_at(&self, index: usize) -> u16 {
-        assert!(
-            index < self.length,
-            "Index {index} out of bounds for length {}",
-            self.length
-        );
+        if index >= self.length {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                Some(&format!(
+                    "Index {} out of bounds for length {}",
+                    index as i32, self.length as i32
+                )),
+            );
+        }
         self.chars[self.offset + index]
     }
 
@@ -145,11 +149,17 @@ impl CharsRef {
     /// end, length)` throws: `Range [<start>, <end>) out of bounds for length
     /// <length>`.
     pub fn sub_sequence(&self, start: usize, end: usize) -> Self {
-        assert!(
-            start <= end && end <= self.length,
-            "Range [{start}, {end}) out of bounds for length {}",
-            self.length
-        );
+        // `Objects.checkFromToIndex(start, end, length)` (`CharsRef.java:147-151`):
+        // `IndexOutOfBoundsException`, with Java's `int`s in the message.
+        if !(start <= end && end <= self.length) {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                Some(&format!(
+                    "Range [{}, {}) out of bounds for length {}",
+                    start as i32, end as i32, self.length as i32
+                )),
+            );
+        }
         let slice = &self.chars[self.offset + start..self.offset + end];
         Self {
             chars: slice.to_vec(),
@@ -161,11 +171,14 @@ impl CharsRef {
     /// Returns a deep copy: a `CharsRef` whose buffer contains a copy of the
     /// active characters and whose offset is zero.
     pub fn deep_copy_of(other: &Self) -> Self {
-        let slice = other.chars();
+        // `ArrayUtil.copyOfSubArray(other.chars, other.offset, other.offset +
+        // other.length)` (`CharsRef.java:216-220`).
+        let chars =
+            crate::util::java_copy_of_sub_array(&other.chars, other.offset, other.length, "char");
         Self {
-            chars: slice.to_vec(),
+            chars,
             offset: 0,
-            length: slice.len(),
+            length: other.length,
         }
     }
 

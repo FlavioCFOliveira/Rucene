@@ -342,6 +342,13 @@ pub(crate) fn java_message(e: &LuceneError) -> String {
             kind: LuceneErrorKind::UnsupportedOperation { message: m, .. },
             ..
         } => m.clone(),
+        // An unchecked Java exception (the `ParseException` `Version.parse`
+        // throws, for one): its `getMessage()`, and string concatenation
+        // renders a `null` message as `null`.
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { message, .. },
+            ..
+        } => message.clone().unwrap_or_else(|| "null".to_string()),
         other => other.to_string(),
     }
 }

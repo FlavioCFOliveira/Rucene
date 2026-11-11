@@ -336,11 +336,16 @@ impl Automaton {
 
             // Move to next source:
             self.cur_state = source;
-            assert!(
-                self.states[2 * source as usize] == -1,
-                "from state ({}) already had transitions added",
-                source
-            );
+            // `throw new IllegalStateException("from state (" + source + ") already
+            // had transitions added")` (`Automaton.java:169-172`).
+            if self.states[2 * source as usize] != -1 {
+                crate::store::java_nio_file::throw_unchecked(
+                    "java.lang.IllegalStateException",
+                    Some(&format!(
+                        "from state ({source}) already had transitions added"
+                    )),
+                );
+            }
             debug_assert!(self.states[2 * source as usize + 1] == 0);
             self.states[2 * source as usize] = self.transitions.len() as i32;
         }

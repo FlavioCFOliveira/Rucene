@@ -1128,7 +1128,7 @@ impl DocIdSetIterator for ShortArrayDocIdSetIterator {
         self.doc_ids.len() as i64
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         let mut run_end = self.doc + 1;
         let mut j = (self.i + 1) as usize;
         while j < self.doc_ids.len() && i32::from(self.doc_ids[j]) == run_end {
@@ -1182,6 +1182,14 @@ impl DocIdSetIterator for RoaringBlockIter {
     fn cost(&self) -> i64 {
         match self {
             RoaringBlockIter::Range { min, max, .. } => (*max as i64 - *min as i64) + 1,
+        }
+    }
+
+    /// `DocIdSetIterator.range(min, max + 1)`'s `docIDRunEnd()`, which is its
+    /// exclusive `maxDoc` (`DocIdSetIterator.java:101-104`).
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        match self {
+            RoaringBlockIter::Range { max, .. } => Ok(i32::from(*max) + 1),
         }
     }
 }
@@ -1247,6 +1255,19 @@ impl DocIdSetIterator for RoaringBitSetIter {
 
     fn cost(&self) -> i64 {
         self.bits.cardinality() as i64
+    }
+
+    /// `BitSetIterator.docIDRunEnd()` (`BitSetIterator.java:97-105`), the
+    /// iterator a `BitDocIdSet` block hands out.
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        debug_assert!(self.doc != NO_MORE_DOCS);
+        let length = self.bits.length() as i32;
+        let next = self.doc + 1;
+        if next >= length {
+            return Ok(length);
+        }
+        let end = crate::util::bit_set::BitSet::next_clear_bit(&self.bits, next);
+        Ok(if end == NO_MORE_DOCS { length } else { end })
     }
 }
 
@@ -1712,6 +1733,40 @@ impl DocIdSetIterator for RoaringDocIdSetIterator {
 
     fn cost(&self) -> i64 {
         self.set.cardinality as i64
+    }
+
+    /// Equivalent to `RoaringDocIdSet.Iterator.docIDRunEnd()`
+    /// (`RoaringDocIdSet.java:477-498`): the current block's run end, merged
+    /// with the following blocks while a run reaches a 64K boundary and the
+    /// next block starts with its local doc 0.
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        debug_assert!(self.doc != NO_MORE_DOCS && self.sub.is_some());
+        let sub = self.sub.as_mut().ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.search.DocIdSetIterator.docIDRunEnd()\" \
+                 because \"this.sub\" is null",
+            )
+        })?;
+        let mut b = i64::from(self.block);
+        let mut global_end = (b << 16) + i64::from(sub.doc_id_run_end()?);
+        while global_end == (b + 1) << 16 && global_end < i64::from(i32::MAX) {
+            let nb = b + 1;
+            let Some(Some(next_block)) = self.set.blocks.get(nb as usize) else {
+                break;
+            };
+            let mut next_it = next_block.iterator((nb as usize) << 16)?;
+            let first = next_it.next_doc()?;
+            if first != 0 {
+                break;
+            }
+            b = nb;
+            global_end = (b << 16) + i64::from(next_it.doc_id_run_end()?);
+        }
+        Ok(if global_end >= i64::from(i32::MAX) {
+            i32::MAX
+        } else {
+            global_end as i32
+        })
     }
 }
 

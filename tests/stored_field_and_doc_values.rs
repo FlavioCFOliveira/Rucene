@@ -224,6 +224,10 @@ fn java_exception(error: &LuceneError) -> String {
             kind: LuceneErrorKind::IllegalState { message, .. },
             ..
         } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { message, .. },
+            ..
+        } => message.clone().unwrap_or_else(|| "null".to_string()),
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())
@@ -721,16 +725,9 @@ fn rucene_flush() -> String {
 /// `DocValues.checkField` throws (`DocValues.java:206-222`) — and when the
 /// field has no `FieldInfo` because its only document failed validation,
 /// where Java's reader dereferences the missing `FieldInfo`
-/// (`IndexingChain.java:187`). Either failure aborts the writer.
-///
-/// That last failure is Java's `NullPointerException`, which this port
-/// reports as `IllegalStateException` with the JVM's message; the oracle's
-/// line is mapped accordingly.
+/// (`IndexingChain.java:187`), a `NullPointerException` with the JVM's
+/// message. Either failure aborts the writer.
 #[test]
 fn a_sort_over_a_field_without_doc_values_fails_the_flush_as_lucene_does() {
-    let java = run_java(&["flush"]).replace(
-        "M commit: NullPointerException: ",
-        "M commit: IllegalStateException: ",
-    );
-    assert_eq!(rucene_flush(), java);
+    assert_eq!(rucene_flush(), run_java(&["flush"]));
 }

@@ -105,15 +105,19 @@ fn test_delegate() -> Result<()> {
         );
         i += 1;
     }
-    // Each read locks the shared delegate on its own: the saturation
-    // collector locks it too.
-    assert_equals(&lock(&delegate).k(), &queue_saturation_collector.k());
+    // Each read locks the shared delegate on its own and releases it before
+    // the saturation collector, which locks it too, is asked: a guard held as
+    // a temporary of the comparison would deadlock.
+    let delegate_k = lock(&delegate).k();
+    assert_equals(&delegate_k, &queue_saturation_collector.k());
+    let delegate_visited = lock(&delegate).visited_count();
     assert_equals(
-        &lock(&delegate).visited_count(),
+        &delegate_visited,
         &queue_saturation_collector.visited_count(),
     );
+    let delegate_visit_limit = lock(&delegate).visit_limit();
     assert_equals(
-        &lock(&delegate).visit_limit(),
+        &delegate_visit_limit,
         &queue_saturation_collector.visit_limit(),
     );
     let delegate_min = lock(&delegate).min_competitive_similarity();

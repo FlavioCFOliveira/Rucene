@@ -158,9 +158,12 @@ fn test_cached_arrays_allocation() -> Result<()> {
         }
         // **Divergence from Lucene 10.5.0.** Java keeps `acc` while it asks
         // `cc.isCached()`; the Rust leaf collector borrows `cc` mutably, so
-        // it is released for the check and a leaf collector is taken again
-        // for the same context. The cache limit counts every cached
-        // document, so the next document still exceeds it.
+        // it is finished and released for the check, and a leaf collector is
+        // taken again for the same context. `finish()` hands the cached docs
+        // to the collector and lowers its remaining budget by them
+        // (`CachingCollector.java`, `postCollect`), so the next document
+        // exceeds the limit exactly as it does on Java's single leaf.
+        acc.finish()?;
         drop(acc);
         Assert::assert_true(cc.is_cached());
 

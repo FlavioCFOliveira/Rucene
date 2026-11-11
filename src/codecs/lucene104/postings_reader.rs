@@ -276,17 +276,49 @@ impl Lucene104PostingsReader {
         // Each input is held as soon as it is opened, as Java assigns `docIn`,
         // `posIn` and `payIn` before checking their headers.
         let result: Result<()> = (|| {
-            let d = doc_in.insert(dir.open_input(&doc_name, state.context)?);
+            let d = doc_in.insert(
+                dir.open_input(
+                    &doc_name,
+                    /* withHints, `Lucene104PostingsReader.java:137` */
+                    state
+                        .context
+                        .with_hints(&[
+                            std::sync::Arc::new(crate::store::FileTypeHint::Data),
+                            std::sync::Arc::new(crate::store::FileDataHint::Postings),
+                        ])
+                        .as_ref(),
+                )?,
+            );
             check_index_header(d.as_mut(), DOC_CODEC, version, version, &id, suffix)?;
             retrieve_checksum_expected_length(d.as_mut(), expected_doc_file_length)?;
 
             if state.field_infos.has_prox() {
-                let p = pos_in.insert(dir.open_input(&pos_name, state.context)?);
+                let p = pos_in.insert(
+                    dir.open_input(
+                        &pos_name,
+                        /* withHints, `Lucene104PostingsReader.java:146` */
+                        state
+                            .context
+                            .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                            .as_ref(),
+                    )?,
+                );
                 check_index_header(p.as_mut(), POS_CODEC, version, version, &id, suffix)?;
                 retrieve_checksum_expected_length(p.as_mut(), expected_pos_file_length)?;
 
                 if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
-                    let y = pay_in.insert(dir.open_input(&pay_name, state.context)?);
+                    let y = pay_in.insert(
+                        dir.open_input(
+                            &pay_name,
+                            /* withHints, `Lucene104PostingsReader.java:157` */
+                            state
+                                .context
+                                .with_hints(&[std::sync::Arc::new(
+                                    crate::store::FileTypeHint::Data,
+                                )])
+                                .as_ref(),
+                        )?,
+                    );
                     check_index_header(y.as_mut(), PAY_CODEC, version, version, &id, suffix)?;
                     retrieve_checksum_expected_length(y.as_mut(), expected_pay_file_length)?;
                 }
@@ -379,7 +411,8 @@ impl PostingsReaderBase for Lucene104PostingsReader {
 
         let l = input.read_v_long()?;
         if (l & 0x01) == 0 {
-            state.doc_start_fp += l >> 1;
+            // `l >>> 1` (`Lucene104PostingsReader.java:227`).
+            state.doc_start_fp += ((l as u64) >> 1) as i64;
             if state.doc_freq == 1 {
                 state.singleton_doc_id = input.read_v_int()?;
             } else {
@@ -388,7 +421,11 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         } else {
             debug_assert!(!absolute);
             debug_assert!(state.singleton_doc_id != -1);
-            state.singleton_doc_id += BitUtil::zig_zag_decode_long(l >> 1) as i32;
+            // `zigZagDecode(l >>> 1)` (`Lucene104PostingsReader.java:236`).
+            // `int += long` narrows the `long` sum, so it wraps.
+            state.singleton_doc_id = (i64::from(state.singleton_doc_id)
+                + BitUtil::zig_zag_decode_long(((l as u64) >> 1) as i64))
+                as i32;
         }
 
         if field_info
@@ -1431,7 +1468,8 @@ impl BlockPostingsEnum {
                 }
                 if let Some(ref mut payload_length_buffer) = self.payload_length_buffer {
                     payload_length_buffer[i] = payload_length;
-                    self.pos_delta_buffer.as_mut().unwrap()[i] = code >> 1;
+                    // `code >>> 1` (`Lucene104PostingsReader.java:1191`).
+                    self.pos_delta_buffer.as_mut().unwrap()[i] = ((code as u32) >> 1) as i32;
                     if payload_length != 0 {
                         let needed = self.payload_byte_upto as usize + payload_length as usize;
                         if needed > self.payload_bytes.len() {
@@ -1458,7 +1496,9 @@ impl BlockPostingsEnum {
                     offset_length = pos_in.read_v_int()?;
                 }
                 if let Some(ref mut offset_start_delta_buffer) = self.offset_start_delta_buffer {
-                    offset_start_delta_buffer[i] = delta_code >> 1;
+                    // `deltaCode >>> 1` (`Lucene104PostingsReader.java:1212`): a
+                    // delta past 2^30 was written as a negative `deltaCode`.
+                    offset_start_delta_buffer[i] = ((delta_code as u32) >> 1) as i32;
                     self.offset_length_buffer.as_mut().unwrap()[i] = offset_length;
                 }
             }
@@ -1768,7 +1808,7 @@ impl DocIdSetIterator for BlockPostingsEnum {
     /// (`Lucene104PostingsReader.java:1100-1128`): in a dense unary block,
     /// the end of the level-1 block when that is dense too, else of the
     /// level-0 block; otherwise `DocIdSetIterator.docIDRunEnd()`.
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         if self.encoding == DeltaEncoding::Unary {
             // Note: this assumes that BLOCK_SIZE == 256, this bit of the code would need to be
             // changed if the block size was changed.
