@@ -2164,28 +2164,34 @@ impl RandomPostingsTester {
                 let threads: Vec<_> = randoms
                     .iter()
                     .map(|random| {
+                        // `new TestThread(...).start()`
+                        // (`RandomPostingsTester.java:1527-1536`): the thread
+                        // is in this thread's group, under the test's
+                        // randomized context.
+                        let context =
+                            randomizedtesting::jdk::thread::Thread::start_context_scoped();
                         scope.spawn(move || {
-                            if let Err(t) = self.test_terms_one_thread(
-                                random,
-                                fields_source,
-                                options,
-                                max_test_options,
-                                max_index_options,
-                                always_test_max,
-                            ) {
-                                panic!("java.lang.RuntimeException: {t}");
-                            }
+                            context(Box::new(move || {
+                                if let Err(t) = self.test_terms_one_thread(
+                                    random,
+                                    fields_source,
+                                    options,
+                                    max_test_options,
+                                    max_index_options,
+                                    always_test_max,
+                                ) {
+                                    panic!("java.lang.RuntimeException: {t}");
+                                }
+                            }))
                         })
                     })
                     .collect();
-                // `Thread.join()`: a thread's uncaught exception does not
-                // reach the joining thread in Java; the runner's uncaught
-                // exception handler fails the test. Re-raising it here is
-                // that failure.
+                // `Thread.join()` (`:1538-1540`): a thread's uncaught
+                // exception does not reach the joining thread; the start
+                // context has handed it to the thread's uncaught-exception
+                // handler, where the runner records it and fails the test.
                 for thread in threads {
-                    if let Err(payload) = thread.join() {
-                        std::panic::resume_unwind(payload);
-                    }
+                    let _ = thread.join();
                 }
             });
             Ok(())

@@ -178,24 +178,31 @@ pub fn child_main(args: &[String]) {
         let barrier = Arc::clone(&barrier);
         let task = Arc::clone(&tasks[task_no % num_tasks]);
         let done = done.clone();
+        // A thread of `Executors.newFixedThreadPool(n, new
+        // NamedThreadFactory("deadlockchecker") {...})`
+        // (`TestClassloadingDeadlock.java:125-133`): in this thread's group.
+        let context = randomizedtesting::jdk::thread::Thread::start_context();
         all_threads.push(
             std::thread::Builder::new()
                 .name(format!("deadlockchecker-{}", task_no + 1))
                 .spawn(move || {
-                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        // Await a common barrier point for all threads and then
-                        // run racy code. This is intentional.
-                        barrier.wait();
-                        task();
-                    }));
-                    if outcome.is_err() {
-                        eprintln!(
-                            "{} failed to call racy method:",
-                            std::thread::current().name().unwrap_or("?")
-                        );
-                        std::process::exit(1); // signal failure to caller
-                    }
-                    let _ = done.send(());
+                    context(Box::new(move || {
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                // Await a common barrier point for all threads and then
+                                // run racy code. This is intentional.
+                                barrier.wait();
+                                task();
+                            }));
+                        if outcome.is_err() {
+                            eprintln!(
+                                "{} failed to call racy method:",
+                                std::thread::current().name().unwrap_or("?")
+                            );
+                            std::process::exit(1); // signal failure to caller
+                        }
+                        let _ = done.send(());
+                    }))
                 })
                 .expect("spawn"),
         );

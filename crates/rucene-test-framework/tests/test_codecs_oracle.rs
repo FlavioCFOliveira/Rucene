@@ -502,14 +502,28 @@ fn misuses(nocfs: &Path, scratch: &Path) -> Vec<(String, (String, String))> {
     });
     misuse("terms consumed in another thread", &|| {
         let terms = leaf.terms("body")?.unwrap();
+        // `new Thread(...)` (`TestCodecsOracle.java:320-330`): a thread of
+        // this thread's group, whose body catches every `Throwable`.
+        let context = randomizedtesting::jdk::thread::Thread::start_context_scoped();
         let thrown = std::thread::scope(|s| {
-            s.spawn(|| match terms.iterator() {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::AssertionError(m),
-                    ..
-                }) => Some(m),
-                Err(e) => Some(e.to_string()),
-                Ok(_) => None,
+            s.spawn(|| {
+                let mut thrown = None;
+                context(Box::new(|| {
+                    thrown = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        terms.iterator().map(drop)
+                    })) {
+                        Ok(Err(LuceneError {
+                            kind: LuceneErrorKind::AssertionError(m),
+                            ..
+                        })) => Some(m),
+                        Ok(Err(e)) => Some(e.to_string()),
+                        Ok(Ok(())) => None,
+                        Err(payload) => {
+                            Some(randomizedtesting::jdk::exception::panic_message(&*payload))
+                        }
+                    };
+                }));
+                thrown
             })
             .join()
             .unwrap()

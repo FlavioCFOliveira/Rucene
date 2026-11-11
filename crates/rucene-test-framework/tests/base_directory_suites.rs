@@ -27,7 +27,9 @@ use std::sync::{Arc, Mutex};
 use randomizedtesting::annotations::ParametersFactory;
 use randomizedtesting::jdk::reflect::{modifier, Class, Constructor, Method, Value};
 use rucene::error::Result;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::directory_reader;
+use rucene::search::task_executor::{Executor, Future, TaskValue};
 use rucene::store::java_nio_file::Path;
 use rucene::store::mmap::MMapDirectory;
 use rucene::store::{
@@ -37,6 +39,9 @@ use rucene::store::{
     TrackingDirectoryWrapper, LIMIT_MIN_BITS_PER_BLOCK,
 };
 use rucene::util::BitUtil;
+use rucene::util::NamedThreadFactory;
+use rucene_test_framework::jdk::executor_service::ExecutorService;
+use rucene_test_framework::jdk::thread_pool_executor::ThreadPoolExecutor;
 use rucene_test_framework::store::base_chunked_directory_test_case::{
     self, chunked_get_directory, BaseChunkedDirectoryTestCase,
 };
@@ -45,6 +50,7 @@ use rucene_test_framework::store::base_directory_test_case::{
 };
 use rucene_test_framework::util::java_exceptions::expect_throws;
 use rucene_test_framework::util::LuceneTestCase;
+use std::time::Duration;
 
 mod draw_hooks;
 mod lucene_core_shims;
@@ -798,35 +804,42 @@ fn mmap_test_ace_with_threads(case: &dyn BaseDirectoryTestCase) -> Result<()> {
             let mut r#in = dir.open_input("test", &*DEFAULT_IO_CONTEXT)?;
             let mut clone = r#in.clone_input()?;
             let shotgun = Arc::new(CountDownLatch::new(1));
+            // `new Thread(...)` (`TestMMapDirectory.java:71-88`): a thread
+            // of this thread's group; what escapes its body goes to its
+            // uncaught-exception handler.
+            let context = randomizedtesting::jdk::thread::Thread::start_context();
             let t1 = {
                 let shotgun = Arc::clone(&shotgun);
                 std::thread::spawn(move || {
-                    let mut accum = vec![0u8; n_ints * 4];
-                    shotgun.await_();
-                    for _ in 0..10 {
-                        let read = clone
-                            .seek(0)
-                            .and_then(|()| clone.read_bytes(Some(&mut accum), 0, n_ints * 4));
-                        match read {
-                            Ok(()) => {}
-                            // OK
-                            Err(e)
-                                if is_instance(
-                                    &e,
-                                    "org.apache.lucene.store.AlreadyClosedException",
-                                ) =>
-                            {
-                                return;
+                    context(Box::new(move || {
+                        let mut accum = vec![0u8; n_ints * 4];
+                        shotgun.await_();
+                        for _ in 0..10 {
+                            let read = clone
+                                .seek(0)
+                                .and_then(|()| clone.read_bytes(Some(&mut accum), 0, n_ints * 4));
+                            match read {
+                                Ok(()) => {}
+                                // OK
+                                Err(e)
+                                    if is_instance(
+                                        &e,
+                                        "org.apache.lucene.store.AlreadyClosedException",
+                                    ) =>
+                                {
+                                    return;
+                                }
+                                Err(e) => panic!("{}", java_throwable(&e)),
                             }
-                            Err(e) => panic!("{}", java_throwable(&e)),
                         }
-                    }
+                    }))
                 })
             };
             shotgun.count_down();
             // this triggers "bad behaviour": closing input while other threads are running
             r#in.close()?;
-            t1.join().expect("t1");
+            // `t1.join()` (`:92`) does not rethrow what the thread threw.
+            let _ = t1.join();
         }
         Ok(())
     })();
@@ -1006,11 +1019,6 @@ const ISE: &str = "java.lang.IllegalStateException";
 /// `TestMMapDirectory.testConfined()`: opens the input with
 /// `ReadAdvice.READONCE` to ensure slice and clone are appropriately
 /// confined.
-///
-/// **Divergence from Lucene 10.5.0.** Java submits each task to a
-/// one-thread `ExecutorService` and unwraps the `ExecutionException`
-/// (`getAndUnwrap`); each task here runs on a scoped thread whose result is
-/// joined, the same "another thread" the confinement rejects.
 fn mmap_test_confined() -> Result<()> {
     let size = 16;
     let mut bytes = vec![0u8; size];
@@ -1023,50 +1031,93 @@ fn mmap_test_confined() -> Result<()> {
             out.write_bytes(&bytes, 0, bytes.len())?;
             out.close()?;
         }
-        let mut r#in = dir.open_input("test", &*READONCE_IO_CONTEXT)?;
-        // ensure accessible
-        Assert::assert_equals(16i64, r#in.slice("test", 0, r#in.length())?.length());
-        Assert::assert_equals(15i64, r#in.slice("test", 1, r#in.length() - 1)?.length());
+        // `try (var in = dir.openInput("test", IOContext.READONCE);
+        //      var executor = Executors.newFixedThreadPool(1,
+        //          new NamedThreadFactory("testConfined")))`: the tasks share
+        // `in` with the test thread, so it is held in an `Arc` until the
+        // executor is closed.
+        let r#in: Arc<Box<dyn IndexInput>> =
+            Arc::new(dir.open_input("test", &*READONCE_IO_CONTEXT)?);
+        let executor = new_fixed_thread_pool(1, "testConfined");
+        let body = (|| -> Result<()> {
+            // ensure accessible
+            Assert::assert_equals(16i64, r#in.slice("test", 0, r#in.length())?.length());
+            Assert::assert_equals(15i64, r#in.slice("test", 1, r#in.length() - 1)?.length());
 
-        // ensure not accessible
-        let input: &dyn IndexInput = &*r#in;
-        let x = expect_throws(ISE, || {
-            get_and_unwrap(|| input.slice("test", 0, input.length()).map(drop))
-        });
-        Assert::assert_true(x.message().is_some_and(|m| m.contains("confined")));
+            // ensure not accessible
+            let input = Arc::clone(&r#in);
+            let task1 = move || input.slice("test", 0, input.length());
+            let x = expect_throws(ISE, || get_and_unwrap(submit(&executor, task1)));
+            Assert::assert_true(x.message().is_some_and(|m| m.contains("confined")));
 
-        let offset = rnd().next_int_bound(input.length() as i32) as i64;
-        let length = input.length() - offset;
-        let x = expect_throws(ISE, || {
-            get_and_unwrap(|| input.slice("test", offset, length).map(drop))
-        });
-        Assert::assert_true(x.message().is_some_and(|m| m.contains("confined")));
+            let offset = rnd().next_int_bound(r#in.length() as i32) as i64;
+            let length = r#in.length() - offset;
+            let input = Arc::clone(&r#in);
+            let task2 = move || input.slice("test", offset, length);
+            let x = expect_throws(ISE, || get_and_unwrap(submit(&executor, task2)));
+            Assert::assert_true(x.message().is_some_and(|m| m.contains("confined")));
 
-        // slice.slice
-        let slice = input.slice("test", 0, input.length())?;
-        let slice_ref: &dyn IndexInput = &*slice;
-        let x = expect_throws(ISE, || {
-            get_and_unwrap(|| slice_ref.slice("test", 0, input.length()).map(drop))
-        });
-        Assert::assert_true(x.message().is_some_and(|m| m.contains("confined")));
-
-        // slice.clone
-        let x = expect_throws(ISE, || get_and_unwrap(|| slice_ref.clone_input().map(drop)));
-        Assert::assert_true(x.message().is_some_and(|m| m.contains("confined")));
-        drop(slice);
-        r#in.close()
+            // slice.slice
+            let slice: Arc<Box<dyn IndexInput>> = Arc::new(r#in.slice("test", 0, r#in.length())?);
+            let in_length = r#in.length();
+            let slice_ref = Arc::clone(&slice);
+            let task3 = move || slice_ref.slice("test", 0, in_length);
+            let x = expect_throws(ISE, || get_and_unwrap(submit(&executor, task3)));
+            Assert::assert_true(x.message().is_some_and(|m| m.contains("confined")));
+            // slice.clone
+            let slice_ref = Arc::clone(&slice);
+            let x = expect_throws(ISE, || {
+                get_and_unwrap(submit(&executor, move || slice_ref.clone_input()))
+            });
+            Assert::assert_true(x.message().is_some_and(|m| m.contains("confined")));
+            Ok(())
+        })();
+        // The resources close in reverse order: the executor, then `in`.
+        close_executor(&executor)?;
+        let mut r#in = Arc::try_unwrap(r#in)
+            .unwrap_or_else(|_| panic!("INVARIANT: the closed executor released every task"));
+        body.and(r#in.close())
     })();
     result.and(dir.close())
 }
 
-/// `getAndUnwrap(Future<Object>)` (`static`): runs `task` on another
-/// thread and returns its outcome.
-fn get_and_unwrap(task: impl FnOnce() -> Result<()> + Send) -> Result<()> {
-    std::thread::scope(|s| {
-        s.spawn(task)
-            .join()
-            .unwrap_or_else(|p| std::panic::resume_unwind(p))
-    })
+/// `getAndUnwrap(Future<Object>)` (`static`): `future.get()`, throwing the
+/// cause of its `ExecutionException`.
+fn get_and_unwrap(future: Future) -> Result<TaskValue> {
+    future.get()
+}
+
+/// `Executors.newFixedThreadPool(n, new NamedThreadFactory(prefix))`: its
+/// workers are named `<prefix>-<poolNumber>-thread-<n>`, are in their
+/// creator's group, and are reused across tasks.
+fn new_fixed_thread_pool(n: i32, prefix: &str) -> ThreadPoolExecutor {
+    ThreadPoolExecutor::new(n, n, Duration::ZERO, NamedThreadFactory::new(prefix))
+}
+
+/// `executor.submit(callable)`, the callable's value boxed as Java's
+/// `Object`.
+fn submit<T: Send + 'static>(
+    executor: &ThreadPoolExecutor,
+    task: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Future {
+    executor
+        .submit(Box::new(move || task().map(|v| Box::new(v) as TaskValue)))
+        .unwrap_or_else(|e| {
+            panic!(
+                "java.util.concurrent.RejectedExecutionException: {}",
+                e.message
+            )
+        })
+}
+
+/// `ExecutorService.close()`: shut down, then wait for termination.
+fn close_executor(executor: &ThreadPoolExecutor) -> Result<()> {
+    executor.shutdown();
+    while !executor
+        .await_termination(Duration::from_secs(86400))
+        .map_err(|e| LuceneError::from(LuceneErrorKind::Other(e.to_string())))?
+    {}
+    Ok(())
 }
 
 /// `TestMMapDirectory.testArenas()`.
@@ -1099,7 +1150,10 @@ fn mmap_test_arenas() -> Result<()> {
     let mut bytes = vec![0u8; size];
     rnd().next_bytes(&mut bytes);
 
-    let dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testArenas"))?;
+    // Shared with the executor's tasks (`new IndicesOpenTask(l, dir)`).
+    let dir = Arc::new(MMapDirectory::open(
+        LuceneTestCase::create_temp_dir_prefix("testArenas"),
+    )?);
     let result = (|| -> Result<()> {
         for name in &names {
             let mut out = dir.create_output(name, &*DEFAULT_IO_CONTEXT)?;
@@ -1109,26 +1163,32 @@ fn mmap_test_arenas() -> Result<()> {
 
         let n_threads = 10;
         let per_list_size = (names.len() + n_threads) / n_threads;
-        let name_lists: Vec<&[String]> = (0..n_threads)
+        let name_lists: Vec<Vec<String>> = (0..n_threads)
             .map(|i| {
-                &names[(per_list_size * i).min(names.len())
+                names[(per_list_size * i).min(names.len())
                     ..(per_list_size * i + per_list_size).min(names.len())]
+                    .to_vec()
             })
             .collect();
 
-        let dir_ref: &dyn Directory = &dir;
-        std::thread::scope(|s| -> Result<()> {
-            let futures: Vec<_> = name_lists
-                .iter()
-                .map(|l| s.spawn(move || indices_open_task(l, dir_ref)))
+        // `try (var executor = Executors.newFixedThreadPool(nThreads,
+        // threadFactory))`.
+        let executor = new_fixed_thread_pool(n_threads as i32, "testArenas");
+        let body = (|| -> Result<()> {
+            let futures: Vec<Future> = name_lists
+                .into_iter()
+                .map(|l| {
+                    let dir = Arc::clone(&dir);
+                    submit(&executor, move || indices_open_task(&l, &*dir))
+                })
                 .collect();
             for future in futures {
-                future
-                    .join()
-                    .unwrap_or_else(|p| std::panic::resume_unwind(p))?;
+                future.get()?;
             }
             Ok(())
-        })?;
+        })();
+        close_executor(&executor)?;
+        body?;
 
         // `dir.attachment instanceof ConcurrentHashMap<?, ?> map`
         Assert::assert_equals(0usize, dir.shared_arena_count());
