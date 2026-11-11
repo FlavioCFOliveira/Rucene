@@ -168,7 +168,7 @@ fn test_constructor_exceptions() -> Result<()> {
         Field::new("name", "value".to_string(), FieldType::new())
     });
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = random_writer(&dir)?;
     Field::new("name", "value".to_string(), ft)?; // okay
     let mut doc = Document::new();
@@ -218,7 +218,7 @@ fn test_get_values_for_new_document() -> Result<()> {
 /// Port of `testGetValuesForIndexedDocument`: `Document.getValues(String)`
 /// on a document retrieved from an index.
 fn test_get_values_for_indexed_document() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = random_writer(&dir)?;
     writer.add_document(&make_document_with_fields()?)?;
     let reader = writer.get_reader()?;
@@ -251,7 +251,7 @@ fn test_get_values() -> Result<()> {
 
 /// Port of `testPositionIncrementMultiFields`.
 fn test_position_increment_multi_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = random_writer(&dir)?;
     writer.add_document(&make_document_with_fields()?)?;
     let reader = writer.get_reader()?;
@@ -380,7 +380,7 @@ fn test_field_set_value() -> Result<()> {
         Store::YES,
     )?));
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = random_writer(&dir)?;
     writer.add_document(&doc)?;
     id_field(&mut doc).set_string_value("id2".to_string())?;
@@ -449,7 +449,7 @@ fn test_numeric_field_as_string() -> Result<()> {
     )?));
     assert_array_containing(&doc.get_values("int"), &["5", "4"]);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = random_writer(&dir)?;
     iw.add_document(&doc)?;
     let ir = iw.get_reader()?;

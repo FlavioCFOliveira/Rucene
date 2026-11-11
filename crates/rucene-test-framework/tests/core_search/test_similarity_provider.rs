@@ -79,7 +79,7 @@ fn provider_tear_down(f: &mut SimilarityProvider) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut directory) = f.directory.take() {
+    if let Some(directory) = f.directory.take() {
         directory.close()?;
     }
     Ok(())

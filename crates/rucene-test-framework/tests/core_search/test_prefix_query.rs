@@ -33,7 +33,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestPrefixQuery.testPrefixQuery`.
 fn test_prefix_query() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
 
     let categories = ["/Computers", "/Computers/Mac", "/Computers/Windows"];
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
@@ -73,7 +73,7 @@ fn test_prefix_query() -> Result<()> {
 
 /// Port of `TestPrefixQuery.testMatchAll`.
 fn test_match_all() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -100,7 +100,7 @@ fn test_match_all() -> Result<()> {
 
 /// Port of `TestPrefixQuery.testRandomBinaryPrefix`.
 fn test_random_binary_prefix() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_terms = LuceneTestCase::at_least(1000);
     let mut terms: JavaHashSet<BytesRef> = JavaHashSet::new();

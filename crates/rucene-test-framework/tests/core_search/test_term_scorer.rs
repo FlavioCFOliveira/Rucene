@@ -117,7 +117,7 @@ fn term_scorer_tear_down(f: &mut TermScorerTest) -> Result<()> {
     if let Some(reader) = f.index_reader.take() {
         reader.as_index_reader().close()?;
     }
-    if let Some(mut directory) = f.directory.take() {
+    if let Some(directory) = f.directory.take() {
         directory.close()?;
     }
     Ok(())
@@ -294,7 +294,7 @@ fn test_does_not_load_norms(f: &mut TermScorerTest) -> Result<()> {
 
 /// Port of `TestTermScorer.testRandomTopDocs`.
 fn test_random_top_docs(_f: &mut TermScorerTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

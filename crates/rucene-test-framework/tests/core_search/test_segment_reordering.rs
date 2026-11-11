@@ -53,7 +53,7 @@ fn no_merge_config() -> Result<IndexWriterConfig> {
 
 /// Port of `TestSegmentReordering.testSingleValuedNumericSorts`.
 fn test_single_valued_numeric_sorts() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), no_merge_config()?)?;
 
     for i in 0..500 {
@@ -168,7 +168,7 @@ fn test_single_valued_numeric_sorts() -> Result<()> {
 
 /// Port of `TestSegmentReordering.testMultiValuedSegmentSorts`.
 fn test_multi_valued_segment_sorts() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), no_merge_config()?)?;
 
     let mut i = 0;
@@ -352,7 +352,7 @@ fn sort_missing(
 
 /// Port of `TestSegmentReordering.testNumericSegmentSortsWithMissingValues`.
 fn test_numeric_segment_sorts_with_missing_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), no_merge_config()?)?;
     for i in 0..500 {
         let mut doc = Document::new();

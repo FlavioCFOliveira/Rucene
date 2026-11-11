@@ -666,6 +666,42 @@ thread_local! {
     static CURRENT_THREAD: Arc<InterruptState> = Arc::new(InterruptState::default());
 }
 
+/// Tests and clears the current thread's interrupt status as a test
+/// runner's own thread model records it.
+pub type InterruptStatusHook = fn() -> bool;
+
+/// The hook [`set_interrupt_status_hook`] installed, once per process.
+static INTERRUPT_STATUS_HOOK: OnceLock<InterruptStatusHook> = OnceLock::new();
+
+/// Installs the hook through which this crate's interruptible waits, and
+/// [`InterruptHandle::interrupted`], also observe an interrupt delivered by a
+/// test runner's model of `java.lang.Thread`.
+///
+/// On the JVM there is one `Thread.interrupt()`: a test interrupting a thread
+/// interrupts the `Object.wait` or `Thread.sleep` Lucene code blocks in on it
+/// (`TestRateLimiter.testOverflowInt`). A Rust thread has no interrupt status,
+/// so a runner that models `Thread` (randomizedtesting's shim, whose
+/// `Thread.interrupt()` sets its own flag) installs this hook with its
+/// "test and clear the current thread's flag", and a waiting thread consumes
+/// that flag as it consumes its [`InterruptHandle`] status, checking it at
+/// least every 10 ms (see [`wait_interruptibly`]). Without a hook only
+/// [`InterruptHandle::interrupt`] interrupts.
+///
+/// Returns `false`, leaving the installed hook in place, when one is already
+/// installed.
+pub fn set_interrupt_status_hook(hook: InterruptStatusHook) -> bool {
+    INTERRUPT_STATUS_HOOK.set(hook).is_ok()
+}
+
+/// Tests and clears the calling thread's interrupt status: `state`, the
+/// current thread's own, and the status the [`InterruptStatusHook`] reports.
+/// Both are cleared, as a single Java status would be.
+fn take_current_interrupt(state: &InterruptState) -> bool {
+    let own = state.take_interrupt();
+    let runner = INTERRUPT_STATUS_HOOK.get().is_some_and(|hook| hook());
+    own | runner
+}
+
 /// A handle to one thread's interrupt status: the part of `java.lang.Thread`
 /// that Lucene's interruptible waits observe.
 ///
@@ -726,7 +762,7 @@ impl InterruptHandle {
     ///
     /// Equivalent to the static `Thread.interrupted()`.
     pub fn interrupted() -> bool {
-        CURRENT_THREAD.with(|state| state.take_interrupt())
+        CURRENT_THREAD.with(|state| take_current_interrupt(state))
     }
 
     /// Returns whether the thread is waiting in [`wait_interruptibly`].
@@ -795,7 +831,7 @@ pub fn wait_interruptibly<'a, T>(
     // notifies, or set the status before this check sees it.
     state.set_blocker(Some(Arc::clone(condvar)));
     let _registration = BlockerRegistration { state: &state };
-    if state.take_interrupt() {
+    if take_current_interrupt(&state) {
         return Ok((guard, Err(InterruptedException)));
     }
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
@@ -820,7 +856,7 @@ pub fn wait_interruptibly<'a, T>(
             }
         };
         guard = reacquired;
-        if state.take_interrupt() {
+        if take_current_interrupt(&state) {
             break Err(InterruptedException);
         }
         if !result.timed_out() {

@@ -351,7 +351,7 @@ fn set_cross_check_term_vectors_on_close(dir: &TestDirectory, value: bool) {
 /// @throws Exception on error
 /// Port of `TestFilterLeafReader.testFilterIndexReader`.
 fn test_filter_index_reader() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
 
     let writer = IndexWriter::new(
         directory.as_directory(),
@@ -372,7 +372,7 @@ fn test_filter_index_reader() -> Result<()> {
     writer.force_merge(1)?;
     writer.close()?;
 
-    let mut target = LuceneTestCase::new_directory();
+    let target = LuceneTestCase::new_directory();
 
     // We mess with the postings so this can fail:
     set_cross_check_term_vectors_on_close(&target, false);
@@ -549,7 +549,7 @@ fn addr(r: &Arc<dyn LeafReader>) -> *const () {
 
 /// Port of `TestFilterLeafReader.testUnwrap`.
 fn test_unwrap() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     w.add_document(&Document::new())?;
     let dr = w.get_reader()?;

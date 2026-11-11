@@ -79,7 +79,7 @@ fn new_iwc() -> IndexWriterConfig {
 
 /// Port of `TestTieredMergePolicy.testForceMergeDeletes`.
 pub fn test_force_merge_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let tmp = Arc::new(LuceneTestCase::new_tiered_merge_policy());
     conf.set_merge_policy(Some(Arc::clone(&tmp) as Arc<dyn MergePolicy>))?;
@@ -138,7 +138,7 @@ pub fn test_partial_merge() -> Result<()> {
         if *VERBOSE {
             println!("TEST: iter={iter}");
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let conf = new_iwc();
         conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
         let tmp = Arc::new(LuceneTestCase::new_tiered_merge_policy());
@@ -208,7 +208,7 @@ pub fn test_partial_merge() -> Result<()> {
 
 /// Port of `TestTieredMergePolicy.testForceMergeDeletesMaxSegSize`.
 pub fn test_force_merge_deletes_max_seg_size() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let tmp = TieredMergePolicy::new();
     tmp.set_max_merged_segment_mb(0.01)?;
@@ -267,7 +267,7 @@ pub fn test_force_merge_deletes_max_seg_size() -> Result<()> {
 ///
 /// Port of `TestTieredMergePolicy.testForcedMergesRespectSegSize`.
 pub fn test_forced_merges_respect_seg_size() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let tmp = TieredMergePolicy::new();
 
@@ -927,7 +927,7 @@ pub fn test_setters() -> Result<()> {
 ///
 /// Port of `TestTieredMergePolicy.testUnbalancedMergeSelection`.
 pub fn test_unbalanced_merge_selection() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let mp = iwc.merge_policy();
     let tmp = as_tiered(&mp);

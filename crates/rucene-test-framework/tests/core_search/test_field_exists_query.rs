@@ -156,7 +156,7 @@ fn riw(dir: &TestDirectory) -> Result<RandomIndexWriter> {
 }
 
 fn test_doc_values_rewrite_with_terms_present() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
@@ -182,7 +182,7 @@ fn test_doc_values_rewrite_with_terms_present() -> Result<()> {
 }
 
 fn test_doc_values_rewrite_with_point_values_present() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
@@ -205,7 +205,7 @@ fn test_doc_values_rewrite_with_point_values_present() -> Result<()> {
 }
 
 fn test_doc_values_rewrite_with_doc_values_skipper_present() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
@@ -231,7 +231,7 @@ fn test_doc_values_rewrite_with_doc_values_skipper_present() -> Result<()> {
 }
 
 fn test_doc_values_no_rewrite() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
@@ -263,7 +263,7 @@ fn test_doc_values_no_rewrite() -> Result<()> {
 }
 
 fn test_doc_values_no_rewrite_with_doc_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {
@@ -320,7 +320,7 @@ fn doc_values_index(dir: &TestDirectory) -> Result<(Arc<dyn DirectoryReader>, In
 fn test_doc_values_random() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let (reader, searcher) = doc_values_index(&dir)?;
 
         assert_same_matches(&searcher, tq("has_value", "yes"), fe("dv1"), false)?;
@@ -336,7 +336,7 @@ fn test_doc_values_random() -> Result<()> {
 fn test_doc_values_approximation() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let (reader, searcher) = doc_values_index(&dir)?;
 
         let mut r#ref = BooleanQueryBuilder::new();
@@ -382,7 +382,7 @@ fn boosted_has_value(boost: f32) -> Result<Arc<dyn Query>> {
 fn test_doc_values_score() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let (reader, searcher) = doc_values_index(&dir)?;
 
         let boost = random().next_float() * 10.0;
@@ -403,7 +403,7 @@ fn test_doc_values_score() -> Result<()> {
 
 /// The body of the `*MissingField` tests: one empty document.
 fn missing_field_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     iw.add_document(&Document::new())?;
     iw.commit()?;
@@ -422,7 +422,7 @@ fn test_doc_values_missing_field() -> Result<()> {
 }
 
 fn test_doc_values_all_docs_have_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let mut doc = Document::new();
     doc.add(Box::new(NumericDocValuesField::new("f", 1)));
@@ -439,7 +439,7 @@ fn test_doc_values_all_docs_have_field() -> Result<()> {
 }
 
 fn test_doc_values_field_exists_but_no_docs_have_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     // 1st segment has the field, but 2nd one does not
     let mut doc = Document::new();
@@ -459,7 +459,7 @@ fn test_doc_values_field_exists_but_no_docs_have_field() -> Result<()> {
 }
 
 fn test_doc_values_query_matches_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = riw(&dir)?;
 
     let random_num_docs = TestUtil::next_int(&*random(), 11, 100);
@@ -541,7 +541,7 @@ fn norms_index(dir: &TestDirectory) -> Result<(Arc<dyn DirectoryReader>, IndexSe
 fn test_norms_random() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let (reader, searcher) = norms_index(&dir)?;
 
         assert_same_matches(&searcher, tq("has_value", "yes"), fe("text1"), false)?;
@@ -556,7 +556,7 @@ fn test_norms_random() -> Result<()> {
 fn test_norms_approximation() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let (reader, searcher) = norms_index(&dir)?;
 
         let mut r#ref = BooleanQueryBuilder::new();
@@ -583,7 +583,7 @@ fn test_norms_approximation() -> Result<()> {
 fn test_norms_score() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let (reader, searcher) = norms_index(&dir)?;
 
         let boost = random().next_float() * 10.0;
@@ -604,7 +604,7 @@ fn test_norms_missing_field() -> Result<()> {
 }
 
 fn test_norms_all_docs_have_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     let mut doc = Document::new();
     doc.add(text_field("f", "value")?);
@@ -621,7 +621,7 @@ fn test_norms_all_docs_have_field() -> Result<()> {
 }
 
 fn test_norms_field_exists_but_no_docs_have_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = riw(&dir)?;
     // 1st segment has the field, but 2nd one does not
     let mut doc = Document::new();
@@ -641,7 +641,7 @@ fn test_norms_field_exists_but_no_docs_have_field() -> Result<()> {
 }
 
 fn test_norms_query_matches_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = riw(&dir)?;
 
     let random_num_docs = TestUtil::next_int(&*random(), 10, 100);
@@ -742,7 +742,7 @@ fn knn(name: &str, vector: &[f32]) -> Result<Box<KnnFloatVectorField>> {
 fn test_knn_vector_random() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = riw(&dir)?;
             let num_docs = LuceneTestCase::at_least(100);
@@ -785,7 +785,7 @@ fn test_knn_vector_random() -> Result<()> {
 }
 
 fn test_knn_vector_missing_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = riw(&dir)?;
         iw.add_document(&Document::new())?;
@@ -804,7 +804,7 @@ fn test_knn_vector_missing_field() -> Result<()> {
 }
 
 fn test_knn_vector_all_docs_have_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = riw(&dir)?;
         for _ in 0..100 {
@@ -835,7 +835,7 @@ fn test_knn_vector_all_docs_have_field() -> Result<()> {
 }
 
 fn test_delete_knn_vector() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = riw(&dir)?;
         let num_docs = LuceneTestCase::at_least(100);
@@ -875,7 +875,7 @@ fn test_delete_knn_vector() -> Result<()> {
 }
 
 fn test_knn_vector_conjunction() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = riw(&dir)?;
         let num_docs = LuceneTestCase::at_least(100);
@@ -919,7 +919,7 @@ fn test_knn_vector_conjunction() -> Result<()> {
 }
 
 fn test_knn_vector_field_exists_but_no_docs_have_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = riw(&dir)?;
         // 1st segment has the field, but 2nd one does not
@@ -952,7 +952,7 @@ fn random_vector(dim: usize) -> Result<Vec<f32>> {
 }
 
 fn test_delete_doc_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = riw(&dir)?;
         let num_docs = LuceneTestCase::at_least(100);
@@ -997,7 +997,7 @@ fn test_delete_doc_values() -> Result<()> {
 }
 
 fn test_delete_all_point_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = riw(&dir)?;
 
@@ -1034,7 +1034,7 @@ fn test_delete_all_point_docs() -> Result<()> {
 }
 
 fn test_delete_all_term_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = riw(&dir)?;
 
@@ -1123,7 +1123,7 @@ fn assert_same_count(
 /// documents are deleted, count() should still return the number of live
 /// docs in O(1) instead of falling back to iteration.
 fn test_doc_values_count_with_deletions_all_docs_have_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = riw(&dir)?;
     let num_docs = LuceneTestCase::at_least(20);
     for i in 0..num_docs {
@@ -1169,7 +1169,7 @@ fn test_doc_values_count_with_deletions_all_docs_have_field() -> Result<()> {
 /// are deleted, count() should still return the number of live docs in O(1)
 /// instead of falling back to iteration.
 fn test_vector_count_with_deletions_all_docs_have_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = riw(&dir)?;
     let num_docs = LuceneTestCase::at_least(20);
     for i in 0..num_docs {

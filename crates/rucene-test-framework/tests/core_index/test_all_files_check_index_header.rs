@@ -34,7 +34,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestAllFilesCheckIndexHeader.test`.
 fn test_() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         rucene_test_framework::analysis::MockAnalyzer::new(&*random()),
     )));
@@ -71,7 +71,7 @@ fn check_index_header(dir: &Arc<dyn Directory>) -> Result<()> {
 fn check_one_file(dir: &Arc<dyn Directory>, victim: &str) -> Result<()> {
     // use ramdir explicit, as we do evil things like try to generate broken files, deletes must
     // work.
-    let mut dir_copy = TestDirectory::Mock(MockDirectoryWrapper::new(
+    let dir_copy = TestDirectory::Mock(MockDirectoryWrapper::new(
         &*random(),
         Arc::new(ByteBuffersDirectory::new()),
     ));

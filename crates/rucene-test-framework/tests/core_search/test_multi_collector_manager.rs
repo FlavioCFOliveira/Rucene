@@ -74,7 +74,7 @@ fn mcm(managers: Vec<Box<dyn ErasedCollectorManager>>) -> Result<MultiCollectorM
 
 /// Port of `TestMultiCollectorManager.testCollection`.
 fn test_collection() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let reader = reader(&dir)?;
     let ctx = first_leaf(&reader)?;
 
@@ -148,7 +148,7 @@ fn new_collector_set_scorer(
 
 /// Port of `TestMultiCollectorManager.testCacheScoresIfNecessary`.
 fn test_cache_scores_if_necessary() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let reader = reader(&dir)?;
     let ctx = first_leaf(&reader)?;
 
@@ -180,7 +180,7 @@ fn test_cache_scores_if_necessary() -> Result<()> {
 
 /// Port of `TestMultiCollectorManager.testScoreWrapping`.
 fn test_score_wrapping() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let reader = reader(&dir)?;
     let ctx = first_leaf(&reader)?;
 
@@ -215,7 +215,7 @@ fn test_score_wrapping() -> Result<()> {
 
 /// Port of `TestMultiCollectorManager.testEarlyTermination`.
 fn test_early_termination() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let reader = reader(&dir)?;
     let ctx = first_leaf(&reader)?;
 

@@ -306,7 +306,7 @@ fn lookup(pk: &mut PerThreadPKLookup, id: &str) -> i32 {
 
 /// `TestPerThreadPKLookup.testReopen`.
 fn test_reopen() {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = pk_writer(&dir);
     let add = |fields: &[(&str, &str)]| {
         writer
@@ -393,7 +393,7 @@ fn test_reopen() {
 
 /// `TestPerThreadPKLookup.testPKLookupWithUpdate`.
 fn test_pk_lookup_with_update() {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = pk_writer(&dir);
 
     writer
@@ -769,7 +769,7 @@ fn expect_assertion(
 /// `testCheck{Skip,FirstSkip}ToDetectsEarlyTermination`: over a local index
 /// merged into one segment, searched without wrapping.
 fn early_termination(check: fn(&Arc<dyn Query>, &IndexSearcher) -> Result<()>) {
-    let mut local_dir = LuceneTestCase::new_directory();
+    let local_dir = LuceneTestCase::new_directory();
     let local_reader = five_docs(&local_dir, true);
     let local_searcher = LuceneTestCase::new_searcher_wrap(Arc::clone(&local_reader), false);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -810,7 +810,7 @@ fn test_query_utils() {
                     let reader = f.reader.take().expect("setUp ran");
                     reader.close().unwrap_or_else(|e| rethrow(e));
                     drop((f.searcher.take(), reader));
-                    let mut dir = f.dir.take().expect("setUp ran");
+                    let dir = f.dir.take().expect("setUp ran");
                     dir.close().unwrap_or_else(|e| rethrow(e));
                     LuceneTestCase::super_tear_down();
                 }),

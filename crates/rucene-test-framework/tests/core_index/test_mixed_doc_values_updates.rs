@@ -104,7 +104,7 @@ fn string_field(name: &str, value: String, store: Store) -> Result<Box<StringFie
 
 /// Port of `TestMixedDocValuesUpdates.testManyReopensAndFields`.
 fn test_many_reopens_and_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let random = random();
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random,
@@ -255,7 +255,7 @@ fn group_of(group: f64) -> &'static str {
 
 /// Port of `TestMixedDocValuesUpdates.testStressMultiThreading`.
 fn test_stress_multi_threading() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -413,7 +413,7 @@ fn test_stress_multi_threading() -> Result<()> {
 /// Port of `TestMixedDocValuesUpdates.testUpdateDifferentDocsInDifferentGens`.
 fn test_update_different_docs_in_different_gens() -> Result<()> {
     // update same document multiple times across generations
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     conf.set_max_buffered_docs(4)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -482,7 +482,7 @@ fn random_from_set(random: &dyn Random, set: &JavaHashSet<String>) -> String {
 /// Port of `TestMixedDocValuesUpdates.testTonsOfUpdates` (`@Nightly`).
 fn test_tons_of_updates() -> Result<()> {
     // LUCENE-5248: make sure that when there are many updates, we don't use too much RAM
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let random = random();
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random,
@@ -581,7 +581,7 @@ fn search_term(reader: Arc<dyn IndexReader>, term: Term) -> Result<TopDocs> {
 
 /// Port of `TestMixedDocValuesUpdates.testTryUpdateDocValues`.
 fn test_try_update_doc_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let num_docs = 1 + random().next_int_bound(128);
@@ -686,7 +686,7 @@ impl HeldLock {
 
 /// Port of `TestMixedDocValuesUpdates.testTryUpdateMultiThreaded`.
 fn test_try_update_multi_threaded() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let num_locks = 25 + random().next_int_bound(50);
@@ -850,7 +850,7 @@ pub(crate) fn do_update(doc: Term, writer: &IndexWriter, fields: &[Field]) -> Re
 
 /// Port of `TestMixedDocValuesUpdates.testResetValue`.
 fn test_reset_value() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let mut doc = Document::new();
@@ -923,7 +923,7 @@ fn test_reset_value() -> Result<()> {
 
 /// Port of `TestMixedDocValuesUpdates.testResetValueMultipleDocs`.
 fn test_reset_value_multiple_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let num_docs = 10 + random().next_int_bound(50);
@@ -1010,7 +1010,7 @@ fn with_dir_and_writer(
     conf: IndexWriterConfig,
     body: impl FnOnce(&IndexWriter) -> Result<()>,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = match IndexWriter::new(dir.as_directory(), conf) {
         Ok(w) => w,
         Err(e) => {
@@ -1104,7 +1104,7 @@ fn test_update_field_with_no_previous_doc_values_throws_error() -> Result<()> {
 
 /// Port of `TestMixedDocValuesUpdates.testLongRunValuesReset`.
 fn test_long_run_values_reset() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
     let num_docs = LuceneTestCase::at_least(65536);
     for i in 0..num_docs {

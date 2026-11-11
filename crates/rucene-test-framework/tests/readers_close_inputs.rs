@@ -200,7 +200,7 @@ fn read_through_wrapper(index: &dyn Directory, seed: i64) -> rucene::error::Resu
     TestUtil::check_index_with(wrapper.as_directory(), 3, true, false, None)?;
     // `close()` runs `CheckIndex` again, after refusing to close over an
     // open file.
-    let mut wrapper = wrapper;
+    let wrapper = wrapper;
     wrapper.close()
 }
 

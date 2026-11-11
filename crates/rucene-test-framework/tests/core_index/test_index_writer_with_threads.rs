@@ -322,7 +322,7 @@ fn test_immediate_disk_full_with_threads() -> Result<()> {
         if verbose() {
             println!("\nTEST: iter={iter}");
         }
-        let mut dir = LuceneTestCase::new_mock_directory();
+        let dir = LuceneTestCase::new_mock_directory();
         let writer = IndexWriter::new(dir.as_directory(), threaded_iwc(2)?)?;
         set_suppress_exceptions(&writer);
         dir.set_max_size_in_bytes(4 * 1024 + 20 * iter);
@@ -372,7 +372,7 @@ fn test_close_with_threads() -> Result<()> {
         if verbose() {
             println!("\nTEST: iter={iter}");
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
 
         let writer = IndexWriter::new(dir.as_directory(), threaded_iwc(10)?)?;
         set_suppress_exceptions(&writer);
@@ -450,7 +450,7 @@ fn testing_multiple_threads_failure(failure: Arc<dyn Failure>) -> Result<()> {
         if verbose() {
             println!("TEST: iter={iter}");
         }
-        let mut dir = LuceneTestCase::new_mock_directory();
+        let dir = LuceneTestCase::new_mock_directory();
 
         let writer = IndexWriter::new(dir.as_directory(), threaded_iwc(2)?)?;
         set_suppress_exceptions(&writer);
@@ -519,7 +519,7 @@ fn testing_multiple_threads_failure(failure: Arc<dyn Failure>) -> Result<()> {
 ///
 /// Port of `TestIndexWriterWithThreads._testSingleThreadFailure`.
 fn testing_single_thread_failure(failure: Arc<dyn Failure>) -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
 
     let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
@@ -770,7 +770,7 @@ fn delayed_index_and_close_runnable(
 ///
 /// Port of `TestIndexWriterWithThreads.testOpenTwoIndexWritersOnDifferentThreads`.
 fn test_open_two_index_writers_on_different_threads() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let body = (|| -> Result<()> {
         let sync_start = Arc::new(CyclicBarrier::new(2));
         let (thread1, state1) =
@@ -832,7 +832,7 @@ fn test_open_two_index_writers_on_different_threads() -> Result<()> {
 ///
 /// Port of `TestIndexWriterWithThreads.testRollbackAndCommitWithThreads`.
 fn test_rollback_and_commit_with_threads() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
 
     let thread_count = TestUtil::next_int(&*random(), 2, 6);
 
@@ -969,7 +969,7 @@ fn test_soft_update_single_doc_with_threads() -> Result<()> {
 
 /// Port of `TestIndexWriterWithThreads.stressUpdateSingleDocWithThreads`.
 fn stress_update_single_doc_with_threads(use_soft_deletes: bool, force_merge: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_max_buffered_docs(-1)?;
     iwc.set_ram_buffer_size_mb(0.00001)?;

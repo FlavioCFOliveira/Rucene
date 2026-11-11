@@ -219,7 +219,7 @@ impl KnnByteMMapCase {
 }
 
 fn test_to_string<C: KnnVectorCase<Q = KnnByteVectorQuery>>() -> Result<()> {
-    let mut index_store = get_index_store::<C>("field", &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
+    let index_store = get_index_store::<C>("field", &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
     let reader = directory_reader::open(index_store.as_directory())?;
     let result = (|| -> Result<()> {
         let query = get_knn_vector_query::<C>("field", &[0.0, 1.0], 10)?;
@@ -259,7 +259,7 @@ fn test_get_target() -> Result<()> {
 }
 
 fn test_vector_encoding_mismatch<C: KnnVectorCase<Q = KnnByteVectorQuery>>() -> Result<()> {
-    let mut index_store = get_index_store::<C>("field", &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
+    let index_store = get_index_store::<C>("field", &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
     let reader = directory_reader::open(index_store.as_directory())?;
     let result = (|| -> Result<()> {
         let mut filter: Option<Arc<dyn Query>> = None;

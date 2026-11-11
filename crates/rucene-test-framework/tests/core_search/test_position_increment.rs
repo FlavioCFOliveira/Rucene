@@ -129,7 +129,7 @@ fn test_set_position() -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(FixedAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
-    let mut store = LuceneTestCase::new_directory();
+    let store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new(&*random(), store.as_directory(), analyzer)?;
     let mut d = Document::new();
     d.add(Box::new(LuceneTestCase::new_text_field(

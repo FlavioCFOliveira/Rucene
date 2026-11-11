@@ -95,8 +95,8 @@ fn parallel_reader(reader: ParallelLeafReader) -> Arc<dyn LeafReader> {
 
 /// Port of `TestParallelLeafReader.testQueries`.
 fn test_queries() -> Result<()> {
-    let (single, mut dir) = single()?;
-    let (parallel, mut dir1, mut dir2) = parallel()?;
+    let (single, dir) = single()?;
+    let (parallel, dir1, dir2) = parallel()?;
 
     let q =
         |f: &str, v: &str| -> Arc<dyn Query> { Arc::new(TermQuery::new(Term::from_text(f, v))) };
@@ -125,8 +125,8 @@ fn test_queries() -> Result<()> {
 
 /// Port of `TestParallelLeafReader.testFieldNames`.
 fn test_field_names() -> Result<()> {
-    let mut dir1 = get_dir1()?;
-    let mut dir2 = get_dir2()?;
+    let dir1 = get_dir1()?;
+    let dir2 = get_dir2()?;
     let pr = parallel_reader(ParallelLeafReader::new(vec![
         only_leaf(&dir1)?,
         only_leaf(&dir2)?,
@@ -144,8 +144,8 @@ fn test_field_names() -> Result<()> {
 
 /// Port of `TestParallelLeafReader.testRefCounts1`.
 fn test_ref_counts1() -> Result<()> {
-    let mut dir1 = get_dir1()?;
-    let mut dir2 = get_dir2()?;
+    let dir1 = get_dir1()?;
+    let dir2 = get_dir2()?;
     // close subreaders, ParallelReader will not change refCounts, but close on its own close
     let ir1 = only_leaf(&dir1)?;
     let ir2 = only_leaf(&dir2)?;
@@ -166,8 +166,8 @@ fn test_ref_counts1() -> Result<()> {
 
 /// Port of `TestParallelLeafReader.testRefCounts2`.
 fn test_ref_counts2() -> Result<()> {
-    let mut dir1 = get_dir1()?;
-    let mut dir2 = get_dir2()?;
+    let dir1 = get_dir1()?;
+    let dir2 = get_dir2()?;
     let ir1 = only_leaf(&dir1)?;
     let ir2 = only_leaf(&dir2)?;
     // don't close subreaders, so ParallelReader will increment refcounts
@@ -191,7 +191,7 @@ fn test_ref_counts2() -> Result<()> {
 
 /// Port of `TestParallelLeafReader.testCloseInnerReader`.
 fn test_close_inner_reader() -> Result<()> {
-    let mut dir1 = get_dir1()?;
+    let dir1 = get_dir1()?;
     let ir1 = only_leaf(&dir1)?;
 
     // with overlapping
@@ -219,10 +219,10 @@ fn test_close_inner_reader() -> Result<()> {
 /// Port of `TestParallelLeafReader.testIncompatibleIndexes`.
 fn test_incompatible_indexes() -> Result<()> {
     // two documents:
-    let mut dir1 = get_dir1()?;
+    let dir1 = get_dir1()?;
 
     // one document only:
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), new_iwc())?;
     let mut d3 = Document::new();
 
@@ -257,8 +257,8 @@ fn test_incompatible_indexes() -> Result<()> {
 
 /// Port of `TestParallelLeafReader.testIgnoreStoredFields`.
 fn test_ignore_stored_fields() -> Result<()> {
-    let mut dir1 = get_dir1()?;
-    let mut dir2 = get_dir2()?;
+    let dir1 = get_dir1()?;
+    let dir2 = get_dir2()?;
     let ir1 = only_leaf(&dir1)?;
     let ir2 = only_leaf(&dir2)?;
 
@@ -447,10 +447,10 @@ fn sorted_two_doc_index(sort_field: Option<&str>, two_commits: bool) -> Result<T
 /// Port of `TestParallelLeafReader.testWithIndexSort1`: not ok to have one
 /// leaf w/ index sort and another with a different index sort.
 fn test_with_index_sort1() -> Result<()> {
-    let mut dir1 = sorted_two_doc_index(Some("foo"), true)?;
+    let dir1 = sorted_two_doc_index(Some("foo"), true)?;
     let r1: Arc<dyn IndexReader> = directory_reader::open(dir1.as_directory())?;
 
-    let mut dir2 = sorted_two_doc_index(Some("bar"), true)?;
+    let dir2 = sorted_two_doc_index(Some("bar"), true)?;
     let r2: Arc<dyn IndexReader> = directory_reader::open(dir2.as_directory())?;
 
     let message = expect_throws(IAE, || {
@@ -476,10 +476,10 @@ fn test_with_index_sort1() -> Result<()> {
 /// Port of `TestParallelLeafReader.testWithIndexSort2`: ok to have one leaf
 /// w/ index sort and the other with no sort.
 fn test_with_index_sort2() -> Result<()> {
-    let mut dir1 = sorted_two_doc_index(Some("foo"), true)?;
+    let dir1 = sorted_two_doc_index(Some("foo"), true)?;
     let r1: Arc<dyn IndexReader> = directory_reader::open(dir1.as_directory())?;
 
-    let mut dir2 = sorted_two_doc_index(None, false)?;
+    let dir2 = sorted_two_doc_index(None, false)?;
 
     let r2: Arc<dyn IndexReader> = directory_reader::open(dir2.as_directory())?;
     close(&parallel_reader(ParallelLeafReader::with_close_flag(
@@ -500,7 +500,7 @@ fn test_with_index_sort2() -> Result<()> {
 
 /// Port of `TestParallelLeafReader.testWithDocValuesUpdates`.
 fn test_with_doc_values_updates() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let iwc1 = new_iwc();
     let w1 = IndexWriter::new(dir1.as_directory(), iwc1)?;
     let mut d = Document::new();

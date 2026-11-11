@@ -236,7 +236,7 @@ fn test_scores() -> Result<()> {
 
 /// `private void doTestScores(int totalHitsThreshold)`.
 fn do_test_scores(total_hits_threshold: i32) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();
@@ -296,7 +296,7 @@ fn test_boosts() -> Result<()> {
 
 /// `public void doTestBoosts(int totalHitsThreshold)`.
 fn do_test_boosts(total_hits_threshold: i32) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();
@@ -603,7 +603,7 @@ impl Impacts for DummyImpacts {
 
 /// Port of `TestSynonymQuery.testRandomTopDocs`.
 fn test_random_top_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

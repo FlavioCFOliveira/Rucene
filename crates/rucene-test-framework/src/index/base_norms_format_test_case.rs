@@ -708,7 +708,7 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
         let docs_with_field = random_docs_with_field(num_docs, num_docs_with_field);
         let norms: Vec<i64> = (0..num_docs_with_field).map(|_| longs()).collect();
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         self.apply_created_version_major(&*dir.as_directory())?;
         let analyzer = whitespace_analyzer();
         let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
@@ -752,7 +752,7 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testUndeadNorms()`: LUCENE-6006: tests undead norms.
     fn test_undead_norms(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         self.apply_created_version_major(&*dir.as_directory())?;
         let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let num_docs = LuceneTestCase::at_least(500);
@@ -818,7 +818,7 @@ pub trait BaseNormsFormatTestCase: BaseIndexFileFormatTestCase {
             .map(|_| random().next_long())
             .collect();
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         self.apply_created_version_major(&*dir.as_directory())?;
         let analyzer = whitespace_analyzer();
         let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
@@ -898,7 +898,7 @@ fn independant_iterators<C: BaseNormsFormatTestCase + ?Sized>(
     case: &C,
     sparse: bool,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config();
     conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let sim = Arc::new(CannedNormSimilarity::new(vec![42, 10, 20]));

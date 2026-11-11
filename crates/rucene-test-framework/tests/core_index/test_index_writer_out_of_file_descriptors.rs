@@ -44,7 +44,7 @@ fn as_cms_opt(
 
 /// Port of `TestIndexWriterOutOfFileDescriptors.test`.
 fn test_() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir = LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "TestIndexWriterOutOfFileDescriptors",
     ));
     let rate = random().next_double() * 0.01;
@@ -221,7 +221,7 @@ fn test_() -> Result<()> {
     }
     if let Some(r) = r {
         r.close()?;
-        if let Some(mut copy) = dir_copy {
+        if let Some(copy) = dir_copy {
             copy.close()?;
         }
     }

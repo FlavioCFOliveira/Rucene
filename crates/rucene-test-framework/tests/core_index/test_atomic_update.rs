@@ -179,7 +179,7 @@ fn run_test(directory: Arc<dyn Directory>) -> Result<()> {
 /// Port of `TestAtomicUpdate.testAtomicUpdates`.
 fn test_atomic_updates() -> Result<()> {
     // run against a random directory.
-    let mut directory = TestDirectory::Mock(MockDirectoryWrapper::new(
+    let directory = TestDirectory::Mock(MockDirectoryWrapper::new(
         &*random(),
         Arc::new(ByteBuffersDirectory::new()),
     ));
@@ -188,7 +188,7 @@ fn test_atomic_updates() -> Result<()> {
 
     // then against an FSDirectory.
     let dir_path = LuceneTestCase::create_temp_dir_prefix("lucene.test.atomic");
-    let mut directory = LuceneTestCase::new_fs_directory(&dir_path);
+    let directory = LuceneTestCase::new_fs_directory(&dir_path);
     run_test(directory.as_directory())?;
     directory.close()
 }

@@ -440,7 +440,7 @@ fn test_truncated_file_throws_corrupt_index_exception() -> Result<()> {
 
 /// Port of `TestCodecUtil.testRetrieveChecksum`.
 fn test_retrieve_checksum() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let dir = directory.as_directory();
         {

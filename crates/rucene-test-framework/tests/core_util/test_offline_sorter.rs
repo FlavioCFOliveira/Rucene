@@ -63,7 +63,7 @@ pub fn class_def() -> Arc<Class> {
 
 fn test_empty() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     check_sort(&d, &mut OfflineSorter::new(Arc::clone(&d), "foo")?, vec![])?;
     drop(d);
@@ -72,7 +72,7 @@ fn test_empty() -> Result<()> {
 
 fn test_single_line() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     check_sort(
         &d,
@@ -110,7 +110,7 @@ fn as_executor(exec: &Option<ThreadPoolExecutor>) -> Option<Arc<dyn Executor>> {
 fn test_intermediate_merges() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
     // Sort 20 mb worth of data with 1mb buffer, binary merging.
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
     let d = dir.as_directory();
     let exec = random_executor_service_or_null();
     let info = check_sort(
@@ -138,7 +138,7 @@ fn test_intermediate_merges() -> Result<()> {
 fn test_small_random() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
     // Sort 20 mb worth of data with 1mb buffer.
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
     let d = dir.as_directory();
     let exec = random_executor_service_or_null();
     let sort_info = check_sort(
@@ -166,7 +166,7 @@ fn test_small_random() -> Result<()> {
 fn test_larger_random() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
     // Sort 100MB worth of data with 15mb buffer.
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
     let d = dir.as_directory();
     let exec = random_executor_service_or_null();
     check_sort(
@@ -320,7 +320,7 @@ fn test_thread_safety() -> Result<()> {
     let num_threads = TestUtil::next_int(&*random(), 4, 10);
     let failed = Arc::new(AtomicBool::new(false));
     let iters = LuceneTestCase::at_least(200);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let mut threads = Vec::with_capacity(num_threads as usize);
     for i in 0..num_threads {
@@ -437,7 +437,7 @@ impl Directory for CorruptingFilterDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.r#in.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         // `FilterDirectory.close()` closes `in`; the test closes `dir0` itself
         // (`try (Directory dir0 = newMockDirectory())`) and never closes `dir`.
         Ok(())
@@ -467,7 +467,7 @@ fn corrupt_first_sort(d: &CorruptingFilterDirectory, _prefix: &str, suffix: &str
 /// corruption didn't confuse OfflineSorter!
 fn test_bit_flipped_on_input1() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
-    let mut dir0_owner = LuceneTestCase::new_mock_directory();
+    let dir0_owner = LuceneTestCase::new_mock_directory();
     let dir0 = dir0_owner.as_directory();
     let dir: Arc<dyn Directory> = Arc::new(CorruptingFilterDirectory {
         r#in: Arc::clone(&dir0),
@@ -541,7 +541,7 @@ fn too_long_length_corruption(
 /// corruption did confuse OfflineSorter!
 fn test_bit_flipped_on_input2() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
-    let mut dir0_owner = LuceneTestCase::new_mock_directory();
+    let dir0_owner = LuceneTestCase::new_mock_directory();
     let dir0 = dir0_owner.as_directory();
     let dir: Arc<dyn Directory> = Arc::new(CorruptingFilterDirectory {
         r#in: Arc::clone(&dir0),
@@ -576,7 +576,7 @@ fn test_bit_flipped_on_input2() -> Result<()> {
 /// corruption didn't confuse OfflineSorter!
 fn test_bit_flipped_on_partition1() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
-    let mut dir0_owner = LuceneTestCase::new_mock_directory();
+    let dir0_owner = LuceneTestCase::new_mock_directory();
     let dir0 = dir0_owner.as_directory();
     let dir: Arc<dyn Directory> = Arc::new(CorruptingFilterDirectory {
         r#in: Arc::clone(&dir0),
@@ -621,7 +621,7 @@ fn test_bit_flipped_on_partition1() -> Result<()> {
 /// corruption did confuse OfflineSorter!
 fn test_bit_flipped_on_partition2() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
-    let mut dir0_owner = LuceneTestCase::new_mock_directory();
+    let dir0_owner = LuceneTestCase::new_mock_directory();
     let dir0 = dir0_owner.as_directory();
     let dir: Arc<dyn Directory> = Arc::new(CorruptingFilterDirectory {
         r#in: Arc::clone(&dir0),
@@ -664,7 +664,7 @@ fn test_fixed_length_heap() -> Result<()> {
     // Make sure the RAM accounting is correct, i.e. if we are sorting fixed
     // width ints (4 bytes) then the heap used is really only 4 bytes per
     // value:
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let out = d.create_temp_output("unsorted", "tmp", &*DEFAULT_IO_CONTEXT)?;
     let out_name = out.name().to_string();
@@ -704,7 +704,7 @@ fn test_fixed_length_heap() -> Result<()> {
 fn test_fixed_length_lies_lies_lies() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
     // Make sure OfflineSorter catches me if I lie about the fixed value length:
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let out = d.create_temp_output("unsorted", "tmp", &*DEFAULT_IO_CONTEXT)?;
     let out_name = out.name().to_string();
@@ -791,7 +791,7 @@ impl ByteSequencesReaderOverride for OverNextingReader {
 // already returned null:
 fn test_over_nexting() -> Result<()> {
     let _temp_dir = LuceneTestCase::create_temp_dir_prefix("mergesort");
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let out = d.create_temp_output("unsorted", "tmp", &*DEFAULT_IO_CONTEXT)?;
     let out_name = out.name().to_string();

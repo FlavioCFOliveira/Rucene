@@ -153,7 +153,7 @@ fn test_full_precision_vector_similarity_dvs(_f: &mut FullPrecision) -> Result<(
     let indexing_similarity_function =
         SIMILARITY_FUNCTIONS[random().next_int_bound(SIMILARITY_FUNCTIONS.len() as i32) as usize];
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let mut id = 0;
 

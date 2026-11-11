@@ -76,7 +76,7 @@ pub(crate) struct SharedTermsHooks {
 pub struct BlockReader {
     /// The block file input the reader was created with (`blockInput` until
     /// `initializeBlockReadLazily` replaces it with a clone).
-    pub(crate) original_block_input: Arc<Box<dyn IndexInput>>,
+    pub(crate) original_block_input: Arc<rucene::store::SharedIndexInput>,
     /// `IndexInput` on the block file, the clone `initializeBlockReadLazily`
     /// makes.
     pub(crate) block_input: Option<Box<dyn IndexInput>>,
@@ -235,7 +235,7 @@ impl BlockReader {
     /// The errors of the postings reader's `newTermState`.
     pub fn new(
         dictionary_browser_supplier: Arc<dyn BrowserSupplier>,
-        block_input: Arc<Box<dyn IndexInput>>,
+        block_input: Arc<rucene::store::SharedIndexInput>,
         postings_reader: Arc<dyn PostingsReaderBase>,
         field_metadata: Arc<FieldMetadata>,
         block_decoder: Option<Arc<dyn BlockDecoder>>,
@@ -1087,7 +1087,11 @@ impl BlockReader {
         };
         let resource = match &self.block_input {
             Some(input) => input.resource_description().to_string(),
-            None => self.original_block_input.resource_description().to_string(),
+            None => self
+                .original_block_input
+                .read()
+                .resource_description()
+                .to_string(),
         };
         LuceneError::corrupt_index(
             format!(

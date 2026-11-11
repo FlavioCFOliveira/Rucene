@@ -91,7 +91,7 @@ fn test_never_cache_doc_values_field_exists_filter() -> Result<()> {
 
 /// Port of `TestUsageTrackingFilterCachingPolicy.testBooleanQueries`.
 fn test_boolean_queries() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     w.add_document(&Document::new())?;
     let reader = w.get_reader()?;

@@ -172,7 +172,7 @@ fn test_reader_chaining(inst: &mut TestReaderClosedInstance) -> Result<()> {
 
 /// `public void tearDown()`.
 fn tear_down(inst: &mut TestReaderClosedInstance) -> Result<()> {
-    if let Some(mut dir) = inst.dir.take() {
+    if let Some(dir) = inst.dir.take() {
         dir.close()?;
     }
     LuceneTestCase::super_tear_down();

@@ -39,6 +39,7 @@ use crate::index::{
 };
 use crate::search::knn::KnnCollector;
 use crate::search::{AcceptDocs, DocIdSetIterator, TaskExecutor, NO_MORE_DOCS};
+use crate::store::SharedIndexInput;
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::hnsw::{
     ArrayNodesIterator, CloseableRandomVectorScorerSupplier, ConcurrentHnswMerger,
@@ -1301,7 +1302,7 @@ impl HnswWriterState {
                 VectorEncoding::BYTE => None,
             };
             if let Some(quantized_vectors_reader) = quantized_vectors_reader {
-                let mut scorer_supplier: Arc<dyn CloseableRandomVectorScorerSupplier> = Arc::from(
+                let scorer_supplier: Arc<dyn CloseableRandomVectorScorerSupplier> = Arc::from(
                     quantized_vectors_reader
                         .get_random_vector_scorer_supplier_for_merge(
                             field_info,
@@ -1322,14 +1323,7 @@ impl HnswWriterState {
                         as Arc<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
                     total_vector_count,
                 );
-                // The graph merger that shared the supplier is gone by now.
-                let close_supplier = || match Arc::get_mut(&mut scorer_supplier) {
-                    Some(supplier) => supplier.close(),
-                    None => Err(LuceneError::illegal_state(
-                        "the merge's scorer supplier is still shared after the graph was built"
-                            .to_string(),
-                    )),
-                };
+                let close_supplier = || scorer_supplier.close();
                 match built {
                     // `IOUtils.closeWhileSuppressingExceptions(t,
                     // scorerSupplier)`, then `throw t`
@@ -1975,7 +1969,7 @@ pub struct Lucene99HnswVectorsReader {
     flat_vectors_reader: Box<dyn FlatVectorsReader>,
     field_infos: FieldInfos,
     fields: HashMap<i32, FieldEntry>,
-    vector_index: Box<dyn IndexInput>,
+    vector_index: SharedIndexInput,
     version: i32,
     data_context: Box<dyn crate::store::IOContext>,
 }
@@ -2020,13 +2014,13 @@ impl Lucene99HnswVectorsReader {
         state: &SegmentReadState<'_>,
         flat_vectors_reader: Box<dyn FlatVectorsReader>,
     ) -> Result<Self> {
-        let mut flat_vectors_reader = flat_vectors_reader;
+        let flat_vectors_reader = flat_vectors_reader;
         match Self::open(state) {
             Ok((fields, vector_index, version_meta, data_context)) => Ok(Self {
                 flat_vectors_reader,
                 field_infos: state.field_infos.clone(),
                 fields,
-                vector_index,
+                vector_index: SharedIndexInput::new(vector_index),
                 version: version_meta,
                 data_context,
             }),
@@ -2216,7 +2210,7 @@ impl Lucene99HnswVectorsReader {
             flat_vectors_reader: self.flat_vectors_reader.get_merge_instance_flat()?,
             field_infos: self.field_infos.clone(),
             fields: self.fields.clone(),
-            vector_index: self.vector_index.clone_input()?,
+            vector_index: SharedIndexInput::new(self.vector_index.clone_input()?),
             version: self.version,
             data_context: self.data_context.with_hints(self.data_context.hints()),
         })
@@ -2258,7 +2252,7 @@ impl Lucene99HnswVectorsReader {
         }
         Ok(Box::new(OffHeapHnswGraph::new(
             entry,
-            self.vector_index.as_ref(),
+            &**self.vector_index.read(),
             self.version,
         )?))
     }
@@ -2537,7 +2531,7 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
     /// Equivalent to `Lucene99HnswVectorsReader.close()`
     /// (`Lucene99HnswVectorsReader.java:424-427`): `IOUtils.close(flatVectorsReader,
     /// vectorIndex)`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         IOUtils::close([
             IOUtils::closeable(|| self.flat_vectors_reader.close()),
             IOUtils::closeable(|| self.vector_index.close()),
@@ -3373,7 +3367,7 @@ mod tests {
             writer.close()?;
         }
 
-        let mut reader = format.fields_reader(&read_state)?;
+        let reader = format.fields_reader(&read_state)?;
         let values = reader
             .get_float_vector_values("float_field")?
             .expect("the field has vectors");
@@ -3766,7 +3760,7 @@ mod tests {
 
         let io_ctx = DefaultIOContext::default();
         let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
-        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
 
         // Without deletions the three nearest vectors to [0, 0] are documents
         // 0, 1 and 2, which fixes what the deletions must displace.
@@ -3799,7 +3793,7 @@ mod tests {
 
         let io_ctx = DefaultIOContext::default();
         let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
-        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
 
         // 54 of the 64 documents pass, which keeps the filtered count above the
         // `expectedVisitedNodes(3, 64) == 12` the graph search is expected to
@@ -3833,7 +3827,7 @@ mod tests {
 
         let io_ctx = DefaultIOContext::default();
         let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
-        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
 
         // `k == numVectors` makes `doHnsw` false, so this is the exhaustive
         // scan rather than the graph search.
@@ -3872,7 +3866,7 @@ mod tests {
 
         let io_ctx = DefaultIOContext::default();
         let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
-        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
 
         // Ten of the 64 documents pass, below the `expectedVisitedNodes(3, 64)
         // == 12` an unfiltered graph search would visit, so Java clears
@@ -4098,7 +4092,7 @@ mod close_family_tests {
         let info = test_segment_info("_0", 10);
         let fis = FieldInfos::default();
         write_empty(&dir, &info);
-        let mut reader = Lucene99HnswVectorsFormat::new()
+        let reader = Lucene99HnswVectorsFormat::new()
             .fields_reader(&read_state(&*dir, &info, &fis))
             .unwrap();
         let before = closed_of(&log, &ALL).len();

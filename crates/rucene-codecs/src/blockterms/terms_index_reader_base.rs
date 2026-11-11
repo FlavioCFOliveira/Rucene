@@ -36,7 +36,7 @@ pub trait TermsIndexReaderBase: Send + Sync + fmt::Display {
     fn get_field_enum(&self, field_info: &FieldInfo) -> Option<Box<dyn FieldIndexEnum>>;
 
     /// Port of `close()`.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 
     /// Port of `supportsOrd()`.
     fn supports_ord(&self) -> bool;

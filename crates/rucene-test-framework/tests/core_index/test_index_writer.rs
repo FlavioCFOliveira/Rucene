@@ -465,7 +465,7 @@ fn tv_type() -> Result<FieldType> {
 
 /// Port of `TestIndexWriter.testDocCount`.
 fn test_doc_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let writer1 = writer(&d, mock_iwc())?;
@@ -536,7 +536,7 @@ fn test_doc_count() -> Result<()> {
 /// reader holds it open (this fails pre lock-less commits on Windows):
 /// Port of `TestIndexWriter.testCreateWithReader`.
 fn test_create_with_reader() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     // add one document & close writer
@@ -572,7 +572,7 @@ fn test_create_with_reader() -> Result<()> {
 
 /// Port of `TestIndexWriter.testChangesAfterClose`.
 fn test_changes_after_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
 
@@ -590,7 +590,7 @@ fn test_changes_after_close() -> Result<()> {
 
 /// Port of `TestIndexWriter.testIndexNoDocuments`.
 fn test_index_no_documents() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     w.commit()?;
@@ -617,7 +617,7 @@ fn test_index_no_documents() -> Result<()> {
 
 /// Port of `TestIndexWriter.testSmallRAMBuffer`.
 fn test_small_ram_buffer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     iwc.set_ram_buffer_size_mb(0.000001)?;
@@ -657,7 +657,7 @@ fn get_segment_count(dir: &Arc<dyn Directory>) -> Result<usize> {
 /// Make sure it's OK to change RAM buffer size and maxBufferedDocs in a write session
 /// Port of `TestIndexWriter.testChangingRAMBuffer`.
 fn test_changing_ram_buffer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let disable = LiveIndexWriterConfig::DISABLE_AUTO_FLUSH;
@@ -728,7 +728,7 @@ fn hit_count(reader: &Arc<dyn DirectoryReader>, term: &Term) -> Result<usize> {
 
 /// Port of `TestIndexWriter.testEnablingNorms`.
 fn test_enabling_norms() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     iwc.set_max_buffered_docs(10)?;
@@ -783,7 +783,7 @@ fn test_enabling_norms() -> Result<()> {
 
 /// Port of `TestIndexWriter.testHighFreqTerm`.
 fn test_high_freq_term() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     iwc.set_ram_buffer_size_mb(0.01)?;
@@ -829,7 +829,7 @@ fn test_high_freq_term() -> Result<()> {
 
 /// Port of `TestIndexWriter.testFlushWithNoMerging`.
 fn test_flush_with_no_merging() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
@@ -858,7 +858,7 @@ fn test_flush_with_no_merging() -> Result<()> {
 /// Make sure we can flush segment w/ norms, then add empty doc (no norms) and flush
 /// Port of `TestIndexWriter.testEmptyDocAfterFlushingRealDoc`.
 fn test_empty_doc_after_flushing_real_doc() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mut doc = Document::new();
@@ -886,7 +886,7 @@ fn test_empty_doc_after_flushing_real_doc() -> Result<()> {
 /// field and term vectors enabled.
 /// Port of `TestIndexWriter.testBadSegment`.
 fn test_bad_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iw = writer(&d, mock_iwc())?;
 
@@ -909,7 +909,7 @@ fn test_bad_segment() -> Result<()> {
 fn test_max_thread_priority() -> Result<()> {
     let pri = Thread::current().priority();
     let result = (|| -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         let conf = mock_iwc();
         conf.set_max_buffered_docs(2)?;
@@ -942,7 +942,7 @@ fn test_max_thread_priority() -> Result<()> {
 
 /// Port of `TestIndexWriter.testVariableSchema`.
 fn test_variable_schema() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     for i in 0..20 {
         if verbose() {
@@ -1011,7 +1011,7 @@ fn test_variable_schema() -> Result<()> {
 /// LUCENE-1084: test unlimited field length
 /// Port of `TestIndexWriter.testUnlimitedMaxFieldLength`.
 fn test_unlimited_max_field_length() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let w = writer(&d, mock_iwc())?;
@@ -1036,7 +1036,7 @@ fn test_unlimited_max_field_length() -> Result<()> {
 /// LUCENE-1179
 /// Port of `TestIndexWriter.testEmptyFieldName`.
 fn test_empty_field_name() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mut doc = Document::new();
@@ -1068,7 +1068,7 @@ fn assert_empty_field_terms(reader: &Arc<dyn DirectoryReader>, expected: &[&str]
 
 /// Port of `TestIndexWriter.testEmptyFieldNameTerms`.
 fn test_empty_field_name_terms() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mut doc = Document::new();
@@ -1088,7 +1088,7 @@ fn test_empty_field_name_terms() -> Result<()> {
 
 /// Port of `TestIndexWriter.testEmptyFieldNameWithEmptyTerm`.
 fn test_empty_field_name_with_empty_term() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mut doc = Document::new();
@@ -1127,7 +1127,7 @@ impl IndexWriterOverrides for MockIndexWriter {
 /// LUCENE-1222
 /// Port of `TestIndexWriter.testDoBeforeAfterFlush`.
 fn test_do_before_after_flush() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mock = Arc::new(MockIndexWriter::default());
@@ -1214,7 +1214,7 @@ fn test_negative_positions() -> Result<()> {
     let tokens: Arc<AtomicRefCell<dyn TokenStream>> =
         Arc::new(AtomicRefCell::new(NegativePositionsTokenStream::new()?));
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mut doc = Document::new();
@@ -1231,7 +1231,7 @@ fn test_negative_positions() -> Result<()> {
 /// LUCENE-2529
 /// Port of `TestIndexWriter.testPositionIncrementGapEmptyField`.
 fn test_position_increment_gap_empty_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_position_increment_gap(100);
@@ -1282,7 +1282,7 @@ fn test_position_increment_gap_empty_field() -> Result<()> {
 
 /// Port of `TestIndexWriter.testDeadlock`.
 fn test_deadlock() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
@@ -1302,7 +1302,7 @@ fn test_deadlock() -> Result<()> {
     w.commit()?;
     // index has 2 segments
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let d2 = dir2.as_directory();
     let writer2 = writer(&d2, mock_iwc())?;
     writer2.add_document(&doc)?;
@@ -1617,12 +1617,11 @@ impl IndexerThreadInterrupt {
     }
 
     /// `run()`.
-    fn run(mut self) {
+    fn run(self) {
         let state = Arc::clone(&self.state);
         let id = self.id;
         // LUCENE-2239: won't work with NIOFS/MMAP
-        let mut dir =
-            MockDirectoryWrapper::new(&self.random, Arc::new(ByteBuffersDirectory::new()));
+        let dir = MockDirectoryWrapper::new(&self.random, Arc::new(ByteBuffersDirectory::new()));
 
         // open/close slowly sometimes
         dir.set_use_slow_open_closers(true);
@@ -1862,7 +1861,7 @@ fn has_doc(reader: &Arc<dyn IndexReader>, field: &str, term: &str) -> Result<boo
 
 /// Port of `TestIndexWriter.testIndexStoreCombos`.
 fn test_index_store_combos() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mut b = vec![0u8; 50];
@@ -1987,7 +1986,7 @@ fn test_index_store_combos() -> Result<()> {
 
 /// Port of `TestIndexWriter.testNoDocsIndex`.
 fn test_no_docs_index() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     w.add_document(&Document::new())?;
@@ -2110,7 +2109,7 @@ fn test_delete_unused_files() -> Result<()> {
 fn test_delete_unused_files2() -> Result<()> {
     // Validates that iw.deleteUnusedFiles() also deletes unused index commits
     // in case a deletion policy which holds onto commits is used.
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let sdp = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
         KeepOnlyLastCommitDeletionPolicy,
@@ -2164,7 +2163,7 @@ fn test_empty_fs_dir_with_no_lock() -> Result<()> {
     // Tests that if FSDir is opened w/ a NoLockFactory (or SingleInstanceLF),
     // then IndexWriter ctor succeeds. Previously (LUCENE-2386) it failed
     // when listAll() was called in IndexFileDeleter.
-    let mut dir = LuceneTestCase::new_fs_directory_lock_factory(
+    let dir = LuceneTestCase::new_fs_directory_lock_factory(
         &LuceneTestCase::create_temp_dir_prefix("emptyFSDirNoLock"),
         Arc::new(NoLockFactory),
     );
@@ -2184,7 +2183,7 @@ fn test_empty_dir_rollback() -> Result<()> {
     // Tests that if IW is created over an empty Directory, some documents are
     // indexed, flushed (but not committed) and then IW rolls back, then no
     // files are left in the Directory.
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let mut orig_files = d.list_all()?;
@@ -2275,7 +2274,7 @@ fn test_empty_dir_rollback() -> Result<()> {
 
 /// Port of `TestIndexWriter.testNoUnwantedTVFiles`.
 fn test_no_unwanted_tv_files() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     iwc.set_ram_buffer_size_mb(0.01)?;
@@ -2438,7 +2437,7 @@ impl TokenizerLogic for StringSplitTokenizer {
 /// Make sure we skip wicked long terms.
 /// Port of `TestIndexWriter.testWickedLongTerm`.
 fn test_wicked_long_term() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = RandomIndexWriter::new(
         &*random(),
@@ -2486,7 +2485,7 @@ fn test_wicked_long_term() -> Result<()> {
     reader.close()?;
     drop((w, d));
     dir.close()?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     // Make sure we can add a document with exactly the maximum length term,
@@ -2528,7 +2527,7 @@ fn test_wicked_long_term() -> Result<()> {
 
 /// Port of `TestIndexWriter.testDeleteAllNRTLeftoverFiles`.
 fn test_delete_all_nrt_leftover_files() -> Result<()> {
-    let mut d = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
+    let d = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
     let dd = d.as_directory();
     let w = writer(
         &dd,
@@ -2555,7 +2554,7 @@ fn test_delete_all_nrt_leftover_files() -> Result<()> {
 
 /// Port of `TestIndexWriter.testNRTReaderVersion`.
 fn test_nrt_reader_version() -> Result<()> {
-    let mut dir = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
+    let dir = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
     let d = dir.as_directory();
     let w = writer(
         &d,
@@ -2593,7 +2592,7 @@ fn test_whether_delete_all_deletes_write_lock() -> Result<()> {
     // Must use SimpleFSLockFactory...
     // NativeFSLockFactory somehow "knows" a lock is held against write.lock
     // even if you remove that file:
-    let mut dir = LuceneTestCase::new_fs_directory_lock_factory(
+    let dir = LuceneTestCase::new_fs_directory_lock_factory(
         &LuceneTestCase::create_temp_dir_prefix(
             "TestIndexWriter.testWhetherDeleteAllDeletesWriteLock",
         ),
@@ -2650,7 +2649,7 @@ fn codec_message(info: &SegmentCommitInfo) -> String {
 
 /// Port of `TestIndexWriter.testHasBlocksMergeFullyDelSegments`.
 fn test_has_blocks_merge_fully_del_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(
@@ -2690,7 +2689,7 @@ fn test_has_blocks_merge_fully_del_segments() -> Result<()> {
 
 /// Port of `TestIndexWriter.testSingleDocsDoNotTriggerHasBlocks`.
 fn test_single_docs_do_not_trigger_has_blocks() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
@@ -2741,7 +2740,7 @@ fn test_single_docs_do_not_trigger_has_blocks() -> Result<()> {
 
 /// Port of `TestIndexWriter.testCarryOverHasBlocks`.
 fn test_carry_over_has_blocks() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(
@@ -2799,7 +2798,7 @@ fn test_carry_over_has_blocks() -> Result<()> {
 /// LUCENE-3872
 /// Port of `TestIndexWriter.testPrepareCommitThenClose`.
 fn test_prepare_commit_then_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(
         &d,
@@ -2820,7 +2819,7 @@ fn test_prepare_commit_then_close() -> Result<()> {
 /// LUCENE-3872
 /// Port of `TestIndexWriter.testPrepareCommitThenRollback`.
 fn test_prepare_commit_then_rollback() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(
         &d,
@@ -2837,7 +2836,7 @@ fn test_prepare_commit_then_rollback() -> Result<()> {
 /// LUCENE-3872
 /// Port of `TestIndexWriter.testPrepareCommitThenRollback2`.
 fn test_prepare_commit_then_rollback2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(
         &d,
@@ -2890,7 +2889,7 @@ fn test_dont_invoke_analyzer_for_un_analyzed_fields() -> Result<()> {
     let analyzer = Arc::new(DontInvokeMeAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(
         &d,
@@ -2918,7 +2917,7 @@ fn test_dont_invoke_analyzer_for_un_analyzed_fields() -> Result<()> {
 /// create=true does not remove non-index files
 /// Port of `TestIndexWriter.testOtherFiles`.
 fn test_other_files() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iw = writer(&d, mock_iwc())?;
     iw.add_document(&Document::new())?;
@@ -2984,7 +2983,7 @@ fn stopwords_pos_inc_hole(
     first: &str,
     gap: i32,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let a = Arc::new(StopwordsAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
@@ -3057,7 +3056,7 @@ fn commit_user_data(r: &Arc<dyn DirectoryReader>, key: &str) -> Result<Option<St
 /// LUCENE-4575
 /// Port of `TestIndexWriter.testCommitWithUserDataOnly`.
 fn test_commit_with_user_data_only() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, null_iwc())?;
     w.commit()?; // first commit to complete IW create transaction.
@@ -3107,7 +3106,7 @@ fn get_live_commit_data(writer: &IndexWriter) -> Result<HashMap<String, String>>
 
 /// Port of `TestIndexWriter.testGetCommitData`.
 fn test_get_commit_data() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, null_iwc())?;
     w.set_live_commit_data(one_entry("key", "value"))?;
@@ -3138,7 +3137,7 @@ fn null_snapshot_iwc() -> IndexWriterConfig {
 
 /// Port of `TestIndexWriter.testGetCommitDataFromOldSnapshot`.
 fn test_get_commit_data_from_old_snapshot() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, null_snapshot_iwc())?;
     w.set_live_commit_data(one_entry("key", "value"))?;
@@ -3200,7 +3199,7 @@ fn add_three_good_docs(iw: &RandomIndexWriter) -> Result<()> {
 
 /// Port of `TestIndexWriter.testNullAnalyzer`.
 fn test_null_analyzer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(None);
     let iw = RandomIndexWriter::new_with_config(&*random(), Arc::clone(&d), iw_conf)?;
@@ -3230,7 +3229,7 @@ fn test_null_analyzer() -> Result<()> {
 
 /// Port of `TestIndexWriter.testNullDocument`.
 fn test_null_document() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), Arc::clone(&d))?;
 
@@ -3254,7 +3253,7 @@ fn test_null_document() -> Result<()> {
 
 /// Port of `TestIndexWriter.testNullDocuments`.
 fn test_null_documents() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), Arc::clone(&d))?;
 
@@ -3324,7 +3323,7 @@ impl IndexableFieldIterable for RandomFailingIterable {
 /// The body `testIterableFieldThrowsException` and
 /// `testIterableThrowsException` share.
 fn iterable_throws_exception() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let iters = LuceneTestCase::at_least(100);
@@ -3417,7 +3416,7 @@ impl DocumentsIterable for BoomDocuments {
 
 /// Port of `TestIndexWriter.testIterableThrowsException2`.
 fn test_iterable_throws_exception2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let expected = expect_throws("java.lang.Exception", || w.add_documents(&BoomDocuments));
@@ -3432,7 +3431,7 @@ fn test_iterable_throws_exception2() -> Result<()> {
 /// Port of `TestIndexWriter.testCorruptFirstCommit`.
 fn test_corrupt_first_commit() -> Result<()> {
     for i in 0..6 {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
 
         // Create a corrupt first commit:
@@ -3488,7 +3487,7 @@ fn test_corrupt_first_commit() -> Result<()> {
 
 /// Port of `TestIndexWriter.testHasUncommittedChanges`.
 fn test_has_uncommitted_changes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     // Disable merging to simplify this test, otherwise a commit might trigger
@@ -3554,7 +3553,7 @@ impl<F: Fn(&str) + Send + Sync> TestPoint for FnTestPoint<F> {
 
 /// Port of `TestIndexWriter.testMergeAllDeleted`.
 fn test_merge_all_deleted() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     let keep_fully_deleted_segments = Arc::new(AtomicBool::new(false));
@@ -3594,7 +3593,7 @@ fn test_merge_all_deleted() -> Result<()> {
 /// LUCENE-5239
 /// Port of `TestIndexWriter.testDeleteSameTermAcrossFields`.
 fn test_delete_same_term_across_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
@@ -3620,7 +3619,7 @@ fn test_delete_same_term_across_fields() -> Result<()> {
 fn test_has_uncommitted_changes_after_exception() -> Result<()> {
     let analyzer = Arc::new(MockAnalyzer::new(&*random()));
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let d = directory.as_directory();
     // we don't use RandomIndexWriter because it might add more docvalues than we expect !!!!
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
@@ -3658,7 +3657,7 @@ fn dv_foo_doc() -> Document {
 
 /// Port of `TestIndexWriter.testDoubleClose`.
 fn test_double_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     w.add_document(&dv_foo_doc())?;
@@ -3671,7 +3670,7 @@ fn test_double_close() -> Result<()> {
 
 /// Port of `TestIndexWriter.testRollbackThenClose`.
 fn test_rollback_then_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     w.add_document(&dv_foo_doc())?;
@@ -3684,7 +3683,7 @@ fn test_rollback_then_close() -> Result<()> {
 
 /// Port of `TestIndexWriter.testCloseThenRollback`.
 fn test_close_then_rollback() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     w.add_document(&dv_foo_doc())?;
@@ -3721,7 +3720,7 @@ impl InfoStream for RollbackInfoStream {
 
 /// Port of `TestIndexWriter.testCloseWhileMergeIsRunning`.
 fn test_close_while_merge_is_running() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let merge_started = Arc::new(CountDownLatch::new(1));
@@ -3768,7 +3767,7 @@ fn test_close_during_commit() -> Result<()> {
     let start_commit = Arc::new(CountDownLatch::new(1));
     let finish_commit = Arc::new(CountDownLatch::new(1));
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(None);
     // use an InfoStream that "takes a long time" to commit
@@ -3813,7 +3812,7 @@ fn test_close_during_commit() -> Result<()> {
 /// Make sure we see ids per segment and per commit.
 /// Port of `TestIndexWriter.testIds`.
 fn test_ids() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     w.add_document(&Document::new())?;
@@ -3864,7 +3863,7 @@ fn test_ids() -> Result<()> {
 
 /// Port of `TestIndexWriter.testEmptyNorm`.
 fn test_empty_norm() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mut doc = Document::new();
@@ -3887,7 +3886,7 @@ fn test_empty_norm() -> Result<()> {
 
 /// Port of `TestIndexWriter.testManySeparateThreads`.
 fn test_many_separate_threads() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_max_buffered_docs(1000)?;
@@ -3931,7 +3930,7 @@ fn assert_commit(r: &Arc<dyn DirectoryReader>, generation: i64, file: &str) -> R
 /// LUCENE-6505
 /// Port of `TestIndexWriter.testNRTSegmentsFile`.
 fn test_nrt_segments_file() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
@@ -3972,7 +3971,7 @@ fn test_nrt_segments_file() -> Result<()> {
 /// LUCENE-6505
 /// Port of `TestIndexWriter.testNRTAfterCommit`.
 fn test_nrt_after_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
@@ -3996,7 +3995,7 @@ fn test_nrt_after_commit() -> Result<()> {
 /// LUCENE-6505
 /// Port of `TestIndexWriter.testNRTAfterSetUserDataWithoutCommit`.
 fn test_nrt_after_set_user_data_without_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
@@ -4021,7 +4020,7 @@ fn test_nrt_after_set_user_data_without_commit() -> Result<()> {
 /// LUCENE-6505
 /// Port of `TestIndexWriter.testNRTAfterSetUserDataWithCommit`.
 fn test_nrt_after_set_user_data_with_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
@@ -4045,7 +4044,7 @@ fn test_nrt_after_set_user_data_with_commit() -> Result<()> {
 /// LUCENE-6523
 /// Port of `TestIndexWriter.testCommitImmediatelyAfterNRTReopen`.
 fn test_commit_immediately_after_nrt_reopen() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
@@ -4073,15 +4072,9 @@ fn test_commit_immediately_after_nrt_reopen() -> Result<()> {
     dir.close()
 }
 
-/// `dir.close()` on a directory this test shares through an `Arc`, once
-/// the writers and readers holding it are gone.
-fn close_shared<D: Directory + ?Sized>(mut dir: Arc<D>) -> Result<()> {
-    match Arc::get_mut(&mut dir) {
-        Some(dir) => dir.close(),
-        None => Err(LuceneError::illegal_state(
-            "the directory is still shared and cannot be closed",
-        )),
-    }
+/// `dir.close()` on a directory this test shares through an `Arc`.
+fn close_shared<D: Directory + ?Sized>(dir: Arc<D>) -> Result<()> {
+    dir.close()
 }
 
 /// `createTempDir()` wrapped in a `WindowsFS` ("Use WindowsFS to prevent open
@@ -4294,7 +4287,7 @@ fn test_pending_deletes_already_written_files() -> Result<()> {
 
 /// Port of `TestIndexWriter.testLeftoverTempFiles`.
 fn test_leftover_temp_files() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
@@ -4324,7 +4317,7 @@ fn test_leftover_temp_files() -> Result<()> {
 
 /// Port of `TestIndexWriter.testMassiveField`.
 fn test_massive_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = writer(&d, iwc)?;
@@ -4368,7 +4361,7 @@ fn test_massive_field() -> Result<()> {
 
 /// Port of `TestIndexWriter.testRecordsIndexCreatedVersion`.
 fn test_records_index_created_version() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, LuceneTestCase::new_index_writer_config())?;
     w.commit()?;
@@ -4445,7 +4438,7 @@ fn largest_non_pending_writer(w: &IndexWriter) -> Arc<DocumentsWriterPerThread> 
 
 /// Port of `TestIndexWriter.testFlushLargestWriter`.
 fn test_flush_largest_writer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, IndexWriterConfig::new())?;
     let num_docs = index_docs_for_multiple_dwpts(&w)?;
@@ -4473,7 +4466,7 @@ fn test_flush_largest_writer() -> Result<()> {
 
 /// Port of `TestIndexWriter.testNeverCheckOutOnFullFlush`.
 fn test_never_check_out_on_full_flush() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, IndexWriterConfig::new())?;
     index_docs_for_multiple_dwpts(&w)?;
@@ -4522,7 +4515,7 @@ impl FlushPolicy for ApplyDeletesFlushPolicy {
 
 /// Port of `TestIndexWriter.testApplyDeletesWithoutFlushes`.
 fn test_apply_deletes_without_flushes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let index_writer_config = IndexWriterConfig::new();
@@ -4564,7 +4557,7 @@ fn stored_id_doc(id: &str) -> Document {
 
 /// Port of `TestIndexWriter.testDeletesAppliedOnFlush`.
 fn test_deletes_applied_on_flush() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, IndexWriterConfig::new())?;
@@ -4635,7 +4628,7 @@ fn test_deletes_applied_on_flush() -> Result<()> {
 
 /// Port of `TestIndexWriter.testHoldLockOnLargestWriter`.
 fn test_hold_lock_on_largest_writer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, IndexWriterConfig::new())?;
     let num_docs = index_docs_for_multiple_dwpts(&w)?;
@@ -4723,7 +4716,7 @@ impl Failure for FlushingThreadsFailure {
 
 /// Port of `TestIndexWriter.testCheckPendingFlushPostUpdate`.
 fn test_check_pending_flush_post_update() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     let flushing_threads: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     dir.fail_on(Arc::new(FlushingThreadsFailure {
         flushing_threads: Arc::clone(&flushing_threads),
@@ -4878,7 +4871,7 @@ fn assert_no_hard_live_docs(reader: &Arc<dyn DirectoryReader>) -> Result<()> {
 
 /// Port of `TestIndexWriter.testSoftUpdateDocuments`.
 fn test_soft_update_documents() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
@@ -5213,7 +5206,7 @@ impl MergePolicy for SoftDeletesWrappingMergePolicy {
 
 /// `softUpdatesConcurrently(mixDeletes)`.
 fn soft_updates_concurrently(mix_deletes: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     index_writer_config.set_soft_deletes_field(Some("soft_delete".to_string()));
@@ -5444,7 +5437,7 @@ impl Directory for FlushBlockingDirectory {
     }
     /// `FilterDirectory.close()`: `in.close()`, which the test's
     /// try-with-resources reaches through the `TestDirectory` it closes.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -5459,7 +5452,7 @@ impl Directory for FlushBlockingDirectory {
 fn test_delete_happens_before_while_flush() -> Result<()> {
     let latch = Arc::new(CountDownLatch::new(1));
     let in_flush = Arc::new(CountDownLatch::new(1));
-    let mut base = LuceneTestCase::new_directory();
+    let base = LuceneTestCase::new_directory();
     let dir: Arc<dyn Directory> = Arc::new(FlushBlockingDirectory {
         inner: base.as_directory(),
         latch: Arc::clone(&latch),
@@ -5557,7 +5550,7 @@ fn string_id_doc(id: &str) -> Result<Document> {
 
 /// Port of `TestIndexWriter.testFullyDeletedSegmentsReleaseFiles`.
 fn test_fully_deleted_segments_release_files() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, no_auto_flush_iwc()?)?;
     w.add_document(&string_id_doc("doc-0")?)?;
@@ -5577,7 +5570,7 @@ fn test_fully_deleted_segments_release_files() -> Result<()> {
 
 /// Port of `TestIndexWriter.testSegmentInfoIsSnapshot`.
 fn test_segment_info_is_snapshot() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, no_auto_flush_iwc()?)?;
     w.add_document(&string_id_doc("doc-0")?)?;
@@ -5626,7 +5619,7 @@ fn soft_deletes_iwc(field: &str) -> IndexWriterConfig {
 
 /// Port of `TestIndexWriter.testPreventChangingSoftDeletesField`.
 fn test_prevent_changing_soft_deletes_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, soft_deletes_iwc("my_deletes"))?;
     w.add_document(&id_version_doc("1", "1")?)?;
@@ -5688,7 +5681,7 @@ fn test_prevent_changing_soft_deletes_field() -> Result<()> {
 
 /// Port of `TestIndexWriter.testPreventAddingIndexesWithDifferentSoftDeletesField`.
 fn test_prevent_adding_indexes_with_different_soft_deletes_field() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let d1 = dir1.as_directory();
     let w1 = writer(&d1, soft_deletes_iwc("soft_deletes_1"))?;
     for i in 0..2 {
@@ -5702,7 +5695,7 @@ fn test_prevent_adding_indexes_with_different_soft_deletes_field() -> Result<()>
     w1.commit()?;
     w1.close()?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let d2 = dir2.as_directory();
     let w2 = writer(&d2, soft_deletes_iwc("soft_deletes_2"))?;
     let error = expect_throws(IAE, || w2.add_indexes_dirs(&[Arc::clone(&d1)]));
@@ -5714,7 +5707,7 @@ fn test_prevent_adding_indexes_with_different_soft_deletes_field() -> Result<()>
     );
     w2.close()?;
 
-    let mut dir3 = LuceneTestCase::new_directory();
+    let dir3 = LuceneTestCase::new_directory();
     let d3 = dir3.as_directory();
     let config = soft_deletes_iwc("soft_deletes_1");
     let w3 = writer(&d3, config)?;
@@ -5736,7 +5729,7 @@ fn test_prevent_adding_indexes_with_different_soft_deletes_field() -> Result<()>
 
 /// Port of `TestIndexWriter.testNotAllowUsingExistingFieldAsSoftDeletes`.
 fn test_not_allow_using_existing_field_as_soft_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, LuceneTestCase::new_index_writer_config())?;
     for _ in 0..2 {
@@ -5781,7 +5774,7 @@ fn test_not_allow_using_existing_field_as_soft_deletes() -> Result<()> {
 
 /// Port of `TestIndexWriter.testBrokenPayload`.
 fn test_broken_payload() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
     let mut doc = Document::new();
@@ -5802,7 +5795,7 @@ fn test_broken_payload() -> Result<()> {
 
 /// Port of `TestIndexWriter.testSoftAndHardLiveDocs`.
 fn test_soft_and_hard_live_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let soft_deletes_field = "soft_delete";
     let index_writer_config = LuceneTestCase::new_index_writer_config();
@@ -5869,7 +5862,7 @@ fn test_abort_fully_deleted_segment() -> Result<()> {
             }),
         )));
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     index_writer_config.set_merge_policy(Some(Arc::new(merge_policy)))?;
@@ -5978,7 +5971,7 @@ fn test_set_index_created_version() -> Result<()> {
                 OpenMode::APPEND,
                 OpenMode::CREATE_OR_APPEND,
             ] {
-                let mut dir = LuceneTestCase::new_directory();
+                let dir = LuceneTestCase::new_directory();
                 let d = dir.as_directory();
                 {
                     let iwc = LuceneTestCase::new_index_writer_config();
@@ -6012,7 +6005,7 @@ fn test_set_index_created_version() -> Result<()> {
 /// see LUCENE-8639
 /// Port of `TestIndexWriter.testFlushWhileStartingNewThreads`.
 fn test_flush_while_starting_new_threads() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, IndexWriterConfig::new())?;
     w.add_document(&Document::new())?;
@@ -6108,7 +6101,7 @@ fn searcher_manager(w: &IndexWriter) -> Result<Arc<SearcherManager>> {
 
 /// Port of `TestIndexWriter.testRefreshAndRollbackConcurrently`.
 fn test_refresh_and_rollback_concurrently() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, LuceneTestCase::new_index_writer_config())?;
     let stopped = Arc::new(AtomicBool::new(false));
@@ -6192,7 +6185,7 @@ fn counting_event(executed: &Arc<AtomicI32>) -> Event {
 
 /// Port of `TestIndexWriter.testCloseableQueue`.
 fn test_closeable_queue() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, LuceneTestCase::new_index_writer_config())?;
@@ -6304,7 +6297,7 @@ fn test_random_operations() -> Result<()> {
     iwc.set_merge_policy(Some(Arc::new(
         KeepFullyDeletedSegmentsMergePolicy::with_flag(inner, keep_fully_deleted_segment),
     )))?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, iwc)?;
@@ -6362,7 +6355,7 @@ fn test_random_operations_with_soft_deletes() -> Result<()> {
         ))))?;
     }
     let soft_deletes_field = iwc.soft_deletes_field().unwrap_or_default().to_string();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, iwc)?;
@@ -6421,7 +6414,7 @@ fn test_random_operations_with_soft_deletes() -> Result<()> {
 /// Port of `TestIndexWriter.testMaxCompletedSequenceNumber`.
 fn test_max_completed_sequence_number() -> Result<()> {
     {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         let w = writer(&d, IndexWriterConfig::new())?;
         assert_equals(&1, &w.add_document(&Document::new())?);
@@ -6444,7 +6437,7 @@ fn test_max_completed_sequence_number() -> Result<()> {
         drop((w, d));
         dir.close()?;
     }
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, LuceneTestCase::new_index_writer_config())?;
@@ -6544,7 +6537,7 @@ fn test_ensure_max_seq_no_is_accurate_during_flush() -> Result<()> {
     });
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     index_writer_config.set_info_stream(stream)?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         // `new IndexWriter(dir, indexWriterConfig) { protected boolean
@@ -6627,7 +6620,7 @@ fn id_string(id: &[u8]) -> String {
 
 /// Port of `TestIndexWriter.testSegmentCommitInfoId`.
 fn test_segment_commit_info_id() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let segment_commit_infos;
     {
@@ -6673,7 +6666,7 @@ fn test_segment_commit_info_id() -> Result<()> {
     }
 
     {
-        let mut dir2 = LuceneTestCase::new_directory();
+        let dir2 = LuceneTestCase::new_directory();
         let d2 = dir2.as_directory();
         let w2 = writer(&d2, no_merge_iwc()?)?;
         w2.add_indexes_dirs(&[Arc::clone(&d)])?;
@@ -6699,7 +6692,7 @@ fn test_segment_commit_info_id() -> Result<()> {
 
     let mut ids: HashSet<String> = HashSet::new();
     for _ in 0..2 {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         {
             let w = writer(&d, no_merge_iwc()?)?;
@@ -6727,7 +6720,7 @@ fn test_merge_zero_docs_merge_is_closed_once() -> Result<()> {
     let keep_all_segments: Arc<dyn MergePolicy> = Arc::new(
         KeepFullyDeletedSegmentsMergePolicy::new(Arc::new(LogMergePolicy::by_doc_count())),
     );
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let iwc = IndexWriterConfig::new();
@@ -6913,7 +6906,7 @@ impl MergePolicy for FullyDeletedOnCommitMergePolicy {
 
 /// Port of `TestIndexWriter.testMergeOnCommitKeepFullyDeletedSegments`.
 fn test_merge_on_commit_keep_fully_deleted_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_max_full_flush_merge_wait_millis(30 * 1000);
@@ -6939,7 +6932,7 @@ fn test_merge_on_commit_keep_fully_deleted_segments() -> Result<()> {
 
 /// Port of `TestIndexWriter.testPendingNumDocs`.
 fn test_pending_num_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_docs = random().next_int_bound(100);
     {
@@ -6964,7 +6957,7 @@ fn test_pending_num_docs() -> Result<()> {
 
 /// Port of `TestIndexWriter.testIndexWriterBlocksOnStall`.
 fn test_index_writer_blocks_on_stall() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, LuceneTestCase::new_index_writer_config())?;
@@ -7018,7 +7011,7 @@ fn set_of(names: &[&str]) -> ImmutableSet<String> {
 
 /// Port of `TestIndexWriter.testGetFieldNames`.
 fn test_get_field_names() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let w = writer(&d, mock_iwc())?;
@@ -7088,7 +7081,7 @@ fn parent_iwc(parent: Option<&str>) -> IndexWriterConfig {
 
 /// Port of `TestIndexWriter.testParentAndSoftDeletesAreTheSame`.
 fn test_parent_and_soft_deletes_are_the_same() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let index_writer_config = mock_iwc();
     index_writer_config.set_soft_deletes_field(Some("foo".to_string()));
@@ -7104,7 +7097,7 @@ fn test_parent_and_soft_deletes_are_the_same() -> Result<()> {
 
 /// Port of `TestIndexWriter.testParentFieldExistingIndex`.
 fn test_parent_field_existing_index() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, parent_iwc(None))?;
@@ -7140,7 +7133,7 @@ fn test_parent_field_existing_index() -> Result<()> {
 
 /// Port of `TestIndexWriter.testIndexWithParentFieldIsCongruent`.
 fn test_index_with_parent_field_is_congruent() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, parent_iwc(Some("parent")))?;
@@ -7183,7 +7176,7 @@ fn test_index_with_parent_field_is_congruent() -> Result<()> {
 
 /// Port of `TestIndexWriter.testParentFieldIsAlreadyUsed`.
 fn test_parent_field_is_already_used() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, parent_iwc(None))?;
@@ -7210,7 +7203,7 @@ fn test_parent_field_is_already_used() -> Result<()> {
 
 /// Port of `TestIndexWriter.testParentFieldEmptyIndex`.
 fn test_parent_field_empty_index() -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let d = dir.as_directory();
     {
         let w = writer(&d, parent_iwc(Some("parent")))?;
@@ -7228,7 +7221,7 @@ fn test_parent_field_empty_index() -> Result<()> {
 
 /// Port of `TestIndexWriter.testSingleDocBlockWritesParentField`.
 fn test_single_doc_block_writes_parent_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let w = writer(&d, parent_iwc(Some("parent")))?;
@@ -7270,7 +7263,7 @@ fn test_single_doc_block_writes_parent_field() -> Result<()> {
 /// Port of `TestIndexWriter.testDocValuesMixedSkippingIndex`.
 fn test_doc_values_mixed_skipping_index() -> Result<()> {
     {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         {
             let w = writer(&d, parent_iwc(None))?;
@@ -7299,7 +7292,7 @@ fn test_doc_values_mixed_skipping_index() -> Result<()> {
         dir.close()?;
     }
     {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         {
             let w = writer(&d, parent_iwc(None))?;
@@ -7338,7 +7331,7 @@ fn test_doc_values_skipping_index_without_doc_values() -> Result<()> {
         field_type.set_doc_values_type(doc_values_type)?;
         field_type.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)?;
         field_type.freeze();
-        let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+        let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
         let d = dir.as_directory();
         {
             let w = writer(&d, parent_iwc(None))?;
@@ -7364,7 +7357,7 @@ fn test_doc_values_skipping_index_without_doc_values() -> Result<()> {
 
 /// Port of `TestIndexWriter.testAdvanceSegmentInfosCounter`.
 fn test_advance_segment_infos_counter() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
 
@@ -7403,7 +7396,7 @@ fn test_advance_segment_infos_counter() -> Result<()> {
 
 /// Port of `TestIndexWriter.testAdvanceSegmentCounterInCrashAndRecoveryScenario`.
 fn test_advance_segment_counter_in_crash_and_recovery_scenario() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = writer(&d, mock_iwc())?;
 

@@ -70,7 +70,7 @@ fn count_hits(
     q: Arc<dyn Query>,
     expected: i32,
 ) -> Result<()> {
-    let mut d = get_directory(analyzer, docs)?;
+    let d = get_directory(analyzer, docs)?;
     let r = directory_reader::open(d.as_directory())?;
     let s = IndexSearcher::new(Arc::clone(&r) as Arc<dyn IndexReader>)?;
     let total_hits = s.count(Arc::clone(&q))?;

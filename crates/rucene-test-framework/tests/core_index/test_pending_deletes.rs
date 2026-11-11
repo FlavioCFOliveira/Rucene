@@ -142,7 +142,7 @@ fn live(live_docs: &Option<Box<dyn Bits>>, doc: usize) -> bool {
 
 /// Port of `TestPendingDeletes.testDeleteDoc`.
 pub fn test_delete_doc(new_pending_deletes: &NewPendingDeletes) -> Result<()> {
-    let mut dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let si = test_segment_info(&dir, 10)?;
     let commit_info = test_commit_info(si)?;
     let mut deletes = new_pending_deletes(&commit_info);
@@ -172,7 +172,7 @@ pub fn test_delete_doc(new_pending_deletes: &NewPendingDeletes) -> Result<()> {
     Assert::assert_false(live(&live_docs, doc_to_delete as usize));
     assert_equals(&3, &deletes.num_pending_deletes());
     drop((deletes, commit_info));
-    Arc::get_mut(&mut dir).unwrap_or_else(|| npe("dir")).close()
+    dir.close()
 }
 
 /// `Codec.getDefault().liveDocsFormat().readLiveDocs(dir, commitInfo, IOContext.DEFAULT)`.
@@ -185,7 +185,7 @@ fn read_live_docs(dir: &dyn Directory, commit_info: &SegmentCommitInfo) -> Resul
 
 /// Port of `TestPendingDeletes.testWriteLiveDocs`.
 pub fn test_write_live_docs(new_pending_deletes: &NewPendingDeletes) -> Result<()> {
-    let mut dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let si = test_segment_info(&dir, 6)?;
     let mut commit_info = test_commit_info(si)?;
     let mut deletes = new_pending_deletes(&commit_info);
@@ -247,7 +247,7 @@ pub fn test_write_live_docs(new_pending_deletes: &NewPendingDeletes) -> Result<(
     );
     assert_equals(&2, &commit_info.get_del_gen());
     drop((deletes, commit_info, live_docs));
-    Arc::get_mut(&mut dir).unwrap_or_else(|| npe("dir")).close()
+    dir.close()
 }
 
 /// Port of `TestPendingDeletes.testIsFullyDeleted`.

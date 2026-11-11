@@ -134,7 +134,7 @@ pub fn after_class_test_explanations() -> Result<()> {
     if let Some(ExplanationState {
         searcher,
         reader,
-        mut directory,
+        directory,
         mut analyzer,
     }) = taken
     {

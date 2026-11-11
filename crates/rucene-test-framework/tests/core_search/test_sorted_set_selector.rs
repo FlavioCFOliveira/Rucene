@@ -108,7 +108,7 @@ pub fn check_sorted(
     total_hits: i64,
     expected_ids: &[&str],
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for parts in docs {
         writer.add_document(&build_doc(parts)?)?;

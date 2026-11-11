@@ -295,7 +295,7 @@ impl PointsReader for SimpleTextPointsReader {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let data_in = self
             .data_in
             .input

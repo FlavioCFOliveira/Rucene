@@ -294,7 +294,7 @@ fn do_nested_conjunctions(
 /// Port of `TestScorerPerf.testConjunctions`.
 fn test_conjunctions() -> Result<()> {
     // test many small sets... the bugs will be found on boundary conditions
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let iw = IndexWriter::new(
             d.as_directory(),

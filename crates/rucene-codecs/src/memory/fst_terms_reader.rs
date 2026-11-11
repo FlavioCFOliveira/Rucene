@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rucene::codecs::codec_util::{check_index_header, checksum_entire_file};
@@ -30,7 +31,7 @@ use rucene::index::{
     FieldInfo, Fields, ImpactsEnum, IndexOptions, PostingsEnum, SeekStatus, SegmentInfo, TermState,
     Terms, TermsEnum,
 };
-use rucene::store::{ByteArrayDataInput, FileTypeHint, IndexInput, PreloadHint};
+use rucene::store::{ByteArrayDataInput, FileTypeHint, IndexInput, PreloadHint, SharedIndexInput};
 use rucene::util::attribute::AttributeSource;
 use rucene::util::automaton::{AutomatonType, ByteRunnable, CompiledAutomaton};
 use rucene::util::fst::{
@@ -56,14 +57,16 @@ use crate::blockterms::fixed_gap_terms_index_reader::{field_info_by_number, seek
 /// `TreeMap<String, TermsReader>` is a map plus the names in
 /// `String.compareTo` order.
 ///
-/// `close()` closes the postings reader and the terms input when this reader
-/// is their last holder; one a live enum still shares is released when that
-/// enum is dropped (see `Lucene103BlockTreeTermsReader`).
+/// `close()` closes the postings reader and the terms input whoever else (a
+/// merge instance, a live enum) still shares them, as Java's does.
 pub struct FSTTermsReader {
     fields: HashMap<String, Arc<TermsReader>>,
     field_names: Vec<String>,
     postings_reader: Option<Arc<dyn PostingsReaderBase>>,
-    fst_terms_input: Option<Arc<Box<dyn IndexInput>>>,
+    fst_terms_input: Option<Arc<SharedIndexInput>>,
+    /// Java's `fields.clear()` in `close()`, seen by this reader and its
+    /// merge instances (Java's `getMergeInstance()` is `this`).
+    fields_cleared: Arc<AtomicBool>,
 }
 
 impl FSTTermsReader {
@@ -121,7 +124,8 @@ impl FSTTermsReader {
                     fields,
                     field_names,
                     postings_reader: Some(postings_reader),
-                    fst_terms_input: Some(Arc::new(input)),
+                    fst_terms_input: Some(Arc::new(SharedIndexInput::new(input))),
+                    fields_cleared: Arc::new(AtomicBool::new(false)),
                 })
             }
             Err(e) => {
@@ -229,18 +233,29 @@ fn check_field_summary(
     Ok(())
 }
 
+impl FSTTermsReader {
+    /// `fields.size()`, `0` once `close()` cleared it.
+    fn fields_len(&self) -> usize {
+        if self.fields_cleared.load(Ordering::SeqCst) {
+            0
+        } else {
+            self.fields.len()
+        }
+    }
+}
+
 impl fmt::Display for FSTTermsReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.postings_reader {
             Some(p) => write!(
                 f,
                 "FSTTermsReader(fields={},delegate={p})",
-                self.fields.len()
+                self.fields_len()
             ),
             None => write!(
                 f,
                 "FSTTermsReader(fields={},delegate=null)",
-                self.fields.len()
+                self.fields_len()
             ),
         }
     }
@@ -248,10 +263,16 @@ impl fmt::Display for FSTTermsReader {
 
 impl Fields for FSTTermsReader {
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        if self.fields_cleared.load(Ordering::SeqCst) {
+            return Box::new(std::iter::empty());
+        }
         Box::new(self.field_names.iter().cloned())
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        if self.fields_cleared.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
         Ok(self
             .fields
             .get(field)
@@ -259,21 +280,7 @@ impl Fields for FSTTermsReader {
     }
 
     fn size(&self) -> i32 {
-        self.fields.len() as i32
-    }
-}
-
-impl Drop for FSTTermsReader {
-    /// Runs [`close`](FieldsProducer::close) (`FSTTermsReader.java:169-175`) when this reader, or
-    /// one of its merge instances, goes away (rmp #351). Java's
-    /// `getMergeInstance()` is `this`, so closing the reader closes the files
-    /// a merge instance reads; here a merge instance shares them, the
-    /// reader's `close()` only closes what it holds alone, and the last
-    /// holder to go away closes the rest. `close()` takes what it closes, so
-    /// a reader closed already closes nothing again. A failure is dropped: no
-    /// caller is left to receive it.
-    fn drop(&mut self) {
-        let _ = FieldsProducer::close(self);
+        self.fields_len() as i32
     }
 }
 
@@ -294,25 +301,24 @@ impl FieldsProducer for FSTTermsReader {
             field_names: self.field_names.clone(),
             postings_reader: self.postings_reader.clone(),
             fst_terms_input: self.fst_terms_input.clone(),
+            fields_cleared: Arc::clone(&self.fields_cleared),
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        // try { IOUtils.close(postingsReader, fstTermsInput) } finally { fields.clear() }
-        self.fields.clear();
-        self.field_names.clear();
-        let mut postings_reader = self.postings_reader.take();
-        let mut input = self.fst_terms_input.take();
-        IOUtils::close([
-            postings_reader
-                .as_mut()
-                .and_then(Arc::get_mut)
+    /// `FSTTermsReader.close()` (`FSTTermsReader.java:169-175`): `try {
+    /// IOUtils.close(postingsReader, fstTermsInput) } finally { fields.clear() }`,
+    /// whoever else still shares the two.
+    fn close(&self) -> Result<()> {
+        let closed = IOUtils::close([
+            self.postings_reader
+                .as_ref()
                 .and_then(|r| IOUtils::closeable(move || r.close())),
-            input
-                .as_mut()
-                .and_then(Arc::get_mut)
+            self.fst_terms_input
+                .as_ref()
                 .and_then(|i| IOUtils::closeable(move || i.close())),
-        ])
+        ]);
+        self.fields_cleared.store(true, Ordering::SeqCst);
+        closed
     }
 }
 

@@ -207,7 +207,7 @@ pub fn close_reader(
 pub fn close_dir(
     dir: Option<rucene_test_framework::util::lucene_test_case::TestDirectory>,
 ) -> Result<()> {
-    if let Some(mut dir) = dir {
+    if let Some(dir) = dir {
         dir.close()?;
     }
     Ok(())

@@ -72,8 +72,8 @@ fn set_up() {
 /// `tearDown()`.
 fn tear_down() {
     // can be null if we force simpletext (funky, some kind of bug in test runner maybe)
-    if let Some(mut dir) = DIR.with(|d| d.borrow_mut().take()) {
-        if let Err(e) = Directory::close(&mut dir) {
+    if let Some(dir) = DIR.with(|d| d.borrow_mut().take()) {
+        if let Err(e) = Directory::close(&dir) {
             rucene_test_framework::util::java_exceptions::rethrow_java(e);
         }
     }
@@ -451,7 +451,7 @@ fn test_real_terms() -> Result<()> {
     conf.set_max_buffered_docs(-1)?
         .set_ram_buffer_size_mb(64.0)?;
     let temp_dir = LuceneTestCase::create_temp_dir_prefix("fstlines");
-    let mut dir = LuceneTestCase::new_fs_directory(&temp_dir);
+    let dir = LuceneTestCase::new_fs_directory(&temp_dir);
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     let mut doc_count = 0;
     while doc_count < num_docs {
@@ -770,7 +770,7 @@ fn field_mut<'a>(doc: &'a mut Document, name: &str) -> &'a Field {
 }
 
 fn test_primary_keys() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     for cycle in 0..2 {
         if verbose() {
@@ -935,7 +935,7 @@ fn test_primary_keys() -> Result<()> {
 }
 
 fn test_random_term_lookup() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
@@ -1235,7 +1235,7 @@ fn test_non_final_stop_node() -> Result<()> {
     check_stop_nodes(&fst, &outputs)?;
 
     // Make sure it still works after save/load:
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     {
         let mut out = d.create_output("fst", &*DEFAULT_IO_CONTEXT)?;

@@ -255,7 +255,7 @@ mod tests {
     /// .testWithExceptions` did on seed A5A5A5A5.
     #[test]
     fn the_index_output_is_closed_when_writing_it_fails() {
-        let mut dir =
+        let dir =
             MockDirectoryWrapper::new(&JdkRandom::new(42), Arc::new(ByteBuffersDirectory::new()));
         {
             let directory = dir.as_directory();

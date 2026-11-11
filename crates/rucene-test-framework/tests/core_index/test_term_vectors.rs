@@ -89,7 +89,7 @@ fn verify_index(dir: &Arc<dyn Directory>) -> Result<()> {
 
 /// Port of `TestTermVectors.testFullMergeAddDocs`.
 fn test_full_merge_add_docs() -> Result<()> {
-    let mut target = LuceneTestCase::new_directory();
+    let target = LuceneTestCase::new_directory();
     let writer = create_writer(&target.as_directory())?;
     // with maxBufferedDocs=2, this results in two segments, so that forceMerge
     // actually does something.
@@ -181,7 +181,7 @@ fn test_merge_with_payloads() -> Result<()> {
 
     let num_docs_in_segment = 10;
     for has_payloads in [false, true] {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let index_writer_config =
             IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
         index_writer_config.set_max_buffered_docs(num_docs_in_segment)?;

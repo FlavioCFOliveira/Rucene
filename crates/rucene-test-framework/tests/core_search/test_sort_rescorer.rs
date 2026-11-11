@@ -109,7 +109,7 @@ fn sort_rescorer_tear_down(f: &mut SortRescorerTest) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())
@@ -214,7 +214,7 @@ fn test_double_values_source_sort(f: &mut SortRescorerTest) -> Result<()> {
 
 /// Port of `TestSortRescorer.testRandom`.
 fn test_random(_f: &mut SortRescorerTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let num_docs = LuceneTestCase::at_least(1000);
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 

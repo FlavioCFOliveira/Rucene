@@ -91,7 +91,7 @@ fn close_reader(reader: Arc<dyn DirectoryReader>) -> Result<()> {
 /// standard number of vertices.
 fn test_basic_intersects() -> Result<()> {
     let num_vertices = TestUtil::next_int(&*random(), 50, 100);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // add a random polygon document
@@ -190,7 +190,7 @@ fn test_bounding_box_queries() -> Result<()> {
         r2 = shape_test_util::next_box(&*random);
     }
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random, dir.as_directory())?;
 
     // add the polygon to the index
@@ -226,7 +226,7 @@ fn test_bounding_box_queries() -> Result<()> {
 
 /// Port of `testPointIndexAndDistanceQuery`.
 fn test_point_index_and_distance_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut document = Document::new();
     let p_x = shape_test_util::next_float(&*random());
@@ -270,7 +270,7 @@ fn test_contains_wrapping_boolean_query() -> Result<()> {
     let xs = vec![-30.0, 30.0, 30.0, -30.0, -30.0];
     let polygon = XYPolygon::new(xs, ys, vec![])?;
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut document = Document::new();
     add_polygons_to_doc(FIELDNAME, &mut document, &polygon)?;
@@ -296,7 +296,7 @@ fn test_contains_wrapping_boolean_query() -> Result<()> {
 
 /// Port of `testContainsIndexedGeometryCollection`.
 fn test_contains_indexed_geometry_collection() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let polygon = XYPolygon::new(
         vec![-132.0, 132.0, 132.0, -132.0, -132.0],

@@ -172,7 +172,12 @@ struct WriterState {
     /// (`IndexWriter.java`), which keeps whatever order the caller handed over:
     /// `prepareCommitInternal` copies it into a `HashMap` in that order, and
     /// that map's bucket order is what `segments_N` records.
-    commit_user_data: Vec<(String, String)>,
+    ///
+    /// Java keeps the `Iterable` itself and walks it at commit time, so a
+    /// live view (`map.entrySet()`) shows the entries as they are then; the
+    /// port keeps the iterable the caller handed over and iterates a fresh
+    /// copy of it each time it is read.
+    commit_user_data: LiveCommitData,
     /// Merges that failed, kept until the next merge generation.
     ///
     /// Equivalent to `IndexWriter.mergeExceptions`.
@@ -1120,11 +1125,14 @@ impl IndexWriter {
         // `commitUserData = new HashMap<>(segmentInfos.getUserData()).entrySet()`
         // (`IndexWriter.java:1122`): the next commit carries the user data of
         // the commit the writer opened unless `setLiveCommitData` replaces it.
-        let commit_user_data: Vec<(String, String)> = segment_infos
-            .user_data()
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
+        let commit_user_data: LiveCommitData = {
+            let entries: Vec<(String, String)> = segment_infos
+                .user_data()
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            Arc::new(move || entries.clone())
+        };
 
         // `pendingNumDocs.set(segmentInfos.totalMaxDoc())` (`IndexWriter.java:1124`).
         let pending_num_docs = Arc::new(AtomicI64::new(i64::from(segment_infos.total_max_doc()?)));
@@ -1884,8 +1892,12 @@ impl IndexWriter {
     /// Returns the user data attached to the next commit.
     ///
     /// Equivalent to `IndexWriter.getLiveCommitData()`.
+    ///
+    /// Java returns the `Iterable` itself; the port returns the entries it
+    /// iterates now.
     pub fn get_live_commit_data(&self) -> Result<Vec<(String, String)>> {
-        Ok(self.state()?.commit_user_data.clone())
+        let live = std::sync::Arc::clone(&self.state()?.commit_user_data);
+        Ok(live())
     }
 
     /// Records that the files of `segment_infos` are in use.
@@ -2832,7 +2844,7 @@ impl IndexWriter {
     /// Fails when the writer's state lock is poisoned.
     pub fn set_live_commit_data<I>(&self, data: I) -> Result<()>
     where
-        I: IntoIterator<Item = (String, String)>,
+        I: IntoIterator<Item = (String, String)> + Clone + Send + Sync + 'static,
     {
         self.set_live_commit_data_with_increment(data, true)
     }
@@ -2855,12 +2867,13 @@ impl IndexWriter {
         do_increment_version: bool,
     ) -> Result<()>
     where
-        I: IntoIterator<Item = (String, String)>,
+        I: IntoIterator<Item = (String, String)> + Clone + Send + Sync + 'static,
     {
         // Java's method is `synchronized` on the writer: the state lock is
-        // held across the three steps.
+        // held across the three steps. `this.commitUserData = commitUserData`:
+        // the iterable is kept and walked when a commit reads it.
         let mut state = self.state()?;
-        state.commit_user_data = data.into_iter().collect();
+        state.commit_user_data = Arc::new(move || data.clone().into_iter().collect());
         if do_increment_version {
             state.segment_infos.changed();
         }
@@ -2977,13 +2990,8 @@ impl IndexWriter {
                     // (`IndexWriter.java:3814-3820`), so the map `segments_N` walks
                     // is a `java.util.HashMap` filled in the live data's iteration
                     // order.
-                    let user_data: JavaStringMap = JavaStringMap::Hash(
-                        state
-                            .commit_user_data
-                            .iter()
-                            .map(|(key, value)| (key.clone(), value.clone()))
-                            .collect(),
-                    );
+                    let user_data: JavaStringMap =
+                        JavaStringMap::Hash((state.commit_user_data)().into_iter().collect());
                     state.segment_infos.set_user_data(user_data, false);
                     self.publish_segment_counter(&mut state.segment_infos);
 
@@ -4379,18 +4387,6 @@ impl IndexWriter {
                 }
                 return Err(err);
             }
-            // Java's `mergedUpdates.info` is `merge.info` itself, so the live
-            // docs `release` just wrote for the deletes carried over (a new
-            // `delGen`, `delCount` and `softDelCount`) are already on the
-            // object `applyMergeChanges` inserts below. `release_with` copies
-            // them back into `segment_infos` only for a segment that is live,
-            // which the merged one is not yet; without this copy the merged
-            // segment would enter the infos without its carried-over deletes,
-            // and its next live-docs write would reuse the generation just
-            // written (`FileAlreadyExistsException` on `_N_1.liv`).
-            if let Some(info) = merge.info().as_mut() {
-                *info = rld.info();
-            }
         }
 
         // Must be done after releasing into the pool, in case an exception is
@@ -4525,7 +4521,7 @@ impl IndexWriter {
         let sec = (t1 - merge.merge_start_ns()) as f64 / 1_000_000_000.0;
         let size_in_bytes = merge
             .info()
-            .as_mut()
+            .as_ref()
             .map(SegmentCommitInfo::size_in_bytes)
             .transpose()?
             .ok_or_else(|| LuceneError::illegal_state("merge has no merged segment".to_string()))?;
@@ -5352,6 +5348,12 @@ impl IndexWriter {
                 .set_use_compound_file(true);
         }
 
+        // `merge.setMergeInfo(merge.info)` (`IndexWriter.java:3615`): an
+        // override of `setMergeInfo` sees the merged segment again, now with
+        // its diagnostics and compound-file state.
+        let merged_info = merge.info().clone().expect("just set");
+        merge.set_merge_info(merged_info);
+
         // Have the codec write the SegmentInfo. This must happen after creating
         // the compound file, so that the `.si` is not slurped into it and so
         // that it records `useCompoundFile=true`. The `.si` joins the files of
@@ -5589,15 +5591,9 @@ impl IndexWriter {
         }
 
         if let Some(info) = merge.info().as_mut() {
+            // `merge.info.setBufferedDeletesGen(minGen)` (`IndexWriter.java:4600`):
+            // the object `mergedDeletesAndUpdates` holds as its `info` too.
             info.set_buffered_deletes_gen(min_gen)?;
-            // `merge.info.setBufferedDeletesGen(minGen)` (`IndexWriter.java:4600`)
-            // sets it on the object `mergedDeletesAndUpdates` holds as its
-            // `info`, since `getPooledInstance(merge.info, true)` pooled that
-            // very object. The pooled entry holds a copy here, so it takes the
-            // stamped commit; otherwise a later copy-back from the pool
-            // (`write_reader_pool_with`) would reset the merged segment's
-            // buffered-deletes generation to `-1`.
-            merged_deletes_and_updates.set_info(info.clone());
         }
 
         Ok(Some(merged_deletes_and_updates))
@@ -6031,16 +6027,12 @@ impl IndexWriter {
                 }
             }
             // If no merge hit an exception, and merge was not aborted, but we
-            // still failed to add indexes, fail the API: Java's
-            // `RuntimeException` (`IndexWriter.java:3376-3377`).
-            Err(LuceneError::from(LuceneErrorKind::Unchecked {
-                class: "java.lang.RuntimeException",
-                message: Some(
-                    "failed to successfully merge all provided readers in addIndexes(CodecReader...)"
-                        .to_string(),
-                ),
-                cause: None,
-            }))
+            // still failed to add indexes, fail the API: `throw new
+            // RuntimeException(...)` (`IndexWriter.java:3376-3377`).
+            Err(LuceneError::unchecked(
+                "java.lang.RuntimeException",
+                "failed to successfully merge all provided readers in addIndexes(CodecReader...)",
+            ))
         }
     }
 
@@ -6445,8 +6437,8 @@ impl IndexWriter {
 ///
 /// **This has no counterpart in Lucene 10.5.0.** Java passes `Directory`
 /// references around freely because the JVM owns their lifetime. In Rucene a
-/// `Directory` is shared through an `Arc` and [`Directory::close`] takes
-/// `&mut self`, so a shared handle cannot perform the close. Closing the
+/// `Directory` is shared through an `Arc`, while `TrackingDirectoryWrapper`
+/// owns a `Box<dyn Directory>`. Closing the
 /// directory is the responsibility of whoever created it — the `IndexWriter` —
 /// so this adapter reports `close` as a no-op and delegates everything else.
 /// `DocumentsWriterPerThread` carries the same adapter for the same reason.
@@ -6503,7 +6495,7 @@ impl Directory for SharedDirectory {
     }
 
     /// No-op: a shared handle does not own the directory's lifetime.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 
@@ -6721,6 +6713,10 @@ fn is_java_io_exception(error: &LuceneError) -> bool {
 fn clone_infos(source: &SegmentInfos) -> Result<SegmentInfos> {
     Ok(source.clone())
 }
+
+/// The live commit data `IndexWriter.setLiveCommitData` keeps: Java's
+/// `Iterable<Map.Entry<String, String>>`, walked each time it is read.
+type LiveCommitData = Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>;
 
 /// Document statistics taken in one consistent snapshot.
 ///
@@ -7782,19 +7778,6 @@ impl IndexWriter {
             self.reader_pool.write_all_doc_values_updates()?
         };
         if changed {
-            // Java's `rld.info` is the very `SegmentCommitInfo` the writer's
-            // `SegmentInfos` holds, so writing a pooled reader's live docs or
-            // doc-values updates updates the writer's copy through reference
-            // identity. This port keeps a clone in the pool, so the new
-            // deletion, field-infos and doc-values generations are copied back
-            // here; without it the commit would record a segment that still has
-            // every document and none of its updates, and would not reference
-            // the files just written.
-            for info in state.segment_infos.iter_mut() {
-                if let Some(rld) = self.reader_pool.peek(&info.info.name) {
-                    *info = rld.info();
-                }
-            }
             if write_deletes {
                 self.checkpoint_no_sis(state)?;
             } else {
@@ -7894,16 +7877,6 @@ impl IndexWriter {
                     self.buffered_updates_stream.get_completed_del_gen(),
                     self.info_stream.as_ref(),
                 )? {
-                    // Copy the generations just written back to the writer's
-                    // own copy of the segment, which Java shares by reference.
-                    let written = rld.info();
-                    if let Some(info) = state
-                        .segment_infos
-                        .iter_mut()
-                        .find(|info| info.info.name == written.info.name)
-                    {
-                        *info = written;
-                    }
                     self.checkpoint_no_sis(&mut state)?;
                 }
             }
@@ -7977,17 +7950,6 @@ impl IndexWriter {
             .reader_pool
             .release(readers_and_updates, assert_live_info, &state.segment_infos)?
         {
-            // Java's `rld.info` is the writer's own `SegmentCommitInfo`; this
-            // port's pool holds a copy, so the generations just written are
-            // copied back before the checkpoint records the segment's files.
-            let written = readers_and_updates.info();
-            if let Some(info) = state
-                .segment_infos
-                .iter_mut()
-                .find(|info| info.info.name == written.info.name)
-            {
-                *info = written;
-            }
             self.checkpoint_no_sis(state)?;
         }
         Ok(())
@@ -8167,7 +8129,7 @@ impl IndexWriter {
             // `try (Directory cfs = codec.compoundFormat().getCompoundReader(...))`
             // (`IndexWriter.java:1262-1264`): closed whatever the read did; a
             // failure to close is reported only when the read succeeded.
-            let mut cfs = codec
+            let cfs = codec
                 .compound_format()
                 .get_compound_reader(si.info.directory.as_ref(), &si.info)?;
             let read = reader.read(&*cfs, &si.info, "", context);
@@ -8557,7 +8519,7 @@ impl IndexWriter {
                             ),
                         );
                     }
-                    let mut copy = info.clone();
+                    let copy = info.clone();
                     let context = crate::store::flush_io_context(crate::store::FlushInfo::new(
                         info.info.max_doc()?,
                         copy.size_in_bytes()?,
@@ -8624,7 +8586,7 @@ impl IndexWriter {
         )?;
         new_info.set_files(info.info.files_ordered()?)?;
 
-        let mut new_info_per_commit = SegmentCommitInfo::new(
+        let new_info_per_commit = SegmentCommitInfo::new(
             new_info,
             info.get_del_count(),
             info.get_soft_del_count(),
@@ -9332,7 +9294,7 @@ impl IndexWriter {
     /// records whether the segment reached the segment infos.
     fn publish_flushed_segment_locked(
         &self,
-        mut new_segment: SegmentCommitInfo,
+        new_segment: SegmentCommitInfo,
         field_infos: &crate::index::field_infos::FieldInfos,
         packet: Option<crate::index::documents_writer::FrozenBufferedUpdates>,
         global_packet: Option<crate::index::documents_writer::FrozenBufferedUpdates>,
@@ -10045,7 +10007,8 @@ impl IndexWriter {
             // SegmentReader.
             self.write_reader_pool_with(state, write_all_deletes)?;
             // Prevent segmentInfos from changing while opening the reader.
-            let infos = state.segment_infos.clone();
+            // Java passes `segmentInfos` itself (`IndexWriter.java:624`).
+            let infos = state.segment_infos.shallow_copy();
             let held = std::cell::RefCell::new(state);
             StandardDirectoryReader::open_from_writer(
                 Arc::clone(&writer_handle) as Arc<dyn IndexWriterTrait>,
@@ -10486,7 +10449,7 @@ impl IndexWriter {
                             // gens.
                             *orig_info.lock().map_err(|_| {
                                 LuceneError::illegal_state("origInfo mutex poisoned".to_string())
-                            })? = Some(info.clone());
+                            })? = Some(info.java_clone());
                         }
                     }
                     if let Some(to_wrap_on_merge_complete) = to_wrap_on_merge_complete.as_ref() {
@@ -10841,7 +10804,7 @@ impl IndexWriterTrait for IndexWriter {
     /// Equivalent to reading `IndexWriter.segmentInfos`, as a writer opening
     /// on this writer's NRT reader does (`IndexWriter.java:1067-1076`).
     fn segment_infos(&self) -> Result<SegmentInfos> {
-        Ok(self.state()?.segment_infos.clone())
+        Ok(self.state()?.segment_infos.shallow_copy())
     }
 
     /// Returns the directory this writer writes to.
@@ -13687,7 +13650,7 @@ mod tests {
             self.inner.obtain_lock(name)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
 

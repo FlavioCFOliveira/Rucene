@@ -128,7 +128,7 @@ impl Fixture {
     /// `IOUtils.close(pool, reader, directory)`.
     fn close(self) -> Result<()> {
         let Fixture {
-            mut directory,
+            directory,
             reader,
             pool,
             ..

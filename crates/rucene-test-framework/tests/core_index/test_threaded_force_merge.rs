@@ -232,7 +232,7 @@ fn run_test(_random: &dyn Random, directory: &Arc<dyn Directory>) -> Result<()> 
 
 /// Port of `TestThreadedForceMerge.testThreadedForceMerge`.
 fn test_threaded_force_merge() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     run_test(&*random(), &directory.as_directory())?;
     directory.close()
 }

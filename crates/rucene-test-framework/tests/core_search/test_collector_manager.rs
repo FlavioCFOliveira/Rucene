@@ -37,7 +37,7 @@ pub fn class_def() -> Arc<Class> {
 type Predicate = fn(i32) -> bool;
 
 fn test_collection() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let reader = reader(&dir)?;
     let leaves = (Arc::clone(&reader) as Arc<dyn IndexReader>).leaves()?;
     let ctx = &leaves[0];

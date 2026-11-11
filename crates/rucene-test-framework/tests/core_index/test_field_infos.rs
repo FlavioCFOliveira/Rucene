@@ -91,7 +91,7 @@ fn name_by_name(fis: &FieldInfos, name: &str) -> String {
 
 /// Port of `TestFieldInfos.testFieldInfos`.
 fn test_field_infos() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = no_merge_writer(&dir)?;
 
     let mut d1 = Document::new();
@@ -178,7 +178,7 @@ fn attribute(fi: &FieldInfo, key: &str) -> Option<String> {
 
 /// Port of `TestFieldInfos.testFieldAttributes`.
 fn test_field_attributes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = no_merge_writer(&dir)?;
 
     let type1 = stored_type()?;
@@ -225,7 +225,7 @@ fn test_field_attributes() -> Result<()> {
 
 /// Port of `TestFieldInfos.testFieldAttributesSingleSegment`.
 fn test_field_attributes_single_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = no_merge_writer(&dir)?;
 
     let mut d1 = Document::new();
@@ -269,7 +269,7 @@ fn test_field_attributes_single_segment() -> Result<()> {
 
 /// Port of `TestFieldInfos.testMergedFieldInfos_empty`.
 fn test_merged_field_infos_empty() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir)?;
 
     let reader: Arc<dyn IndexReader> = directory_reader::open_with_writer(&*writer)?;
@@ -284,7 +284,7 @@ fn test_merged_field_infos_empty() -> Result<()> {
 
 /// Port of `TestFieldInfos.testMergedFieldInfos_singleLeaf`.
 fn test_merged_field_infos_single_leaf() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir)?;
 
     let mut d1 = Document::new();

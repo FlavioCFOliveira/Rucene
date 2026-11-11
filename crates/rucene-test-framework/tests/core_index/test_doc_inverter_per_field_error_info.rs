@@ -142,7 +142,7 @@ fn throwing_config(info_bytes: &ByteArrayOutputStream) -> Result<IndexWriterConf
 
 /// Port of `TestDocInverterPerFieldErrorInfo.testInfoStreamGetsFieldName`.
 fn test_info_stream_gets_field_name() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let info_bytes = ByteArrayOutputStream::default();
     let c = throwing_config(&info_bytes)?;
     let writer = IndexWriter::new(dir.as_directory(), c)?;
@@ -162,7 +162,7 @@ fn test_info_stream_gets_field_name() -> Result<()> {
 
 /// Port of `TestDocInverterPerFieldErrorInfo.testNoExtraNoise`.
 fn test_no_extra_noise() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let info_bytes = ByteArrayOutputStream::default();
     let c = throwing_config(&info_bytes)?;
     let writer = IndexWriter::new(dir.as_directory(), c)?;

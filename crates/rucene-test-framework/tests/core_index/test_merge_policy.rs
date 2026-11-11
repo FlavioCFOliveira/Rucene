@@ -49,7 +49,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `try (Directory dir = newDirectory()) { body }`.
 fn with_dir(body: impl FnOnce(Arc<dyn Directory>) -> Result<()>) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let outcome = body(dir.as_directory());
     let closed = dir.close();
     outcome?;

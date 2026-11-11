@@ -96,7 +96,7 @@ fn check_with_payload(terms: Option<Box<dyn Terms>>, position: i32) -> Result<()
 /// Port of `TestPayloadsOnVectors.testMixupDocs`: some docs have payload
 /// att, some not.
 fn test_mixup_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));
@@ -128,7 +128,7 @@ fn test_mixup_docs() -> Result<()> {
 /// Port of `TestPayloadsOnVectors.testMixupMultiValued`: some field
 /// instances have payload att, some not.
 fn test_mixup_multi_valued() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let custom_type = vector_type(true)?;
@@ -152,7 +152,7 @@ fn test_mixup_multi_valued() -> Result<()> {
 
 /// Port of `TestPayloadsOnVectors.testPayloadsWithoutPositions`.
 fn test_payloads_without_positions() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let custom_type = vector_type(false)?;

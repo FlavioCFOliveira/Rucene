@@ -88,7 +88,7 @@ fn random_dense_rank_power() -> i8 {
 fn test_empty() -> Result<()> {
     let max_doc = TestUtil::next_int(&*random(), 1, 100000);
     let set = sparse(max_doc)?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test(&set, &*dir.as_directory())?;
     dir.close()
 }
@@ -123,14 +123,14 @@ fn test_empty_blocks() -> Result<()> {
     }
 
     {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         do_test_all_single_jump(&set, &*dir.as_directory())?;
         dir.close()?;
     }
 
     // Change the first block to DENSE to see if jump-tables sets to position 0
     bits(&mut set).set(0);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test_all_single_jump(&set, &*dir.as_directory())?;
     dir.close()
 }
@@ -151,7 +151,7 @@ fn test_last_empty_blocks() -> Result<()> {
     }
     // Last block is EMPTY
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let d = dir.as_directory();
         do_test_all_single_jump(&set, &*d)?;
@@ -216,7 +216,7 @@ fn assert_advance_beyond_end(set: &Arc<dyn BitSet>, dir: &dyn Directory) -> Resu
 fn test_random_blocks() -> Result<()> {
     const BLOCKS: i32 = 5;
     let set = create_set_with_random_blocks(BLOCKS)?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test_all_single_jump(&set, &*dir.as_directory())?;
     dir.close()
 }
@@ -230,7 +230,7 @@ fn test_position_not_zero() -> Result<()> {
     let dense_rank_power = random_dense_rank_power();
 
     let set = create_set_with_random_blocks(BLOCKS)?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let d = dir.as_directory();
         let cardinality = set.cardinality() as i64;
@@ -389,7 +389,7 @@ fn test_one_doc() -> Result<()> {
     let max_doc = TestUtil::next_int(&*random(), 1, 100000);
     let mut set = sparse(max_doc)?;
     bits(&mut set).set(random().next_int_bound(max_doc) as usize);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test(&set, &*dir.as_directory())?;
     dir.close()
 }
@@ -400,7 +400,7 @@ fn test_two_docs() -> Result<()> {
     let mut set = sparse(max_doc)?;
     bits(&mut set).set(random().next_int_bound(max_doc) as usize);
     bits(&mut set).set(random().next_int_bound(max_doc) as usize);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test(&set, &*dir.as_directory())?;
     dir.close()
 }
@@ -411,7 +411,7 @@ fn test_all_docs() -> Result<()> {
     let mut set = FixedBitSet::new(max_doc as usize);
     set.set_range(1, max_doc as usize);
     let set: Arc<dyn BitSet> = Arc::new(set);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test(&set, &*dir.as_directory())?;
     dir.close()
 }
@@ -428,14 +428,14 @@ fn test_half_full() -> Result<()> {
             i += TestUtil::next_int(&*random(), 1, 3);
         }
     }
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test(&set, &*dir.as_directory())?;
     dir.close()
 }
 
 /// Port of `TestIndexedDISI.testDocRange`.
 fn test_doc_range() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let d = dir.as_directory();
         for _ in 0..10 {
@@ -453,7 +453,7 @@ fn test_doc_range() -> Result<()> {
 
 /// Port of `TestIndexedDISI.testSparseDenseBoundary`.
 fn test_sparse_dense_boundary() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let d = dir.as_directory();
         let mut fixed = FixedBitSet::new(200000);
@@ -534,14 +534,14 @@ fn test_one_doc_missing() -> Result<()> {
     set.set_range(0, max_doc as usize);
     set.clear(random().next_int_bound(max_doc) as usize);
     let set: Arc<dyn BitSet> = Arc::new(set);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test(&set, &*dir.as_directory())?;
     dir.close()
 }
 
 /// Port of `TestIndexedDISI.testFewMissingDocs`.
 fn test_few_missing_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let d = dir.as_directory();
         let num_iters = LuceneTestCase::at_least(10);
@@ -562,7 +562,7 @@ fn test_few_missing_docs() -> Result<()> {
 
 /// Port of `TestIndexedDISI.testDenseMultiBlock`.
 fn test_dense_multi_block() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let max_doc = 10 * 65536; // 10 blocks
         let mut set = FixedBitSet::new(max_doc);
@@ -579,7 +579,7 @@ fn test_dense_multi_block() -> Result<()> {
 /// Port of `TestIndexedDISI.testDenseBitSizeLessThanBlockSize`.
 fn test_dense_bit_size_less_than_block_size() -> Result<()> {
     let dense_rank_power = (random().next_int_bound(7) + 7) as i8;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let d = dir.as_directory();
         // initialize a maxDoc that is less than IndexedDISI.BLOCK_SIZE
@@ -651,7 +651,7 @@ fn create_and_open_disi(dense_rank_power_write: i8, dense_rank_power_read: i8) -
     let len = fixed.length();
     fixed.set(len - 1);
     let set: Arc<dyn BitSet> = Arc::new(fixed);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let d = dir.as_directory();
         let length;
@@ -694,7 +694,7 @@ fn test_one_doc_missing_fixed() -> Result<()> {
     fixed.set_range(0, max_doc);
     fixed.clear(1345);
     let set: Arc<dyn BitSet> = Arc::new(fixed);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let d = dir.as_directory();
         let cardinality = set.cardinality() as i64;
@@ -732,7 +732,7 @@ fn test_one_doc_missing_fixed() -> Result<()> {
 
 /// Port of `TestIndexedDISI.testRandom`.
 fn test_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let d = dir.as_directory();
         let num_iters = LuceneTestCase::at_least(3);

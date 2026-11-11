@@ -24,7 +24,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestNot.testNot`.
 fn test_not() -> Result<()> {
-    let mut store = LuceneTestCase::new_directory();
+    let store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), store.as_directory())?;
 
     let mut d1 = Document::new();

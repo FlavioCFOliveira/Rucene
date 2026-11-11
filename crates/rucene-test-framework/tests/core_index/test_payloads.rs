@@ -118,7 +118,7 @@ fn config(
 /// DocumentWriter and SegmentMerger correctly enable the payload bit in the
 /// FieldInfo.
 fn test_payload_field_bit() -> Result<()> {
-    let mut ram = LuceneTestCase::new_directory();
+    let ram = LuceneTestCase::new_directory();
     let analyzer = Arc::new(PayloadAnalyzer::new());
     let writer = IndexWriter::new(ram.as_directory(), config(&analyzer))?;
     let mut d = Document::new();
@@ -195,7 +195,7 @@ fn test_payload_field_bit() -> Result<()> {
 /// Port of `TestPayloads.testPayloadsEncoding`: tests if payloads are
 /// correctly stored and loaded.
 fn test_payloads_encoding() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     perform_test(&dir.as_directory())?;
     dir.close()
 }
@@ -633,7 +633,7 @@ fn test_thread_safety() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(50);
     let pool = Arc::new(ByteArrayPool::new(num_threads, 5));
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -816,7 +816,7 @@ impl ByteArrayPool {
 
 /// Port of `TestPayloads.testAcrossFields`.
 fn test_across_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new(
         &*random(),
         dir.as_directory(),
@@ -885,7 +885,7 @@ fn payload_ref(de: &dyn PostingsEnum) -> Result<Option<BytesRef>> {
 /// Port of `TestPayloads.testMixupDocs`: some docs have payload att, some
 /// not.
 fn test_mixup_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
@@ -923,7 +923,7 @@ fn test_mixup_docs() -> Result<()> {
 /// Port of `TestPayloads.testMixupMultiValued`: some field instances have
 /// payload att, some not.
 fn test_mixup_multi_valued() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let ts = whitespace_stream("here we go")?;

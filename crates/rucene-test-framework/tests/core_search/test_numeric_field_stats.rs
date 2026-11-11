@@ -124,7 +124,7 @@ fn with_writer(
     config: impl FnOnce() -> Result<IndexWriterConfig>,
     body: impl FnOnce(&IndexWriter) -> Result<()>,
 ) -> Result<()> {
-    let mut dir: TestDirectory = LuceneTestCase::new_directory();
+    let dir: TestDirectory = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), config()?)?;
     let outcome = body(&w);
     w.close()?;

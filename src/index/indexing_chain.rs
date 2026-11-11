@@ -508,7 +508,7 @@ impl crate::codecs::norms::NormsProducer for EmptyNormsProducer {
         Ok(Box::new(*self))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

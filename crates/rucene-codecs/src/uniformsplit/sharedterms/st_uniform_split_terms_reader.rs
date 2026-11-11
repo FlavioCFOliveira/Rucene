@@ -31,7 +31,6 @@ use std::sync::Arc;
 use rucene::codecs::{PostingsReaderBase, SegmentReadState};
 use rucene::error::Result;
 use rucene::index::FieldInfos;
-use rucene::store::IndexInput;
 
 use super::st_uniform_split_postings_format::{
     NAME, TERMS_BLOCKS_EXTENSION, TERMS_DICTIONARY_EXTENSION, VERSION_CURRENT,
@@ -88,8 +87,8 @@ pub(crate) fn fill_field_map(
     _state: &SegmentReadState<'_>,
     block_decoder: Option<&Arc<dyn BlockDecoder>>,
     dictionary_on_heap: bool,
-    dictionary_input: &Arc<Box<dyn IndexInput>>,
-    block_input: &Arc<Box<dyn IndexInput>>,
+    dictionary_input: &Arc<rucene::store::SharedIndexInput>,
+    block_input: &Arc<rucene::store::SharedIndexInput>,
     field_metadata_collection: Vec<FieldMetadata>,
     field_infos: &FieldInfos,
 ) -> Result<()> {
@@ -98,7 +97,7 @@ pub(crate) fn fill_field_map(
             Arc::new(create_union_field_metadata(&field_metadata_collection)?);
         // Share the same immutable dictionary between all fields.
         let dictionary_browser_supplier = create_dictionary_browser_supplier(
-            dictionary_input.as_ref().as_ref(),
+            &**dictionary_input.read(),
             &union_field_metadata,
             block_decoder,
             dictionary_on_heap,

@@ -50,7 +50,7 @@ fn get_index_input(len: i64) -> Box<dyn IndexInput> {
 fn test_raw_filter_index_input_read() -> Result<()> {
     for _ in 0..10 {
         let random = random();
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         let mut os = d.create_output("foo", &*LuceneTestCase::new_io_context(&*random))?;
         os.write_bytes(READ_TEST_BYTES, 0, READ_TEST_BYTES.len())?;
@@ -178,8 +178,7 @@ fn test_overrides() -> Result<()> {
 
 /// Port of `TestFilterIndexInput.testUnwrap`.
 fn test_unwrap() -> Result<()> {
-    let mut dir: Box<dyn Directory> =
-        Box::new(FSDirectory::open(LuceneTestCase::create_temp_dir())?);
+    let dir: Box<dyn Directory> = Box::new(FSDirectory::open(LuceneTestCase::create_temp_dir())?);
     let mut ignored = dir.create_output("test", &*DEFAULT_IO_CONTEXT)?;
     let index_input = dir.open_input("test", &*DEFAULT_IO_CONTEXT)?;
     let index_input_addr = &*index_input as *const dyn IndexInput as *const ();

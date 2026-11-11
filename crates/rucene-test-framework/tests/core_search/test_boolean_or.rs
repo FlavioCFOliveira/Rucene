@@ -172,7 +172,7 @@ fn boolean_or_tear_down(f: &mut BooleanOr) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())
@@ -204,7 +204,7 @@ impl LeafCollector for MaxCollector<'_> {
 }
 
 fn test_boolean_scorer_max(_f: &mut BooleanOr) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let riw = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),

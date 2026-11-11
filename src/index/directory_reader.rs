@@ -540,7 +540,7 @@ impl StandardDirectoryReader {
                             old_reader.as_ref(),
                             index_created_version,
                         )?;
-                        Ok(Box::new(Arc::new(reader)) as crate::search::TaskValue)
+                        Ok(Box::new(reader) as crate::search::TaskValue)
                     }))
                     .map_err(|rejected| {
                         LuceneError::unchecked(
@@ -622,11 +622,11 @@ impl StandardDirectoryReader {
                         .copied(),
                     commit_info,
                 )?;
-                readers.push(Arc::new(Self::create_or_reuse_segment_reader(
+                readers.push(Self::create_or_reuse_segment_reader(
                     commit_info,
                     old_reader,
                     index_created_version,
-                )?));
+                )?);
             }
             Ok(())
         })();
@@ -721,13 +721,14 @@ impl StandardDirectoryReader {
         commit_info: &crate::index::segment_info::SegmentCommitInfo,
         old_reader: Option<&Arc<SegmentReader>>,
         index_created_version_major: i32,
-    ) -> Result<SegmentReader> {
+    ) -> Result<Arc<SegmentReader>> {
         let Some(old_reader) = old_reader else {
             return SegmentReader::new(
                 commit_info.clone(),
                 index_created_version_major,
                 &*DEFAULT_IO_CONTEXT,
-            );
+            )
+            .map(Arc::new);
         };
         if commit_info.info.get_use_compound_file()
             != old_reader.get_segment_info().info.get_use_compound_file()
@@ -738,26 +739,22 @@ impl StandardDirectoryReader {
                 commit_info.clone(),
                 index_created_version_major,
                 &*DEFAULT_IO_CONTEXT,
-            );
+            )
+            .map(Arc::new);
         }
 
         let del_gen_unchanged =
             commit_info.get_del_gen() == old_reader.get_segment_info().get_del_gen();
-        let dv_gen_unchanged = commit_info.get_field_infos_gen()
-            == old_reader.get_segment_info().get_field_infos_gen()
-            && commit_info.get_doc_values_gen()
-                == old_reader.get_segment_info().get_doc_values_gen();
 
-        if del_gen_unchanged && dv_gen_unchanged && !old_reader.is_nrt() {
-            // Nothing changed: reuse the reader's live docs as they are.
-            return SegmentReader::new_shared(
-                commit_info.clone(),
-                old_reader,
-                old_reader.get_live_docs(),
-                old_reader.get_hard_live_docs(),
-                LeafReader::num_docs(old_reader.as_ref()),
-                false,
-            );
+        if !old_reader.is_nrt()
+            && del_gen_unchanged
+            && commit_info.get_field_infos_gen()
+                == old_reader.get_segment_info().get_field_infos_gen()
+        {
+            // No change; this reader will be shared between the old and the
+            // new one, so we must incRef it (`StandardDirectoryReader.java:318-324`).
+            old_reader.inc_ref()?;
+            return Ok(Arc::clone(old_reader));
         }
 
         debug_assert!(Arc::ptr_eq(
@@ -765,15 +762,17 @@ impl StandardDirectoryReader {
             &old_reader.get_segment_info().info.directory
         ));
         if del_gen_unchanged && !old_reader.is_nrt() {
-            // Only the doc values changed; the live docs carry over.
-            return SegmentReader::new_shared(
+            // Only the doc values changed; the live docs carry over: the old
+            // reader's `liveDocs` and `hardLiveDocs` objects themselves.
+            return SegmentReader::new_shared_bits(
                 commit_info.clone(),
                 old_reader,
-                old_reader.get_live_docs(),
-                old_reader.get_hard_live_docs(),
+                old_reader.live_docs_shared(),
+                old_reader.hard_live_docs_shared(),
                 LeafReader::num_docs(old_reader.as_ref()),
                 false,
-            );
+            )
+            .map(Arc::new);
         }
 
         // The live docs changed, or the old reader was an NRT one whose live
@@ -798,16 +797,15 @@ impl StandardDirectoryReader {
         // hard live docs; the shared handle is how that sharing is expressed
         // here, so the bits are read once and not copied.
         let live_docs = live_docs.map(crate::index::segment_reader::SharedBits::new);
-        SegmentReader::new_shared(
+        SegmentReader::new_shared_bits(
             commit_info.clone(),
             old_reader,
-            live_docs
-                .clone()
-                .map(|bits| Box::new(bits) as Box<dyn crate::util::Bits>),
-            live_docs.map(|bits| Box::new(bits) as Box<dyn crate::util::Bits>),
+            live_docs.clone(),
+            live_docs,
             num_docs,
             false,
         )
+        .map(Arc::new)
     }
 
     /// Returns the `SegmentInfos` for this reader.
@@ -1278,14 +1276,19 @@ impl DirectoryReader for StandardDirectoryReader {
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
         self.ensure_open()?;
         if let Some(ref my_writer) = self.writer {
-            if std::ptr::eq(my_writer.as_ref(), writer)
+            // `writer == this.writer`: object identity, the data address
+            // alone (two `&dyn` to one object may carry distinct vtables).
+            if std::ptr::addr_eq(my_writer.as_ref(), writer)
                 && apply_all_deletes == self.apply_all_deletes
             {
                 return self.do_open_from_writer(None, executor.as_ref());
             }
         }
-        // Different writer or different applyAllDeletes setting: ask the writer.
-        Ok(Some(writer.get_reader(apply_all_deletes, false)?))
+        // `writer.getReader(applyAllDeletes, writeAllDeletes)`
+        // (`StandardDirectoryReader.java:453`).
+        Ok(Some(
+            writer.get_reader(apply_all_deletes, self.write_all_deletes)?,
+        ))
     }
 }
 

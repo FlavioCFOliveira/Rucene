@@ -65,7 +65,7 @@ fn set_up(inst: &mut TestSegmentTermEnumInstance) -> Result<()> {
 
 /// `public void tearDown()`.
 fn tear_down(inst: &mut TestSegmentTermEnumInstance) -> Result<()> {
-    if let Some(mut dir) = inst.dir.take() {
+    if let Some(dir) = inst.dir.take() {
         dir.close()?;
     }
     LuceneTestCase::super_tear_down();

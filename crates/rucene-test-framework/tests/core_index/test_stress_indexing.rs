@@ -185,7 +185,7 @@ fn run_stress_test(
 
 /// Port of `TestStressIndexing.testStressIndexAndSearching`.
 fn test_stress_index_and_searching() -> Result<()> {
-    let mut directory = if *TEST_NIGHTLY {
+    let directory = if *TEST_NIGHTLY {
         LuceneTestCase::new_maybe_virus_checking_directory()
     } else {
         TestDirectory::Mock(MockDirectoryWrapper::new(

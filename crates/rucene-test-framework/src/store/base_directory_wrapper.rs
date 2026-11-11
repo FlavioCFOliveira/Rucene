@@ -25,7 +25,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
-use rucene::error::{LuceneError, LuceneErrorKind, Result};
+use rucene::error::Result;
 use rucene::index::check_index::Level;
 use rucene::index::directory_reader::index_exists;
 use rucene::store::{Directory, IOContext, IndexInput, IndexOutput, Lock};
@@ -39,9 +39,7 @@ use crate::util::TestUtil;
 /// the wrapper itself; core's `CheckIndex` takes an owned `Arc<dyn
 /// Directory>`, which a wrapper cannot hand out for itself from `&mut self`,
 /// so the check runs over the delegate, which this base class only forwards
-/// to. The delegate is shared (`Arc`) for that check; closing it needs the
-/// wrapper to hold the only reference, as Java's `in.close()` owns its
-/// delegate.
+/// to. The delegate is shared (`Arc`) for that check.
 pub struct BaseDirectoryWrapper {
     delegate: Arc<dyn Directory>,
     check_index_on_close: AtomicBool,
@@ -163,7 +161,7 @@ impl Directory for BaseDirectoryWrapper {
     /// `close()`: the first close runs `TestUtil.checkIndex` at
     /// [`get_level_for_check_on_close`](Self::get_level_for_check_on_close)
     /// when enabled and an index exists, then closes the delegate.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         if self.is_open.swap(false, Ordering::SeqCst)
             && self.get_check_index_on_close()
             && index_exists(self)?
@@ -173,16 +171,8 @@ impl Directory for BaseDirectoryWrapper {
                 self.get_level_for_check_on_close(),
             )?;
         }
-        Arc::get_mut(&mut self.delegate)
-            .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::IllegalState {
-                    message:
-                        "BaseDirectoryWrapper: the delegate is still shared and cannot be closed"
-                            .to_string(),
-                    cause: None,
-                })
-            })?
-            .close()
+        // `super.close()`: `FilterDirectory.close()`, `in.close()`.
+        self.delegate.close()
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {

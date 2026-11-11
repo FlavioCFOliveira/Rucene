@@ -39,6 +39,7 @@ use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{segment_file_name, FieldInfos};
+use crate::store::SharedIndexInput;
 use crate::store::{DataInput, Directory, IndexInput, IndexOutput};
 use crate::util::bkd::{BKDConfig, BKDFinalizer, BKDReader, BKDSplitOverride, BKDWriter};
 use crate::util::IOUtils;
@@ -645,8 +646,12 @@ pub(crate) mod merge_path_probe {
 pub struct Lucene90PointsReader {
     readers: HashMap<i32, BkdPointValues>,
     field_infos: FieldInfos,
-    index_in: Box<dyn IndexInput>,
-    data_in: Box<dyn IndexInput>,
+    /// `indexIn` and `dataIn`, shared with the merge instances (Java's
+    /// `getMergeInstance()` is `this`) and closed in place by `close()`.
+    index_in: Arc<SharedIndexInput>,
+    data_in: Arc<SharedIndexInput>,
+    /// Java's `readers.clear()` in `close()`, seen by the merge instances too.
+    readers_cleared: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Lucene90PointsReader {
@@ -665,8 +670,9 @@ impl Lucene90PointsReader {
                 Ok(Self {
                     readers,
                     field_infos: state.field_infos.clone(),
-                    index_in: index_in.expect(expect),
-                    data_in: data_in.expect(expect),
+                    index_in: Arc::new(SharedIndexInput::new(index_in.expect(expect))),
+                    data_in: Arc::new(SharedIndexInput::new(data_in.expect(expect))),
+                    readers_cleared: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })
             }
             Err(error) => {
@@ -813,6 +819,13 @@ impl PointsReader for Lucene90PointsReader {
                 "field=\"{field}\" did not index point values"
             )));
         }
+        if self
+            .readers_cleared
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            // `readers.get(fieldInfo.number)` on the map `close()` cleared.
+            return Ok(None);
+        }
         Ok(self
             .readers
             .get(&field_info.number)
@@ -829,24 +842,26 @@ impl PointsReader for Lucene90PointsReader {
     /// inherits `PointsReader.getMergeInstance()`, which returns `this`
     /// (`PointsReader.java:56-58`). Rust hands out an owned box, so this shares the
     /// per-field trees — each [`BkdPointValues`] clone reads the same bytes —
-    /// and clones the two inputs, which is the closest owned equivalent of
-    /// returning the reader itself.
+    /// and the two inputs, which is the closest owned equivalent of returning
+    /// the reader itself.
     fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
         Ok(Box::new(Self {
             readers: self.readers.clone(),
             field_infos: self.field_infos.clone(),
-            index_in: self.index_in.clone_input()?,
-            data_in: self.data_in.clone_input()?,
+            index_in: Arc::clone(&self.index_in),
+            data_in: Arc::clone(&self.data_in),
+            readers_cleared: Arc::clone(&self.readers_cleared),
         }))
     }
 
     /// Equivalent to `Lucene90PointsReader.close()`
     /// (`Lucene90PointsReader.java:154-159`): `IOUtils.close(indexIn,
     /// dataIn)`, then the readers are cleared.
-    fn close(&mut self) -> Result<()> {
-        IOUtils::close([&mut self.index_in, &mut self.data_in].map(|i| Some(move || i.close())))?;
+    fn close(&self) -> Result<()> {
+        IOUtils::close([&self.index_in, &self.data_in].map(|i| Some(move || i.close())))?;
         // Free up heap:
-        self.readers.clear();
+        self.readers_cleared
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
@@ -1174,7 +1189,7 @@ mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1301,7 +1316,7 @@ mod tests {
         fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
             unreachable!()
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -2113,7 +2128,7 @@ mod close_family_tests {
         let info = test_segment_info("_0", 10);
         let fis = FieldInfos::default();
         write_empty(&dir, &info, &fis);
-        let mut reader = Lucene90PointsReader::new(&read_state(&*dir, &info, &fis)).unwrap();
+        let reader = Lucene90PointsReader::new(&read_state(&*dir, &info, &fis)).unwrap();
         let before = log.closed().len();
         log.fail_close("_0.kdi");
         let error = reader.close().unwrap_err();

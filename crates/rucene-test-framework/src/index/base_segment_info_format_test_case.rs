@@ -203,7 +203,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testFiles()`: test files map.
     fn test_files(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = self.get_codec();
             let id = StringHelper::random_id();
@@ -237,7 +237,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             self.supports_has_blocks(),
         );
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = self.get_codec();
             let id = StringHelper::random_id();
@@ -266,7 +266,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testAddsSelfToFiles()`: tests SI writer adds itself to files...
     fn test_adds_self_to_files(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = self.get_codec();
             let id = StringHelper::random_id();
@@ -310,7 +310,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testDiagnostics()`: test diagnostics map.
     fn test_diagnostics(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = self.get_codec();
             let id = StringHelper::random_id();
@@ -345,7 +345,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testAttributes()`: test attributes map.
     fn test_attributes(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = self.get_codec();
             let id = StringHelper::random_id();
@@ -384,7 +384,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testUniqueID()`: test unique ID.
     fn test_unique_id(&self) -> Result<()> {
         let codec = self.get_codec();
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let id = StringHelper::random_id();
             let info = self.new_info(
@@ -415,7 +415,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
         let codec = self.get_codec();
         for v in self.get_versions() {
             for min_v in [Some(v), None] {
-                let mut dir = LuceneTestCase::new_directory();
+                let dir = LuceneTestCase::new_directory();
                 {
                     let id = StringHelper::random_id();
                     let info = SegmentInfo::new(
@@ -603,7 +603,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                 Sort::new_fields(sort_fields)?
             };
 
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let codec = self.get_codec();
                 let id = StringHelper::random_id();
@@ -665,7 +665,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception immediately on open. make sure we get our exception back, no
     /// file handle leaks, etc.
     fn test_exception_on_create_output(&self) -> Result<()> {
-        let (mut dir, fail, info, _id) = self.exception_fixture("create_output");
+        let (dir, fail, info, _id) = self.exception_fixture("create_output");
         {
             let codec = self.get_codec();
 
@@ -685,7 +685,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception on close. make sure we get our exception back, no file handle
     /// leaks, etc.
     fn test_exception_on_close_output(&self) -> Result<()> {
-        let (mut dir, fail, info, _id) = self.exception_fixture("close");
+        let (dir, fail, info, _id) = self.exception_fixture("close");
         {
             let codec = self.get_codec();
 
@@ -705,7 +705,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception immediately on open. make sure we get our exception back, no
     /// file handle leaks, etc.
     fn test_exception_on_open_input(&self) -> Result<()> {
-        let (mut dir, fail, info, id) = self.exception_fixture("open_input");
+        let (dir, fail, info, id) = self.exception_fixture("open_input");
         {
             let codec = self.get_codec();
             codec
@@ -731,7 +731,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception on close make sure we get our exception back, no file handle
     /// leaks, etc.
     fn test_exception_on_close_input(&self) -> Result<()> {
-        let (mut dir, fail, info, id) = self.exception_fixture("close");
+        let (dir, fail, info, id) = self.exception_fixture("close");
         {
             let codec = self.get_codec();
             codec
@@ -759,7 +759,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
         let codec = self.get_codec();
         let versions = self.get_versions();
         for _ in 0..10 {
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 // Java's `dir`: one handle, so `assertSame(expected.dir,
                 // actual.dir)` compares the same reference.

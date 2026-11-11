@@ -42,7 +42,7 @@ pub trait NormsProducer: Send + Sync + fmt::Debug {
     fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>>;
 
     /// Closes this producer, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 }
 
 // -----------------------------------------------------------------------------
@@ -150,7 +150,7 @@ impl NormsProducer for EmptyNormsProducer {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -220,7 +220,7 @@ mod tests {
     fn empty_norms_producer_returns_empty_values() {
         use crate::search::DocIdSetIterator;
 
-        let mut producer = EmptyNormsProducer;
+        let producer = EmptyNormsProducer;
         let field = FieldInfo::default();
         let mut values = producer.get_norms(&field).unwrap().unwrap();
         assert_eq!(values.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
@@ -333,7 +333,7 @@ impl NormsProducer for MergedNormsProducer<'_> {
         ))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

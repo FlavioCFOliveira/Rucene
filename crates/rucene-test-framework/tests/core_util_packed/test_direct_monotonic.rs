@@ -123,7 +123,7 @@ fn get_instance(
 }
 
 fn test_empty() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let block_shift = TestUtil::next_int(
         &*random(),
@@ -147,7 +147,7 @@ fn test_empty() -> Result<()> {
 }
 
 fn test_simple() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let block_shift = 2;
 
@@ -173,7 +173,7 @@ fn test_simple() -> Result<()> {
 }
 
 fn test_constant_slope() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let block_shift = TestUtil::next_int(
         &*random(),
@@ -209,7 +209,7 @@ fn test_constant_slope() -> Result<()> {
 }
 
 fn test_zero_values_small_blob_shift() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_values = TestUtil::next_int(&*random(), 8, 1 << 20);
     // use blockShift < log2(numValues)
@@ -271,7 +271,7 @@ fn do_test_random(merging: bool) -> Result<()> {
     let random = random();
     let iters = LuceneTestCase::at_least_with(&*random, 3);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         let block_shift = TestUtil::next_int(
             &*random,
@@ -318,7 +318,7 @@ fn do_test_random(merging: bool) -> Result<()> {
 }
 
 fn test_monotonic_binary_search() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let result = do_test_monotonic_binary_search_against_long_array(
         &d,
@@ -330,7 +330,7 @@ fn test_monotonic_binary_search() -> Result<()> {
 }
 
 fn test_monotonic_binary_search_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let result = (|| -> Result<()> {
         let iters = LuceneTestCase::at_least(100);

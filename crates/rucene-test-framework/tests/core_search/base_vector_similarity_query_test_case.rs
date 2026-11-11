@@ -537,7 +537,7 @@ fn with_index<C: VectorSimilarityCase, T>(
     vectors: &[C::V],
     body: impl FnOnce(&Arc<dyn DirectoryReader>) -> Result<T>,
 ) -> Result<T> {
-    let mut index_store = get_index_store(f, vectors)?;
+    let index_store = get_index_store(f, vectors)?;
     let reader = directory_reader::open(index_store.as_directory())?;
     let result = body(&reader);
     reader.close()?;
@@ -783,7 +783,7 @@ fn test_some_deletes<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>
     let delete = IntField::new_range_query(f.id_field(), start_index, end_index)?;
 
     let vectors = get_random_vectors::<C>(f.num_docs, f.dim);
-    let mut index_store = get_index_store(f, &vectors)?;
+    let index_store = get_index_store(f, &vectors)?;
     let w = IndexWriter::new(
         index_store.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -830,7 +830,7 @@ fn test_some_deletes<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>
 
 fn test_all_deletes<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>) -> Result<()> {
     let vectors = get_random_vectors::<C>(f.num_docs, f.dim);
-    let mut dir = get_index_store(f, &vectors)?;
+    let dir = get_index_store(f, &vectors)?;
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -1008,7 +1008,7 @@ fn test_approximate<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>)
     let result_similarity = get_similarity(f, &vectors, &query_vector, target_visited);
     let filter = IntField::new_set_query(f.id_field(), &get_filtered(f, num_filtered))?;
 
-    let mut index_store = get_index_store(f, &vectors)?;
+    let index_store = get_index_store(f, &vectors)?;
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_codec(hnsw_codec())?;
     let w = IndexWriter::new(index_store.as_directory(), iwc)?;

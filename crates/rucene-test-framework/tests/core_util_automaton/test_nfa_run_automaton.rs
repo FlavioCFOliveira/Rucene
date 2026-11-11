@@ -141,7 +141,7 @@ fn assert_random_access_transition(
 fn test_random_automaton_query() -> Result<()> {
     let doc_num = 50;
     let automaton_num = 50;
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     let mut vocab: JavaHashSet<String> = JavaHashSet::new();
     let mut per_doc_vocab: JavaHashSet<String> = JavaHashSet::new();

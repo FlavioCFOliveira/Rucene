@@ -436,7 +436,7 @@ fn read_everything_unguarded(
 ) {
     let context = &*DEFAULT_IO_CONTEXT;
     let state = SegmentReadState::new(&**directory, info, field_infos, context);
-    let Ok(mut reader) = codec().knn_vectors_format().fields_reader(&state) else {
+    let Ok(reader) = codec().knn_vectors_format().fields_reader(&state) else {
         return;
     };
     let _ = reader.check_integrity();

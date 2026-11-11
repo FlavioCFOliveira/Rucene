@@ -58,7 +58,7 @@ use randomizedtesting::jdk::reflect::{modifier, Class, Method};
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
 use randomizedtesting::RandomizedTest;
-use rucene::error::{LuceneError, Result};
+use rucene::error::Result;
 use rucene::index::directory_reader;
 use rucene::index::index_file_names::segment_file_name;
 use rucene::store::java_nio_file::{Files, Path};
@@ -245,7 +245,7 @@ fn java_bytes(bytes: &[u8]) -> Vec<i8> {
 /// The try-with-resources of a directory: `body` runs on it, then it is
 /// closed; the body's failure comes first.
 pub fn with_directory(
-    mut dir: Box<dyn Directory>,
+    dir: Box<dyn Directory>,
     body: impl FnOnce(&dyn Directory) -> Result<()>,
 ) -> Result<()> {
     // Java's try-with-resources closes the resource on any throwable, an
@@ -258,18 +258,13 @@ pub fn with_directory(
     }
 }
 
-/// Closes a directory shared through an `Arc` once every sharer is gone.
+/// Closes a directory shared through an `Arc`: Java's `dir.close()`.
 ///
 /// # Errors
 ///
-/// What `close()` throws; `IllegalStateException` while a sharer remains.
-pub fn close_shared(mut dir: Arc<dyn Directory>) -> Result<()> {
-    match Arc::get_mut(&mut dir) {
-        Some(dir) => dir.close(),
-        None => Err(LuceneError::illegal_state(
-            "the directory is still shared and cannot be closed",
-        )),
-    }
+/// What `close()` throws.
+pub fn close_shared(dir: Arc<dyn Directory>) -> Result<()> {
+    dir.close()
 }
 
 /// The try-with-resources of an input or output: closed after `body`.
@@ -322,17 +317,17 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
         {
             let source = self.get_directory(&temp_dir("testCopy"))?;
             let dest = OwnedTestDirectory::new(LuceneTestCase::new_directory());
-            let mut dest: Box<dyn Directory> = Box::new(dest);
+            let dest: Box<dyn Directory> = Box::new(dest);
             let result = run_copy_from(&*source, &*dest);
             let closed = dest.close();
-            let mut source = source;
+            let source = source;
             let closed_source = source.close();
             result.and(closed).and(closed_source)?;
         }
         {
-            let mut source: Box<dyn Directory> =
+            let source: Box<dyn Directory> =
                 Box::new(OwnedTestDirectory::new(LuceneTestCase::new_directory()));
-            let mut dest = self.get_directory(&temp_dir("testCopyDestination"))?;
+            let dest = self.get_directory(&temp_dir("testCopyDestination"))?;
             let result = run_copy_from(&*source, &*dest);
             let closed = dest.close();
             let closed_source = source.close();
@@ -877,7 +872,7 @@ pub trait BaseDirectoryTestCase: Send + Sync + 'static {
     /// `testDetectClose()`: make sure directory throws AlreadyClosedException
     /// if you try to createOutput after closing.
     fn test_detect_close(&self) -> Result<()> {
-        let mut dir = self.get_directory(&temp_dir("testDetectClose"))?;
+        let dir = self.get_directory(&temp_dir("testDetectClose"))?;
         dir.close()?;
         expect_throws("org.apache.lucene.store.AlreadyClosedException", || {
             dir.create_output("test", &*io_context())
@@ -2332,7 +2327,7 @@ impl Directory for OwnedTestDirectory {
         self.get().obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 

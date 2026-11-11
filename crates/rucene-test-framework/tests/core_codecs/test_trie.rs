@@ -188,7 +188,7 @@ fn test_trie_lookup(random_bytes_supplier: &dyn Fn() -> Vec<u8>, round: i32) -> 
             trie_builder.append(&add)?;
         }
 
-        let mut directory = LuceneTestCase::new_directory();
+        let directory = LuceneTestCase::new_directory();
         {
             let dir = directory.as_directory();
             {

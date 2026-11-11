@@ -469,7 +469,7 @@ macro_rules! empty_producer_methods {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     };

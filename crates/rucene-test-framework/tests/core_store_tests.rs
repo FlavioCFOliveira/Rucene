@@ -1417,7 +1417,7 @@ impl BaseDataOutputTestCase for TestFilterIndexOutput {
 
 /// `TestFilterIndexOutput.testUnwrap()`.
 fn filter_index_output_test_unwrap() -> Result<()> {
-    let mut dir = FSDirectory::open(LuceneTestCase::create_temp_dir())?;
+    let dir = FSDirectory::open(LuceneTestCase::create_temp_dir())?;
     let output = dir.create_output("test", &*DEFAULT_IO_CONTEXT)?;
     let output_ptr = &*output as *const dyn IndexOutput as *const ();
     let mut filter_index_output =
@@ -1730,7 +1730,9 @@ fn bb_input_test_eof_on_array_read_past_buffer_size() -> Result<()> {
 /// **Divergence from Lucene 10.5.0.** Java simulates a "large" (> 4GB)
 /// input by duplicating one 4 MB `ByteBuffer` (sharing its storage); Rucene's
 /// `ByteBuffersDataInput` owns `Vec<u8>` blocks, so each duplicate is a copy
-/// of the page (the same content, its limit and the head shift applied).
+/// of the page (the same content, its limit applied); the head shift, Java's
+/// `buffers.get(0).position(shift)`, is the first-buffer position given to
+/// `ByteBuffersDataInput::with_first_position`.
 fn bb_input_test_slicing_large_buffers() -> Result<()> {
     // Simulate a "large" (> 4GB) input by duplicating
     // buffers with the same content.
@@ -1752,9 +1754,7 @@ fn bb_input_test_slicing_large_buffers() -> Result<()> {
         remaining -= bb.len() as i64;
         buffers.push(bb);
     }
-    buffers[0].drain(..shift);
-
-    let dst = ByteBuffersDataInput::new(buffers)?;
+    let dst = ByteBuffersDataInput::with_first_position(buffers, shift)?;
     Assert::assert_equals(simulated_length, dst.length() as i64);
 
     let max = dst.length() as i64;
@@ -1834,7 +1834,7 @@ fn byte_buffers_data_input_class() -> Arc<Class> {
 fn checksum_index_input_test_skip_bytes() -> Result<()> {
     let num_test_bytes = TestUtil::next_int(&*random(), 100, 1000) as usize;
     let test_bytes = vec![0u8; num_test_bytes];
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut os = dir
         .as_directory()
         .create_output("foo", &*LuceneTestCase::new_io_context(&*random()))?;
@@ -2062,7 +2062,7 @@ fn directory_test_direct_instantiation() -> Result<()> {
 /// `TestDirectory.testNotDirectory()` (LUCENE-1468).
 fn directory_test_not_directory() -> Result<()> {
     let path = LuceneTestCase::create_temp_dir_prefix("testnotdir");
-    let mut fs_dir = NIOFSDirectory::open(&path)?;
+    let fs_dir = NIOFSDirectory::open(&path)?;
     let result = (|| -> Result<()> {
         let mut out =
             fs_dir.create_output("afile", &*LuceneTestCase::new_io_context(&*random()))?;
@@ -2082,7 +2082,10 @@ fn directory_test_list_all() -> Result<()> {
     let dir = LuceneTestCase::create_temp_dir_prefix("testdir");
     LuceneTestCase::assume_false(
         "this test does not expect extra files",
-        dir.get_file_system().provider().get_scheme() == "extras",
+        dir.get_file_system()
+            .provider()
+            .as_any()
+            .is::<rucene_test_framework::mockfile::ExtrasFS>(),
     );
     let file1 = Files::create_file(&dir.resolve_str("tempfile1"))?;
     let file2 = Files::create_file(&dir.resolve_str("tempfile2"))?;

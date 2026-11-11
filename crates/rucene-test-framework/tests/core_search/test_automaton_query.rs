@@ -109,7 +109,7 @@ pub fn tear_down_fixture(f: &mut AutomatonFixture) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut directory) = f.directory.take() {
+    if let Some(directory) = f.directory.take() {
         directory.close()?;
     }
     Ok(())

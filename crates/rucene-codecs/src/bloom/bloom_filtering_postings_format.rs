@@ -315,7 +315,7 @@ impl FieldsProducer for BloomFilteredFieldsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.delegate_fields_producer.close()
     }
 }

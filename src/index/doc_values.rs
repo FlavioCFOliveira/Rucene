@@ -1755,7 +1755,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     /// # Errors
     ///
     /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Err(Self::unsupported("close"))
     }
 }
@@ -3291,7 +3291,7 @@ mod tests {
         assert!(unsupported(producer.get_sorted_set(&field)));
         assert!(unsupported(producer.get_skipper(&field)));
         assert!(unsupported(producer.check_integrity()));
-        let mut clone = producer.get_merge_instance().unwrap();
+        let clone = producer.get_merge_instance().unwrap();
         assert!(unsupported(clone.close()));
     }
 

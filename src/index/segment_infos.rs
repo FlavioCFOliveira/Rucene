@@ -209,13 +209,9 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.remove(SegmentCommitInfo)`, which finds the
     /// segment by `List.remove(Object)`. `SegmentCommitInfo` does not override
-    /// `equals`, so Java matches the very instance the writer holds, whatever
-    /// its delete counts and generations are at the time. This port hands out
-    /// clones (the reader pool keeps its own copy of each segment), so the
-    /// instance is recognised by its segment name, which is unique within one
-    /// `SegmentInfos`. Comparing by value instead would miss a segment whose
-    /// pooled copy has a different delete count than the writer's, and leave it
-    /// in the index after its reader was dropped.
+    /// `equals`, so Java matches the very instance, whatever its delete counts
+    /// and generations are at the time; so does this port, as every holder of
+    /// a commit info shares one object (see [`SegmentCommitInfo`]).
     ///
     /// # Warning
     ///
@@ -252,16 +248,14 @@ impl SegmentInfos {
 
     /// Returns the index of the provided `SegmentCommitInfo`, or `None`.
     ///
-    /// Equivalent to `SegmentInfos.indexOf(SegmentCommitInfo)`; the segment is
-    /// recognised by its name, as [`remove`](Self::remove) explains.
+    /// Equivalent to `SegmentInfos.indexOf(SegmentCommitInfo)`: the very
+    /// instance, as [`remove`](Self::remove) explains.
     ///
     /// # Warning
     ///
     /// O(N) cost.
     pub fn index_of(&self, si: &SegmentCommitInfo) -> Option<usize> {
-        self.segments
-            .iter()
-            .position(|s| s.info.name == si.info.name)
+        self.segments.iter().position(|s| s.same_object(si))
     }
 
     /// Returns an iterator over the contained segments.
@@ -870,7 +864,7 @@ impl SegmentInfos {
                 StringHelper::random_id()
             };
 
-            let mut si_per_commit = SegmentCommitInfo::new(
+            let si_per_commit = SegmentCommitInfo::new(
                 info,
                 del_count,
                 soft_del_count,
@@ -1278,7 +1272,7 @@ impl SegmentInfos {
             let sci_id = si_per_commit.id();
             out.write_bytes(&sci_id, 0, sci_id.len())?;
 
-            out.write_set_of_strings(si_per_commit.get_field_infos_files())?;
+            out.write_set_of_strings(&si_per_commit.get_field_infos_files())?;
             let dv_updates_files = si_per_commit.get_doc_values_updates_files();
             codec_util::write_be_int(out, dv_updates_files.len() as i32)?;
             for (field_number, files) in dv_updates_files.iter() {
@@ -1363,6 +1357,33 @@ impl SegmentInfos {
     }
 }
 
+impl SegmentInfos {
+    /// Another handle on this `SegmentInfos` holding the very same segment
+    /// commit infos, where Java passes the `SegmentInfos` object itself.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java hands the one
+    /// object around by reference; a Rust value cannot alias the writer's
+    /// guarded field, so a caller that Java gives the object itself (a reader
+    /// opened over the writer, `IndexWriter.java:593-609`) gets this copy of
+    /// the list, whose entries are the same objects (see
+    /// [`SegmentCommitInfo`]). [`Clone`] is Java's `clone()`.
+    pub fn shallow_copy(&self) -> Self {
+        Self {
+            generation: self.generation,
+            last_generation: self.last_generation,
+            counter: self.counter,
+            version: self.version,
+            user_data: self.user_data.clone(),
+            segments: self.segments.to_vec(),
+            id: self.id,
+            lucene_version: self.lucene_version,
+            min_segment_lucene_version: self.min_segment_lucene_version,
+            index_created_version_major: self.index_created_version_major,
+            pending_commit: self.pending_commit,
+        }
+    }
+}
+
 impl Clone for SegmentInfos {
     fn clone(&self) -> Self {
         // `SegmentInfos.java:715`, per cloned segment.
@@ -1373,7 +1394,12 @@ impl Clone for SegmentInfos {
             counter: self.counter,
             version: self.version,
             user_data: self.user_data.clone(),
-            segments: self.segments.to_vec(),
+            // `sis.add(info.clone())` per segment (`SegmentInfos.java:711-717`).
+            segments: self
+                .segments
+                .iter()
+                .map(SegmentCommitInfo::java_clone)
+                .collect(),
             id: self.id,
             lucene_version: self.lucene_version,
             min_segment_lucene_version: self.min_segment_lucene_version,
@@ -1682,7 +1708,11 @@ mod tests {
         assert_eq!(cloned.size(), 1);
         assert_eq!(cloned.generation(), sis.generation());
         assert_eq!(cloned.id(), sis.id());
-        cloned.remove(&sci);
+        // `SegmentInfos.clone()` clones every segment: the original instance is
+        // not in the copy, which removes only its own.
+        assert!(!cloned.remove(&sci));
+        let own = cloned.info(0).clone();
+        assert!(cloned.remove(&own));
         assert_eq!(cloned.size(), 0);
         assert_eq!(sis.size(), 1);
     }
@@ -2078,7 +2108,11 @@ impl SegmentInfos {
     pub fn create_backup_segment_infos(&self) -> Vec<SegmentCommitInfo> {
         // `SegmentInfos.java:1126`, per backed-up segment.
         debug_assert!(self.segments.iter().all(|info| info.info.codec().is_some()));
-        self.segments.to_vec()
+        // `list.add(info.clone())` (`SegmentInfos.java:1127`).
+        self.segments
+            .iter()
+            .map(SegmentCommitInfo::java_clone)
+            .collect()
     }
 }
 

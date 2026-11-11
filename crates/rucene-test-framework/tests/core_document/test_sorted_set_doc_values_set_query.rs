@@ -39,7 +39,7 @@ fn br(s: &str) -> BytesRef {
 /// Port of `testMissingTerms`.
 fn test_missing_terms() -> Result<()> {
     let field_name = "field1";
-    let mut rd = LuceneTestCase::new_directory();
+    let rd = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), rd.as_directory())?;
     for i in 0..100 {
         let mut doc = Document::new();
@@ -129,7 +129,7 @@ fn duel(filtered: bool) -> Result<()> {
             let value = TestUtil::random_analysis_string(&*random(), 10, true);
             all_terms.push(Term::from_text("f", &value));
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let num_docs = LuceneTestCase::at_least(100);
         for _i in 0..num_docs {

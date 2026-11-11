@@ -20,7 +20,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestNewestSegment.testNewestSegment`.
 fn test_newest_segment() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(

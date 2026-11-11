@@ -60,7 +60,7 @@ fn range_merge_policy(writer: &IndexWriter) -> Arc<dyn MergePolicy> {
 /// Port of `TestPerSegmentDeletes.testDeletes1`.
 fn test_deletes1() -> Result<()> {
     // IndexWriter.debug2 = System.out;
-    let mut dir = MockDirectoryWrapper::new(
+    let dir = MockDirectoryWrapper::new(
         &JdkRandom::new(random().next_long()),
         Arc::new(ByteBuffersDirectory::new()),
     );

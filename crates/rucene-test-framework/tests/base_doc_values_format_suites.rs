@@ -283,7 +283,7 @@ fn asserting_default_doc_values_format() -> Arc<dyn DocValuesFormat> {
 fn test_two_fields_two_formats() -> Result<()> {
     let analyzer = Arc::new(MockAnalyzer::new(&*LuceneTestCase::random()));
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     // we don't use RandomIndexWriter because it might add more docvalues than we expect !!!!1
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     let fast = TestUtil::get_default_doc_values_format();
@@ -400,7 +400,7 @@ fn test_merge_called_on_two_formats() -> Result<()> {
         },
     )))?;
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
 
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
 
@@ -452,7 +452,7 @@ fn test_doc_values_merge_with_indexed_fields() -> Result<()> {
         move |_field: &str| Arc::clone(&format),
     )))?;
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
 
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
 

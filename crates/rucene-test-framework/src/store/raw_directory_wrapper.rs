@@ -111,7 +111,7 @@ impl Directory for RawDirectoryWrapper {
     }
 
     /// `BaseDirectoryWrapper.close()`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.base.close()
     }
 

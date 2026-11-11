@@ -335,7 +335,7 @@ impl FieldsProducer for RAMPostingsProducer {
         Ok(Box::new(RAMPostingsProducer(Arc::clone(&self.0))))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -382,7 +382,7 @@ impl FieldsProducer for MissingPostings {
         ))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

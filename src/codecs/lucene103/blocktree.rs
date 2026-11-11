@@ -31,7 +31,7 @@ use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
 use crate::store::{
     ByteArrayDataOutput, ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput,
-    IndexInput, IndexOutput,
+    IndexOutput, SharedIndexInput,
 };
 use crate::util::compress::{
     HighCompressionHashTable, LowercaseAsciiCompression, Lz4, Lz4HashTable,
@@ -2298,31 +2298,25 @@ impl Lucene103BlockTreeTermsReader {
     ) -> Result<Self> {
         let mut postings_reader: Arc<dyn PostingsReaderBase> = Arc::from(postings_reader);
         // `indexIn` and `termsIn`, once opened.
-        let mut inputs: [Option<Arc<dyn IndexInput>>; 2] = [None, None];
+        let mut inputs: [Option<Arc<SharedIndexInput>>; 2] = [None, None];
         let error = match Self::open(&mut postings_reader, &mut inputs, state) {
             Ok(reader) => return Ok(reader),
             Err(error) => error,
         };
-        // `open` has dropped every other holder of the inputs and the reader.
-        let [index_in, terms_in] = &mut inputs;
+        let [index_in, terms_in] = &inputs;
         let this_closed = IOUtils::close_while_handling_exception([Some(|| {
             IOUtils::close([
                 index_in
-                    .as_mut()
-                    .and_then(Arc::get_mut)
+                    .as_ref()
                     .and_then(|i| IOUtils::closeable(move || i.close())),
                 terms_in
-                    .as_mut()
-                    .and_then(Arc::get_mut)
+                    .as_ref()
                     .and_then(|i| IOUtils::closeable(move || i.close())),
-                Arc::get_mut(&mut postings_reader)
-                    .and_then(|r| IOUtils::closeable(move || r.close())),
+                IOUtils::closeable(|| postings_reader.close()),
             ])
         })]);
         let caller_closed =
-            IOUtils::close_while_handling_exception([
-                Arc::get_mut(&mut postings_reader).map(|r| move || r.close())
-            ]);
+            IOUtils::close_while_handling_exception([Some(|| postings_reader.close())]);
         caller_closed?;
         this_closed?;
         Err(error)
@@ -2332,14 +2326,14 @@ impl Lucene103BlockTreeTermsReader {
     /// `inputs` (index, terms) and reads the metadata.
     fn open(
         postings_reader: &mut Arc<dyn PostingsReaderBase>,
-        inputs: &mut [Option<Arc<dyn IndexInput>>; 2],
+        inputs: &mut [Option<Arc<SharedIndexInput>>; 2],
         state: &SegmentReadState,
     ) -> Result<Self> {
         let segment = state.segment_info.name.clone();
         let segment_suffix = state.segment_suffix.clone();
 
         let terms_name = segment_file_name(&segment, &segment_suffix, TERMS_EXTENSION);
-        let terms_in = inputs[1].insert(Arc::from(
+        let terms_in = inputs[1].insert(Arc::new(SharedIndexInput::new(
             // `state.context.withHints(FileTypeHint.DATA)`
             // (`Lucene103BlockTreeTermsReader.java:117`).
             state.directory.open_input(
@@ -2349,9 +2343,9 @@ impl Lucene103BlockTreeTermsReader {
                     .with_hints(&[Arc::new(crate::store::FileTypeHint::Data)])
                     .as_ref(),
             )?,
-        ));
+        )));
         let version = codec_util::check_index_header(
-            Arc::get_mut(terms_in).expect("INVARIANT: not shared yet"),
+            &mut **terms_in.write(),
             TERMS_CODEC_NAME,
             VERSION_START,
             VERSION_CURRENT,
@@ -2360,7 +2354,7 @@ impl Lucene103BlockTreeTermsReader {
         )?;
 
         let index_name = segment_file_name(&segment, &segment_suffix, TERMS_INDEX_EXTENSION);
-        let index_in = inputs[0].insert(Arc::from(
+        let index_in = inputs[0].insert(Arc::new(SharedIndexInput::new(
             // `state.context.withHints(FileTypeHint.INDEX)`
             // (`Lucene103BlockTreeTermsReader.java:129`).
             state.directory.open_input(
@@ -2370,9 +2364,9 @@ impl Lucene103BlockTreeTermsReader {
                     .with_hints(&[Arc::new(crate::store::FileTypeHint::Index)])
                     .as_ref(),
             )?,
-        ));
+        )));
         codec_util::check_index_header(
-            Arc::get_mut(index_in).expect("INVARIANT: not shared yet"),
+            &mut **index_in.write(),
             TERMS_INDEX_CODEC_NAME,
             version,
             version,
@@ -2406,7 +2400,7 @@ impl Lucene103BlockTreeTermsReader {
                 segment: segment.clone(),
                 version,
                 postings_reader: Arc::clone(postings_reader),
-                closed: false,
+                fields_cleared: std::sync::atomic::AtomicBool::new(false),
             });
 
             let num_fields = meta_in.read_v_int()?;
@@ -2600,12 +2594,27 @@ fn read_bytes_ref(input: &mut dyn DataInput, resource: &str) -> Result<BytesRef>
     Ok(BytesRef::new(bytes))
 }
 
+impl Lucene103BlockTreeTermsReader {
+    /// Whether `close()` cleared `fieldMap`.
+    fn fields_cleared(&self) -> bool {
+        self.shared
+            .fields_cleared
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 impl Fields for Lucene103BlockTreeTermsReader {
     fn size(&self) -> i32 {
+        if self.fields_cleared() {
+            return 0;
+        }
         self.fields.len() as i32
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        if self.fields_cleared() {
+            return Ok(None);
+        }
         Ok(self
             .fields
             .get(field)
@@ -2613,6 +2622,9 @@ impl Fields for Lucene103BlockTreeTermsReader {
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        if self.fields_cleared() {
+            return Box::new(std::iter::empty());
+        }
         Box::new(self.field_list.iter().cloned())
     }
 }
@@ -2624,10 +2636,10 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
     /// postings reader's.
     fn check_integrity(&self) -> Result<()> {
         // terms index
-        codec_util::checksum_entire_file_shared(&*self.shared.index_in)?;
+        codec_util::checksum_entire_file_shared(&**self.shared.index_in.read())?;
 
         // term dictionary
-        codec_util::checksum_entire_file_shared(&*self.shared.terms_in)?;
+        codec_util::checksum_entire_file_shared(&**self.shared.terms_in.read())?;
 
         // postings
         self.shared.postings_reader.check_integrity()
@@ -2658,27 +2670,21 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
     /// `IOUtils.close(indexIn, termsIn, postingsReader)`, then `fieldMap` is
     /// cleared.
     ///
-    /// **Divergence from Lucene 10.5.0.** The three are shared behind `Arc`s —
-    /// the same sharing Java has, only made explicit — and `close` needs
-    /// `&mut`, which no holder of a shared reference can give. The field
-    /// readers are dropped first, which no caller can observe, and each of the
-    /// three is closed only when this reader is its last holder; otherwise it
-    /// is closed by [`BlockTreeShared`]'s `Drop` when the last `TermsEnum` (or
-    /// merge instance) goes away. The files are closed once nothing is reading them, and
-    /// unlike Java this cannot pull a file out from under a live `TermsEnum`.
-    fn close(&mut self) -> Result<()> {
-        self.fields.clear();
-        self.field_list.clear();
-        let Some(shared) = Arc::get_mut(&mut self.shared) else {
-            return Ok(());
-        };
-        shared.closed = true;
-        IOUtils::close([
-            Arc::get_mut(&mut shared.index_in).and_then(|i| IOUtils::closeable(move || i.close())),
-            Arc::get_mut(&mut shared.terms_in).and_then(|i| IOUtils::closeable(move || i.close())),
-            Arc::get_mut(&mut shared.postings_reader)
-                .and_then(|r| IOUtils::closeable(move || r.close())),
-        ])
+    /// The three are closed in place, whoever else (a merge instance, a terms
+    /// enum) still shares them, as in Java; clearing `fieldMap` is the
+    /// `fields_cleared` flag, which every holder of the shared state sees.
+    fn close(&self) -> Result<()> {
+        let shared = &self.shared;
+        let closed = IOUtils::close([
+            IOUtils::closeable(|| shared.index_in.close()),
+            IOUtils::closeable(|| shared.terms_in.close()),
+            IOUtils::closeable(|| shared.postings_reader.close()),
+        ]);
+        // `finally { fieldMap.clear(); }`
+        shared
+            .fields_cleared
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        closed
     }
 }
 
@@ -3017,7 +3023,7 @@ mod tests {
             self.inner.obtain_lock(name)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
 
@@ -3521,7 +3527,7 @@ mod tests {
             Ok(())
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -3752,7 +3758,7 @@ mod close_family_tests {
         let fis = FieldInfos::default();
         write_empty_terms(&dir, &info, &fis);
         let before = log.closed().len();
-        let mut producer = Lucene104PostingsFormat::new()
+        let producer = Lucene104PostingsFormat::new()
             .fields_producer(&read_state(&*dir, &info, &fis))
             .unwrap();
         producer.close().unwrap();
@@ -3764,26 +3770,29 @@ mod close_family_tests {
         assert_eq!(closed, ["_0.tip", "_0.tim", "_0.doc"]);
     }
 
-    /// Regression (rmp #351): Java's `getMergeInstance()` is `this`, so
-    /// `close()` closes the files a merge instance reads
-    /// (`FieldsProducer.java:50-53`, `Lucene103BlockTreeTermsReader.java:275-284`).
-    /// Here a merge instance shares them; when the reader is closed first, the
-    /// merge instance closes them when it goes away, each exactly once.
+    /// Java's `getMergeInstance()` is `this`, so `close()` closes the files a
+    /// merge instance reads (`FieldsProducer.java:50-53`,
+    /// `Lucene103BlockTreeTermsReader.java:275-284`); dropping the merge
+    /// instance afterwards closes nothing again.
     #[test]
-    fn a_merge_instance_outliving_close_closes_the_files_once() {
+    fn close_closes_the_files_a_merge_instance_reads() {
         let (dir, _tracking, log) = tracking_directory();
         let info = test_segment_info("_0", 10);
         let fis = FieldInfos::default();
         write_empty_terms(&dir, &info, &fis);
         let before = log.closed().len();
-        let mut producer = Lucene104PostingsFormat::new()
+        let producer = Lucene104PostingsFormat::new()
             .fields_producer(&read_state(&*dir, &info, &fis))
             .unwrap();
         let merge_instance = producer.get_merge_instance().unwrap();
         producer.close().unwrap();
         drop(producer);
         let count = |name: &str| log.closed()[before..].iter().filter(|n| *n == name).count();
-        assert_eq!(count("_0.tim"), 0, "still read by the merge instance");
+        assert_eq!(
+            count("_0.tim"),
+            1,
+            "closed although a merge instance reads it"
+        );
         drop(merge_instance);
         assert_eq!(count("_0.tip"), 1);
         assert_eq!(count("_0.tim"), 1);
@@ -3799,7 +3808,7 @@ mod close_family_tests {
         let fis = FieldInfos::default();
         write_empty_terms(&dir, &info, &fis);
         let before = log.closed().len();
-        let mut producer = Lucene104PostingsFormat::new()
+        let producer = Lucene104PostingsFormat::new()
             .fields_producer(&read_state(&*dir, &info, &fis))
             .unwrap();
         producer.close().unwrap();

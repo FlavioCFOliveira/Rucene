@@ -1160,15 +1160,8 @@ impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegm
 /// the requested type — the norms and doc-values producers answer `None`, as
 /// Java's return that `null`.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's producers `close()` the producers
-/// of the wrapped readers they hold (`IOUtils.close(producers)`). The norms,
-/// doc-values, postings, points and vectors producers of a wrapped reader are
-/// [`Arc`]s it shares with every other holder and closes itself, and a close
-/// needs exclusive access, so the producers built here close through
-/// `IOUtils.close` only the producers they are the last holder of — none,
-/// while the wrapped reader is open; the stored-fields and term-vectors
-/// readers, which each wrapped reader hands out as a fresh instance, are
-/// closed as in Java.
+/// Its producers `close()` the producers of the wrapped readers they hold
+/// (`IOUtils.close(producers)`), whoever else shares them, as Java's do.
 pub struct SlowCompositeCodecReaderWrapper {
     /// This reader's own reference count and identity: Java's wrapper is an
     /// `IndexReader` of its own, distinct from every wrapped reader.
@@ -1708,21 +1701,18 @@ impl StoredFieldsReader for SlowCompositeStoredFieldsReader {
 }
 
 /// `IOUtils.close(producers)` over producers the wrapped readers share with
-/// this one: every producer this one holds last is closed, in order, and the
-/// first failure is returned once all ran; a producer another holder still
-/// shares is left to it (the close divergence of
-/// [`SlowCompositeCodecReaderWrapper`]).
+/// this one: every producer is closed, in order, whoever else shares it, and
+/// the first failure is returned once all ran.
 fn close_shared<T: ?Sized>(
-    producers: &mut [Option<Arc<T>>],
-    close: impl Fn(&mut T) -> Result<()>,
+    producers: &[Option<Arc<T>>],
+    close: impl Fn(&T) -> Result<()>,
 ) -> Result<()> {
     let close = &close;
-    crate::util::IOUtils::close(producers.iter_mut().map(|producer| {
-        producer
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .map(|producer| move || close(producer))
-    }))
+    crate::util::IOUtils::close(
+        producers
+            .iter()
+            .map(|producer| producer.as_deref().map(|producer| move || close(producer))),
+    )
 }
 
 /// Hands every field a wrapped reader visits to `visitor` under the
@@ -1852,8 +1842,7 @@ impl TermVectorsReader for SlowCompositeTermVectorsReader {
 /// Norms of the composite reader, merged by `MultiDocValues.getNormValues`.
 ///
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositeNormsProducer`
-/// (`SlowCompositeCodecReaderWrapper.java:268-292`). The close divergence of
-/// [`SlowCompositeCodecReaderWrapper`] applies.
+/// (`SlowCompositeCodecReaderWrapper.java:268-292`).
 #[derive(Clone)]
 struct SlowCompositeNormsProducer {
     multi_reader: Arc<dyn IndexReader>,
@@ -1885,11 +1874,10 @@ impl NormsProducer for SlowCompositeNormsProducer {
         Ok(Box::new(self.clone()))
     }
 
-    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:285-288`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.producers, |producer| producer.close())
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:285-288`):
+    /// every producer is closed, whoever else shares it.
+    fn close(&self) -> Result<()> {
+        close_shared(&self.producers, |producer| producer.close())
     }
 }
 
@@ -1897,8 +1885,7 @@ impl NormsProducer for SlowCompositeNormsProducer {
 /// ordinal map of each sorted and sorted-set field cached.
 ///
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositeDocValuesProducerWrapper`
-/// (`SlowCompositeCodecReaderWrapper.java:372-462`). The close divergence of
-/// [`SlowCompositeCodecReaderWrapper`] applies.
+/// (`SlowCompositeCodecReaderWrapper.java:372-462`).
 #[derive(Clone)]
 struct SlowCompositeDocValuesProducer {
     readers: Vec<Arc<dyn CodecReader>>,
@@ -2054,11 +2041,10 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
         Ok(Box::new(self.clone()))
     }
 
-    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:397-400`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.producers, |producer| producer.close())
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:397-400`):
+    /// every producer is closed, whoever else shares it.
+    fn close(&self) -> Result<()> {
+        close_shared(&self.producers, |producer| producer.close())
     }
 }
 
@@ -2085,8 +2071,7 @@ impl Fields for SharedFields {
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositeFieldsProducerWrapper`
 /// (`SlowCompositeCodecReaderWrapper.java:473-517`): the `MultiFields` is built
 /// once, in the constructor, and its per-field memo serves every later
-/// `terms(field)`. The close divergence of [`SlowCompositeCodecReaderWrapper`]
-/// applies.
+/// `terms(field)`.
 struct SlowCompositeFieldsProducer {
     producers: Vec<Option<Arc<dyn FieldsProducer>>>,
     /// Equivalent to `SlowCompositeFieldsProducerWrapper.fields`; shared with
@@ -2145,11 +2130,15 @@ impl FieldsProducer for SlowCompositeFieldsProducer {
         }))
     }
 
-    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:525-528`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.producers, |producer| producer.close())
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:525-528`):
+    /// every producer is closed, whoever else shares it, and the first
+    /// failure is returned once all ran.
+    fn close(&self) -> Result<()> {
+        crate::util::IOUtils::close(
+            self.producers
+                .iter()
+                .map(|producer| producer.as_ref().map(|producer| move || producer.close())),
+        )
     }
 }
 
@@ -2157,8 +2146,7 @@ impl FieldsProducer for SlowCompositeFieldsProducer {
 /// every wrapped reader's tree.
 ///
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositePointsReaderWrapper`
-/// (`SlowCompositeCodecReaderWrapper.java:531-788`). The close divergence of
-/// [`SlowCompositeCodecReaderWrapper`] applies.
+/// (`SlowCompositeCodecReaderWrapper.java:531-788`).
 #[derive(Clone)]
 struct SlowCompositePointsReader {
     readers: Vec<Arc<dyn CodecReader>>,
@@ -2220,11 +2208,10 @@ impl PointsReader for SlowCompositePointsReader {
         Ok(Box::new(self.clone()))
     }
 
-    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:582-585`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.points_readers, |producer| producer.close())
+    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:582-585`):
+    /// every producer is closed, whoever else shares it.
+    fn close(&self) -> Result<()> {
+        close_shared(&self.points_readers, |producer| producer.close())
     }
 }
 
@@ -2461,8 +2448,7 @@ impl IntersectVisitor for DocBaseIntersectVisitor<'_> {
 /// readers' values, concatenated.
 ///
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositeKnnVectorsReaderWrapper`
-/// (`SlowCompositeCodecReaderWrapper.java:795-1046`). The close divergence of
-/// [`SlowCompositeCodecReaderWrapper`] applies.
+/// (`SlowCompositeCodecReaderWrapper.java:795-1046`).
 #[derive(Clone)]
 struct SlowCompositeKnnVectorsReader {
     readers: Vec<Arc<dyn CodecReader>>,
@@ -2595,11 +2581,10 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         map
     }
 
-    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:822-825`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.vectors_readers, |producer| producer.close())
+    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:822-825`):
+    /// every producer is closed, whoever else shares it.
+    fn close(&self) -> Result<()> {
+        close_shared(&self.vectors_readers, |producer| producer.close())
     }
 }
 
@@ -3716,10 +3701,8 @@ impl Bits for SortingBits {
 /// Equivalent to the anonymous `DocValuesProducer`
 /// `SortingCodecReader.getDocValuesReader()` builds.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `close()` closes the delegate
-/// (`SortingCodecReader.java:708-711`). The delegate here is the [`Arc`] the
-/// wrapped reader shares with every other holder and closes itself, so `close`
-/// releases nothing — as every other producer wrapper of this module does.
+/// `close()` closes the delegate (`SortingCodecReader.java:708-711`), whoever
+/// else shares it.
 struct SortingDocValuesProducer {
     delegate: Arc<dyn DocValuesProducer>,
     doc_map: Arc<SorterDocMap>,
@@ -3824,8 +3807,8 @@ impl DocValuesProducer for SortingDocValuesProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.delegate.close()
     }
 }
 
@@ -3835,8 +3818,8 @@ impl DocValuesProducer for SortingDocValuesProducer {
 /// evict one another's key.
 ///
 /// Equivalent to the anonymous `NormsProducer`
-/// `SortingCodecReader.getNormsReader()` builds. The close divergence of
-/// [`SortingDocValuesProducer`] applies (`SortingCodecReader.java:626-629`).
+/// `SortingCodecReader.getNormsReader()` builds; `close()` closes the delegate
+/// (`SortingCodecReader.java:626-629`).
 struct SortingNormsProducer {
     delegate: Arc<dyn NormsProducer>,
     doc_map: Arc<SorterDocMap>,
@@ -3879,8 +3862,8 @@ impl NormsProducer for SortingNormsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.delegate.close()
     }
 }
 
@@ -3895,10 +3878,8 @@ impl NormsProducer for SortingNormsProducer {
 /// `SortingCodecReader.getPostingsReader()` builds
 /// (`SortingCodecReader.java:448-484`).
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `close()` closes the delegate.
-/// The delegate here is the [`Arc`] the wrapped reader shares with every other
-/// holder, and it is closed by its owner, so `close` releases nothing — as
-/// every other producer wrapper of this module does.
+/// `close()` closes the delegate (`SortingCodecReader.java:456-458`), whoever
+/// else shares it.
 struct SortingFieldsProducer {
     postings_reader: Arc<dyn FieldsProducer>,
     /// `in.getFieldInfos()`, read for each field's index options.
@@ -3953,8 +3934,8 @@ impl FieldsProducer for SortingFieldsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.postings_reader.close()
     }
 }
 
@@ -3963,8 +3944,8 @@ impl FieldsProducer for SortingFieldsProducer {
 ///
 /// Equivalent to the anonymous `PointsReader`
 /// `SortingCodecReader.getPointsReader()` builds
-/// (`SortingCodecReader.java:534-560`). The close divergence of
-/// [`SortingFieldsProducer`] applies.
+/// (`SortingCodecReader.java:534-560`); `close()` closes the delegate
+/// (`:555-558`).
 #[derive(Debug)]
 struct SortingPointsReader {
     delegate: Arc<dyn PointsReader>,
@@ -3997,8 +3978,8 @@ impl PointsReader for SortingPointsReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.delegate.close()
     }
 }
 
@@ -4143,8 +4124,8 @@ impl IntersectVisitor for SortingIntersectVisitor<'_> {
 ///
 /// Equivalent to the anonymous `KnnVectorsReader`
 /// `SortingCodecReader.getVectorReader()` builds
-/// (`SortingCodecReader.java:562-606`). The close divergence of
-/// [`SortingFieldsProducer`] applies.
+/// (`SortingCodecReader.java:562-606`); `close()` closes the delegate
+/// (`:601-604`).
 #[derive(Debug)]
 struct SortingKnnVectorsReader {
     delegate: Arc<dyn KnnVectorsReader>,
@@ -4234,8 +4215,8 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
         self.delegate.get_off_heap_byte_size(field_info)
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.delegate.close()
     }
 }
 
@@ -4744,7 +4725,7 @@ mod tests {
             Ok(Box::new(CountingFields(Arc::clone(&self.0))))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }

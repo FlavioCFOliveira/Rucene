@@ -191,7 +191,7 @@ impl CollectorManager for TestCollectorManager {
 }
 
 fn test_scorer_get_children(_f: &mut Conjunctions) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

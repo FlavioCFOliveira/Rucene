@@ -135,7 +135,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestOneMergeWrappingMergePolicy.testSegmentsAreWrapped`.
 fn test_segments_are_wrapped() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let body = (|| -> Result<()> {
         let dir = dir.as_directory();
         // first create random merge specs

@@ -107,7 +107,7 @@ fn ordinal_map_ram_used(map: &OrdinalMap) -> i64 {
 
 /// Port of `TestOrdinalMap.testRamBytesUsed`.
 fn test_ram_bytes_used() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let cfg = config()?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), cfg)?;
     let max_doc = TestUtil::next_int(&*random(), 10, 1000);
@@ -169,7 +169,7 @@ fn test_ram_bytes_used() -> Result<()> {
 /// a small optimization and hardcode the first segment indices and global ord
 /// deltas as all zeroes.
 fn test_one_segment_with_all_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let cfg = config()?;
     cfg.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let iw = IndexWriter::new(dir.as_directory(), cfg)?;

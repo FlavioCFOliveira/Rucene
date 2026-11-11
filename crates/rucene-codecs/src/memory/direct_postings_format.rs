@@ -137,7 +137,7 @@ impl PostingsFormat for DirectPostingsFormat {
     }
 
     fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>> {
-        let mut postings = postings_format_for_name("Lucene104")?.fields_producer(state)?;
+        let postings = postings_format_for_name("Lucene104")?.fields_producer(state)?;
         if state.context.context() != Context::Merge {
             let loaded = postings.check_integrity().and_then(|()| {
                 DirectFields::new(
@@ -255,7 +255,7 @@ impl FieldsProducer for DirectFields {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

@@ -98,7 +98,7 @@ fn utf8(te: &dyn rucene::index::TermsEnum) -> Result<String> {
 
 /// Port of `TestMultiPhraseQuery.testPhrasePrefix`.
 fn test_phrase_prefix() -> Result<()> {
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     add("blueberry pie", &writer)?;
     add("blueberry strudel", &writer)?;
@@ -214,7 +214,7 @@ fn test_phrase_prefix() -> Result<()> {
 ///
 /// Port of `TestMultiPhraseQuery.testTall`.
 fn test_tall() -> Result<()> {
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     add("blueberry chocolate pie", &writer)?;
     add("blueberry chocolate tart", &writer)?;
@@ -235,7 +235,7 @@ fn test_tall() -> Result<()> {
 
 /// Port of `TestMultiPhraseQuery.testMultiSloppyWithRepeats`.
 fn test_multi_sloppy_with_repeats() -> Result<()> {
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     add("a b c d e f g h i k", &writer)?;
     let r = writer.get_reader()?;
@@ -258,7 +258,7 @@ fn test_multi_sloppy_with_repeats() -> Result<()> {
 
 /// Port of `TestMultiPhraseQuery.testMultiExactWithRepeats`.
 fn test_multi_exact_with_repeats() -> Result<()> {
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     add("a b c d e f g h i k", &writer)?;
     let r = writer.get_reader()?;
@@ -292,7 +292,7 @@ fn test_boolean_query_containing_single_term_prefix_query() -> Result<()> {
     // In order to cause the bug, the outer query must have more than one term
     // and all terms required.
     // The contained PhraseMultiQuery must contain exactly one term array.
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     add("blueberry pie", &writer)?;
     add("blueberry chewing gum", &writer)?;
@@ -325,7 +325,7 @@ fn test_boolean_query_containing_single_term_prefix_query() -> Result<()> {
 
 /// Port of `TestMultiPhraseQuery.testPhrasePrefixWithBooleanQuery`.
 fn test_phrase_prefix_with_boolean_query() -> Result<()> {
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     add_typed("This is a test", "object", &writer)?;
     add_typed("a note", "note", &writer)?;
@@ -354,7 +354,7 @@ fn test_phrase_prefix_with_boolean_query() -> Result<()> {
 
 /// Port of `TestMultiPhraseQuery.testNoDocs`.
 fn test_no_docs() -> Result<()> {
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     add_typed("a note", "note", &writer)?;
 
@@ -467,7 +467,7 @@ fn canned_text_field(tokens: Vec<Token>) -> Result<Box<Field>> {
 
 /// Port of `TestMultiPhraseQuery.testZeroPosIncr`.
 fn test_zero_pos_incr() -> Result<()> {
-    let mut dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
     let tokens = vec![make_token("a", 1), make_token("b", 0), make_token("c", 0)];
 
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), Arc::clone(&dir))?;
@@ -507,12 +507,7 @@ fn test_zero_pos_incr() -> Result<()> {
     drop(s);
     r.close()?;
     drop(r);
-    // `dir.close()`: the directory is shared with the writer and reader that
-    // were just closed; once they are gone this is its only handle.
-    if let Some(dir) = Arc::get_mut(&mut dir) {
-        dir.close()?;
-    }
-    Ok(())
+    dir.close()
 }
 
 fn make_token(text: &str, pos_incr: i32) -> Token {
@@ -588,7 +583,7 @@ fn test_zero_pos_incr_sloppy_parsed_and() -> Result<()> {
 }
 
 fn do_test_zero_pos_incr_sloppy(q: Arc<dyn Query>, n_expected: i64) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory(); // random dir
+    let dir = LuceneTestCase::new_directory(); // random dir
     let cfg = LuceneTestCase::new_index_writer_config_analyzer(None);
     let writer = IndexWriter::new(dir.as_directory(), cfg)?;
     let mut doc = Document::new();

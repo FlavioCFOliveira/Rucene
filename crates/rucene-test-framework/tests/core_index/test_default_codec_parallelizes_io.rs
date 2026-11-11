@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::{AfterClass, BeforeClass};
-use rucene::error::{LuceneError, Result};
+use rucene::error::Result;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
@@ -103,15 +103,8 @@ fn after_class() -> Result<()> {
     {
         let closed_reader = reader.close();
         drop(reader);
-        let still_referenced = || LuceneError::illegal_state("the directory is still referenced");
-        let closed_dir = match Arc::try_unwrap(dir) {
-            Ok(mut dir) => dir.close(),
-            Err(_) => Err(still_referenced()),
-        };
-        let closed_bb_dir = match Arc::try_unwrap(bb_dir) {
-            Ok(mut bb_dir) => bb_dir.close(),
-            Err(_) => Err(still_referenced()),
-        };
+        let closed_dir = dir.close();
+        let closed_bb_dir = bb_dir.close();
         closed_reader?;
         closed_dir?;
         closed_bb_dir?;

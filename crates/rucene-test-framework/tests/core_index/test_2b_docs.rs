@@ -44,8 +44,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Indexes `Integer.MAX_VALUE` docs with indexed field(s).
 fn test_2b_docs() -> Result<()> {
-    let mut dir =
-        LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BDocs"));
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BDocs"));
     never_throttle(&dir);
 
     let w = IndexWriter::new(dir.as_directory(), two_b_config()?)?;

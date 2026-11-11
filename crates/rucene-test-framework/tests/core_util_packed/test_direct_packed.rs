@@ -32,7 +32,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `testSimple()`: simple encode/decode.
 fn test_simple() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let bits_per_value = DirectWriter::bits_required(2);
     let mut output = d.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
@@ -64,7 +64,7 @@ fn test_simple() -> Result<()> {
 /// `testNotEnoughValues()`: test exception is delivered if you add the
 /// wrong number of values.
 fn test_not_enough_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let bits_per_value = DirectWriter::bits_required(2);
     let mut output = d.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
@@ -87,7 +87,7 @@ fn test_not_enough_values() -> Result<()> {
 }
 
 fn test_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     for bpv in 1..=64 {
         do_test_bpv(&d, bpv, 0, false)?;
@@ -96,7 +96,7 @@ fn test_random() -> Result<()> {
 }
 
 fn test_random_with_offset() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let offset = TestUtil::next_int(&*random(), 1, 100) as i64;
     for bpv in 1..=64 {
@@ -106,7 +106,7 @@ fn test_random_with_offset() -> Result<()> {
 }
 
 fn test_random_merge() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     for bpv in 1..=64 {
         do_test_bpv(&d, bpv, 0, true)?;
@@ -115,7 +115,7 @@ fn test_random_merge() -> Result<()> {
 }
 
 fn test_random_merge_with_offset() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let offset = TestUtil::next_int(&*random(), 1, 100) as i64;
     for bpv in 1..=64 {

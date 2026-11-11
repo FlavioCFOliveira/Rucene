@@ -125,7 +125,7 @@ fn index_options(reader: &Arc<dyn LeafReader>, name: &str) -> IndexOptions {
 /// omitTermFreqAndPositions for field X, then adding docs that do
 /// omitTermFreqAndPositions for that same field.
 fn test_mixed_ram() -> Result<()> {
-    let mut ram = LuceneTestCase::new_directory();
+    let ram = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     let writer = IndexWriter::new(
         ram.as_directory(),
@@ -188,7 +188,7 @@ fn assert_no_prx(dir: &Arc<dyn Directory>) -> Result<()> {
 /// Port of `TestOmitTf.testNoPrxFile`: verifies no *.prx exists when all
 /// fields omit term freq.
 fn test_no_prx_file() -> Result<()> {
-    let mut ram = LuceneTestCase::new_directory();
+    let ram = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     let writer = IndexWriter::new(
         ram.as_directory(),
@@ -273,7 +273,7 @@ impl CollectorManager for ScoreAssertingManager {
 /// Port of `TestOmitTf.testBasic`: test scores with one field with Term
 /// Freqs and one without, otherwise with equal content.
 fn test_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     let writer = IndexWriter::new(dir.as_directory(), {
         let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
@@ -405,7 +405,7 @@ fn test_basic() -> Result<()> {
 /// Port of `TestOmitTf.testStats`: test that when freqs are omitted, that
 /// totalTermFreq and sumTotalTermFreq are docFreq, and sumDocFreq.
 fn test_stats() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),

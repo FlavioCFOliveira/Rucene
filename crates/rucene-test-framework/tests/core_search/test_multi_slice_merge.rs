@@ -98,7 +98,7 @@ fn multi_slice_tear_down(f: &mut MultiSliceMerge) -> Result<()> {
     for reader in [f.reader1.take(), f.reader2.take()].into_iter().flatten() {
         reader.close()?;
     }
-    for mut dir in [f.dir1.take(), f.dir2.take()].into_iter().flatten() {
+    for dir in [f.dir1.take(), f.dir2.take()].into_iter().flatten() {
         dir.close()?;
     }
     Ok(())

@@ -1348,7 +1348,7 @@ mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> crate::error::Result<()> {
+        fn close(&self) -> crate::error::Result<()> {
             Ok(())
         }
     }

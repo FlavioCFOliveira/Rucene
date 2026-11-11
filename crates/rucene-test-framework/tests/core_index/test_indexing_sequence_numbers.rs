@@ -67,7 +67,7 @@ fn writer(
 
 /// Port of `TestIndexingSequenceNumbers.testBasic`.
 fn test_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let a = w.add_document(&Document::new())?;
     let b = w.add_document(&Document::new())?;
@@ -78,7 +78,7 @@ fn test_basic() -> Result<()> {
 
 /// Port of `TestIndexingSequenceNumbers.testAfterRefresh`.
 fn test_after_refresh() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let a = w.add_document(&Document::new())?;
     directory_reader::open_with_writer(&*w)?.close()?;
@@ -90,7 +90,7 @@ fn test_after_refresh() -> Result<()> {
 
 /// Port of `TestIndexingSequenceNumbers.testAfterCommit`.
 fn test_after_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let a = w.add_document(&Document::new())?;
     w.commit()?;
@@ -137,7 +137,7 @@ fn thread_value(doc: &Document) -> Result<i32> {
 fn test_stress_update_same_id() -> Result<()> {
     let iters = LuceneTestCase::at_least(100);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = Arc::new(RandomIndexWriter::new_with_mock_analyzer(
             &*random(),
             dir.as_directory(),
@@ -282,7 +282,7 @@ fn test_stress_concurrent_commit() -> Result<()> {
     let op_count = LuceneTestCase::at_least(10000);
     let id_count = TestUtil::next_int(&*random(), 10, 1000);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_deletion_writer(&dir)?;
 
     let num_threads = TestUtil::next_int(&*random(), 2, 10);
@@ -452,7 +452,7 @@ fn test_stress_concurrent_doc_values_updates_commit() -> Result<()> {
     let op_count = LuceneTestCase::at_least(10000);
     let id_count = TestUtil::next_int(&*random(), 10, 1000);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_deletion_writer(&dir)?;
 
     let num_threads = TestUtil::next_int(&*random(), 2, 10);
@@ -614,7 +614,7 @@ fn test_stress_concurrent_add_and_delete_and_commit() -> Result<()> {
     let op_count = LuceneTestCase::at_least(10000);
     let id_count = TestUtil::next_int(&*random(), 10, 1000);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_deletion_writer(&dir)?;
 
     let num_threads = TestUtil::next_int(&*random(), 2, 5);
@@ -802,7 +802,7 @@ fn test_stress_concurrent_add_and_delete_and_commit() -> Result<()> {
 
 /// Port of `TestIndexingSequenceNumbers.testDeleteAll`.
 fn test_delete_all() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let a = w.add_document(&Document::new())?;
     let b = w.delete_all()?;

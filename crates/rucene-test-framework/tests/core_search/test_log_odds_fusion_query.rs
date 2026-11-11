@@ -227,7 +227,7 @@ fn log_odds_tear_down(f: &mut LogOddsFusion) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())
@@ -508,7 +508,7 @@ fn test_three_way_combination(f: &mut LogOddsFusion) -> Result<()> {
 // ---- Multi-field hybrid text tests ----
 
 fn test_multi_field_hybrid_search(_f: &mut LogOddsFusion) -> Result<()> {
-    let mut hybrid_dir = LuceneTestCase::new_directory();
+    let hybrid_dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(hybrid_dir.as_directory(), IndexWriterConfig::new())?;
 
     let mut doc0 = Document::new();
@@ -575,7 +575,7 @@ fn test_multi_field_hybrid_search(_f: &mut LogOddsFusion) -> Result<()> {
 }
 
 fn test_more_signals_increase_score(_f: &mut LogOddsFusion) -> Result<()> {
-    let mut signal_dir = LuceneTestCase::new_directory();
+    let signal_dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(signal_dir.as_directory(), IndexWriterConfig::new())?;
 
     let mut doc = Document::new();
@@ -718,7 +718,7 @@ fn close_hybrid_index(f: &mut LogOddsFusion) -> Result<()> {
     if let Some(reader) = f.hybrid_reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.hybrid_dir.take() {
+    if let Some(dir) = f.hybrid_dir.take() {
         dir.close()?;
     }
     Ok(())
@@ -817,7 +817,7 @@ fn test_multiple_vector_fields(_f: &mut LogOddsFusion) -> Result<()> {
     let query_a = normalize(&[1.0, 0.0]);
     let query_b = normalize(&[0.0, 1.0]);
 
-    let mut test_dir = LuceneTestCase::new_directory();
+    let test_dir = LuceneTestCase::new_directory();
     let config = default_codec_config()?;
     let writer = IndexWriter::new(test_dir.as_directory(), config)?;
 
@@ -946,7 +946,7 @@ fn test_vector_and_vector(_f: &mut LogOddsFusion) -> Result<()> {
     let query_x = normalize(&[1.0, 0.0]);
     let query_y = normalize(&[0.0, 1.0]);
 
-    let mut test_dir = LuceneTestCase::new_directory();
+    let test_dir = LuceneTestCase::new_directory();
     let config = default_codec_config()?;
     let writer = IndexWriter::new(test_dir.as_directory(), config)?;
 

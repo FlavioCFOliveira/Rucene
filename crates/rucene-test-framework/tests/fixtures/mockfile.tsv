@@ -116,6 +116,6 @@ FilterFileSystem roots	OK	/
 FilterFileSystem views	OK	[basic, dos, owner, posix, unix, user]
 FilterFileSystem isOpen	OK	true false
 FilterFileSystem matcher	OK	true false
-FilterFileStore	OK	tmpfs tmpfs
+FilterFileStore	OK	$TYPE $NAME
 readSymbolicLink unwrapped	OK	true
 newFileSystem	OK	true

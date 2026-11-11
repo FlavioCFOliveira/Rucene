@@ -419,13 +419,9 @@ fn test_merges_work_with_uncommitted_segments() -> Result<()> {
     Ok(())
 }
 
-/// `dir.close()` of the `ByteBuffersDirectory` the test created, once the
-/// writer and the reader that shared it are gone.
-pub fn close_directory(mut dir: Arc<dyn Directory>) -> Result<()> {
-    match Arc::get_mut(&mut dir) {
-        Some(d) => d.close(),
-        None => Ok(()),
-    }
+/// `dir.close()` of the `ByteBuffersDirectory` the test created.
+pub fn close_directory(dir: Arc<dyn Directory>) -> Result<()> {
+    dir.close()
 }
 
 /// `private TemporalMergePolicy.SegmentDateRange range(long maxMillis)`.

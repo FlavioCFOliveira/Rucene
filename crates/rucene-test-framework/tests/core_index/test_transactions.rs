@@ -275,8 +275,8 @@ fn init_index(dir: &Arc<dyn Directory>) -> Result<()> {
 fn test_transactions() -> Result<()> {
     let do_fail = Arc::new(AtomicBool::new(false));
     // we cant use non-ramdir on windows, because this test needs to double-write.
-    let mut dir1 = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
-    let mut dir2 = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
+    let dir1 = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
+    let dir2 = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
     dir1.fail_on(Arc::new(RandomFailure {
         test_do_fail: Arc::clone(&do_fail),
         do_fail: AtomicBool::new(false),

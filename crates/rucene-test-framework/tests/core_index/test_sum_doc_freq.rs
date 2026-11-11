@@ -38,7 +38,7 @@ fn random_letter() -> char {
 fn test_sum_doc_freq() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(500);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();

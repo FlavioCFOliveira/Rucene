@@ -198,7 +198,7 @@ impl FieldsProducer for SimpleTextFieldsReader {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let input = self
             .input
             .input

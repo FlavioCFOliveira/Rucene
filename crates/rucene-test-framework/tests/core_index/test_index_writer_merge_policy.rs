@@ -274,7 +274,7 @@ fn mock_iwc_buffered(
 // Test the normal case
 /// Port of `TestIndexWriterMergePolicy.testNormalCase`.
 fn test_normal_case() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let writer = IndexWriter::new(
         dir.as_directory(),
@@ -293,7 +293,7 @@ fn test_normal_case() -> Result<()> {
 // Test to see if there is over merge
 /// Port of `TestIndexWriterMergePolicy.testNoOverMerge`.
 fn test_no_over_merge() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let writer = IndexWriter::new(
         dir.as_directory(),
@@ -317,7 +317,7 @@ fn test_no_over_merge() -> Result<()> {
 // Test the case where flush is forced after every addDoc
 /// Port of `TestIndexWriterMergePolicy.testForceFlush`.
 fn test_force_flush() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let mp = MockMergePolicy::new();
     mp.set_merge_factor(10);
@@ -359,7 +359,7 @@ fn as_mock(mp: &Arc<dyn MergePolicy>) -> &MockMergePolicy {
 // Test the case where mergeFactor changes
 /// Port of `TestIndexWriterMergePolicy.testMergeFactorChange`.
 fn test_merge_factor_change() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let iwc = mock_iwc_buffered(10, Arc::new(MockMergePolicy::new()))?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
@@ -397,7 +397,7 @@ fn append_serial_iwc(max_buffered_docs: i32, mp: MockMergePolicy) -> Result<Inde
 // Test the case where both mergeFactor and maxBufferedDocs change
 /// Port of `TestIndexWriterMergePolicy.testMaxBufferedDocsChange`.
 fn test_max_buffered_docs_change() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let iwc = mock_iwc_buffered(101, Arc::new(MockMergePolicy::new()))?;
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
@@ -445,7 +445,7 @@ fn test_max_buffered_docs_change() -> Result<()> {
 // Test the case where a merge results in no doc at all
 /// Port of `TestIndexWriterMergePolicy.testMergeDocCount0`.
 fn test_merge_doc_count0() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let ldmp = MockMergePolicy::new();
     ldmp.set_merge_factor(100);
@@ -535,9 +535,7 @@ const EPSILON: f64 = 1E-14;
 
 /// Port of `TestIndexWriterMergePolicy.testSetters`.
 fn test_setters() -> Result<()> {
-    assert_setters(&LogMergePolicy::new(Arc::new(
-        rucene::index::merge_policy::LogByteSize,
-    )))?;
+    assert_setters(&LogMergePolicy::by_byte_size())?;
     assert_setters(&MockMergePolicy::new())?;
     Ok(())
 }
@@ -561,7 +559,7 @@ fn five_flushed_segments(dir: &TestDirectory) -> Result<()> {
 // Test basic semantics of merge on commit
 /// Port of `TestIndexWriterMergePolicy.testMergeOnCommit`.
 fn test_merge_on_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     five_flushed_segments(&dir)?;
 
@@ -604,7 +602,7 @@ fn test_merge_on_commit() -> Result<()> {
 // Test basic semantics of merge on commit and events recording invocation
 /// Port of `TestIndexWriterMergePolicy.testMergeOnCommitWithEventListener`.
 fn test_merge_on_commit_with_event_listener() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     five_flushed_segments(&dir)?;
 
@@ -694,7 +692,7 @@ impl IndexWriterOverrides for WaitingMergeWriter {
 
 /// Port of `TestIndexWriterMergePolicy.testCarryOverNewDeletesOnCommit`.
 fn test_carry_over_new_deletes_on_commit() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let use_soft_deletes = random().next_boolean();
         let wait_for_merge = Arc::new(CountDownLatch::new(1));
@@ -808,7 +806,7 @@ fn test_abort_merge_on_get_reader() -> Result<()> {
 
 /// `void abortMergeOnX(boolean useGetReader)`.
 fn abort_merge_on_x(use_get_reader: bool) -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let wait_for_merge = Arc::new(CountDownLatch::new(1));
         let wait_for_delete_all = Arc::new(CountDownLatch::new(1));
@@ -876,7 +874,7 @@ fn abort_merge_on_x(use_get_reader: bool) -> Result<()> {
 
 /// Port of `TestIndexWriterMergePolicy.testForceMergeWhileGetReader`.
 fn test_force_merge_while_get_reader() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let wait_for_merge = Arc::new(CountDownLatch::new(1));
         let wait_for_force_merge_called = Arc::new(CountDownLatch::new(1));
@@ -943,7 +941,7 @@ impl IndexWriterOverrides for FailAfterFlushWriter {
 
 /// Port of `TestIndexWriterMergePolicy.testFailAfterMergeCommitted`.
 fn test_fail_after_merge_committed() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let merge_and_fail = Arc::new(AtomicBool::new(false));
         let iwc = LuceneTestCase::new_index_writer_config();
@@ -994,7 +992,7 @@ fn test_stress_update_same_document_with_merge_on_commit() -> Result<()> {
 
 /// `void stressUpdateSameDocumentWithMergeOnX(boolean useGetReader)`.
 fn stress_update_same_document_with_merge_on_x(use_get_reader: bool) -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(merge_on_x_merge_policy(
@@ -1105,7 +1103,7 @@ fn stress_update_same_document_with_merge_on_x(use_get_reader: bool) -> Result<(
 // Test basic semantics of merge on getReader
 /// Port of `TestIndexWriterMergePolicy.testMergeOnGetReader`.
 fn test_merge_on_get_reader() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     five_flushed_segments(&dir)?;
 
@@ -1225,7 +1223,7 @@ fn test_set_diagnostics() -> Result<()> {
             },
         )),
     ));
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(my_merge_policy))?;
     iwc.set_max_buffered_docs(2)?;
@@ -1407,7 +1405,7 @@ impl Directory for AssertFileExistDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.r#in.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
@@ -1470,7 +1468,7 @@ fn test_force_merge_dv_update_file_with_concurrent_flush() -> Result<()> {
     let wait_for_dv_update = Arc::new(CountDownLatch::new(1));
     let wait_for_merge_finished = Arc::new(CountDownLatch::new(1));
 
-    let (mut holder, mock_directory) =
+    let (holder, mock_directory) =
         assert_file_exist_directory("testForceMergeDVUpdateFileWithConcurrentFlush");
 
     let mock_merge_policy: Arc<dyn MergePolicy> = {
@@ -1630,7 +1628,7 @@ fn test_merge_dv_update_file_on_get_reader_with_concurrent_flush() -> Result<()>
     let wait_for_init_merge_reader = Arc::new(CountDownLatch::new(1));
     let wait_for_dv_update = Arc::new(CountDownLatch::new(1));
 
-    let (mut holder, mock_directory) =
+    let (holder, mock_directory) =
         assert_file_exist_directory("testMergeDVUpdateFileOnGetReaderWithConcurrentFlush");
 
     two_segments_with_soft_update(&mock_directory)?;
@@ -1671,7 +1669,7 @@ fn test_merge_dv_update_file_on_commit_with_concurrent_flush() -> Result<()> {
     let wait_for_init_merge_reader = Arc::new(CountDownLatch::new(1));
     let wait_for_dv_update = Arc::new(CountDownLatch::new(1));
 
-    let (mut holder, mock_directory) =
+    let (holder, mock_directory) =
         assert_file_exist_directory("testMergeDVUpdateFileOnCommitWithConcurrentFlush");
 
     two_segments_with_soft_update(&mock_directory)?;
@@ -1706,7 +1704,7 @@ fn test_merge_dv_update_file_on_commit_with_concurrent_flush() -> Result<()> {
 
 /// Port of `TestIndexWriterMergePolicy.testForceMergeWithPendingHardAndSoftDeleteFile`.
 fn test_force_merge_with_pending_hard_and_soft_delete_file() -> Result<()> {
-    let (mut holder, mock_directory) =
+    let (holder, mock_directory) =
         assert_file_exist_directory("testForceMergeWithPendingHardAndSoftDeleteFile");
 
     let mock_merge_policy: Arc<dyn MergePolicy> = Arc::new(OneMergeWrappingMergePolicy::new(

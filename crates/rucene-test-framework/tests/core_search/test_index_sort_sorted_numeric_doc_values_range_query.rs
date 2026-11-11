@@ -107,7 +107,7 @@ fn sorted_writer(
 fn test_same_hits_as_point_range_query() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _iter in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
 
         let iwc = mock_iwc();
         let reverse = random().next_boolean();
@@ -177,7 +177,7 @@ fn test_same_hits_as_point_range_query() -> Result<()> {
 fn test_same_hits_as_point_range_query_int_sort() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _iter in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
 
         let iwc = mock_iwc();
         let reverse = random().next_boolean();
@@ -306,7 +306,7 @@ fn test_index_sort_doc_values_with_even_length() -> Result<()> {
 
 /// `testIndexSortDocValuesWithEvenLength(boolean reverse, SortField.Type type)`.
 fn index_sort_doc_values_with_even_length(reverse: bool, ty: SortFieldType) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let index_sort = sort_of(SortedNumericSortField::with_reverse("field", ty, reverse)?)?;
     let writer = sorted_writer(&dir, index_sort)?;
@@ -384,7 +384,7 @@ fn test_index_sort_doc_values_with_odd_length() -> Result<()> {
 
 /// `testIndexSortDocValuesWithOddLength(boolean reverse)`.
 fn index_sort_doc_values_with_odd_length(reverse: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let index_sort = sort_of(SortedNumericSortField::with_reverse(
         "field",
@@ -451,7 +451,7 @@ fn test_index_sort_doc_values_with_single_value() -> Result<()> {
 }
 
 fn index_sort_doc_values_with_single_value(reverse: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let index_sort = sort_of(SortedNumericSortField::with_reverse(
         "field",
@@ -478,7 +478,7 @@ fn index_sort_doc_values_with_single_value(reverse: bool) -> Result<()> {
 }
 
 fn test_index_sort_missing_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let iwc = mock_iwc();
     let sort_field = SortedNumericSortField::with_missing_value(
@@ -517,7 +517,7 @@ fn test_index_sort_missing_values() -> Result<()> {
 }
 
 fn test_no_documents() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     writer.add_document(&Document::new())?;
     let reader = writer.get_reader()?;
@@ -542,7 +542,7 @@ fn rewrite_once(query: &Arc<dyn Query>, searcher: &IndexSearcher) -> Result<Arc<
 }
 
 fn test_rewrite_exhaustive_range() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     writer.add_document(&Document::new())?;
     let reader = writer.get_reader()?;
@@ -559,7 +559,7 @@ fn test_rewrite_exhaustive_range() -> Result<()> {
 }
 
 fn test_rewrite_fallback_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     writer.add_document(&Document::new())?;
     let reader = writer.get_reader()?;
@@ -593,7 +593,7 @@ fn test_rewrite_fallback_query() -> Result<()> {
 
 /// Test that the index sort optimization not activated if there is no index sort.
 fn test_no_index_sort() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     writer.add_document(&create_document("field", 0))?;
@@ -607,7 +607,7 @@ fn test_no_index_sort() -> Result<()> {
 
 /// Test that the index sort optimization is not activated when the sort is on the wrong field.
 fn test_index_sort_on_wrong_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let index_sort = sort_of(SortedNumericSortField::new(
         "other-field",
@@ -625,7 +625,7 @@ fn test_index_sort_on_wrong_field() -> Result<()> {
 
 fn test_other_sort_types() -> Result<()> {
     for ty in [SortFieldType::Float, SortFieldType::Double] {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
 
         let index_sort = sort_of(SortedNumericSortField::new("field", ty)?)?;
         let writer = sorted_writer(&dir, index_sort)?;
@@ -642,7 +642,7 @@ fn test_other_sort_types() -> Result<()> {
 /// Test that the index sort optimization is not activated when some documents have multiple
 /// values.
 fn test_multi_doc_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let index_sort = sort_of(SortedNumericSortField::new("field", SortFieldType::Long)?)?;
     let writer = sorted_writer(&dir, index_sort)?;
@@ -680,7 +680,7 @@ fn index_sort_optimization_deactivated(writer: &RandomIndexWriter) -> Result<()>
 }
 
 fn test_fallback_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_sort = sort_of(SortedNumericSortField::new("field", SortFieldType::Long)?)?;
     let writer = sorted_writer(&dir, index_sort)?;
     let mut doc = Document::new();
@@ -708,7 +708,7 @@ fn test_fallback_count() -> Result<()> {
 fn test_compare_count() -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _iter in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iwc = mock_iwc();
         let enable_missing_value = random().next_boolean();
         let mut missing_value = None;
@@ -791,7 +791,7 @@ fn assert_same_count(
 }
 
 fn test_count_boundary() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let use_lower = random().next_boolean();
     let lower_value: i64 = 1;
@@ -904,7 +904,7 @@ fn assert_bkd_count(
 /// `doTestCountWithBkd(boolean reverse)`.
 fn do_test_count_with_bkd(reverse: bool) -> Result<()> {
     let filed_name = "field";
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_sort = sort_of(SortedNumericSortField::with_reverse(
         filed_name,
         SortFieldType::Long,
@@ -974,7 +974,7 @@ fn test_random_count_with_bkd_desc() -> Result<()> {
 
 fn do_test_random_count_with_bkd(reverse: bool) -> Result<()> {
     let filed_name = "field";
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_sort = sort_of(SortedNumericSortField::with_reverse(
         filed_name,
         SortFieldType::Long,

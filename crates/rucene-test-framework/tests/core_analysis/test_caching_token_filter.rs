@@ -84,7 +84,7 @@ impl TokenStream for CountingStream {
 }
 
 fn test_caching() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer =
         RandomIndexWriter::new_with_mock_analyzer(&*LuceneTestCase::random(), dir.as_directory())?;
     let mut doc = Document::new();

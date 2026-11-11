@@ -63,7 +63,7 @@ fn with_index(
     body: impl FnOnce(&IndexWriter) -> Result<()>,
     check: impl FnOnce(&Arc<dyn IndexReader>) -> Result<()>,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let writer = IndexWriter::new(dir.as_directory(), iwc)?;
         let result = (|| -> Result<()> {

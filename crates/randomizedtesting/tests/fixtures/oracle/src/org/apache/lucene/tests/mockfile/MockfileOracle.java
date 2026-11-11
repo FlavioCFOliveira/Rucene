@@ -250,7 +250,10 @@ public class MockfileOracle {
       row("FilterFileSystem views", () -> new TreeSet<>(fs.supportedFileAttributeViews()));
       row("FilterFileSystem isOpen", () -> fs.isOpen() + " " + fs.isReadOnly());
       row("FilterFileSystem matcher", () -> { PathMatcher pm = fs.getPathMatcher("glob:*.txt"); return pm.matches(fs.getPath("a.txt")) + " " + pm.matches(Paths.get("a.txt")); });
-      row("FilterFileStore", () -> { FileStore s = Files.getFileStore(dir); return s.type() + " " + s.name(); });
+      // The store's type and name depend on the filesystem the temporary
+      // directory lives on; they are masked as $TYPE/$NAME when they are the
+      // underlying store's, which is what FilterFileStore forwards.
+      row("FilterFileStore", () -> { FileStore s = Files.getFileStore(dir); FileStore d = Files.getFileStore(base); return (s.type().equals(d.type()) ? "$TYPE" : s.type()) + " " + (s.name().equals(d.name()) ? "$NAME" : s.name()); });
       row("readSymbolicLink unwrapped", () -> { Files.createSymbolicLink(dir.resolve("s"), dir.resolve("t")); Path p = Files.readSymbolicLink(dir.resolve("s")); return p.getFileSystem() == def; });
       row("newFileSystem", () -> provider.newFileSystem(URI.create("file:///"), Map.of()) == fs);
     }

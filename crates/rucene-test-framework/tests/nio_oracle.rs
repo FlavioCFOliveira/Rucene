@@ -605,7 +605,7 @@ fn store_calls_match_lucene_over_a_recording_provider() {
         nio = Some(NIOFSDirectory::open(root.resolve_str("idx"))?);
         Ok(())
     });
-    let mut dir = nio.expect("NIOFSDirectory opened");
+    let dir = nio.expect("NIOFSDirectory opened");
     step(r, &ds, "createOutput", || {
         let mut o = dir.create_output("_0.cfs", ctx)?;
         o.write_bytes(&[0u8; 64], 0, 64)?;
@@ -640,7 +640,7 @@ fn store_calls_match_lucene_over_a_recording_provider() {
     step(r, &ds, "deleteFile missing", || dir.delete_file("_0.cfs"));
     step(r, &ds, "close", || dir.close());
     step(r, &ds, "MMapDirectory", || {
-        let mut mm = MMapDirectory::open(root.resolve_str("mm"))?;
+        let mm = MMapDirectory::open(root.resolve_str("mm"))?;
         let mut o = mm.create_output("a", ctx)?;
         o.write_long(1)?;
         o.close()?;
@@ -650,7 +650,7 @@ fn store_calls_match_lucene_over_a_recording_provider() {
         mm.close()
     });
     step(r, &ds, "SimpleFSLockFactory", || {
-        let mut s = FSDirectory::open_with_lock_factory(
+        let s = FSDirectory::open_with_lock_factory(
             root.resolve_str("s"),
             Box::new(SimpleFSLockFactory),
         )?;

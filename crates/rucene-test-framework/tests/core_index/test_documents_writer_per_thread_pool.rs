@@ -66,7 +66,7 @@ fn new_pool(directory: Arc<dyn Directory>) -> DocumentsWriterPerThreadPool {
 
 /// Port of `TestDocumentsWriterPerThreadPool.testLockReleaseAndClose`.
 fn test_lock_release_and_close() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let pool = new_pool(directory.as_directory());
 
@@ -100,7 +100,7 @@ fn test_lock_release_and_close() -> Result<()> {
 
 /// Port of `TestDocumentsWriterPerThreadPool.testCloseWhileNewWritersLocked`.
 fn test_close_while_new_writers_locked() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let pool = Arc::new(new_pool(directory.as_directory()));
 

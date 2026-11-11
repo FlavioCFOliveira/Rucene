@@ -34,7 +34,7 @@ fn eng_field() -> Result<TextField> {
 ///
 /// Port of `TestSameTokenSamePosition.test`.
 fn test_() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let riw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(eng_field()?));
@@ -47,7 +47,7 @@ fn test_() -> Result<()> {
 ///
 /// Port of `TestSameTokenSamePosition.testMoreDocs`.
 fn test_more_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let riw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for _i in 0..100 {
         let mut doc = Document::new();

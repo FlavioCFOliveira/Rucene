@@ -93,7 +93,7 @@ fn removing_combined_scheduler(set: &Arc<DirectorySet>) -> Arc<CombinedMergeSche
 
 /// Port of `TestMultiIndexMergeScheduler.testCloseSingle`.
 fn test_close_single() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let directory = dir.as_directory();
     let directories_to_be_closed = Arc::new(DirectorySet::default());
     directories_to_be_closed.add(&directory);
@@ -274,11 +274,11 @@ fn test_close_multiple() -> Result<()> {
 fn test_reference_counting() -> Result<()> {
     Assert::assert_true(CombinedMergeScheduler::peek_singleton().is_none()); // 0
 
-    let mut directory1 = LuceneTestCase::new_directory();
+    let directory1 = LuceneTestCase::new_directory();
     let mims1 = MultiIndexMergeScheduler::new(directory1.as_directory());
     Assert::assert_true(CombinedMergeScheduler::peek_singleton().is_some()); // 1
 
-    let mut directory2 = LuceneTestCase::new_directory();
+    let directory2 = LuceneTestCase::new_directory();
     let mims2 = MultiIndexMergeScheduler::new(directory2.as_directory());
     Assert::assert_true(CombinedMergeScheduler::peek_singleton().is_some()); // 2
 
@@ -292,7 +292,7 @@ fn test_reference_counting() -> Result<()> {
     directory2.close()?;
     Assert::assert_true(CombinedMergeScheduler::peek_singleton().is_none()); // 0
 
-    let mut directory3 = LuceneTestCase::new_directory();
+    let directory3 = LuceneTestCase::new_directory();
     let mims3 = MultiIndexMergeScheduler::new(directory3.as_directory());
     Assert::assert_true(CombinedMergeScheduler::peek_singleton().is_some()); // 1
 

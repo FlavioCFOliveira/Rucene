@@ -933,7 +933,7 @@ impl rucene::store::Directory for SharedDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn rucene::store::Lock>> {
         self.r#in.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {

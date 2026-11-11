@@ -26,7 +26,7 @@ pub fn class_def() -> Arc<Class> {
 /// Port of `TestMixedCodecs.test`.
 fn test_() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(1000);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut w: Option<RandomIndexWriter> = None;
     let mut docs_left_in_this_segment = 0;
 

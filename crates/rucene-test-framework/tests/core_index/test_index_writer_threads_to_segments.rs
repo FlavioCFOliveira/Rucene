@@ -84,7 +84,7 @@ fn ir(reader: &Arc<dyn DirectoryReader>) -> Arc<dyn IndexReader> {
 ///
 /// Port of `TestIndexWriterThreadsToSegments.testSegmentCountOnFlushBasic`.
 fn test_segment_count_on_flush_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), plain_iwc())?;
     let starting_gun = Arc::new(CountDownLatch::new(1));
     let start_done = Arc::new(CountDownLatch::new(2));
@@ -235,7 +235,7 @@ impl CheckSegmentCount {
 ///
 /// Port of `TestIndexWriterThreadsToSegments.testSegmentCountOnFlushRandom`.
 fn test_segment_count_on_flush_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
     let iwc = plain_iwc();
     // Never trigger flushes (so we only flush on getReader):
     iwc.set_max_buffered_docs(100000000)?;
@@ -347,7 +347,7 @@ fn test_segment_count_on_flush_random() -> Result<()> {
 
 /// Port of `TestIndexWriterThreadsToSegments.testManyThreadsClose`.
 fn test_many_threads_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = random();
     let iwc =
         LuceneTestCase::new_index_writer_config_with(&*r, Some(Arc::new(MockAnalyzer::new(&*r))));
@@ -412,7 +412,7 @@ fn test_many_threads_close() -> Result<()> {
 ///
 /// Port of `TestIndexWriterThreadsToSegments.testDocsStuckInRAMForever`.
 fn test_docs_stuck_in_ram_forever() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = plain_iwc();
     iwc.set_ram_buffer_size_mb(0.2)?;
     let codec = TestUtil::get_default_codec();

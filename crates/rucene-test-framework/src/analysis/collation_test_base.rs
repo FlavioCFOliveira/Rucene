@@ -132,7 +132,7 @@ impl CollationTestBase {
         second_beg: &BytesRef,
         second_end: &BytesRef,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = IndexWriter::new(
             dir.as_directory(),
             IndexWriterConfig::with_analyzer(Some(analyzer)),
@@ -185,7 +185,7 @@ impl CollationTestBase {
         second_beg: &BytesRef,
         second_end: &BytesRef,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = IndexWriter::new(
             dir.as_directory(),
             IndexWriterConfig::with_analyzer(Some(analyzer)),
@@ -242,7 +242,7 @@ impl CollationTestBase {
         second_beg: &BytesRef,
         second_end: &BytesRef,
     ) -> Result<()> {
-        let mut farsi_index = LuceneTestCase::new_directory();
+        let farsi_index = LuceneTestCase::new_directory();
         let writer = IndexWriter::new(
             farsi_index.as_directory(),
             IndexWriterConfig::with_analyzer(Some(analyzer)),

@@ -1825,14 +1825,14 @@ impl BaseTokenStreamTestCase {
         match result {
             Ok(()) => {
                 // `IOUtils.close(dir)`
-                if let Some(mut dir) = dir {
+                if let Some(dir) = dir {
                     dir.close()?;
                 }
                 Ok(())
             }
             Err(e) => {
                 // `IOUtils.closeWhileHandlingException(dir); // checkindex`
-                if let Some(mut dir) = dir {
+                if let Some(dir) = dir {
                     let _ = dir.close();
                 }
                 Err(e)

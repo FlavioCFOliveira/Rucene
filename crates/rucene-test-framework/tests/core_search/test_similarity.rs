@@ -176,7 +176,7 @@ impl CollectorManager for DocPlusBaseManager {
 
 /// Port of `TestSimilarity.testSimilarity`.
 fn test_similarity() -> Result<()> {
-    let mut store = LuceneTestCase::new_directory();
+    let store = LuceneTestCase::new_directory();
     let writer = writer(&store, MockAnalyzer::new(&*random()))?;
 
     let mut d1 = Document::new();
@@ -296,7 +296,7 @@ fn custom_freqs_type() -> Result<FieldType> {
 
 /// Port of `TestSimilarity.testSimilarityTermDocNoTf`.
 fn test_similarity_term_doc_no_tf() -> Result<()> {
-    let mut store = LuceneTestCase::new_directory();
+    let store = LuceneTestCase::new_directory();
     let writer = writer(&store, MockAnalyzer::new(&*random()))?;
 
     let field_type = custom_freqs_type()?;
@@ -344,7 +344,7 @@ fn test_similarity_term_doc_no_tf() -> Result<()> {
 
 /// Port of `TestSimilarity.testTermDocSimilarity`.
 fn test_term_doc_similarity() -> Result<()> {
-    let mut store = LuceneTestCase::new_directory();
+    let store = LuceneTestCase::new_directory();
     let term_freq: rucene_test_framework::analysis::mock_token_filter::CustomTermFreq =
         Arc::new(|term: &str| match term {
             "a" => 17,

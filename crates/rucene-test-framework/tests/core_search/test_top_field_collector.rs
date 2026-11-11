@@ -117,7 +117,7 @@ fn top_field_collector_tear_down(f: &mut TopFieldCollectorTest) -> Result<()> {
     if let Some(ir) = f.ir.take() {
         ir.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())
@@ -290,7 +290,7 @@ fn leaves(reader: &Arc<dyn DirectoryReader>) -> Result<Vec<Arc<LeafReaderContext
 
 /// Port of `TestTopFieldCollector.testTotalHits`.
 fn test_total_hits(_f: &mut TopFieldCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let sort = Sort::new_fields(vec![SortField::new(
         Some("foo".to_string()),
         SortFieldType::Long,
@@ -435,7 +435,7 @@ fn score_then_foo() -> Result<Sort> {
 
 /// Port of `TestTopFieldCollector.testSetMinCompetitiveScore`.
 fn test_set_min_competitive_score(_f: &mut TopFieldCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_merge_writer(&dir)?;
     add_empty_docs(&w, 4)?;
     w.flush()?;
@@ -500,7 +500,7 @@ fn test_set_min_competitive_score(_f: &mut TopFieldCollectorTest) -> Result<()> 
 
 /// Port of `TestTopFieldCollector.testTotalHitsWithScore`.
 fn test_total_hits_with_score(_f: &mut TopFieldCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_merge_writer(&dir)?;
     add_empty_docs(&w, 4)?;
     w.flush()?;
@@ -677,7 +677,7 @@ impl CollectorManager for OnceCollectorManager {
 
 /// Port of `TestTopFieldCollector.testComputeScoresOnlyOnce`.
 fn test_compute_scores_only_once(_f: &mut TopFieldCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let text = StringField::new("text", "foo".to_string(), Store::NO)?;
@@ -725,7 +725,7 @@ fn test_compute_scores_only_once(_f: &mut TopFieldCollectorTest) -> Result<()> {
 
 /// Port of `TestTopFieldCollector.testPopulateScores`.
 fn test_populate_scores(_f: &mut TopFieldCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let field = TextField::new("f", "foo bar".to_string(), Store::NO)?;
@@ -798,7 +798,7 @@ fn test_populate_scores(_f: &mut TopFieldCollectorTest) -> Result<()> {
 
 /// Port of `TestTopFieldCollector.testConcurrentMinScore`.
 fn test_concurrent_min_score(_f: &mut TopFieldCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_merge_writer(&dir)?;
     add_empty_docs(&w, 5)?;
     w.flush()?;
@@ -936,7 +936,7 @@ fn test_concurrent_min_score(_f: &mut TopFieldCollectorTest) -> Result<()> {
 
 /// Port of `TestTopFieldCollector.testRandomMinCompetitiveScore`.
 fn test_random_min_competitive_score(_f: &mut TopFieldCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
@@ -992,7 +992,7 @@ fn test_random_min_competitive_score(_f: &mut TopFieldCollectorTest) -> Result<(
 /// Port of `TestTopFieldCollector.testRelationVsTopDocsCount`.
 fn test_relation_vs_top_docs_count(_f: &mut TopFieldCollectorTest) -> Result<()> {
     let sort = Sort::new_fields(vec![SortField::FIELD_SCORE, SortField::FIELD_DOC])?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let w = no_merge_writer(&dir)?;
         let result = (|| -> Result<()> {

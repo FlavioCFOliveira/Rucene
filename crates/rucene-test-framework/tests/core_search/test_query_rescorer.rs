@@ -117,7 +117,7 @@ fn publish_docs(
 
 /// Port of `TestQueryRescorer.testRescoreOfASubsetOfHits`.
 fn test_rescore_of_a_subset_of_hits() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let num_docs = 100;
     let field_name = "field";
     let reader = publish_docs(num_docs, field_name, &dir)?;
@@ -156,7 +156,7 @@ fn test_rescore_of_a_subset_of_hits() -> Result<()> {
 
 /// Port of `TestQueryRescorer.testRescoreIsIdempotent`.
 fn test_rescore_is_idempotent() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let num_docs = 100;
     let field_name = "field";
     let reader = publish_docs(num_docs, field_name, &dir)?;
@@ -268,7 +268,7 @@ fn assert_first_pass(searcher: &IndexSearcher, hits: &TopDocs) -> Result<()> {
 
 /// Port of `TestQueryRescorer.testBasic`.
 fn test_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = wizard_index(&dir)?;
 
     // Do ordinary BooleanQuery:
@@ -303,7 +303,7 @@ fn test_basic() -> Result<()> {
 
 /// Test LUCENE-5682
 fn test_null_scorer_term_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = wizard_index(&dir)?;
 
     // Do ordinary BooleanQuery:
@@ -350,7 +350,7 @@ impl QueryRescorerImpl for Combiner {
 
 /// Port of `TestQueryRescorer.testCustomCombine`.
 fn test_custom_combine() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = wizard_index(&dir)?;
 
     // Do ordinary BooleanQuery:
@@ -398,7 +398,7 @@ fn test_custom_combine() -> Result<()> {
 
 /// Port of `TestQueryRescorer.testExplain`.
 fn test_explain() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = wizard_index(&dir)?;
 
     // Do ordinary BooleanQuery:
@@ -481,7 +481,7 @@ fn test_explain() -> Result<()> {
 
 /// Port of `TestQueryRescorer.testMissingSecondPassScore`.
 fn test_missing_second_pass_score() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = wizard_index(&dir)?;
 
     // Do ordinary BooleanQuery:
@@ -515,7 +515,7 @@ fn test_missing_second_pass_score() -> Result<()> {
 
 /// Port of `TestQueryRescorer.testRandom`.
 fn test_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let num_docs = LuceneTestCase::at_least(1000);
     let w = RandomIndexWriter::new_with_config(
         &*random(),

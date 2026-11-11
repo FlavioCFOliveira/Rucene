@@ -227,7 +227,7 @@ fn assert_field_17(r: &Arc<dyn DirectoryReader>) -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testAddIndexes`.
 fn test_add_indexes() -> Result<()> {
-    let mut d1 = LuceneTestCase::new_directory();
+    let d1 = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d1.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -240,7 +240,7 @@ fn test_add_indexes() -> Result<()> {
     let r1 = w.get_reader()?;
     w.close()?;
 
-    let mut d2 = LuceneTestCase::new_directory();
+    let d2 = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d2.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -253,7 +253,7 @@ fn test_add_indexes() -> Result<()> {
     let r2 = w.get_reader()?;
     w.close()?;
 
-    let mut d3 = LuceneTestCase::new_directory();
+    let d3 = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d3.as_directory())?;
     w.add_indexes_codec_readers(&[
         SlowCodecReaderWrapper::wrap(LuceneTestCase::get_only_leaf_reader(
@@ -284,7 +284,7 @@ fn test_add_indexes() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testMultiValuedDocValuesField`.
 fn test_multi_valued_doc_values_field() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let mut doc = Document::new();
     let f: Arc<dyn IndexableField> = Arc::new(NumericDocValuesField::new("field", 17));
@@ -307,7 +307,7 @@ fn test_multi_valued_doc_values_field() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testDifferentTypedDocValuesField`.
 fn test_different_typed_doc_values_field() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let mut doc = doc_of(vec![ndv("field", 17)]);
     w.add_document(&doc)?;
@@ -326,7 +326,7 @@ fn test_different_typed_doc_values_field() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testDifferentTypedDocValuesField2`.
 fn test_different_typed_doc_values_field2() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let mut doc = doc_of(vec![ndv("field", 17)]);
     w.add_document(&doc)?;
@@ -346,7 +346,7 @@ fn test_different_typed_doc_values_field2() -> Result<()> {
 // LUCENE-3870
 /// Port of `TestDocValuesIndexing.testLengthPrefixAcrossTwoPages`.
 fn test_length_prefix_across_two_pages() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         d.as_directory(),
         IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random())))),
@@ -389,7 +389,7 @@ fn test_length_prefix_across_two_pages() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testDocValuesUnstored`.
 fn test_doc_values_unstored() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwconfig = mock_iwc();
     iwconfig.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwconfig)?;
@@ -429,7 +429,7 @@ fn test_doc_values_unstored() -> Result<()> {
 // Same field in one document as different types:
 /// Port of `TestDocValuesIndexing.testMixedTypesSameDocument`.
 fn test_mixed_types_same_document() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     w.add_document(&Document::new())?;
 
@@ -444,7 +444,7 @@ fn test_mixed_types_same_document() -> Result<()> {
 // Two documents with same field as different types:
 /// Port of `TestDocValuesIndexing.testMixedTypesDifferentDocuments`.
 fn test_mixed_types_different_documents() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     let doc = doc_of(vec![ndv("foo", 0)]);
     w.add_document(&doc)?;
@@ -466,7 +466,7 @@ fn add_twice(
 ) -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     // we don't use RandomIndexWriter because it might add more docvalues than we expect !!!!1
     let iwc = log_mp_iwc(analyzer)?;
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
@@ -517,7 +517,7 @@ fn test_add_numeric_twice() -> Result<()> {
 fn too_large(field: fn(&str, BytesRef) -> Box<dyn IndexableField>) -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     // we don't use RandomIndexWriter because it might add more docvalues than we expect !!!!1
     let iwc = log_mp_iwc(analyzer)?;
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
@@ -553,7 +553,7 @@ fn test_too_large_term_sorted_set_bytes() -> Result<()> {
 // Two documents across segments
 /// Port of `TestDocValuesIndexing.testMixedTypesDifferentSegments`.
 fn test_mixed_types_different_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     w.add_document(&doc_of(vec![ndv("foo", 0)]))?;
     w.commit()?;
@@ -568,7 +568,7 @@ fn test_mixed_types_different_segments() -> Result<()> {
 // Add inconsistent document after deleteAll
 /// Port of `TestDocValuesIndexing.testMixedTypesAfterDeleteAll`.
 fn test_mixed_types_after_delete_all() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     w.add_document(&doc_of(vec![ndv("foo", 0)]))?;
     w.delete_all()?;
@@ -581,7 +581,7 @@ fn test_mixed_types_after_delete_all() -> Result<()> {
 // Add inconsistent document after reopening IW w/ create
 /// Port of `TestDocValuesIndexing.testMixedTypesAfterReopenCreate`.
 fn test_mixed_types_after_reopen_create() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     w.add_document(&doc_of(vec![ndv("foo", 0)]))?;
     w.close()?;
@@ -596,7 +596,7 @@ fn test_mixed_types_after_reopen_create() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testMixedTypesAfterReopenAppend1`.
 fn test_mixed_types_after_reopen_append1() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     w.add_document(&doc_of(vec![ndv("foo", 0)]))?;
     w.close()?;
@@ -612,7 +612,7 @@ fn test_mixed_types_after_reopen_append1() -> Result<()> {
 /// The body `testMixedTypesAfterReopenAppend2` and `…3` share; the second
 /// adds an empty document before the merge.
 fn mixed_types_after_reopen_append(add_empty: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     w.add_document(&doc_of(vec![ssdv("foo", "foo")]))?;
     w.close()?;
@@ -653,7 +653,7 @@ fn test_mixed_types_after_reopen_append3() -> Result<()> {
 // from separate threads:
 /// Port of `TestDocValuesIndexing.testMixedTypesDifferentThreads`.
 fn test_mixed_types_different_threads() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
 
     let starting_gun = Arc::new(CountDownLatch::new(1));
@@ -709,12 +709,12 @@ fn test_mixed_types_different_threads() -> Result<()> {
 // Adding documents via addIndexes
 /// Port of `TestDocValuesIndexing.testMixedTypesViaAddIndexes`.
 fn test_mixed_types_via_add_indexes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     w.add_document(&doc_of(vec![ndv("foo", 0)]))?;
 
     // Make 2nd index w/ inconsistent field
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), mock_iwc())?;
     w2.add_document(&doc_of(vec![sdv("foo", "hello")]))?;
     w2.close()?;
@@ -733,7 +733,7 @@ fn test_mixed_types_via_add_indexes() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testIllegalTypeChange`.
 fn test_illegal_type_change() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     writer.add_document(&doc_of(vec![ndv("dv", 0)]))?;
@@ -757,7 +757,7 @@ fn numeric_dv_index(dir: &Arc<dyn Directory>) -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testIllegalTypeChangeAcrossSegments`.
 fn test_illegal_type_change_across_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     numeric_dv_index(&dir.as_directory())?;
 
     let conf = mock_iwc();
@@ -771,7 +771,7 @@ fn test_illegal_type_change_across_segments() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testTypeChangeAfterCloseAndDeleteAll`.
 fn test_type_change_after_close_and_delete_all() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     numeric_dv_index(&dir.as_directory())?;
 
     let conf = mock_iwc();
@@ -784,7 +784,7 @@ fn test_type_change_after_close_and_delete_all() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testTypeChangeAfterDeleteAll`.
 fn test_type_change_after_delete_all() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     writer.add_document(&doc_of(vec![ndv("dv", 0)]))?;
@@ -796,7 +796,7 @@ fn test_type_change_after_delete_all() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testTypeChangeAfterCommitAndDeleteAll`.
 fn test_type_change_after_commit_and_delete_all() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     writer.add_document(&doc_of(vec![ndv("dv", 0)]))?;
@@ -809,7 +809,7 @@ fn test_type_change_after_commit_and_delete_all() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testTypeChangeAfterOpenCreate`.
 fn test_type_change_after_open_create() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     numeric_dv_index(&dir.as_directory())?;
     let conf = mock_iwc();
     conf.set_open_mode(OpenMode::CREATE)?;
@@ -821,10 +821,10 @@ fn test_type_change_after_open_create() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testTypeChangeViaAddIndexes`.
 fn test_type_change_via_add_indexes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     numeric_dv_index(&dir.as_directory())?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer2 = IndexWriter::new(dir2.as_directory(), conf)?;
     writer2.add_document(&doc_of(vec![sdv("dv", "foo")]))?;
@@ -838,10 +838,10 @@ fn test_type_change_via_add_indexes() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testTypeChangeViaAddIndexesIR`.
 fn test_type_change_via_add_indexes_ir() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     numeric_dv_index(&dir.as_directory())?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer2 = IndexWriter::new(dir2.as_directory(), conf)?;
     writer2.add_document(&doc_of(vec![sdv("dv", "foo")]))?;
@@ -860,10 +860,10 @@ fn test_type_change_via_add_indexes_ir() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testTypeChangeViaAddIndexes2`.
 fn test_type_change_via_add_indexes2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     numeric_dv_index(&dir.as_directory())?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer2 = IndexWriter::new(dir2.as_directory(), conf)?;
     writer2.add_indexes_dirs(&[dir.as_directory()])?;
@@ -878,10 +878,10 @@ fn test_type_change_via_add_indexes2() -> Result<()> {
 
 /// Port of `TestDocValuesIndexing.testTypeChangeViaAddIndexesIR2`.
 fn test_type_change_via_add_indexes_ir2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     numeric_dv_index(&dir.as_directory())?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer2 = IndexWriter::new(dir2.as_directory(), conf)?;
     let reader = directory_reader::open(dir.as_directory())?;
@@ -902,7 +902,7 @@ fn test_same_field_name_for_posting_and_doc_value() -> Result<()> {
     // LUCENE-5192: FieldInfos.Builder neglected to update
     // globalFieldNumbers.docValuesType map if the field existed, resulting in
     // potentially adding the same field with different DV types.
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -1003,7 +1003,7 @@ impl IndexableField for ThrowingTokenStreamField {
 // LUCENE-6049
 /// Port of `TestDocValuesIndexing.testExcIndexingDocBeforeDocValues`.
 fn test_exc_indexing_doc_before_doc_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let ft = FieldType::new_from(StringField::type_not_stored());

@@ -291,7 +291,7 @@ fn external_codecs_test_per_field_codec() -> Result<()> {
         println!("TEST: NUM_DOCS={num_docs}");
     }
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir, false); // we use a custom codec provider
     let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*random()),
@@ -512,7 +512,7 @@ impl std::io::Write for ByteArrayOutputStream {
 
 /// `TestMergeSchedulerExternal.testSubclassConcurrentMergeScheduler()`.
 fn merge_scheduler_external_test_subclass_concurrent_merge_scheduler() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     dir.fail_on(Arc::new(FailOnlyOnMerge {
         do_fail: AtomicBool::new(false),
     }));
@@ -683,7 +683,7 @@ fn do_test_duplicates(
     use_compound_files: bool,
     max_docs: i32,
 ) -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(random));
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     let mp = conf.merge_policy();
@@ -841,7 +841,7 @@ fn search_test_search() -> Result<()> {
 
 /// `doTestSearch(Random, PrintWriter, boolean)` (`private`).
 fn do_test_search(random: &dyn Random, out: &mut String, use_compound_file: bool) -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(random));
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     let mp = conf.merge_policy();

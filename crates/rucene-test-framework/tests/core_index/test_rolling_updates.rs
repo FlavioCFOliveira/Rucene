@@ -42,7 +42,7 @@ pub fn class_def() -> Arc<Class> {
 /// Port of `TestRollingUpdates.testRollingUpdates`.
 fn test_rolling_updates() -> Result<()> {
     let random = JdkRandom::new(crate::core_support::random().next_long());
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let docs = LineFileDocs::with_default_file(&random)?;
 
@@ -192,7 +192,7 @@ fn test_rolling_updates() -> Result<()> {
 
 /// Port of `TestRollingUpdates.testUpdateSameDoc`.
 fn test_update_same_doc() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let docs = Arc::new(LineFileDocs::with_default_file(&*random())?);
     for _r in 0..3 {

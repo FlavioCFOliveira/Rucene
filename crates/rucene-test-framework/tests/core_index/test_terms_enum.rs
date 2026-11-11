@@ -98,7 +98,7 @@ fn test_() -> Result<()> {
     // Java's local `Random random` shadows nothing: `random()` stays the test's.
     let line_random = JdkRandom::new(random().next_long());
     let docs = LineFileDocs::with_default_file(&line_random)?;
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
     let w = RandomIndexWriter::new(&*random(), d.as_directory(), Arc::new(analyzer))?;
@@ -281,7 +281,7 @@ fn accepts(c: &CompiledAutomaton, b: &BytesRef) -> bool {
 ///
 /// Port of `TestTermsEnum.testIntersectRandom`.
 fn test_intersect_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let num_terms = LuceneTestCase::at_least(300);
@@ -960,7 +960,7 @@ fn first_doc(te: &mut dyn TermsEnum) -> Result<i32> {
 
 /// Port of `TestTermsEnum.testIntersectBasic`.
 fn test_intersect_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = log_doc_writer(&dir)?;
     for value in ["aaa", "bbb", "ccc"] {
         let mut doc = Document::new();
@@ -1008,7 +1008,7 @@ fn test_intersect_basic() -> Result<()> {
 
 /// Port of `TestTermsEnum.testIntersectStartTerm`.
 fn test_intersect_start_term() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = log_doc_writer(&dir)?;
     for value in ["abc", "abd", "acd", "bcd"] {
         let mut doc = Document::new();
@@ -1061,7 +1061,7 @@ fn test_intersect_start_term() -> Result<()> {
 
 /// Port of `TestTermsEnum.testIntersectEmptyString`.
 fn test_intersect_empty_string() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = log_doc_writer(&dir)?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -1139,7 +1139,7 @@ fn test_intersect_empty_string() -> Result<()> {
 ///
 /// Port of `TestTermsEnum.testCommonPrefixTerms`.
 fn test_common_prefix_terms() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let mut terms: JavaHashSet<String> = JavaHashSet::new();
     // String prefix = TestUtil.randomSimpleString(random(), 1, 20);
@@ -1236,7 +1236,7 @@ fn test_common_prefix_terms() -> Result<()> {
 ///
 /// Port of `TestTermsEnum.testVaryingTermsPerSegment`.
 fn test_varying_terms_per_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut terms: JavaHashSet<BytesRef> = JavaHashSet::new();
     let max_terms = LuceneTestCase::at_least(1000);
     while terms.size() < max_terms as usize {
@@ -1300,7 +1300,7 @@ fn test_varying_terms_per_segment() -> Result<()> {
 ///
 /// Port of `TestTermsEnum.testIntersectRegexp`.
 fn test_intersect_regexp() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(

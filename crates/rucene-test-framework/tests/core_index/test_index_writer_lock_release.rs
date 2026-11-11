@@ -41,7 +41,7 @@ fn open_append(dir: &Arc<dyn rucene::store::Directory>) -> Result<Arc<IndexWrite
 
 /// Port of `TestIndexWriterLockRelease.testIndexWriterLockRelease`.
 fn test_index_writer_lock_release() -> Result<()> {
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "testLockRelease",
     ));
     let d = dir.as_directory();

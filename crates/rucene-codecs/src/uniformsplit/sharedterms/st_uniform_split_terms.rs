@@ -23,7 +23,6 @@ use std::sync::Arc;
 use rucene::codecs::PostingsReaderBase;
 use rucene::error::Result;
 use rucene::index::{FieldInfos, Terms, TermsEnum};
-use rucene::store::IndexInput;
 use rucene::util::automaton::CompiledAutomaton;
 use rucene::util::BytesRef;
 
@@ -54,7 +53,7 @@ impl STUniformSplitTerms {
     /// IndexDictionary.BrowserSupplier)`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        block_input: Arc<Box<dyn IndexInput>>,
+        block_input: Arc<rucene::store::SharedIndexInput>,
         field_metadata: Arc<FieldMetadata>,
         union_field_metadata: Arc<FieldMetadata>,
         postings_reader: Arc<dyn PostingsReaderBase>,

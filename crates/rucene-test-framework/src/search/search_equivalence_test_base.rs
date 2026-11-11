@@ -197,7 +197,7 @@ pub fn after_class() -> Result<()> {
     if let Some(EquivalenceState {
         s1,
         s2,
-        mut directory,
+        directory,
         reader,
         mut analyzer,
         ..

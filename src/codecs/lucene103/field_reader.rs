@@ -10,7 +10,7 @@ use crate::codecs::lucene103::trie_reader::TrieReader;
 use crate::error::{LuceneError, Result};
 use crate::index::terms::{Terms, TermsEnum};
 use crate::index::{FieldInfo, IndexOptions};
-use crate::store::IndexInput;
+use crate::store::SharedIndexInput;
 use crate::util::BytesRef;
 
 /// The shared state a [`FieldReader`] needs to open a cursor: the two files the
@@ -22,15 +22,14 @@ use crate::util::BytesRef;
 /// through it. Rust cannot hold that back-reference without a cycle, so the
 /// shared parts are extracted into this struct and shared by `Arc`.
 ///
-/// When the terms reader is closed while another holder (a merge instance or
-/// a terms enum) still shares this struct, the three cannot be closed then;
-/// the last holder to go away closes them, through this struct's `Drop`, so
-/// every file Java closes is closed (rmp #351).
+/// `Lucene103BlockTreeTermsReader::close` closes the two inputs and the
+/// postings reader in place, whoever else (a merge instance, a terms enum)
+/// still shares this struct, as Java's `close()` does.
 pub struct BlockTreeShared {
     /// The `.tim` file, holding the term blocks.
-    pub terms_in: Arc<dyn IndexInput>,
+    pub terms_in: Arc<SharedIndexInput>,
     /// The `.tip` file, holding the term index tries.
-    pub index_in: Arc<dyn IndexInput>,
+    pub index_in: Arc<SharedIndexInput>,
     /// The segment this dictionary belongs to.
     pub segment: String,
     /// Format version of the three files.
@@ -43,30 +42,10 @@ pub struct BlockTreeShared {
     /// shared rather than cloned — a per-enum copy would duplicate the `.doc`,
     /// `.pos` and `.pay` handles Lucene opens once.
     pub postings_reader: Arc<dyn crate::codecs::postings::PostingsReaderBase>,
-    /// Whether `Lucene103BlockTreeTermsReader::close` closed the three
-    /// already, so that `Drop` does not close them twice.
-    pub closed: bool,
-}
-
-impl Drop for BlockTreeShared {
-    /// Closes the `.tip` and `.tim` inputs and the postings reader, as
-    /// `IOUtils.close(indexIn, termsIn, postingsReader)` does
-    /// (`Lucene103BlockTreeTermsReader.java:275-284`), when the terms reader's
-    /// `close` could not because another holder shared them. A failure is
-    /// dropped: no caller is left to receive it.
-    fn drop(&mut self) {
-        if self.closed {
-            return;
-        }
-        let _ = crate::util::IOUtils::close([
-            Arc::get_mut(&mut self.index_in)
-                .and_then(|i| crate::util::IOUtils::closeable(move || i.close())),
-            Arc::get_mut(&mut self.terms_in)
-                .and_then(|i| crate::util::IOUtils::closeable(move || i.close())),
-            Arc::get_mut(&mut self.postings_reader)
-                .and_then(|r| crate::util::IOUtils::closeable(move || r.close())),
-        ]);
-    }
+    /// Set by `close()`, after which the reader answers as Java's does once
+    /// its `fieldMap` is cleared (`Lucene103BlockTreeTermsReader.java:281-283`):
+    /// no fields.
+    pub fields_cleared: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for BlockTreeShared {
@@ -203,6 +182,7 @@ impl FieldReader {
         let slice = self
             .shared
             .index_in
+            .read()
             .random_access_slice(self.index_start, self.index_end - self.index_start)?;
         TrieReader::new(slice, self.root_fp)
     }

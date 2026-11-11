@@ -84,7 +84,7 @@ fn set_up(inst: &mut TestSegmentTermDocsInstance) -> Result<()> {
 
 /// `public void tearDown()`.
 fn tear_down(inst: &mut TestSegmentTermDocsInstance) -> Result<()> {
-    if let Some(mut dir) = inst.dir.take() {
+    if let Some(dir) = inst.dir.take() {
         dir.close()?;
     }
     LuceneTestCase::super_tear_down();
@@ -190,7 +190,7 @@ fn docs(reader: &Arc<dyn IndexReader>, t: &Term, flags: i32) -> Result<Box<dyn P
 
 /// Port of `TestSegmentTermDocs.testSkipTo`.
 fn test_skip_to(_inst: &mut TestSegmentTermDocsInstance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));

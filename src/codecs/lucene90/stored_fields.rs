@@ -4308,7 +4308,7 @@ mod tests {
         fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
             self.inner.obtain_lock(name)
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
         fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {

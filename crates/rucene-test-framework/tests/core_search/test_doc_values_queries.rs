@@ -229,7 +229,7 @@ fn test_duel_point_range_numeric_range_with_skipper_query() -> Result<()> {
 }
 
 fn test_duel_point_numeric_sorted_with_skipper_range_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = IndexWriterConfig::new();
     config.set_codec(get_codec())?;
     config.set_index_sort(sort_by("dv", SortFieldType::Long, random().next_boolean())?)?;
@@ -275,7 +275,7 @@ fn do_test_duel_point_range_numeric_range_query(
 ) -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = if sorted_numeric || random().next_boolean() {
             RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?
         } else {
@@ -356,7 +356,7 @@ fn do_test_duel_point_range_sorted_range_query(
 ) -> Result<()> {
     let iters = LuceneTestCase::at_least(10);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = if sorted_set || random().next_boolean() {
             RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?
         } else {
@@ -494,7 +494,7 @@ fn test_sorted_set_range_query_uses_two_phase_range_iterator_with_skipper() -> R
 fn assert_sorted_set_range_query_uses_two_phase_range_iterator_with_skipper(
     multi_valued: bool,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let config = IndexWriterConfig::new();
         config.set_codec(get_codec_with(8))?;
@@ -593,7 +593,7 @@ fn test_duel_point_range_sorted_range_skipper_query() -> Result<()> {
 }
 
 fn test_duel_point_sorted_set_sorted_with_skipper_range_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = IndexWriterConfig::new();
     config.set_codec(get_codec())?;
     config.set_index_sort(sort_by(
@@ -824,7 +824,7 @@ fn test_to_string() -> Result<()> {
 }
 
 fn test_missing_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     iw.add_document(&Document::new())?;
     let reader = iw.get_reader()?;
@@ -856,7 +856,7 @@ fn test_missing_field() -> Result<()> {
 }
 
 fn test_slow_range_query_rewrite() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let reader = iw.get_reader()?;
     iw.close()?;
@@ -890,7 +890,7 @@ fn rewrite_once(query: &Arc<dyn Query>, searcher: &IndexSearcher) -> Result<Arc<
 }
 
 fn test_sorted_numeric_npe() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let nums: [f64; 8] = [
         -1.7147449030215377E-208,
@@ -968,7 +968,7 @@ fn test_duel_set_vs_terms_query() -> Result<()> {
         for _ in 0..num_numbers {
             all_numbers.push(random().next_long());
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let num_docs = LuceneTestCase::at_least(100);
         for _ in 0..num_docs {
@@ -1061,7 +1061,7 @@ fn test_duel_set_vs_terms_query() -> Result<()> {
 }
 
 fn test_sorted_numeric_doc_values_range_query_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         for i in 0..100 {
@@ -1146,7 +1146,7 @@ fn assert_count(
 }
 
 fn test_sorted_set_doc_values_range_query_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         for i in 0..100 {
@@ -1283,7 +1283,7 @@ fn assert_class_to_string_contains(query: &Arc<dyn Query>, part: &str) {
 }
 
 fn test_sorted_numeric_doc_values_range_query_rewrites(_random: &dyn Random) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         for i in 0..100 {
@@ -1369,7 +1369,7 @@ fn test_sorted_numeric_doc_values_range_query_rewrites(_random: &dyn Random) -> 
 }
 
 fn test_rewrite_works_with_points_but_no_skip_index() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         for i in 0..100 {
@@ -1437,7 +1437,7 @@ fn do_test_primary_sort_dense_exact_match(
     queries: fn(i32) -> Arc<dyn Query>,
 ) -> Result<()> {
     let deletes = random().next_boolean();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let skip_interval_size = random().next_int_range(4, 4096);
     let config = IndexWriterConfig::new();
     config.set_codec(get_codec_with(skip_interval_size))?;

@@ -93,7 +93,7 @@ fn close_all(readers: &[Arc<dyn DirectoryReader>]) -> Result<()> {
 
 /// Port of `TestFilterDirectoryReader.testDoubleClose`.
 fn test_double_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -212,7 +212,7 @@ impl DirectoryReaderWrapper for NumDocsCountingFilterDirectoryReader {
 
 /// Port of `TestFilterDirectoryReader.testFilterDirectoryReaderNumDocsIsLazy`.
 fn test_filter_directory_reader_num_docs_is_lazy() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -291,7 +291,7 @@ impl ClosedListener for CountingListener {
 
 /// Port of `TestFilterDirectoryReader.testDelegatingCacheHelper`.
 fn test_delegating_cache_helper() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

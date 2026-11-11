@@ -137,15 +137,14 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     /// `testGroupVIntMultiBlocks()`.
     fn test_group_v_int_multi_blocks(&self) -> Result<()> {
         let max_chunk_size = random().next_int_range(64, 512);
-        let mut dir =
-            self.get_directory_chunked(&LuceneTestCase::create_temp_dir(), max_chunk_size)?;
+        let dir = self.get_directory_chunked(&LuceneTestCase::create_temp_dir(), max_chunk_size)?;
         let result = self.do_test_group_v_int(&*dir, 10, 1, 31, 1024);
         result.and(dir.close())
     }
 
     /// `testCloneClose()`.
     fn test_clone_close(&self) -> Result<()> {
-        let mut dir = self.get_directory(&temp_dir("testCloneClose"))?;
+        let dir = self.get_directory(&temp_dir("testCloneClose"))?;
         let mut io = dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
         let mut values = [0, 7, 11, 9];
         io.write_v_int(5)?;
@@ -170,7 +169,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
 
     /// `testCloneSliceClose()`.
     fn test_clone_slice_close(&self) -> Result<()> {
-        let mut dir = self.get_directory(&temp_dir("testCloneSliceClose"))?;
+        let dir = self.get_directory(&temp_dir("testCloneSliceClose"))?;
         let mut io = dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
         let mut values = [0, 7, 11, 9];
         io.write_int(1)?;
@@ -201,7 +200,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     fn test_seek_zero(&self) -> Result<()> {
         let upto = if *TEST_NIGHTLY { 31 } else { 3 };
         for i in 0..upto {
-            let mut dir = self.get_directory_chunked(&temp_dir("testSeekZero"), 1 << i)?;
+            let dir = self.get_directory_chunked(&temp_dir("testSeekZero"), 1 << i)?;
             let mut io =
                 dir.create_output("zeroBytes", &*LuceneTestCase::new_io_context(&*random()))?;
             io.close()?;
@@ -218,7 +217,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     fn test_seek_slice_zero(&self) -> Result<()> {
         let upto = if *TEST_NIGHTLY { 31 } else { 3 };
         for i in 0..upto {
-            let mut dir = self.get_directory_chunked(&temp_dir("testSeekSliceZero"), 1 << i)?;
+            let dir = self.get_directory_chunked(&temp_dir("testSeekSliceZero"), 1 << i)?;
             let mut io =
                 dir.create_output("zeroBytes", &*LuceneTestCase::new_io_context(&*random()))?;
             io.close()?;
@@ -236,7 +235,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     /// `testSeekEnd()`.
     fn test_seek_end(&self) -> Result<()> {
         for i in 0..17 {
-            let mut dir = self.get_directory_chunked(&temp_dir("testSeekEnd"), 1 << i)?;
+            let dir = self.get_directory_chunked(&temp_dir("testSeekEnd"), 1 << i)?;
             let mut io =
                 dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut bytes = vec![0u8; 1 << i];
@@ -258,7 +257,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     /// `testSeekSliceEnd()`.
     fn test_seek_slice_end(&self) -> Result<()> {
         for i in 0..17 {
-            let mut dir = self.get_directory_chunked(&temp_dir("testSeekSliceEnd"), 1 << i)?;
+            let dir = self.get_directory_chunked(&temp_dir("testSeekSliceEnd"), 1 << i)?;
             let mut io =
                 dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut bytes = vec![0u8; 1 << i];
@@ -284,7 +283,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     fn test_seeking(&self) -> Result<()> {
         let num_iters = if *TEST_NIGHTLY { 10 } else { 1 };
         for i in 0..num_iters {
-            let mut dir = self.get_directory_chunked(&temp_dir("testSeeking"), 1 << i)?;
+            let dir = self.get_directory_chunked(&temp_dir("testSeeking"), 1 << i)?;
             let mut io =
                 dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut bytes = vec![0u8; 1 << (i + 1)]; // make sure we switch buffers
@@ -320,7 +319,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     fn test_sliced_seeking(&self) -> Result<()> {
         let num_iters = if *TEST_NIGHTLY { 10 } else { 1 };
         for i in 0..num_iters {
-            let mut dir = self.get_directory_chunked(&temp_dir("testSlicedSeeking"), 1 << i)?;
+            let dir = self.get_directory_chunked(&temp_dir("testSlicedSeeking"), 1 << i)?;
             let mut io =
                 dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut bytes = vec![0u8; 1 << (i + 1)]; // make sure we switch buffers
@@ -350,7 +349,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     fn chunked_test_slice_of_slice(&self) -> Result<()> {
         let upto = if *TEST_NIGHTLY { 10 } else { 8 };
         for i in 0..upto {
-            let mut dir = self.get_directory_chunked(&temp_dir("testSliceOfSlice"), 1 << i)?;
+            let dir = self.get_directory_chunked(&temp_dir("testSliceOfSlice"), 1 << i)?;
             let mut io =
                 dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*random()))?;
             let mut bytes = vec![0u8; 1 << (i + 1)]; // make sure we switch buffers
@@ -409,7 +408,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
     fn assert_chunking(&self, random: &dyn Random, chunk_size: i32) -> Result<()> {
         let path = LuceneTestCase::create_temp_dir_prefix(&format!("mmap{chunk_size}"));
         let chunked_dir = self.get_directory_chunked(&path, chunk_size)?;
-        let mut dir = MockDirectoryWrapper::new(random, Arc::from(chunked_dir));
+        let dir = MockDirectoryWrapper::new(random, Arc::from(chunked_dir));
         let config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(random),
         )));
@@ -460,7 +459,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
         };
         let mut bytes = vec![0u8; num as usize];
         random().next_bytes(&mut bytes);
-        let mut dir = self.get_directory_chunked(&temp_dir("testBytesCrossBoundary"), 16)?;
+        let dir = self.get_directory_chunked(&temp_dir("testBytesCrossBoundary"), 16)?;
         let result = (|| -> Result<()> {
             let mut out = dir.create_output(
                 "bytesCrossBoundary",
@@ -514,7 +513,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
 
     /// `testLittleEndianLongsCrossBoundary()`.
     fn test_little_endian_longs_cross_boundary(&self) -> Result<()> {
-        let mut dir =
+        let dir =
             self.get_directory_chunked(&temp_dir("testLittleEndianLongsCrossBoundary"), 16)?;
         let result = (|| -> Result<()> {
             let mut out = dir.create_output(
@@ -546,7 +545,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
 
     /// `testLittleEndianFloatsCrossBoundary()`.
     fn test_little_endian_floats_cross_boundary(&self) -> Result<()> {
-        let mut dir = self.get_directory_chunked(&temp_dir("testFloatsCrossBoundary"), 8)?;
+        let dir = self.get_directory_chunked(&temp_dir("testFloatsCrossBoundary"), 8)?;
         let result = (|| -> Result<()> {
             let mut out =
                 dir.create_output("Floats", &*LuceneTestCase::new_io_context(&*random()))?;

@@ -42,7 +42,7 @@ fn canned_text_field(tokens: Vec<Token>) -> Result<TextField> {
 
 /// Port of `TestMaxPosition.testTooBigPosition`.
 fn test_too_big_position() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(None),
@@ -74,7 +74,7 @@ fn test_too_big_position() -> Result<()> {
 
 /// Port of `TestMaxPosition.testMaxPosition`.
 fn test_max_position() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(None),

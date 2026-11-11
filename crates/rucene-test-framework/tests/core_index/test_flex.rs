@@ -33,7 +33,7 @@ pub fn class_def() -> Arc<Class> {
 /// Test non-flex API emulated on flex index
 /// Port of `TestFlex.testNonFlex`.
 fn test_non_flex() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
 
     const DOC_COUNT: i32 = 177;
 
@@ -90,7 +90,7 @@ fn test_non_flex() -> Result<()> {
 
 /// Port of `TestFlex.testTermOrd`.
 fn test_term_ord() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));

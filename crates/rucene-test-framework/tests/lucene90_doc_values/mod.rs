@@ -365,7 +365,7 @@ fn do_test_dense_numeric_long_values_bulk_fetch(bits_per_value: i32) -> Result<(
         };
     }
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     conf.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -513,7 +513,7 @@ fn do_test_sparse_doc_values_vs_stored_fields() -> Result<()> {
         *value = random().next_long();
     }
 
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));
@@ -696,7 +696,7 @@ fn do_test_terms_enum_random(
     num_docs: i32,
     values_producer: &mut dyn FnMut() -> String,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));
@@ -905,7 +905,7 @@ fn assert_equals_terms_enum(
 fn test_sorted_set_around_block_size(_suite: &CompressingDocValuesSuite) -> Result<()> {
     let frontier = 1 << DIRECT_MONOTONIC_BLOCK_SHIFT;
     for max_doc in frontier - 1..=frontier + 1 {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -964,7 +964,7 @@ fn test_sorted_set_around_block_size(_suite: &CompressingDocValuesSuite) -> Resu
 fn test_sorted_numeric_around_block_size(_suite: &CompressingDocValuesSuite) -> Result<()> {
     let frontier = 1 << DIRECT_MONOTONIC_BLOCK_SHIFT;
     for max_doc in frontier - 1..=frontier + 1 {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1046,7 +1046,7 @@ fn test_numeric_field_jump_tables(suite: &CompressingDocValuesSuite) -> Result<(
     // trigger consecutive block skips
     let max_doc = LuceneTestCase::at_least(5 * 65536);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = create_fast_index_writer(&dir.as_directory(), max_doc)?;
 
     let id_field = Arc::new(LuceneTestCase::new_string_field("id", "", Store::NO));
@@ -1140,7 +1140,7 @@ fn blocks_of_various_bpv() -> BlocksOfVariousBpv {
 fn do_test_sorted_numeric_blocks_of_various_bits_per_value(
     counts: &mut dyn FnMut() -> i64,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));
@@ -1222,7 +1222,7 @@ fn do_test_sparse_numeric_blocks_of_various_bits_per_value(
     suite: &CompressingDocValuesSuite,
     density: f64,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));
@@ -1337,7 +1337,7 @@ fn test_reseek_after_skip_decompression(suite: &CompressingDocValuesSuite) -> Re
     );
     let doc_values = values.len();
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let analyzer = Arc::new(StandardAnalyzer::new());
         let config = IndexWriterConfig::with_analyzer(Some(analyzer));
@@ -1397,7 +1397,7 @@ fn test_large_terms_compression(suite: &CompressingDocValuesSuite) -> Result<()>
     let values_count = values_set.len();
     let values: Vec<String> = values_set.iter().cloned().collect();
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let analyzer = Arc::new(StandardAnalyzer::new());
         let config = IndexWriterConfig::with_analyzer(Some(analyzer));
@@ -1437,7 +1437,7 @@ fn test_large_terms_compression(suite: &CompressingDocValuesSuite) -> Result<()>
 
 /// Port of `TestLucene90DocValuesFormat.testSortedTermsDictLookupOrd`.
 fn test_sorted_terms_dict_lookup_ord(_suite: &CompressingDocValuesSuite) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -1469,7 +1469,7 @@ fn test_sorted_terms_dict_lookup_ord(_suite: &CompressingDocValuesSuite) -> Resu
 
 /// Port of `TestLucene90DocValuesFormat.testSortedSetTermsDictLookupOrd`.
 fn test_sorted_set_terms_dict_lookup_ord(_suite: &CompressingDocValuesSuite) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -1532,7 +1532,7 @@ fn do_test_terms_dict_lookup_ord(te: &mut dyn TermsEnum) -> Result<()> {
 // other terms
 /// Port of `TestLucene90DocValuesFormat.testTermsEnumDictionary`.
 fn test_terms_enum_dictionary(_suite: &CompressingDocValuesSuite) -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config();
     let iwriter = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
     let mut doc = Document::new();
@@ -1569,7 +1569,7 @@ fn test_terms_enum_dictionary(_suite: &CompressingDocValuesSuite) -> Result<()> 
 /// Port of `TestLucene90DocValuesFormat.testTermsEnumConsistency`.
 fn test_terms_enum_consistency(_suite: &CompressingDocValuesSuite) -> Result<()> {
     let num_terms = TERMS_DICT_BLOCK_LZ4_SIZE as i32 + 10; // need more than one block of unique terms.
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config();
     let iwriter = RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), conf)?;
 
@@ -1627,7 +1627,7 @@ fn test_terms_enum_consistency(_suite: &CompressingDocValuesSuite) -> Result<()>
 
 /// Port of `TestLucene90DocValuesFormat.testSkipIndexStoredSeparately`.
 fn test_skip_index_stored_separately(suite: &CompressingDocValuesSuite) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let conf = LuceneTestCase::new_index_writer_config();
         conf.set_codec(suite.get_codec())?;
@@ -1731,7 +1731,7 @@ impl Directory for NoDataSliceDirectory {
     /// `FilterDirectory.close()` closes the wrapped directory; the test never
     /// closes this wrapper, only the wrapped directory, through its
     /// try-with-resources.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -1906,7 +1906,7 @@ fn only_skipper(reader: &Arc<dyn DirectoryReader>) -> Result<Box<dyn DocValuesSk
 /// Port of `TestLucene90DocValuesFormatVariableSkipInterval.testSkipperAllEqualValue`.
 fn test_skipper_all_equal_value(suite: &DocValuesSuite) -> Result<()> {
     let config = skip_interval_config(suite)?;
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let writer =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
@@ -1945,7 +1945,7 @@ fn test_skipper_few_values_sorted(suite: &DocValuesSuite) -> Result<()> {
         SortFieldType::Long,
         reverse,
     )?])?)?;
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let writer =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
@@ -1998,7 +1998,7 @@ fn test_skipper_all_equal_value_with_gaps(suite: &DocValuesSuite) -> Result<()> 
         SortFieldType::Long,
         false,
     )?])?)?;
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let writer =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;
@@ -2053,7 +2053,7 @@ fn test_skipper_all_equal_value_with_multi_values(suite: &DocValuesSuite) -> Res
         SortFieldType::Long,
         false,
     )?])?)?;
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let writer =
             RandomIndexWriter::new_with_config(&*random(), directory.as_directory(), config)?;

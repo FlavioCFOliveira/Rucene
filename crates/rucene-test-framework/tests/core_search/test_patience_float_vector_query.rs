@@ -129,7 +129,7 @@ fn expected_to_string(inner: &str) -> String {
 
 /// Port of `TestPatienceFloatVectorQuery.testToString`.
 fn test_to_string() -> Result<()> {
-    let mut index_store =
+    let index_store =
         get_index_store::<PatienceFloatCase>("field", &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
     let reader = directory_reader::open(index_store.as_directory())?;
     let result = (|| -> Result<()> {

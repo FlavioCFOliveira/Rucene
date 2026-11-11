@@ -263,7 +263,7 @@ impl TestConstantScoreScorerIndex {
 
 fn test_early_termination() -> Result<()> {
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     config.set_max_buffered_docs(2)?;
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;

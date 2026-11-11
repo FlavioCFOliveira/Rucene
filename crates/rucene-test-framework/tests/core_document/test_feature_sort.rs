@@ -89,7 +89,7 @@ fn sorted_values(
 
 /// Port of `testFeature`.
 fn test_feature() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir)?;
     writer.add_document(&doc(Some(("name", 30.1, Some("30.1"))))?)?;
     writer.add_document(&doc(Some(("name", 1.3, Some("1.3"))))?)?;
@@ -118,7 +118,7 @@ fn assert_missing_order(v: &[Option<String>]) {
 
 /// Port of `testFeatureMissing`.
 fn test_feature_missing() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir)?;
     writer.add_document(&doc(None)?)?;
     writer.add_document(&doc(Some(("name", 1.3, Some("1.3"))))?)?;
@@ -135,7 +135,7 @@ fn test_feature_missing() -> Result<()> {
 
 /// Port of `testFeatureMissingFieldInSegment`.
 fn test_feature_missing_field_in_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir)?;
     writer.add_document(&doc(None)?)?;
     writer.commit()?;
@@ -153,7 +153,7 @@ fn test_feature_missing_field_in_segment() -> Result<()> {
 
 /// Port of `testFeatureMissingFeatureNameInSegment`.
 fn test_feature_missing_feature_name_in_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir)?;
     writer.add_document(&doc(Some(("different_name", 0.5, None)))?)?;
     writer.commit()?;
@@ -171,7 +171,7 @@ fn test_feature_missing_feature_name_in_segment() -> Result<()> {
 
 /// Port of `testFeatureMultipleMissing`.
 fn test_feature_multiple_missing() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir)?;
     for _ in 0..5 {
         writer.add_document(&doc(None)?)?;
@@ -198,7 +198,7 @@ fn score_docs(td: &TopFieldDocs) -> Vec<ScoreDoc> {
 /// Port of `testDuelFloat`: this duel gives `compareBottom` and
 /// `compareTop` some coverage.
 fn test_duel_float() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs = LuceneTestCase::at_least(100);
     for _d in 0..num_docs {

@@ -198,7 +198,7 @@ fn random_id() -> BytesRef {
 /// Port of `TestFrozenBufferedUpdates.testTermDocsIterator`.
 fn test_term_docs_iterator() -> Result<()> {
     for _ in 0..5 {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = IndexWriter::new(
             dir.as_directory(),
             LuceneTestCase::new_index_writer_config(),

@@ -427,7 +427,7 @@ fn assert_next(te: &mut dyn TermsEnum, expected: &str) -> Result<()> {
 
 /// `testBasic()`.
 fn ords_test_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w =
         RandomIndexWriter::new_with_mock_analyzer(&*LuceneTestCase::random(), dir.as_directory())?;
     w.add_document(&one_field_doc("field", "a b c", true))?;
@@ -483,7 +483,7 @@ fn add_36(w: &RandomIndexWriter, terms: &mut Vec<String>, prefix: &str) -> Resul
 
 /// `testTwoBlocks()`.
 fn ords_test_two_blocks() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w =
         RandomIndexWriter::new_with_mock_analyzer(&*LuceneTestCase::random(), dir.as_directory())?;
     let mut terms: Vec<String> = Vec::new();
@@ -552,7 +552,7 @@ fn ords_test_two_blocks() -> Result<()> {
 
 /// `testThreeBlocks()`.
 fn ords_test_three_blocks() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w =
         RandomIndexWriter::new_with_mock_analyzer(&*LuceneTestCase::random(), dir.as_directory())?;
     let mut terms: Vec<String> = Vec::new();
@@ -647,7 +647,7 @@ fn plain_writer(
 
 /// `testFloorBlocks()`.
 fn ords_test_floor_blocks() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = plain_writer(&dir)?;
     for i in 0..128 {
         let term = char_string(i);
@@ -685,7 +685,7 @@ fn ords_test_floor_blocks() -> Result<()> {
 
 /// `testNonRootFloorBlocks()`.
 fn ords_test_non_root_floor_blocks() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = plain_writer(&dir)?;
     let mut terms: Vec<String> = Vec::new();
     for i in 0..36 {
@@ -729,7 +729,7 @@ fn ords_test_non_root_floor_blocks() -> Result<()> {
 
 /// `testSeveralNonRootBlocks()`.
 fn ords_test_several_non_root_blocks() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = plain_writer(&dir)?;
     let mut terms: Vec<String> = Vec::new();
     for i in 0..30 {
@@ -785,7 +785,7 @@ fn ords_test_several_non_root_blocks() -> Result<()> {
 
 /// `testSeekCeilNotFound()`.
 fn ords_test_seek_ceil_not_found() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w =
         RandomIndexWriter::new_with_mock_analyzer(&*LuceneTestCase::random(), dir.as_directory())?;
     // Get empty string in there!

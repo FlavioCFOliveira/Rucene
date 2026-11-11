@@ -133,9 +133,9 @@ impl QueryFixture {
         let QueryFixture {
             parallel,
             single,
-            mut dir,
-            mut dir1,
-            mut dir2,
+            dir,
+            dir1,
+            dir2,
         } = self;
         single.get_index_reader().close()?;
         drop(single);
@@ -186,8 +186,8 @@ fn queries(f: &QueryFixture) -> Result<()> {
 
 /// Port of `TestParallelCompositeReader.testRefCounts1`.
 fn test_ref_counts1() -> Result<()> {
-    let mut dir1 = get_dir1()?;
-    let mut dir2 = get_dir2()?;
+    let dir1 = get_dir1()?;
+    let dir2 = get_dir2()?;
     // close subreaders, ParallelReader will not change refCounts, but close on its own close
     let ir1 = directory_reader::open(dir1.as_directory())?;
     let ir2 = directory_reader::open(dir2.as_directory())?;
@@ -210,8 +210,8 @@ fn test_ref_counts1() -> Result<()> {
 
 /// Port of `TestParallelCompositeReader.testRefCounts2`.
 fn test_ref_counts2() -> Result<()> {
-    let mut dir1 = get_dir1()?;
-    let mut dir2 = get_dir2()?;
+    let dir1 = get_dir1()?;
+    let dir2 = get_dir2()?;
     let ir1 = directory_reader::open(dir1.as_directory())?;
     let ir2 = directory_reader::open(dir2.as_directory())?;
 
@@ -256,7 +256,7 @@ fn test_ref_counts2() -> Result<()> {
 /// `private void testReaderClosedListener1(boolean closeSubReaders, int
 /// wrapMultiReaderType)`.
 fn reader_closed_listener1(close_sub_readers: bool, wrap_multi_reader_type: i32) -> Result<()> {
-    let mut dir1 = get_dir1()?;
+    let dir1 = get_dir1()?;
     let ir1 = open(&dir1)?;
     let ir2: Arc<dyn CompositeReader> = match wrap_multi_reader_type {
         0 => Arc::clone(&ir1),
@@ -321,7 +321,7 @@ fn test_reader_closed_listener1() -> Result<()> {
 
 /// Port of `TestParallelCompositeReader.testCloseInnerReader`.
 fn test_close_inner_reader() -> Result<()> {
-    let mut dir1 = get_dir1()?;
+    let dir1 = get_dir1()?;
     let ir1 = open(&dir1)?;
     assert_equals(&1, &first_sub(&*ir1).get_ref_count());
 
@@ -355,10 +355,10 @@ fn test_close_inner_reader() -> Result<()> {
 /// Port of `TestParallelCompositeReader.testIncompatibleIndexes1`.
 fn test_incompatible_indexes1() -> Result<()> {
     // two documents:
-    let mut dir1 = get_dir1()?;
+    let dir1 = get_dir1()?;
 
     // one document only:
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), new_iwc())?;
     let mut d3 = Document::new();
 
@@ -393,8 +393,8 @@ fn test_incompatible_indexes1() -> Result<()> {
 
 /// Port of `TestParallelCompositeReader.testIncompatibleIndexes2`.
 fn test_incompatible_indexes2() -> Result<()> {
-    let mut dir1 = get_dir1()?;
-    let mut dir2 = get_invalid_structured_dir2()?;
+    let dir1 = get_dir1()?;
+    let dir2 = get_invalid_structured_dir2()?;
 
     let ir1 = directory_reader::open(dir1.as_directory())?;
     let ir2 = directory_reader::open(dir2.as_directory())?;
@@ -424,8 +424,8 @@ fn test_incompatible_indexes2() -> Result<()> {
 
 /// Port of `TestParallelCompositeReader.testIgnoreStoredFields`.
 fn test_ignore_stored_fields() -> Result<()> {
-    let mut dir1 = get_dir1()?;
-    let mut dir2 = get_dir2()?;
+    let dir1 = get_dir1()?;
+    let dir2 = get_dir2()?;
     let ir1 = open(&dir1)?;
     let ir2 = open(&dir2)?;
 
@@ -491,7 +491,7 @@ fn test_ignore_stored_fields() -> Result<()> {
 
 /// Port of `TestParallelCompositeReader.testToString`.
 fn test_to_string() -> Result<()> {
-    let mut dir1 = get_dir1()?;
+    let dir1 = get_dir1()?;
     let ir1 = open(&dir1)?;
     let pr = ParallelCompositeReader::new(vec![ir1])?;
 
@@ -507,7 +507,7 @@ fn test_to_string() -> Result<()> {
 
 /// Port of `TestParallelCompositeReader.testToStringCompositeComposite`.
 fn test_to_string_composite_composite() -> Result<()> {
-    let mut dir1 = get_dir1()?;
+    let dir1 = get_dir1()?;
     let ir1 = open(&dir1)?;
     let pr = ParallelCompositeReader::new(vec![Arc::new(MultiReader::new_closing(vec![
         ir1 as Arc<dyn IndexReader>,

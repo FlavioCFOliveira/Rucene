@@ -114,7 +114,7 @@ fn visit_tear_down(f: &mut VisitSubscorers) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())

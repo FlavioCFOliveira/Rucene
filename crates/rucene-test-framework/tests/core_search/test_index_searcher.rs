@@ -127,7 +127,7 @@ fn index_searcher_tear_down(f: &mut IndexSearcherTest) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())
@@ -232,7 +232,7 @@ fn test_huge_n(f: &mut IndexSearcherTest) -> Result<()> {
 
 fn test_search_after_passed_max_doc(_f: &mut IndexSearcherTest) -> Result<()> {
     // LUCENE-5128: ensure we get a meaningful message if searchAfter exceeds maxDoc
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     w.add_document(&Document::new())?;
     let r = w.get_reader()?;
@@ -254,7 +254,7 @@ fn test_search_after_passed_max_doc(_f: &mut IndexSearcherTest) -> Result<()> {
 }
 
 fn test_count(_f: &mut IndexSearcherTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs = LuceneTestCase::at_least(100);
     for _i in 0..num_docs {
@@ -417,7 +417,7 @@ impl IndexSearcherOverrides for OneSegmentPerSlice {
 }
 
 fn test_get_slices(_f: &mut IndexSearcherTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for _i in 0..10 {
         w.add_document(&Document::new())?;

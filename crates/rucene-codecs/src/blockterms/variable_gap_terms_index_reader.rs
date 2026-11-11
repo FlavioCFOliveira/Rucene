@@ -211,7 +211,7 @@ impl TermsIndexReaderBase for VariableGapTermsIndexReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

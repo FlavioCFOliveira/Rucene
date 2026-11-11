@@ -50,7 +50,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Indexes `Integer.MAX_VALUE` docs with a fixed binary field.
 fn test_fixed_sorted() -> Result<()> {
-    let mut dir =
+    let dir =
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BFixedSorted"));
     never_throttle(&dir);
 

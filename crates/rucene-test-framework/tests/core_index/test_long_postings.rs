@@ -130,9 +130,10 @@ fn expected_from(mut expected: i32, num_docs: i32, is_s1: &FixedBitSet, do_s1: b
 fn test_long_postings() -> Result<()> {
     // Don't use _TestUtil.getTempDir so that we own the
     // randomness (ie same seed will point to same dir):
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
-        &format!("longpostings.{}", random().next_long()),
-    ));
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(&format!(
+        "longpostings.{}",
+        random().next_long()
+    )));
 
     let num_docs = LuceneTestCase::at_least(1000);
 
@@ -279,9 +280,10 @@ fn test_long_postings_no_positions() -> Result<()> {
 fn do_test_long_postings_no_positions(options: IndexOptions) -> Result<()> {
     // Don't use _TestUtil.getTempDir so that we own the
     // randomness (ie same seed will point to same dir):
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
-        &format!("longpostings.{}", random().next_long()),
-    ));
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(&format!(
+        "longpostings.{}",
+        random().next_long()
+    )));
 
     let num_docs = LuceneTestCase::at_least(1000);
 

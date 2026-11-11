@@ -272,7 +272,7 @@ fn next_long(r: &mut Recorder, dir: &MockDirectoryWrapper) {
     });
 }
 
-fn close_dir(r: &mut Recorder, mut dir: MockDirectoryWrapper) {
+fn close_dir(r: &mut Recorder, dir: MockDirectoryWrapper) {
     r.rec_void("close dir", || dir.close());
 }
 
@@ -374,7 +374,7 @@ fn open_io(r: &mut Recorder, sd: i64) {
 fn tracking(r: &mut Recorder) {
     // An unclosed output.
     r.begin("tracking", 1);
-    let mut d1 = mdw(1);
+    let d1 = mdw(1);
     let mut o1 = d1.create_output("a", default()).unwrap();
     o1.write_bytes(&bytes(10, 1), 0, 10).unwrap();
     r.rec("getFileHandleCount", || {
@@ -395,7 +395,7 @@ fn tracking(r: &mut Recorder) {
 
     // An unclosed input.
     r.begin("tracking", 2);
-    let mut d2 = mdw(2);
+    let d2 = mdw(2);
     let mut o2 = d2.create_output("b", default()).unwrap();
     o2.write_bytes(&bytes(10, 2), 0, 10).unwrap();
     o2.close().unwrap();
@@ -409,7 +409,7 @@ fn tracking(r: &mut Recorder) {
 
     // Several open files: the map in the message.
     r.begin("tracking", 3);
-    let mut d3 = mdw(3);
+    let d3 = mdw(3);
     let mut keep = Vec::new();
     for n in ["zz", "a1", "_0.cfs", "b"] {
         let mut o = d3.create_output(n, default()).unwrap();
@@ -823,17 +823,17 @@ fn index(r: &mut Recorder, index: &ByteBuffersDirectory, sd: i64) {
     next_long(r, &d);
 
     r.begin("index_close", sd);
-    let mut d2 = copy_index(index, sd, &none);
+    let d2 = copy_index(index, sd, &none);
     r.rec_void("close dir", || d2.close());
     next_long(r, &d2);
 
     r.begin("index_close_most", sd);
-    let mut d3 = copy_index(index, sd, &most);
+    let d3 = copy_index(index, sd, &most);
     r.rec_void("close dir", || d3.close());
     next_long(r, &d3);
 
     r.begin("index_close_clean", sd);
-    let mut d4 = copy_index(index, sd, &all);
+    let d4 = copy_index(index, sd, &all);
     d4.set_cross_check_term_vectors_on_close(false);
     r.rec("getLevelForCheckOnClose", || {
         Ok(d4.get_level_for_check_on_close().to_string())
@@ -884,7 +884,7 @@ fn load_corpus(case: &str) -> ByteBuffersDirectory {
 fn index_read(r: &mut Recorder, corpus: &ByteBuffersDirectory, scenario: &'static str, sd: i64) {
     r.begin(scenario, sd);
     let all = corpus.list_all().unwrap();
-    let mut d = copy_index(corpus, sd, &all);
+    let d = copy_index(corpus, sd, &all);
     let mut reader: Option<Arc<dyn IndexReader>> = None;
     r.rec("open reader", || {
         let opened = directory_reader::open(d.as_directory())?;
@@ -912,7 +912,7 @@ fn index_read(r: &mut Recorder, corpus: &ByteBuffersDirectory, scenario: &'stati
 
 fn unreferenced(r: &mut Recorder, index: &ByteBuffersDirectory) {
     r.begin("index_unref", 0);
-    let mut d = copy_index(index, 0, &index.list_all().unwrap());
+    let d = copy_index(index, 0, &index.list_all().unwrap());
     d.set_check_index_on_close(false);
     d.set_assert_no_unrefenced_files_on_close(true);
     let mut o = d
@@ -924,7 +924,7 @@ fn unreferenced(r: &mut Recorder, index: &ByteBuffersDirectory) {
     r.rec_void("close dir", || d.close());
 
     r.begin("index_unref", 1);
-    let mut d2 = copy_index(index, 1, &index.list_all().unwrap());
+    let d2 = copy_index(index, 1, &index.list_all().unwrap());
     d2.set_check_index_on_close(false);
     d2.set_assert_no_unrefenced_files_on_close(true);
     r.rec_void("close dir", || d2.close());
@@ -936,7 +936,7 @@ fn with_hint(hint: Arc<dyn FileOpenHint>) -> Box<dyn IOContext> {
 
 fn serial_io(r: &mut Recorder) {
     r.begin("serial_io", 0);
-    let mut dir = SerialIOCountingDirectory::new(Box::new(ByteBuffersDirectory::new()));
+    let dir = SerialIOCountingDirectory::new(Box::new(ByteBuffersDirectory::new()));
     let mut o = dir.create_output("s", default()).unwrap();
     o.write_bytes(&bytes(256 * 1024, 9), 0, 256 * 1024).unwrap();
     o.close().unwrap();
@@ -1177,7 +1177,7 @@ fn raw(r: &mut Recorder) {
     let mut o = src.create_output("a", default()).unwrap();
     o.write_bytes(&bytes(7, 1), 0, 7).unwrap();
     o.close().unwrap();
-    let mut raw = RawDirectoryWrapper::new(Arc::new(ByteBuffersDirectory::new()));
+    let raw = RawDirectoryWrapper::new(Arc::new(ByteBuffersDirectory::new()));
     r.rec("toString", || Ok(raw.to_string()));
     r.rec("copyFrom", || {
         raw.copy_from(&src, "a", "b", default())?;
@@ -1310,7 +1310,7 @@ fn plain_failure_never_throws() {
     assert!(!plain.do_fail());
     d.fail_on(plain);
     d.create_output("a", default()).unwrap().close().unwrap();
-    let mut d = d;
+    let d = d;
     d.close().unwrap();
 }
 
@@ -1330,7 +1330,7 @@ fn unwrap_only_test_steps_through_mock_inputs() {
     assert_eq!(inner.length(), 3);
     input.close().unwrap();
     drop(input);
-    let mut d = d;
+    let d = d;
     d.close().unwrap();
 }
 
@@ -1372,7 +1372,7 @@ fn readonce_inputs_are_confined_to_their_thread() {
     confined.close().unwrap();
     free.close().unwrap();
     drop((confined, free));
-    let mut d = d;
+    let d = d;
     d.close().unwrap();
 }
 
@@ -1422,7 +1422,7 @@ fn failures_reenter_and_threads_share_the_wrapper() {
     assert!(failure.calls.load(Ordering::SeqCst) > 0);
     assert_eq!(d.get_file_handle_count(), 0);
     assert_eq!(d.list_all().unwrap().len(), 100);
-    let mut d = d;
+    let d = d;
     d.close().unwrap();
 }
 
@@ -1454,6 +1454,6 @@ fn crash_closes_slow_closing_inputs() {
     assert_eq!(class_and_message(&e).1, "Abusing closed IndexInput!");
     slow.close().unwrap();
     drop(slow);
-    let mut d = d;
+    let d = d;
     d.close().unwrap();
 }

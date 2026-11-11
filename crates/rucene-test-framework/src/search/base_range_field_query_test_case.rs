@@ -397,7 +397,7 @@ pub trait BaseRangeFieldQueryTestCase: Send + Sync + 'static {
         if mbd != -1 && mbd < (ranges.len() / 100) as i32 {
             iwc.set_max_buffered_docs((ranges.len() / 100) as i32)?;
         }
-        let mut dir = if ranges.len() > 50000 {
+        let dir = if ranges.len() > 50000 {
             // Avoid slow codecs like SimpleText
             iwc.set_codec(TestUtil::get_default_codec())?;
             let simple_name = LuceneTestCase::get_test_class().simple_name().to_string();

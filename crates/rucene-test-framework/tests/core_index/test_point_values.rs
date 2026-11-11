@@ -162,7 +162,7 @@ fn as_codec_reader(leaf: Arc<dyn LeafReader>) -> Arc<dyn CodecReader> {
 ///
 /// Port of `TestPointValues.testUpgradeFieldToPoints`.
 fn test_upgrade_field_to_points() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -185,7 +185,7 @@ fn test_upgrade_field_to_points() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalDimChangeOneDoc`.
 fn test_illegal_dim_change_one_doc() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -199,7 +199,7 @@ fn test_illegal_dim_change_one_doc() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalDimChangeTwoDocs`.
 fn test_illegal_dim_change_two_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -216,7 +216,7 @@ fn test_illegal_dim_change_two_docs() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalDimChangeTwoSegments`.
 fn test_illegal_dim_change_two_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -234,7 +234,7 @@ fn test_illegal_dim_change_two_segments() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalDimChangeTwoWriters`.
 fn test_illegal_dim_change_two_writers() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -338,7 +338,7 @@ fn test_illegal_dim_change_via_add_indexes_slow_codec_reader() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalNumBytesChangeOneDoc`.
 fn test_illegal_num_bytes_change_one_doc() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -352,7 +352,7 @@ fn test_illegal_num_bytes_change_one_doc() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalNumBytesChangeTwoDocs`.
 fn test_illegal_num_bytes_change_two_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -369,7 +369,7 @@ fn test_illegal_num_bytes_change_two_docs() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalNumBytesChangeTwoSegments`.
 fn test_illegal_num_bytes_change_two_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -387,7 +387,7 @@ fn test_illegal_num_bytes_change_two_segments() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalNumBytesChangeTwoWriters`.
 fn test_illegal_num_bytes_change_two_writers() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -491,7 +491,7 @@ fn test_illegal_num_bytes_change_via_add_indexes_slow_codec_reader() -> Result<(
 
 /// Port of `TestPointValues.testIllegalTooManyBytes`.
 fn test_illegal_too_many_bytes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -509,7 +509,7 @@ fn test_illegal_too_many_bytes() -> Result<()> {
 
 /// Port of `TestPointValues.testIllegalTooManyDimensions`.
 fn test_illegal_too_many_dimensions() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -542,7 +542,7 @@ fn codec_for_name(name: &str) -> Arc<dyn rucene::codecs::Codec> {
 ///
 /// Port of `TestPointValues.testDifferentCodecs1`.
 fn test_different_codecs1() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     iwc.set_codec(TestUtil::get_default_codec())?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -568,7 +568,7 @@ fn test_different_codecs1() -> Result<()> {
 ///
 /// Port of `TestPointValues.testDifferentCodecs2`.
 fn test_different_codecs2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     iwc.set_codec(codec_for_name("SimpleText"))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -669,7 +669,7 @@ impl IntersectVisitor for TieBreakVisitor {
 
 /// Port of `TestPointValues.testTieBreakByDocID`.
 fn test_tie_break_by_doc_id() -> Result<()> {
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
     let iwc = LuceneTestCase::new_index_writer_config();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -699,7 +699,7 @@ fn test_tie_break_by_doc_id() -> Result<()> {
 
 /// Port of `TestPointValues.testDeleteAllPointDocs`.
 fn test_delete_all_point_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -747,7 +747,7 @@ fn test_points_field_missing_from_one_segment() -> Result<()> {
 
 /// Port of `TestPointValues.testSparsePoints`.
 fn test_sparse_points() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let num_docs = LuceneTestCase::at_least(1000);
     let num_fields = TestUtil::next_int(&*random(), 1, 10) as usize;
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
@@ -836,13 +836,9 @@ fn test_check_index_includes_points() -> Result<()> {
     close_shared(dir)
 }
 
-/// `dir.close()` over a directory shared as an `Arc`, once every other owner
-/// (closed writers and readers) is released.
-fn close_shared(mut dir: Arc<dyn Directory>) -> Result<()> {
-    match Arc::get_mut(&mut dir) {
-        Some(d) => d.close(),
-        None => Ok(()),
-    }
+/// `dir.close()` over a directory shared as an `Arc`.
+fn close_shared(dir: Arc<dyn Directory>) -> Result<()> {
+    dir.close()
 }
 
 /// Port of `TestPointValues.testMergedStatsEmptyReader`.

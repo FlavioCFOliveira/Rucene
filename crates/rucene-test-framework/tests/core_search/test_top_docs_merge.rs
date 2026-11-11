@@ -217,7 +217,7 @@ fn sort_test(use_from: bool) -> Result<()> {
         println!("TEST: make index");
     }
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let reader = {
         let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         // w.setDoRandomForceMerge(false);

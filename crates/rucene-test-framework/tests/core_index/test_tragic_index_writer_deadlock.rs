@@ -47,7 +47,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestTragicIndexWriterDeadlock.testDeadlockExcNRTReaderCommit`.
 fn test_deadlock_exc_nrt_reader_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     if iwc
         .merge_scheduler()
@@ -153,7 +153,7 @@ impl IndexWriterOverrides for TragicMergeSuccess {
 
 /// `private void doTestDeadlockStalledMerges(boolean mergeOnFlush)`.
 fn do_test_deadlock_stalled_merges(merge_on_flush: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::new();
     iwc.set_max_full_flush_merge_wait_millis(if merge_on_flush { 1000 } else { 0 });
 

@@ -93,7 +93,7 @@ fn tear_down(inst: &mut Instance) -> Result<()> {
         None => crate::support::npe("writer"),
     }
     match inst.directory.take() {
-        Some(mut directory) => directory.close(),
+        Some(directory) => directory.close(),
         None => crate::support::npe("directory"),
     }
 }

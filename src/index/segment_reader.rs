@@ -294,18 +294,20 @@ impl SegmentCoreReaders {
     fn close_producers(&self) -> Result<()> {
         use crate::util::IOUtils;
         IOUtils::close([
-            IOUtils::closeable(|| close_lock_arc(&self.fields, |producer| producer.close())),
+            IOUtils::closeable(|| close_lock_shared(&self.fields, |producer| producer.close())),
             IOUtils::closeable(|| {
                 close_lock(&self.term_vectors_reader_orig, |reader| reader.close())
             }),
             IOUtils::closeable(|| close_lock(&self.fields_reader_orig, |reader| reader.close())),
             IOUtils::closeable(|| close_lock(&self.cfs_reader, |reader| reader.close())),
             IOUtils::closeable(|| {
-                close_lock_arc(&self.norms_producer, |producer| producer.close())
+                close_lock_shared(&self.norms_producer, |producer| producer.close())
             }),
-            IOUtils::closeable(|| close_lock_arc(&self.points_reader, |producer| producer.close())),
             IOUtils::closeable(|| {
-                close_lock_arc(&self.knn_vectors_reader, |producer| producer.close())
+                close_lock_shared(&self.points_reader, |producer| producer.close())
+            }),
+            IOUtils::closeable(|| {
+                close_lock_shared(&self.knn_vectors_reader, |producer| producer.close())
             }),
         ])
     }
@@ -342,25 +344,20 @@ fn close_lock<T>(
     Ok(())
 }
 
-/// Closes a producer held behind an `Arc` in place: the closed producer stays
-/// in its slot, as Java's `final` field keeps it.
-///
-/// The producers a `SegmentCoreReaders` owns are shared through `Arc` so that
-/// [`CodecReader`](crate::index::CodecReader) can hand them out, which mirrors
-/// Java's sharing of the producer object. Closing therefore needs sole
-/// ownership: when another `Arc` is still outstanding the close is skipped, as
-/// the producer is still in use.
-fn close_lock_arc<T: ?Sized>(
+/// Closes a producer held behind an `Arc` in place whoever else still shares
+/// it, as Java's `close()` closes the one producer object: the closed producer
+/// stays in its slot, as Java's `final` field keeps it.
+fn close_lock_shared<T: ?Sized>(
     lock: &RwLock<Option<Arc<T>>>,
-    mut close: impl FnMut(&mut T) -> Result<()>,
+    close: impl FnOnce(&T) -> Result<()>,
 ) -> Result<()> {
-    let mut guard = lock
-        .write()
+    let guard = lock
+        .read()
         .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
-    if let Some(inner) = guard.as_mut().and_then(Arc::get_mut) {
-        close(inner)?;
+    match guard.as_deref() {
+        Some(inner) => close(inner),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 impl Drop for SegmentCoreReaders {
@@ -742,11 +739,11 @@ impl DocValuesProducer for SharedDocValuesProducer {
         }
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let mut guard = self.producer.write().map_err(|_| {
             LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
-        if let Some(mut producer) = guard.take() {
+        if let Some(producer) = guard.take() {
             producer.close()?;
         }
         Ok(())
@@ -943,7 +940,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         // Reference counting is performed explicitly by the owner
         // (`SegmentReader::do_close`) using `dv_gens`.
         Ok(())
@@ -1234,7 +1231,7 @@ impl SegmentReader {
         context: &dyn IOContext,
     ) -> Result<Self> {
         let max_doc = segment_info.info.max_doc()?;
-        let si = segment_info.clone();
+        let si = segment_info.java_clone(); // `this.si = si.clone()` (`SegmentReader.java:83`)
         let original_si = segment_info;
         let dir: &dyn Directory = &*original_si.info.directory;
 
@@ -1369,6 +1366,28 @@ impl SegmentReader {
         num_docs: i32,
         is_nrt: bool,
     ) -> Result<Self> {
+        Self::new_shared_bits(
+            segment_info,
+            parent,
+            live_docs.map(SharedBits::new),
+            hard_live_docs.map(SharedBits::new),
+            num_docs,
+            is_nrt,
+        )
+    }
+
+    /// [`new_shared`](Self::new_shared) over bits handed in as shared handles,
+    /// so that a caller passing the same `Bits` object twice — as Java's
+    /// `StandardDirectoryReader` does for a reader that is not near-real-time
+    /// — keeps it one object (`SegmentReader.java:151`).
+    pub(crate) fn new_shared_bits(
+        segment_info: SegmentCommitInfo,
+        parent: &SegmentReader,
+        live_docs: Option<SharedBits>,
+        hard_live_docs: Option<SharedBits>,
+        num_docs: i32,
+        is_nrt: bool,
+    ) -> Result<Self> {
         let max_doc = segment_info.info.max_doc()?;
         if num_docs > max_doc {
             return Err(LuceneError::illegal_argument(format!(
@@ -1384,10 +1403,8 @@ impl SegmentReader {
             }
         }
 
-        let si = segment_info.clone();
+        let si = segment_info.java_clone(); // `this.si = si.clone()` (`SegmentReader.java:146`)
         let original_si = segment_info;
-        let live_docs = live_docs.map(SharedBits::new);
-        let hard_live_docs = hard_live_docs.map(SharedBits::new);
         // `SegmentReader.java:151`.
         debug_assert!(Self::assert_live_docs(
             is_nrt,
@@ -1557,6 +1574,18 @@ impl SegmentReader {
     /// whether the live docs must be re-read from disk.
     pub fn is_nrt(&self) -> bool {
         self.is_nrt
+    }
+
+    /// The live docs as the shared handle this reader holds, Java's
+    /// `liveDocs` object itself.
+    pub(crate) fn live_docs_shared(&self) -> Option<SharedBits> {
+        self.live_docs.clone()
+    }
+
+    /// The hard live docs as the shared handle this reader holds, Java's
+    /// `hardLiveDocs` object itself.
+    pub(crate) fn hard_live_docs_shared(&self) -> Option<SharedBits> {
+        self.hard_live_docs.clone()
     }
 
     /// Returns the live docs that are not hard-deleted, if any.
@@ -2024,12 +2053,8 @@ impl SegmentReader {
     /// `hardLiveDocs == liveDocs`, a *reference* comparison — its constructors
     /// are handed the same `Bits` object twice. This port's [`SharedBits`]
     /// names that sharing with an `Arc`, so the identity test is
-    /// [`Arc::ptr_eq`] over the two handles. Only
-    /// [`SegmentReader::new`] can satisfy it: the reopen constructor
-    /// [`SegmentReader::new_shared`] receives its two views as separate owned
-    /// `Box<dyn Bits>`, which it must wrap in two distinct handles, so the
-    /// identity Java's assert tests is not expressible there and the check is
-    /// not run from it.
+    /// [`Arc::ptr_eq`] over the two handles; a caller handing the same bits
+    /// twice passes the same handle ([`SegmentReader::new_shared_bits`]).
     fn assert_live_docs(
         is_nrt: bool,
         hard_live_docs: Option<&SharedBits>,
@@ -2471,7 +2496,10 @@ mod tests {
         assert_eq!(reader.get_segment_name(), "_0");
         assert_eq!(LeafReader::max_doc(&reader), 7);
         assert_eq!(LeafReader::num_docs(&reader), 7);
-        assert_eq!(reader.get_segment_info(), &info);
+        // `getSegmentInfo()` returns `si`, the reader's `si.clone()`
+        // (`SegmentReader.java:72`): a copy, not the caller's object.
+        assert!(!reader.get_segment_info().same_object(&info));
+        assert_eq!(reader.get_segment_info().info.name, info.info.name);
         assert!(!reader.has_deletions());
     }
 
@@ -2649,7 +2677,7 @@ mod tests {
             }))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -2692,7 +2720,7 @@ mod tests {
             }))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -2845,7 +2873,7 @@ mod tests {
             }))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -2924,7 +2952,7 @@ mod tests {
             self.inner.get_off_heap_byte_size(field_info)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -2995,7 +3023,7 @@ mod tests {
         /// `UnsupportedOperationException`; `SegmentDocValues` propagates a
         /// close error as Java's `RefCount.decRef` does, and a real producer
         /// closes cleanly, so the dummy is not closed.
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             Ok(())
         }
@@ -3094,7 +3122,7 @@ mod tests {
             self.inner.get_pending_deletions()
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -3686,7 +3714,7 @@ mod tests {
         del_docs.set(3);
         let del_count = del_docs.cardinality() as i32;
         let info = {
-            let mut i = test_segment_commit_info("_0", max_doc);
+            let i = test_segment_commit_info("_0", max_doc);
             i.set_del_count(del_count).unwrap();
             i
         };
@@ -3697,11 +3725,14 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         )
         .unwrap();
-        let reader = SegmentReader::new_shared(
+        // Not NRT: `liveDocs` and `hardLiveDocs` are one object
+        // (`SegmentReader.java:151`).
+        let live_docs = SharedBits::new(Box::new(del_docs));
+        let reader = SegmentReader::new_shared_bits(
             info,
             &parent,
-            Some(Box::new(del_docs)),
-            Some(Box::new(FixedBitSet::new(max_doc as usize))),
+            Some(live_docs.clone()),
+            Some(live_docs),
             max_doc - del_count,
             // Distinct live-docs and hard-live-docs instances are only legal
             // for an NRT reader: the non-NRT case asserts they are the same
@@ -3874,7 +3905,7 @@ mod segment_doc_values_ref_count_tests {
         fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
             Err(LuceneError::illegal_state("no merge instance".to_string()))
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closes.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
                 return Err(LuceneError::illegal_state("close failed".to_string()));

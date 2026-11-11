@@ -854,7 +854,7 @@ fn members_match_lucene_under_the_runner() {
 /// as `$D`, identity hashes as `@HASH`), then the outcome of a second
 /// `obtainLock` of a held lock, after which the directory is closed.
 fn describe_dir(
-    mut d: rucene_test_framework::util::lucene_test_case::TestDirectory,
+    d: rucene_test_framework::util::lucene_test_case::TestDirectory,
     masks: &[String],
 ) -> String {
     let mut s = d.to_string();

@@ -806,7 +806,7 @@ fn test_stored_field_long() -> Result<()> {
 
 /// Port of `testIndexedBinaryField`.
 fn test_indexed_binary_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let br = LuceneTestCase::new_bytes_ref_bytes(&[0u8; 5]);
@@ -838,7 +838,7 @@ fn test_knn_vector_field() -> Result<()> {
     if rucene::codecs::get_default().is_some_and(|c| c.name() == "SimpleText") {
         return Ok(());
     }
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

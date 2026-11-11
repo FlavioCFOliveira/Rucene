@@ -113,11 +113,11 @@ fn crash(writer: &IndexWriter, dir: &TestDirectory) -> Result<()> {
 
 /// `Directory dir2 = newDirectory(dir); dir.close(); new
 /// RandomIndexWriter(random(), dir2).close(); dir2.close();`
-fn copy_and_reopen(mut dir: TestDirectory) -> Result<()> {
+fn copy_and_reopen(dir: TestDirectory) -> Result<()> {
     // Make a new dir, copying from the crashed dir, and
     // open IW on it, to confirm IW "recovers" after a
     // crash:
-    let mut dir2 = LuceneTestCase::new_directory_copy(&*dir.as_directory())?;
+    let dir2 = LuceneTestCase::new_directory_copy(&*dir.as_directory())?;
     dir.close()?;
 
     RandomIndexWriter::new_with_mock_analyzer(&*random(), dir2.as_directory())?.close()?;
@@ -197,7 +197,7 @@ fn test_crash_after_reopen() -> Result<()> {
 
 /// Port of `TestCrash.testCrashAfterClose`.
 fn test_crash_after_close() -> Result<()> {
-    let (writer, mut dir) = init_index_new(&*random(), false)?;
+    let (writer, dir) = init_index_new(&*random(), false)?;
 
     writer.close()?;
     mock(&dir).crash()?;
@@ -211,7 +211,7 @@ fn test_crash_after_close() -> Result<()> {
 /// Port of `TestCrash.testCrashAfterCloseNoWait`.
 fn test_crash_after_close_no_wait() -> Result<()> {
     let random = random();
-    let mut dir = new_no_lock_mock_directory(&*random);
+    let dir = new_no_lock_mock_directory(&*random);
     let writer = init_index(&*random, &dir, false, false)?;
 
     let committed = writer.commit();

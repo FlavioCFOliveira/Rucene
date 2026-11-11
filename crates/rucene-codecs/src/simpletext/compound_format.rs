@@ -18,7 +18,7 @@
 //! Port of `org.apache.lucene.codecs.simpletext.SimpleTextCompoundFormat`.
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rucene::codecs::{CompoundDirectory, CompoundFormat};
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
@@ -156,7 +156,7 @@ impl CompoundFormat for SimpleTextCompoundFormat {
         }
 
         Ok(Box::new(SimpleTextCompoundDirectory {
-            input,
+            input: Mutex::new(input),
             file_names,
             start_offsets,
             end_offsets,
@@ -237,7 +237,9 @@ impl CompoundFormat for SimpleTextCompoundFormat {
 
 /// The anonymous `CompoundDirectory` `getCompoundReader` returns.
 struct SimpleTextCompoundDirectory {
-    input: Box<dyn IndexInput>,
+    /// Behind a mutex because `close()` closes it through the shared
+    /// directory, as Java's `in.close()` does.
+    input: Mutex<Box<dyn IndexInput>>,
     file_names: Vec<String>,
     start_offsets: Vec<i64>,
     end_offsets: Vec<i64>,
@@ -319,20 +321,26 @@ impl Directory for SimpleTextCompoundDirectory {
 
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         let index = self.get_index(name)?;
-        self.input.slice_with_context(
-            name,
-            self.start_offsets[index],
-            self.end_offsets[index] - self.start_offsets[index],
-            context,
-        )
+        self.input
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .slice_with_context(
+                name,
+                self.start_offsets[index],
+                self.end_offsets[index] - self.start_offsets[index],
+                context,
+            )
     }
 
     fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn close(&mut self) -> Result<()> {
-        self.input.close()
+    fn close(&self) -> Result<()> {
+        self.input
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close()
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {

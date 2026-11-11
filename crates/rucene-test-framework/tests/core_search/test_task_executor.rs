@@ -314,7 +314,7 @@ impl CollectorManager for InvokingCollectorManager {
 /// `try (Directory dir = newDirectory(); RandomIndexWriter iw = ...) { 500
 /// empty docs; try (DirectoryReader reader = iw.getReader()) { body } }`.
 fn with_500_docs_reader(body: impl FnOnce(Arc<dyn IndexReader>) -> Result<()>) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let result = (|| -> Result<()> {

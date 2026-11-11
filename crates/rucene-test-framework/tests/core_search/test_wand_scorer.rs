@@ -222,7 +222,7 @@ fn index_docs(dir: &TestDirectory, docs: &[&[&str]]) -> Result<()> {
 /// `try (Directory dir = newDirectory()) { index; try (IndexReader reader =
 /// DirectoryReader.open(dir)) { body(newSearcher(reader)) } }`.
 fn with_searcher(docs: &[&[&str]], body: impl FnOnce(&IndexSearcher) -> Result<()>) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         index_docs(&dir, docs)?;
         let reader = directory_reader::open(dir.as_directory())?;
@@ -561,7 +561,7 @@ fn test_basics_with_filtered_disjunction_and_must_not_and_min_should_match_and_n
 /// The random index of `testRandom`, `testRandomWithZeroScores` and
 /// `doTestRandomSpecialMaxScore`, and a searcher without concurrency over it.
 fn random_index(body: impl FnOnce(&IndexSearcher, i32) -> Result<()>) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

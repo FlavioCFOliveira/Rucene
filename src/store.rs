@@ -2196,7 +2196,9 @@ pub trait IndexOutput: DataOutput + Send + Sync {
 ///
 /// Returns [`LuceneErrorKind::IllegalArgument`] when `offset` is negative or the
 /// alignment is not a positive power of two — the two
-/// `IllegalArgumentException`s Java raises.
+/// `IllegalArgumentException`s Java raises — and
+/// [`LuceneErrorKind::Arithmetic`] (`long overflow`) when the aligned offset
+/// overflows, as `Math.addExact` throws.
 pub fn align_offset(offset: i64, alignment_bytes: i32) -> Result<i64> {
     if offset < 0 {
         return Err(LuceneError::illegal_argument(
@@ -2209,11 +2211,12 @@ pub fn align_offset(offset: i64, alignment_bytes: i32) -> Result<i64> {
         ));
     }
     let alignment = i64::from(alignment_bytes);
+    // `Math.addExact(offset - 1L, alignmentBytes) & (-alignmentBytes)`
     match (offset - 1).checked_add(alignment) {
         Some(sum) => Ok(sum & -alignment),
-        None => Err(LuceneError::illegal_argument(
-            "Offset overflows when aligned".to_string(),
-        )),
+        None => Err(LuceneError::from(LuceneErrorKind::Arithmetic(
+            "long overflow".to_string(),
+        ))),
     }
 }
 
@@ -2972,9 +2975,10 @@ impl<R: Read> DataInput for InputStreamDataInput<R> {
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        // `InputStreamDataInput.skipBytes` (`InputStreamDataInput.java:58-67`).
         if num_bytes < 0 {
             return Err(LuceneError::illegal_argument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
+                "numBytes must be >= 0, got {num_bytes}"
             )));
         }
         let skipped = io::copy(
@@ -2983,6 +2987,16 @@ impl<R: Read> DataInput for InputStreamDataInput<R> {
         )
         .map_err(LuceneError::from)?;
         debug_assert!(skipped as i64 <= num_bytes);
+        if (skipped as i64) < num_bytes {
+            // `throw new EOFException()`
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                crate::store::java_nio_file::JavaIoException::new(
+                    crate::store::java_nio_file::EOF_EXCEPTION,
+                    None,
+                )
+                .into_io_error(),
+            )));
+        }
         Ok(())
     }
 }
@@ -5247,6 +5261,60 @@ impl ChecksumIndexInput for BufferedChecksumIndexInput {
     }
 }
 
+/// An [`IndexInput`] shared by reference whose owner closes it while other
+/// holders may still exist.
+///
+/// Java's readers keep one input object (a terms dictionary's `termsIn`, a
+/// postings reader's `docIn`), hand clones of it to every enum, and close it in
+/// their own `close()` whoever else still holds the reader. Rust closes an
+/// input through `&mut`; this holder gives shared access for reading (cloning,
+/// slicing, checksumming) and closes the input in place through `&self`, so
+/// the closed input stays in its slot as Java's `final` field keeps it.
+pub struct SharedIndexInput {
+    input: std::sync::RwLock<Box<dyn IndexInput>>,
+}
+
+impl SharedIndexInput {
+    /// Wraps `input`.
+    pub fn new(input: Box<dyn IndexInput>) -> Self {
+        Self {
+            input: std::sync::RwLock::new(input),
+        }
+    }
+
+    /// Shared access to the input.
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Box<dyn IndexInput>> {
+        self.input
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Exclusive access to the input.
+    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, Box<dyn IndexInput>> {
+        self.input
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `input.clone()`.
+    pub fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        self.read().clone_input()
+    }
+
+    /// `input.close()`.
+    pub fn close(&self) -> Result<()> {
+        self.write().close()
+    }
+}
+
+impl std::fmt::Debug for SharedIndexInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SharedIndexInput")
+            .field(&self.read().resource_description())
+            .finish()
+    }
+}
+
 /// Abstraction for a flat file store.
 ///
 /// Equivalent to `org.apache.lucene.store.Directory`. Implementations must be
@@ -5326,7 +5394,7 @@ pub trait Directory: Send + Sync {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>>;
 
     /// Closes the directory and releases any resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 
     /// Copies `src` from `from` into a new file `dest` in this directory.
     ///
@@ -5716,7 +5784,7 @@ impl Directory for FilterDirectory {
         self.inner.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -5814,11 +5882,37 @@ impl SimpleRateLimiter {
         slf
     }
 
+    /// `System.nanoTime()`: a monotonic clock read in nanoseconds from a
+    /// fixed, arbitrary origin.
     fn now_ns() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0)
+        static ORIGIN: std::sync::LazyLock<std::time::Instant> =
+            std::sync::LazyLock::new(std::time::Instant::now);
+        ORIGIN.elapsed().as_nanos() as i64
+    }
+
+    /// `Thread.sleep`: waits `duration`, returning early with
+    /// [`InterruptedException`](crate::util::InterruptedException) (status
+    /// cleared) when the thread is interrupted.
+    fn sleep(
+        duration: std::time::Duration,
+    ) -> std::result::Result<(), crate::util::InterruptedException> {
+        let monitor = Mutex::new(());
+        let condvar = Arc::new(std::sync::Condvar::new());
+        let deadline = std::time::Instant::now() + duration;
+        let mut guard = monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Ok(());
+            }
+            let (reacquired, outcome) =
+                crate::util::concurrent::wait_interruptibly(&condvar, guard, Some(deadline - now))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = reacquired;
+            outcome?;
+        }
     }
 
     fn store_f64(atom: &std::sync::atomic::AtomicU64, value: f64) {
@@ -5852,20 +5946,27 @@ impl RateLimiter for SimpleRateLimiter {
         self.min_pause_check_bytes.load(Ordering::Relaxed)
     }
 
+    /// Equivalent to `SimpleRateLimiter.pause(long)` (`RateLimiter.java:98-160`):
+    /// sleeps until the instantaneous rate is back under the cap, in a loop
+    /// because a sleep may end early, each sleep capped at
+    /// `Integer.MAX_VALUE` milliseconds. An interrupt of the sleeping thread
+    /// (see [`InterruptHandle`](crate::util::InterruptHandle)) is rethrown as
+    /// `ThreadInterruptedException`.
     fn pause(&self, bytes: i64) -> Result<i64> {
-        let mb_per_sec = self.get_mb_per_sec();
-        if mb_per_sec <= 0.0 || bytes <= 0 {
-            return Ok(0);
-        }
-
         let start_ns = Self::now_ns();
-        let seconds_to_pause = (bytes as f64 / (1024.0 * 1024.0)) / mb_per_sec;
-        let pause_ns = (seconds_to_pause * 1_000_000_000.0) as i64;
 
+        let seconds_to_pause = (bytes as f64 / 1024. / 1024.) / self.get_mb_per_sec();
+
+        // Sync'd to read + write lastNS:
         let target_ns = {
             let mut last = self.last_ns.lock().expect("last_ns mutex poisoned");
-            let target = *last + pause_ns;
+            // Time we should sleep until; this is purely instantaneous rate
+            // (just adds seconds onto the last time we had paused to).
+            let target = last.wrapping_add((1_000_000_000f64 * seconds_to_pause) as i64);
             if start_ns >= target {
+                // OK, current time is already beyond the target sleep time,
+                // no pausing to do. Set to startNS, not targetNS, to enforce
+                // the instant rate, not the "averaged over all history" rate:
                 *last = start_ns;
                 return Ok(0);
             }
@@ -5873,10 +5974,32 @@ impl RateLimiter for SimpleRateLimiter {
             target
         };
 
-        let duration_ns = (target_ns - start_ns).max(0) as u64;
-        let duration = std::time::Duration::from_nanos(duration_ns);
-        std::thread::sleep(duration);
-        Ok(Self::now_ns().saturating_sub(start_ns))
+        let mut cur_ns = start_ns;
+
+        // While loop because Thread.sleep doesn't always sleep enough:
+        loop {
+            let pause_ns = target_ns.wrapping_sub(cur_ns);
+            if pause_ns > 0 {
+                let (sleep_ms, sleep_ns) = if pause_ns > 100_000i64 * i64::from(i32::MAX) {
+                    // Not really practical (sleeping for 25 days) but we
+                    // shouldn't overflow int:
+                    (i64::from(i32::MAX), 0)
+                } else {
+                    (pause_ns / 1_000_000, pause_ns % 1_000_000)
+                };
+                // `Thread.sleep(sleepMS, sleepNS)`, whose
+                // `InterruptedException` becomes `ThreadInterruptedException`.
+                Self::sleep(
+                    std::time::Duration::from_millis(sleep_ms as u64)
+                        + std::time::Duration::from_nanos(sleep_ns as u64),
+                )
+                .map_err(LuceneError::thread_interrupted)?;
+                cur_ns = Self::now_ns();
+                continue;
+            }
+            break;
+        }
+        Ok(cur_ns.wrapping_sub(start_ns))
     }
 }
 
@@ -6022,7 +6145,7 @@ impl Directory for TrackingDirectoryWrapper {
         self.inner.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -6074,7 +6197,8 @@ pub struct FileSwitchDirectory {
     primary_dir: Box<dyn Directory>,
     secondary_dir: Box<dyn Directory>,
     primary_extensions: HashSet<String>,
-    do_close: bool,
+    /// Java's `doClose` field, cleared by a successful `close()`.
+    do_close: AtomicBool,
 }
 
 impl FileSwitchDirectory {
@@ -6102,7 +6226,7 @@ impl FileSwitchDirectory {
             primary_dir,
             secondary_dir,
             primary_extensions,
-            do_close,
+            do_close: AtomicBool::new(do_close),
         })
     }
 
@@ -6253,9 +6377,17 @@ impl Directory for FileSwitchDirectory {
         let source_dir = self.get_directory(source);
         let dest_dir = self.get_directory(dest);
         if !std::ptr::eq(source_dir, dest_dir) {
-            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
-                format!("source and dest are in different directories: {source} -> {dest}"),
-            ))));
+            // `new AtomicMoveNotSupportedException(source, dest, "source and
+            // dest are in different directories")` (`FileSwitchDirectory.java:222-225`).
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::JavaIoException::file_system(
+                    nio::ATOMIC_MOVE_NOT_SUPPORTED_EXCEPTION,
+                    Some(source.to_string()),
+                    Some(dest.to_string()),
+                    Some("source and dest are in different directories".to_string()),
+                )
+                .into_io_error(),
+            )));
         }
         source_dir.rename(source, dest)
     }
@@ -6271,13 +6403,13 @@ impl Directory for FileSwitchDirectory {
     /// Equivalent to `FileSwitchDirectory.close()` (`FileSwitchDirectory.java:82-88`):
     /// `IOUtils.close(primaryDir, secondaryDir)` closes both, even when the
     /// first fails, and rethrows the first failure, which leaves `doClose` set.
-    fn close(&mut self) -> Result<()> {
-        if self.do_close {
+    fn close(&self) -> Result<()> {
+        if self.do_close.load(Ordering::SeqCst) {
             crate::util::IOUtils::close([
                 crate::util::IOUtils::closeable(|| self.primary_dir.close()),
                 crate::util::IOUtils::closeable(|| self.secondary_dir.close()),
             ])?;
-            self.do_close = false;
+            self.do_close.store(false, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -6751,27 +6883,22 @@ impl Directory for NRTCachingDirectory {
     /// directory and the delegate are then closed whatever it raised, and the
     /// first failure is rethrown. Closing again is therefore allowed: it
     /// closes the two directories again.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let closed = &self.closed;
         let cache = &self.cache;
         let shared = &self.shared;
-        let inner = std::cell::RefCell::new(&mut self.inner);
+        let inner = &self.inner;
         crate::util::IOUtils::close([
             crate::util::IOUtils::closeable(|| {
                 if !closed.swap(true, Ordering::SeqCst) {
-                    let inner = inner.borrow();
                     for file_name in cache.list_all()? {
                         Self::un_cache_with(shared, cache, inner.get_delegate(), &file_name)?;
                     }
                 }
                 Ok(())
             }),
-            crate::util::IOUtils::closeable(|| {
-                // `ByteBuffersDirectory.close()` raises nothing.
-                cache.close_shared();
-                Ok(())
-            }),
-            crate::util::IOUtils::closeable(|| inner.borrow_mut().close()),
+            crate::util::IOUtils::closeable(|| cache.close()),
+            crate::util::IOUtils::closeable(|| inner.close()),
         ])
     }
 
@@ -6865,6 +6992,10 @@ pub struct ByteBuffersDataInput {
     block_bits: usize,
     block_mask: usize,
     length: usize,
+    /// Java's `offset`: `blocks[0].position()`, where the stream starts
+    /// inside the first block. `pos` here is relative to it (Java's
+    /// `pos - offset`); the block arithmetic adds it back.
+    offset: usize,
     pos: usize,
 }
 
@@ -6896,8 +7027,33 @@ impl ByteBuffersDataInput {
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout assumptions
     /// are violated.
     pub fn new(buffers: Vec<Vec<u8>>) -> Result<Self> {
+        Self::with_first_position(buffers, 0)
+    }
+
+    /// Creates an input over a set of contiguous byte buffers whose first
+    /// buffer is positioned at `first_position`: the stream starts there, and
+    /// the bytes of the first buffer before it are not part of it.
+    ///
+    /// Equivalent to `ByteBuffersDataInput(List<ByteBuffer>)`
+    /// (`ByteBuffersDataInput.java:55-83`) when `buffers.get(0).position()`
+    /// is `first_position`: a Rust buffer carries no position, so it is
+    /// given here, and the first buffer holds `position() + remaining()`
+    /// bytes, what `determineBlockPage` measures.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout
+    /// assumptions are violated or `first_position` exceeds the first buffer.
+    pub fn with_first_position(buffers: Vec<Vec<u8>>, first_position: usize) -> Result<Self> {
         ensure_assumptions(&buffers)?;
-        let length = buffers.iter().map(Vec::len).sum();
+        if first_position > buffers[0].len() {
+            // `Buffer.position(int)`: `newPosition > limit`.
+            return Err(LuceneError::illegal_argument(format!(
+                "newPosition > limit: ({first_position} > {})",
+                buffers[0].len()
+            )));
+        }
+        let length = buffers.iter().map(Vec::len).sum::<usize>() - first_position;
         let (block_bits, block_mask) = if buffers.len() == 1 {
             // Sentinel values for the single-block case; indexing is handled
             // explicitly in `block_index` / `block_offset`.
@@ -6913,6 +7069,7 @@ impl ByteBuffersDataInput {
             block_bits,
             block_mask,
             length,
+            offset: first_position,
             pos: 0,
         })
     }
@@ -7112,7 +7269,7 @@ impl ByteBuffersDataInput {
         // owned `Vec<u8>` that carries no position, so the views are joined
         // into the single block that holds the same bytes.
         let mut data = Vec::with_capacity(length);
-        for view in slice_buffer_list(&self.blocks, offset, length)? {
+        for view in slice_buffer_list(&self.blocks, self.offset, offset, length)? {
             data.extend_from_slice(view);
         }
         Self::new(vec![data])
@@ -7134,19 +7291,21 @@ impl ByteBuffersDataInput {
         1usize << self.block_bits
     }
 
+    /// `blockIndex(pos)` of the absolute position of `pos` (`pos + offset`).
     fn block_index(&self, pos: usize) -> usize {
         if self.blocks.len() == 1 {
             0
         } else {
-            pos >> self.block_bits
+            (pos + self.offset) >> self.block_bits
         }
     }
 
+    /// `blockOffset(pos)` of the absolute position of `pos` (`pos + offset`).
     fn block_offset(&self, pos: usize) -> usize {
         if self.blocks.len() == 1 {
-            pos
+            pos + self.offset
         } else {
-            pos & self.block_mask
+            (pos + self.offset) & self.block_mask
         }
     }
 
@@ -7165,7 +7324,7 @@ impl ByteBuffersDataInput {
     /// `org.apache.lucene.store.ByteBuffersDataInput#getFloatBuffer`.
     fn get_float_buffer(&self, pos: usize) -> &[u8] {
         let buffer_index = self.block_index(pos);
-        let alignment = pos & 0x3;
+        let alignment = (pos + self.offset) & 0x3;
         &self.blocks[buffer_index][alignment..]
     }
 
@@ -7180,7 +7339,7 @@ impl ByteBuffersDataInput {
     /// `org.apache.lucene.store.ByteBuffersDataInput#getLongBuffer`.
     fn get_long_buffer(&self, pos: usize) -> &[u8] {
         let buffer_index = self.block_index(pos);
-        let alignment = pos & 0x7;
+        let alignment = (pos + self.offset) & 0x7;
         &self.blocks[buffer_index][alignment..]
     }
 }
@@ -7363,7 +7522,7 @@ impl DataInput for ByteBuffersDataInput {
             }
             let available_floats = available_bytes / 4;
             let chunk = remaining.min(available_floats);
-            let view_off = block_off - (self.pos & 0x3);
+            let view_off = block_off - ((self.pos + self.offset) & 0x3);
             let view = self.get_float_buffer(self.pos);
             for i in 0..chunk {
                 let byte_off = view_off + i * 4;
@@ -7405,7 +7564,7 @@ impl DataInput for ByteBuffersDataInput {
             }
             let available_longs = available_bytes / 8;
             let chunk = remaining.min(available_longs);
-            let view_off = block_off - (self.pos & 0x7);
+            let view_off = block_off - ((self.pos + self.offset) & 0x7);
             let view = self.get_long_buffer(self.pos);
             for i in 0..chunk {
                 let byte_off = view_off + i * 8;
@@ -7458,16 +7617,21 @@ fn determine_block_page(buffers: &[Vec<u8>]) -> usize {
 ///
 /// Returns [`LuceneErrorKind::IllegalArgument`] when `buffers` violates the block
 /// layout assumptions.
-fn slice_buffer_list(buffers: &[Vec<u8>], offset: usize, length: usize) -> Result<Vec<&[u8]>> {
+fn slice_buffer_list(
+    buffers: &[Vec<u8>],
+    first_position: usize,
+    offset: usize,
+    length: usize,
+) -> Result<Vec<&[u8]>> {
     ensure_assumptions(buffers)?;
 
     if buffers.len() == 1 {
-        return Ok(vec![&buffers[0][offset..offset + length]]);
+        let start = first_position + offset;
+        return Ok(vec![&buffers[0][start..start + length]]);
     }
 
-    // Java adds `buffers.get(0).position()` here; a block of this port always
-    // starts at position zero, so the absolute start is the offset itself.
-    let abs_start = offset;
+    // `long absStart = buffers.get(0).position() + offset;`
+    let abs_start = first_position + offset;
     let abs_end = abs_start + length;
 
     let block_bytes = determine_block_page(buffers);
@@ -7946,17 +8110,24 @@ impl ByteBuffersDataOutput {
 
     /// Resets this output to a clean (zero-size) state, publishing buffers to
     /// the recycler if one was configured.
+    ///
+    /// Equivalent to `ByteBuffersDataOutput.reset()`
+    /// (`ByteBuffersDataOutput.java:469-476`): every allocated block (Java's
+    /// `blocks`, here `completed` and an allocated `current`) goes to the
+    /// recycler, `ramBytesUsed` drops to zero and `currentBlock` becomes
+    /// `EMPTY`. The block size (`blockBits`) is kept.
     pub fn reset(&mut self) {
+        let current = std::mem::take(&mut self.current);
         if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
                 reuse(block);
             }
-            reuse(std::mem::take(&mut self.current));
+            if current.capacity() > 0 {
+                reuse(current);
+            }
         } else {
             self.completed.clear();
-            self.current.clear();
         }
-        self.block_bits = self.min_bits;
     }
 
     fn allocate(&mut self, size: usize) -> Vec<u8> {
@@ -8358,18 +8529,6 @@ impl ByteBuffersDirectory {
     pub fn lock_factory(&self) -> &dyn LockFactory {
         self.base.lock_factory()
     }
-
-    /// The body of `ByteBuffersDirectory.close()`
-    /// (`ByteBuffersDirectory.java:216-219`): `isOpen = false;
-    /// files.clear();`.
-    ///
-    /// [`Directory::close`] takes `&mut self`; this needs only shared access,
-    /// which an owner that shares the directory — `NRTCachingDirectory`, whose
-    /// cache directory its own callback reaches — closes it through.
-    fn close_shared(&self) {
-        self.base.set_open(false);
-        self.files.lock().expect("files mutex poisoned").clear();
-    }
 }
 
 impl Default for ByteBuffersDirectory {
@@ -8500,8 +8659,12 @@ impl Directory for ByteBuffersDirectory {
         self.base.obtain_lock(self, name)
     }
 
-    fn close(&mut self) -> Result<()> {
-        self.close_shared();
+    /// Equivalent to `ByteBuffersDirectory.close()`
+    /// (`ByteBuffersDirectory.java:216-219`): `isOpen = false;
+    /// files.clear();`.
+    fn close(&self) -> Result<()> {
+        self.base.set_open(false);
+        self.files.lock().expect("files mutex poisoned").clear();
         Ok(())
     }
 
@@ -9872,7 +10035,7 @@ impl Directory for FSDirectory {
     }
 
     /// Equivalent to `FSDirectory.close()` (`FSDirectory.java:279-283`).
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.base.set_open(false);
         self.delete_pending_files()?;
         Ok(())
@@ -10193,7 +10356,7 @@ impl Directory for NIOFSDirectory {
         self.inner.base().obtain_lock(self, name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -12098,7 +12261,7 @@ mod tests {
     /// lifecycle of create, open, read, write, rename, delete, list and close.
     #[test]
     fn directory_basic_operations() {
-        let mut dir = ByteBuffersDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
 
         // Empty directory.
@@ -12289,7 +12452,7 @@ mod tests {
             fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
                 self.dir.obtain_lock(name)
             }
-            fn close(&mut self) -> Result<()> {
+            fn close(&self) -> Result<()> {
                 self.dir.close()
             }
             fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -12539,7 +12702,7 @@ mod tests {
     /// lockName=x)", "bb closed obtainLock: ok".
     #[test]
     fn byte_buffers_directory_inherits_base_directory_members() {
-        let mut dir = ByteBuffersDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let lock = dir.obtain_lock("x").unwrap();
         match dir.obtain_lock("x") {
             Err(LuceneError {
@@ -12592,7 +12755,7 @@ mod tests {
     #[test]
     fn a_closed_fs_directory_hands_out_only_non_fs_locks() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut native = NIOFSDirectory::open(tmp.path().join("closed")).unwrap();
+        let native = NIOFSDirectory::open(tmp.path().join("closed")).unwrap();
         native.close().unwrap();
         match native.obtain_lock("y") {
             Err(LuceneError {
@@ -12603,14 +12766,14 @@ mod tests {
             }
             other => panic!("expected AlreadyClosedException, got {:?}", other.err()),
         }
-        let mut single = NIOFSDirectory::with_lock_factory(
+        let single = NIOFSDirectory::with_lock_factory(
             tmp.path().join("closed2"),
             Box::new(SingleInstanceLockFactory::new()),
         )
         .unwrap();
         single.close().unwrap();
         single.obtain_lock("y").unwrap().close().unwrap();
-        let mut none =
+        let none =
             NIOFSDirectory::with_lock_factory(tmp.path().join("closed3"), Box::new(NoLockFactory))
                 .unwrap();
         none.close().unwrap();
@@ -13505,19 +13668,19 @@ mod tests {
         };
         let canonical = tmp.path().canonicalize().unwrap();
 
-        let mut fs = FSDirectory::with_lock_factory(tmp.path(), Box::new(NoLockFactory)).unwrap();
+        let fs = FSDirectory::with_lock_factory(tmp.path(), Box::new(NoLockFactory)).unwrap();
         assert_eq!(fs.get_directory().unwrap().as_std_path(), canonical);
         fs.close().unwrap();
         closed(fs.get_directory());
 
-        let mut nio = NIOFSDirectory::open(tmp.path()).unwrap();
+        let nio = NIOFSDirectory::open(tmp.path()).unwrap();
         assert_eq!(nio.get_directory().unwrap().as_std_path(), canonical);
         nio.close().unwrap();
         closed(nio.get_directory());
 
         #[cfg(feature = "mmap")]
         {
-            let mut mmap = mmap::MMapDirectory::open(tmp.path()).unwrap();
+            let mmap = mmap::MMapDirectory::open(tmp.path()).unwrap();
             assert_eq!(mmap.get_directory().unwrap().as_std_path(), canonical);
             mmap.close().unwrap();
             closed(mmap.get_directory());
@@ -13746,7 +13909,7 @@ mod tests {
             self.inner.obtain_lock(name)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             if self.fault == "close" {
                 return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
                     "close refused",
@@ -13810,13 +13973,13 @@ mod tests {
 
         // `ByteBuffersDirectory.getPendingDeletions()` has no `ensureOpen`
         // (`ByteBuffersDirectory.java:221-224`).
-        let mut bb = ByteBuffersDirectory::new();
+        let bb = ByteBuffersDirectory::new();
         bb.close().unwrap();
         assert!(bb.get_pending_deletions().unwrap().is_empty());
 
         // `close()` twice: the second only closes the directories again; the
         // pending deletions are the delegate's (`FilterDirectory.java:119-122`).
-        let mut nrt = NRTCachingDirectory::new(Box::new(ByteBuffersDirectory::new()), 5.0, 60.0);
+        let nrt = NRTCachingDirectory::new(Box::new(ByteBuffersDirectory::new()), 5.0, 60.0);
         nrt.close().unwrap();
         nrt.close().expect("nrt close twice: ok");
         assert!(nrt.get_pending_deletions().unwrap().is_empty());
@@ -13840,8 +14003,7 @@ mod tests {
         // `IOUtils.close(lambda, cacheDirectory, in)`: a failing `unCache`
         // does not stop the two directories from closing, and its failure is
         // the one rethrown; a second close skips the lambda.
-        let mut failing =
-            NRTCachingDirectory::new(Box::new(FaultyDirectory::new("create")), 5.0, 60.0);
+        let failing = NRTCachingDirectory::new(Box::new(FaultyDirectory::new("create")), 5.0, 60.0);
         let mut cached = failing.create_output("c", flush.as_ref()).unwrap();
         cached.write_byte(7).unwrap();
         cached.close().unwrap();
@@ -14202,7 +14364,7 @@ mod tests {
     /// Closing the directory renders it unusable.
     #[test]
     fn byte_buffers_directory_close_unusable() {
-        let mut dir = ByteBuffersDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let context = &*DEFAULT_IO_CONTEXT;
         {
             let mut out = dir.create_output("x.bin", context).unwrap();
@@ -14348,7 +14510,7 @@ mod tests {
     #[test]
     fn fs_directory_close_unusable() {
         let temp = TempDir::new().unwrap();
-        let mut dir = FSDirectory::open(&temp).unwrap();
+        let dir = FSDirectory::open(&temp).unwrap();
         let context = &*DEFAULT_IO_CONTEXT;
         {
             let mut out = dir.create_output("x.bin", context).unwrap();
@@ -15597,7 +15759,7 @@ mod tests {
     /// rethrown, and `doClose` stays set.
     #[test]
     fn file_switch_close_closes_the_secondary_past_a_primary_failure() {
-        let mut fsd = FileSwitchDirectory::new(
+        let fsd = FileSwitchDirectory::new(
             HashSet::from(["fdt".to_string()]),
             Box::new(FaultyDirectory::new("close")),
             Box::new(ByteBuffersDirectory::new()),

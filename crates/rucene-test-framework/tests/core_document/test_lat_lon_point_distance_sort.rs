@@ -75,7 +75,7 @@ fn location_sort() -> Result<Sort> {
 
 /// Port of `testDistanceSort`: add three points and sort by distance.
 fn test_distance_sort() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // add some docs
@@ -100,7 +100,7 @@ fn test_distance_sort() -> Result<()> {
 /// Port of `testMissingLast`: add two points (one doc missing) and sort by
 /// distance.
 fn test_missing_last() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // missing
@@ -193,7 +193,7 @@ fn double_compare(a: f64, b: f64) -> std::cmp::Ordering {
 
 /// `doRandomTest(numDocs, numQueries)`.
 fn do_random_test(num_docs: i32, num_queries: i32) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     // else seeds may not to reproduce:
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;

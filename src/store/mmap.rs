@@ -461,7 +461,7 @@ impl Directory for MMapDirectory {
         self.inner.base().obtain_lock(self, name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 

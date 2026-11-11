@@ -43,7 +43,7 @@ const BYTE_TEST_FIELD: &str = "normsTestByte";
 
 /// Port of `TestNorms.testMaxByteNorms`.
 fn test_max_byte_norms() -> Result<()> {
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "TestNorms.testMaxByteNorms",
     ));
     build_index(dir.as_directory())?;
@@ -187,7 +187,7 @@ impl Similarity for ByteEncodingBoostSimilarity {
 
 /// Port of `TestNorms.testEmptyValueVsNoValue`.
 fn test_empty_value_vs_no_value() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let cfg = LuceneTestCase::new_index_writer_config();
     cfg.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), cfg)?;

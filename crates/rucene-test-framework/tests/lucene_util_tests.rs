@@ -1123,7 +1123,7 @@ fn test_fail_if_unreferenced_files() {
                         use rucene::index::index_writer::IndexWriter;
                         use rucene::index::index_writer_config::IndexWriterConfig;
                         use rucene::store::{Directory, IndexOutput, DEFAULT_IO_CONTEXT};
-                        let mut dir = LuceneTestCase::new_mock_directory();
+                        let dir = LuceneTestCase::new_mock_directory();
                         dir.set_assert_no_unrefenced_files_on_close(true);
                         let iw = IndexWriter::new(
                             dir.as_directory(),

@@ -220,7 +220,7 @@ fn expect_add_batch_fails(
     column: impl FnOnce() -> Result<AnyColumn>,
     part: Option<&str>,
 ) -> Result<()> {
-    let mut c = Ctx::open()?;
+    let c = Ctx::open()?;
     let e = expect_throws(class, || {
         c.add_batch(&simple_batch(num_docs, vec![column()?]))
     });
@@ -394,7 +394,7 @@ fn test_dense_vector_column_too_few_values_fails() -> Result<()> {
 
 /// Port of `testVectorColumnSchemaConsistencyAcrossBatches`.
 fn test_vector_column_schema_consistency_across_batches() -> Result<()> {
-    let mut c = Ctx::open()?;
+    let c = Ctx::open()?;
     let float32_type = euclid_float(2)?;
     c.add_batch(&simple_batch(
         1,
@@ -417,7 +417,7 @@ fn test_vector_column_schema_consistency_across_batches() -> Result<()> {
 /// deleted via `deleteDocuments(Term)` when an indexed column is added
 /// alongside, and live-doc filtering hides the deleted vectors from search.
 fn test_vector_with_deletes() -> Result<()> {
-    let mut c = Ctx::open()?;
+    let c = Ctx::open()?;
     let vector_type = euclid_float(2)?;
     let id_type = FieldType::new_from(StringField::type_not_stored());
     id_type.freeze();

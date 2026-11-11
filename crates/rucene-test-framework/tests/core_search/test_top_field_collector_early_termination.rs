@@ -168,7 +168,7 @@ impl Instance {
         if let Some(iw) = self.iw.take() {
             iw.close()?;
         }
-        if let Some(mut dir) = self.dir.take() {
+        if let Some(dir) = self.dir.take() {
             dir.close()?;
         }
         Ok(())

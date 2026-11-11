@@ -60,7 +60,7 @@ pub fn class_def() -> Arc<Class> {
                 .annotate(After)
                 .throws(&["java.io.IOException"])
                 .body(|inst: &mut Instance| {
-                    if let Some(mut dir) = inst.dir.take() {
+                    if let Some(dir) = inst.dir.take() {
                         dir.close().unwrap_or_else(|e| rethrow_java(e));
                     } else {
                         crate::support::npe::<()>("dir");

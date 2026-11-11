@@ -85,7 +85,7 @@ fn is_simple_text(si: &SegmentInfo) -> bool {
 
 /// Port of `TestIndexFileDeleter.testDeleteLeftoverFiles`.
 fn test_delete_leftover_files() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let merge_policy = LuceneTestCase::new_log_merge_policy_use_cfs_merge_factor(true, 10)?;
@@ -272,7 +272,7 @@ fn add_doc(writer: &IndexWriter, id: i32) -> Result<()> {
 /// Port of `TestIndexFileDeleter.testVirusScannerDoesntCorruptIndex`.
 fn test_virus_scanner_doesnt_corrupt_index() -> Result<()> {
     let path = LuceneTestCase::create_temp_dir();
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::add_virus_checker(&path));
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::add_virus_checker(&path));
     let d = dir.as_directory();
     TestUtil::disable_virus_checker(&*d)?;
 
@@ -321,7 +321,7 @@ fn inflate_gens(sis: &mut SegmentInfos, files: &[String]) -> Result<()> {
 
 /// Port of `TestIndexFileDeleter.testNoSegmentsDotGenInflation`.
 fn test_no_segments_dot_gen_inflation() -> Result<()> {
-    let mut dir = mock_directory();
+    let dir = mock_directory();
     let d = dir.as_directory();
 
     // empty commit
@@ -340,7 +340,7 @@ fn test_no_segments_dot_gen_inflation() -> Result<()> {
 
 /// Port of `TestIndexFileDeleter.testSegmentsInflation`.
 fn test_segments_inflation() -> Result<()> {
-    let mut dir = mock_directory();
+    let dir = mock_directory();
     mock(&dir).set_check_index_on_close(false); // TODO: allow falling back more than one commit
     let d = dir.as_directory();
 
@@ -370,7 +370,7 @@ fn test_segments_inflation() -> Result<()> {
 
 /// Port of `TestIndexFileDeleter.testSegmentNameInflation`.
 fn test_segment_name_inflation() -> Result<()> {
-    let mut dir = mock_directory();
+    let dir = mock_directory();
     let d = dir.as_directory();
 
     // empty commit
@@ -418,7 +418,7 @@ fn test_segment_name_inflation() -> Result<()> {
 
 /// Port of `TestIndexFileDeleter.testGenerationInflation`.
 fn test_generation_inflation() -> Result<()> {
-    let mut dir = mock_directory();
+    let dir = mock_directory();
     let d = dir.as_directory();
 
     // initial commit
@@ -453,7 +453,7 @@ fn test_generation_inflation() -> Result<()> {
 
 /// Port of `TestIndexFileDeleter.testTrashyFile`.
 fn test_trashy_file() -> Result<()> {
-    let mut dir = mock_directory();
+    let dir = mock_directory();
     mock(&dir).set_check_index_on_close(false); // TODO: maybe handle such trash better elsewhere...
     let d = dir.as_directory();
 
@@ -477,7 +477,7 @@ fn test_trashy_file() -> Result<()> {
 
 /// Port of `TestIndexFileDeleter.testTrashyGenFile`.
 fn test_trashy_gen_file() -> Result<()> {
-    let mut dir = mock_directory();
+    let dir = mock_directory();
     let d = dir.as_directory();
 
     // initial commit
@@ -538,7 +538,7 @@ fn is_fake_fail(e: &LuceneError) -> bool {
 /// LUCENE-5919
 /// Port of `TestIndexFileDeleter.testExcInDecRef`.
 fn test_exc_in_dec_ref() -> Result<()> {
-    let mut dir = mock_directory();
+    let dir = mock_directory();
     let m = mock(&dir);
 
     // disable slow things: we don't rely upon sleeps here.
@@ -652,7 +652,7 @@ fn test_exc_in_delete_file() -> Result<()> {
         if verbose() {
             println!("TEST: iter={iter}");
         }
-        let mut dir = mock_directory();
+        let dir = mock_directory();
 
         let do_fail_exc = Arc::new(AtomicBool::new(false));
 
@@ -751,7 +751,7 @@ impl Failure for DeleteCommitsFailure {
 
 /// Port of `TestIndexFileDeleter.testThrowExceptionWhileDeleteCommits`.
 fn test_throw_exception_while_delete_commits() -> Result<()> {
-    let mut dir = mock_directory();
+    let dir = mock_directory();
     let result = (|| -> Result<()> {
         let fail_on_delete_commits = Arc::new(AtomicBool::new(false));
         mock(&dir).fail_on(Arc::new(DeleteCommitsFailure {

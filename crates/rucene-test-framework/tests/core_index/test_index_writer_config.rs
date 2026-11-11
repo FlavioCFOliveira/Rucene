@@ -210,25 +210,25 @@ fn test_defaults() -> Result<()> {
     Ok(())
 }
 
-/// The getters `IndexWriterConfig.java` itself declares — Java filters
-/// `getDeclaredMethods()` on `m.getDeclaringClass() == IndexWriterConfig.class`,
-/// so the ones inherited from `LiveIndexWriterConfig` are not listed.
+/// The getters `IndexWriterConfig.class.getDeclaredMethods()` lists: the
+/// ones `IndexWriterConfig.java` itself declares (`:162-392`), the others
+/// being inherited from `LiveIndexWriterConfig`.
 const IWC_GETTERS: &[&str] = &[
-    "getAnalyzer",
-    "getRAMBufferSizeMB",
-    "getMaxBufferedDocs",
-    "getMergePolicy",
-    "getMergedSegmentWarmer",
     "getOpenMode",
     "getIndexDeletionPolicy",
     "getIndexCommit",
     "getSimilarity",
     "getMergeScheduler",
     "getCodec",
-    "getInfoStream",
+    "getMergePolicy",
     "getReaderPooling",
     "getRAMPerThreadHardLimitMB",
     "getFlushPolicy",
+    "getInfoStream",
+    "getAnalyzer",
+    "getMaxBufferedDocs",
+    "getMergedSegmentWarmer",
+    "getRAMBufferSizeMB",
 ];
 
 /// The getters `impl LiveIndexWriterConfig` defines, under their Java names.
@@ -333,7 +333,7 @@ fn test_setters_chaining() -> Result<()> {
 /// exception guards against is rejected by the type system, and only the
 /// first writer is opened.
 fn test_reuse() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // test that IWC cannot be reused across two IWs
     let conf = Arc::new(LuceneTestCase::new_index_writer_config_analyzer(None));
     RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), Arc::clone(&conf))?
@@ -481,7 +481,7 @@ fn test_invalid_values() -> Result<()> {
 
 /// Port of `TestIndexWriterConfig.testLiveChangeToCFS`.
 fn test_live_change_to_cfs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(true)))?;
     // Start false:

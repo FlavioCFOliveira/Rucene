@@ -107,7 +107,7 @@ impl Query for QueryWrapper {
 }
 
 fn test_constant_score_query_and_filter() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -156,7 +156,7 @@ fn test_constant_score_query_and_filter() -> Result<()> {
 // LUCENE-5307
 // don't reuse the scorer of filters since they have been created with bulkScorer=false
 fn test_propagates_approximations() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = LuceneTestCase::new_text_field("field", "a b", Store::NO);

@@ -573,7 +573,7 @@ impl TestPoint for TestPoint1 {
 /// The body of `testRandomExceptions` and `testRandomExceptionsThreads`
 /// after the threads ran: commit, close (or roll back), and check that a
 /// document that hit an exception partway through tokenization is deleted.
-fn finish_random_exceptions(writer: &Arc<IndexWriter>, mut dir: TestDirectory) -> Result<()> {
+fn finish_random_exceptions(writer: &Arc<IndexWriter>, dir: TestDirectory) -> Result<()> {
     writer.commit()?;
 
     if let Err(t) = catching(|| writer.close()) {
@@ -791,7 +791,7 @@ impl Analyzer for CrashingAnalyzer {
 /// LUCENE-1198
 /// Port of `TestIndexWriterExceptions.testExceptionDocumentsWriterInit`.
 fn test_exception_documents_writer_init() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let test_point = Arc::new(TestPoint2::default());
     let w = RandomIndexWriter::mock_index_writer_with_test_point(
         &*random(),
@@ -818,7 +818,7 @@ fn test_exception_documents_writer_init() -> Result<()> {
 /// Port of `TestIndexWriterExceptions.testExceptionJustBeforeFlush`.
 fn test_exception_just_before_flush() -> Result<()> {
     set_do_fail(false);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let do_crash = Arc::new(AtomicBool::new(false));
 
@@ -876,7 +876,7 @@ impl TestPoint for TestPoint3 {
 /// LUCENE-1210
 /// Port of `TestIndexWriterExceptions.testExceptionOnMergeInit`.
 fn test_exception_on_merge_init() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     conf.set_max_buffered_docs(2)?;
     let mut lmp = LuceneTestCase::new_log_merge_policy();
@@ -972,7 +972,7 @@ impl Analyzer for TokenStreamFailureAnalyzer {
 /// LUCENE-1072
 /// Port of `TestIndexWriterExceptions.testExceptionFromTokenStream`.
 fn test_exception_from_token_stream() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         TokenStreamFailureAnalyzer {
             state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
@@ -1076,7 +1076,7 @@ impl Failure for FailOnlyOnFlush {
 /// make sure an aborting exception closes the writer:
 /// Port of `TestIndexWriterExceptions.testDocumentsWriterAbort`.
 fn test_documents_writer_abort() -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let failure = Arc::new(FailOnlyOnFlush::default());
     failure.set_do_fail();
     dir.as_mock().expect("newMockDirectory").fail_on(failure);
@@ -1144,7 +1144,7 @@ fn test_documents_writer_exceptions() -> Result<()> {
         if verbose() {
             println!("TEST: cycle i={i}");
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
         let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -1250,7 +1250,7 @@ fn test_documents_writer_exception_fail_one_doc() -> Result<()> {
         "org.apache.lucene.index.TestIndexWriterExceptions$4",
     ));
     for _ in 0..10 {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
         conf.set_max_buffered_docs(-1)?;
         conf.set_ram_buffer_size_mb(if random().next_boolean() {
@@ -1309,7 +1309,7 @@ fn test_documents_writer_exception_threads() -> Result<()> {
     let num_iter = LuceneTestCase::at_least(10);
 
     for i in 0..2 {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let conf =
                 LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
@@ -1462,7 +1462,7 @@ impl Failure for FailOnlyInSync {
 /// LUCENE-1044: test exception during sync
 /// Port of `TestIndexWriterExceptions.testExceptionDuringSync`.
 fn test_exception_during_sync() -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let failure = Arc::new(FailOnlyInSync::default());
     dir.as_mock()
         .expect("newMockDirectory")
@@ -1573,7 +1573,7 @@ fn test_exceptions_during_commit() -> Result<()> {
     ];
 
     for failure in failures {
-        let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+        let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
         let mock = dir.as_mock().expect("newMockDirectory");
         mock.set_fail_on_create_output(false);
         let file_count = dir.as_directory().list_all()?.len();
@@ -1611,7 +1611,7 @@ fn test_exceptions_during_commit() -> Result<()> {
 
 /// Port of `TestIndexWriterExceptions.testForceMergeExceptions`.
 fn test_force_merge_exceptions() -> Result<()> {
-    let mut start_dir = LuceneTestCase::new_directory();
+    let start_dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     conf.set_max_buffered_docs(2)?;
     let lmp = LuceneTestCase::new_log_merge_policy();
@@ -1629,7 +1629,7 @@ fn test_force_merge_exceptions() -> Result<()> {
             println!("\nTEST: iter {i}");
         }
         let copy = TestUtil::ram_copy_of(&*start_dir.as_directory())?;
-        let mut dir = TestDirectory::Mock(MockDirectoryWrapper::new(&*random(), Arc::from(copy)));
+        let dir = TestDirectory::Mock(MockDirectoryWrapper::new(&*random(), Arc::from(copy)));
         let conf = mock_iwc();
         conf.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
         as_cms(&conf.merge_scheduler()).set_suppress_exceptions();
@@ -1701,7 +1701,7 @@ impl InfoStream for OomeInfoStream {
 /// Port of `TestIndexWriterExceptions.testOutOfMemoryErrorCausesCloseToFail`.
 fn test_out_of_memory_error_causes_close_to_fail() -> Result<()> {
     let thrown = Arc::new(AtomicBool::new(false));
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     conf.set_info_stream(Arc::new(OomeInfoStream {
         thrown: Arc::clone(&thrown),
@@ -1721,7 +1721,7 @@ fn test_out_of_memory_error_causes_close_to_fail() -> Result<()> {
 /// Port of `TestIndexWriterExceptions.testOutOfMemoryErrorRollback`.
 fn test_out_of_memory_error_rollback() -> Result<()> {
     let thrown = Arc::new(AtomicBool::new(false));
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     conf.set_info_stream(Arc::new(OomeInfoStream {
         thrown: Arc::clone(&thrown),
@@ -1767,7 +1767,7 @@ impl TestPoint for TestPoint4 {
 /// LUCENE-1347
 /// Port of `TestIndexWriterExceptions.testRollbackExceptionHang`.
 fn test_rollback_exception_hang() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let test_point = Arc::new(TestPoint4::default());
     let w = RandomIndexWriter::mock_index_writer_with_test_point(
         &*random(),
@@ -1816,7 +1816,7 @@ fn write_hundred_docs(
 /// LUCENE-1044: Simulate checksum error in segments_N
 /// Port of `TestIndexWriterExceptions.testSegmentsChecksumError`.
 fn test_segments_checksum_error() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     crate::support::set_check_index_on_close(&dir, false); // we corrupt the index
 
     let (_writer, gen) = write_hundred_docs(&dir, mock_iwc())?;
@@ -1849,7 +1849,7 @@ fn test_segments_checksum_error() -> Result<()> {
 /// IOException trying to open the index:
 /// Port of `TestIndexWriterExceptions.testSimulatedCorruptIndex1`.
 fn test_simulated_corrupt_index1() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     crate::support::set_check_index_on_close(&dir, false); // we are corrupting it!
 
     let (_writer, gen) = write_hundred_docs(&dir, mock_iwc())?;
@@ -1882,7 +1882,7 @@ fn test_simulated_corrupt_index1() -> Result<()> {
 /// open the index:
 /// Port of `TestIndexWriterExceptions.testSimulatedCorruptIndex2`.
 fn test_simulated_corrupt_index2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     crate::support::set_check_index_on_close(&dir, false); // we are corrupting it!
 
     let conf = mock_iwc();
@@ -1978,7 +1978,7 @@ fn test_term_vector_exceptions() -> Result<()> {
     let num = LuceneTestCase::at_least(1);
     'iters: for _ in 0..num {
         for failure in &failures {
-            let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+            let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
             let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
             dir.as_mock()
                 .expect("newMockDirectory")
@@ -2096,7 +2096,7 @@ fn add_good_doc(w: &RandomIndexWriter) -> Result<()> {
 
 /// Port of `TestIndexWriterExceptions.testAddDocsNonAbortingException`.
 fn test_add_docs_non_aborting_exception() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs1 = random().next_int_bound(25);
     for _ in 0..num_docs1 {
@@ -2148,7 +2148,7 @@ fn test_add_docs_non_aborting_exception() -> Result<()> {
 
 /// Port of `TestIndexWriterExceptions.testUpdateDocsNonAbortingException`.
 fn test_update_docs_non_aborting_exception() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs1 = random().next_int_bound(25);
     for _ in 0..num_docs1 {
@@ -2246,7 +2246,7 @@ fn plain_mock_writer(dir: &TestDirectory) -> Result<Arc<IndexWriter>> {
 
 /// The tail every null-stored-value test shares: no tragedy, close, and the
 /// good document is the only one.
-fn assert_only_good_doc(iw: &Arc<IndexWriter>, mut dir: TestDirectory) -> Result<()> {
+fn assert_only_good_doc(iw: &Arc<IndexWriter>, dir: TestDirectory) -> Result<()> {
     assert_null(&iw.get_tragic_exception().map(|e| e.to_string()));
     iw.close()?;
     // make sure we see our good doc
@@ -2442,7 +2442,7 @@ impl Analyzer for CrazyGapAnalyzer {
 
 /// Port of `TestIndexWriterExceptions.testCrazyPositionIncrementGap`.
 fn test_crazy_position_increment_gap() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(CrazyGapAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
@@ -2552,7 +2552,7 @@ impl Directory for UoeDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.filter().obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.filter().close()
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
@@ -2566,7 +2566,7 @@ impl Directory for UoeDirectory {
 /// Port of `TestIndexWriterExceptions.testExceptionOnCtor`.
 fn test_exception_on_ctor() -> Result<()> {
     let uoe = Arc::new(UoeDirectory::new());
-    let mut d = TestDirectory::Mock(MockDirectoryWrapper::new(
+    let d = TestDirectory::Mock(MockDirectoryWrapper::new(
         &*random(),
         Arc::clone(&uoe) as Arc<dyn Directory>,
     ));
@@ -2615,7 +2615,7 @@ fn test_too_many_file_exception() -> Result<()> {
     // Create failure that throws Too many open files exception randomly
     let failure = Arc::new(TooManyOpenFilesFailure::default());
 
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let mock = dir.as_mock().expect("newMockDirectory");
     // The exception is only thrown on open input
     mock.set_fail_on_open_input(true);
@@ -2737,7 +2737,7 @@ impl TokenStream for TooManyTokensStream {
 /// kind of slow, but omits positions, so just CPU
 /// Port of `TestIndexWriterExceptions.testTooManyTokens`.
 fn test_too_many_tokens() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(dir.as_directory(), null_analyzer_iwc())?;
     let mut doc = Document::new();
     let ft = FieldType::new_from(TextField::type_not_stored());
@@ -2806,7 +2806,7 @@ fn test_exception_during_rollback() -> Result<()> {
     // infostream that throws exception during rollback
     let evil_info_stream = Arc::new(EvilInfoStream { message_to_fail_on });
 
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory()); // we want to ensure we don't leak any locks or file handles
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory()); // we want to ensure we don't leak any locks or file handles
     let iwc = plain_null_analyzer_iwc();
     iwc.set_info_stream(evil_info_stream)?;
     // TODO: cutover to RandomIndexWriter.mockIndexWriter?
@@ -2877,7 +2877,7 @@ fn test_random_exception_during_rollback() -> Result<()> {
     // fail in random places on i/o
     let num_iters = *RANDOM_MULTIPLIER * 75;
     for _ in 0..num_iters {
-        let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+        let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
         dir.as_mock()
             .expect("newMockDirectory")
             .fail_on(Arc::new(RollbackFailure::default()));
@@ -2960,7 +2960,7 @@ impl Failure for MergeFailure {
 /// TODO: can be super slow in pathological cases (merge config?)
 /// Port of `TestIndexWriterExceptions.testMergeExceptionIsTragic`.
 fn test_merge_exception_is_tragic() -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let did_fail = Arc::new(AtomicBool::new(false));
     dir.as_mock()
         .expect("newMockDirectory")
@@ -3072,7 +3072,7 @@ fn test_only_rollback_once_on_exception() -> Result<()> {
     let stream = Arc::new(RollbackOnceInfoStream {
         once: AtomicBool::new(false),
     });
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let body = (|| -> Result<()> {
         let conf = LuceneTestCase::new_index_writer_config();
         conf.set_info_stream(stream)?;
@@ -3140,7 +3140,7 @@ impl Failure for SyncMetadataFailure {
 
 /// Port of `TestIndexWriterExceptions.testExceptionOnSyncMetadata`.
 fn test_exception_on_sync_metadata() -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let body = (|| -> Result<()> {
         let conf = LuceneTestCase::new_index_writer_config();
         conf.set_commit_on_close(false);
@@ -3242,7 +3242,7 @@ fn test_exception_on_sync_metadata() -> Result<()> {
 
 /// Port of `TestIndexWriterExceptions.testExceptionJustBeforeFlushWithPointValues`.
 fn test_exception_just_before_flush_with_point_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(CrashingAnalyzer::new(
         None,
         "org.apache.lucene.index.TestIndexWriterExceptions$21",

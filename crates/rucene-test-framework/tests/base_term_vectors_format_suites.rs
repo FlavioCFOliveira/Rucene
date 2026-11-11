@@ -148,7 +148,7 @@ fn test_skip_redundant_prefetches() -> Result<()> {
     // Use the "dummy" codec, which has the same base class as Lucene90StoredFieldsFormat but allows
     // configuring the number of docs per chunk.
     let codec: Arc<dyn Codec> = Arc::new(DummyCompressingCodec::new(1 << 10, 2, false, 16)?);
-    let mut orig_dir = LuceneTestCase::new_directory();
+    let orig_dir = LuceneTestCase::new_directory();
     let counter = Arc::new(AtomicI32::new(0));
     let dir: Arc<dyn Directory> = Arc::new(CountingPrefetchDirectory::new(
         orig_dir.as_directory(),
@@ -218,7 +218,7 @@ fn compressing_class() -> Arc<Class> {
 // https://issues.apache.org/jira/browse/LUCENE-5156
 /// Port of `TestCompressingTermVectorsFormat.testNoOrds`.
 fn test_no_ords() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw =
         RandomIndexWriter::new_with_mock_analyzer(&*LuceneTestCase::random(), dir.as_directory())?;
     let mut doc = Document::new();
@@ -289,7 +289,7 @@ fn with_compressing_term_vectors_reader<T>(
 ///
 /// Port of `TestCompressingTermVectorsFormat.testChunkCleanup`.
 fn test_chunk_cleanup() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw_conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*LuceneTestCase::random()),
     )));

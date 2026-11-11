@@ -51,7 +51,7 @@ fn append(points: &mut dyn PointWriter, value: &[u8], doc_id: i32) -> Result<()>
 
 fn test_basic() -> Result<()> {
     let values = 4;
-    let mut dir = get_directory(values);
+    let dir = get_directory(values);
     let middle = 2;
     let dimensions = 1;
     let bytes_per_dimensions = 4;
@@ -93,7 +93,7 @@ fn test_random_binary_big() -> Result<()> {
 fn do_test_random_binary(count: i32) -> Result<()> {
     let config = get_random_config()?;
     let values = TestUtil::next_int(&*random(), count, count * 2);
-    let mut dir = get_directory(values);
+    let dir = get_directory(values);
     let start;
     let end;
     if random().next_boolean() {
@@ -134,7 +134,7 @@ fn test_random_all_dimensions_equals() -> Result<()> {
         BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
     )?;
     let values = TestUtil::next_int(&*random(), 15000, 20000);
-    let mut dir = get_directory(values);
+    let dir = get_directory(values);
     let partition_point = random().next_int_bound(values);
     let sorted_on_heap = random().next_int_bound(5000);
     let mut points = get_random_point_writer(&config, &dir, values as i64)?;
@@ -162,7 +162,7 @@ fn test_random_all_dimensions_equals() -> Result<()> {
 
 fn test_random_last_byte_two_values() -> Result<()> {
     let values = random().next_int_bound(15000) + 1;
-    let mut dir = get_directory(values);
+    let dir = get_directory(values);
     let partition_point = random().next_int_bound(values);
     let sorted_on_heap = random().next_int_bound(5000);
     let config = get_random_config()?;
@@ -191,7 +191,7 @@ fn test_random_last_byte_two_values() -> Result<()> {
 
 fn test_random_all_docs_equals() -> Result<()> {
     let values = random().next_int_bound(15000) + 1;
-    let mut dir = get_directory(values);
+    let dir = get_directory(values);
     let partition_point = random().next_int_bound(values);
     let sorted_on_heap = random().next_int_bound(5000);
     let config = get_random_config()?;
@@ -217,7 +217,7 @@ fn test_random_all_docs_equals() -> Result<()> {
 fn test_random_few_different_values() -> Result<()> {
     let config = get_random_config()?;
     let values = LuceneTestCase::at_least(15000);
-    let mut dir = get_directory(values);
+    let dir = get_directory(values);
     let partition_point = random().next_int_bound(values);
     let sorted_on_heap = random().next_int_bound(5000);
     let mut points = get_random_point_writer(&config, &dir, values as i64)?;
@@ -247,7 +247,7 @@ fn test_random_few_different_values() -> Result<()> {
 fn test_random_data_dim_diff_values() -> Result<()> {
     let config = get_random_config()?;
     let values = LuceneTestCase::at_least(15000);
-    let mut dir = get_directory(values);
+    let dir = get_directory(values);
     let partition_point = random().next_int_bound(values);
     let sorted_on_heap = random().next_int_bound(5000);
     let mut points = get_random_point_writer(&config, &dir, values as i64)?;

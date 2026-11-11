@@ -88,7 +88,7 @@ fn psdp_of(dp: &dyn IndexDeletionPolicy) -> &PersistentSnapshotDeletionPolicy {
 fn test_existing_snapshots() -> Result<()> {
     let mut f = SnapshotFixture::default();
     let num_snapshots = 3;
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         f.get_config(
@@ -149,7 +149,7 @@ fn test_existing_snapshots() -> Result<()> {
 
 /// Port of `TestPersistentSnapshotDeletionPolicy.testNoSnapshotInfos`.
 fn test_no_snapshot_infos() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     PersistentSnapshotDeletionPolicy::with_open_mode(
         Arc::new(KeepOnlyLastCommitDeletionPolicy::new()),
         dir.as_directory(),
@@ -160,7 +160,7 @@ fn test_no_snapshot_infos() -> Result<()> {
 
 /// Port of `TestPersistentSnapshotDeletionPolicy.testMissingSnapshots`.
 fn test_missing_snapshots() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     expect_throws("java.lang.IllegalStateException", || {
         PersistentSnapshotDeletionPolicy::with_open_mode(
@@ -197,7 +197,7 @@ impl Failure for FailOnPersist {
 /// Port of `TestPersistentSnapshotDeletionPolicy.testExceptionDuringSave`.
 fn test_exception_during_save() -> Result<()> {
     let f = SnapshotFixture::default();
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     dir.fail_on(Arc::new(FailOnPersist {
         do_fail: AtomicBool::new(false),
     }));
@@ -242,7 +242,7 @@ fn test_exception_during_save() -> Result<()> {
 /// Port of `TestPersistentSnapshotDeletionPolicy.testSnapshotRelease`.
 fn test_snapshot_release() -> Result<()> {
     let mut f = SnapshotFixture::default();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         f.get_config(
@@ -276,7 +276,7 @@ fn test_snapshot_release() -> Result<()> {
 /// Port of `TestPersistentSnapshotDeletionPolicy.testSnapshotReleaseByGeneration`.
 fn test_snapshot_release_by_generation() -> Result<()> {
     let mut f = SnapshotFixture::default();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         f.get_config(

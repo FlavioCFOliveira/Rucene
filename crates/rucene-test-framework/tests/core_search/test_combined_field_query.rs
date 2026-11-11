@@ -166,7 +166,7 @@ fn text(name: &str, value: &str) -> Result<Box<TextField>> {
 }
 
 fn test_same_score() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let similarity = random_compatible_similarity()?;
 
     let iwc = iwc_with(Arc::clone(&similarity))?;
@@ -259,7 +259,7 @@ fn test_scoring_with_multiple_field_terms_match() -> Result<()> {
     let boost1 = 1.max(random().next_int_bound(5));
     let boost2 = 1.max(random().next_int_bound(5));
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let similarity = random_compatible_similarity()?;
 
     let iwc = iwc_with(Arc::clone(&similarity))?;
@@ -287,7 +287,7 @@ fn test_scoring_with_multiple_field_terms_match() -> Result<()> {
 }
 
 fn test_norms_disabled() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let similarity = random_compatible_similarity()?;
 
     let iwc = iwc_with(similarity)?;
@@ -336,7 +336,7 @@ fn test_norms_disabled() -> Result<()> {
 }
 
 fn test_copy_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let similarity = random_compatible_similarity()?;
 
     let iwc = iwc_with(Arc::clone(&similarity))?;
@@ -395,13 +395,9 @@ fn mmap_dir() -> Result<Arc<dyn Directory>> {
     )?))
 }
 
-/// `dir.close()` on a directory the test shares: closed once the test holds
-/// the only handle.
-fn close_shared_dir(mut dir: Arc<dyn Directory>) -> Result<()> {
-    match Arc::get_mut(&mut dir) {
-        Some(d) => d.close(),
-        None => Ok(()),
-    }
+/// `dir.close()` on a directory the test shares.
+fn close_shared_dir(dir: Arc<dyn Directory>) -> Result<()> {
+    dir.close()
 }
 
 fn test_copy_field_with_single_field() -> Result<()> {
@@ -531,7 +527,7 @@ fn check_expected_hits(
 /// `NegativeNormSimilarity`, searched with `BM25Similarity` for
 /// `foo` over `f` and `g`; `expected` are the doc IDs in order.
 fn negative_norms(docs: &[(&str, &str)], expected: &[i32]) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = iwc_with(Arc::new(NegativeNormSimilarity::default()))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
 
@@ -640,7 +636,7 @@ impl IndexSearcherOverrides for ExtraStatsSearcher {
 }
 
 fn test_override_collection_statistics() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let similarity = random_compatible_similarity()?;
     let iwc = iwc_with(Arc::clone(&similarity))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
@@ -709,7 +705,7 @@ fn test_next_docs_and_scores() -> Result<()> {
     let boost1 = 1.max(random().next_int_bound(5));
     let boost2 = 1.max(random().next_int_bound(5));
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let similarity = random_compatible_similarity()?;
 
     let iwc = iwc_with(Arc::clone(&similarity))?;

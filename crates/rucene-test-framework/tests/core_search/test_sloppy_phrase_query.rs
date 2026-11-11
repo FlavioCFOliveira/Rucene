@@ -222,7 +222,7 @@ fn check_phrase_query(
     builder.set_slop(slop);
     let query = builder.build()?;
 
-    let mut ram_dir = rucene_test_framework::util::lucene_test_case::TestDirectory::Mock(
+    let ram_dir = rucene_test_framework::util::lucene_test_case::TestDirectory::Mock(
         MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::default())),
     );
     let writer = RandomIndexWriter::new(
@@ -419,7 +419,7 @@ fn assert_sane_scoring(pq: &PhraseQuery, searcher: &IndexSearcher) -> Result<()>
 ///
 /// Port of `TestSloppyPhraseQuery.testSlopWithHoles`.
 fn test_slop_with_holes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let custom_type = omit_norms_type()?;
     let mut doc = Document::new();
@@ -461,7 +461,7 @@ fn test_slop_with_holes() -> Result<()> {
 fn test_infinite_freq1() -> Result<()> {
     let document = "drug druggy drug drug drug";
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_field(
@@ -524,7 +524,7 @@ fn test_infinite_freq2() -> Result<()> {
         "Need sensation like my baby"
     );
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();

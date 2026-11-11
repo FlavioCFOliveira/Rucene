@@ -44,7 +44,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock};
 
 use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::reflect::{modifier, Class};
@@ -390,7 +390,7 @@ fn assert_read_only(
 ) -> Result<()> {
     let testfile = "_123.test";
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let directory = dir.as_directory();
         if write_test_file {
@@ -400,7 +400,7 @@ fn assert_read_only(
         let si = new_segment_info(&directory, "_123")?;
         si.set_files(Vec::<String>::new())?;
         write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let mut cfs = compound_reader(&*directory, &si)?;
+        let cfs = compound_reader(&*directory, &si)?;
         expect_throws_lucene(
             "java.lang.UnsupportedOperationException",
             is_unsupported_operation,
@@ -533,14 +533,14 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testEmpty()`: test that empty CFS is empty.
     fn test_empty(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
 
             let si = new_segment_info(&directory, "_123")?;
             si.set_files(Vec::<String>::new())?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let mut cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&*directory, &si)?;
             Assert::assert_equals(0, cfs.list_all()?.len() as i64);
             cfs.close()?;
             drop(directory);
@@ -554,7 +554,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
         let data = [0, 1, 10, 100];
         for (i, &size) in data.iter().enumerate() {
             let testfile = format!("_{i}.test");
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let directory = dir.as_directory();
                 let si = new_segment_info(&directory, &format!("_{i}"))?;
@@ -562,7 +562,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
                 si.set_files([testfile.clone()])?;
                 write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-                let mut cfs = compound_reader(&*directory, &si)?;
+                let cfs = compound_reader(&*directory, &si)?;
 
                 let mut expected = directory.open_input(&testfile, &*random_io_context())?;
                 let mut actual = cfs.open_input(&testfile, &*random_io_context())?;
@@ -581,7 +581,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testTwoFiles()`: this test creates compound file based on two files.
     fn test_two_files(&self) -> Result<()> {
         let files = ["_123.d1".to_string(), "_123.d2".to_string()];
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
             let si = new_segment_info(&directory, "_123")?;
@@ -590,7 +590,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             si.set_files(files.clone())?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let mut cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&*directory, &si)?;
 
             for file in &files {
                 let mut expected = directory.open_input(file, &*random_io_context())?;
@@ -612,7 +612,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_double_close(&self) -> Result<()> {
         let testfile = "_123.test";
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
             let si = new_segment_info(&directory, "_123")?;
@@ -620,7 +620,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             si.set_files([testfile.to_string()])?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let mut cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&*directory, &si)?;
             Assert::assert_equals(1, cfs.list_all()?.len() as i64);
             cfs.close()?;
             cfs.close()?; // second close should not throw exception
@@ -687,7 +687,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testListAll()`: just tests that we can open all files returned by
     /// listAll.
     fn test_list_all(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
             // riw should sometimes create docvalues fields, etc
@@ -720,7 +720,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
             for si in infos.iter() {
                 if si.info.get_use_compound_file() {
-                    let mut cfs_dir = compound_reader(&*directory, &si.info)?;
+                    let cfs_dir = compound_reader(&*directory, &si.info)?;
                     let listed = (|| -> Result<()> {
                         for cfs_file in cfs_dir.list_all()? {
                             let mut cfs_in = cfs_dir.open_input(&cfs_file, &*DEFAULT_IO_CONTEXT)?;
@@ -772,7 +772,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// For this the chunk variable is set to the length of the buffer used
     /// internally by the compound file logic.
     fn test_random_files(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
             // Setup the test segment
@@ -802,7 +802,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             si.set_files(files.clone())?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let mut cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&*directory, &si)?;
 
             for file in &files {
                 let mut check = directory.open_input(file, &*random_io_context())?;
@@ -846,7 +846,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
         si.set_files(files)?;
         write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-        let mut cfs = compound_reader(&*directory, &si)?;
+        let cfs = compound_reader(&*directory, &si)?;
 
         let mut ins: Vec<Box<dyn IndexInput>> = Vec::with_capacity(file_count as usize);
         for file_idx in 0..file_count {
@@ -879,10 +879,10 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testClonedStreamsClosing()`.
     fn test_cloned_streams_closing(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
-            let mut cr = create_large_cfs(&directory)?;
+            let cr = create_large_cfs(&directory)?;
 
             // basic clone
             let mut expected = directory.open_input("_123.f11", &*random_io_context())?;
@@ -908,10 +908,10 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// stream and verifies that their file positions are independent of each
     /// other.
     fn test_random_access(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
-            let mut cr = create_large_cfs(&directory)?;
+            let cr = create_large_cfs(&directory)?;
 
             // Open two files
             let mut e1 = directory.open_input("_123.f11", &*random_io_context())?;
@@ -936,10 +936,10 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// stream and verifies that their file positions are independent of each
     /// other.
     fn test_random_access_clones(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
-            let mut cr = create_large_cfs(&directory)?;
+            let cr = create_large_cfs(&directory)?;
 
             // Open two files
             let mut e1 = cr.open_input("_123.f11", &*random_io_context())?;
@@ -962,10 +962,10 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testFileNotFound()`.
     fn test_file_not_found(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
-            let mut cr = create_large_cfs(&directory)?;
+            let cr = create_large_cfs(&directory)?;
 
             // Open bogus file
             expect_throws_lucene("java.io.IOException", LuceneError::is_io_exception, || {
@@ -980,10 +980,10 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testReadPastEOF()`.
     fn test_read_past_eof(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
-            let mut cr = create_large_cfs(&directory)?;
+            let cr = create_large_cfs(&directory)?;
             let mut is = cr.open_input("_123.f2", &*random_io_context())?;
             let length = is.length();
             is.seek(length - 10)?;
@@ -1013,7 +1013,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
     /// resource name inside a compound file confesses that it's inside a
     /// compound file.
     fn test_resource_name_inside_compound_file(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
             let sub_file = "_123.xyz";
@@ -1022,7 +1022,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
             si.set_files([sub_file.to_string()])?;
             write_compound(&*directory, &si, &*DEFAULT_IO_CONTEXT)?;
-            let mut cfs = compound_reader(&*directory, &si)?;
+            let cfs = compound_reader(&*directory, &si)?;
             let r#in = cfs.open_input(sub_file, &*DEFAULT_IO_CONTEXT)?;
             let desc = r#in.to_java_string();
             Assert::assert_true_msg(
@@ -1038,7 +1038,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testMissingCodecHeadersAreCaught()`.
     fn test_missing_codec_headers_are_caught(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
             let sub_file = "_123.xyz";
@@ -1068,7 +1068,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testCorruptFilesAreCaught()`.
     fn test_corrupt_files_are_caught(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
             let sub_file = "_123.xyz";
@@ -1094,7 +1094,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testCheckIntegrity()`.
     fn test_check_integrity(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let directory = dir.as_directory();
             let sub_file = "_123.xyz";
@@ -1108,7 +1108,7 @@ pub trait BaseCompoundFormatTestCase: BaseIndexFileFormatTestCase {
             let created_files: HashSet<String> = write_tracking_dir.get_files();
 
             let read_tracking_dir = ReadBytesDirectoryWrapper::new(Arc::clone(&directory));
-            let mut compound_dir = compound_reader(&read_tracking_dir, &si)?;
+            let compound_dir = compound_reader(&read_tracking_dir, &si)?;
             compound_dir.check_integrity()?;
             let read_bytes = read_tracking_dir.get_read_bytes();
             Assert::assert_equals(
@@ -1142,15 +1142,9 @@ fn context_address(context: &dyn IOContext) -> usize {
     context as *const dyn IOContext as *const () as usize
 }
 
-/// Closes a directory once every other holder of it is gone (Java's
-/// `dir.close()` on the wrapper the test built).
+/// Java's `dir.close()` on the wrapper the test built.
 fn close_shared<D: Directory + 'static>(dir: Arc<D>) -> Result<()> {
-    match Arc::try_unwrap(dir) {
-        Ok(mut dir) => dir.close(),
-        Err(_) => Err(LuceneError::illegal_state(
-            "the directory is still referenced".to_string(),
-        )),
-    }
+    dir.close()
 }
 
 /// A `FilterDirectory` over a test directory that owns it (see the module
@@ -1159,42 +1153,22 @@ fn close_shared<D: Directory + 'static>(dir: Arc<D>) -> Result<()> {
 /// very `IOContext`, as the anonymous `FilterDirectory` of
 /// `testPassIOContext` does.
 struct OwningTestDirectory {
-    /// The owned directory as `Arc<dyn Directory>` (`FilterDirectory.in`);
-    /// released by `close()` before the owner closes, so the owner's
-    /// wrapper is no longer shared.
-    r#in: Option<Arc<dyn Directory>>,
-    owner: Mutex<Option<TestDirectory>>,
+    /// The owned directory as `Arc<dyn Directory>` (`FilterDirectory.in`).
+    r#in: Arc<dyn Directory>,
     expected_context: Option<usize>,
 }
 
 impl OwningTestDirectory {
     fn new(owner: TestDirectory, expected_context: Option<usize>) -> Self {
         OwningTestDirectory {
-            r#in: Some(owner.as_directory()),
-            owner: Mutex::new(Some(owner)),
+            r#in: owner.as_directory(),
             expected_context,
         }
     }
 
-    /// `in`: the owned directory, `AlreadyClosedException` once closed.
+    /// `in`: the owned directory.
     fn delegate(&self) -> Result<&Arc<dyn Directory>> {
-        self.r#in
-            .as_ref()
-            .ok_or_else(|| LuceneError::already_closed("this Directory is closed"))
-    }
-
-    /// Closes the owned test directory.
-    fn close_owned(&mut self) -> Result<()> {
-        self.r#in = None;
-        let owner = self
-            .owner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        match owner {
-            Some(mut owner) => owner.close(),
-            None => Ok(()),
-        }
+        Ok(&self.r#in)
     }
 }
 
@@ -1256,8 +1230,9 @@ impl Directory for OwningTestDirectory {
         self.delegate()?.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
-        self.close_owned()
+    /// `FilterDirectory.close()`: `in.close()`.
+    fn close(&self) -> Result<()> {
+        self.r#in.close()
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -1265,18 +1240,12 @@ impl Directory for OwningTestDirectory {
     }
 
     fn as_filter_directory(&self) -> Option<&dyn Directory> {
-        self.r#in.as_deref()
+        Some(&*self.r#in)
     }
 }
 
 impl fmt::Display for OwningTestDirectory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "FilterDirectory({})",
-            self.r#in
-                .as_ref()
-                .map_or("closed", |d| d.directory_type_name())
-        )
+        write!(f, "FilterDirectory({})", self.r#in.directory_type_name())
     }
 }

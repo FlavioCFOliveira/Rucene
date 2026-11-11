@@ -424,7 +424,7 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
         HashMap::new()
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let data_in = self.data_in.lock().map_err(poisoned)?.take();
         match data_in {
             Some(mut data_in) => data_in.close(),

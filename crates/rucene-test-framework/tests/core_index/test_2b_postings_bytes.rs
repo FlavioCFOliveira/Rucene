@@ -93,7 +93,7 @@ fn test_() -> Result<()> {
         );
     }
 
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "2BPostingsBytes1",
     ));
     never_throttle(&dir);
@@ -126,7 +126,7 @@ fn test_() -> Result<()> {
 
     let one_thousand = open_reader(&dir)?;
     let sub_readers: Vec<Arc<dyn DirectoryReader>> = vec![Arc::clone(&one_thousand); 1000];
-    let mut dir2 = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir2 = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "2BPostingsBytes2",
     ));
     never_throttle(&dir2);
@@ -138,7 +138,7 @@ fn test_() -> Result<()> {
 
     let one_million = open_reader(&dir2)?;
     let sub_readers: Vec<Arc<dyn DirectoryReader>> = vec![Arc::clone(&one_million); 2000];
-    let mut dir3 = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir3 = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "2BPostingsBytes3",
     ));
     never_throttle(&dir3);

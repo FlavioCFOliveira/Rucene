@@ -82,7 +82,7 @@ fn test_values() -> Result<()> {
     let score_function =
         SCORE_FUNCTIONS[random().next_int_bound(SCORE_FUNCTIONS.len() as i32) as usize];
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let mut id = 0;
         {

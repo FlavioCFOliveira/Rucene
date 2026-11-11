@@ -33,7 +33,7 @@ use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{FieldInfo, IndexOptions};
 use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::{close_after, DataInput, IndexInput};
+use crate::store::{close_after, DataInput, IndexInput, SharedIndexInput};
 use crate::util::{BitUtil, FixedBitSet, IOUtils};
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -176,7 +176,10 @@ fn next_set_bit(bits: &FixedBitSet, from_index: i32) -> Option<i32> {
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsReader`.
 pub struct Lucene104PostingsReader {
     version: i32,
-    doc_in: Option<Box<dyn IndexInput>>,
+    /// `docIn`, `posIn` and `payIn`: shared by every enum this reader hands
+    /// out (as clones), and closed by [`close`](PostingsReaderBase::close)
+    /// whoever else still holds the reader, as Java's are.
+    doc_in: Option<SharedIndexInput>,
     /// Stands for the identity of `doc_in`, which
     /// `BlockPostingsEnum.canReuse` compares by reference
     /// (`docIn == Lucene104PostingsReader.this.docIn`,
@@ -186,8 +189,8 @@ pub struct Lucene104PostingsReader {
     /// are compared on that instead; the comparison answers exactly what the
     /// reference comparison answers.
     doc_in_identity: u64,
-    pos_in: Option<Box<dyn IndexInput>>,
-    pay_in: Option<Box<dyn IndexInput>>,
+    pos_in: Option<SharedIndexInput>,
+    pay_in: Option<SharedIndexInput>,
     max_num_impacts_at_level0: i32,
     max_impact_num_bytes_at_level0: i32,
     max_num_impacts_at_level1: i32,
@@ -337,10 +340,10 @@ impl Lucene104PostingsReader {
 
         Ok(Self {
             version,
-            doc_in,
+            doc_in: doc_in.map(SharedIndexInput::new),
             doc_in_identity: NEXT_DOC_IN_IDENTITY.fetch_add(1, AtomicOrdering::Relaxed),
-            pos_in,
-            pay_in,
+            pos_in: pos_in.map(SharedIndexInput::new),
+            pay_in: pay_in.map(SharedIndexInput::new),
             max_num_impacts_at_level0,
             max_impact_num_bytes_at_level0,
             max_num_impacts_at_level1,
@@ -356,14 +359,17 @@ impl Lucene104PostingsReader {
         flags: i32,
         needs_impacts: bool,
     ) -> Result<BlockPostingsEnum> {
+        let doc_in = self.doc_in.as_ref().map(SharedIndexInput::read);
+        let pos_in = self.pos_in.as_ref().map(SharedIndexInput::read);
+        let pay_in = self.pay_in.as_ref().map(SharedIndexInput::read);
         BlockPostingsEnum::new(
             field_info,
             flags,
             needs_impacts,
-            self.doc_in.as_deref(),
+            doc_in.as_deref().map(|i| &**i),
             self.doc_in_identity,
-            self.pos_in.as_deref(),
-            self.pay_in.as_deref(),
+            pos_in.as_deref().map(|i| &**i),
+            pay_in.as_deref().map(|i| &**i),
             self.max_num_impacts_at_level0,
             self.max_impact_num_bytes_at_level0,
             self.max_num_impacts_at_level1,
@@ -518,10 +524,10 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     /// Equivalent to `Lucene104PostingsReader.close()`
     /// (`Lucene104PostingsReader.java:209-212`): `IOUtils.close(docIn, posIn,
     /// payIn)`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         IOUtils::close(
-            [&mut self.doc_in, &mut self.pos_in, &mut self.pay_in]
-                .map(|i| i.as_mut().map(|i| move || i.close())),
+            [&self.doc_in, &self.pos_in, &self.pay_in]
+                .map(|i| i.as_ref().map(|i| move || i.close())),
         )
     }
 }
@@ -2273,9 +2279,8 @@ mod tests {
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new(vec![0], vec![1], vec![vec![]]);
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
@@ -2298,9 +2303,8 @@ mod tests {
             vec![vec![], vec![], vec![], vec![]],
         );
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
@@ -2343,9 +2347,8 @@ mod tests {
             ],
         );
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_ALL)
@@ -2395,9 +2398,8 @@ mod tests {
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new((0..256).collect(), vec![1; 256], vec![vec![]; 256]);
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
@@ -2467,7 +2469,7 @@ mod tests {
             out.write_bytes(&bytes, 0, bytes.len()).unwrap();
             out.close().unwrap();
         };
-        let (mut reader, state) =
+        let (reader, state) =
             write_term_and_open_reader_with(&dir, &field_infos, field_info, &postings, corrupt)
                 .expect("reader builds");
 
@@ -2494,9 +2496,8 @@ mod tests {
         let postings =
             TestPostingsEnum::new((0..8193).collect(), vec![1; 8193], vec![vec![]; 8193]);
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
@@ -2591,7 +2592,7 @@ mod close_family_tests {
         let info = test_segment_info("_0", 10);
         let fis = positions();
         write_empty(&dir, &info, &fis);
-        let mut reader = Lucene104PostingsReader::new(&read_state(&*dir, &info, &fis)).unwrap();
+        let reader = Lucene104PostingsReader::new(&read_state(&*dir, &info, &fis)).unwrap();
         let before = log.closed().len();
         log.fail_close("_0.doc");
         let error = reader.close().unwrap_err();

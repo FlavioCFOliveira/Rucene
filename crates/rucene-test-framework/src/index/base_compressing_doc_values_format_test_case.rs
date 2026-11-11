@@ -211,12 +211,7 @@ fn abandon(iwriter: Arc<IndexWriter>) -> Result<()> {
 /// The try-with-resources of the directory: closed on every exit, the
 /// body's failure first.
 fn close_directory(directory: Arc<ByteBuffersDirectory>, outcome: Result<()>) -> Result<()> {
-    let closed = match Arc::try_unwrap(directory) {
-        Ok(mut directory) => directory.close(),
-        Err(_) => Err(rucene::error::LuceneError::illegal_state(
-            "the directory is still referenced".to_string(),
-        )),
-    };
+    let closed = directory.close();
     outcome?;
     closed
 }

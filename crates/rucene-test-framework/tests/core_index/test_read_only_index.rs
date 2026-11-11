@@ -87,7 +87,7 @@ fn build_index() -> Result<()> {
 
     // borrows from TestDemo, but not important to keep in sync with demo
     let analyzer = Arc::new(MockAnalyzer::new(&*random()));
-    let mut directory = LuceneTestCase::new_fs_directory(&path);
+    let directory = LuceneTestCase::new_fs_directory(&path);
     let iwriter = RandomIndexWriter::new(&*random(), directory.as_directory(), analyzer.clone())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(

@@ -245,8 +245,7 @@ fn test_2b_terms() -> Result<()> {
 
     let mut saved_terms: Option<Vec<BytesRef>> = None;
 
-    let mut dir =
-        LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BTerms"));
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BTerms"));
     // MockDirectoryWrapper dir = newFSDirectory(new File("/p/lucene/indices/2bindex"));
     never_throttle(&dir);
     set_check_index_on_close(&dir, false); // don't double-checkindex

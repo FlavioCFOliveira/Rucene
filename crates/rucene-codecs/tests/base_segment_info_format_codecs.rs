@@ -68,7 +68,7 @@ impl TestSimpleTextSegmentInfoFormat {
     /// `testFileIsUTF8()`. Java's `null` index sort is `Sort::default()`,
     /// as in `BaseSegmentInfoFormatTestCase`.
     fn test_file_is_utf8(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let codec = self.get_codec();
         let id = StringHelper::random_id();
         let info = SegmentInfo::new(

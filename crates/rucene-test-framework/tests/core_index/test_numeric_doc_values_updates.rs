@@ -309,7 +309,7 @@ fn random_from_set(random: &dyn Random, set: &JavaHashSet<String>) -> String {
 
 /// Port of `TestNumericDocValuesUpdates.testMultipleUpdatesSameDoc`.
 fn test_multiple_updates_same_doc() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
 
     conf.set_max_buffered_docs(3)?; // small number of docs, so use a tiny maxBufferedDocs
@@ -353,7 +353,7 @@ fn test_biased_mix_of_random_updates() -> Result<()> {
     let add_cutoff = TestUtil::next_int(&*random(), 1, 98);
     let upd_cutoff = TestUtil::next_int(&*random(), add_cutoff + 1, 99);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
 
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -416,7 +416,7 @@ fn test_biased_mix_of_random_updates() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdatesAreFlushed`.
 fn test_updates_are_flushed() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let c = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::with_automaton(&*random(), Arc::clone(&WHITESPACE), false),
     )));
@@ -442,7 +442,7 @@ fn test_updates_are_flushed() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testSimple`.
 fn test_simple() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     // make sure random config doesn't flush on us
     conf.set_max_buffered_docs(10)?;
@@ -472,7 +472,7 @@ fn test_simple() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdateFewSegments`.
 fn test_update_few_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_max_buffered_docs(2)?; // generate few segments
     conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // prevent merges for this test
@@ -519,7 +519,7 @@ fn test_update_few_segments() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testReopen`.
 fn test_reopen() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
     writer.add_document(&doc(0)?)?;
@@ -570,7 +570,7 @@ fn test_reopen() -> Result<()> {
 fn test_updates_and_deletes() -> Result<()> {
     // create an index with a segment with only deletes, a segment with both
     // deletes and updates and a segment with only updates
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_max_buffered_docs(10)?; // control segment flushing
     conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // prevent merges for this test
@@ -616,7 +616,7 @@ fn test_updates_and_deletes() -> Result<()> {
 /// Port of `TestNumericDocValuesUpdates.testUpdatesWithDeletes`.
 fn test_updates_with_deletes() -> Result<()> {
     // update and delete different documents in the same commit session
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // otherwise a singleton merge could get rid of the delete
     conf.set_max_buffered_docs(10)?; // control segment flushing
@@ -650,7 +650,7 @@ fn test_updates_with_deletes() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testMultipleDocValuesTypes`.
 fn test_multiple_doc_values_types() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_max_buffered_docs(10)?; // prevent merges
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -729,7 +729,7 @@ fn test_multiple_doc_values_types() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testMultipleNumericDocValues`.
 fn test_multiple_numeric_doc_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_max_buffered_docs(10)?; // prevent merges
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -768,7 +768,7 @@ fn test_multiple_numeric_doc_values() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testDocumentWithNoValue`.
 fn test_document_with_no_value() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -823,7 +823,7 @@ fn test_document_with_no_value() -> Result<()> {
 fn test_update_non_numeric_doc_values_field() -> Result<()> {
     // we don't support adding new fields or updating existing non-numeric-dv
     // fields through numeric updates
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -853,7 +853,7 @@ fn test_different_dv_format_per_field() -> Result<()> {
         &TestUtil::get_default_doc_values_format(),
         &TestUtil::get_default_doc_values_format()
     ));
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_codec(Arc::new(asserting_codec_with_dv_format(
         TestUtil::get_default_doc_values_format,
@@ -894,7 +894,7 @@ fn test_different_dv_format_per_field() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdateSameDocMultipleTimes`.
 fn test_update_same_doc_multiple_times() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -921,7 +921,7 @@ fn test_update_same_doc_multiple_times() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testSegmentMerges`.
 fn test_segment_merges() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let random = random();
     let conf = new_iwc_with(&*random);
     let mut writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -1059,7 +1059,7 @@ fn test_segment_merges() -> Result<()> {
 /// Port of `TestNumericDocValuesUpdates.testUpdateDocumentByMultipleTerms`.
 fn test_update_document_by_multiple_terms() -> Result<()> {
     // make sure the order of updates is respected, even when multiple terms affect same document
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -1119,7 +1119,7 @@ impl OneSortDoc {
 
 /// Port of `TestNumericDocValuesUpdates.testSortedIndex`.
 fn test_sorted_index() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_index_sort(Sort::new_fields(vec![long_sort_field("sort")?])?)?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
@@ -1246,7 +1246,7 @@ fn test_sorted_index() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testManyReopensAndFields`.
 fn test_many_reopens_and_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let random = random();
     let conf = new_iwc_with(&*random);
     let lmp = LuceneTestCase::new_log_merge_policy();
@@ -1380,7 +1380,7 @@ fn test_many_reopens_and_fields() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdateSegmentWithNoDocValues`.
 fn test_update_segment_with_no_doc_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     // prevent merges, otherwise by the time updates are applied
     // (writer.close()), the segments might have merged and that update becomes
@@ -1432,7 +1432,7 @@ fn test_update_segment_with_no_doc_values() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdateSegmentWithNoDocValues2`.
 fn test_update_segment_with_no_doc_values2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     // prevent merges, otherwise by the time updates are applied
     // (writer.close()), the segments might have merged and that update becomes
@@ -1516,7 +1516,7 @@ fn test_update_segment_with_no_doc_values2() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdateSegmentWithPostingButNoDocValues`.
 fn test_update_segment_with_posting_but_no_doc_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     // prevent merges, otherwise by the time updates are applied
     // (writer.close()), the segments might have merged and that update becomes
@@ -1570,7 +1570,7 @@ fn test_update_segment_with_posting_but_no_doc_values() -> Result<()> {
 fn test_update_numeric_dv_field_with_same_name_as_posting_field() -> Result<()> {
     // this used to fail because FieldInfos.Builder neglected to update
     // globalFieldMaps.docValuesTypes map
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -1616,7 +1616,7 @@ fn group_of(group: f64) -> &'static str {
 
 /// Port of `TestNumericDocValuesUpdates.testStressMultiThreading`.
 fn test_stress_multi_threading() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -1775,7 +1775,7 @@ fn test_stress_multi_threading() -> Result<()> {
 /// Port of `TestNumericDocValuesUpdates.testUpdateDifferentDocsInDifferentGens`.
 fn test_update_different_docs_in_different_gens() -> Result<()> {
     // update same document multiple times across generations
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_max_buffered_docs(4)?;
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
@@ -1824,7 +1824,7 @@ fn test_update_different_docs_in_different_gens() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testChangeCodec`.
 fn test_change_codec() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     conf.set_merge_policy(Some(NoMergePolicy::instance()))?; // disable merges to simplify test assertions.
     conf.set_codec(Arc::new(asserting_codec_with_dv_format(
@@ -1870,7 +1870,7 @@ fn test_change_codec() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testAddIndexes`.
 fn test_add_indexes() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir1.as_directory(), conf)?;
 
@@ -1907,7 +1907,7 @@ fn test_add_indexes() -> Result<()> {
     )?;
     writer.close()?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir2.as_directory(), conf)?;
     if random().next_boolean() {
@@ -1957,7 +1957,7 @@ fn leaf_field_infos(writer: &IndexWriter) -> Result<Vec<FieldInfos>> {
 
 /// Port of `TestNumericDocValuesUpdates.testAddNewFieldAfterAddIndexes`.
 fn test_add_new_field_after_add_indexes() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let conf = new_iwc_no_merges()?;
     let num_docs = LuceneTestCase::at_least(50);
     {
@@ -1973,7 +1973,7 @@ fn test_add_new_field_after_add_indexes() -> Result<()> {
         writer.close()?;
     }
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let conf = new_iwc_no_merges()?;
     {
         let writer = IndexWriter::new(dir2.as_directory(), conf)?;
@@ -1989,7 +1989,7 @@ fn test_add_new_field_after_add_indexes() -> Result<()> {
         writer.close()?;
     }
 
-    let mut main_dir = LuceneTestCase::new_directory();
+    let main_dir = LuceneTestCase::new_directory();
     let conf = new_iwc_no_merges()?;
     {
         let writer = IndexWriter::new(main_dir.as_directory(), conf)?;
@@ -2046,7 +2046,7 @@ fn test_add_new_field_after_add_indexes() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdatesAfterAddIndexes`.
 fn test_updates_after_add_indexes() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let conf = new_iwc_no_merges()?;
     let num_docs = LuceneTestCase::at_least(50);
     {
@@ -2063,7 +2063,7 @@ fn test_updates_after_add_indexes() -> Result<()> {
         writer.close()?;
     }
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let conf = new_iwc_no_merges()?;
     {
         let writer = IndexWriter::new(dir2.as_directory(), conf)?;
@@ -2080,7 +2080,7 @@ fn test_updates_after_add_indexes() -> Result<()> {
         writer.close()?;
     }
 
-    let mut main_dir = LuceneTestCase::new_directory();
+    let main_dir = LuceneTestCase::new_directory();
     let conf = new_iwc_no_merges()?;
     {
         let writer = IndexWriter::new(main_dir.as_directory(), conf)?;
@@ -2179,7 +2179,7 @@ fn ensure_consistent_field_infos(old: &FieldInfos, after: &FieldInfos) {
 
 /// Port of `TestNumericDocValuesUpdates.testDeleteUnusedUpdatesFiles`.
 fn test_delete_unused_updates_files() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -2210,7 +2210,7 @@ fn test_delete_unused_updates_files() -> Result<()> {
 /// Port of `TestNumericDocValuesUpdates.testTonsOfUpdates`.
 fn test_tons_of_updates() -> Result<()> {
     // LUCENE-5248: make sure that when there are many updates, we don't use too much RAM
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let random = random();
     let conf = new_iwc_with(&*random);
     conf.set_ram_buffer_size_mb(LiveIndexWriterConfig::DEFAULT_RAM_BUFFER_SIZE_MB)?;
@@ -2296,7 +2296,7 @@ fn test_tons_of_updates() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdatesOrder`.
 fn test_updates_order() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -2330,7 +2330,7 @@ fn test_updates_order() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdateAllDeletedSegment`.
 fn test_update_all_deleted_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -2358,7 +2358,7 @@ fn test_update_all_deleted_segment() -> Result<()> {
 
 /// Port of `TestNumericDocValuesUpdates.testUpdateTwoNonexistingTerms`.
 fn test_update_two_nonexisting_terms() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = new_iwc();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
@@ -2398,7 +2398,7 @@ fn io_context_config() -> Result<IndexWriterConfig> {
 /// `NRTCachingDirectory` here wraps a shared handle of it, whose close does
 /// nothing, so the test closes the directory right after the caching one.
 fn test_io_context() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), io_context_config()?)?;
     for i in 0..100 {
         writer.add_document(&doc(i)?)?;
@@ -2406,7 +2406,7 @@ fn test_io_context() -> Result<()> {
     writer.commit()?;
     writer.close()?;
 
-    let mut caching_dir = Arc::new(NRTCachingDirectory::new(
+    let caching_dir = Arc::new(NRTCachingDirectory::new(
         Box::new(SharedDirectory(dir.as_directory())),
         100.0,
         1.0 / (1024.0 * 1024.0),
@@ -2423,12 +2423,7 @@ fn test_io_context() -> Result<()> {
     let closed_writer = writer.close();
     drop(writer);
     drop(reader);
-    let closed_caching = match Arc::get_mut(&mut caching_dir) {
-        Some(caching) => caching.close(),
-        None => Err(rucene::error::LuceneError::illegal_state(
-            "the NRTCachingDirectory is still shared",
-        )),
-    };
+    let closed_caching = caching_dir.close();
     let closed_dir = dir.close();
     closed_reader?;
     closed_writer?;

@@ -248,7 +248,7 @@ pub fn check_seeks_and_skips(is: &mut dyn IndexInput, random: &dyn Random) -> Re
 fn test_raw_index_input_read() -> Result<()> {
     for _ in 0..10 {
         let random = random();
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         let mut os = d.create_output("foo", &*LuceneTestCase::new_io_context(&*random))?;
         os.write_bytes(READ_TEST_BYTES, 0, READ_TEST_BYTES.len())?;

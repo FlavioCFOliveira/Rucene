@@ -262,6 +262,12 @@ impl SerialMergeScheduler {
 }
 
 impl MergeScheduler for SerialMergeScheduler {
+    /// This scheduler answers with itself: Java's `getClass()` /
+    /// `instanceof SerialMergeScheduler` on it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Equivalent to `SerialMergeScheduler.merge(MergeSource, MergeTrigger)`
     /// (`SerialMergeScheduler.java:31-40`).
     fn merge(&self, merge_source: Arc<dyn MergeSource>, _trigger: MergeTrigger) -> Result<()> {
@@ -2768,7 +2774,7 @@ impl Directory for RateLimitedMergeDirectory {
 
     /// A no-op: the wrapper does not own the directory it shares, exactly as
     /// the writer's other shared-directory adapters.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 

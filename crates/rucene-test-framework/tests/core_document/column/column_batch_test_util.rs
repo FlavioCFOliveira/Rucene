@@ -1282,7 +1282,7 @@ impl Ctx {
     }
 
     /// `r.close(); w.close(); dir.close();` (`r` absent when the test opened none).
-    pub fn close(mut self, r: Option<Arc<dyn rucene::index::IndexReader>>) -> Result<()> {
+    pub fn close(self, r: Option<Arc<dyn rucene::index::IndexReader>>) -> Result<()> {
         if let Some(r) = r {
             r.close()?;
         }

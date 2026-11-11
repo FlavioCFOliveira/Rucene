@@ -129,7 +129,7 @@ fn run_index_threads(
 fn run_flush_by_ram(num_threads: i32, max_ram_mb: f64, ensure_not_stalled: bool) -> Result<()> {
     let num_documents_to_index = 10 + LuceneTestCase::at_least(30);
     let num_docs = Arc::new(AtomicI32::new(num_documents_to_index));
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let flush_policy = Arc::new(MockDefaultFlushPolicy::default());
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
@@ -185,7 +185,7 @@ fn test_flush_doc_count() -> Result<()> {
     for i in 0..num_threads.len() {
         let num_documents_to_index = 50 + LuceneTestCase::at_least(30);
         let num_docs = Arc::new(AtomicI32::new(num_documents_to_index));
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let flush_policy = Arc::new(MockDefaultFlushPolicy::default());
         let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(
             Arc::clone(&analyzer) as Arc<dyn rucene::analysis::Analyzer>
@@ -238,7 +238,7 @@ fn test_random() -> Result<()> {
     let num_threads = 1 + random().next_int_bound(8);
     let num_documents_to_index = 50 + LuceneTestCase::at_least(70);
     let num_docs = Arc::new(AtomicI32::new(num_documents_to_index));
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));
@@ -309,7 +309,7 @@ fn test_stall_control() -> Result<()> {
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
     for i in 0..num_threads.len() {
         let num_docs = Arc::new(AtomicI32::new(num_documents_to_index));
-        let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+        let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
         // mock a very slow harddisk sometimes here so that flushing is very slow
         dir.as_mock()
             .unwrap_or_else(|| npe("dir"))

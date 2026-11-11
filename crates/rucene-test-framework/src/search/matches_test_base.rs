@@ -140,7 +140,7 @@ pub struct MatchesState {
 pub fn tear_down(inst: &mut MatchesTestInstance) -> Result<()> {
     if let Some(MatchesState {
         searcher,
-        mut directory,
+        directory,
         reader,
     }) = inst.state.take()
     {

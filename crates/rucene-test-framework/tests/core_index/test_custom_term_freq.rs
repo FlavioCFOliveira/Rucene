@@ -159,11 +159,7 @@ fn open() -> Result<(TestDirectory, Arc<IndexWriter>)> {
 
 /// `IOUtils.close(r, w, dir)` (`r` absent when the test opened none); the
 /// try-with-resources of `dir` and `w` closes them in the same order.
-fn close(
-    r: Option<Arc<dyn IndexReader>>,
-    w: Arc<IndexWriter>,
-    mut dir: TestDirectory,
-) -> Result<()> {
+fn close(r: Option<Arc<dyn IndexReader>>, w: Arc<IndexWriter>, dir: TestDirectory) -> Result<()> {
     if let Some(r) = r {
         r.close()?;
     }
@@ -695,7 +691,7 @@ impl Similarity for NeverForgetsSimilarity {
 
 /// Port of `TestCustomTermFreq.testFieldInvertState`.
 fn test_field_invert_state() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_similarity(Some(Arc::clone(&*INSTANCE) as Arc<dyn Similarity>))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;

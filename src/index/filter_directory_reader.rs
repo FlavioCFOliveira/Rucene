@@ -2909,7 +2909,7 @@ impl PointsReader for SlowPointsReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -2988,7 +2988,7 @@ impl KnnVectorsReader for SlowKnnVectorsReader {
         }
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -3020,7 +3020,7 @@ impl NormsProducer for SlowNormsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -3086,7 +3086,7 @@ impl DocValuesProducer for SlowDocValuesProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -3201,7 +3201,7 @@ impl FieldsProducer for SlowFieldsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

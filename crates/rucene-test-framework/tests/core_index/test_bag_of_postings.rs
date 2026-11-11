@@ -75,7 +75,7 @@ fn test_() -> Result<()> {
     let postings: Arc<Mutex<VecDeque<String>>> =
         Arc::new(Mutex::new(postings_list.into_iter().collect()));
 
-    let mut dir =
+    let dir =
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("bagofpostings"));
 
     let iw = Arc::new(RandomIndexWriter::new_with_config(

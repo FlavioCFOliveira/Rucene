@@ -587,9 +587,22 @@ fn mockfile_filesystems_match_lucene() {
                 pm.matches(&Path::new(Arc::clone(&def), "a.txt"))
             ))
         });
+        // Masked as the oracle masks it: `$TYPE`/`$NAME` when they are the
+        // underlying store's, whatever filesystem TMPDIR is on.
         s.row("FilterFileStore", || {
             let st = Files::get_file_store(&dir)?;
-            Ok(format!("{} {}", st.type_(), st.name()))
+            let under = Files::get_file_store(&Path::new(Arc::clone(&def), base.as_os_str()))?;
+            let type_ = if st.type_() == under.type_() {
+                "$TYPE".to_string()
+            } else {
+                st.type_().to_string()
+            };
+            let name = if st.name() == under.name() {
+                "$NAME".to_string()
+            } else {
+                st.name().to_string()
+            };
+            Ok(format!("{type_} {name}"))
         });
         s.row("readSymbolicLink unwrapped", || {
             Files::create_symbolic_link(&dir.resolve_str("s"), &dir.resolve_str("t"))?;

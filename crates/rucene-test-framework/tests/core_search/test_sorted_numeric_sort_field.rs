@@ -163,7 +163,7 @@ type DocFn = Box<dyn Fn() -> Document>;
 /// built and added in order, `sort_field` sorts all of them, `expected_ids`
 /// are the ids in the sorted order.
 fn check_sorted(docs: Vec<DocFn>, sort_field: SortField, expected_ids: &[&str]) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for doc in &docs {
         writer.add_document(&doc())?;

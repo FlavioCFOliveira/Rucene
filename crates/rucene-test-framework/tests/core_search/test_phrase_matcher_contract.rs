@@ -128,7 +128,7 @@ fn one_doc_index(
 
 /// Port of `TestPhraseMatcherContract.testExactPhraseMatcherContract`.
 fn test_exact_phrase_matcher_contract() -> Result<()> {
-    let mut dir = one_doc_index("the quick brown fox")?;
+    let dir = one_doc_index("the quick brown fox")?;
     {
         let reader = directory_reader::open(dir.as_directory())?;
         let ir = Arc::clone(&reader) as Arc<dyn IndexReader>;
@@ -145,7 +145,7 @@ fn test_exact_phrase_matcher_contract() -> Result<()> {
 
 /// Port of `TestPhraseMatcherContract.testSloppyPhraseMatcherContract`.
 fn test_sloppy_phrase_matcher_contract() -> Result<()> {
-    let mut dir = one_doc_index("the quick silver fox")?;
+    let dir = one_doc_index("the quick silver fox")?;
     {
         let reader = directory_reader::open(dir.as_directory())?;
         let ir = Arc::clone(&reader) as Arc<dyn IndexReader>;

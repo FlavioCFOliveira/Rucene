@@ -173,7 +173,7 @@ fn test_seed_with_timeout() -> Result<()> {
     let num_docs = LuceneTestCase::at_least(50);
     let dimension = LuceneTestCase::at_least(5);
     let num_iters = LuceneTestCase::at_least(5);
-    let mut d = SeededKnnByteCase::new_directory_for_test()?;
+    let d = SeededKnnByteCase::new_directory_for_test()?;
     let result = (|| -> Result<()> {
         index_tagged_docs::<SeededKnnByteCase>(&d, num_docs, dimension)?;
 
@@ -301,7 +301,7 @@ fn test_random_with_seed() -> Result<()> {
     let num_docs = 1000;
     let dimension = LuceneTestCase::at_least(5);
     let num_iters = LuceneTestCase::at_least(10);
-    let mut d = SeededKnnByteCase::new_directory_for_test()?;
+    let d = SeededKnnByteCase::new_directory_for_test()?;
     let result = (|| -> Result<()> {
         let num_docs_with_vector =
             index_random_with_seed::<SeededKnnByteCase>(&d, num_docs, dimension)?;

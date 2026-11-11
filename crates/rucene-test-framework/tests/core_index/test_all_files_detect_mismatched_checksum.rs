@@ -34,7 +34,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestAllFilesDetectMismatchedChecksum.test`.
 fn test_() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         rucene_test_framework::analysis::MockAnalyzer::new(&*random()),
     )));
@@ -62,7 +62,7 @@ fn check_mismatched_checksum(dir: &Arc<dyn Directory>) -> Result<()> {
 
 /// `private void corruptFile(Directory dir, String victim)`.
 fn corrupt_file(dir: &Arc<dyn Directory>, victim: &str) -> Result<()> {
-    let mut dir_copy = LuceneTestCase::new_directory();
+    let dir_copy = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir_copy, false);
     let copy = dir_copy.as_directory();
     let victim_length = dir.file_length(victim)?;

@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rucene::codecs::codec_util::{check_index_header, checksum_entire_file, retrieve_checksum};
@@ -30,7 +31,7 @@ use rucene::index::{
     FieldInfo, Fields, ImpactsEnum, IndexOptions, PostingsEnum, SeekStatus, TermState, Terms,
     TermsEnum,
 };
-use rucene::store::{ByteArrayDataInput, DataInput, IndexInput};
+use rucene::store::{ByteArrayDataInput, DataInput, IndexInput, SharedIndexInput};
 use rucene::util::attribute::AttributeSource;
 use rucene::util::java_collections::java_compare_to;
 use rucene::util::BytesRef;
@@ -43,9 +44,11 @@ use super::terms_index_reader_base::{FieldIndexEnum, TermsIndexReaderBase};
 /// `postingsReader` and `indexReader`, which the inner classes reach
 /// through their outer instance.
 struct Shared {
-    input: Arc<Box<dyn IndexInput>>,
+    input: SharedIndexInput,
     postings_reader: Arc<dyn PostingsReaderBase>,
     index_reader: Arc<dyn TermsIndexReaderBase>,
+    /// Java's `indexReader = null` in `close()`, which `toString()` shows.
+    index_reader_nulled: AtomicBool,
 }
 
 /// Handles a terms dict, but decouples all details of doc/freqs/positions
@@ -62,9 +65,8 @@ struct Shared {
 /// `String.compareTo` order.
 ///
 /// `close()` closes the index reader, `in` and the postings reader, in that
-/// order, each when this reader is its last holder; as for
-/// `Lucene103BlockTreeTermsReader`, one a live enum still shares is released
-/// when that enum is dropped.
+/// order, whoever else (a merge instance, a live enum) still shares them, as
+/// Java's does.
 pub struct BlockTermsReader {
     shared: Option<Arc<Shared>>,
     fields: HashMap<String, Arc<FieldReaderData>>,
@@ -85,7 +87,7 @@ impl BlockTermsReader {
     /// `CorruptIndexException` for a bad header, footer, field count or
     /// field statistics, or a duplicate field; I/O errors.
     pub fn new(
-        mut index_reader: Box<dyn TermsIndexReaderBase>,
+        index_reader: Box<dyn TermsIndexReaderBase>,
         mut postings_reader: Box<dyn PostingsReaderBase>,
         state: &SegmentReadState<'_>,
     ) -> Result<Self> {
@@ -93,9 +95,10 @@ impl BlockTermsReader {
         match opened {
             Ok((input, fields, field_names)) => Ok(Self {
                 shared: Some(Arc::new(Shared {
-                    input: Arc::new(input),
+                    input: SharedIndexInput::new(input),
                     postings_reader: Arc::from(postings_reader),
                     index_reader: Arc::from(index_reader),
+                    index_reader_nulled: AtomicBool::new(false),
                 })),
                 fields,
                 field_names,
@@ -241,6 +244,11 @@ impl BlockTermsReader {
 impl fmt::Display for BlockTermsReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.shared {
+            Some(shared) if shared.index_reader_nulled.load(Ordering::SeqCst) => write!(
+                f,
+                "BlockTermsReader(index=null,delegate={})",
+                shared.postings_reader
+            ),
             Some(shared) => write!(
                 f,
                 "BlockTermsReader(index={},delegate={})",
@@ -271,20 +279,6 @@ impl Fields for BlockTermsReader {
     }
 }
 
-impl Drop for BlockTermsReader {
-    /// Runs [`close`](FieldsProducer::close) (`BlockTermsReader.java:191-205`) when this reader, or
-    /// one of its merge instances, goes away (rmp #351). Java's
-    /// `getMergeInstance()` is `this`, so closing the reader closes the files
-    /// a merge instance reads; here a merge instance shares them, the
-    /// reader's `close()` only closes what it holds alone, and the last
-    /// holder to go away closes the rest. `close()` takes what it closes, so
-    /// a reader closed already closes nothing again. A failure is dropped: no
-    /// caller is left to receive it.
-    fn drop(&mut self) {
-        let _ = FieldsProducer::close(self);
-    }
-}
-
 impl FieldsProducer for BlockTermsReader {
     fn check_integrity(&self) -> Result<()> {
         let shared = self.shared()?;
@@ -303,20 +297,15 @@ impl FieldsProducer for BlockTermsReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        self.fields.clear();
-        self.field_names.clear();
-        let Some(mut shared) = self.shared.take() else {
-            return Ok(());
-        };
-        let Some(shared) = Arc::get_mut(&mut shared) else {
-            return Ok(());
-        };
-        // try { try { IOUtils.close(indexReader) } finally { IOUtils.close(in) } }
-        // finally { IOUtils.close(postingsReader) }
-        let index = Arc::get_mut(&mut shared.index_reader).map_or(Ok(()), |r| r.close());
-        let input = Arc::get_mut(&mut shared.input).map_or(Ok(()), |i| i.close());
-        let postings = Arc::get_mut(&mut shared.postings_reader).map_or(Ok(()), |r| r.close());
+    fn close(&self) -> Result<()> {
+        let shared = self.shared()?;
+        // try { try { IOUtils.close(indexReader) } finally { indexReader = null;
+        // IOUtils.close(in) } } finally { IOUtils.close(postingsReader) }
+        // (`BlockTermsReader.java:191-205`), whoever else shares them.
+        let index = shared.index_reader.close();
+        shared.index_reader_nulled.store(true, Ordering::SeqCst);
+        let input = shared.input.close();
+        let postings = shared.postings_reader.close();
         // A `finally` that throws replaces the exception of its `try`.
         postings.and(input).and(index)
     }

@@ -171,7 +171,7 @@ impl Directory for SerialIOCountingDirectory {
     }
 
     /// `close()`: closes `pendingFetch`, then the delegate.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.shared.pending_fetch.close();
         self.r#in.close()
     }

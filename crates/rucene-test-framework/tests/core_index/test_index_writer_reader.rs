@@ -180,7 +180,7 @@ pub fn count(t: &Term, r: &Arc<dyn IndexReader>) -> Result<i32> {
 fn test_add_close_open() -> Result<()> {
     // Can't use assertNoDeletes: this test pulls a non-NRT
     // reader in the end:
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
 
     let writer = IndexWriter::new(dir1.as_directory(), iwc)?;
@@ -251,7 +251,7 @@ fn test_add_close_open() -> Result<()> {
 fn test_update_document() -> Result<()> {
     let do_full_merge = true;
 
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     if iwc.max_buffered_docs() < 20 {
         iwc.set_max_buffered_docs(20)?;
@@ -335,7 +335,7 @@ fn test_update_document() -> Result<()> {
 
 /// Port of `TestIndexWriterReader.testIsCurrent`.
 fn test_is_current() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
 
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -387,7 +387,7 @@ fn test_is_current() -> Result<()> {
 fn test_add_indexes() -> Result<()> {
     let do_full_merge = false;
 
-    let mut dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     let iwc = no_wait_iwc()?;
     if iwc.max_buffered_docs() < 20 {
         iwc.set_max_buffered_docs(20)?;
@@ -401,7 +401,7 @@ fn test_add_indexes() -> Result<()> {
     writer.flush_with(false, true)?;
 
     // create a 2nd index
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let writer2 = IndexWriter::new(dir2.as_directory(), mock_iwc())?;
     create_index_no_close(!do_full_merge, "index2", &writer2)?;
     writer2.close()?;
@@ -442,11 +442,11 @@ fn test_add_indexes() -> Result<()> {
 fn test_add_indexes2() -> Result<()> {
     let do_full_merge = false;
 
-    let mut dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     let writer = IndexWriter::new(dir1.as_directory(), no_wait_iwc()?)?;
 
     // create a 2nd index
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let writer2 = IndexWriter::new(dir2.as_directory(), no_wait_iwc()?)?;
     create_index_no_close(!do_full_merge, "index2", &writer2)?;
     writer2.close()?;
@@ -471,7 +471,7 @@ fn test_add_indexes2() -> Result<()> {
 fn test_delete_from_index_writer() -> Result<()> {
     let do_full_merge = true;
 
-    let mut dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     let writer = IndexWriter::new(dir1.as_directory(), no_wait_iwc()?)?;
     // create the index
     create_index_no_close(!do_full_merge, "index1", &writer)?;
@@ -530,7 +530,7 @@ fn test_add_indexes_and_do_deletes_threads() -> Result<()> {
     let num_iter = if *TEST_NIGHTLY { 2 } else { 1 };
     let num_dirs = if *TEST_NIGHTLY { 3 } else { 2 };
 
-    let mut main_dir = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let main_dir = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
 
     let iwc = no_wait_iwc()?;
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -735,7 +735,7 @@ fn test_index_writer_reopen_segment() -> Result<()> {
 ///
 /// The public `doTestIndexWriterReopenSegment(boolean)`.
 fn do_test_index_writer_reopen_segment(do_full_merge: bool) -> Result<()> {
-    let mut dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     let writer = IndexWriter::new(dir1.as_directory(), no_wait_iwc()?)?;
     let r1 = directory_reader::open_with_writer(&*writer)?;
     assert_equals(&0, &r1.max_doc());
@@ -863,7 +863,7 @@ fn as_cms(
 
 /// Port of `TestIndexWriterReader.testMergeWarmer`.
 fn test_merge_warmer() -> Result<()> {
-    let mut dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     // Enroll warmer
     let warm_count = Arc::new(AtomicI32::new(0));
     let iwc = mock_iwc();
@@ -913,7 +913,7 @@ fn test_merge_warmer() -> Result<()> {
 
 /// Port of `TestIndexWriterReader.testAfterCommit`.
 fn test_after_commit() -> Result<()> {
-    let mut dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     let iwc = mock_iwc();
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;
     iwc.set_max_full_flush_merge_wait_millis(0);
@@ -950,7 +950,7 @@ fn test_after_commit() -> Result<()> {
 ///
 /// Port of `TestIndexWriterReader.testAfterClose`.
 fn test_after_close() -> Result<()> {
-    let mut dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     let writer = IndexWriter::new(dir1.as_directory(), no_wait_iwc()?)?;
 
     // create the index
@@ -978,7 +978,7 @@ fn test_after_close() -> Result<()> {
 ///
 /// Port of `TestIndexWriterReader.testDuringAddIndexes`.
 fn test_during_add_indexes() -> Result<()> {
-    let mut dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let dir1 = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     let iwc = no_wait_iwc()?;
     iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(2)?,
@@ -1090,7 +1090,7 @@ fn get_assert_no_deletes_directory(directory: TestDirectory) -> TestDirectory {
 ///
 /// Port of `TestIndexWriterReader.testDuringAddDelete`.
 fn test_during_add_delete() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(
         LuceneTestCase::new_log_merge_policy_merge_factor(2)?,
@@ -1191,7 +1191,7 @@ fn test_during_add_delete() -> Result<()> {
 
 /// Port of `TestIndexWriterReader.testForceMergeDeletes`.
 fn test_force_merge_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1226,7 +1226,7 @@ fn test_force_merge_deletes() -> Result<()> {
 
 /// Port of `TestIndexWriterReader.testDeletesNumDocs`.
 fn test_deletes_num_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(
@@ -1265,7 +1265,7 @@ fn test_deletes_num_docs() -> Result<()> {
 /// Port of `TestIndexWriterReader.testEmptyIndex`.
 fn test_empty_index() -> Result<()> {
     // Ensures that getReader works on an empty index, which hasn't been committed yet.
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     let r = directory_reader::open_with_writer(&*w)?;
     assert_equals(&0, &r.num_docs());
@@ -1297,7 +1297,7 @@ impl MergedSegmentWarmer for SearchingWarmer {
 
 /// Port of `TestIndexWriterReader.testSegmentWarmer`.
 fn test_segment_warmer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let did_warm = Arc::new(AtomicBool::new(false));
     let mut mp = LuceneTestCase::new_log_merge_policy_merge_factor(10)?;
     mp.set_target_search_concurrency(1)?;
@@ -1349,7 +1349,7 @@ impl InfoStream for SmswInfoStream {
 
 /// Port of `TestIndexWriterReader.testSimpleMergedSegmentWarmer`.
 fn test_simple_merged_segment_warmer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let did_warm = Arc::new(AtomicBool::new(false));
     let info_stream: Arc<dyn InfoStream> = Arc::new(SmswInfoStream(Arc::clone(&did_warm)));
     let mut mp = LuceneTestCase::new_log_merge_policy_merge_factor(10)?;
@@ -1381,7 +1381,7 @@ fn test_simple_merged_segment_warmer() -> Result<()> {
 
 /// Port of `TestIndexWriterReader.testReopenAfterNoRealChange`.
 fn test_reopen_after_no_real_change() -> Result<()> {
-    let mut d = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
+    let d = get_assert_no_deletes_directory(LuceneTestCase::new_directory());
     let w = IndexWriter::new(d.as_directory(), no_wait_iwc()?)?;
 
     let r = directory_reader::open_with_writer(&*w)?; // start pooling readers
@@ -1446,7 +1446,7 @@ impl Failure for NrtOpenFailure {
 fn test_nrt_open_exceptions() -> Result<()> {
     // LUCENE-5262: test that several failed attempts to obtain an NRT reader
     // don't leak file handles.
-    let mut dir_holder =
+    let dir_holder =
         get_assert_no_deletes_directory(TestDirectory::Mock(LuceneTestCase::new_mock_directory()));
     let dir = dir_holder.as_mock().expect("newMockDirectory");
     let should_fail = Arc::new(AtomicBool::new(false));
@@ -1485,7 +1485,7 @@ fn test_nrt_open_exceptions() -> Result<()> {
 ///
 /// Port of `TestIndexWriterReader.testTooManySegments`.
 fn test_too_many_segments() -> Result<()> {
-    let mut dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     // getAssertNoDeletesDirectory: a ByteBuffersDirectory is no MockDirectoryWrapper.
     // Don't use newIndexWriterConfig, because we need a
     // "sane" mergePolicy:
@@ -1508,9 +1508,7 @@ fn test_too_many_segments() -> Result<()> {
     }
     w.close()?;
     drop(w);
-    Arc::get_mut(&mut dir)
-        .unwrap_or_else(|| Throwable::new("java.lang.IllegalStateException", "dir shared").throw())
-        .close()
+    dir.close()
 }
 
 /// LUCENE-5912: make sure when you reopen an NRT reader using a commit point, the SegmentReaders
@@ -1518,7 +1516,7 @@ fn test_too_many_segments() -> Result<()> {
 ///
 /// Port of `TestIndexWriterReader.testReopenNRTReaderOnCommit`.
 fn test_reopen_nrt_reader_on_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     w.add_document(&Document::new())?;
@@ -1611,7 +1609,7 @@ fn test_index_reader_writer_with_leaf_sorter() -> Result<()> {
     });
 
     let num_docs = LuceneTestCase::at_least(30);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::new();
     iwc.set_leaf_sorter(Some(Arc::clone(&leaf_sorter)));
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;

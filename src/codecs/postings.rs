@@ -306,7 +306,12 @@ pub trait FieldsProducer: Fields + Send + Sync {
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>>;
 
     /// Closes this producer, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    ///
+    /// Takes `&self`: Java's `close()` runs on the shared producer object, and
+    /// closes its files whoever else still holds it (a merge instance, a terms
+    /// enum), so implementations close their inputs through interior
+    /// mutability.
+    fn close(&self) -> Result<()>;
 }
 
 // -----------------------------------------------------------------------------
@@ -581,7 +586,11 @@ pub trait PostingsReaderBase: Send + Sync + fmt::Display {
     fn check_integrity(&self) -> Result<()>;
 
     /// Closes this reader.
-    fn close(&mut self) -> Result<()>;
+    ///
+    /// Takes `&self`: the reader is shared by its terms dictionary and every
+    /// enum it hands out, and Java's `close()` closes its inputs whoever else
+    /// still holds it.
+    fn close(&self) -> Result<()>;
 }
 
 /// Low-level postings writer used by term dictionaries.
@@ -1276,7 +1285,7 @@ mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1361,7 +1370,7 @@ mod tests {
             Ok(())
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1523,7 +1532,7 @@ mod tests {
             .unwrap();
         consumer.close().unwrap();
 
-        let mut producer = format.fields_producer(&read_state).unwrap();
+        let producer = format.fields_producer(&read_state).unwrap();
         assert_eq!(producer.size(), 0);
         producer.check_integrity().unwrap();
         let _merge_instance = producer.get_merge_instance().unwrap();

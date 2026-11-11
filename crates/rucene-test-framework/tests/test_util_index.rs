@@ -185,10 +185,8 @@ fn base_directory_wrapper_and_closeable_directory() {
     drop(closeable);
 
     // An empty directory holds no index: close does not check, and closes.
-    let mut wrapper = Arc::try_unwrap(wrapper).ok().unwrap();
     wrapper.close().unwrap();
     assert!(!wrapper.is_open());
-    let wrapper = Arc::new(wrapper);
     CloseableDirectory::new(Arc::clone(&wrapper), marker).close();
 }
 

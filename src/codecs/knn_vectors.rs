@@ -1937,7 +1937,7 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
     }
 
     /// Closes this reader, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 }
 
 /// The maximum number of dimensions a vector may have, unless a format
@@ -2403,7 +2403,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -2799,7 +2799,7 @@ mod tests {
             ))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }

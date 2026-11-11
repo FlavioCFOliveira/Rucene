@@ -220,7 +220,7 @@ impl rucene::index::index_writer_config::LeafComparator for NumDocsSorter {
 
 /// Port of `TestDirectoryReader.testDocument`.
 fn test_document() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut doc1 = Document::new();
     let mut doc2 = Document::new();
     DocHelper::setup_doc(&mut doc1);
@@ -259,11 +259,11 @@ fn test_document() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testMultiTermDocs`.
 fn test_multi_term_docs() -> Result<()> {
-    let mut ram_dir1 = LuceneTestCase::new_directory();
+    let ram_dir1 = LuceneTestCase::new_directory();
     add_doc_to_dir(&*random(), &ram_dir1.as_directory(), "test foo", true)?;
-    let mut ram_dir2 = LuceneTestCase::new_directory();
+    let ram_dir2 = LuceneTestCase::new_directory();
     add_doc_to_dir(&*random(), &ram_dir2.as_directory(), "test blah", true)?;
-    let mut ram_dir3 = LuceneTestCase::new_directory();
+    let ram_dir3 = LuceneTestCase::new_directory();
     add_doc_to_dir(&*random(), &ram_dir3.as_directory(), "test wow", true)?;
 
     let readers1: Vec<Arc<dyn IndexReader>> = vec![
@@ -349,7 +349,7 @@ fn add_doc_to_dir(
 
 /// Port of `TestDirectoryReader.testIsCurrent`.
 fn test_is_current() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(d.as_directory(), mock_iwc())?;
     add_document_with_fields(&writer)?;
     writer.close()?;
@@ -380,7 +380,7 @@ fn test_is_current() -> Result<()> {
 ///
 /// Port of `TestDirectoryReader.testGetFieldNames`.
 fn test_get_field_names() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     // set up writer
     let writer = IndexWriter::new(d.as_directory(), mock_iwc())?;
 
@@ -594,7 +594,7 @@ fn test_get_field_names() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testTermVectors`.
 fn test_term_vectors() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     // set up writer
     let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -688,7 +688,7 @@ fn check_binary_fields(dir: &Arc<dyn Directory>, bin1: &[u8], bin2: &[u8]) -> Re
 
 /// Port of `TestDirectoryReader.testBinaryFields`.
 fn test_binary_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let bin1: &'static [u8] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     let bin2: &'static [u8] = &[10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
 
@@ -742,7 +742,7 @@ fn test_binary_fields() -> Result<()> {
 fn test_files_open_close() -> Result<()> {
     // Create initial data set
     let dir_file = LuceneTestCase::create_temp_dir_prefix("TestIndexReader.testFilesOpenClose");
-    let mut dir = LuceneTestCase::new_fs_directory(&dir_file);
+    let dir = LuceneTestCase::new_fs_directory(&dir_file);
 
     let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     add_doc(&writer, "test")?;
@@ -752,7 +752,7 @@ fn test_files_open_close() -> Result<()> {
 
     // Try to erase the data - this ensures that the writer closed all files
     IOUtils::rm([&dir_file])?;
-    let mut dir = LuceneTestCase::new_fs_directory(&dir_file);
+    let dir = LuceneTestCase::new_fs_directory(&dir_file);
 
     // Now create the data set again, just as before
     let iwc = mock_iwc();
@@ -764,7 +764,7 @@ fn test_files_open_close() -> Result<()> {
     dir.close()?;
 
     // Now open existing directory and test that reader closes all files
-    let mut dir = LuceneTestCase::new_fs_directory(&dir_file);
+    let dir = LuceneTestCase::new_fs_directory(&dir_file);
     let reader1 = directory_reader::open(dir.as_directory())?;
     reader1.close()?;
     drop(reader1);
@@ -778,7 +778,7 @@ fn test_files_open_close() -> Result<()> {
 /// Port of `TestDirectoryReader.testOpenReaderAfterDelete`.
 fn test_open_reader_after_delete() -> Result<()> {
     let dir_file = LuceneTestCase::create_temp_dir_prefix("deletetest");
-    let mut dir = LuceneTestCase::new_fs_directory(&dir_file);
+    let dir = LuceneTestCase::new_fs_directory(&dir_file);
     set_check_index_on_close(&dir, false); // we will hit NoSuchFileException in MDW since we nuked it!
     expect_throws_any_of(
         &[
@@ -1171,14 +1171,14 @@ fn get_index_commit_body(
 
 /// Port of `TestDirectoryReader.testGetIndexCommit`.
 fn test_get_index_commit() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     get_index_commit_body(&d.as_directory(), None)?;
     d.close()
 }
 
 /// Port of `TestDirectoryReader.testGetIndexCommitWithExecutorService`.
 fn test_get_index_commit_with_executor_service() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let executor_service = new_fixed_thread_pool(4);
 
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -1216,7 +1216,7 @@ pub fn create_document(id: &str) -> Result<Document> {
 /// Port of `TestDirectoryReader.testNoDir`.
 fn test_no_dir() -> Result<()> {
     let temp_dir = LuceneTestCase::create_temp_dir_prefix("doesnotexist");
-    let mut dir = LuceneTestCase::new_fs_directory(&temp_dir);
+    let dir = LuceneTestCase::new_fs_directory(&temp_dir);
     expect_throws("org.apache.lucene.index.IndexNotFoundException", || {
         directory_reader::open(dir.as_directory())
     });
@@ -1226,7 +1226,7 @@ fn test_no_dir() -> Result<()> {
 /// Port of `TestDirectoryReader.testNoDirWithExecutor`.
 fn test_no_dir_with_executor() -> Result<()> {
     let temp_dir = LuceneTestCase::create_temp_dir_prefix("doesnotexist");
-    let mut dir = LuceneTestCase::new_fs_directory(&temp_dir);
+    let dir = LuceneTestCase::new_fs_directory(&temp_dir);
     let executor_service = new_fixed_thread_pool(4);
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         expect_throws("org.apache.lucene.index.IndexNotFoundException", || {
@@ -1243,7 +1243,7 @@ fn test_no_dir_with_executor() -> Result<()> {
 // LUCENE-1509
 /// Port of `TestDirectoryReader.testNoDupCommitFileNames`.
 fn test_no_dup_commit_file_names() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
@@ -1274,7 +1274,7 @@ fn test_no_dup_commit_file_names() -> Result<()> {
 // LUCENE-1586: getUniqueTermCount
 /// Port of `TestDirectoryReader.testUniqueTermCount`.
 fn test_unique_term_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(
@@ -1322,7 +1322,7 @@ fn terms_size(reader: &dyn LeafReader, field: &str) -> Result<i64> {
 // LUCENE-2046
 /// Port of `TestDirectoryReader.testPrepareCommitIsCurrent`.
 fn test_prepare_commit_is_current() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     writer.commit()?;
     let doc = Document::new();
@@ -1344,7 +1344,7 @@ fn test_prepare_commit_is_current() -> Result<()> {
 // LUCENE-2753
 /// Port of `TestDirectoryReader.testListCommits`.
 fn test_list_commits() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(None);
     let sdp = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
         KeepOnlyLastCommitDeletionPolicy,
@@ -1396,7 +1396,7 @@ fn nrt_reader_over(dir: &Arc<dyn Directory>, docs: &[&str]) -> Result<Arc<dyn Di
 // dict cache
 /// Port of `TestDirectoryReader.testTotalTermFreqCached`.
 fn test_total_term_freq_cached() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = nrt_reader_over(&dir.as_directory(), &["a a b"])?;
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         // Make sure codec impls totalTermFreq (eg PreFlex doesn't)
@@ -1425,7 +1425,7 @@ fn test_total_term_freq_cached() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testGetSumDocFreq`.
 fn test_get_sum_doc_freq() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = nrt_reader_over(&dir.as_directory(), &["a", "b"])?;
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         // Make sure codec impls getSumDocFreq (eg PreFlex doesn't)
@@ -1441,7 +1441,7 @@ fn test_get_sum_doc_freq() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testGetDocCount`.
 fn test_get_doc_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = nrt_reader_over(&dir.as_directory(), &["a", "a"])?;
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         // Make sure codec impls getSumDocFreq (eg PreFlex doesn't)
@@ -1457,7 +1457,7 @@ fn test_get_doc_count() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testGetSumTotalTermFreq`.
 fn test_get_sum_total_term_freq() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = nrt_reader_over(&dir.as_directory(), &["a b b", "a a b"])?;
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         // Make sure codec impls getSumDocFreq (eg PreFlex doesn't)
@@ -1484,7 +1484,7 @@ impl ClosedListener for CountingListener {
 // LUCENE-2474
 /// Port of `TestDirectoryReader.testReaderFinishedListener`.
 fn test_reader_finished_listener() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1521,7 +1521,7 @@ fn test_reader_finished_listener() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testOOBDocID`.
 fn test_oob_doc_id() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     writer.add_document(&Document::new())?;
     let r = directory_reader::open_with_writer(writer.as_ref())?;
@@ -1536,7 +1536,7 @@ fn test_oob_doc_id() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testTryIncRef`.
 fn test_try_inc_ref() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     writer.add_document(&Document::new())?;
     writer.commit()?;
@@ -1551,7 +1551,7 @@ fn test_try_inc_ref() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testStressTryIncRef`.
 fn test_stress_try_inc_ref() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
     writer.add_document(&Document::new())?;
     writer.commit()?;
@@ -1623,7 +1623,7 @@ impl IncThread {
 
 /// Port of `TestDirectoryReader.testLoadCertainFields`.
 fn test_load_certain_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -1658,14 +1658,14 @@ fn test_load_certain_fields() -> Result<()> {
 /// Port of `TestDirectoryReader.testIndexExistsOnNonExistentDirectory`.
 fn test_index_exists_on_non_existent_directory() -> Result<()> {
     let temp_dir = LuceneTestCase::create_temp_dir_prefix("testIndexExistsOnNonExistentDirectory");
-    let mut dir = LuceneTestCase::new_fs_directory(&temp_dir);
+    let dir = LuceneTestCase::new_fs_directory(&temp_dir);
     Assert::assert_false(directory_reader::index_exists(dir.as_directory().as_ref())?);
     dir.close()
 }
 
 /// Port of `TestDirectoryReader.testOpenWithInvalidMinCompatVersion`.
 fn test_open_with_invalid_min_compat_version() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -1707,7 +1707,7 @@ fn test_open_with_invalid_min_compat_version() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testOpenWithExecutorService`.
 fn test_open_with_executor_service() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     create_multi_segment_index(&dir.as_directory(), 5)?;
 
     let executor = new_fixed_thread_pool(1);
@@ -1724,7 +1724,7 @@ fn test_open_with_executor_service() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testOpenWithLeafSorterAndExecutor`.
 fn test_open_with_leaf_sorter_and_executor() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     create_multi_segment_index(&dir.as_directory(), 3)?;
 
     let executor = new_fixed_thread_pool(1);
@@ -1746,7 +1746,7 @@ fn test_open_with_leaf_sorter_and_executor() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testOpenCommitWithExecutor`.
 fn test_open_commit_with_executor() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -1778,7 +1778,7 @@ fn test_open_commit_with_executor() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testOpenCommitWithMinVersionAndExecutor`.
 fn test_open_commit_with_min_version_and_executor() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     create_multi_segment_index(&dir.as_directory(), 3)?;
 
     let executor = new_fixed_thread_pool(1);
@@ -1810,7 +1810,7 @@ fn test_open_commit_with_min_version_and_executor() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testNullExecutorService`.
 fn test_null_executor_service() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     create_multi_segment_index(&dir.as_directory(), 3)?;
 
     // Should work fine with null executor (fallback to sequential)
@@ -1822,7 +1822,7 @@ fn test_null_executor_service() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testExecutorServiceExceptionHandling`.
 fn test_executor_service_exception_handling() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     create_multi_segment_index(&dir.as_directory(), 3)?;
 
     // Test with shutdown executor
@@ -1838,7 +1838,7 @@ fn test_executor_service_exception_handling() -> Result<()> {
 
 /// Port of `TestDirectoryReader.testExecutorServicePartialFailure`.
 fn test_executor_service_partial_failure() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     create_multi_segment_index(&dir.as_directory(), 3)?;
 
     // Create an executor that fails on the second task but succeeds on others

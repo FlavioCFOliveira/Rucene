@@ -158,7 +158,7 @@ impl PointsReader for CrankyPointsReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.delegate().close()?;
         maybe_fail(&*self.random, 100, FAKE)
     }

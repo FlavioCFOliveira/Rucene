@@ -327,7 +327,7 @@ impl NormsProducer for BufferedNormsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

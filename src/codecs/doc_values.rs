@@ -123,7 +123,7 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>>;
 
     /// Closes this producer, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 }
 
 // -----------------------------------------------------------------------------
@@ -1859,7 +1859,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
         Err(self.unsupported("merge-instance"))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

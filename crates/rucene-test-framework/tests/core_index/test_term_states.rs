@@ -27,7 +27,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestTermStates.testToStringOnNullTermState`.
 fn test_to_string_on_null_term_state() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     w.add_document(&Document::new())?;
     let r: Arc<dyn IndexReader> = w.get_reader()?;

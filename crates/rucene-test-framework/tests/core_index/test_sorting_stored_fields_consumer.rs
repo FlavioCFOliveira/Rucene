@@ -94,7 +94,7 @@ impl Directory for TrackingDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.r#in.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -186,7 +186,7 @@ impl IndexInput for SeekCountingInput {
 ///
 /// Port of `TestSortingStoredFieldsConsumer.testFlushWithNoStoredFieldsSkipsPerDocumentSeeks`.
 fn test_flush_with_no_stored_fields_skips_per_document_seeks() -> Result<()> {
-    let mut dir_holder = LuceneTestCase::new_directory();
+    let dir_holder = LuceneTestCase::new_directory();
     let dir = dir_holder.as_directory();
     let iwc = IndexWriterConfig::new();
     let codec = iwc.codec();

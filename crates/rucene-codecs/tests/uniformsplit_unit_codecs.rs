@@ -430,7 +430,7 @@ impl PostingsReaderBase for MockPostingsReaderBase {
         Ok(())
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -898,7 +898,9 @@ fn mock_block_reader_reset(block_reader: &mut BlockReader) {
 fn new_mock_block_reader(lines: Vec<BlockLine>, directory: &dyn Directory) -> Result<BlockReader> {
     let reader = BlockReader::new(
         Arc::new(NullBrowserSupplier),
-        Arc::new(directory.open_input("temp.bin", &*DEFAULT_IO_CONTEXT)?),
+        Arc::new(rucene::store::SharedIndexInput::new(
+            directory.open_input("temp.bin", &*DEFAULT_IO_CONTEXT)?,
+        )),
         Arc::new(MockPostingsReaderBase),
         Arc::new(FieldMetadata::with_mutability(None, 1, true)),
         None,
@@ -1227,7 +1229,9 @@ impl MockSTBlockReader {
         let last_term = Self::get_last_term_for_field(&lines, field_info.get_name());
         let reader = STBlockReader::new(
             supplier,
-            Arc::new(directory.open_input(MOCK_BLOCK_OUTPUT_NAME, &*DEFAULT_IO_CONTEXT)?),
+            Arc::new(rucene::store::SharedIndexInput::new(
+                directory.open_input(MOCK_BLOCK_OUTPUT_NAME, &*DEFAULT_IO_CONTEXT)?,
+            )),
             Arc::new(MockPostingsReaderBase),
             Arc::new(Self::mock_field_metadata(field_info, last_term)),
             None,

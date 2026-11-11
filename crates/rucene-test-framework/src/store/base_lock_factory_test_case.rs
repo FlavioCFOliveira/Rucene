@@ -122,7 +122,7 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
     /// validity.
     fn test_basics(&self) -> Result<()> {
         let temp_path = LuceneTestCase::create_temp_dir();
-        let mut dir = self.get_directory(&temp_path)?;
+        let dir = self.get_directory(&temp_path)?;
 
         let l = dir.obtain_lock("commit")?;
         // shouldn't be able to get the lock twice
@@ -141,7 +141,7 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
     /// `testDoubleClose()`: test closing locks twice.
     fn test_double_close(&self) -> Result<()> {
         let temp_path = LuceneTestCase::create_temp_dir();
-        let mut dir = self.get_directory(&temp_path)?;
+        let dir = self.get_directory(&temp_path)?;
 
         let l = dir.obtain_lock("commit")?;
         l.close()?;
@@ -154,7 +154,7 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
     /// acquire.
     fn test_valid_after_acquire(&self) -> Result<()> {
         let temp_path = LuceneTestCase::create_temp_dir();
-        let mut dir = self.get_directory(&temp_path)?;
+        let dir = self.get_directory(&temp_path)?;
         let l = dir.obtain_lock("commit")?;
         l.ensure_valid()?; // no exception
         l.close()?;
@@ -165,7 +165,7 @@ pub trait BaseLockFactoryTestCase: Send + Sync + 'static {
     /// close.
     fn test_invalid_after_close(&self) -> Result<()> {
         let temp_path = LuceneTestCase::create_temp_dir();
-        let mut dir = self.get_directory(&temp_path)?;
+        let dir = self.get_directory(&temp_path)?;
 
         let l = dir.obtain_lock("commit")?;
         l.close()?;

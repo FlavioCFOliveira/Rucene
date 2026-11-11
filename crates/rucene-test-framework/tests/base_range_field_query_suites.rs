@@ -69,7 +69,7 @@ fn do_test_basics<T: RangeNumber>(
     query: (&[T], &[T]),
     expected: [i32; 4],
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = rucene_test_framework::index::random_index_writer::RandomIndexWriter::new_with_mock_analyzer(
         &*LuceneTestCase::random(),
         dir.as_directory(),

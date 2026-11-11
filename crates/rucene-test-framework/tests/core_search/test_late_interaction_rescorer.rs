@@ -46,7 +46,7 @@ fn test_basic() -> Result<()> {
         [random().next_int_bound(VECTOR_SIMILARITY_FUNCTIONS.len() as i32) as usize];
     let score_function = LateInteractionScoreFunction::SumMaxSim;
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         index_multi_vectors(&dir, &mut corpus)?;
         let late_i_query_vector = create_multi_vector(DIMENSION);
@@ -107,7 +107,7 @@ fn test_missing_late_i_values() -> Result<()> {
     let vector_similarity_function = VECTOR_SIMILARITY_FUNCTIONS
         [random().next_int_bound(VECTOR_SIMILARITY_FUNCTIONS.len() as i32) as usize];
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         index_multi_vectors(&dir, &mut corpus)?;
         let late_i_query_vector = create_multi_vector(DIMENSION);

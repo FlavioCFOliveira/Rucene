@@ -26,7 +26,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestMergeRateLimiter.testInitDefaults`.
 fn test_init_defaults() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     w.add_document(&Document::new())?;
     w.close()?;

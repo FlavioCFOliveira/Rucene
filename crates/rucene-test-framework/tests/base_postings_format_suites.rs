@@ -127,7 +127,7 @@ fn test_v_long15() -> Result<()> {
 ///
 /// Port of `TestLucene104PostingsFormat.testFinalBlock`.
 fn test_final_block() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         d.as_directory(),
         IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -220,7 +220,7 @@ fn do_test_impact_serialization(impacts: &[Impact]) -> Result<()> {
     for impact in impacts {
         acc.add(impact.freq, impact.norm);
     }
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let mut out = dir
             .as_directory()

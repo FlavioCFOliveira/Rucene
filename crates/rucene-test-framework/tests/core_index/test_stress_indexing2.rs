@@ -100,7 +100,7 @@ fn fields_to_string(fields: &[Arc<dyn IndexableField>]) -> String {
 /// Port of `TestStressIndexing2.testRandomIWReader`.
 fn test_random_iw_reader() -> Result<()> {
     let mut this = TestStressIndexing2::default();
-    let mut dir = LuceneTestCase::new_maybe_virus_checking_directory();
+    let dir = LuceneTestCase::new_maybe_virus_checking_directory();
 
     // TODO: verify equals using IW.getReader
     let dw = this.index_random_iw_reader(5, 3, 100, &dir.as_directory())?;
@@ -115,8 +115,8 @@ fn test_random_iw_reader() -> Result<()> {
 /// Port of `TestStressIndexing2.testRandom`.
 fn test_random() -> Result<()> {
     let mut this = TestStressIndexing2::default();
-    let mut dir1 = LuceneTestCase::new_maybe_virus_checking_directory();
-    let mut dir2 = LuceneTestCase::new_maybe_virus_checking_directory();
+    let dir1 = LuceneTestCase::new_maybe_virus_checking_directory();
+    let dir2 = LuceneTestCase::new_maybe_virus_checking_directory();
     // mergeFactor=2; maxBufferedDocs=2; Map docs = indexRandom(1, 3, 2, dir1);
     let do_reader_pooling = random().next_boolean();
     let docs = this.index_random(5, 3, 100, &dir1.as_directory(), do_reader_pooling)?;
@@ -151,8 +151,8 @@ fn test_multi_config() -> Result<()> {
         let n_threads = random().next_int_bound(5) + 1;
         let iter = random().next_int_bound(5) + 1;
         let range = random().next_int_bound(20) + 1;
-        let mut dir1 = LuceneTestCase::new_directory();
-        let mut dir2 = LuceneTestCase::new_directory();
+        let dir1 = LuceneTestCase::new_directory();
+        let dir2 = LuceneTestCase::new_directory();
         if verbose() {
             println!(
                 "  nThreads={n_threads} iter={iter} range={range} doPooling={do_reader_pooling} \

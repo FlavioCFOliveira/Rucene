@@ -466,7 +466,7 @@ fn check_intra_slice_doc_id_order(s: &IndexSearcher) -> Result<()> {
 
 /// Port of `TestSegmentToThreadMapping.testIntraSliceDocIDOrder`.
 fn test_intra_slice_doc_id_order() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = two_segment_reader(&dir)?;
 
     let s = IndexSearcher::with_executor(Arc::clone(&r), Some(Arc::new(NoOpExecutor)))?;
@@ -496,7 +496,7 @@ impl IndexSearcherOverrides for OnePerPartitionSlices {
 
 /// Port of `TestSegmentToThreadMapping.testIntraSliceDocIDOrderWithPartitions`.
 fn test_intra_slice_doc_id_order_with_partitions() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let r = two_segment_reader(&dir)?;
 
     let mut s = IndexSearcher::with_executor(Arc::clone(&r), Some(Arc::new(NoOpExecutor)))?;

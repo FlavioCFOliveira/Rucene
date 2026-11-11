@@ -170,7 +170,7 @@ pub fn after_class() -> Result<()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
-    if let Some((reader, mut dir)) = state {
+    if let Some((reader, dir)) = state {
         let closed_reader = Arc::clone(&reader).as_index_reader().close();
         drop(reader);
         let closed_dir = dir.close();

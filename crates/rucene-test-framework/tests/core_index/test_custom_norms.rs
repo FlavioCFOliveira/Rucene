@@ -35,7 +35,7 @@ const EXCEPTION_TEST_FIELD: &str = "normsTestExcp";
 
 /// Port of `TestCustomNorms.testFloatNorms`.
 fn test_float_norms() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 2, MAX_TERM_LENGTH as i32));
 

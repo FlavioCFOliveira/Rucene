@@ -84,8 +84,7 @@ fn test_add_document_on_disk_full() -> Result<()> {
             if verbose() {
                 println!("TEST: cycle: diskFree={disk_free}");
             }
-            let mut dir =
-                MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
+            let dir = MockDirectoryWrapper::new(&*random(), Arc::new(ByteBuffersDirectory::new()));
             dir.set_max_size_in_bytes(disk_free);
             let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
             let ms = writer.get_config().merge_scheduler();
@@ -238,7 +237,7 @@ fn test_add_index_on_disk_full() -> Result<()> {
 
     // Now, build a starting index that has START_COUNT docs.  We
     // will then try to addIndexes into a copy of this:
-    let mut start_dir = LuceneTestCase::new_mock_directory();
+    let start_dir = LuceneTestCase::new_mock_directory();
     let writer = IndexWriter::new(start_dir.as_directory(), mock_iwc())?;
     for j in 0..start_count {
         add_doc_with_index(&writer, j)?;
@@ -306,7 +305,7 @@ fn test_add_index_on_disk_full() -> Result<()> {
 
             // Make a new dir that will enforce disk usage:
             let copy = TestUtil::ram_copy_of(&*start_dir.as_directory())?;
-            let mut dir = MockDirectoryWrapper::new(&*random(), Arc::from(copy));
+            let dir = MockDirectoryWrapper::new(&*random(), Arc::from(copy));
             let iwc = mock_iwc();
             iwc.set_open_mode(OpenMode::APPEND)?;
             iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(false)))?;
@@ -621,7 +620,7 @@ impl Failure for FailTwiceDuringMerge {
 ///
 /// Port of `TestIndexWriterOnDiskFull.testCorruptionAfterDiskFullDuringMerge`.
 fn test_corruption_after_disk_full_during_merge() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     // IndexWriter w = new IndexWriter(dir, newIndexWriterConfig(new
     // MockAnalyzer(random)).setReaderPooling(true));
     let mp = LogMergePolicy::by_doc_count();
@@ -671,7 +670,7 @@ fn test_corruption_after_disk_full_during_merge() -> Result<()> {
 ///
 /// Port of `TestIndexWriterOnDiskFull.testImmediateDiskFull`.
 fn test_immediate_disk_full() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     let iwc = mock_iwc();
     iwc.set_max_buffered_docs(2)?;
     iwc.set_merge_scheduler(Some(Arc::new(ConcurrentMergeScheduler::new())))?;

@@ -38,7 +38,7 @@ fn test_encode_decode() -> Result<()> {
                 RandomNumbers::random_int_between(&*random(), 0, PackedInts::max_value(bpv) as i32);
         }
     }
-    let mut d = ByteBuffersDirectory::new();
+    let d = ByteBuffersDirectory::new();
     let end_pointer;
     {
         // encode

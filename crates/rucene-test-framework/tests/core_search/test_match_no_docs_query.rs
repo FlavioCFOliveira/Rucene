@@ -77,7 +77,7 @@ fn test_simple(_f: &mut MatchNoDocs) -> Result<()> {
 }
 
 fn test_query(f: &mut MatchNoDocs) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(
         f.analyzer.as_ref().expect("setUp ran"),
     )));

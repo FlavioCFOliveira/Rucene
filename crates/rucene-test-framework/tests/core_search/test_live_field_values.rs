@@ -72,7 +72,7 @@ impl LiveFieldValuesLookup<ManagedSearcher, i32> for Lookup {
 }
 
 fn test_live_field_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "livefieldupdates",
     ));
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(

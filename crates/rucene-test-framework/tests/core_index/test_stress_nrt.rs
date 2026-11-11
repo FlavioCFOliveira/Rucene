@@ -137,7 +137,7 @@ fn test_() -> Result<()> {
 
     let mut threads: Vec<Thread> = Vec::new();
 
-    let mut dir = LuceneTestCase::new_maybe_virus_checking_directory();
+    let dir = LuceneTestCase::new_maybe_virus_checking_directory();
 
     let writer = Arc::new(RandomIndexWriter::new_with_soft_deletes(
         &*random(),

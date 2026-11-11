@@ -105,7 +105,7 @@ fn tear_down(inst: &mut TestSegmentReaderInstance) -> Result<()> {
     if let Some(reader) = inst.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = inst.dir.take() {
+    if let Some(dir) = inst.dir.take() {
         dir.close()?;
     }
     LuceneTestCase::super_tear_down();

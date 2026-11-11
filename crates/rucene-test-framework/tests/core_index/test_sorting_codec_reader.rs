@@ -73,8 +73,8 @@ fn sorting_wrap(leaf: Arc<dyn LeafReader>, index_sort: &Sort) -> Result<Arc<dyn 
 
 /// Port of `TestSortingCodecReader.testSortOnAddIndicesOrd`.
 fn test_sort_on_add_indices_ord() -> Result<()> {
-    let mut tmp_dir = LuceneTestCase::new_directory();
-    let mut dir = LuceneTestCase::new_directory();
+    let tmp_dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(tmp_dir.as_directory(), iwc)?;
 
@@ -140,8 +140,8 @@ fn test_sort_on_add_indices_ord() -> Result<()> {
 
 /// Port of `TestSortingCodecReader.testSortOnAddIndicesInt`.
 fn test_sort_on_add_indices_int() -> Result<()> {
-    let mut tmp_dir = LuceneTestCase::new_directory();
-    let mut dir = LuceneTestCase::new_directory();
+    let tmp_dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     let w = IndexWriter::new(tmp_dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -225,7 +225,7 @@ fn graph_of(leaf: &Arc<dyn LeafReader>) -> Result<Option<Box<dyn HnswGraph>>> {
 
 /// Port of `TestSortingCodecReader.testSortOnAddIndicesRandom`.
 fn test_sort_on_add_indices_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = sort_on_add_indices_random_in(&dir);
     let closed = dir.close();
     result.and(closed)
@@ -366,7 +366,7 @@ fn sort_on_add_indices_random_in(
         ])?,
     ];
     let index_sort = RandomPicks::random_from(&*random(), &sorts).clone();
-    let mut sort_dir = LuceneTestCase::new_directory();
+    let sort_dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_index_sort(index_sort.clone())?;

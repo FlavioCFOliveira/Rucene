@@ -655,9 +655,11 @@ impl MemorySegmentIndexInput {
 /// Equivalent to `Objects.checkFromIndexSize(long, long, long)`.
 fn check_from_index_size(offset: i64, length: i64, size: i64) -> Result<()> {
     if offset < 0 || length < 0 || offset > size - length {
-        return Err(LuceneError::illegal_argument(format!(
-            "Range [{offset}, {offset} + {length}) out of bounds for length {size}"
-        )));
+        // `Objects.checkFromIndexSize` throws `IndexOutOfBoundsException`.
+        return Err(LuceneError::unchecked(
+            "java.lang.IndexOutOfBoundsException",
+            format!("Range [{offset}, {offset} + {length}) out of bounds for length {size}"),
+        ));
     }
     Ok(())
 }

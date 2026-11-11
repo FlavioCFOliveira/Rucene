@@ -46,7 +46,7 @@ fn test_cfs() -> Result<()> {
 
 /// `private void doTest(boolean cfs)`.
 fn do_test(cfs: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         rucene_test_framework::analysis::MockAnalyzer::new(&*random()),
     )));
@@ -79,7 +79,7 @@ fn check_truncation(dir: &Arc<dyn Directory>) -> Result<()> {
 
 /// `private void truncateOneFile(Directory dir, String victim)`.
 fn truncate_one_file(dir: &Arc<dyn Directory>, victim: &str) -> Result<()> {
-    let mut dir_copy = LuceneTestCase::new_directory();
+    let dir_copy = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir_copy, false);
     let copy = dir_copy.as_directory();
     let victim_length = dir.file_length(victim)?;

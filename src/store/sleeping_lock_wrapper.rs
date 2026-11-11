@@ -204,7 +204,7 @@ impl Directory for SleepingLockWrapper {
         ))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 

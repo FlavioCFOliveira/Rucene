@@ -56,7 +56,7 @@ struct Indexed {
 
 impl Indexed {
     /// `ir.close(); ir2.close(); dir.close();`
-    fn close(mut self) -> Result<()> {
+    fn close(self) -> Result<()> {
         self.ir.close()?;
         self.ir2.close()?;
         drop(self.merged);

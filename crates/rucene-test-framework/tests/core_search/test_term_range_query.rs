@@ -63,7 +63,7 @@ fn term_range_query_set_up(f: &mut TermRangeQueryTest) -> Result<()> {
 
 /// `tearDown()`.
 fn term_range_query_tear_down(f: &mut TermRangeQueryTest) -> Result<()> {
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())

@@ -542,12 +542,8 @@ impl FieldsProducer for FieldsReader {
 
     /// Equivalent to `PerFieldPostingsFormat.FieldsReader.close()`
     /// (`PerFieldPostingsFormat.java:350-353`): `IOUtils.close(formats.values())`.
-    fn close(&mut self) -> Result<()> {
-        IOUtils::close(
-            self.formats
-                .iter_mut()
-                .map(|(_, p)| Some(move || p.close())),
-        )
+    fn close(&self) -> Result<()> {
+        IOUtils::close(self.formats.iter().map(|(_, p)| Some(move || p.close())))
     }
 }
 
@@ -1099,12 +1095,8 @@ impl DocValuesProducer for DvFieldsReader {
 
     /// Equivalent to `PerFieldDocValuesFormat.FieldsReader.close()`
     /// (`PerFieldDocValuesFormat.java:354-357`): `IOUtils.close(formats.values())`.
-    fn close(&mut self) -> Result<()> {
-        IOUtils::close(
-            self.formats
-                .iter_mut()
-                .map(|(_, p)| Some(move || p.close())),
-        )
+    fn close(&self) -> Result<()> {
+        IOUtils::close(self.formats.iter().map(|(_, p)| Some(move || p.close())))
     }
 }
 
@@ -1644,7 +1636,7 @@ impl KnnVectorsReader for KnnFieldsReader {
     /// (`PerFieldKnnVectorsFormat.java:335-341`): `IOUtils.close(readers)`
     /// over `fields.values()`, one reader per field, so a reader several
     /// fields share is closed once for each of them.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         // `for (ObjectCursor<KnnVectorsReader> cursor : fields.values())
         // readers.add(cursor.value);`, in the map's own iteration order.
         let suffixes: Vec<&String> = self
@@ -1653,10 +1645,9 @@ impl KnnVectorsReader for KnnFieldsReader {
             .into_iter()
             .map(|cursor| cursor.value)
             .collect();
-        let formats = std::cell::RefCell::new(&mut self.formats);
+        let formats = &self.formats;
         IOUtils::close(suffixes.into_iter().map(|suffix| {
-            let formats = &formats;
-            Some(move || match formats.borrow_mut().get_mut(suffix) {
+            Some(move || match formats.get(suffix) {
                 Some(reader) => reader.close(),
                 None => Ok(()),
             })
@@ -1787,7 +1778,7 @@ impl FieldsProducer for FilterFieldsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -1887,7 +1878,7 @@ mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1900,7 +1891,7 @@ mod tests {
         let mut consumer = format.fields_consumer(&write_state()).unwrap();
         consumer.close().unwrap();
 
-        let mut producer = format.fields_producer(&read_state()).unwrap();
+        let producer = format.fields_producer(&read_state()).unwrap();
         producer.close().unwrap();
     }
 
@@ -2295,7 +2286,7 @@ mod close_family_tests {
         fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
             Ok(Box::new(self.clone()))
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.record()
         }
     }
@@ -2343,7 +2334,7 @@ mod close_family_tests {
         fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
             Ok(Box::new(self.clone()))
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.record()
         }
     }
@@ -2410,7 +2401,7 @@ mod close_family_tests {
         fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
             Ok(Box::new(self.clone()))
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.record()
         }
     }
@@ -2546,7 +2537,7 @@ mod close_family_tests {
                 Box::new(closing) as Box<dyn FieldsProducer>,
             );
         }
-        let mut reader = FieldsReader {
+        let reader = FieldsReader {
             formats,
             fields: BTreeMap::new(),
         };
@@ -2582,7 +2573,7 @@ mod close_family_tests {
                 Box::new(closing) as Box<dyn DocValuesProducer>,
             );
         }
-        let mut reader = DvFieldsReader {
+        let reader = DvFieldsReader {
             formats,
             fields: HashMap::new(),
         };
@@ -2620,7 +2611,7 @@ mod close_family_tests {
                 fail: true,
                 log: Arc::clone(&log),
             };
-            let mut reader = KnnFieldsReader {
+            let reader = KnnFieldsReader {
                 formats: java_map([
                     (
                         "field0",
@@ -2652,7 +2643,7 @@ mod close_family_tests {
     #[test]
     fn postings_reader_close_closes_every_producer() {
         let (a, b, log) = failing_pair();
-        let mut reader = FieldsReader {
+        let reader = FieldsReader {
             formats: java_map([
                 ("a", Box::new(a) as Box<dyn FieldsProducer>),
                 ("b", Box::new(b) as Box<dyn FieldsProducer>),
@@ -2668,7 +2659,7 @@ mod close_family_tests {
     #[test]
     fn doc_values_reader_close_closes_every_producer() {
         let (a, b, log) = failing_pair();
-        let mut reader = DvFieldsReader {
+        let reader = DvFieldsReader {
             formats: java_map([
                 ("a", Box::new(a) as Box<dyn DocValuesProducer>),
                 ("b", Box::new(b) as Box<dyn DocValuesProducer>),
@@ -2762,7 +2753,7 @@ mod close_family_tests {
             fail: false,
             log: Arc::clone(&log),
         };
-        let mut reader = KnnFieldsReader {
+        let reader = KnnFieldsReader {
             formats: java_map([("s", Box::new(shared) as Box<dyn KnnVectorsReader>)]),
             fields: int_map([(0, "s"), (1, "s")]),
             field_names: HashMap::new(),
@@ -2772,7 +2763,7 @@ mod close_family_tests {
         assert_eq!(sorted(&log), ["shared", "shared"]);
 
         let (a, b, log) = failing_pair();
-        let mut reader = KnnFieldsReader {
+        let reader = KnnFieldsReader {
             formats: java_map([
                 ("a", Box::new(a) as Box<dyn KnnVectorsReader>),
                 ("b", Box::new(b) as Box<dyn KnnVectorsReader>),

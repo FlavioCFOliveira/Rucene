@@ -88,7 +88,7 @@ fn values_of(
 
 /// Port of `testFeature`.
 fn test_feature() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (ir, mut values) = values_of(
         &dir,
         vec![
@@ -112,7 +112,7 @@ fn test_feature() -> Result<()> {
 
 /// Port of `testFeatureMissing`.
 fn test_feature_missing() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (ir, mut values) = values_of(
         &dir,
         vec![None, Some(("name", 1.0)), Some(("name", 4.0))],
@@ -131,7 +131,7 @@ fn test_feature_missing() -> Result<()> {
 
 /// Port of `testFeatureMissingFieldInSegment`.
 fn test_feature_missing_field_in_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (ir, mut values) = values_of(&dir, vec![None], true)?;
     Assert::assert_false(values.advance_exact(0)?);
     Assert::assert_false(values.advance_exact(1)?);
@@ -142,7 +142,7 @@ fn test_feature_missing_field_in_segment() -> Result<()> {
 
 /// Port of `testFeatureMissingFeatureNameInSegment`.
 fn test_feature_missing_feature_name_in_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (ir, mut values) = values_of(&dir, vec![Some(("different_name", 0.5))], true)?;
     Assert::assert_false(values.advance_exact(0)?);
     Assert::assert_false(values.advance_exact(1)?);
@@ -153,7 +153,7 @@ fn test_feature_missing_feature_name_in_segment() -> Result<()> {
 
 /// Port of `testFeatureMultipleMissing`.
 fn test_feature_multiple_missing() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (ir, mut values) = values_of(
         &dir,
         vec![

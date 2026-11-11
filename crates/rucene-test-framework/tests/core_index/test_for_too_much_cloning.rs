@@ -31,7 +31,7 @@ pub fn class_def() -> Arc<Class> {
 /// during merging and searching:
 /// Port of `TestForTooMuchCloning.test`.
 fn test_() -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let mock = dir.as_mock().unwrap_or_else(|| crate::support::npe("dir"));
     mock.set_verbose_clone(false); // set true to view clone stacks.
     let tmp = TieredMergePolicy::new();

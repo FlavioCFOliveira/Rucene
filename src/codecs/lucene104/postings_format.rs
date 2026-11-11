@@ -402,7 +402,7 @@ mod tests {
         consumer.close().expect("close should succeed");
 
         let read_state = test_read_state(dir_ref, &segment_info, &field_infos);
-        let mut producer = format
+        let producer = format
             .fields_producer(&read_state)
             .expect("producer should build");
 

@@ -127,7 +127,7 @@ fn rewrite_with(
 ///
 /// Port of `TestWildcardQuery.testTermWithoutWildcard`.
 fn test_term_without_wildcard() -> Result<()> {
-    let mut index_store = get_index_store("field", &["nowildcard", "nowildcardx"])?;
+    let index_store = get_index_store("field", &["nowildcard", "nowildcardx"])?;
     let (reader, searcher) = open(&index_store)?;
 
     let wq = wq("field", "nowildcard")?;
@@ -154,7 +154,7 @@ fn test_term_without_wildcard() -> Result<()> {
 ///
 /// Port of `TestWildcardQuery.testEmptyTerm`.
 fn test_empty_term() -> Result<()> {
-    let mut index_store = get_index_store("field", &["nowildcard", "nowildcardx"])?;
+    let index_store = get_index_store("field", &["nowildcard", "nowildcardx"])?;
     let (reader, searcher) = open(&index_store)?;
 
     let wq: Arc<dyn Query> = Arc::new(WildcardQuery::with_rewrite_method(
@@ -176,7 +176,7 @@ fn test_empty_term() -> Result<()> {
 ///
 /// Port of `TestWildcardQuery.testPrefixTerm`.
 fn test_prefix_term() -> Result<()> {
-    let mut index_store = get_index_store("field", &["prefix", "prefixx"])?;
+    let index_store = get_index_store("field", &["prefix", "prefixx"])?;
     let (reader, searcher) = open(&index_store)?;
 
     let wq1 = wq("field", "prefix*")?;
@@ -205,7 +205,7 @@ fn test_prefix_term() -> Result<()> {
 ///
 /// Port of `TestWildcardQuery.testAsterisk`.
 fn test_asterisk() -> Result<()> {
-    let mut index_store = get_index_store("body", &["metal", "metals"])?;
+    let index_store = get_index_store("body", &["metal", "metals"])?;
     let (reader, searcher) = open(&index_store)?;
     let query1: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text("body", "metal")));
     let query2 = wq("body", "metal*")?;
@@ -243,7 +243,7 @@ fn test_asterisk() -> Result<()> {
 ///
 /// Port of `TestWildcardQuery.testQuestionmark`.
 fn test_questionmark() -> Result<()> {
-    let mut index_store = get_index_store("body", &["metal", "metals", "mXtals", "mXtXls"])?;
+    let index_store = get_index_store("body", &["metal", "metals", "mXtals", "mXtXls"])?;
     let (reader, searcher) = open(&index_store)?;
     let query1 = wq("body", "m?tal")?;
     let query2 = wq("body", "metal?")?;
@@ -267,7 +267,7 @@ fn test_questionmark() -> Result<()> {
 ///
 /// Port of `TestWildcardQuery.testEscapes`.
 fn test_escapes() -> Result<()> {
-    let mut index_store = get_index_store(
+    let index_store = get_index_store(
         "field",
         &[
             "foo*bar",
@@ -414,7 +414,7 @@ fn test_parsing_and_searching() -> Result<()> {
     ];
 
     // prepare the index
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
     let config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -502,7 +502,7 @@ fn test_parsing_and_searching() -> Result<()> {
 fn test_large() -> Result<()> {
     // big string from a user
     let big = "{group-bm-http-server-02083.node.dm.reg,group-bm-http-server-02082.node.dm.reg,group-bm-http-server-02081.node.dm.reg,group-bm-http-server-02080.node.dm.reg,group-bm-http-server-02079.node.dm.reg,group-bm-http-server-02078.node.dm.reg,group-bm-http-server-02077.node.dm.reg,group-bm-http-server-02076.node.dm.reg,group-bm-http-server-02073.node.dm.reg,group-bm-http-server-02070.node.dm.reg,group-bm-http-server-02067.node.dm.reg,group-bm-http-server-02064.node.dm.reg,group-bm-http-server-02029.node.dm.reg,group-bm-http-server-02028.node.dm.reg,group-bm-http-server-02027.node.dm.reg,group-bm-http-server-02026.node.dm.reg,group-bm-http-server-02025.node.dm.reg,group-bm-http-server-02023.node.dm.reg,group-bm-http-server-02022.node.dm.reg,group-bm-http-server-02021.node.dm.reg,group-bm-http-server-02020.node.dm.reg,group-bm-http-server-02019.node.dm.reg,group-bm-http-server-02018.node.dm.reg,group-bm-http-server-02016.node.dm.reg,group-bm-http-server-02015.node.dm.reg,group-bm-http-server-02014.node.dm.reg,group-bm-http-server-02009.node.dm.reg,group-bm-http-server-02007.node.dm.reg,group-bm-http-server-02004.node.dm.reg,group-bm-http-server-02003.node.dm.reg,group-bm-http-server-02002.node.dm.reg,group-bm-http-server-01311.node.dm.reg,group-bm-http-server-01309.node.dm.reg,group-bm-http-server-01307.node.dm.reg}";
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -525,7 +525,7 @@ fn test_large() -> Result<()> {
 
 /// Port of `TestWildcardQuery.testCostEstimate`.
 fn test_cost_estimate() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for i in 0..1000 {
         let mut doc = Document::new();
@@ -589,7 +589,7 @@ fn test_cost_estimate() -> Result<()> {
 ///
 /// Port of `TestWildcardQuery.testScorerSupplierDoesNotScanTermsEagerly`.
 fn test_scorer_supplier_does_not_scan_terms_eagerly() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for i in 0..1000 {
         let mut doc = Document::new();

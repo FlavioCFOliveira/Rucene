@@ -352,7 +352,7 @@ impl PostingsFormat for MockRandomPostingsFormat {
             if *VERBOSE {
                 println!("MockRandomCodec: reading Block terms dict");
             }
-            let mut postings_reader = postings_reader;
+            let postings_reader = postings_reader;
             let index_reader = (|| -> Result<Box<dyn TermsIndexReaderBase>> {
                 let do_fixed_gap = random.next_boolean();
 

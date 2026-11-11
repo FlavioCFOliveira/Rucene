@@ -534,7 +534,7 @@ fn test_offset_reader(inst: &mut TestTermVectorsReaderInstance) -> Result<()> {
 /// The shared body of the `testIllegal*` tests: indexing `"value"` in a
 /// field of `ft` must throw an `IllegalArgumentException` with `message`.
 fn check_illegal(ft: FieldType, message: &str) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let a = MockAnalyzer::new(&*random());
     a.set_enable_checks(false);
     let w = RandomIndexWriter::new(&*random(), dir.as_directory(), Arc::new(a))?;

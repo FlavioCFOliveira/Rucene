@@ -2654,19 +2654,12 @@ impl TestDirectory {
     ///
     /// # Errors
     ///
-    /// What the wrapper's `close()` throws; a `RawDirectoryWrapper` another
-    /// handle still shares fails as `BaseDirectoryWrapper.close()` does for a
-    /// shared delegate.
-    pub fn close(&mut self) -> rucene::error::Result<()> {
+    /// What the wrapper's `close()` throws.
+    pub fn close(&self) -> rucene::error::Result<()> {
         use rucene::store::Directory;
         match self {
             TestDirectory::Mock(mock) => mock.close(),
-            TestDirectory::Raw(raw) => match Arc::get_mut(raw) {
-                Some(raw) => raw.close(),
-                None => Err(rucene::error::LuceneError::illegal_state(
-                    "RawDirectoryWrapper: the wrapper is still shared and cannot be closed",
-                )),
-            },
+            TestDirectory::Raw(raw) => raw.close(),
         }
     }
 
@@ -3343,7 +3336,7 @@ impl LuceneTestCase {
         lf: &LockFactoryArg,
     ) -> Box<dyn rucene::store::Directory> {
         use rucene::util::command_line_util::CommandLineUtil;
-        match CommandLineUtil::new_fs_directory_of_kind(clazz, path.as_std_path(), lf.instance()) {
+        match CommandLineUtil::new_fs_directory_of_kind(clazz, path, lf.instance()) {
             Ok(d) => d,
             Err(e) => rethrow_lucene_error(&e),
         }

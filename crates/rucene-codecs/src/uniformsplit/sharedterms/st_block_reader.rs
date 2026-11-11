@@ -24,7 +24,6 @@ use rucene::codecs::PostingsReaderBase;
 use rucene::error::{LuceneError, Result};
 use rucene::index::index_reader::java_object_to_string;
 use rucene::index::{FieldInfos, ImpactsEnum, PostingsEnum, SeekStatus, TermState, TermsEnum};
-use rucene::store::IndexInput;
 use rucene::util::attribute::AttributeSource;
 use rucene::util::BytesRef;
 
@@ -54,7 +53,7 @@ impl STBlockReader {
     /// The errors of the base reader's constructor.
     pub fn new(
         dictionary_browser_supplier: Arc<dyn BrowserSupplier>,
-        block_input: Arc<Box<dyn IndexInput>>,
+        block_input: Arc<rucene::store::SharedIndexInput>,
         postings_reader: Arc<dyn PostingsReaderBase>,
         field_metadata: Arc<FieldMetadata>,
         block_decoder: Option<Arc<dyn BlockDecoder>>,

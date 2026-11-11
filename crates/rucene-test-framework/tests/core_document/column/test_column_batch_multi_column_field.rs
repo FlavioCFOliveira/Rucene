@@ -197,7 +197,7 @@ fn test_compose_order_independent() -> Result<()> {
     let indexed = nbr("hello");
     let stored_first = index_composed_binary_columns(true, &stored, &indexed)?;
     let inverted_first = index_composed_binary_columns(false, &stored, &indexed)?;
-    for mut d in [stored_first, inverted_first] {
+    for d in [stored_first, inverted_first] {
         let r: Arc<dyn IndexReader> = rucene::index::directory_reader::open(d.as_directory())?;
         let leaf = only_leaf(&r)?;
         let s = searcher(&r)?;

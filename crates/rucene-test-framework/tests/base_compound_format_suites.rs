@@ -86,7 +86,7 @@ fn lucene90_class() -> Arc<Class> {
 
 /// Port of `TestLucene90CompoundFormat.testFileLengthOrdering`.
 fn test_file_length_ordering() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let dir = directory.as_directory();
     // Setup the test segment
     let segment = "_123";

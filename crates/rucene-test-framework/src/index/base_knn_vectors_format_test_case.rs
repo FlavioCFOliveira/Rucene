@@ -883,7 +883,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_illegal_dim_change_two_docs(&self) -> Result<()> {
         // illegal change in the same segment
         {
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let w = new_writer(dir.as_directory())?;
                 w.add_document(&float_doc(
@@ -903,7 +903,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
         // illegal change in a different segment
         {
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let w = new_writer(dir.as_directory())?;
                 w.add_document(&float_doc(
@@ -928,7 +928,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_illegal_similarity_function_change(&self) -> Result<()> {
         // illegal change in the same segment
         {
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let w = new_writer(dir.as_directory())?;
                 w.add_document(&float_doc(
@@ -948,7 +948,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
         // illegal change a different segment
         {
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let w = new_writer(dir.as_directory())?;
                 w.add_document(&float_doc(
@@ -979,7 +979,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         second_sim: VectorSimilarityFunction,
         message: &str,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             {
                 let w = new_writer(dir.as_directory())?;
@@ -1038,7 +1038,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testMergingWithDifferentKnnFields()`.
     fn test_merging_with_different_knn_fields(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let merge_scheduler = Arc::new(TestMergeScheduler::default());
             let iwc = self.merging_config(Arc::clone(&merge_scheduler))?;
@@ -1079,7 +1079,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testMergingWithDifferentByteKnnFields()`.
     fn test_merging_with_different_byte_knn_fields(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let merge_scheduler = Arc::new(TestMergeScheduler::default());
             let iwc = self.merging_config(Arc::clone(&merge_scheduler))?;
@@ -1118,7 +1118,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testWriterRamEstimate()`.
     fn test_writer_ram_estimate(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = rucene::codecs::get_default().expect("Codec.getDefault()");
             let state = ram_estimate_state(dir.as_directory())?;
@@ -1153,7 +1153,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testWriterByteVectorRamEstimate()`.
     fn test_writer_byte_vector_ram_estimate(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = rucene::codecs::get_default().expect("Codec.getDefault()");
             let state = ram_estimate_state(dir.as_directory())?;
@@ -1211,8 +1211,8 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             &[0f32; 4],
             VectorSimilarityFunction::DOT_PRODUCT,
         )?;
-        let mut dir = LuceneTestCase::new_directory();
-        let mut dir2 = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
+        let dir2 = LuceneTestCase::new_directory();
         {
             {
                 {
@@ -1246,8 +1246,8 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_add_indexes_directory1(&self) -> Result<()> {
         let field_name = "field";
         let mut doc = Document::new();
-        let mut dir = LuceneTestCase::new_directory();
-        let mut dir2 = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
+        let dir2 = LuceneTestCase::new_directory();
         {
             {
                 {
@@ -1286,8 +1286,8 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_add_indexes_directory01(&self) -> Result<()> {
         let field_name = "field";
         let mut vector = [0f32; 2];
-        let mut dir = LuceneTestCase::new_directory();
-        let mut dir2 = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
+        let dir2 = LuceneTestCase::new_directory();
         {
             {
                 {
@@ -1346,8 +1346,8 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         how: AddIndexesHow,
         message: &str,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
-        let mut dir2 = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
+        let dir2 = LuceneTestCase::new_directory();
         {
             {
                 {
@@ -1469,7 +1469,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testIllegalMultipleValues()`.
     fn test_illegal_multiple_values(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let w = new_writer(dir.as_directory())?;
             let mut doc = Document::new();
@@ -1496,7 +1496,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testIllegalDimensionTooLarge()`.
     fn test_illegal_dimension_too_large(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let w = new_writer(dir.as_directory())?;
             let max = self.get_vectors_max_dimensions("f");
@@ -1530,7 +1530,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testIllegalEmptyVector()`.
     fn test_illegal_empty_vector(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let w = new_writer(dir.as_directory())?;
             let e = expect_illegal_argument(|| {
@@ -1551,7 +1551,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testDifferentCodecs1()`: write vectors, one segment with default
     /// codec, another with SimpleText, then forceMerge.
     fn test_different_codecs1(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             {
                 let w = new_writer(dir.as_directory())?;
@@ -1583,7 +1583,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_different_codecs2(&self) -> Result<()> {
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_codec(codec_for_name("SimpleText")?)?;
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             {
                 let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -1622,7 +1622,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testDeleteAllVectorDocs()`.
     fn test_delete_all_vector_docs(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let w = new_writer(dir.as_directory())?;
             let mut doc = Document::new();
@@ -1721,7 +1721,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             field_similarity_functions[i] = self.random_similarity();
             field_vector_encodings[i] = self.random_vector_encoding();
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let w = RandomIndexWriter::new_with_config(
                 &*random(),
@@ -1817,7 +1817,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         }
         let field_name = "field";
         let similarity_function = self.knn_state().similarity_function();
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let num_doc = LuceneTestCase::at_least(100);
@@ -1901,7 +1901,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         }
         let field_name = "field";
         let similarity_function = self.knn_state().similarity_function();
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let num_doc = LuceneTestCase::at_least(100);
@@ -1979,7 +1979,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// The body of `testEmptyFloatVectorData` and `testEmptyByteVectorData`.
     fn empty_vector_data(&self, bytes: bool) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let w = new_writer(dir.as_directory())?;
             let mut doc1 = Document::new();
@@ -2054,7 +2054,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_indexed_value_not_aliased(&self) -> Result<()> {
         let field_name = "field";
         let mut v = [0f32, 0.0];
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iwc = LuceneTestCase::new_index_writer_config();
             iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
@@ -2098,7 +2098,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_index_sort(sortkey_sort()?)?;
         let field_name = "field";
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let euclidean = VectorSimilarityFunction::EUCLIDEAN;
@@ -2145,7 +2145,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let iwc = LuceneTestCase::new_index_writer_config();
         iwc.set_index_sort(sortkey_sort()?)?;
         let field_name = "field";
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let euclidean = VectorSimilarityFunction::EUCLIDEAN;
@@ -2195,7 +2195,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testIndexMultipleKnnVectorFields()`.
     fn test_index_multiple_knn_vector_fields(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iwc = LuceneTestCase::new_index_writer_config();
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -2279,7 +2279,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         }
         let field_name = "field";
         let similarity_function = self.knn_state().similarity_function();
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let num_doc = LuceneTestCase::at_least(100);
@@ -2380,7 +2380,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         }
         let field_name = "field";
         let similarity_function = self.knn_state().similarity_function();
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let num_doc = LuceneTestCase::at_least(100);
@@ -2483,7 +2483,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_search_with_visited_limit(&self) -> Result<()> {
         let iwc = LuceneTestCase::new_index_writer_config();
         let field_name = "field";
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let num_doc = 300;
@@ -2571,7 +2571,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     fn test_random_with_updates_and_graph(&self) -> Result<()> {
         let iwc = LuceneTestCase::new_index_writer_config();
         let field_name = "field";
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iw = IndexWriter::new(dir.as_directory(), iwc)?;
             let num_doc = LuceneTestCase::at_least(100);
@@ -2668,7 +2668,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testCheckIndexIncludesVectors()`.
     fn test_check_index_includes_vectors(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             {
                 let w = new_writer(dir.as_directory())?;
@@ -2740,7 +2740,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testAdvance()`.
     fn test_advance(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let w = new_writer(dir.as_directory())?;
             let numdocs = LuceneTestCase::at_least(1500);
@@ -2824,7 +2824,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         let vector_encoding = self.knn_state().vector_encoding();
         let similarity_function = self.knn_state().similarity_function();
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let w = RandomIndexWriter::new_with_config(
                 &*random(),
@@ -2993,7 +2993,7 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             similarity_function == VectorSimilarityFunction::COSINE,
         );
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             if let Some(mock) = dir.as_mock() {
                 mock.set_check_index_on_close(false);
@@ -3075,10 +3075,10 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testMismatchedFields()`.
     fn test_mismatched_fields(&self) -> Result<()> {
-        let mut dir1 = LuceneTestCase::new_directory();
+        let dir1 = LuceneTestCase::new_directory();
         // Created where Java creates it; declared here so it outlives the
         // block that releases every handle on it before it closes.
-        let mut dir2;
+        let dir2;
         {
             let w1 = new_writer(dir1.as_directory())?;
             let mut doc = Document::new();

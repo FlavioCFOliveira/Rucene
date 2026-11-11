@@ -27,7 +27,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestTotalHitCountCollector.testBasics`.
 fn test_basics() -> Result<()> {
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     for i in 0..5 {
         let mut doc = Document::new();

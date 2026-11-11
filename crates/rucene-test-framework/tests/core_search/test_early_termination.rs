@@ -49,7 +49,7 @@ fn rucene_tear_down() -> randomizedtesting::jdk::reflect::Method {
                 if let Some(w) = f.writer.take() {
                     w.close()?;
                 }
-                if let Some(mut d) = f.dir.take() {
+                if let Some(d) = f.dir.take() {
                     d.close()?;
                 }
                 Ok(())

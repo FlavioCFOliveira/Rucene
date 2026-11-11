@@ -95,7 +95,7 @@ fn riw(
 
 /// Port of `TestFuzzyQuery.testBasicPrefix`.
 fn test_basic_prefix() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = riw(&directory)?;
     add_doc("abc", &writer)?;
     let reader = writer.get_reader()?;
@@ -113,7 +113,7 @@ fn test_basic_prefix() -> Result<()> {
 
 /// Port of `TestFuzzyQuery.testFuzziness`.
 fn test_fuzziness() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
     let config = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));
     config.set_merge_policy(Some(LuceneTestCase::new_merge_policy_include_mock(
@@ -231,7 +231,7 @@ fn test_fuzziness() -> Result<()> {
 
 /// Port of `TestFuzzyQuery.testPrefixLengthEqualStringLength`.
 fn test_prefix_length_equal_string_length() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = riw(&directory)?;
     add_doc("b*a", &writer)?;
     add_doc("b*ab", &writer)?;
@@ -271,7 +271,7 @@ fn test_prefix_length_equal_string_length() -> Result<()> {
 
 /// Port of `TestFuzzyQuery.test2`.
 fn test2() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new(
         &*random(),
         directory.as_directory(),
@@ -322,7 +322,7 @@ fn test2() -> Result<()> {
 /// Port of `TestFuzzyQuery.testSingleQueryExactMatchScoresHighest`.
 fn test_single_query_exact_match_scores_highest() -> Result<()> {
     // See issue LUCENE-329 - IDF shouldn't wreck similarity ranking
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = riw(&directory)?;
     for text in [
         "smith", "smith", "smith", "smith", "smith", "smith", "smythe", "smdssasd",
@@ -367,7 +367,7 @@ fn test_multiple_queries_idf_works() -> Result<()> {
     // MultiTermQuery.TopTermsBoostOnlyBooleanQueryRewrite
     // is the solution as it disables IDF.
     // However - IDF is still useful as in this case where there are multiple FuzzyQueries.
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = riw(&directory)?;
 
     for text in [
@@ -423,14 +423,14 @@ fn test_multiple_queries_idf_works() -> Result<()> {
 ///
 /// Port of `TestFuzzyQuery.testTieBreaker`.
 fn test_tie_breaker() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = riw(&directory)?;
     add_doc("a123456", &writer)?;
     add_doc("c123456", &writer)?;
     add_doc("d123456", &writer)?;
     add_doc("e123456", &writer)?;
 
-    let mut directory2 = LuceneTestCase::new_directory();
+    let directory2 = LuceneTestCase::new_directory();
     let writer2 = riw(&directory2)?;
     add_doc("a123456", &writer2)?;
     add_doc("b123456", &writer2)?;
@@ -475,7 +475,7 @@ fn test_tie_breaker() -> Result<()> {
 ///
 /// Port of `TestFuzzyQuery.testBoostOnlyRewrite`.
 fn test_boost_only_rewrite() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = riw(&directory)?;
     add_doc("Lucene", &writer)?;
     add_doc("Lucene", &writer)?;
@@ -518,7 +518,7 @@ fn test_boost_only_rewrite() -> Result<()> {
 
 /// Port of `TestFuzzyQuery.testGiga`.
 fn test_giga() -> Result<()> {
-    let mut index = LuceneTestCase::new_directory();
+    let index = LuceneTestCase::new_directory();
     let w = riw(&index)?;
 
     for text in [
@@ -561,7 +561,7 @@ fn test_giga() -> Result<()> {
 
 /// Port of `TestFuzzyQuery.testDistanceAsEditsSearching`.
 fn test_distance_as_edits_searching() -> Result<()> {
-    let mut index = LuceneTestCase::new_directory();
+    let index = LuceneTestCase::new_directory();
     let w = riw(&index)?;
     add_doc("foobar", &w)?;
     add_doc("test", &w)?;
@@ -632,7 +632,7 @@ fn test_random() -> Result<()> {
         terms.add(random_simple_string(digits));
     }
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = riw(&dir)?;
     for term in terms.iter() {
         let mut doc = Document::new();

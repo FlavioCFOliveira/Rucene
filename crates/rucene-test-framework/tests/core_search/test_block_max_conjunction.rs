@@ -50,7 +50,7 @@ fn foo(i: i32) -> Arc<dyn Query> {
 }
 
 fn test_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

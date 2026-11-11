@@ -9,7 +9,7 @@
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
@@ -97,7 +97,7 @@ fn hit_count(r: &Arc<dyn DirectoryReader>, term: &Term) -> Result<usize> {
 /// these docs until writer is closed.
 /// Port of `TestIndexWriterCommit.testCommitOnClose`.
 fn test_commit_on_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let writer = IndexWriter::new(Arc::clone(&d), mock_iwc())?;
     for _ in 0..14 {
@@ -157,7 +157,7 @@ fn test_commit_on_close() -> Result<()> {
 /// and add docs to it.
 /// Port of `TestIndexWriterCommit.testCommitOnCloseAbort`.
 fn test_commit_on_close_abort() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let writer = IndexWriter::new(Arc::clone(&d), iwc_max_buffered(10)?)?;
     for _ in 0..14 {
@@ -273,7 +273,7 @@ impl Analyzer for DiskUsageAnalyzer {
 /// measure max temp disk space used.
 /// Port of `TestIndexWriterCommit.testCommitOnCloseDiskUsage`.
 fn test_commit_on_close_disk_usage() -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let d = dir.as_directory();
     let analyzer: Arc<dyn Analyzer> = if random().next_boolean() {
         Arc::new(DiskUsageAnalyzer {
@@ -349,7 +349,7 @@ fn test_commit_on_close_disk_usage() -> Result<()> {
 /// and close().
 /// Port of `TestIndexWriterCommit.testCommitOnCloseForceMerge`.
 fn test_commit_on_close_force_merge() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = iwc_max_buffered(10)?;
     iwc.set_merge_policy(Some(Arc::new(
@@ -423,7 +423,7 @@ fn test_commit_on_close_force_merge() -> Result<()> {
 fn test_commit_thread_safety() -> Result<()> {
     const NUM_THREADS: usize = 5;
     let max_iterations = 10;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = mock_iwc();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -500,7 +500,7 @@ fn test_commit_thread_safety() -> Result<()> {
 
 /// Port of `TestIndexWriterCommit.testForceCommit`.
 fn test_force_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let iwc = iwc_max_buffered(2)?;
@@ -554,7 +554,7 @@ fn commit_tagged(d: &Arc<dyn Directory>, tag: &str) -> Result<Option<Arc<dyn Ind
 
 /// Port of `TestIndexWriterCommit.testFutureCommit`.
 fn test_future_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let iwc = mock_iwc();
@@ -599,7 +599,7 @@ fn test_future_commit() -> Result<()> {
 
 /// Port of `TestIndexWriterCommit.testZeroCommits`.
 fn test_zero_commits() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let writer = IndexWriter::new(Arc::clone(&d), mock_iwc())?;
     expect_throws("org.apache.lucene.index.IndexNotFoundException", || {
@@ -618,7 +618,7 @@ fn test_zero_commits() -> Result<()> {
 
 /// Port of `TestIndexWriterCommit.testPrepareCommit`.
 fn test_prepare_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let iwc = iwc_max_buffered(2)?;
@@ -678,7 +678,7 @@ fn test_prepare_commit() -> Result<()> {
 
 /// Port of `TestIndexWriterCommit.testPrepareCommitRollback`.
 fn test_prepare_commit_rollback() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let iwc = iwc_max_buffered(2)?;
@@ -735,7 +735,7 @@ fn test_prepare_commit_rollback() -> Result<()> {
 
 /// Port of `TestIndexWriterCommit.testPrepareCommitNoChanges`.
 fn test_prepare_commit_no_changes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let writer = IndexWriter::new(Arc::clone(&d), mock_iwc())?;
@@ -752,7 +752,7 @@ fn test_prepare_commit_no_changes() -> Result<()> {
 
 /// Port of `TestIndexWriterCommit.testCommitUserData`.
 fn test_commit_user_data() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = IndexWriter::new(Arc::clone(&d), iwc_max_buffered(2)?)?;
     for _ in 0..17 {
@@ -790,7 +790,7 @@ fn test_commit_user_data() -> Result<()> {
 
 /// Port of `TestIndexWriterCommit.testPrepareCommitThenClose`.
 fn test_prepare_commit_then_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = IndexWriter::new(Arc::clone(&d), mock_iwc())?;
     w.add_document(&Document::new())?;
@@ -807,20 +807,57 @@ fn test_prepare_commit_then_close() -> Result<()> {
     dir.close()
 }
 
+/// `commitData.entrySet()`: a live view of the test's map, which the writer
+/// walks when it commits.
+#[derive(Clone)]
+struct EntrySet(Arc<Mutex<HashMap<String, String>>>);
+
+impl EntrySet {
+    fn put(&self, key: &str, value: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+    }
+
+    fn clear(&self) {
+        self.0.lock().unwrap().clear();
+    }
+}
+
+impl IntoIterator for EntrySet {
+    type Item = (String, String);
+    type IntoIter = std::vec::IntoIter<(String, String)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let entries: Vec<(String, String)> = self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        entries.into_iter()
+    }
+}
+
 /// Port of `TestIndexWriterCommit.testCommitDataIsLive`.
 fn test_commit_data_is_live() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = IndexWriter::new(Arc::clone(&d), mock_iwc())?;
     w.add_document(&Document::new())?;
 
-    let mut commit_data: HashMap<String, String> = HashMap::new();
-    commit_data.insert("foo".to_string(), "bar".to_string());
+    let commit_data = EntrySet(Arc::new(Mutex::new(HashMap::new())));
+    commit_data.put("foo", "bar");
 
+    // make sure "foo" / "bar" doesn't take
     w.set_live_commit_data(commit_data.clone())?;
 
     commit_data.clear();
-    commit_data.insert("boo".to_string(), "baz".to_string());
+    commit_data.put("boo", "baz");
+
+    // this finally does the commit, and should burn "boo" / "baz"
 
     w.close()?;
 

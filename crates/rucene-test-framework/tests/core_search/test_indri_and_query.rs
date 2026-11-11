@@ -63,7 +63,7 @@ pub fn class_def() -> Arc<Class> {
                 if let Some(r) = f.r.take() {
                     r.as_index_reader().close()?;
                 }
-                if let Some(mut index) = f.index.take() {
+                if let Some(index) = f.index.take() {
                     index.close()?;
                 }
                 Ok(())

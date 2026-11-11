@@ -45,13 +45,13 @@ fn new_iwc() -> IndexWriterConfig {
 /// indexes and wraps a ParallelReader around. Adding this reader to a new
 /// index should not throw any exception.
 fn test_empty_index() -> Result<()> {
-    let mut rd1 = LuceneTestCase::new_directory();
+    let rd1 = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(rd1.as_directory(), new_iwc())?;
     iw.close()?;
     // create a copy:
-    let mut rd2 = LuceneTestCase::new_directory_copy(&*rd1.as_directory())?;
+    let rd2 = LuceneTestCase::new_directory_copy(&*rd1.as_directory())?;
 
-    let mut rd_out = LuceneTestCase::new_directory();
+    let rd_out = LuceneTestCase::new_directory();
 
     let iw_out = IndexWriter::new(rd_out.as_directory(), new_iwc())?;
 
@@ -86,7 +86,7 @@ fn test_empty_index() -> Result<()> {
 /// have TermVectors. Adding this index to another index should not throw any
 /// exception.
 fn test_empty_index_with_vectors() -> Result<()> {
-    let mut rd1 = LuceneTestCase::new_directory();
+    let rd1 = LuceneTestCase::new_directory();
     {
         if verbose() {
             println!("\nTEST: make 1st writer");
@@ -135,7 +135,7 @@ fn test_empty_index_with_vectors() -> Result<()> {
         iw.close()?;
     }
 
-    let mut rd2 = LuceneTestCase::new_directory();
+    let rd2 = LuceneTestCase::new_directory();
     {
         let iw = IndexWriter::new(rd2.as_directory(), new_iwc())?;
         let doc = Document::new();
@@ -143,7 +143,7 @@ fn test_empty_index_with_vectors() -> Result<()> {
         iw.close()?;
     }
 
-    let mut rd_out = LuceneTestCase::new_directory();
+    let rd_out = LuceneTestCase::new_directory();
 
     let iw_out = IndexWriter::new(rd_out.as_directory(), new_iwc())?;
     let reader1 = directory_reader::open(rd1.as_directory())?;

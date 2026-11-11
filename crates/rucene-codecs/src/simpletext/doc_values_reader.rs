@@ -1112,7 +1112,7 @@ impl DocValuesProducer for SimpleTextDocValuesReader {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let data = self
             .data
             .data

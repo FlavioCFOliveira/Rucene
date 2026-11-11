@@ -318,7 +318,7 @@ fn test_multiple_terms() -> Result<()> {
 
 /// Port of `TestPhraseQuery.testPhraseQueryWithStopAnalyzer`.
 fn test_phrase_query_with_stop_analyzer() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let stop_analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::with_filter(
         &*random(),
         Arc::clone(&SIMPLE),
@@ -351,7 +351,7 @@ fn test_phrase_query_with_stop_analyzer() -> Result<()> {
 
 /// Port of `TestPhraseQuery.testPhraseQueryInConjunctionScorer`.
 fn test_phrase_query_in_conjunction_scorer() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
 
     let mut doc = Document::new();
@@ -435,7 +435,7 @@ fn test_phrase_query_in_conjunction_scorer() -> Result<()> {
 
 /// Port of `TestPhraseQuery.testSlopScoring`.
 fn test_slop_scoring() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));
@@ -750,7 +750,7 @@ fn make_token(text: &str, pos_incr: i32) -> Token {
 ///
 /// Port of `TestPhraseQuery.testZeroPosIncr`.
 fn test_zero_pos_incr() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let tokens = vec![make_token("a", 1), make_token("aa", 0), make_token("b", 1)];
 
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
@@ -791,7 +791,7 @@ fn test_zero_pos_incr() -> Result<()> {
 
 /// Port of `TestPhraseQuery.testRandomPhrases`.
 fn test_random_phrases() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
 
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::clone(&analyzer)));
@@ -950,7 +950,7 @@ const DOCS: [&str; 6] = [
 
 /// Port of `TestPhraseQuery.testTopPhrases`.
 fn test_top_phrases() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -1281,7 +1281,7 @@ impl Impacts for DummyImpacts {
 
 /// Port of `TestPhraseQuery.testRandomTopDocs`.
 fn test_random_top_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

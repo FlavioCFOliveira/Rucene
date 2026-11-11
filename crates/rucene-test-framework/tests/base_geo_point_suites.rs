@@ -324,7 +324,7 @@ fn test_distance_query_with_inverted_intersection() -> Result<()> {
         10 * rucene::util::bkd::BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
     );
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         {
             let w = rucene::index::index_writer::IndexWriter::new(

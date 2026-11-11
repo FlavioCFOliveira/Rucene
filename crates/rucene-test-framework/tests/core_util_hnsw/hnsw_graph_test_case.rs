@@ -368,7 +368,7 @@ fn test_random_read_write_and_merge<C: HnswCase>(this: &mut Fixture<C>) -> Resul
     let vectors = C::mock_values(C::vector_values(num_vectors, dim));
     HnswGraphBuilder::set_rand_seed(seed as u64);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let outcome = (|| -> Result<()> {
         let iwc = hnsw_config(Lucene99HnswVectorsFormat::with_max_conn_beam_width(
             m, beam_width,
@@ -458,7 +458,7 @@ fn test_graph_merge_with_deletes<C: HnswCase>(this: &mut Fixture<C>) -> Result<(
     let vectors = C::mock_values(C::vector_values(num_vectors, dim));
     let mut delete_count = 0;
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let outcome = (|| -> Result<()> {
         let iwc = hnsw_config(
             Lucene99HnswVectorsFormat::with_max_conn_beam_width_threshold(m, beam_width, 0),
@@ -539,7 +539,7 @@ fn test_read_write<C: HnswCase>(this: &mut Fixture<C>) -> Result<()> {
 
     // Recreate the graph while indexing with the same random seed and write it out
     HnswGraphBuilder::set_rand_seed(seed as u64);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let outcome = (|| -> Result<()> {
         let mut n_vec = 0;
         let mut indexed_doc = 0;
@@ -652,8 +652,8 @@ fn test_sorted_and_unsorted_indices_return_same_results<C: HnswCase>(
         SortFieldType::Long,
     )?])?)?;
 
-    let mut dir = LuceneTestCase::new_directory();
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let outcome = (|| -> Result<()> {
         let mut indexed_doc = 0;
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;

@@ -323,12 +323,9 @@ impl DocValuesProducer for MismatchedDocValuesProducer {
         }))
     }
 
-    /// `in.close()`; see [`shared_close_error`].
-    fn close(&mut self) -> Result<()> {
-        match Arc::get_mut(&mut self.r#in) {
-            Some(r#in) => r#in.close(),
-            None => Err(shared_close_error("doc values producer")),
-        }
+    /// `in.close()`.
+    fn close(&self) -> Result<()> {
+        self.r#in.close()
     }
 }
 
@@ -366,11 +363,8 @@ impl NormsProducer for MismatchedNormsProducer {
         }))
     }
 
-    /// `in.close()`; see [`shared_close_error`].
-    fn close(&mut self) -> Result<()> {
-        match Arc::get_mut(&mut self.r#in) {
-            Some(r#in) => r#in.close(),
-            None => Err(shared_close_error("norms producer")),
-        }
+    /// `in.close()`.
+    fn close(&self) -> Result<()> {
+        self.r#in.close()
     }
 }

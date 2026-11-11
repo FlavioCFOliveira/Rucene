@@ -50,7 +50,7 @@ impl StoredFieldsConsumerOverrides for CountingOverrides {
 
 /// Port of `TestStoredFieldsConsumer.testFinish`.
 fn test_finish() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = IndexWriterConfig::new();
     let mut si = SegmentInfo::new(

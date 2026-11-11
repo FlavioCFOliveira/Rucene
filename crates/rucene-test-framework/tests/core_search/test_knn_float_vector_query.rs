@@ -131,7 +131,7 @@ impl KnnVectorCase for KnnFloatCase {
 }
 
 fn test_to_string() -> Result<()> {
-    let mut index_store =
+    let index_store =
         get_index_store::<KnnFloatCase>("field", &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
     let reader = directory_reader::open(index_store.as_directory())?;
     let result = (|| -> Result<()> {
@@ -162,7 +162,7 @@ fn test_to_string() -> Result<()> {
 }
 
 fn test_vector_encoding_mismatch() -> Result<()> {
-    let mut index_store =
+    let index_store =
         get_index_store::<KnnFloatCase>("field", &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
     let reader = directory_reader::open(index_store.as_directory())?;
     let result = (|| -> Result<()> {
@@ -198,7 +198,7 @@ fn test_get_target() -> Result<()> {
 }
 
 fn test_score_negative_dot_product() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = IndexWriter::new(d.as_directory(), IndexWriterConfig::new())?;
     let mut doc = Document::new();
     doc.add(KnnFloatCase::get_knn_vector_field_with(
@@ -247,7 +247,7 @@ fn l2normalize(mut v: Vec<f32>) -> Result<Vec<f32>> {
 }
 
 fn test_score_dot_product() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = IndexWriter::new(d.as_directory(), IndexWriterConfig::new())?;
     let written = (|| -> Result<()> {
         for j in 1..=5 {
@@ -324,7 +324,7 @@ fn test_score_dot_product() -> Result<()> {
 }
 
 fn test_doc_and_score_query_basics() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let reader;
     {
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;

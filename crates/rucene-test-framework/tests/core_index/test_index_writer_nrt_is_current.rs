@@ -92,7 +92,7 @@ fn report(failed: &Failed) -> bool {
 
 /// Port of `TestIndexWriterNRTIsCurrent.testIsCurrentWithThreads`.
 fn test_is_current_with_threads() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));

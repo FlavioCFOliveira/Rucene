@@ -117,7 +117,7 @@ fn verify_sort(
     start: usize,
     end: usize,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut radix_selector =
         BKDRadixSelector::new(config.clone(), 1000, dir.as_directory(), "test");
     let bytes_per_dim = config.bytes_per_dim as usize;

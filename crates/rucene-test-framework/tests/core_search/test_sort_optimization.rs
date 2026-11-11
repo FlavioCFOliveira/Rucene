@@ -308,7 +308,7 @@ fn open_and_close(writer: &Arc<IndexWriter>) -> Result<Arc<dyn DirectoryReader>>
 }
 
 /// `reader.close(); dir.close();`.
-fn close_all(reader: &Arc<dyn DirectoryReader>, mut dir: TestDirectory) -> Result<()> {
+fn close_all(reader: &Arc<dyn DirectoryReader>, dir: TestDirectory) -> Result<()> {
     reader.close()?;
     dir.close()
 }
@@ -979,7 +979,7 @@ fn test_doc_sort_optimization_with_after() -> Result<()> {
 
 /// Port of `TestSortOptimization.testDocSortOptimizationWithAfterCollectsAllDocs`.
 fn test_doc_sort_optimization_with_after_collects_all_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
     let num_docs = LuceneTestCase::at_least(if *TEST_NIGHTLY { 50_000 } else { 5_000 });
     let multiple_segments = random().next_boolean();

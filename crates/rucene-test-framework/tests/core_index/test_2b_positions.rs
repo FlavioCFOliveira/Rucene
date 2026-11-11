@@ -35,7 +35,7 @@ pub fn class_def() -> Arc<Class> {
 }
 
 fn test_() -> Result<()> {
-    let mut dir =
+    let dir =
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BPositions"));
     never_throttle(&dir);
 

@@ -206,7 +206,7 @@ fn into_bit_set_tear_down(f: &mut IntoBitSet) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())
@@ -456,7 +456,7 @@ fn test_into_bit_set_matches_linear_scan(f: &mut IntoBitSet) -> Result<()> {
 /// `try (Directory hugeDir = newDirectory()) { buildIndex(hugeDir, 4096 * 100); try
 /// (DirectoryReader r = DirectoryReader.open(hugeDir)) { body(r); } }`.
 fn with_huge_index(body: fn(&Arc<dyn DirectoryReader>) -> Result<()>) -> Result<()> {
-    let mut huge_dir = LuceneTestCase::new_directory();
+    let huge_dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         build_index(&huge_dir.as_directory(), 4096 * 100)?;
         let r = directory_reader::open(huge_dir.as_directory())?;
@@ -612,7 +612,7 @@ fn test_into_bit_set_sparse_field_huge(_f: &mut IntoBitSet) -> Result<()> {
 
 /// `private void doTestIntoBitSetSparseField(int numDocs)`.
 fn do_test_into_bit_set_sparse_field(num_docs: i32) -> Result<()> {
-    let mut sparse_dir = LuceneTestCase::new_directory();
+    let sparse_dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let iwc = lucene104_config()?;
         let w = IndexWriter::new(sparse_dir.as_directory(), iwc)?;
@@ -942,7 +942,7 @@ fn test_range_into_bit_set_matches_per_doc_evaluation(_f: &mut IntoBitSet) -> Re
         let range_min = rng.next_long_range(0, max_value / 2);
         let range_max = range_min + rng.next_long_range(1, max_value / 2);
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let result = (|| -> Result<()> {
             {
                 let iwc = lucene104_config()?;
@@ -1039,7 +1039,7 @@ fn test_sorted_numeric_range_into_bit_set_sparse_variable_cardinality(
 /// `private void doTestSortedNumericRangeIntoBitSet(boolean dense, boolean fixedCardinality)`.
 fn do_test_sorted_numeric_range_into_bit_set(dense: bool, fixed_cardinality: bool) -> Result<()> {
     let num_docs = 4096 * 2;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         {
             let iwc = lucene104_config()?;

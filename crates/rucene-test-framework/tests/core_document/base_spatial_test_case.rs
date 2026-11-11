@@ -1590,7 +1590,7 @@ fn verify<C: SpatialCase>(case: &C, shapes: &[Option<Shape>]) -> Result<()> {
     if mbd != -1 && mbd < (shapes.len() / 100) as i32 {
         iwc.set_max_buffered_docs((shapes.len() / 100) as i32)?;
     }
-    let mut dir = if shapes.len() > 1000 {
+    let dir = if shapes.len() > 1000 {
         let simple_name = LuceneTestCase::get_test_class().simple_name().to_string();
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(&simple_name))
     } else {
@@ -2082,7 +2082,7 @@ fn index_for_equivalence<C: SpatialCase>(
 /// `BaseLatLonShapeTestCase.testBoundingBoxQueriesEquivalence()`.
 pub fn lat_lon_shape_test_bounding_box_queries_equivalence<C: SpatialCase>(case: &C) -> Result<()> {
     use rucene::document::spatial_query::LatLonShapeQuery;
-    let (searcher, reader, w, mut dir) = index_for_equivalence(case)?;
+    let (searcher, reader, w, dir) = index_for_equivalence(case)?;
 
     let b = geo_test_util::next_box();
     let rect = || vec![LatLonGeometryValue::Rectangle(b.clone())];
@@ -2143,7 +2143,7 @@ pub fn lat_lon_shape_test_bounding_box_queries_equivalence<C: SpatialCase>(case:
 /// `BaseLatLonPointTestCase.testBoundingBoxQueriesEquivalence()`.
 pub fn lat_lon_point_test_bounding_box_queries_equivalence<C: SpatialCase>(case: &C) -> Result<()> {
     use rucene::document::point_queries::LatLonPointQuery;
-    let (searcher, reader, w, mut dir) = index_for_equivalence(case)?;
+    let (searcher, reader, w, dir) = index_for_equivalence(case)?;
 
     let b = geo_test_util::next_box();
     let q1 = LatLonPoint::new_box_query(

@@ -97,7 +97,7 @@ fn test_random() -> Result<()> {
             if verbose() {
                 println!("TEST: save/load final bytes");
             }
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             let d = dir.as_directory();
             let mut out = d.create_output("bytes", &*DEFAULT_IO_CONTEXT)?;
             bytes.write_to(out.as_mut())?;

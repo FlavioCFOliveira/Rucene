@@ -171,7 +171,7 @@ fn log_doc() -> Arc<dyn MergePolicy> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testForceMergeFullyDeleted`.
 fn test_force_merge_fully_deleted() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let let_it_go = Arc::new(AtomicBool::new(false));
     let policy: Arc<dyn MergePolicy> = {
         let let_it_go = Arc::clone(&let_it_go);
@@ -254,7 +254,7 @@ fn test_force_merge_fully_deleted() -> Result<()> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testKeepFullyDeletedSegments`.
 fn test_keep_fully_deleted_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     index_writer_config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
@@ -321,7 +321,7 @@ fn dated_doc(version: &str, creation_date: i64) -> Result<Document> {
 /// Port of `TestSoftDeletesRetentionMergePolicy.testFieldBasedRetention`.
 fn test_field_based_retention() -> Result<()> {
     const HOUR: i64 = 60 * 60 * 1000;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     let now = now_millis();
     let time24_hours_ago = now - 24 * HOUR;
@@ -408,7 +408,7 @@ fn test_field_based_retention() -> Result<()> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testKeepAllDocsAcrossMerges`.
 fn test_keep_all_docs_across_merges() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     index_writer_config.set_merge_policy(Some(Arc::new(SoftDeletesRetentionMergePolicy::new(
         "soft_delete",
@@ -510,7 +510,7 @@ type SyncIds = Arc<Mutex<JavaHashSet<String>>>;
 /// rentention.
 fn test_soft_delete_with_retention() -> Result<()> {
     let seq_ids = Arc::new(AtomicI32::new(0));
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     {
         let seq_ids = Arc::clone(&seq_ids);
@@ -674,7 +674,7 @@ fn test_soft_delete_with_retention() -> Result<()> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testForceMergeDeletes`.
 fn test_force_merge_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config();
     config.set_soft_deletes_field(Some("soft_delete".to_string()));
     config.set_merge_policy(Some(LuceneTestCase::new_merge_policy_include_mock(
@@ -718,7 +718,7 @@ fn test_force_merge_deletes() -> Result<()> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testDropFullySoftDeletedSegment`.
 fn test_drop_fully_soft_deleted_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let soft_delete = if random().next_boolean() {
         None
     } else {
@@ -838,7 +838,7 @@ fn set_warmer(
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testSoftDeleteWhileMergeSurvives`.
 fn test_soft_delete_while_merge_survives() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let soft_delete = "soft_delete";
     let config = LuceneTestCase::new_index_writer_config();
     config.set_soft_deletes_field(Some(soft_delete.to_string()));
@@ -909,7 +909,7 @@ fn test_soft_delete_while_merge_survives() -> Result<()> {
 ///
 /// Port of `TestSoftDeletesRetentionMergePolicy.testDeleteDocWhileMergeThatIsSoftDeleted`.
 fn test_delete_doc_while_merge_that_is_soft_deleted() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let soft_delete = "soft_delete";
     let config = LuceneTestCase::new_index_writer_config();
     config.set_soft_deletes_field(Some(soft_delete.to_string()));
@@ -985,7 +985,7 @@ fn check_counts(writer: &IndexWriter, max_doc: i32, num_docs: i32) -> Result<()>
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testUndeleteDocument`.
 fn test_undelete_document() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let soft_delete = "soft_delete";
     let config = LuceneTestCase::new_index_writer_config();
     config.set_soft_deletes_field(Some(soft_delete.to_string()));
@@ -1020,7 +1020,7 @@ fn test_undelete_document() -> Result<()> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testMergeSoftDeleteAndHardDelete`.
 fn test_merge_soft_delete_and_hard_delete() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let soft_delete = "soft_delete";
     let config = LuceneTestCase::new_index_writer_config();
     config.set_soft_deletes_field(Some(soft_delete.to_string()));
@@ -1070,7 +1070,7 @@ fn test_merge_soft_delete_and_hard_delete() -> Result<()> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testSoftDeleteWithTryUpdateDocValue`.
 fn test_soft_delete_with_try_update_doc_value() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config();
     config.set_soft_deletes_field(Some("soft_delete".to_string()));
     config.set_merge_policy(Some(Arc::new(SoftDeletesRetentionMergePolicy::new(
@@ -1109,7 +1109,7 @@ fn test_soft_delete_with_try_update_doc_value() -> Result<()> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testMixedSoftDeletesAndHardDeletes`.
 fn test_mixed_soft_deletes_and_hard_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let soft_deletes_field = "soft-deletes";
     let config = LuceneTestCase::new_index_writer_config();
     config.set_max_buffered_docs(2 + random().next_int_bound(50))?;
@@ -1182,7 +1182,7 @@ fn test_mixed_soft_deletes_and_hard_deletes() -> Result<()> {
 
 /// Port of `TestSoftDeletesRetentionMergePolicy.testRewriteRetentionQuery`.
 fn test_rewrite_retention_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config();
     config.set_soft_deletes_field(Some("soft_deletes".to_string()));
     config.set_merge_policy(Some(Arc::new(SoftDeletesRetentionMergePolicy::new(

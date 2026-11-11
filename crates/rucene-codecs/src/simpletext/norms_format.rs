@@ -108,7 +108,7 @@ impl NormsProducer for SimpleTextNormsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.imp.close()
     }
 }
@@ -204,7 +204,7 @@ impl DocValuesProducer for NormsAsDocValues<'_> {
         Err(unsupported("getMergeInstance"))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Err(unsupported("close"))
     }
 }

@@ -176,7 +176,7 @@ const SCORES: [f32; 13] = [
 
 /// Port of `TestScoreCachingWrappingScorer.testGetScores`.
 fn test_get_scores() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
     writer.commit()?;
     let ir = writer.get_reader()?;

@@ -37,6 +37,7 @@ use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::doc_values::DocValuesIterator;
 use crate::index::index_file_names::segment_file_name;
 use crate::search::{DocIdSetIterator, SortedSetSelector, SortedSetSelectorType, NO_MORE_DOCS};
+use crate::store::SharedIndexInput;
 use crate::store::{
     ByteArrayDataOutput, ByteBuffersDataOutput, ByteBuffersIndexOutput, DataOutput, IOContext,
     IndexInput, IndexOutput, RandomAccessInput,
@@ -1910,7 +1911,7 @@ enum FieldEntry {
 /// iterator asks for it, as `Lucene90DocValuesProducer` does. Nothing that
 /// comes off disk sizes an allocation at open time.
 pub struct Lucene90DocValuesProducer {
-    data: Box<dyn IndexInput>,
+    data: SharedIndexInput,
     max_doc: i32,
     entries: HashMap<i32, FieldEntry>,
     skippers: HashMap<i32, DocValuesSkipperEntry>,
@@ -1920,7 +1921,7 @@ pub struct Lucene90DocValuesProducer {
     ///
     /// Equivalent to `Lucene90DocValuesProducer.skipIndexData`
     /// (`Lucene90DocValuesProducer.java:70,155-183`).
-    skip_index_data: Option<Box<dyn IndexInput>>,
+    skip_index_data: Option<SharedIndexInput>,
     /// Set on the instance `get_merge_instance` hands out, exactly as Lucene's
     /// `merging` field is (`Lucene90DocValuesProducer.java:2295-2310`).
     merging: bool,
@@ -2051,11 +2052,11 @@ impl Lucene90DocValuesProducer {
             None
         };
         Ok(Self {
-            data,
+            data: SharedIndexInput::new(data),
             max_doc,
             entries,
             skippers,
-            skip_index_data,
+            skip_index_data: skip_index_data.map(SharedIndexInput::new),
             merging: false,
         })
     }
@@ -4526,7 +4527,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
         let values: Result<Box<dyn NumericDocValues>> = {
             match self.entries.get(&field.number) {
                 Some(FieldEntry::Numeric(entry)) => Ok(Box::new(LazyNumericDocValues::new(
-                    &*self.data,
+                    &**self.data.read(),
                     self.max_doc,
                     entry,
                     self.merging,
@@ -4553,7 +4554,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                     Ok(Box::new(EmptyBinaryDocValues::new()))
                 }
                 Some(FieldEntry::Binary(entry)) => Ok(Box::new(LazyBinaryDocValues::new(
-                    &*self.data,
+                    &**self.data.read(),
                     self.max_doc,
                     entry,
                 )?)),
@@ -4569,7 +4570,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
         let values: Result<Box<dyn SortedDocValues>> = {
             match self.entries.get(&field.number) {
                 Some(FieldEntry::Sorted(entry)) => Ok(Box::new(LazySortedDocValues::new(
-                    &*self.data,
+                    &**self.data.read(),
                     self.max_doc,
                     entry,
                     self.merging,
@@ -4598,7 +4599,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                             .map(|skipper| skipper.max_value_count),
                     );
                     Ok(Box::new(LazySortedNumericDocValues::new(
-                        &*self.data,
+                        &**self.data.read(),
                         self.max_doc,
                         entry,
                         dense_fixed_cardinality,
@@ -4618,7 +4619,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
         let values: Result<Box<dyn SortedSetDocValues>> = {
             match self.entries.get(&field.number) {
                 Some(FieldEntry::SortedSet(entry)) => Ok(Box::new(LazySortedSetDocValues::new(
-                    &*self.data,
+                    &**self.data.read(),
                     self.max_doc,
                     entry,
                     self.merging,
@@ -4652,11 +4653,17 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
                 field.name
             )));
         };
-        let skipper_source: &dyn IndexInput = match &self.skip_index_data {
-            Some(skip_index_data) => skip_index_data.as_ref(),
-            None => self.data.as_ref(),
+        let input = match &self.skip_index_data {
+            Some(skip_index_data) => {
+                skip_index_data
+                    .read()
+                    .slice("doc value skipper", entry.offset, entry.length)?
+            }
+            None => self
+                .data
+                .read()
+                .slice("doc value skipper", entry.offset, entry.length)?,
         };
-        let input = skipper_source.slice("doc value skipper", entry.offset, entry.length)?;
         Ok(Some(Box::new(Lucene90DocValuesSkipper::new(entry, input))))
     }
 
@@ -4673,12 +4680,14 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
 
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
         Ok(Box::new(Self {
-            data: self.data.clone_input()?,
+            data: SharedIndexInput::new(self.data.clone_input()?),
             max_doc: self.max_doc,
             entries: self.entries.clone(),
             skippers: self.skippers.clone(),
             skip_index_data: match &self.skip_index_data {
-                Some(skip_index_data) => Some(skip_index_data.clone_input()?),
+                Some(skip_index_data) => {
+                    Some(SharedIndexInput::new(skip_index_data.clone_input()?))
+                }
                 None => None,
             },
             merging: true,
@@ -4686,11 +4695,10 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     }
 
     /// Equivalent to `IOUtils.close(data, skipIndexData)`: both are closed,
-    /// and the first error is reported.
-    fn close(&mut self) -> Result<()> {
+    /// and the first error is reported, whoever else shares the producer.
+    fn close(&self) -> Result<()> {
         IOUtils::close(
-            [Some(&mut self.data), self.skip_index_data.as_mut()]
-                .map(|i| i.map(|i| move || i.close())),
+            [Some(&self.data), self.skip_index_data.as_ref()].map(|i| i.map(|i| move || i.close())),
         )
     }
 }
@@ -5581,7 +5589,7 @@ mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -6078,7 +6086,7 @@ impl DocValuesProducer for SingletonNumericProducer<'_> {
         corrupt("a singleton numeric producer has no merge instance".to_string())
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let _ = &self.field;
         Ok(())
     }
@@ -6150,7 +6158,7 @@ impl DocValuesProducer for OrdinalsAsSortedNumericProducer<'_> {
         corrupt("an ordinals producer has no merge instance".to_string())
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -6225,7 +6233,7 @@ impl DocValuesProducer for SortedOrdinalsProducer<'_> {
         corrupt("a sorted-ordinals producer has no merge instance".to_string())
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -6333,7 +6341,7 @@ impl DocValuesProducer for MinOrdinalOfSortedSetProducer<'_> {
         corrupt("a minimum-ordinal producer has no merge instance".to_string())
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

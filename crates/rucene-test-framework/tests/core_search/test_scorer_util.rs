@@ -67,7 +67,7 @@ fn test_likely_fixed_bits() -> Result<()> {
             == class_of(&ScorerUtil::likely_live_docs(Some(&bits2))),
     );
 
-    let mut dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
     let iwc = IndexWriterConfig::new();
     iwc.set_codec(TestUtil::get_default_codec())?;
     iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
@@ -107,11 +107,7 @@ fn test_likely_fixed_bits() -> Result<()> {
     let closed = w.close();
     drop(w);
     result.and(closed)?;
-    // `dir.close()`: the writer and reader that shared it are closed.
-    if let Some(dir) = Arc::get_mut(&mut dir) {
-        dir.close()?;
-    }
-    Ok(())
+    dir.close()
 }
 
 /// Port of `TestScorerUtil.testLikelyImpactsEnum`.
@@ -123,7 +119,7 @@ fn test_likely_impacts_enum() -> Result<()> {
             .is_some_and(|a| a.is::<FilterDocIdSetIterator>()),
     );
 
-    let mut dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
     let iwc = IndexWriterConfig::new();
     iwc.set_codec(TestUtil::get_default_codec())?;
     let w = IndexWriter::new(Arc::clone(&dir), iwc)?;
@@ -160,11 +156,7 @@ fn test_likely_impacts_enum() -> Result<()> {
     let closed = w.close();
     drop(w);
     result.and(closed)?;
-    // `dir.close()`: the writer and reader that shared it are closed.
-    if let Some(dir) = Arc::get_mut(&mut dir) {
-        dir.close()?;
-    }
-    Ok(())
+    dir.close()
 }
 
 /// `Math.ulp(float)`.

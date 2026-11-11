@@ -264,7 +264,7 @@ fn top_docs_collector_tear_down(f: &mut TopDocsCollectorTest) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())
@@ -447,7 +447,7 @@ fn leaves(reader: &Arc<dyn DirectoryReader>) -> Result<Vec<Arc<LeafReaderContext
 
 /// Port of `TestTopDocsCollector.testSetMinCompetitiveScore`.
 fn test_set_min_competitive_score(_f: &mut TopDocsCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_merge_writer(&dir)?;
     add_empty_docs(&w, 4)?;
     w.flush()?;
@@ -517,7 +517,7 @@ fn test_set_min_competitive_score(_f: &mut TopDocsCollectorTest) -> Result<()> {
 /// Port of `TestTopDocsCollector.testSharedCountCollectorManager`.
 fn test_shared_count_collector_manager(_f: &mut TopDocsCollectorTest) -> Result<()> {
     let q: Arc<dyn Query> = Arc::new(MatchAllDocsQuery::instance());
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_merge_writer(&dir)?;
     add_empty_docs(&w, 4)?;
     w.flush()?;
@@ -538,7 +538,7 @@ fn test_shared_count_collector_manager(_f: &mut TopDocsCollectorTest) -> Result<
 
 /// Port of `TestTopDocsCollector.testTotalHits`.
 fn test_total_hits(_f: &mut TopDocsCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_merge_writer(&dir)?;
     add_empty_docs(&w, 4)?;
     w.flush()?;
@@ -606,7 +606,7 @@ fn test_total_hits(_f: &mut TopDocsCollectorTest) -> Result<()> {
 
 /// Port of `TestTopDocsCollector.testRelationVsTopDocsCount`.
 fn test_relation_vs_top_docs_count(_f: &mut TopDocsCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let w = no_merge_writer(&dir)?;
         let result = (|| -> Result<()> {
@@ -660,7 +660,7 @@ fn test_relation_vs_top_docs_count(_f: &mut TopDocsCollectorTest) -> Result<()> 
 
 /// Port of `TestTopDocsCollector.testConcurrentMinScore`.
 fn test_concurrent_min_score(_f: &mut TopDocsCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = no_merge_writer(&dir)?;
     add_empty_docs(&w, 5)?;
     w.flush()?;
@@ -800,7 +800,7 @@ fn test_concurrent_min_score(_f: &mut TopDocsCollectorTest) -> Result<()> {
 
 /// Port of `TestTopDocsCollector.testRandomMinCompetitiveScore`.
 fn test_random_min_competitive_score(_f: &mut TopDocsCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
@@ -854,7 +854,7 @@ fn test_random_min_competitive_score(_f: &mut TopDocsCollectorTest) -> Result<()
 
 /// Port of `TestTopDocsCollector.testRealisticConcurrentMinimumScore`.
 fn test_realistic_concurrent_minimum_score(_f: &mut TopDocsCollectorTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     {
         let docs = LineFileDocs::with_default_file(&*random())?;

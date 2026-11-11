@@ -443,7 +443,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
     /// `testBoxBasics()`: add a single point and search for it in a box.
     fn test_box_basics(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
         // add a doc with a point
@@ -486,7 +486,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
     /// `testDistanceBasics()`: test we can search for a point.
     fn test_distance_basics(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
         // add a doc with a location
@@ -568,7 +568,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
     /// `testPolygonBasics()`: test we can search for a polygon.
     fn test_polygon_basics(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
         // add a doc with a point
@@ -602,7 +602,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
     /// `testPolygonHole()`: test we can search for a polygon with a hole
     /// (but still includes the doc).
     fn test_polygon_hole(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
         // add a doc with a point
@@ -639,7 +639,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
     /// `testPolygonHoleExcludes()`: test we can search for a polygon with a
     /// hole (that excludes the doc).
     fn test_polygon_hole_excludes(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
         // add a doc with a point
@@ -675,7 +675,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
     /// `testMultiPolygonBasics()`: test we can search for a multi-polygon.
     fn test_multi_polygon_basics(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
         // add a doc with a point
@@ -876,7 +876,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         // Every doc has 2 points:
         let mut xs = vec![0f32; 2 * num_points];
         let mut ys = vec![0f32; 2 * num_points];
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iwc = LuceneTestCase::new_index_writer_config();
 
         // We rely on docID order:
@@ -1462,7 +1462,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
     /// `testRectBoundariesAreInclusive()`.
     fn test_rect_boundaries_are_inclusive(&self) -> Result<()> {
         let rect = shape_test_util::next_box(&*random());
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
         iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
@@ -1584,7 +1584,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
 
     /// `doRandomDistanceTest(int numDocs, int numQueries)` (`private`).
     fn do_random_distance_test(&self, num_docs: i32, num_queries: i32) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iwc = LuceneTestCase::new_index_writer_config();
         // Else seeds may not reproduce:
         iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
@@ -1746,7 +1746,7 @@ pub trait BaseXYPointTestCase: Send + Sync + 'static {
         // this is a simple systematic test, indexing these points
         let pts = &SMALL_SET_POINTS;
 
-        let mut directory = LuceneTestCase::new_directory();
+        let directory = LuceneTestCase::new_directory();
 
         // TODO: must these simple tests really rely on docid order?
         let iwc: IndexWriterConfig = LuceneTestCase::new_index_writer_config_analyzer(Some(

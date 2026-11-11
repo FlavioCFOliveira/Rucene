@@ -142,7 +142,7 @@ fn random_title_query() -> Arc<dyn Query> {
 }
 
 fn test_basic(f: &mut DoubleValuesSourceRescorerTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     publish_docs(
         random().next_int_range(50, 100),
         "title",
@@ -189,7 +189,7 @@ fn test_basic(f: &mut DoubleValuesSourceRescorerTest) -> Result<()> {
 }
 
 fn test_subset_and_idempotency(f: &mut DoubleValuesSourceRescorerTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     publish_docs(
         random().next_int_range(60, 200),
         "title",
@@ -226,7 +226,7 @@ fn test_subset_and_idempotency(f: &mut DoubleValuesSourceRescorerTest) -> Result
 }
 
 fn test_missing_values(f: &mut DoubleValuesSourceRescorerTest) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     publish_docs(
         random().next_int_range(60, 200),
         "title",

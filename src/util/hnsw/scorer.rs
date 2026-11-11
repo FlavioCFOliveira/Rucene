@@ -191,7 +191,10 @@ pub trait CloseableRandomVectorScorerSupplier: RandomVectorScorerSupplier {
     /// so that a supplier holding no resource — which Java expresses by
     /// wrapping itself with `create(supplier, count, () -> {})` — does not have
     /// to restate an empty body.
-    fn close(&mut self) -> Result<()> {
+    ///
+    /// Takes `&self`: the supplier is shared with the graph merger that scores
+    /// through it, and Java closes it whoever else still holds it.
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -215,7 +218,7 @@ pub fn create(
     DelegatingCloseableSupplier {
         supplier,
         total_vector_count,
-        on_close,
+        on_close: std::sync::Mutex::new(on_close),
     }
 }
 
@@ -226,7 +229,9 @@ pub fn create(
 pub struct DelegatingCloseableSupplier {
     supplier: Box<dyn RandomVectorScorerSupplier>,
     total_vector_count: i32,
-    on_close: Box<dyn FnMut() -> Result<()> + Send + Sync>,
+    /// Behind a mutex so that [`close`](CloseableRandomVectorScorerSupplier::close)
+    /// runs it through `&self`.
+    on_close: std::sync::Mutex<Box<dyn FnMut() -> Result<()> + Send + Sync>>,
 }
 
 impl Debug for DelegatingCloseableSupplier {
@@ -252,7 +257,10 @@ impl CloseableRandomVectorScorerSupplier for DelegatingCloseableSupplier {
         self.total_vector_count
     }
 
-    fn close(&mut self) -> Result<()> {
-        (self.on_close)()
+    fn close(&self) -> Result<()> {
+        (self
+            .on_close
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))()
     }
 }

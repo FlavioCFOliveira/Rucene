@@ -258,7 +258,7 @@ fn writer_sdp(writer: &IndexWriter) -> Arc<dyn IndexDeletionPolicy> {
 
 /// Port of `TestSnapshotDeletionPolicy.testSnapshotDeletionPolicy`.
 pub fn test_snapshot_deletion_policy() -> Result<()> {
-    let mut fs_dir = LuceneTestCase::new_directory();
+    let fs_dir = LuceneTestCase::new_directory();
     run_test(&*random(), &fs_dir.as_directory())?;
     fs_dir.close()
 }
@@ -425,7 +425,7 @@ pub fn test_basic_snapshots() -> Result<()> {
     let num_snapshots = 3;
 
     // Create 3 snapshots: snapshot0, snapshot1, snapshot2
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         f.get_config(&*random(), Some(f.get_deletion_policy()? as _))?,
@@ -461,7 +461,7 @@ pub fn test_basic_snapshots() -> Result<()> {
 /// Port of `TestSnapshotDeletionPolicy.testMultiThreadedSnapshotting`.
 pub fn test_multi_threaded_snapshotting() -> Result<()> {
     let f = SnapshotFixture::default();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let writer = IndexWriter::new(
         dir.as_directory(),
@@ -535,7 +535,7 @@ pub fn test_multi_threaded_snapshotting() -> Result<()> {
 pub fn test_rollback_to_old_snapshot() -> Result<()> {
     let mut f = SnapshotFixture::default();
     let num_snapshots = 2;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let sdp = f.get_deletion_policy()?;
     let writer = IndexWriter::new(
@@ -568,7 +568,7 @@ pub fn test_rollback_to_old_snapshot() -> Result<()> {
 /// Port of `TestSnapshotDeletionPolicy.testReleaseSnapshot`.
 pub fn test_release_snapshot() -> Result<()> {
     let mut f = SnapshotFixture::default();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         f.get_config(&*random(), Some(f.get_deletion_policy()? as _))?,
@@ -597,7 +597,7 @@ pub fn test_release_snapshot() -> Result<()> {
 /// Port of `TestSnapshotDeletionPolicy.testSnapshotLastCommitTwice`.
 pub fn test_snapshot_last_commit_twice() -> Result<()> {
     let f = SnapshotFixture::default();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let writer = IndexWriter::new(
         dir.as_directory(),
@@ -630,7 +630,7 @@ pub fn test_missing_commits() -> Result<()> {
     let f = SnapshotFixture::default();
     // Tests the behavior of SDP when commits that are given at ctor are missing
     // on onInit().
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         f.get_config(&*random(), Some(f.get_deletion_policy()? as _))?,

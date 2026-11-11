@@ -422,7 +422,7 @@ impl Directory for SyncRecordingDirectory {
     fn obtain_lock(&self, name: &str) -> rucene::Result<Box<dyn rucene::store::Lock>> {
         self.inner.obtain_lock(name)
     }
-    fn close(&mut self) -> rucene::Result<()> {
+    fn close(&self) -> rucene::Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> rucene::Result<HashSet<String>> {

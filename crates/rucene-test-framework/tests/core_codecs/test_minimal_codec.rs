@@ -65,7 +65,7 @@ fn install_test_codecs() {
 /// Port of `TestMinimalCodec.runMinimalCodecTest`.
 fn run_minimal_codec_test(use_compound_file: bool) -> Result<()> {
     install_test_codecs();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let writer_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*random()),

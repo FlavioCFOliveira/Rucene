@@ -318,7 +318,7 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testOneField()`: test field infos read/write with a single field.
     fn test_one_field(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = self.get_codec();
             let segment_info = new_segment_info(dir.as_directory(), "_123");
@@ -362,7 +362,7 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testImmutableAttributes()`: test field infos attributes coming back
     /// are not mutable (see the module docs for the divergence).
     fn test_immutable_attributes(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = self.get_codec();
             let segment_info = new_segment_info(dir.as_directory(), "_123");
@@ -406,7 +406,7 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception immediately on open. make sure we get our exception back, no
     /// file handle leaks, etc.
     fn test_exception_on_create_output(&self) -> Result<()> {
-        let (mut dir, fail, codec, segment_info, infos) = self.exception_fixture("create_output");
+        let (dir, fail, codec, segment_info, infos) = self.exception_fixture("create_output");
         {
             fail.set_do_fail();
             expect_fake_io_exception(|| {
@@ -428,7 +428,7 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception on close. make sure we get our exception back, no file handle
     /// leaks, etc.
     fn test_exception_on_close_output(&self) -> Result<()> {
-        let (mut dir, fail, codec, segment_info, infos) = self.exception_fixture("close");
+        let (dir, fail, codec, segment_info, infos) = self.exception_fixture("close");
         {
             fail.set_do_fail();
             expect_fake_io_exception(|| {
@@ -450,7 +450,7 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception immediately on open. make sure we get our exception back, no
     /// file handle leaks, etc.
     fn test_exception_on_open_input(&self) -> Result<()> {
-        let (mut dir, fail, codec, segment_info, infos) = self.exception_fixture("open_input");
+        let (dir, fail, codec, segment_info, infos) = self.exception_fixture("open_input");
         {
             codec.field_infos_format().write(
                 &dir,
@@ -476,7 +476,7 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// exception on close. make sure we get our exception back, no file handle
     /// leaks, etc.
     fn test_exception_on_close_input(&self) -> Result<()> {
-        let (mut dir, fail, codec, segment_info, infos) = self.exception_fixture("close");
+        let (dir, fail, codec, segment_info, infos) = self.exception_fixture("close");
         {
             codec.field_infos_format().write(
                 &dir,
@@ -503,7 +503,7 @@ pub trait BaseFieldInfoFormatTestCase: BaseIndexFileFormatTestCase {
     /// `testRandom()`: test field infos read/write with random fields, with
     /// different values.
     fn test_random(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let codec = self.get_codec();
             let segment_info = new_segment_info(dir.as_directory(), "_123");

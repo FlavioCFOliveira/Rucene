@@ -94,7 +94,7 @@ impl LeafReader for ThrowOnCloseReader {
 
 /// Port of `TestIndexReaderClose.testCloseUnderException`.
 fn test_close_under_exception() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_with(
@@ -159,7 +159,7 @@ fn test_close_under_exception() -> Result<()> {
 
 /// Port of `TestIndexReaderClose.testCoreListenerOnWrapperWithDifferentCacheKey`.
 fn test_core_listener_on_wrapper_with_different_cache_key() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs = TestUtil::next_int(&*random(), 1, 5);
     for _ in 0..num_docs {
@@ -249,7 +249,7 @@ impl ClosedListener for NoOpListener {
 
 /// Port of `TestIndexReaderClose.testRegisterListenerOnClosedReader`.
 fn test_register_listener_on_closed_reader() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

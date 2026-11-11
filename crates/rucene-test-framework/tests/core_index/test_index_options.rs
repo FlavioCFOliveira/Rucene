@@ -157,7 +157,7 @@ fn do_test_change_index_options_via_add_document(
     to: IndexOptions,
     freeze: bool,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let ft1 = stored_with(from)?;
     if freeze {
@@ -205,12 +205,12 @@ fn do_test_change_index_options_add_indexes_codec_reader(
     from: IndexOptions,
     to: IndexOptions,
 ) -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let w1 = writer(&dir1)?;
     let ft1 = stored_with(from)?;
     w1.add_document(&singleton("foo", "bar", &ft1)?)?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = writer(&dir2)?;
     let ft2 = stored_with(to)?;
     w2.add_document(&singleton("foo", "bar", &ft2)?)?;
@@ -277,12 +277,12 @@ fn do_test_change_index_options_add_indexes_directory(
     from: IndexOptions,
     to: IndexOptions,
 ) -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let w1 = writer(&dir1)?;
     let ft1 = stored_with(from)?;
     w1.add_document(&singleton("foo", "bar", &ft1)?)?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = writer(&dir2)?;
     let ft2 = stored_with(to)?;
     w2.add_document(&singleton("foo", "bar", &ft2)?)?;
@@ -324,7 +324,7 @@ fn test_change_index_options_via_add_document_frozen_field_type() -> Result<()> 
 
 /// Port of `TestIndexOptions.testSameFrozenFieldTypeAcrossManyDocuments`.
 fn test_same_frozen_field_type_across_many_documents() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
     ft.freeze();
@@ -345,7 +345,7 @@ fn test_same_frozen_field_type_across_many_documents() -> Result<()> {
 
 /// Port of `TestIndexOptions.testMultiValuedFieldSameFrozenFieldType`.
 fn test_multi_valued_field_same_frozen_field_type() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let ft = stored();
     ft.freeze();
@@ -366,7 +366,7 @@ fn test_multi_valued_field_same_frozen_field_type() -> Result<()> {
 
 /// Port of `TestIndexOptions.testMultiValuedFieldMixedFrozenAndUnfrozenCompatibleTypes`.
 fn test_multi_valued_field_mixed_frozen_and_unfrozen_compatible_types() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let frozen_ft = stored();
     frozen_ft.freeze();
@@ -392,7 +392,7 @@ fn test_multi_valued_field_mixed_frozen_and_unfrozen_compatible_types() -> Resul
 
 /// Port of `TestIndexOptions.testMultiValuedFieldMixedFrozenIncompatibleTypes`.
 fn test_multi_valued_field_mixed_frozen_incompatible_types() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let frozen_ft = stored_with(IndexOptions::DOCS)?;
     frozen_ft.freeze();
@@ -422,7 +422,7 @@ fn iae_message(w: &IndexWriter, doc: &Document) -> Option<String> {
 
 /// Port of `TestIndexOptions.testFrozenFieldTypeTransitionAcrossDocuments`.
 fn test_frozen_field_type_transition_across_documents() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     // First doc uses one frozen type
     let ft1 = stored_with(IndexOptions::DOCS_AND_FREQS)?;
@@ -446,7 +446,7 @@ fn test_frozen_field_type_transition_across_documents() -> Result<()> {
 
 /// Port of `TestIndexOptions.testFrozenFieldTypeCacheRestabilizes`.
 fn test_frozen_field_type_cache_restabilizes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     // Two distinct frozen FieldType instances with identical settings
     let ft_a = stored();
@@ -477,7 +477,7 @@ fn test_frozen_field_type_cache_restabilizes() -> Result<()> {
 
 /// Port of `TestIndexOptions.testFrozenFieldTypeAcrossSegments`.
 fn test_frozen_field_type_across_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let ft = stored_with(IndexOptions::DOCS_AND_FREQS)?;
     ft.freeze();
@@ -507,7 +507,7 @@ fn test_frozen_field_type_across_segments() -> Result<()> {
 
 /// Port of `TestIndexOptions.testMultiValueForcesDeoptimization`.
 fn test_multi_value_forces_deoptimization() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let ft_a = stored();
     ft_a.freeze();
@@ -556,7 +556,7 @@ fn test_multi_value_forces_deoptimization() -> Result<()> {
 
 /// Port of `TestIndexOptions.testFrozenFieldTypeInDocumentBlock`.
 fn test_frozen_field_type_in_document_block() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_parent_field(Some("__parent".to_string()));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;

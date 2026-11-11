@@ -1176,7 +1176,7 @@ fn postings_enum_test(
     flags_only: bool,
     positions: &dyn Fn(i32) -> [PositionIs; 2],
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let iw = IndexWriter::new(dir.as_directory(), iwc())?;
         let mut doc = Document::new();
@@ -1371,7 +1371,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             let num_docs = LuceneTestCase::at_least(200);
             let doc_with_vectors = random().next_int_bound(num_docs);
             let empty_doc = Document::new();
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let writer =
                     RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
@@ -1420,7 +1420,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             if options == Options::None {
                 continue;
             }
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let writer =
                     RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
@@ -1453,7 +1453,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
         };
         let doc_factory = RandomDocumentFactory::new(field_count, 10);
         for options in self.valid_options() {
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let writer =
                     RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
@@ -1481,7 +1481,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 if options1 == options2 {
                     continue;
                 }
-                let mut dir = LuceneTestCase::new_directory();
+                let dir = LuceneTestCase::new_directory();
                 {
                     let writer =
                         RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
@@ -1516,7 +1516,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             let options = self.random_options();
             docs.push(doc_factory.new_document(self, field_count, max_term_count, options));
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
             for (i, doc) in docs.iter().enumerate() {
@@ -1559,7 +1559,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 docs.insert(i.to_string(), doc);
                 inserted.push(i.to_string());
             }
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             {
                 let iwc = LuceneTestCase::new_index_writer_config();
                 if let Some(index_sort) = &index_sort {
@@ -1604,7 +1604,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                         if let Some(index_sort) = &index_sort {
                             other_iwc.set_index_sort(index_sort.clone())?;
                         }
-                        let mut other_dir = LuceneTestCase::new_directory();
+                        let other_dir = LuceneTestCase::new_directory();
                         let other_iw = RandomIndexWriter::new_with_config(
                             &*random(),
                             other_dir.as_directory(),
@@ -1699,7 +1699,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                 ));
             }
             let docs = Arc::new(docs);
-            let mut dir = LuceneTestCase::new_directory();
+            let dir = LuceneTestCase::new_directory();
             let thrown = {
                 let writer =
                     RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;

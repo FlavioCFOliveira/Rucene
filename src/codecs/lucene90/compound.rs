@@ -7,6 +7,7 @@
 
 use crate::util::{IOUtils, PriorityQueue, PriorityQueueComparator};
 use std::collections::HashSet;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::codecs::codec_util;
 use crate::codecs::compound::CompoundFormat;
@@ -211,7 +212,10 @@ fn write_compound_file(
 pub struct Lucene90CompoundReader {
     segment_name: String,
     entries: CompoundEntries,
-    handle: Box<dyn IndexInput>,
+    ///
+    /// Behind a mutex because `close()` closes it through the shared
+    /// reader, as Java's `IOUtils.close(handle)` does.
+    handle: Mutex<Box<dyn IndexInput>>,
     /// How the directory this reader was opened from renders itself.
     ///
     /// Java keeps the `Directory` in a field and concatenates it in
@@ -225,12 +229,17 @@ impl std::fmt::Debug for Lucene90CompoundReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Lucene90CompoundReader")
             .field("segment_name", &self.segment_name)
-            .field("handle", &self.handle.resource_description())
+            .field("handle", &self.handle().resource_description())
             .finish_non_exhaustive()
     }
 }
 
 impl Lucene90CompoundReader {
+    /// The `.cfs` handle every sub-file is sliced from.
+    fn handle(&self) -> MutexGuard<'_, Box<dyn IndexInput>> {
+        self.handle.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Opens the compound reader for the given segment.
     ///
     /// Equivalent to `Lucene90CompoundReader(Directory, SegmentInfo)`
@@ -296,7 +305,7 @@ impl Lucene90CompoundReader {
         Ok(Self {
             segment_name,
             entries,
-            handle,
+            handle: Mutex::new(handle),
             directory_description,
         })
     }
@@ -387,7 +396,7 @@ impl CompoundDirectory for Lucene90CompoundReader {
     /// `CodecUtil.checksumEntireFile(handle)`, which reads a clone of the
     /// handle from the start.
     fn check_integrity(&self) -> Result<()> {
-        let mut handle = self.handle.clone_input()?;
+        let mut handle = self.handle().clone_input()?;
         codec_util::checksum_entire_file(handle.as_mut())?;
         Ok(())
     }
@@ -473,7 +482,7 @@ impl Directory for Lucene90CompoundReader {
                 ),
             ))));
         };
-        self.handle
+        self.handle()
             .slice_with_context(name, entry.offset, entry.length, context)
     }
 
@@ -484,8 +493,8 @@ impl Directory for Lucene90CompoundReader {
     }
 
     /// Equivalent to `Lucene90CompoundReader.close()`: `IOUtils.close(handle)`.
-    fn close(&mut self) -> Result<()> {
-        IOUtils::close([Some(|| self.handle.close())])
+    fn close(&self) -> Result<()> {
+        IOUtils::close([Some(|| self.handle().close())])
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {

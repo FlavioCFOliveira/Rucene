@@ -5308,7 +5308,7 @@ impl TemporalMergePolicy {
             // `try (PointsReader pointsReader = ...)` (`TemporalMergePolicy.java:695-731`).
             let read_state =
                 crate::codecs::state::SegmentReadState::new(reader_dir, si, &field_infos, context);
-            let mut points_reader = codec.points_format().fields_reader(&read_state)?;
+            let points_reader = codec.points_format().fields_reader(&read_state)?;
             let range = self.date_range_from_points(points_reader.as_ref());
             let closed = points_reader.close();
             let range = range?;
@@ -5318,7 +5318,7 @@ impl TemporalMergePolicy {
         // Close compound directory if we opened it (never close si.dir); as in
         // Java's `finally`, a failure to close replaces the outcome
         // (`TemporalMergePolicy.java:732-736`).
-        if let Some(mut compound_dir) = compound_dir.take() {
+        if let Some(compound_dir) = compound_dir.take() {
             compound_dir.close()?;
         }
         range
@@ -5926,7 +5926,7 @@ impl SoftDeletesRetentionMergePolicy {
         query: Arc<dyn crate::search::Query>,
         reader: Arc<R>,
     ) -> Result<Option<Box<dyn crate::search::Scorer>>> {
-        let index_reader: Arc<dyn crate::index::IndexReader> = reader as _;
+        let index_reader: Arc<dyn crate::index::IndexReader> = Arc::clone(&reader) as _;
         let mut searcher = crate::search::IndexSearcher::new(Arc::clone(&index_reader))?;
         searcher.set_query_cache(None);
         let rewritten = searcher.rewrite(query)?;
@@ -5935,14 +5935,15 @@ impl SoftDeletesRetentionMergePolicy {
             crate::search::score_mode::ScoreMode::COMPLETE_NO_SCORES,
             1.0,
         )?;
-        // `weight.scorer(reader.getContext())`: the searcher holds the
-        // reader's context, so this is the same top-level `LeafReaderContext`
-        // the weight was built for, as `TermQuery`'s `wasBuiltFor` assertion
-        // requires (`TermQuery.java:121, 207`).
-        let context = index_reader
-            .get_context()?
-            .as_leaf()
-            .expect("a leaf reader's top-level context is a LeafReaderContext");
+        // `reader.getContext()`: the leaf reader's own context, the very one
+        // `new IndexSearcher(reader)` holds as its only leaf.
+        let context = searcher
+            .get_leaf_contexts()
+            .first()
+            .cloned()
+            .ok_or_else(|| {
+                crate::error::LuceneError::illegal_state("the searcher has no leaf".to_string())
+            })?;
         weight.scorer(&context)
     }
 }

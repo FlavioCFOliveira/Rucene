@@ -33,15 +33,6 @@
 //!
 //! # Declared divergences
 //!
-//! * **Closing the delegate.** `close()` ends with `IOUtils.close(in)`. Rust
-//!   closes a directory through `&mut`, so the delegate is closed only when
-//!   the wrapper's state is no longer shared: every stream it opened closed
-//!   or dropped (a closed input or output releases its handle; a clone keeps
-//!   one until dropped) and no [`as_directory`](MockDirectoryWrapper::as_directory)
-//!   copy alive. Otherwise a successful `close()` returns the
-//!   `IllegalStateException` [`BaseDirectoryWrapper`](super::BaseDirectoryWrapper)
-//!   returns for a shared delegate, and a failed one (where Java uses
-//!   `IOUtils.closeWhileHandlingException`) leaves it open.
 //! * **`openFileHandles` order.** Java's map is an `IdentityHashMap`, whose
 //!   iteration order (the first open handle's trace, chosen as the cause of
 //!   the close-time `RuntimeException`) depends on identity hash codes and
@@ -338,6 +329,9 @@ pub(crate) struct Core {
     fail_on_open_input: AtomicBool,
     assert_no_unreferenced_files_on_close: AtomicBool,
     next_handle_id: AtomicU64,
+    /// The `Arc` [`MockDirectoryWrapper::as_directory`] last handed out, so
+    /// that every copy alive is the same object, as Java's `this` is.
+    as_directory: Mutex<std::sync::Weak<MockDirectoryWrapper>>,
     /// An override of `openInput` that a Java subclass declares
     /// (`TestMultiLevelSkipList.CountingDirectory`); see
     /// [`MockDirectoryWrapper::set_open_input_override`].
@@ -425,6 +419,7 @@ impl MockDirectoryWrapper {
                 fail_on_open_input: AtomicBool::new(true),
                 assert_no_unreferenced_files_on_close: AtomicBool::new(false),
                 next_handle_id: AtomicU64::new(0),
+                as_directory: Mutex::new(std::sync::Weak::new()),
             }),
         }
     }
@@ -442,10 +437,17 @@ impl MockDirectoryWrapper {
     /// `DirectoryReader.open` and `IndexWriter`, and where a test opens a
     /// writer or a reader over it.
     ///
-    /// It has no counterpart in Lucene. A copy alive when the wrapper is
-    /// closed keeps the delegate from being closed (see the module docs).
+    /// It has no counterpart in Lucene. While a copy is alive every call
+    /// returns that same `Arc`, so that the directory compares by identity
+    /// (`Arc::ptr_eq`) as Java's `==` compares `this`.
     pub fn as_directory(&self) -> Arc<dyn Directory> {
-        Arc::new(self.handle())
+        let mut cached = lock(&self.core.as_directory);
+        if let Some(directory) = cached.upgrade() {
+            return directory;
+        }
+        let directory = Arc::new(self.handle());
+        *cached = Arc::downgrade(&directory);
+        directory
     }
 
     pub(crate) fn next_handle_id(&self) -> u64 {
@@ -1243,17 +1245,9 @@ impl MockDirectoryWrapper {
         Ok(())
     }
 
-    /// The `IOUtils.close(in)` that ends `close()`: closes the delegate when
-    /// the wrapper's state is no longer shared (see the module docs).
-    fn close_delegate(&mut self) -> Result<()> {
-        match Arc::get_mut(&mut self.core).and_then(|core| Arc::get_mut(&mut core.delegate)) {
-            Some(delegate) => delegate.close(),
-            None => Err(LuceneError::illegal_state(format!(
-                "MockDirectoryWrapper: the delegate is still shared and cannot be closed B2DEBUG core={} delegate={}",
-                Arc::strong_count(&self.core),
-                Arc::strong_count(&self.core.delegate)
-            ))),
-        }
+    /// The `in.close()` / `IOUtils.close(in)` that ends `close()`.
+    fn close_delegate(&self) -> Result<()> {
+        self.core.delegate.close()
     }
 
     /// The body of `close()` between `isOpen = false` and the closing of the
@@ -1736,21 +1730,17 @@ impl Directory for MockDirectoryWrapper {
     /// and runs `CheckIndex` (and the unreferenced-files check when enabled);
     /// finally closes the delegate. A second close closes the delegate
     /// again.
-    fn close(&mut self) -> Result<()> {
-        let first = {
-            let _monitor = self.core.monitor.enter();
-            self.core.is_open.swap(false, Ordering::SeqCst)
-        };
-        if !first {
+    fn close(&self) -> Result<()> {
+        // `synchronized`: the monitor is held for the whole method.
+        let _monitor = self.core.monitor.enter();
+        if !self.core.is_open.swap(false, Ordering::SeqCst) {
             return self.close_delegate(); // but call it again on our wrapped dir
         }
-        let result = {
-            let _monitor = self.core.monitor.enter();
-            self.close_checks()
-        };
-        match result {
+        match self.close_checks() {
+            // `IOUtils.close(in)`
             Ok(()) => self.close_delegate(),
             Err(e) => {
+                // `IOUtils.closeWhileHandlingException(in)`
                 let _ = self.close_delegate();
                 Err(e)
             }

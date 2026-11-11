@@ -27,7 +27,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestReaderWrapperDVTypeCheck.testNoDVFieldOnSegment`.
 fn test_no_dv_field_on_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let cfg = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     cfg.set_codec(TestUtil::always_doc_values_format(
         TestUtil::get_default_doc_values_format(),

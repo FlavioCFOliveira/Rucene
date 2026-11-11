@@ -3011,10 +3011,12 @@ impl IndexableField for KeywordField {
         self.binary_value.borrow().clone()
     }
 
+    /// `KeywordField` inherits `Field.stringValue()` (`Field.java:264-270`):
+    /// the `String` (or number) it holds, `null` for a `BytesRef` value.
     fn string_value(&self) -> Option<String> {
         match &*self.fields_data.borrow() {
             FieldData::String(v) => Some(v.clone()),
-            FieldData::Bytes(v) => String::from_utf8(v.slice().to_vec()).ok(),
+            FieldData::Number(v) => Some(v.to_string()),
             _ => None,
         }
     }

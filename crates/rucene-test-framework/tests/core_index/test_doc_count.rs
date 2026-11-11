@@ -28,7 +28,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestDocCount.testSimple`.
 fn test_simple() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs = LuceneTestCase::at_least(100);
     for _ in 0..num_docs {

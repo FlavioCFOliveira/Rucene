@@ -83,7 +83,7 @@ fn set_up(inst: &mut TestDocInstance) -> Result<()> {
     inst.work_dir = Some(LuceneTestCase::create_temp_dir_prefix("TestDoc"));
     inst.index_dir = Some(LuceneTestCase::create_temp_dir_prefix("testIndex"));
 
-    let mut directory = LuceneTestCase::new_fs_directory(inst.index_dir());
+    let directory = LuceneTestCase::new_fs_directory(inst.index_dir());
     directory.close()?;
 
     inst.files = Vec::new();
@@ -132,7 +132,7 @@ fn test_index_and_merge(inst: &mut TestDocInstance) -> Result<()> {
 fn index_and_merge(inst: &TestDocInstance, use_compound_file: bool) -> Result<String> {
     let mut out = String::new();
 
-    let mut directory = LuceneTestCase::new_fs_directory(inst.index_dir());
+    let directory = LuceneTestCase::new_fs_directory(inst.index_dir());
 
     if let Some(mock) = directory.as_mock() {
         // We create unreferenced files (we don't even write

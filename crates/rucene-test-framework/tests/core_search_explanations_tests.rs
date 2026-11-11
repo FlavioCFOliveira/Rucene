@@ -249,7 +249,7 @@ fn replace_index() -> Result<()> {
     let ExplanationState {
         searcher,
         reader,
-        mut directory,
+        directory,
         analyzer,
     } = base_explanation_test_case::state()
         .take()

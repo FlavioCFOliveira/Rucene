@@ -102,7 +102,7 @@ fn scorer_of(
 
 /// Port of `testBasics`.
 fn test_basics() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = log_mp_writer(&dir)?;
     let mut doc = Document::new();
     let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
@@ -210,7 +210,7 @@ fn test_basics() -> Result<()> {
 
 /// Port of `testExplanations`.
 fn test_explanations() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = log_mp_writer(&dir)?;
     let mut doc = Document::new();
     let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
@@ -311,7 +311,7 @@ fn do_test_sim_scorer(s: &dyn SimScorer) {
 
 /// Port of `testComputePivotFeatureValue`.
 fn test_compute_pivot_feature_value() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
@@ -357,7 +357,7 @@ fn test_compute_pivot_feature_value() -> Result<()> {
 
 /// Port of `testDemo`.
 fn test_demo() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = log_mp_writer(&dir)?;
     let mut doc = Document::new();
     let pagerank = FeatureField::new("features", "pagerank", 1.0)?;
@@ -425,7 +425,7 @@ fn test_demo() -> Result<()> {
 
 /// Port of `testBasicsNonScoringCase`.
 fn test_basics_non_scoring_case() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let reader;
     {
         let writer = log_mp_writer(&dir)?;
@@ -503,7 +503,7 @@ fn test_basics_non_scoring_case() -> Result<()> {
 
 /// Port of `testStoreTermVectors`.
 fn test_store_term_vectors() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = log_mp_writer(&dir)?;
     let mut doc = Document::new();
     let pagerank = FeatureField::with_term_vectors("features", "pagerank", 1.0, true)?;

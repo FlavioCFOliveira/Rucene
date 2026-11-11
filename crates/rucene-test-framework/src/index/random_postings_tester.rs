@@ -771,7 +771,7 @@ impl NormsProducer for FakeNorms {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -2486,10 +2486,10 @@ impl RandomPostingsTester {
         options: IndexOptions,
         with_payloads: bool,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_fs_directory(path);
+        let dir = LuceneTestCase::new_fs_directory(path);
 
         // TODO test thread safety of buildIndex too
-        let mut fields_producer =
+        let fields_producer =
             self.build_index(codec, dir.as_directory(), options, with_payloads, true)?;
 
         self.test_fields(&*fields_producer);

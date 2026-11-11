@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rucene::codecs::codec_util::{check_index_header, checksum_entire_file, retrieve_checksum};
@@ -26,7 +27,7 @@ use rucene::codecs::{FieldsProducer, PostingsReaderBase, SegmentReadState};
 use rucene::error::{LuceneError, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::{Fields, IndexOptions, Terms};
-use rucene::store::IndexInput;
+use rucene::store::{IndexInput, SharedIndexInput};
 use rucene::util::java_collections::java_compare_to;
 
 use super::java_assert;
@@ -41,34 +42,16 @@ use crate::blockterms::fixed_gap_terms_index_reader::seek_dir;
 /// `postingsReader`, which they reach through `fr.parent`.
 pub(crate) struct Shared {
     /// Open input to the main terms dict file (`_X.tio`).
-    pub(crate) input: Arc<Box<dyn IndexInput>>,
+    pub(crate) input: SharedIndexInput,
     /// Reads the terms dict entries, to gather state to produce `DocsEnum`
     /// on demand.
     pub(crate) postings_reader: Arc<dyn PostingsReaderBase>,
     /// The number of fields, for `OrdsSegmentTermsEnum.toString()`, which
     /// prints the reader (`seg=` + `fr.parent`).
     pub(crate) description: String,
-    /// Whether the reader's `close()` closed `input` and the postings reader
-    /// already, so that `Drop` does not close them twice.
-    pub(crate) closed: bool,
-}
-
-impl Drop for Shared {
-    /// `IOUtils.close(in, postingsReader)` (`OrdsBlockTreeTermsReader.java:207-215`),
-    /// run by the last holder when the reader's `close()` found
-    /// them still shared by a merge instance or an enum (rmp #351). A failure
-    /// is dropped: no caller is left to receive it.
-    fn drop(&mut self) {
-        if self.closed {
-            return;
-        }
-        if let Some(input) = Arc::get_mut(&mut self.input) {
-            let _ = input.close();
-        }
-        if let Some(reader) = Arc::get_mut(&mut self.postings_reader) {
-            let _ = reader.close();
-        }
-    }
+    /// Java's `fields.clear()` in `close()`, seen by the reader and its merge
+    /// instances (Java's `getMergeInstance()` is `this`).
+    pub(crate) fields_cleared: AtomicBool,
 }
 
 /// See [`OrdsBlockTreeTermsWriter`](super::OrdsBlockTreeTermsWriter).
@@ -77,10 +60,8 @@ impl Drop for Shared {
 /// Java's `TreeMap<String, OrdsFieldReader>` is a map plus the names in
 /// `String.compareTo` order.
 ///
-/// `close()` closes `in` and the postings reader when this reader is their
-/// last holder; ones a live enum or merge instance still shares are closed
-/// by `Shared`'s `Drop` when the last of them is dropped (see
-/// `Lucene103BlockTreeTermsReader`).
+/// `close()` closes `in` and the postings reader whoever else (a live enum, a
+/// merge instance) still shares them, as Java's does.
 pub struct OrdsBlockTreeTermsReader {
     shared: Option<Arc<Shared>>,
     fields: HashMap<String, Arc<FieldData>>,
@@ -132,10 +113,10 @@ impl OrdsBlockTreeTermsReader {
                 let description = format!("fields={}", fields.len());
                 Ok(Self {
                     shared: Some(Arc::new(Shared {
-                        input: Arc::new(input),
+                        input: SharedIndexInput::new(input),
                         postings_reader: Arc::from(postings_reader),
                         description,
-                        closed: false,
+                        fields_cleared: AtomicBool::new(false),
                     })),
                     fields,
                     field_names,
@@ -317,6 +298,24 @@ fn read_bytes_ref(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+impl OrdsBlockTreeTermsReader {
+    /// Whether `close()` cleared `fields`.
+    fn fields_cleared(&self) -> bool {
+        self.shared
+            .as_ref()
+            .is_some_and(|shared| shared.fields_cleared.load(Ordering::SeqCst))
+    }
+
+    /// `fields.size()`.
+    fn fields_len(&self) -> usize {
+        if self.fields_cleared() {
+            0
+        } else {
+            self.fields.len()
+        }
+    }
+}
+
 impl fmt::Display for OrdsBlockTreeTermsReader {
     /// Port of `OrdsBlockTreeTermsReader.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -324,13 +323,13 @@ impl fmt::Display for OrdsBlockTreeTermsReader {
             Some(shared) => write!(
                 f,
                 "OrdsBlockTreeTermsReader(fields={},delegate={})",
-                self.fields.len(),
+                self.fields_len(),
                 shared.postings_reader
             ),
             None => write!(
                 f,
                 "OrdsBlockTreeTermsReader(fields={},delegate=null)",
-                self.fields.len()
+                self.fields_len()
             ),
         }
     }
@@ -338,10 +337,16 @@ impl fmt::Display for OrdsBlockTreeTermsReader {
 
 impl Fields for OrdsBlockTreeTermsReader {
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        if self.fields_cleared() {
+            return Box::new(std::iter::empty());
+        }
         Box::new(self.field_names.iter().cloned())
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        if self.fields_cleared() {
+            return Ok(None);
+        }
         let Some(data) = self.fields.get(field) else {
             return Ok(None);
         };
@@ -352,7 +357,7 @@ impl Fields for OrdsBlockTreeTermsReader {
     }
 
     fn size(&self) -> i32 {
-        self.fields.len() as i32
+        self.fields_len() as i32
     }
 }
 
@@ -375,21 +380,18 @@ impl FieldsProducer for OrdsBlockTreeTermsReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    /// `OrdsBlockTreeTermsReader.close()` (`OrdsBlockTreeTermsReader.java:207-215`):
+    /// `try { IOUtils.close(in, postingsReader) } finally { fields.clear() }`,
+    /// whoever else shares the two.
+    fn close(&self) -> Result<()> {
+        let shared = self.shared()?;
+        let closed = rucene::util::IOUtils::close([
+            rucene::util::IOUtils::closeable(|| shared.input.close()),
+            rucene::util::IOUtils::closeable(|| shared.postings_reader.close()),
+        ]);
         // finally: Clear so refs to terms index is GCable even if
         // app hangs onto us:
-        self.fields.clear();
-        self.field_names.clear();
-        let Some(mut shared) = self.shared.take() else {
-            return Ok(());
-        };
-        let Some(shared) = Arc::get_mut(&mut shared) else {
-            return Ok(());
-        };
-        shared.closed = true;
-        // IOUtils.close(in, postingsReader)
-        let input = Arc::get_mut(&mut shared.input).map_or(Ok(()), |i| i.close());
-        let postings = Arc::get_mut(&mut shared.postings_reader).map_or(Ok(()), |r| r.close());
-        input.and(postings)
+        shared.fields_cleared.store(true, Ordering::SeqCst);
+        closed
     }
 }

@@ -100,7 +100,7 @@ fn test_methods_overridden() -> Result<()> {
 
 /// Port of `TestNoDeletionPolicy.testAllCommitsRemain`.
 fn test_all_commits_remain() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));

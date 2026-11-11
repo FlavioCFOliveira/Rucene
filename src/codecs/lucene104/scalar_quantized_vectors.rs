@@ -31,6 +31,7 @@ use crate::index::{
 };
 use crate::search::vector_scorer::OffHeapVectorScorer;
 use crate::search::NO_MORE_DOCS;
+use crate::store::SharedIndexInput;
 use crate::store::{IOContext, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
 use crate::util::hnsw::scorer::{
@@ -1704,7 +1705,7 @@ pub const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
 pub struct Lucene104ScalarQuantizedVectorsReader {
     /// One entry per field that has quantized vectors, by field name.
     fields: std::collections::BTreeMap<String, FieldEntry>,
-    vector_data: Arc<dyn IndexInput>,
+    vector_data: Arc<SharedIndexInput>,
     /// The reader of the unquantized vectors this one wraps.
     ///
     /// Equivalent to Lucene's `final FlatVectorsReader rawVectorsReader`.
@@ -1766,11 +1767,11 @@ impl Lucene104ScalarQuantizedVectorsReader {
         scorer: Arc<Lucene104ScalarQuantizedVectorScorer>,
         access_hint: Option<crate::store::DataAccessHint>,
     ) -> Result<Self> {
-        let mut raw_vectors_reader = raw_vectors_reader;
+        let raw_vectors_reader = raw_vectors_reader;
         match Self::open(state, access_hint) {
             Ok((fields, vector_data)) => Ok(Self {
                 fields,
-                vector_data: Arc::from(vector_data),
+                vector_data: Arc::new(SharedIndexInput::new(vector_data)),
                 raw_vectors_reader,
                 scorer,
             }),
@@ -1901,7 +1902,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     fn clone_reader(&self) -> Result<Self> {
         Ok(Self {
             fields: self.fields.clone(),
-            vector_data: Arc::from(self.vector_data.clone_input()?),
+            vector_data: Arc::new(SharedIndexInput::new(self.vector_data.clone_input()?)),
             raw_vectors_reader: self.raw_vectors_reader.clone_flat_reader()?,
             scorer: self.scorer.clone(),
         })
@@ -1935,7 +1936,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
             entry.centroid.as_deref(),
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )
     }
 
@@ -2474,13 +2475,11 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
     /// Closes the `.veq` input and the delegate.
     ///
     /// Equivalent to `IOUtils.close(quantizedVectorData, rawVectorsReader)`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         IOUtils::close([
-            // When another view of the same file is still alive, exactly as
-            // when Java's `IndexInput` has been cloned, Lucene closes the
-            // original and lets the clones fall away.
-            Arc::get_mut(&mut self.vector_data)
-                .and_then(|input| IOUtils::closeable(move || input.close())),
+            // Closed whoever else shares it, as Java closes its one
+            // `quantizedVectorData`.
+            IOUtils::closeable(|| self.vector_data.close()),
             IOUtils::closeable(|| self.raw_vectors_reader.close()),
         ])
     }

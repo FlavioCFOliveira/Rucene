@@ -370,6 +370,11 @@ impl LuceneTestCase {
                     // The JVM records a waiting thread's `Thread.State`;
                     // `lucene-core`'s waiting points report it to the shim.
                     let _ = rucene::util::concurrent::set_thread_wait_hook(record_thread_wait);
+                    // The JVM has one `Thread.interrupt()`: the shim's
+                    // reaches the waits and sleeps of `lucene-core`.
+                    let _ = rucene::util::concurrent::set_interrupt_status_hook(
+                        randomizedtesting::jdk::thread::Thread::interrupted,
+                    );
                     // The throwables of this runner are panics carrying a
                     // `Throwable`: `lucene-core` records the one that escapes
                     // a merge with its Java class and message.

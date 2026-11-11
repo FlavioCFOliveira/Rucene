@@ -128,7 +128,7 @@ fn vectorization_provider_class() -> Arc<Class> {
 /// each utility owns.
 fn posting_decoding_util_test_duel_split_ints() -> Result<()> {
     let iterations = LuceneTestCase::at_least(100);
-    let mut dir = MMapDirectory::open(LuceneTestCase::create_temp_dir())?;
+    let dir = MMapDirectory::open(LuceneTestCase::create_temp_dir())?;
     let result = (|| -> Result<()> {
         {
             let mut out = dir.create_output("tests.bin", &*DEFAULT_IO_CONTEXT)?;
@@ -688,7 +688,7 @@ mod vector_scorer {
 
     /// `testSimpleScorer(long maxChunkSize)`.
     fn test_simple_scorer_impl(max_chunk_size: i64) -> Result<()> {
-        let mut dir = mmap_directory("testSimpleScorer", max_chunk_size)?;
+        let dir = mmap_directory("testSimpleScorer", max_chunk_size)?;
         let result = (|| -> Result<()> {
             for dims in [31, 32, 33] {
                 // dimensions that, in some scenarios, cross the mmap chunk sizes
@@ -781,7 +781,7 @@ mod vector_scorer {
         max_chunk_size: i64,
         byte_array_supplier: fn(i32) -> Vec<u8>,
     ) -> Result<()> {
-        let mut dir = mmap_directory("testRandomScorer", max_chunk_size)?;
+        let dir = mmap_directory("testRandomScorer", max_chunk_size)?;
         let result = (|| -> Result<()> {
             let dims = random_int_between(1, 4096);
             let size = random_int_between(2, 100);
@@ -830,7 +830,7 @@ mod vector_scorer {
         initial_offset: i32,
         byte_array_supplier: fn(i32) -> Vec<u8>,
     ) -> Result<()> {
-        let mut dir = mmap_directory("testRandomSliceImpl", max_chunk_size)?;
+        let dir = mmap_directory("testRandomSliceImpl", max_chunk_size)?;
         let result = (|| -> Result<()> {
             let size = random_int_between(2, 100);
             let mut vectors: Vec<Vec<u8>> = Vec::with_capacity(size as usize);
@@ -881,7 +881,7 @@ mod vector_scorer {
         let dims = 34; // dimensions that are larger than the chunk size, to force fallback
         let vec1 = vec![1u8; dims as usize];
         let vec2 = vec![2u8; dims as usize];
-        let mut dir = mmap_directory("testRace", max_chunk_size)?;
+        let dir = mmap_directory("testRace", max_chunk_size)?;
         let result = (|| -> Result<()> {
             let file_name = format!("biz-{dims}");
             {
@@ -1000,7 +1000,7 @@ mod vector_scorer {
     /// with a large amount of data (> 2GB), which ensures that data offsets
     /// do not overflow.
     pub fn test_large() -> Result<()> {
-        let mut dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testLarge"))?;
+        let dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testLarge"))?;
         let result = (|| -> Result<()> {
             let dims = 8192;
             let size = 262500;
@@ -1046,7 +1046,7 @@ mod vector_scorer {
     /// `get_random_vector_scorer_byte` takes `ByteVectorValues` only, so the
     /// call does not compile.
     pub fn test_with_float_values() -> Result<()> {
-        let mut dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix(
+        let dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix(
             "testWithFloatValues",
         ))?;
         let result = (|| -> Result<()> {

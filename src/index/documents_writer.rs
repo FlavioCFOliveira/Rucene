@@ -136,9 +136,8 @@ pub const SOURCE_FLUSH: &str = "flush";
 /// [`TrackingDirectoryWrapper`] requires.
 ///
 /// Java passes `Directory` references around freely because the JVM owns their
-/// lifetime. In Rucene a `Directory` is shared through an `Arc` and
-/// [`Directory::close`] takes `&mut self`, so a shared handle cannot perform
-/// the close. Closing the directory is the responsibility of whoever created
+/// lifetime. In Rucene a `Directory` is shared through an `Arc`, while
+/// [`TrackingDirectoryWrapper`] owns a `Box<dyn Directory>`. Closing the directory is the responsibility of whoever created
 /// it — the `IndexWriter` — so this adapter reports `close` as a no-op and
 /// delegates everything else.
 ///
@@ -198,7 +197,7 @@ impl Directory for SharedDirectory {
     }
 
     /// No-op: a shared handle does not own the directory's lifetime.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 

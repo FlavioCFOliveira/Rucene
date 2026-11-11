@@ -244,7 +244,7 @@ fn tq(field: &str, text: &str) -> Arc<dyn Query> {
 /// Document nor Field class
 /// Port of `TestIndexableField.testArbitraryFields`.
 fn test_arbitrary_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let num_docs = LuceneTestCase::at_least(27);
@@ -480,7 +480,7 @@ impl IndexableField for CustomField {
 /// LUCENE-5611
 /// Port of `TestIndexableField.testNotIndexedTermVectors`.
 fn test_not_indexed_term_vectors() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     expect_throws(IAE, || {
         let mut doc = Document::new();

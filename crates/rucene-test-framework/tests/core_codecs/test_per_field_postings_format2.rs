@@ -133,7 +133,7 @@ fn add_docs3(writer: &IndexWriter, num_docs: i32) -> Result<()> {
 ///
 /// Port of `TestPerFieldPostingsFormat2.testMergeUnusedPerFieldCodec`.
 fn test_merge_unused_per_field_codec() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwconf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*random()),
     )));
@@ -161,7 +161,7 @@ fn test_merge_unused_per_field_codec() -> Result<()> {
 ///
 /// Port of `TestPerFieldPostingsFormat2.testChangeCodecAndMerge`.
 fn test_change_codec_and_merge() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let dir = directory.as_directory();
     if *VERBOSE {
         println!("TEST: make new index");
@@ -267,7 +267,7 @@ fn mock_codec() -> AssertingCodec {
 ///
 /// Port of `TestPerFieldPostingsFormat2.testStressPerFieldCodec`.
 fn test_stress_per_field_codec() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory_with(&*random());
+    let directory = LuceneTestCase::new_directory_with(&*random());
     let dir = directory.as_directory();
     let docs_per_round = 97;
     let num_rounds = LuceneTestCase::at_least(1);
@@ -356,7 +356,7 @@ fn test_same_codec_different_params() -> Result<()> {
 
 /// Port of `TestPerFieldPostingsFormat2.doTestMixedPostings`.
 fn do_test_mixed_postings(codec: Arc<dyn Codec>) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));
@@ -413,7 +413,7 @@ fn test_merge_called_on_two_formats() -> Result<()> {
         None,
     )))?;
 
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
 
     let iwriter = IndexWriter::new(directory.as_directory(), iwc)?;
 

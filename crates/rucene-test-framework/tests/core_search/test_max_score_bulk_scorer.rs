@@ -272,7 +272,7 @@ fn run_over_documents(
     maybe_approximate: bool,
     mut collector: ExpectedHits,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     write_documents(&dir)?;
     {
         let reader = directory_reader::open(dir.as_directory())?;
@@ -657,7 +657,7 @@ impl LeafCollector for DeletesCollector {
 
 /// Port of `TestMaxScoreBulkScorer.testDeletes`.
 fn test_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = log_merge_writer(&dir)?;
     // doc2 and doc3 hold the same field instances as doc1, then their own id
     let shared = |id: &str| -> Result<Document> {
@@ -752,7 +752,7 @@ fn assert_dense_filter(
 ///
 /// Port of `TestMaxScoreBulkScorer.testFilteredDisjunctionWithDenseFilter`.
 fn test_filtered_disjunction_with_dense_filter() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // We need maxDoc >= INNER_WINDOW_SIZE (4096) and filter.cost >= maxDoc/32.
     // Create INNER_WINDOW_SIZE + 1 docs. Add the filter term "F" to all of
     // them, and scoring terms "A" and "C" to specific docs.
@@ -830,7 +830,7 @@ impl Bits for AllButDoc1 {
 ///
 /// Port of `TestMaxScoreBulkScorer.testFilteredDisjunctionWithDenseFilterAndAcceptDocs`.
 fn test_filtered_disjunction_with_dense_filter_and_accept_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let num_docs = INNER_WINDOW_SIZE + 1;
     {
         let w = log_merge_writer(&dir)?;
@@ -904,7 +904,7 @@ impl LeafCollector for OnlyDoc0Collector {
 /// Port of
 /// `TestMaxScoreBulkScorer.testFilteredDisjunctionWithFilterGapCausingNegativeWindowSize`.
 fn test_filtered_disjunction_with_filter_gap_causing_negative_window_size() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // Need 2 * INNER_WINDOW_SIZE docs so there's room for a second inner
     // window. Filter only matches first INNER_WINDOW_SIZE docs, creating a gap.
     let num_docs = 2 * INNER_WINDOW_SIZE;
@@ -1052,7 +1052,7 @@ fn count_filter_calls(
 ///
 /// Port of `TestMaxScoreBulkScorer.testSparseFilterUsesLeapFrog`.
 fn test_sparse_filter_uses_leap_frog() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
     for i in 0..10000 {
         let mut doc = Document::new();
@@ -1093,7 +1093,7 @@ fn test_sparse_filter_uses_leap_frog() -> Result<()> {
 ///
 /// Port of `TestMaxScoreBulkScorer.testDenseScorersUseBitSet`.
 fn test_dense_scorers_use_bit_set() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
     for i in 0..10000 {
         let mut doc = Document::new();

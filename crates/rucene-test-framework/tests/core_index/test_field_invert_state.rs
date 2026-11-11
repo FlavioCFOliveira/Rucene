@@ -95,7 +95,7 @@ fn config() -> Result<IndexWriterConfig> {
 
 /// Port of `TestFieldInvertState.testBasic`.
 fn test_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();
@@ -121,7 +121,7 @@ fn test_basic() -> Result<()> {
 /// Port of `TestFieldInvertState.testRandom`.
 fn test_random() -> Result<()> {
     let num_unique_tokens = TestUtil::next_int(&*random(), 1, 25);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let mut doc = Document::new();

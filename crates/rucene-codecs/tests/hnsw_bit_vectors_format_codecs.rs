@@ -55,7 +55,7 @@ impl BaseIndexFileFormatTestCase for TestHnswBitVectorsFormat {
 
 /// `testFloatVectorFails()`.
 fn test_float_vector_fails() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let w = IndexWriter::new(
             dir.as_directory(),
@@ -89,7 +89,7 @@ fn test_index_and_search_bit_vectors() -> Result<()> {
         [0b11111111, 0b00000000],
         [0b00000000, 0b00000000],
     ];
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let w = IndexWriter::new(
             dir.as_directory(),

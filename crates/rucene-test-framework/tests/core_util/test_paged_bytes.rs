@@ -39,7 +39,7 @@ fn test_data_input_output() -> Result<()> {
     let random = random();
     let num_iters = LuceneTestCase::at_least(1);
     for _ in 0..num_iters {
-        let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+        let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
             "testOverflow",
         ));
         if let Some(mock) = dir.as_mock() {
@@ -189,7 +189,7 @@ fn test_data_input_output2() -> Result<()> {
 // `@Ignore // memory hole`.
 #[allow(dead_code)]
 fn test_overflow() -> Result<()> {
-    let mut dir =
+    let dir =
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("testOverflow"));
     if let Some(mock) = dir.as_mock() {
         mock.set_throttling(Throttling::Never);

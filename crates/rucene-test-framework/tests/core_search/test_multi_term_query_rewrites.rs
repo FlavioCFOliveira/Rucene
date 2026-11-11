@@ -161,9 +161,9 @@ fn before_class() -> Result<()> {
 fn after_class() -> Result<()> {
     let statics = STATICS.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(Statics {
-        mut dir,
-        mut sdir1,
-        mut sdir2,
+        dir,
+        sdir1,
+        sdir2,
         reader,
         multi_reader,
         multi_reader_dupls,

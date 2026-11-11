@@ -148,7 +148,7 @@ fn do_test(fail_on: Arc<dyn Failure>) -> Result<()> {
     for _iter in 0..num_iterations {
         let result = (|| -> Result<()> {
             // close from last run
-            if let Some(mut d) = dir.take() {
+            if let Some(d) = dir.take() {
                 d.close()?;
             }
             // disable slow things: we don't rely upon sleeps here.
@@ -335,7 +335,7 @@ fn do_test(fail_on: Arc<dyn Failure>) -> Result<()> {
             return Err(t);
         }
     }
-    if let Some(mut d) = dir.take() {
+    if let Some(d) = dir.take() {
         d.close()?;
     }
     if verbose() {

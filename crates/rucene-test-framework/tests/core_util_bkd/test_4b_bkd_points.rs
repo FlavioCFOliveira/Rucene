@@ -97,10 +97,7 @@ fn run(
         &visitor.get_doc_count_seen(),
     );
     input.close_stream()?;
-    let mut dir = dir;
-    Arc::get_mut(&mut dir)
-        .expect("the test holds the only reference")
-        .close()
+    dir.close()
 }
 
 fn test_1d() -> Result<()> {

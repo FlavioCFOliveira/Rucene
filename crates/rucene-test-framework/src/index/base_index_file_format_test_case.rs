@@ -493,7 +493,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
     /// bulk merge doesn't accumulate useless data over runs.
     fn test_merge_stability(&self) -> Result<()> {
         LuceneTestCase::assume_true("merge is not stable", self.merge_is_stable());
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         self.apply_created_version_major(&*dir.as_directory())?;
 
         // do not use newMergePolicy that might return a MockMergePolicy that ignores the no-CFS
@@ -523,7 +523,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         drop(w);
         let reader = directory_reader::open(dir.as_directory())?;
 
-        let mut dir2 = LuceneTestCase::new_directory();
+        let dir2 = LuceneTestCase::new_directory();
         self.apply_created_version_major(&*dir2.as_directory())?;
         let mp = LuceneTestCase::new_tiered_merge_policy();
         mp.set_no_cfs_ratio(0.0)?;
@@ -555,7 +555,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
     /// apis.
     fn test_multi_close(&self) -> Result<()> {
         // first make a one doc index
-        let mut one_doc_index = LuceneTestCase::new_directory();
+        let one_doc_index = LuceneTestCase::new_directory();
         self.apply_created_version_major(&*one_doc_index.as_directory())?;
         let iw = IndexWriter::new(
             one_doc_index.as_directory(),
@@ -580,7 +580,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         // now feed to codec apis manually
         // we use FSDir, things like ramdir are not guaranteed to cause fails if you write to them
         // after close(), etc
-        let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+        let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
             "justSoYouGetSomeChannelErrors",
         ));
         let directory = dir.as_directory();
@@ -664,7 +664,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
             consumer.close()?;
         }
         {
-            let mut producer = codec.postings_format().fields_producer(&read_state)?;
+            let producer = codec.postings_format().fields_producer(&read_state)?;
             producer.close()?;
             producer.close()?;
             producer.close()?;
@@ -679,7 +679,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
             consumer.close()?;
         }
         {
-            let mut producer = codec.doc_values_format().fields_producer(&read_state)?;
+            let producer = codec.doc_values_format().fields_producer(&read_state)?;
             producer.close()?;
             producer.close()?;
             producer.close()?;
@@ -694,7 +694,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
             consumer.close()?;
         }
         {
-            let mut producer = codec.norms_format().norms_producer(&read_state)?;
+            let producer = codec.norms_format().norms_producer(&read_state)?;
             producer.close()?;
             producer.close()?;
             producer.close()?;
@@ -790,7 +790,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
     // codec does not corrupt the index or leak file handles.
     fn test_random_exceptions(&self) -> Result<()> {
         // disable slow things: we don't rely upon sleeps here.
-        let mut dir = LuceneTestCase::new_mock_directory();
+        let dir = LuceneTestCase::new_mock_directory();
         self.apply_created_version_major(&*dir.as_directory())?;
         dir.set_throttling(Throttling::Never);
         dir.set_use_slow_open_closers(false);
@@ -958,7 +958,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
             "SimpleText doesn't store checksums of its files",
             self.get_codec().name() == "SimpleText",
         );
-        let mut inner = LuceneTestCase::new_directory();
+        let inner = LuceneTestCase::new_directory();
         let dir = Arc::new(FileTrackingDirectoryWrapper::new(inner.as_directory()));
         self.apply_created_version_major(&*dir)?;
 
@@ -1279,7 +1279,7 @@ impl NormsProducer for OneDocNorms {
         Ok(Box::new(OneDocNorms(Arc::clone(&self.0))))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -1410,7 +1410,7 @@ impl DocValuesProducer for OneValueProducer {
         Ok(Box::new(OneValueProducer))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         rucene::index::doc_values::EmptyDocValuesProducer.close()
     }
 }
@@ -1433,7 +1433,7 @@ impl NormsProducer for OneValueNorms {
         Ok(Box::new(OneValueNorms))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -1533,7 +1533,7 @@ impl Directory for FileTrackingDirectoryWrapper {
 
     /// `FilterDirectory.close()` closes the delegate; the delegate here is
     /// the shared test directory, which its owner closes.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 
@@ -1791,7 +1791,7 @@ impl Directory for ReadBytesDirectoryWrapper {
 
     /// `FilterDirectory.close()` closes the delegate; the delegate here is
     /// shared, and its owner closes it.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 

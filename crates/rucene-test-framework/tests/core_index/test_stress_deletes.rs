@@ -103,7 +103,7 @@ fn test_() -> Result<()> {
     let num_ids = LuceneTestCase::at_least(100);
     let locks: Arc<Vec<Mutex<()>>> = Arc::new((0..num_ids).map(|_| Mutex::new(())).collect());
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let iters = LuceneTestCase::at_least(2000);

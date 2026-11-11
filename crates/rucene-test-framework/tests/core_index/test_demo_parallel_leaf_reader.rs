@@ -318,7 +318,7 @@ impl ReindexingReader {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
-        if let Some(mut index_dir) = index_dir {
+        if let Some(index_dir) = index_dir {
             index_dir.close()?;
         }
         Ok(())
@@ -459,7 +459,7 @@ impl ReindexingState {
                 None => {
                     let leaf_index = self.segs_path.resolve_str(&seg_id_gen.to_string());
 
-                    let mut dir = self.hooks.open_directory(&leaf_index)?;
+                    let dir = self.hooks.open_directory(&leaf_index)?;
 
                     if !LuceneTestCase::slow_file_exists(&*dir.as_directory(), "done")? {
                         if DEBUG {
@@ -810,7 +810,7 @@ impl ClosedListener for ParallelReaderClosed {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.seg_id_gen);
-        if let Some(mut dir) = dir {
+        if let Some(dir) = dir {
             let description = dir.as_directory().directory_to_string();
             if let Err(ioe) = dir.close() {
                 println!("TEST: hit IOExc closing dir={description}");
@@ -1764,7 +1764,7 @@ fn test_random_multiple_schema_gens_same_field() -> Result<()> {
     }
 
     // Verify main index never reflects schema changes beyond mergingSchemaGen:
-    let mut dir = LuceneTestCase::new_fs_directory(&root.resolve_str("index"));
+    let dir = LuceneTestCase::new_fs_directory(&root.resolve_str("index"));
     let r: Arc<dyn IndexReader> = crate::support::open_reader(&dir)?;
     let body = || -> Result<()> {
         for ctx in Arc::clone(&r).leaves()? {

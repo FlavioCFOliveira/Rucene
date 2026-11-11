@@ -393,7 +393,7 @@ impl TermsIndexReaderBase for FixedGapTermsIndexReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

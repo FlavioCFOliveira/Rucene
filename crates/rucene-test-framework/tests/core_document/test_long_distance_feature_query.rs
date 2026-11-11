@@ -104,7 +104,7 @@ fn top(
 
 /// Port of `testBasics`.
 fn test_basics() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let mut doc = field_doc();
 
@@ -148,7 +148,7 @@ fn test_basics() -> Result<()> {
 
 /// Port of `testOverUnderFlow`.
 fn test_over_under_flow() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let mut doc = field_doc();
 
@@ -210,7 +210,7 @@ fn test_missing_field() -> Result<()> {
 
 /// Port of `testMissingValue`.
 fn test_missing_value() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let mut doc = field_doc();
 
@@ -246,7 +246,7 @@ fn test_missing_value() -> Result<()> {
 
 /// Port of `testMultiValued`.
 fn test_multi_valued() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     w.add_document(&doc(&[3, 1000, i64::MAX]))?;
     w.add_document(&doc(&[-100, 12, 999]))?;
@@ -289,7 +289,7 @@ fn test_multi_valued() -> Result<()> {
 
 /// Port of `testRandom`.
 fn test_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),

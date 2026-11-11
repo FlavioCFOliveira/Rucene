@@ -48,7 +48,7 @@ fn random_string_sort(t: SortFieldType) -> Result<()> {
     let rnd = JdkRandom::new(random().next_long());
 
     let num_docs_target = LuceneTestCase::at_least(100);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&rnd, dir.as_directory())?;
     let allow_dups = rnd.next_boolean();
     let mut seen: HashSet<String> = HashSet::new();

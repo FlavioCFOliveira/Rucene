@@ -44,7 +44,7 @@ fn text_type(index_options: IndexOptions) -> Result<FieldType> {
 
 /// Port of `TestOmitPositions.testBasic`.
 fn test_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let ft = text_type(IndexOptions::DOCS_AND_FREQS)?;
@@ -93,7 +93,7 @@ fn index_options(reader: &Arc<dyn LeafReader>, name: &str) -> IndexOptions {
 /// DocumentWriter correctly enable the omitTermFreqAndPositions bit in the
 /// FieldInfo.
 fn test_positions() -> Result<()> {
-    let mut ram = LuceneTestCase::new_directory();
+    let ram = LuceneTestCase::new_directory();
     let analyzer = Arc::new(MockAnalyzer::new(&*random()));
     let writer = IndexWriter::new(
         ram.as_directory(),
@@ -154,7 +154,7 @@ fn assert_no_prx(dir: &Arc<dyn Directory>) -> Result<()> {
 /// Port of `TestOmitPositions.testNoPrxFile`: verifies no *.prx exists when
 /// all fields omit term positions.
 fn test_no_prx_file() -> Result<()> {
-    let mut ram = LuceneTestCase::new_directory();
+    let ram = LuceneTestCase::new_directory();
 
     let analyzer = Arc::new(MockAnalyzer::new(&*random()));
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer));

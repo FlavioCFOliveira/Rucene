@@ -358,7 +358,7 @@ fn search_through(
 /// @throws Exception on error
 /// Port of `TestExitableDirectoryReader.testExitableFilterTermsIndexReader`.
 fn test_exitable_filter_terms_index_reader() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -434,7 +434,7 @@ fn test_exitable_filter_terms_index_reader() -> Result<()> {
 /// @throws Exception on error
 /// Port of `TestExitableDirectoryReader.testExitableTermsEnumSampleTimeoutCheck`.
 fn test_exitable_terms_enum_sample_timeout_check() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let writer = IndexWriter::new(
             directory.as_directory(),
@@ -493,7 +493,7 @@ fn test_exitable_terms_enum_sample_timeout_check() -> Result<()> {
 /// @throws Exception on error
 /// Port of `TestExitableDirectoryReader.testExitablePointValuesIndexReader`.
 fn test_exitable_point_values_index_reader() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -590,7 +590,7 @@ impl Terms for MinMaxTerms {
 
 /// Port of `TestExitableDirectoryReader.testExitableTermsMinAndMax`.
 fn test_exitable_terms_min_and_max() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         directory.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -641,7 +641,7 @@ type DvFactory = fn(&dyn LeafReader) -> Result<Option<Box<dyn DocValuesIterator>
 
 /// Port of `TestExitableDirectoryReader.testDocValues`.
 fn test_doc_values() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let writer = IndexWriter::new(
             directory.as_directory(),
@@ -796,7 +796,7 @@ fn random_query_timeout() -> Arc<dyn QueryTimeout> {
 
 /// Port of `TestExitableDirectoryReader.testFloatVectorValues`.
 fn test_float_vector_values() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -874,7 +874,7 @@ fn test_float_vector_values() -> Result<()> {
 
 /// Port of `TestExitableDirectoryReader.testByteVectorValues`.
 fn test_byte_vector_values() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         directory.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(

@@ -129,7 +129,7 @@ impl Directory for EmptyCompoundDirectory {
         ))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 

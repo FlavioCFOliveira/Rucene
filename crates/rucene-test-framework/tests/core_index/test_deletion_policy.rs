@@ -358,7 +358,7 @@ fn set_commit_time(writer: &IndexWriter) -> Result<()> {
 fn test_expiration_time_deletion_policy() -> Result<()> {
     const SECONDS: f64 = 2.0;
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let policy = Arc::new(ExpirationTimeDeletionPolicy {
         dir: dir.as_directory(),
         expiration_time_seconds: SECONDS,
@@ -459,7 +459,7 @@ fn test_keep_all_deletion_policy() -> Result<()> {
 
         let use_compound_file = (pass % 2) != 0;
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
 
         let policy = Arc::new(KeepAllDeletionPolicy::new(dir.as_directory()));
         let conf = mock_iwc();
@@ -574,7 +574,7 @@ fn prior_commit_iwc(
 ///
 /// Port of `TestDeletionPolicy.testOpenPriorSnapshot`.
 fn test_open_prior_snapshot() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let policy = Arc::new(KeepAllDeletionPolicy::new(dir.as_directory()));
     let conf = mock_iwc();
@@ -701,7 +701,7 @@ fn test_keep_none_on_init_deletion_policy() -> Result<()> {
     for pass in 0..2 {
         let use_compound_file = (pass % 2) != 0;
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
 
         let policy = Arc::new(KeepNoneOnInitDeletionPolicy::default());
         let conf = mock_iwc();
@@ -758,7 +758,7 @@ fn test_keep_last_n_deletion_policy() -> Result<()> {
     for pass in 0..2 {
         let use_compound_file = (pass % 2) != 0;
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
 
         let policy = Arc::new(KeepLastNDeletionPolicy::new(N));
         for _ in 0..N + 1 {
@@ -869,7 +869,7 @@ fn test_keep_last_n_deletion_policy_with_creates() -> Result<()> {
     for pass in 0..2 {
         let use_compound_file = (pass % 2) != 0;
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let policy = Arc::new(KeepLastNDeletionPolicy::new(N));
         let conf = mock_iwc();
         conf.set_open_mode(OpenMode::CREATE)?;
@@ -995,7 +995,7 @@ fn test_keep_last_n_commits_deletion_policy() -> Result<()> {
     );
 
     // Create an index and make several commits
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), conf)?;
 
     for _ in 0..5 {

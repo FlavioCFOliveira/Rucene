@@ -673,7 +673,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     /// The body shared by `testBasic` and `testMerge`: twenty one-dimension
     /// points, a commit after the eleventh when `commit_at_10`.
     fn basic_or_merge(&self, commit_at_10: bool) -> Result<()> {
-        let mut dir = get_directory(20);
+        let dir = get_directory(20);
         {
             let iwc = LuceneTestCase::new_index_writer_config();
             iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
@@ -723,7 +723,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testAllPointDocsDeletedInSegment()`.
     fn test_all_point_docs_deleted_in_segment(&self) -> Result<()> {
-        let mut dir = get_directory(20);
+        let dir = get_directory(20);
         {
             let iwc = LuceneTestCase::new_index_writer_config();
             let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -842,7 +842,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         // MDW:
         let mut done = false;
         while !done {
-            let mut dir = LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir());
+            let dir = LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir());
             {
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
                     dir.set_random_io_exception_rate(0.05);
@@ -1010,7 +1010,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
     /// dimension is a `BigInteger`.
     fn test_big_int_n_dims(&self) -> Result<()> {
         let num_docs = LuceneTestCase::at_least(200);
-        let mut dir = get_directory(num_docs);
+        let dir = get_directory(num_docs);
         {
             let num_bytes_per_dim = TestUtil::next_int(&*random(), 2, MAX_NUM_BYTES) as usize;
             let num_dims = TestUtil::next_int(&*random(), 1, MAX_INDEX_DIMENSIONS) as usize;
@@ -1185,7 +1185,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         num_index_dims: i32,
         num_bytes_per_dim: i32,
     ) -> Result<()> {
-        let mut dir = get_directory(doc_values.len() as i32);
+        let dir = get_directory(doc_values.len() as i32);
         {
             loop {
                 match self.verify_in(
@@ -1570,7 +1570,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
         if let Some(save_w) = save_w {
             let _ = save_w.close();
         }
-        if let Some(mut d) = side_dir {
+        if let Some(d) = side_dir {
             let _ = d.close();
         }
         drop(dir);
@@ -1579,11 +1579,11 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testAddIndexes()`.
     fn test_add_indexes(&self) -> Result<()> {
-        let mut dir1 = LuceneTestCase::new_directory();
+        let dir1 = LuceneTestCase::new_directory();
         // Created where Java creates them; declared here so they outlive the
         // block that releases every handle on them before they close.
-        let mut dir2;
-        let mut dir;
+        let dir2;
+        let dir;
         {
             let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir1.as_directory())?;
             let mut doc = Document::new();
@@ -1633,7 +1633,7 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testMergeMissing()` (LUCENE-7491).
     fn test_merge_missing(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let iwc = LuceneTestCase::new_index_writer_config();
             let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iwc)?;
@@ -1700,10 +1700,10 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
 
     /// `testMismatchedFields()`.
     fn test_mismatched_fields(&self) -> Result<()> {
-        let mut dir1 = LuceneTestCase::new_directory();
+        let dir1 = LuceneTestCase::new_directory();
         // Created where Java creates it; declared here so it outlives the
         // block that releases every handle on it before it closes.
-        let mut dir2;
+        let dir2;
         {
             let w1 = IndexWriter::new(
                 dir1.as_directory(),

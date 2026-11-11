@@ -82,7 +82,7 @@ fn check(
     ok: &[Getter],
     errors: &[Getter],
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = null_analyzer_writer(&dir.as_directory())?;
     let mut doc = Document::new();
     if let Some(field) = field {

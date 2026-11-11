@@ -70,7 +70,7 @@ fn segment_count(dir: &TestDirectory) -> Result<usize> {
 
 /// Port of `TestIndexWriterForceMerge.testPartialMerge`.
 fn test_partial_merge() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -118,7 +118,7 @@ fn test_partial_merge() -> Result<()> {
 
 /// Port of `TestIndexWriterForceMerge.testMaxNumSegments2`.
 fn test_max_num_segments2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -189,7 +189,7 @@ impl Analyzer for WhitespaceAnalyzer {
 /// space required.
 /// Port of `TestIndexWriterForceMerge.testForceMergeTempSpaceUsage`.
 fn test_force_merge_temp_space_usage() -> Result<()> {
-    let mut holder = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let holder = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let dir = holder.as_mock().expect("newMockDirectory");
     let d = dir.as_directory();
     // don't use MockAnalyzer, variable length payloads can cause merge to make things bigger,
@@ -288,7 +288,7 @@ fn list_files(dir: &Arc<dyn Directory>) -> Result<String> {
         }
         if info.info.get_use_compound_file() {
             let codec = info.info.codec().unwrap_or_else(|| npe("getCodec()"));
-            let mut cfs = codec
+            let cfs = codec
                 .compound_format()
                 .get_compound_reader(&**dir, &info.info)?;
             let outcome = (|| -> Result<()> {
@@ -314,7 +314,7 @@ fn list_files(dir: &Arc<dyn Directory>) -> Result<String> {
 /// writer.close()) does wait
 /// Port of `TestIndexWriterForceMerge.testBackgroundForceMerge`.
 fn test_background_force_merge() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     for pass in 0..2 {
         let conf = mock_iwc();
         conf.set_open_mode(OpenMode::CREATE)?;
@@ -398,7 +398,7 @@ fn test_merge_per_field() -> Result<()> {
             )) as Arc<dyn DocValuesFormat>
         }));
     config.set_codec(Arc::new(filter) as Arc<dyn Codec>)?;
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let body = (|| -> Result<()> {
         let writer = IndexWriter::new(directory.as_directory(), config)?;
         let inner = (|| -> Result<()> {

@@ -65,7 +65,7 @@ impl BaseDirectoryTestCase for TestMockDirectoryWrapper {
 /// `testDiskFull()`.
 fn test_disk_full() -> Result<()> {
     // test writeBytes
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     dir.set_max_size_in_bytes(3);
     let bytes = [1u8, 2];
     let mut out = dir.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
@@ -82,7 +82,7 @@ fn test_disk_full() -> Result<()> {
     dir.close()?;
 
     // test copyBytes
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     dir.set_max_size_in_bytes(3);
     let mut out = dir.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
     out.copy_bytes(&mut ByteArrayDataInput::new(&bytes), bytes.len() as i64)?; // first copy should succeed
@@ -101,7 +101,7 @@ fn test_disk_full() -> Result<()> {
 /// `testMDWinsideOfMDW()`: add MDW inside another MDW.
 fn test_mdw_inside_of_mdw() -> Result<()> {
     let inner: Arc<dyn Directory> = Arc::new(LuceneTestCase::new_mock_directory());
-    let mut dir = MockDirectoryWrapper::new(&*LuceneTestCase::random(), inner);
+    let dir = MockDirectoryWrapper::new(&*LuceneTestCase::random(), inner);
     {
         let iw = RandomIndexWriter::new_with_mock_analyzer(
             &*LuceneTestCase::random(),
@@ -162,7 +162,7 @@ impl Directory for PreventCloseDirectoryWrapper {
         self.r#in.obtain_lock(name)
     }
     /// `close()` (`@Override`): nothing.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
@@ -187,7 +187,7 @@ fn test_corrupt_on_close_is_working(dir: &Arc<dyn Directory>) -> Result<()> {
         })
     };
     {
-        let mut wrapped = MockDirectoryWrapper::new(&*LuceneTestCase::random(), prevent(dir));
+        let wrapped = MockDirectoryWrapper::new(&*LuceneTestCase::random(), prevent(dir));
         let result = (|| -> Result<()> {
             // otherwise MDW sometimes randomly leaves the file intact and we'll see false test
             // failures:
@@ -258,25 +258,25 @@ fn test_corrupt_on_close_is_working(dir: &Arc<dyn Directory>) -> Result<()> {
 /// `testCorruptOnCloseIsWorkingFSDir()`.
 fn test_corrupt_on_close_is_working_fs_dir() -> Result<()> {
     let path = LuceneTestCase::create_temp_dir();
-    let mut dir: Arc<dyn Directory> = Arc::new(OwnedTestDirectory::new(
+    let dir: Arc<dyn Directory> = Arc::new(OwnedTestDirectory::new(
         LuceneTestCase::new_fs_directory(&path),
     ));
     let result = test_corrupt_on_close_is_working(&dir);
-    let closed = Arc::get_mut(&mut dir).map_or(Ok(()), |d| d.close());
+    let closed = dir.close();
     result.and(closed)
 }
 
 /// `testCorruptOnCloseIsWorkingOnByteBuffersDirectory()`.
 fn test_corrupt_on_close_is_working_on_byte_buffers_directory() -> Result<()> {
-    let mut dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let result = test_corrupt_on_close_is_working(&dir);
-    let closed = Arc::get_mut(&mut dir).map_or(Ok(()), |d| d.close());
+    let closed = dir.close();
     result.and(closed)
 }
 
 /// `testAbuseClosedIndexInput()`.
 fn test_abuse_closed_index_input() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     let mut out = dir.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
     out.write_byte(42)?;
     out.close()?;
@@ -289,7 +289,7 @@ fn test_abuse_closed_index_input() -> Result<()> {
 
 /// `testAbuseCloneAfterParentClosed()`.
 fn test_abuse_clone_after_parent_closed() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     let mut out = dir.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
     out.write_byte(42)?;
     out.close()?;
@@ -304,7 +304,7 @@ fn test_abuse_clone_after_parent_closed() -> Result<()> {
 
 /// `testAbuseCloneOfCloneAfterParentClosed()`.
 fn test_abuse_clone_of_clone_after_parent_closed() -> Result<()> {
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     let mut out = dir.create_output("foo", &*DEFAULT_IO_CONTEXT)?;
     out.write_byte(42)?;
     out.close()?;
@@ -401,7 +401,7 @@ fn counting_directory_with_test_file() -> Result<SerialIOCountingDirectory> {
 
 /// `testSequentialReads()`.
 fn test_sequential_reads() -> Result<()> {
-    let mut dir = counting_directory_with_test_file()?;
+    let dir = counting_directory_with_test_file()?;
     let result = (|| -> Result<()> {
         {
             let mut input = dir.open_input("test", &*with_hint(DataAccessHint::Sequential))?;
@@ -437,7 +437,7 @@ fn test_sequential_reads() -> Result<()> {
 
 /// `testParallelReads()`.
 fn test_parallel_reads() -> Result<()> {
-    let mut dir = counting_directory_with_test_file()?;
+    let dir = counting_directory_with_test_file()?;
     let result = (|| -> Result<()> {
         let mut input = dir.open_input("test", &*with_hint(DataAccessHint::Random))?;
         let mut count = dir.count();

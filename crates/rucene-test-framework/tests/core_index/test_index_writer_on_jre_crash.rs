@@ -220,7 +220,7 @@ struct CheckIndexesVisitor {
 impl CheckIndexesVisitor {
     /// The `else` branch of `postVisitDirectory`.
     fn check(&mut self, dir_path: &Path) -> Result<()> {
-        let mut dir = LuceneTestCase::new_fs_directory(dir_path);
+        let dir = LuceneTestCase::new_fs_directory(dir_path);
         let body = (|| -> Result<()> {
             set_check_index_on_close(&dir, false); // don't double-checkindex
             if directory_reader::index_exists(&*dir.as_directory())? {

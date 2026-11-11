@@ -98,7 +98,7 @@ fn set_add(set: &mut Vec<BytesRef>, value: BytesRef) {
 
 /// Port of `TestTermInSetQuery.testAllDocsInFieldTerm`.
 fn test_all_docs_in_field_term() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let field = "f";
 
@@ -170,7 +170,7 @@ fn test_duel() -> Result<()> {
             let value = TestUtil::random_analysis_string(&*random(), 10, true);
             all_terms.push(nbr(&value));
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let num_docs = LuceneTestCase::at_least(10_000);
         for _i in 0..num_docs {
@@ -255,7 +255,7 @@ fn test_duel() -> Result<()> {
 
 /// Port of `TestTermInSetQuery.testReturnsNullScoreSupplier`.
 fn test_returns_null_score_supplier() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         {
             let writer = IndexWriter::new(directory.as_directory(), IndexWriterConfig::new())?;
@@ -353,7 +353,7 @@ fn test_returns_null_score_supplier() -> Result<()> {
 ///
 /// Port of `TestTermInSetQuery.testSkipperOptimizationGapAssumption`.
 fn test_skipper_optimization_gap_assumption() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     // Index the first 10,000 docs all with the term "b" to get some skip list blocks with the range
     // [b, b]:
@@ -807,7 +807,7 @@ impl LeafReader for TermsCountingLeafReaderWrapper {
 
 /// Port of `TestTermInSetQuery.testPullOneTermsEnum`.
 fn test_pull_one_terms_enum() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(StringField::new(

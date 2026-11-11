@@ -201,7 +201,7 @@ fn do_test_doc_with_extra_schema_options_throws_error(
 /// `try (Directory dir = newDirectory(); IndexWriter writer = new IndexWriter(dir,
 /// new IndexWriterConfig().setMergePolicy(NoMergePolicy.INSTANCE))) { body }`.
 fn with_writer(body: impl FnOnce(&Arc<IndexWriter>) -> Result<()>) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = IndexWriterConfig::new();
     config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let writer = IndexWriter::new(dir.as_directory(), config)?;

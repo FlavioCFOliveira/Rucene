@@ -153,7 +153,7 @@ pub fn class_def() -> Arc<Class> {
                 if let Some(r) = f.r.take() {
                     r.as_index_reader().close()?;
                 }
-                if let Some(mut index) = f.index.take() {
+                if let Some(index) = f.index.take() {
                     index.close()?;
                 }
                 Ok(())
@@ -909,7 +909,7 @@ fn test_explain_match_one_non_matching_sub_query_not_included_in_explanation(
 
 fn do_test_random_top_docs(num_fields: usize, freqs: &[f64]) -> Result<()> {
     randomizedtesting::jdk::exception::java_assert(num_fields == freqs.len(), String::new);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = IndexWriterConfig::with_analyzer(Some(Arc::new(StandardAnalyzer::new())));
     let w = IndexWriter::new(dir.as_directory(), config)?;
 

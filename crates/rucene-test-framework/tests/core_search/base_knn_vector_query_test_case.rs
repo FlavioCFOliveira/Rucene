@@ -295,7 +295,7 @@ fn test_get_filter<C: KnnVectorCase>() -> Result<()> {
 
 /// `try (Directory indexStore = …; IndexReader reader = DirectoryReader.open(indexStore)) { body }`.
 fn with_index<T>(
-    mut index_store: TestDirectory,
+    index_store: TestDirectory,
     body: impl FnOnce(&Arc<dyn DirectoryReader>) -> Result<T>,
 ) -> Result<T> {
     let reader = directory_reader::open(index_store.as_directory())?;
@@ -573,7 +573,7 @@ fn with_plain_writer(
 }
 
 fn test_score_cosine<C: KnnVectorCase>() -> Result<()> {
-    let mut d = C::new_directory_for_test()?;
+    let d = C::new_directory_for_test()?;
     with_plain_writer(&d, |w| {
         for j in 1..=5 {
             let mut doc = Document::new();
@@ -677,7 +677,7 @@ fn test_score_mip<C: KnnVectorCase>() -> Result<()> {
 
 /// The body shared by `testExplain` and `testExplainMultipleSegments`.
 fn explain_body<C: KnnVectorCase>(commit_each: bool, nomatch_doc: i32) -> Result<()> {
-    let mut d = C::new_directory_for_test()?;
+    let d = C::new_directory_for_test()?;
     with_plain_writer(&d, |w| {
         for j in 0..5 {
             let mut doc = Document::new();
@@ -725,7 +725,7 @@ fn test_skewed_index<C: KnnVectorCase>() -> Result<()> {
      * number of top K documents, but no more than K documents in total (otherwise we might occasionally
      * randomly fail to find one).
      */
-    let mut d = C::new_directory_for_test()?;
+    let d = C::new_directory_for_test()?;
     with_plain_writer(&d, |w| {
         let mut r = 0;
         for _i in 0..5 {
@@ -786,7 +786,7 @@ fn assert_random_consistency<C: KnnVectorCase>(multi_threaded: bool) -> Result<(
     let num_iters = 10;
     let every_doc_has_a_vector = random().next_boolean();
     let r = random();
-    let mut d = C::new_directory_for_test()?;
+    let d = C::new_directory_for_test()?;
     // To ensure consistency between seeded runs, remove some randomness
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))?;
@@ -861,7 +861,7 @@ fn test_random<C: KnnVectorCase>() -> Result<()> {
     let dimension = LuceneTestCase::at_least(5);
     let num_iters = LuceneTestCase::at_least(10);
     let every_doc_has_a_vector = random().next_boolean();
-    let mut d = C::new_directory_for_test()?;
+    let d = C::new_directory_for_test()?;
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     for _i in 0..num_docs {
         let mut doc = Document::new();
@@ -918,7 +918,7 @@ fn test_random_with_filter<C: KnnVectorCase>() -> Result<()> {
     let num_docs = 1000;
     let dimension = LuceneTestCase::at_least(5);
     let num_iters = LuceneTestCase::at_least(10);
-    let mut d = C::new_directory_for_test()?;
+    let d = C::new_directory_for_test()?;
     // Always use the default kNN format to have predictable behavior around when it hits
     // visitedLimit. This is fine since the test targets AbstractKnnVectorQuery logic, not the kNN
     // format
@@ -1066,7 +1066,7 @@ fn test_random_with_filter<C: KnnVectorCase>() -> Result<()> {
 fn test_filter_with_same_score<C: KnnVectorCase>() -> Result<()> {
     let num_docs = 100;
     let dimension = LuceneTestCase::at_least(5);
-    let mut d = C::new_directory_for_test()?;
+    let d = C::new_directory_for_test()?;
     // Always use the default kNN format to have predictable behavior around when it hits
     // visitedLimit. This is fine since the test targets AbstractKnnVectorQuery logic, not the kNN
     // format
@@ -1126,7 +1126,7 @@ fn with_dir_and_writer<C: KnnVectorCase>(
     iwc: IndexWriterConfig,
     body: impl FnOnce(&TestDirectory, &Arc<IndexWriter>) -> Result<()>,
 ) -> Result<()> {
-    let mut dir = C::new_directory_for_test()?;
+    let dir = C::new_directory_for_test()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     let result = body(&dir, &w);
     w.close()?;
@@ -1952,7 +1952,7 @@ impl Query for ThrowingBitSetQuery {
 }
 
 fn test_same_field_different_formats<C: KnnVectorCase>() -> Result<()> {
-    let mut directory = C::new_directory_for_test()?;
+    let directory = C::new_directory_for_test()?;
     let result = (|| -> Result<()> {
         let mock_analyzer = Arc::new(MockAnalyzer::new(&*random()));
         let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(

@@ -41,7 +41,7 @@ fn test_search_with_threads() -> Result<()> {
         LuceneTestCase::at_least(200)
     };
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();

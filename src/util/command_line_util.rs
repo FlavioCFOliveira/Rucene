@@ -31,10 +31,10 @@
 
 #![deny(unsafe_code)]
 
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::store::java_nio_file::IntoNioPath;
 use crate::store::{Directory, LockFactory, NIOFSDirectory, NativeFSLockFactory};
 
 /// The package Lucene qualifies an unqualified directory name with.
@@ -254,7 +254,10 @@ impl CommandLineUtil {
     /// # Errors
     ///
     /// As [`CommandLineUtil::new_fs_directory_with_lock`].
-    pub fn new_fs_directory(clazz_name: &str, path: &Path) -> Result<Box<dyn Directory>> {
+    pub fn new_fs_directory(
+        clazz_name: &str,
+        path: impl IntoNioPath,
+    ) -> Result<Box<dyn Directory>> {
         Self::new_fs_directory_with_lock(clazz_name, path, Box::new(NativeFSLockFactory))
     }
 
@@ -295,7 +298,7 @@ impl CommandLineUtil {
     /// [`adjust_directory_class_name`](Self::adjust_directory_class_name).
     pub fn new_fs_directory_with_lock(
         clazz_name: &str,
-        path: &Path,
+        path: impl IntoNioPath,
         lf: Box<dyn LockFactory>,
     ) -> Result<Box<dyn Directory>> {
         // `final Class<? extends FSDirectory> clazz = loadFSDirectoryClass(clazzName);`
@@ -393,9 +396,12 @@ impl CommandLineUtil {
     /// exception as its cause (`getCause()`); [`LuceneError`] has no reflective
     /// exception and [`LuceneErrorKind::Other`] holds one message and no cause, so
     /// the cause's text is that message.
+    ///
+    /// `path` keeps its filesystem (a [`nio::Path`](crate::store::java_nio_file::Path)
+    /// of a mock filesystem stays one), as Java's `Path` argument does.
     pub fn new_fs_directory_of_kind(
         kind: FSDirectoryKind,
-        path: &Path,
+        path: impl IntoNioPath,
         lf: Box<dyn LockFactory>,
     ) -> Result<Box<dyn Directory>> {
         // `Constructor ctor = clazz.getConstructor(Path.class,

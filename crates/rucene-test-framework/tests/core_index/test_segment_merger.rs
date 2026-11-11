@@ -129,7 +129,7 @@ fn tear_down(inst: &mut TestSegmentMergerInstance) -> Result<()> {
     .into_iter()
     .flatten()
     {
-        let mut dir = dir;
+        let dir = dir;
         dir.close()?;
     }
     LuceneTestCase::super_tear_down();

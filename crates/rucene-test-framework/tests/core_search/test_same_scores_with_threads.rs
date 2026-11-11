@@ -32,7 +32,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestSameScoresWithThreads.test`.
 fn test_same_scores_with_threads() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
     let w = RandomIndexWriter::new(&*random(), dir.as_directory(), Arc::new(analyzer))?;

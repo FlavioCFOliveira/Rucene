@@ -36,7 +36,7 @@ fn do_test_integer_overflow(size: usize) -> Result<()> {
     let freq_buffer = vec![0i32; size];
     let delta = 1 << 30;
     doc_delta_buffer[0] = delta;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         {
             let mut out = dir

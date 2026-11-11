@@ -313,7 +313,7 @@ impl Directory for ObservingDirectory {
             closed_at_release: Arc::clone(&self.closed_at_release),
         }))
     }
-    fn close(&mut self) -> rucene::error::Result<()> {
+    fn close(&self) -> rucene::error::Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> rucene::error::Result<std::collections::HashSet<String>> {

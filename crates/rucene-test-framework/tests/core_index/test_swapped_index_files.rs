@@ -36,8 +36,8 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestSwappedIndexFiles.test`.
 fn test_() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
 
     // Disable CFS 80% of the time so we can truncate individual files, but the other 20% of the
     // time we test truncation of .cfs/.cfe too:
@@ -99,7 +99,7 @@ fn swap_one_file(dir1: &Arc<dyn Directory>, dir2: &Arc<dyn Directory>, victim: &
     if verbose() {
         println!("TEST: swap file {victim}");
     }
-    let mut dir_copy = LuceneTestCase::new_directory();
+    let dir_copy = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir_copy, false);
     let copy = dir_copy.as_directory();
 

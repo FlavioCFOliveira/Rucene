@@ -188,7 +188,7 @@ fn test_packed_ints() -> Result<()> {
             } else {
                 TestUtil::next_int(&*random(), 0, 4096)
             };
-            let mut d = LuceneTestCase::new_directory();
+            let d = LuceneTestCase::new_directory();
             let dir = d.as_directory();
 
             let mut out =
@@ -297,7 +297,7 @@ fn test_packed_ints() -> Result<()> {
 }
 
 fn test_end_pointer() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let dir = d.as_directory();
     let value_count = RandomNumbers::random_int_between(&*random(), 1, 1000);
     let mut out = dir.create_output("tests.bin", &*LuceneTestCase::new_io_context(&*random()))?;
@@ -1418,7 +1418,7 @@ fn test_packed_input_output() -> Result<()> {
         skip[i] = LuceneTestCase::rarely();
     }
 
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let dir = d.as_directory();
     let mut out = dir.create_output("out.bin", &*DEFAULT_IO_CONTEXT)?;
     let mut total_bits: i64 = 0;
@@ -1565,7 +1565,7 @@ fn test_block_packed_reader_writer() -> Result<()> {
             };
         }
 
-        let mut d = LuceneTestCase::new_directory();
+        let d = LuceneTestCase::new_directory();
         let dir = d.as_directory();
         let mut out = dir.create_output("out.bin", &*DEFAULT_IO_CONTEXT)?;
         {
@@ -1639,7 +1639,7 @@ fn test_monotonic_block_packed_reader_writer() -> Result<()> {
             }
         }
 
-        let mut d = LuceneTestCase::new_directory();
+        let d = LuceneTestCase::new_directory();
         let dir = d.as_directory();
         let mut out = dir.create_output("out.bin", &*DEFAULT_IO_CONTEXT)?;
         {
@@ -1676,7 +1676,7 @@ fn test_monotonic_block_packed_reader_writer() -> Result<()> {
 fn test_block_reader_overflow() -> Result<()> {
     let value_count = TestUtil::next_long(&*random(), 1 + i32::MAX as i64, i32::MAX as i64 * 2);
     let block_size = 1i64 << TestUtil::next_int(&*random(), 20, 22);
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let dir = d.as_directory();
     let mut out = dir.create_output("out.bin", &*DEFAULT_IO_CONTEXT)?;
     let value = random().next_int() as i64 & 0xFFFFFFFF;

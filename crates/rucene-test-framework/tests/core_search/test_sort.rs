@@ -233,7 +233,7 @@ fn check_sort(
     total_hits: i64,
     expected: &[Option<&str>],
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for parts in docs {
         writer.add_document(&build_doc(parts))?;
@@ -694,7 +694,7 @@ fn test_double_missing_last() -> Result<()> {
 ///
 /// Port of `TestSort.testMultiSort`.
 fn test_multi_sort() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for (value1, value2) in [("foo", 0), ("bar", 1), ("bar", 0), ("foo", 1)] {
         let mut doc = Document::new();
@@ -776,7 +776,7 @@ fn test_multi_sort() -> Result<()> {
 /// Port of `TestSort.testRewrite`.
 ///
 fn test_rewrite() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let r = (|| -> Result<()> {
@@ -828,7 +828,7 @@ fn do_test_ghost(
     t: SortFieldType,
     expected: SortValue,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
     let mut doc = Document::new();
     add(&mut doc, indexed)?;

@@ -82,7 +82,7 @@ fn set_up(inst: &mut CheckIndexInstance) {
 
 /// `tearDown()`: `directory.close(); super.tearDown();`.
 fn tear_down(inst: &mut CheckIndexInstance) {
-    if let Some(mut directory) = inst.directory.take() {
+    if let Some(directory) = inst.directory.take() {
         directory.close().unwrap_or_else(|e| rethrow(e));
     }
     LuceneTestCase::super_tear_down();
@@ -140,7 +140,7 @@ fn token_with_payload(text: &str, start: i32, end: i32, payload: &str) -> Token 
 
 /// Port of `TestCheckIndex.testCheckIndexAllValid`.
 fn test_check_index_all_valid() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let live_doc_count = 1 + random().next_int_bound(10);
     let config = LuceneTestCase::new_index_writer_config();
     config.set_index_sort(Sort::new_fields(vec![SortField::new_reverse(
@@ -406,7 +406,7 @@ impl IndexDeletionPolicy for DeleteNothingIndexDeletionPolicy {
 /// CheckIndex fails to detect and correct that, while opening an IndexWriter
 /// on the index will fail since IndexWriter loads all commit points on init.
 fn test_prior_broken_commit_point() -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     // disable this normally useful test infra feature since this test intentionally leaves broken
     // indices:
     set_check_index_on_close(&dir, false);

@@ -183,7 +183,7 @@ fn test_one_clause_rewrite_optimization() -> Result<()> {
     const FIELD: &str = "content";
     const VALUE: &str = "foo";
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?.close()?;
     let r = directory_reader::open(dir.as_directory())?;
 
@@ -224,7 +224,7 @@ fn test_one_clause_rewrite_optimization() -> Result<()> {
 }
 
 fn test_single_filter_clause() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = LuceneTestCase::new_text_field("field", "a", Store::NO);
@@ -688,7 +688,7 @@ impl IndexSearcherOverrides for NoRewriteSearcher {
 }
 
 fn test_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = TextField::new("body", "a b c".to_string(), Store::NO)?;

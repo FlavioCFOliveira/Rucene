@@ -339,7 +339,7 @@ fn scores_with_rucene(
         &*DEFAULT_IO_CONTEXT,
     );
     let field_info = infos.field_info_by_number(0).expect("field info").clone();
-    let mut supplier = reader
+    let supplier = reader
         .as_quantized_vectors_reader()
         .expect("a quantized reader")
         .get_random_vector_scorer_supplier_for_merge(&field_info, &score_state)

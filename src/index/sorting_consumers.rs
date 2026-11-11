@@ -167,7 +167,7 @@ impl Directory for TrackingTmpOutputDirectoryWrapper {
     /// The wrapped directory belongs to the segment, which closes it; the
     /// wrapper holds it through a shared handle and has nothing of its own to
     /// close.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 

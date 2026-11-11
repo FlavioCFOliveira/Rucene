@@ -487,6 +487,52 @@ pub trait PointReader {
     fn close(&mut self) -> Result<()>;
 }
 
+/// The `try (PointReader reader = ...)` of a [`PointReader`]: an early exit
+/// (an error returned with `?`, or a panic) closes the reader, its own
+/// failure dropped as Java suppresses it under the one in flight; the normal
+/// exit closes it through [`close`](Self::close), whose failure is returned.
+pub(crate) struct PointReaderResource<'a>(Option<Box<dyn PointReader + 'a>>);
+
+impl<'a> PointReaderResource<'a> {
+    pub(crate) fn new(reader: Box<dyn PointReader + 'a>) -> Self {
+        Self(Some(reader))
+    }
+
+    /// Closes the reader at the end of the `try` block.
+    pub(crate) fn close(mut self) -> Result<()> {
+        match self.0.take() {
+            Some(mut reader) => reader.close(),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<'a> std::ops::Deref for PointReaderResource<'a> {
+    type Target = dyn PointReader + 'a;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_deref()
+            .expect("INVARIANT: the reader is taken only by close")
+    }
+}
+
+impl std::ops::DerefMut for PointReaderResource<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+            .as_deref_mut()
+            .expect("INVARIANT: the reader is taken only by close")
+    }
+}
+
+impl Drop for PointReaderResource<'_> {
+    fn drop(&mut self) {
+        if let Some(mut reader) = self.0.take() {
+            let _ = reader.close();
+        }
+    }
+}
+
 /// Sink that appends point values and later exposes a [`PointReader`].
 ///
 /// Equivalent to `org.apache.lucene.util.bkd.PointWriter`.
@@ -990,7 +1036,7 @@ impl OfflinePointWriter {
         let bytes_per_doc = self.config.bytes_per_doc() as usize;
         let mut records = Vec::with_capacity(count);
         {
-            let mut reader = self.get_reader(0, count)?;
+            let mut reader = PointReaderResource::new(self.get_reader(0, count)?);
             while reader.next()? {
                 let value = reader.point_value().clone();
                 let mut record = vec![0u8; bytes_per_doc];
@@ -4185,7 +4231,7 @@ impl BKDWriter {
             .map(|offline| offline.name.clone());
         let result = (|| -> Result<HeapPointWriter> {
             let mut heap = HeapPointWriter::new(self.config.clone(), count)?;
-            let mut reader = source.get_reader(0, count)?;
+            let mut reader = PointReaderResource::new(source.get_reader(0, count)?);
             for _ in 0..count {
                 let has_next = reader.next()?;
                 debug_assert!(has_next);
@@ -4712,7 +4758,9 @@ impl BKDWriter {
         max: &mut [u8],
     ) -> Result<()> {
         let mut writer = slice.writer.borrow_mut();
-        let mut reader = writer.get_reader(slice.start as usize, slice.count as usize)?;
+        let mut reader = PointReaderResource::new(
+            writer.get_reader(slice.start as usize, slice.count as usize)?,
+        );
         if !reader.next()? {
             return reader.close();
         }
@@ -6752,7 +6800,7 @@ mod tests {
             self.inner.obtain_lock(name)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.inner.close()
         }
 

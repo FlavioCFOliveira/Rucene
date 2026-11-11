@@ -137,7 +137,7 @@ fn assert_next_offsets(dp_enum: &mut dyn PostingsEnum, start: i32, end: i32) -> 
 ///
 /// Port of `TestTermVectorsWriter.testDoubleOffsetCounting`.
 fn test_double_offset_counting() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = plain_writer(&dir.as_directory())?;
     let mut doc = Document::new();
     let custom_type = tv_pos_off_type(StringField::type_not_stored())?;
@@ -208,7 +208,7 @@ fn check_double_field(
     first: (i32, i32),
     second: (i32, i32),
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(analyzer())),
@@ -266,7 +266,7 @@ fn test_end_offset_position_char_analyzer() -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testEndOffsetPositionWithCachingTokenFilter`.
 fn test_end_offset_position_with_caching_token_filter() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(MockAnalyzer::new(&*random()));
     let w = IndexWriter::new(
         dir.as_directory(),
@@ -334,7 +334,7 @@ fn test_end_offset_position_stop_filter() -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testEndOffsetPositionStandard`.
 fn test_end_offset_position_standard() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = plain_writer(&dir.as_directory())?;
     let mut doc = Document::new();
     let custom_type = tv_pos_off_type(TextField::type_not_stored())?;
@@ -377,7 +377,7 @@ fn test_end_offset_position_standard() -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testEndOffsetPositionStandardEmptyField`.
 fn test_end_offset_position_standard_empty_field() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = plain_writer(&dir.as_directory())?;
     let mut doc = Document::new();
     let custom_type = tv_pos_off_type(TextField::type_not_stored())?;
@@ -414,7 +414,7 @@ fn test_end_offset_position_standard_empty_field() -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testEndOffsetPositionStandardEmptyField2`.
 fn test_end_offset_position_standard_empty_field2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = plain_writer(&dir.as_directory())?;
     let mut doc = Document::new();
     let custom_type = tv_pos_off_type(TextField::type_not_stored())?;
@@ -496,7 +496,7 @@ fn index_corruption_docs(writer: &IndexWriter) -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testTermVectorCorruption`.
 fn test_term_vector_corruption() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     for _ in 0..2 {
         let writer = IndexWriter::new(dir.as_directory(), corruption_config()?)?;
         index_corruption_docs(&writer)?;
@@ -529,7 +529,7 @@ fn test_term_vector_corruption() -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testTermVectorCorruption2`.
 fn test_term_vector_corruption2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     for _ in 0..2 {
         let writer = IndexWriter::new(dir.as_directory(), corruption_config()?)?;
         index_corruption_docs(&writer)?;
@@ -547,7 +547,7 @@ fn test_term_vector_corruption2() -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testTermVectorCorruption3`.
 fn test_term_vector_corruption3() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), corruption_config()?)?;
 
     let mut document = Document::new();
@@ -587,7 +587,7 @@ fn test_term_vector_corruption3() -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testNoTermVectorAfterTermVector`.
 fn test_no_term_vector_after_term_vector() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = plain_writer(&dir.as_directory())?;
     let mut document = Document::new();
     let custom_type2 = tv_pos_off_type(TextField::type_not_stored())?;
@@ -628,7 +628,7 @@ fn test_no_term_vector_after_term_vector() -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testNoTermVectorAfterTermVectorMerge`.
 fn test_no_term_vector_after_term_vector_merge() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = plain_writer(&dir.as_directory())?;
     let mut document = Document::new();
     let custom_type = FieldType::new_from(TextField::type_not_stored());
@@ -719,7 +719,7 @@ fn test_inconsistent_term_vector_options() -> Result<()> {
 
 /// `private void doTestMixup(FieldType ft1, FieldType ft2)`.
 fn do_test_mixup(ft1: FieldType, ft2: FieldType) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // add 3 good docs
@@ -765,7 +765,7 @@ fn do_test_mixup(ft1: FieldType, ft2: FieldType) -> Result<()> {
 ///
 /// Port of `TestTermVectorsWriter.testNoAbortOnBadTVSettings`.
 fn test_no_abort_on_bad_tv_settings() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // Don't use RandomIndexWriter because we want to be sure both docs go to 1 seg:
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     let iw = IndexWriter::new(dir.as_directory(), iwc)?;

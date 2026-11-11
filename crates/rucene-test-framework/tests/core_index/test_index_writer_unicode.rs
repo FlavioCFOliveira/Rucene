@@ -337,7 +337,7 @@ fn test_all_unicode_chars() -> Result<()> {
 
 /// Port of `TestIndexWriterUnicode.testEmbeddedFFFF`.
 fn test_embedded_ffff() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         d.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -370,7 +370,7 @@ fn test_embedded_ffff() -> Result<()> {
 ///
 /// Port of `TestIndexWriterUnicode.testInvalidUTF16`.
 fn test_invalid_utf16() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(
@@ -418,7 +418,7 @@ fn test_invalid_utf16() -> Result<()> {
 /// Port of `TestIndexWriterUnicode.testTermUTF16SortOrder`.
 fn test_term_utf16_sort_order() -> Result<()> {
     let rnd = random();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*rnd, dir.as_directory())?;
     let mut d = Document::new();
     // Single segment

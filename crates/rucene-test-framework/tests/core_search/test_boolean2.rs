@@ -195,7 +195,7 @@ fn before_class() -> Result<()> {
         if verbose() {
             println!("\nTEST: cycle...");
         }
-        let mut copy = copy_of(&dir2)?;
+        let copy = copy_of(&dir2)?;
 
         let iwc = mock_iwc();
         iwc.set_codec(TestUtil::get_default_codec())?;

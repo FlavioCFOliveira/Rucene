@@ -82,7 +82,7 @@ pub fn class_def() -> Arc<Class> {
             Method::new("tearDown")
                 .throws(&["java.lang.Exception"])
                 .body(|inst: &mut Instance| {
-                    if let Some(mut dir) = inst.dir.take() {
+                    if let Some(dir) = inst.dir.take() {
                         dir.close().unwrap_or_else(|e| rethrow_java(e));
                     }
                     LuceneTestCase::super_tear_down();
@@ -565,7 +565,7 @@ fn test_lucene_1590(inst: &Instance) -> Result<()> {
 fn do_test_ram_usage(
     field_supplier: impl Fn(&str) -> Result<Box<dyn IndexableField>>,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_max_buffered_docs(10)?;
     iwc.set_ram_buffer_size_mb(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH as f64)?;

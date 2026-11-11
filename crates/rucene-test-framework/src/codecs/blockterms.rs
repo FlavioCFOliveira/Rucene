@@ -90,7 +90,7 @@ pub(crate) fn fields_producer(
     state: &SegmentReadState<'_>,
     index_reader: impl FnOnce(&SegmentReadState<'_>) -> Result<Box<dyn TermsIndexReaderBase>>,
 ) -> Result<Box<dyn FieldsProducer>> {
-    let mut postings: Box<dyn PostingsReaderBase> = Box::new(Lucene104PostingsReader::new(state)?);
+    let postings: Box<dyn PostingsReaderBase> = Box::new(Lucene104PostingsReader::new(state)?);
     let index_reader = match index_reader(state) {
         Ok(r) => r,
         Err(e) => {

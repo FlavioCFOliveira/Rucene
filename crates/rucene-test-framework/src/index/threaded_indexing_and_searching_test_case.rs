@@ -154,17 +154,11 @@ impl ThreadedDirectory {
     ///
     /// # Errors
     ///
-    /// The directory's close errors; `IllegalStateException` when a caching
-    /// directory is still referenced.
+    /// The directory's close errors.
     pub fn close(self) -> Result<()> {
         match self {
-            ThreadedDirectory::Mock(mut d) => d.close(),
-            ThreadedDirectory::NrtCaching(d) => match Arc::try_unwrap(d) {
-                Ok(mut d) => d.close(),
-                Err(_) => Err(LuceneError::illegal_state(
-                    "the NRTCachingDirectory is still referenced".to_string(),
-                )),
-            },
+            ThreadedDirectory::Mock(d) => d.close(),
+            ThreadedDirectory::NrtCaching(d) => d.close(),
         }
     }
 }

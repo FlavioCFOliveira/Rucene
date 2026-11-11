@@ -58,7 +58,7 @@ impl InfoStream for NoTestPoints {
 ///
 /// Port of `TestInfoStream.testTestPointsOff`.
 fn test_test_points_off() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(None);
     iwc.set_info_stream(Arc::new(NoTestPoints))?;
     let iw = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -93,7 +93,7 @@ impl InfoStream for SeenTestPoint {
 ///
 /// Port of `TestInfoStream.testTestPointsOn`.
 fn test_test_points_on() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(None);
     let seen_test_point = Arc::new(AtomicBool::new(false));
     iwc.set_info_stream(Arc::new(SeenTestPoint(Arc::clone(&seen_test_point))))?;
@@ -145,7 +145,7 @@ fn test_merge_small_index() -> Result<()> {
     }))?;
     {
         // try (Directory dir = newDirectory(); IndexWriter iw = new IndexWriter(dir, iwc))
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = IndexWriter::new(dir.as_directory(), iwc)?;
         let body = (|| -> Result<()> {
             iw.add_document(&Document::new())?;

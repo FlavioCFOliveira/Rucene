@@ -45,7 +45,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `testSameVectorIndexedMultipleTimes`.
 fn test_same_vector_indexed_multiple_times() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let vector = vec![0.5f32; 16];
     let outcome = (|| -> Result<()> {
         let w = IndexWriter::new(d.as_directory(), IndexWriterConfig::new())?;

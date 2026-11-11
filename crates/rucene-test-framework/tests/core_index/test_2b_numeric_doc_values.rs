@@ -40,7 +40,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Indexes `IndexWriter.MAX_DOCS` docs with an increasing dv field.
 fn test_numerics() -> Result<()> {
-    let mut dir =
+    let dir =
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BNumerics"));
     never_throttle(&dir);
 

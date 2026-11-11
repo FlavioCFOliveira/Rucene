@@ -270,7 +270,7 @@ impl Directory for FakeDirectory {
         unsupported()
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         unsupported()
     }
 
@@ -526,7 +526,7 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
 
     /// `testForceMergeNotNeeded()`.
     fn test_force_merge_not_needed(&self) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let may_merge = Arc::new(AtomicBool::new(true));
             let merge_scheduler = Arc::new(NotNeededMergeScheduler {
@@ -594,7 +594,7 @@ pub trait BaseMergePolicyTestCase: Send + Sync + 'static {
             );
         }
         let mut infos = SegmentInfos::new(i32::from(Version::LATEST.major))?;
-        let mut directory = LuceneTestCase::new_directory();
+        let directory = LuceneTestCase::new_directory();
         {
             let context = MockMergeContext::new(|_| 0);
             let num_segs = LuceneTestCase::random().next_int_bound(10);

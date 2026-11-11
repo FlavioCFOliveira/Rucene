@@ -53,7 +53,7 @@ fn stored_text(name: &str, value: &str) -> Box<Field> {
 
 /// Port of `TestManyFields.testManyFields`.
 fn test_many_fields() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     iwc.set_max_buffered_docs(10)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -89,7 +89,7 @@ fn test_many_fields() -> Result<()> {
 
 /// Port of `TestManyFields.testDiverseDocs`.
 fn test_diverse_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = mock_iwc();
     iwc.set_ram_buffer_size_mb(0.5)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -148,7 +148,7 @@ fn test_diverse_docs() -> Result<()> {
 ///
 /// Port of `TestManyFields.testRotatingFieldNames`.
 fn test_rotating_field_names() -> Result<()> {
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "TestIndexWriter.testChangingFields",
     ));
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));

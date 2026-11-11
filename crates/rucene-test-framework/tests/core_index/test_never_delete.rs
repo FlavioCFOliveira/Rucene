@@ -34,7 +34,7 @@ pub fn class_def() -> Arc<Class> {
 /// Port of `TestNeverDelete.testIndexing`.
 fn test_indexing() -> Result<()> {
     let tmp_dir = LuceneTestCase::create_temp_dir_prefix("TestNeverDelete");
-    let mut d = LuceneTestCase::new_fs_directory(&tmp_dir);
+    let d = LuceneTestCase::new_fs_directory(&tmp_dir);
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));

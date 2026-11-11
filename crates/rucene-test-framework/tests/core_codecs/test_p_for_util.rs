@@ -31,7 +31,7 @@ pub fn class_def() -> Arc<Class> {
 fn test_encode_decode() -> Result<()> {
     let iterations = RandomNumbers::random_int_between(&*random(), 50, 1000) as usize;
     let values = create_test_data(iterations, 31);
-    let mut d = ByteBuffersDirectory::new();
+    let d = ByteBuffersDirectory::new();
     let end_pointer = encode_test_data(iterations, &values, &d)?;
     let mut r#in = d.open_input("test.bin", &*READONCE_IO_CONTEXT)?;
     {

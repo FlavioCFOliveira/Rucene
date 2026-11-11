@@ -117,7 +117,7 @@ fn test_drop_fully_deleted_segments() -> Result<()> {
         match_all(),
         NoMergePolicy::instance(),
     ))))?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let writer = IndexWriter::new(dir.as_directory(), index_writer_config)?;
         let result = (|| -> Result<()> {
@@ -184,7 +184,7 @@ fn test_drop_fully_deleted_segments() -> Result<()> {
 
 /// Port of `TestSoftDeletesDirectoryReaderWrapper.testReuseUnchangedLeafReader`.
 fn test_reuse_unchanged_leaf_reader() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     let soft_deletes_field = "soft_delete";
     index_writer_config.set_soft_deletes_field(Some(soft_deletes_field.to_string()));
@@ -266,7 +266,7 @@ fn is_wrapped(reader: &dyn LeafReader) -> bool {
 
 /// Port of `TestSoftDeletesDirectoryReaderWrapper.testMixSoftAndHardDeletes`.
 fn test_mix_soft_and_hard_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     let soft_deletes_field = "soft_delete";
     index_writer_config.set_soft_deletes_field(Some(soft_deletes_field.to_string()));
@@ -339,7 +339,7 @@ impl ClosedListener for CountingListener {
 
 /// Port of `TestSoftDeletesDirectoryReaderWrapper.testReaderCacheKey`.
 fn test_reader_cache_key() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let index_writer_config = LuceneTestCase::new_index_writer_config();
     let soft_deletes_field = "soft_delete";
     index_writer_config.set_soft_deletes_field(Some(soft_deletes_field.to_string()));
@@ -428,7 +428,7 @@ fn test_avoid_wrapping_readers_without_soft_deletes() -> Result<()> {
         match_all(),
         Arc::clone(&merge_policy),
     ))))?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let writer = IndexWriter::new(dir.as_directory(), iwc)?;
         let result = (|| -> Result<()> {

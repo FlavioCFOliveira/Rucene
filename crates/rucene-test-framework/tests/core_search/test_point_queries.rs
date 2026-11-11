@@ -234,7 +234,7 @@ fn doc_with(field: Box<dyn rucene::index::IndexableField>) -> Document {
 
 /// Port of `TestPointQueries.testBasicInts`.
 fn test_basic_ints() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = mock_writer(&dir)?;
 
     w.add_document(&doc_with(Box::new(IntPoint::new("point", &[-7])?)))?;
@@ -262,7 +262,7 @@ fn test_basic_ints() -> Result<()> {
 
 /// Port of `TestPointQueries.testBasicFloats`.
 fn test_basic_floats() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = mock_writer(&dir)?;
 
     w.add_document(&doc_with(Box::new(FloatPoint::new("point", &[-7.0])?)))?;
@@ -290,7 +290,7 @@ fn test_basic_floats() -> Result<()> {
 
 /// Port of `TestPointQueries.testBasicLongs`.
 fn test_basic_longs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = mock_writer(&dir)?;
 
     w.add_document(&doc_with(Box::new(LongPoint::new("point", &[-7])?)))?;
@@ -318,7 +318,7 @@ fn test_basic_longs() -> Result<()> {
 
 /// Port of `TestPointQueries.testBasicDoubles`.
 fn test_basic_doubles() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = mock_writer(&dir)?;
 
     w.add_document(&doc_with(Box::new(DoublePoint::new("point", &[-7.0])?)))?;
@@ -346,7 +346,7 @@ fn test_basic_doubles() -> Result<()> {
 
 /// Port of `TestPointQueries.testCrazyDoubles`.
 fn test_crazy_doubles() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = mock_writer(&dir)?;
 
     for v in [
@@ -418,7 +418,7 @@ fn test_crazy_doubles() -> Result<()> {
 
 /// Port of `TestPointQueries.testCrazyFloats`.
 fn test_crazy_floats() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = mock_writer(&dir)?;
 
     for v in [
@@ -588,7 +588,7 @@ fn verify_longs(values: Arc<Vec<i64>>, ids: Option<Vec<i32>>) -> Result<()> {
         iwc.set_max_buffered_docs((values.len() / 100) as i32)?;
     }
     iwc.set_codec(get_codec())?;
-    let mut dir = if values.len() > 100000 {
+    let dir = if values.len() > 100000 {
         LuceneTestCase::new_maybe_virus_checking_fs_directory(
             &LuceneTestCase::create_temp_dir_prefix("TestRangeTree"),
         )
@@ -897,7 +897,7 @@ fn verify_binary(
     }
     iwc.set_codec(get_codec())?;
 
-    let mut dir = if doc_values.len() > 100000 {
+    let dir = if doc_values.len() > 100000 {
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
             "TestPointQueries",
         ))
@@ -1212,7 +1212,7 @@ fn codec_random_writer(
 fn close_rwd(
     r: Arc<dyn DirectoryReader>,
     w: RandomIndexWriter,
-    mut dir: rucene_test_framework::util::lucene_test_case::TestDirectory,
+    dir: rucene_test_framework::util::lucene_test_case::TestDirectory,
 ) -> Result<()> {
     r.close()?;
     w.close()?;
@@ -1497,7 +1497,7 @@ fn id_zero_doc() -> Result<Document> {
 
 /// Port of `TestPointQueries.testAllPointDocsWereDeletedAndThenMergedAgain`.
 fn test_all_point_docs_were_deleted_and_then_merged_again() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
     w.add_document(&id_zero_doc()?)?;
@@ -1579,7 +1579,7 @@ fn get_codec() -> Arc<dyn Codec> {
 
 /// Port of `TestPointQueries.testExactPoints`.
 fn test_exact_points() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -1720,7 +1720,7 @@ fn test_random_point_in_set_query() -> Result<()> {
         println!("TEST: numValues={num_values} numDocs={num_docs}");
     }
 
-    let mut dir = if num_docs > 100000 {
+    let dir = if num_docs > 100000 {
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
             "TestPointQueries",
         ))
@@ -1919,7 +1919,7 @@ fn new_multi_dim_int_set_query(
 
 /// Port of `TestPointQueries.testBasicMultiDimPointInSetQuery`.
 fn test_basic_multi_dim_point_in_set_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -1953,7 +1953,7 @@ fn test_basic_multi_dim_point_in_set_query() -> Result<()> {
 
 /// Port of `TestPointQueries.testBasicMultiValueMultiDimPointInSetQuery`.
 fn test_basic_multi_value_multi_dim_point_in_set_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -2003,7 +2003,7 @@ fn test_basic_multi_value_multi_dim_point_in_set_query() -> Result<()> {
 
 /// Port of `TestPointQueries.testManyEqualValuesMultiDimPointInSetQuery`.
 fn test_many_equal_values_multi_dim_point_in_set_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -2067,7 +2067,7 @@ fn b(v: i32) -> u8 {
 
 /// Port of `TestPointQueries.testBasicPointInSetQuery`.
 fn test_basic_point_in_set_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -2259,7 +2259,7 @@ fn test_point_int_set_boxed() -> Result<()> {
 
 /// Port of `TestPointQueries.testBasicMultiValuedPointInSetQuery`.
 fn test_basic_multi_valued_point_in_set_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -2395,7 +2395,7 @@ fn test_basic_multi_valued_point_in_set_query() -> Result<()> {
 
 /// Port of `TestPointQueries.testEmptyPointInSetQuery`.
 fn test_empty_point_in_set_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -2432,7 +2432,7 @@ fn all_points_single_byte_doc(x: i32) -> Result<Document> {
 
 /// Port of `TestPointQueries.testPointInSetQueryManyEqualValues`.
 fn test_point_in_set_query_many_equal_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -2552,7 +2552,7 @@ fn test_point_in_set_query_many_equal_values() -> Result<()> {
 
 /// Port of `TestPointQueries.testPointRangeQueryManyEqualValues`.
 fn test_point_range_query_many_equal_values() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -2681,7 +2681,7 @@ fn test_point_range_query_many_equal_values() -> Result<()> {
 
 /// Port of `TestPointQueries.testPointInSetQueryManyEqualValuesWithBigGap`.
 fn test_point_in_set_query_many_equal_values_with_big_gap() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = codec_config()?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -2946,7 +2946,7 @@ fn range_class(it: &dyn DocIdSetIterator) -> bool {
 /// Port of `TestPointQueries.testRangeOptimizesIfAllPointsMatch`.
 fn test_range_optimizes_if_all_points_match() -> Result<()> {
     let num_dims = TestUtil::next_int(&*random(), 1, 3);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut value = vec![0i32; num_dims as usize];
     for i in 0..num_dims as usize {
@@ -3010,7 +3010,7 @@ fn test_range_optimizes_if_all_points_match() -> Result<()> {
 /// Port of `TestPointQueries.testPointRangeWeightCount`.
 fn test_point_range_weight_count() -> Result<()> {
     // the optimization for Weight#count kicks in only when the number of dimensions is 1
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let num_points = random().next_int_range(1, 10);
@@ -3331,7 +3331,7 @@ fn test_next_down() -> Result<()> {
 
 /// Port of `TestPointQueries.testInversePointRange`.
 fn test_inverse_point_range() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -3384,7 +3384,7 @@ fn test_inverse_point_range() -> Result<()> {
 
 /// Port of `TestPointQueries.testRangeQueryOptimizesRewrites`.
 fn test_range_query_optimizes_rewrites() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
@@ -3481,7 +3481,7 @@ fn scorer_supplier_is_null(
 
 /// Port of `TestPointQueries.testRangeQuerySkipsNonMatchingSegments`.
 fn test_range_query_skips_non_matching_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -3515,7 +3515,7 @@ fn test_range_query_skips_non_matching_segments() -> Result<()> {
 
 /// Port of `TestPointQueries.testPointInSetQuerySkipsNonMatchingSegments`.
 fn test_point_in_set_query_skips_non_matching_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

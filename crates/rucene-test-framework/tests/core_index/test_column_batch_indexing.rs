@@ -691,7 +691,7 @@ fn test_sparse_batch_matches_doc_by_doc() -> Result<()> {
     let total_docs = 7;
 
     // --- Batch path ---
-    let mut batch_dir = LuceneTestCase::new_directory();
+    let batch_dir = LuceneTestCase::new_directory();
     let batch_iwc = stable_iwc()?;
     {
         let batch_w = IndexWriter::new(batch_dir.as_directory(), batch_iwc)?;
@@ -712,7 +712,7 @@ fn test_sparse_batch_matches_doc_by_doc() -> Result<()> {
         batch_w.close()?;
     }
 
-    let mut single_dir = LuceneTestCase::new_directory();
+    let single_dir = LuceneTestCase::new_directory();
     let single_iwc = stable_iwc()?;
     {
         let single_w = IndexWriter::new(single_dir.as_directory(), single_iwc)?;
@@ -1925,8 +1925,8 @@ fn test_randomized_parity_vs_doc_by_doc() -> Result<()> {
         docs.push(random_parity_doc(&*r));
     }
 
-    let mut batch_dir = LuceneTestCase::new_directory();
-    let mut doc_dir = LuceneTestCase::new_directory();
+    let batch_dir = LuceneTestCase::new_directory();
+    let doc_dir = LuceneTestCase::new_directory();
     build_batch_index(&batch_dir, &docs, &*r)?;
     build_doc_by_doc_index(&doc_dir, &docs)?;
 

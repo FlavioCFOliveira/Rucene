@@ -27,7 +27,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestBinaryTerms.testBinary`.
 fn test_binary() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut bytes = BytesRef::new(vec![0u8; 2]);
     bytes.length = 0;

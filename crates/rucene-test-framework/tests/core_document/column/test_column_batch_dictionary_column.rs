@@ -467,12 +467,12 @@ fn with_writer(body: impl FnOnce(&Arc<IndexWriter>) -> Result<()>) -> Result<()>
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
     )?;
+    // `try (IndexWriter w = ...) { ... } dir.close();`
     let outcome = body(&w);
     let closed = w.close();
-    // `dir` stays open: `newDirectory` registered it for closing after the suite.
-    drop(dir);
     outcome?;
-    closed
+    closed?;
+    dir.close()
 }
 
 /// Port of `testIncompatibleDocValuesTypeThrows`.
@@ -742,7 +742,7 @@ impl CrossCheck {
         })
     }
 
-    fn close(mut self) -> Result<()> {
+    fn close(self) -> Result<()> {
         self.plain_w.close()?;
         self.dict_w.close()?;
         self.plain_dir.close()?;

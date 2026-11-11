@@ -60,7 +60,7 @@ fn set_up(inst: &mut CheckIndexInstance) {
 
 /// `tearDown()`: `directory.close(); super.tearDown();`.
 fn tear_down(inst: &mut CheckIndexInstance) {
-    if let Some(mut directory) = inst.directory.take() {
+    if let Some(directory) = inst.directory.take() {
         directory.close().unwrap_or_else(|e| rethrow(e));
     }
     LuceneTestCase::super_tear_down();

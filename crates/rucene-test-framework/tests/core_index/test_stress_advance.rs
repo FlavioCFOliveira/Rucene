@@ -34,7 +34,7 @@ fn test_stress_advance() -> Result<()> {
         if verbose() {
             println!("\nTEST: iter={iter}");
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let mut a_docs: HashSet<i32> = HashSet::new();
         let mut doc = Document::new();

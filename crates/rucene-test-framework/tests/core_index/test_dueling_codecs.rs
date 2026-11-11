@@ -191,10 +191,10 @@ fn tear_down(inst: &mut DuelingCodecsInstance) -> Result<()> {
     if let Some(r) = inst.right_reader.take() {
         keep(r.close());
     }
-    if let Some(mut d) = inst.left_dir.take() {
+    if let Some(d) = inst.left_dir.take() {
         keep(d.close());
     }
-    if let Some(mut d) = inst.right_dir.take() {
+    if let Some(d) = inst.right_dir.take() {
         keep(d.close());
     }
     if let Some(e) = first {

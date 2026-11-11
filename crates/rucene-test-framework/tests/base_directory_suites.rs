@@ -615,7 +615,7 @@ fn nrt_verify_compiles() -> Result<()> {
 /// `TestNRTCachingDirectory.testCreateTempOutputSameName()`.
 fn nrt_test_create_temp_output_same_name() -> Result<()> {
     let fs_dir = FSDirectory::open(LuceneTestCase::create_temp_dir_prefix("verify"))?;
-    let mut nrt_dir = NRTCachingDirectory::new(Box::new(fs_dir), 2.0, 25.0);
+    let nrt_dir = NRTCachingDirectory::new(Box::new(fs_dir), 2.0, 25.0);
     let name = "foo_bar_0.tmp";
     nrt_dir.create_output(name, &*DEFAULT_IO_CONTEXT)?.close()?;
 
@@ -685,7 +685,7 @@ fn nrt_test_cache_size_after_delete() -> Result<()> {
     let io_context = flush_io_context(FlushInfo::new(3, 40));
     let fn_ = "f1";
     let dir = LuceneTestCase::new_directory();
-    let mut nrt = NRTCachingDirectory::new(Box::new(OwnedTestDirectory::new(dir)), 1.0, 1.0);
+    let nrt = NRTCachingDirectory::new(Box::new(OwnedTestDirectory::new(dir)), 1.0, 1.0);
     let result = (|| -> Result<()> {
         // deletes a closed file
         {
@@ -777,7 +777,7 @@ fn tracking_test_track_copy_from() -> Result<()> {
 /// `TestMMapDirectory.testAceWithThreads()`.
 fn mmap_test_ace_with_threads(case: &dyn BaseDirectoryTestCase) -> Result<()> {
     let n_ints = 8 * 1024 * 1024;
-    let mut dir = case.get_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir = case.get_directory(&LuceneTestCase::create_temp_dir_prefix(
         "testAceWithThreads",
     ))?;
     let result = (|| -> Result<()> {
@@ -832,7 +832,7 @@ fn mmap_test_ace_with_threads(case: &dyn BaseDirectoryTestCase) -> Result<()> {
 
 /// `TestMMapDirectory.testNullParamsIndexInput()`.
 fn mmap_test_null_params_index_input(case: &dyn BaseDirectoryTestCase) -> Result<()> {
-    let mut mmap_dir = case.get_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let mmap_dir = case.get_directory(&LuceneTestCase::create_temp_dir_prefix(
         "testNullParamsIndexInput",
     ))?;
     let result = (|| -> Result<()> {
@@ -971,7 +971,7 @@ fn mmap_test_preload() -> Result<()> {
     let mut bytes = vec![0u8; size];
     rnd().next_bytes(&mut bytes);
 
-    let mut dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testPreload"))?;
+    let dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testPreload"))?;
     let result = (|| -> Result<()> {
         dir.set_preload(MMapDirectory::preload_hint());
         let preload: Arc<dyn FileOpenHint> = Arc::new(PreloadHint::instance());
@@ -1013,7 +1013,7 @@ fn mmap_test_confined() -> Result<()> {
     let mut bytes = vec![0u8; size];
     rnd().next_bytes(&mut bytes);
 
-    let mut dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testConfined"))?;
+    let dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testConfined"))?;
     let result = (|| -> Result<()> {
         {
             let mut out = dir.create_output("test", &*DEFAULT_IO_CONTEXT)?;
@@ -1096,7 +1096,7 @@ fn mmap_test_arenas() -> Result<()> {
     let mut bytes = vec![0u8; size];
     rnd().next_bytes(&mut bytes);
 
-    let mut dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testArenas"))?;
+    let dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix("testArenas"))?;
     let result = (|| -> Result<()> {
         for name in &names {
             let mut out = dir.create_output(name, &*DEFAULT_IO_CONTEXT)?;
@@ -1154,7 +1154,7 @@ fn mmap_test_arenas_many_segment_files() -> Result<()> {
     let mut bytes = vec![0u8; size];
     rnd().next_bytes(&mut bytes);
 
-    let mut dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix(
+    let dir = MMapDirectory::open(LuceneTestCase::create_temp_dir_prefix(
         "testArenasManySegmentFiles",
     ))?;
     let result = (|| -> Result<()> {
@@ -1251,7 +1251,7 @@ const IOOBE: &str = "java.lang.IndexOutOfBoundsException";
 /// actual segment is prefetched, but rather exercises the code and bounds.
 fn mmap_test_prefetch_with_segments(max_chunk_size: usize) -> Result<()> {
     let bytes = vec![0u8; (max_chunk_size * 2) + 1];
-    let mut dir = MMapDirectory::with_options(
+    let dir = MMapDirectory::with_options(
         LuceneTestCase::create_temp_dir_prefix("testPrefetchWithSegments"),
         Box::new(NativeFSLockFactory),
         max_chunk_size,
@@ -1359,7 +1359,7 @@ fn filter_test_overrides() -> Result<()> {
 fn filter_test_unwrap() -> Result<()> {
     let dir: Box<dyn Directory> = Box::new(FSDirectory::open(LuceneTestCase::create_temp_dir())?);
     let dir_ptr = &*dir as *const dyn Directory as *const ();
-    let mut dir2 = FilterDirectory::new(dir);
+    let dir2 = FilterDirectory::new(dir);
     Assert::assert_true(std::ptr::eq(
         dir2.get_delegate() as *const dyn Directory as *const (),
         dir_ptr,
@@ -1491,7 +1491,7 @@ impl Directory for SharedDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn rucene::store::Lock>> {
         self.0.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         close_shared(Arc::clone(&self.0))
     }
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -1505,7 +1505,7 @@ impl Directory for SharedDirectory {
 /// `TestFileSwitchDirectory.testRenameTmpFile()`.
 fn file_switch_test_rename_tmp_file(case: &dyn BaseDirectoryTestCase) -> Result<()> {
     {
-        let mut directory = case.get_directory(&LuceneTestCase::create_temp_dir())?;
+        let directory = case.get_directory(&LuceneTestCase::create_temp_dir())?;
         let result = (|| -> Result<()> {
             let name;
             {
@@ -1527,7 +1527,7 @@ fn file_switch_test_rename_tmp_file(case: &dyn BaseDirectoryTestCase) -> Result<
         result.and(directory.close())?;
     }
 
-    let mut directory =
+    let directory =
         TestFileSwitchDirectory::new_fs_switch_directory(HashSet::from(["bar".to_string()]))?;
     let result = (|| -> Result<()> {
         let broken_name;
@@ -1595,7 +1595,7 @@ fn niofs_test_handle_exception_in_constructor() -> Result<()> {
         Box::new(SimulatedSizeFailureLeakFS),
     );
     let wrapped = leak_fs.wrap_path(&path);
-    let mut dir = NIOFSDirectory::open(&wrapped)?;
+    let dir = NIOFSDirectory::open(&wrapped)?;
     let result = (|| -> Result<()> {
         {
             let mut out = dir.create_output("test.bin", &*DEFAULT_IO_CONTEXT)?;
@@ -1617,7 +1617,7 @@ fn file_switch_test_delete_and_list() -> Result<()> {
     let path = LuceneTestCase::create_temp_dir();
     let provider = WindowsFS::new(Arc::clone(path.get_file_system()));
     let index_path = provider.wrap_path(&path);
-    let mut dir = FileSwitchDirectory::new(
+    let dir = FileSwitchDirectory::new(
         HashSet::from(["tim".to_string()]),
         Box::new(NIOFSDirectory::open(&index_path)?),
         Box::new(NIOFSDirectory::open(&index_path)?),
@@ -1693,7 +1693,7 @@ fn multi_mmap_assert_correct_impl(is_single: bool, ii: &dyn IndexInput) {
 /// `TestMultiMMap.testSeekingExceptions()`.
 fn multi_mmap_test_seeking_exceptions(case: &dyn BaseDirectoryTestCase) -> Result<()> {
     let slice_size = 128;
-    let mut dir = multi_mmap_get_directory(case, &LuceneTestCase::create_temp_dir(), slice_size)?;
+    let dir = multi_mmap_get_directory(case, &LuceneTestCase::create_temp_dir(), slice_size)?;
     let result = (|| -> Result<()> {
         let size = 128 + 63;
         {
@@ -1751,7 +1751,7 @@ fn multi_mmap_test_seeking_exceptions(case: &dyn BaseDirectoryTestCase) -> Resul
 fn multi_mmap_test_implementations(case: &dyn BaseDirectoryTestCase) -> Result<()> {
     for i in 2..12 {
         let chunk_size: i32 = 1 << i;
-        let mut mmap_dir = multi_mmap_get_directory(
+        let mmap_dir = multi_mmap_get_directory(
             case,
             &LuceneTestCase::create_temp_dir_prefix("testImplementations"),
             chunk_size,
@@ -1806,7 +1806,7 @@ fn multi_mmap_test_implementations(case: &dyn BaseDirectoryTestCase) -> Result<(
 
 /// `TestMultiMMap.testCloneSafety()`.
 fn multi_mmap_test_clone_safety(case: &dyn BaseDirectoryTestCase) -> Result<()> {
-    let mut mmap_dir =
+    let mmap_dir =
         case.get_directory(&LuceneTestCase::create_temp_dir_prefix("testCloneSafety"))?;
     let mut io = mmap_dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*rnd()))?;
     io.write_v_int(5)?;
@@ -1828,7 +1828,7 @@ fn multi_mmap_test_clone_safety(case: &dyn BaseDirectoryTestCase) -> Result<()> 
 
 /// `TestMultiMMap.testCloneSliceSafety()`.
 fn multi_mmap_test_clone_slice_safety(case: &dyn BaseDirectoryTestCase) -> Result<()> {
-    let mut mmap_dir = case.get_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let mmap_dir = case.get_directory(&LuceneTestCase::create_temp_dir_prefix(
         "testCloneSliceSafety",
     ))?;
     let mut io = mmap_dir.create_output("bytes", &*LuceneTestCase::new_io_context(&*rnd()))?;

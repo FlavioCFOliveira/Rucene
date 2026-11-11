@@ -56,7 +56,7 @@ fn test_random() -> Result<()> {
             println!("TEST: iter={iter}");
         }
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
 
         let iwc = mock_iwc();
         iwc.set_merge_policy(Some(Arc::new(KeepFullyDeletedSegmentsMergePolicy::new(
@@ -198,7 +198,7 @@ fn two_segment_index() -> Result<(
 
 /// Port of `TestMultiFields.testSeparateEnums`.
 fn test_separate_enums() -> Result<()> {
-    let (mut dir, r) = two_segment_index()?;
+    let (dir, r) = two_segment_index()?;
     let j = BytesRef::from_char_sequence("j");
     let mut d1 = TestUtil::docs(&*random(), &r, "f", &j, None, POSTINGS_ENUM_NONE)?
         .unwrap_or_else(|| npe("d1"));
@@ -212,7 +212,7 @@ fn test_separate_enums() -> Result<()> {
 
 /// Port of `TestMultiFields.testTermDocsEnum`.
 fn test_term_docs_enum() -> Result<()> {
-    let (mut dir, r) = two_segment_index()?;
+    let (dir, r) = two_segment_index()?;
     let mut de = MultiTerms::get_term_postings_enum(
         &r,
         "f",

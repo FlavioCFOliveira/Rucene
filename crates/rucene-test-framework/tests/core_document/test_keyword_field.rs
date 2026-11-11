@@ -101,7 +101,7 @@ fn test_set_string_value() -> Result<()> {
 /// index `field` alone, then check its term, its doc values and its stored
 /// value with `check_stored`.
 fn index_one(field: KeywordField, check_stored: impl FnOnce(&Document)) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),

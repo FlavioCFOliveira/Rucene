@@ -417,7 +417,7 @@ struct NormsEntry {
 pub struct Lucene90NormsProducer {
     norms: HashMap<i32, NormsEntry>,
     max_doc: i32,
-    data: Box<dyn IndexInput>,
+    data: crate::store::SharedIndexInput,
     /// `merging`: set on the instance `getMergeInstance()` returns.
     merging: bool,
     /// `disiInputs`: the docs-with-field inputs a merge instance opened, by
@@ -521,7 +521,7 @@ impl Lucene90NormsProducer {
         Ok(Self {
             norms,
             max_doc,
-            data,
+            data: crate::store::SharedIndexInput::new(data),
             merging: false,
             disi_inputs: Mutex::new(HashMap::new()),
             disi_jump_tables: Mutex::new(HashMap::new()),
@@ -536,7 +536,7 @@ impl Lucene90NormsProducer {
         Ok(Self {
             norms: self.norms.clone(),
             max_doc: self.max_doc,
-            data: self.data.clone_input()?,
+            data: crate::store::SharedIndexInput::new(self.data.clone_input()?),
             merging: true,
             disi_inputs: Mutex::new(HashMap::new()),
             disi_jump_tables: Mutex::new(HashMap::new()),
@@ -597,7 +597,9 @@ impl Lucene90NormsProducer {
                 entry.num_docs_with_field, entry.bytes_per_norm
             ))));
         }
-        self.data.random_access_slice(entry.norms_offset, length)
+        self.data
+            .read()
+            .random_access_slice(entry.norms_offset, length)
     }
 
     /// Opens the data-blocks slice of one sparse field's docs-with-field
@@ -617,7 +619,7 @@ impl Lucene90NormsProducer {
     fn get_disi_input(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<Box<dyn IndexInput>> {
         if !self.merging {
             return create_block_slice(
-                self.data.as_ref(),
+                &**self.data.read(),
                 "docs",
                 entry.docs_with_field_offset,
                 entry.docs_with_field_length,
@@ -630,7 +632,7 @@ impl Lucene90NormsProducer {
             Some(r#in) => Arc::clone(r#in),
             None => {
                 let r#in = Arc::new(Mutex::new(create_block_slice(
-                    self.data.as_ref(),
+                    &**self.data.read(),
                     "docs",
                     entry.docs_with_field_offset,
                     entry.docs_with_field_length,
@@ -671,7 +673,7 @@ impl Lucene90NormsProducer {
             Some(jump_table) => jump_table,
             None => {
                 let Some(jump_table) = create_jump_table(
-                    self.data.as_ref(),
+                    &**self.data.read(),
                     entry.docs_with_field_offset,
                     entry.docs_with_field_length,
                     entry.jump_table_entry_count as i32,
@@ -815,7 +817,7 @@ impl NormsProducer for Lucene90NormsProducer {
         Ok(Box::new(self.merge_instance()?))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.data.close()
     }
 }
@@ -1563,7 +1565,7 @@ mod tests {
             }))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1604,7 +1606,7 @@ mod tests {
             consumer.close().unwrap();
         }
 
-        let mut producer = Lucene90NormsFormat::new()
+        let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
         let mut values = producer.get_norms(&body).unwrap().unwrap();
@@ -1637,7 +1639,7 @@ mod tests {
         let first = lengths(&dir);
         consumer.close().unwrap();
         assert_eq!(lengths(&dir), first);
-        let mut producer = Lucene90NormsFormat::new()
+        let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
         producer.check_integrity().unwrap();

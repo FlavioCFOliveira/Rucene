@@ -85,7 +85,7 @@ fn npe<T>() -> T {
 
 /// `private void doTestBasics(Occur reqOccur)`.
 fn do_test_basics(req_occur: Occur) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     // retain doc id order
     iwc.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
@@ -176,7 +176,7 @@ fn assert_equals_float(expected: f32, actual: f32) {
 
 /// Port of `TestReqOptSumScorer.testMaxBlock`.
 fn test_max_block() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -230,7 +230,7 @@ fn test_max_block() -> Result<()> {
 
 /// Port of `TestReqOptSumScorer.testMaxScoreSegment`.
 fn test_max_score_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -345,7 +345,7 @@ fn random_approx(query: &Arc<dyn Query>) -> Arc<dyn Query> {
 
 /// `private void doTestRandom(Occur reqOccur, double optFreq)`.
 fn do_test_random(req_occur: Occur, opt_freq: f64) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),

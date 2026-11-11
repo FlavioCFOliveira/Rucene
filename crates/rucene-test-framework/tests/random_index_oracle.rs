@@ -632,7 +632,7 @@ fn random_postings_test_terms_match_lucene() {
         let result = outcome(|| {
             let mut t = RandomPostingsTester::new(Arc::clone(&r))?;
             let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-            let mut fp = t.build_index(codec_of(codec), Arc::clone(&dir), max, payloads, false)?;
+            let fp = t.build_index(codec_of(codec), Arc::clone(&dir), max, payloads, false)?;
             t.test_fields(&*fp);
             let mut options = TestOptions::all_of();
             if !threads {

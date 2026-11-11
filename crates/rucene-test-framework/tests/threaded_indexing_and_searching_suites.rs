@@ -457,6 +457,18 @@ enum Nrt {
     NoDeletes,
 }
 
+/// The checked `InterruptedException` of `waitForGeneration`, propagated as
+/// the throwable it is (`throws InterruptedException`).
+fn interrupted_exception(
+    _: rucene::util::concurrent::InterruptedException,
+) -> rucene::error::LuceneError {
+    rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::Unchecked {
+        class: "java.lang.InterruptedException",
+        message: None,
+        cause: None,
+    })
+}
+
 impl ControlledRealTimeSuite {
     fn manager(&self, which: Nrt) -> Arc<SearcherManager> {
         match which {
@@ -470,7 +482,7 @@ impl ControlledRealTimeSuite {
     }
 
     /// `thread.waitForGeneration(gen); assertTrue(gen <= thread.getSearchingGen())`.
-    fn wait_for(&self, which: Nrt, gen: i64) {
+    fn wait_for(&self, which: Nrt, gen: i64) -> Result<()> {
         let guard = match which {
             Nrt::Deletes => &self.nrt_deletes_thread,
             Nrt::NoDeletes => &self.nrt_no_deletes_thread,
@@ -478,8 +490,11 @@ impl ControlledRealTimeSuite {
         .read()
         .unwrap_or_else(|e| e.into_inner());
         let thread = guard.as_ref().expect("doAfterWriter started the threads");
-        thread.wait_for_generation(gen);
+        thread
+            .wait_for_generation(gen)
+            .map_err(interrupted_exception)?;
         Assert::assert_true(gen <= thread.get_searching_gen());
+        Ok(())
     }
 
     /// The random verification of each indexing hook: once in 20 (with
@@ -501,7 +516,7 @@ impl ControlledRealTimeSuite {
                     Thread::current().name()
                 );
             }
-            self.wait_for(which, gen);
+            self.wait_for(which, gen)?;
             let manager = self.manager(which);
             let s = manager.acquire()?;
             if *VERBOSE {
@@ -554,7 +569,8 @@ impl ThreadedIndexingAndSearchingTestCase for ControlledRealTimeSuite {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .expect("doAfterWriter started the threads")
-            .wait_for_generation(max_gen);
+            .wait_for_generation(max_gen)
+            .map_err(interrupted_exception)?;
         Ok(TestSearcher::Managed(self.manager(Nrt::Deletes).acquire()?))
     }
 
@@ -920,7 +936,7 @@ mod crt {
             MockAnalyzer::new(&*LuceneTestCase::random()),
         )));
         conf.set_merge_policy(Some(NoMergePolicy::instance()))?;
-        let mut d = LuceneTestCase::new_directory();
+        let d = LuceneTestCase::new_directory();
         let latch = Arc::new(CountDownLatch::new(1));
         let signal = Arc::new(CountDownLatch::new(1));
 
@@ -959,11 +975,19 @@ mod crt {
                         manager.maybe_refresh()?; // kick off another reopen so we inc. the internal gen
                         Ok(())
                     };
-                if let Err(e) = run() {
+                // `try { ... } catch (Exception e) { e.printStackTrace(); }
+                // finally { latch.countDown(); }`: the latch is counted down
+                // whatever escapes, a Java `Error` (a panic) included, which
+                // then propagates as the thread's uncaught exception.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+                if let Ok(Err(e)) = &outcome {
                     // e.printStackTrace()
                     eprintln!("{e}");
                 }
                 latch.count_down(); // let the add below finish
+                if let Err(payload) = outcome {
+                    std::panic::resume_unwind(payload);
+                }
             })
         };
         t.start();
@@ -993,10 +1017,20 @@ mod crt {
         let finished = Arc::new(AtomicBool::new(false));
         let waiter = {
             let (thread, finished) = (Arc::clone(&thread), Arc::clone(&finished));
-            // Java catches the `InterruptedException` of `waitForGeneration`;
-            // Rucene's wait is not interruptible.
             Thread::unnamed(move || {
-                thread.wait_for_generation(last_gen);
+                if let Err(ie) = thread.wait_for_generation(last_gen) {
+                    // `Thread.currentThread().interrupt(); throw new RuntimeException(ie);`
+                    Thread::current().interrupt();
+                    rucene_test_framework::util::java_exceptions::rethrow_java(
+                        rucene::error::LuceneError::from(
+                            rucene::error::LuceneErrorKind::Unchecked {
+                                class: "java.lang.RuntimeException",
+                                message: Some(ie.to_string()),
+                                cause: Some(Arc::new(crate::interrupted_exception(ie))),
+                            },
+                        ),
+                    );
+                }
                 finished.store(true, Ordering::SeqCst);
             })
         };
@@ -1040,7 +1074,7 @@ mod crt {
     pub fn test_evil_searcher_factory(
         _inst: &mut ThreadedInstance<ControlledRealTimeSuite>,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = RandomIndexWriter::new_with_mock_analyzer(
             &*LuceneTestCase::random(),
             dir.as_directory(),
@@ -1095,7 +1129,7 @@ mod crt {
     pub fn test_listener_called(
         _inst: &mut ThreadedInstance<ControlledRealTimeSuite>,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = IndexWriter::new(dir.as_directory(), iwc_null_analyzer())?;
         let after_refresh_called = Arc::new(AtomicBool::new(false));
         let sm = SearcherManager::from_writer(
@@ -1139,7 +1173,7 @@ mod crt {
         let sdp = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
             KeepOnlyLastCommitDeletionPolicy,
         ))));
-        let mut fs_dir =
+        let fs_dir =
             LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("nrt"));
         let dir: Arc<dyn Directory> = Arc::new(NRTCachingDirectory::new(
             Box::new(SharedDirectory(fs_dir.as_directory())),
@@ -1208,7 +1242,9 @@ mod crt {
             )?));
             let start = std::time::Instant::now();
             let l = iw.add_document(&d)?;
-            controlled_real_time_reopen_thread.wait_for_generation(l);
+            controlled_real_time_reopen_thread
+                .wait_for_generation(l)
+                .map_err(crate::interrupted_exception)?;
             let wait = start.elapsed().as_nanos() as i64;
             Assert::assert_true_msg(
                 &format!("waited too long for generation {wait}"),
@@ -1233,16 +1269,13 @@ mod crt {
         // `dir.close()`: the caching directory, then the wrapped
         // `newFSDirectory` it closes in Java.
         drop(iw);
-        let mut dir = dir;
-        if let Some(d) = Arc::get_mut(&mut dir) {
-            d.close()?;
-        }
+        dir.close()?;
         fs_dir.close()?;
         Ok(())
     }
 
     pub fn test_delete_all(inst: &mut ThreadedInstance<ControlledRealTimeSuite>) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = IndexWriter::new(
             dir.as_directory(),
             LuceneTestCase::new_index_writer_config(),
@@ -1274,7 +1307,8 @@ mod crt {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
         {
-            t.wait_for_generation(gen2);
+            t.wait_for_generation(gen2)
+                .map_err(crate::interrupted_exception)?;
         }
         // IOUtils.close(nrtDeletesThread, nrtDeletes, w, dir): `nrtDeletes`
         // is still `null` in this test, which `IOUtils.close` skips.
@@ -1457,7 +1491,7 @@ mod sm {
     pub fn test_intermediate_close(
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         // Test can deadlock if we use SMS:
         let writer = IndexWriter::new(dir.as_directory(), cms_config()?)?;
         writer.add_document(&Document::new())?;
@@ -1567,7 +1601,7 @@ mod sm {
     /// Port of `TestSearcherManager.testCloseTwice`.
     pub fn test_close_twice(_inst: &mut ThreadedInstance<SearcherManagerSuite>) -> Result<()> {
         // test that we can close SM twice (per Closeable's contract).
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         IndexWriter::new(dir.as_directory(), iwc_null_analyzer())?.close()?;
         let sm = SearcherManager::from_directory(dir.as_directory(), None)?;
         sm.close()?;
@@ -1580,7 +1614,7 @@ mod sm {
     pub fn test_reference_decrement_illegally(
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = IndexWriter::new(dir.as_directory(), cms_config()?)?;
         let sm = SearcherManager::from_writer(
             &*writer,
@@ -1611,7 +1645,7 @@ mod sm {
 
     /// Port of `TestSearcherManager.testEnsureOpen`.
     pub fn test_ensure_open(_inst: &mut ThreadedInstance<SearcherManagerSuite>) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         IndexWriter::new(dir.as_directory(), iwc_null_analyzer())?.close()?;
         let sm = SearcherManager::from_directory(dir.as_directory(), None)?;
         let s = sm.acquire()?;
@@ -1650,7 +1684,7 @@ mod sm {
 
     /// Port of `TestSearcherManager.testListenerCalled`.
     pub fn test_listener_called(_inst: &mut ThreadedInstance<SearcherManagerSuite>) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = IndexWriter::new(dir.as_directory(), iwc_null_analyzer())?;
         let after_refresh_called = Arc::new(AtomicBool::new(false));
         let sm = SearcherManager::from_writer(
@@ -1695,7 +1729,7 @@ mod sm {
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
         let random = LuceneTestCase::random();
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = RandomIndexWriter::new_with_mock_analyzer(&*random, dir.as_directory())?;
         w.commit()?;
 
@@ -1729,7 +1763,7 @@ mod sm {
     ) -> Result<()> {
         // make sure that maybeRefreshBlocking releases the lock, otherwise other
         // threads cannot obtain it.
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = RandomIndexWriter::new_with_mock_analyzer(
             &*LuceneTestCase::random(),
             dir.as_directory(),
@@ -1979,7 +2013,7 @@ mod sm {
     pub fn test_custom_directory_reader(
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = RandomIndexWriter::new_with_mock_analyzer(
             &*LuceneTestCase::random(),
             dir.as_directory(),
@@ -2068,7 +2102,7 @@ mod sm {
     pub fn test_previous_reader_is_passed(
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = IndexWriter::new(
             dir.as_directory(),
             LuceneTestCase::new_index_writer_config(),
@@ -2147,7 +2181,7 @@ mod sm {
     pub fn test_concurrent_index_close_search_and_refresh(
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+        let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
         let directory = dir.as_directory();
         let analyzer = Arc::new(MockAnalyzer::new(&*LuceneTestCase::random()));
         analyzer.set_max_token_length(MAX_TERM_LENGTH as i32);
@@ -2373,7 +2407,7 @@ mod sm {
     pub fn test_step_wise_commit_refresh(
         _inst: &mut ThreadedInstance<SearcherManagerSuite>,
     ) -> Result<()> {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
             MockAnalyzer::new(&*LuceneTestCase::random()),
         )));

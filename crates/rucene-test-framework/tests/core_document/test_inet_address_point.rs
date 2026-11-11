@@ -88,7 +88,7 @@ fn index_one(
 
 /// Port of `testBasics`: add a single address and search for it.
 fn test_basics() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let address = get_by_name("1.2.3.4");
     let (writer, reader) = index_one(&dir, &address)?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));
@@ -141,7 +141,7 @@ fn test_basics() -> Result<()> {
 
 /// Port of `testBasicsV6`: add a single address and search for it.
 fn test_basics_v6() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let address = get_by_name("fec0::f66d");
     let (writer, reader) = index_one(&dir, &address)?;
     let searcher = LuceneTestCase::new_searcher(Arc::clone(&reader));

@@ -117,8 +117,7 @@ impl Drop for MaxDocsGuard {
 
 /// Port of `TestIndexWriterMaxDocs.testExactlyAtTrueLimit`.
 fn test_exactly_at_true_limit() -> Result<()> {
-    let mut dir =
-        LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BDocs3"));
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BDocs3"));
     let iw = IndexWriter::new(dir.as_directory(), iwc_null())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -174,7 +173,7 @@ fn test_exactly_at_true_limit() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testAddDocument`.
 fn test_add_document() -> Result<()> {
     let _limit = MaxDocsGuard::set(10);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..10 {
         w.add_document(&Document::new())?;
@@ -190,7 +189,7 @@ fn test_add_document() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testAddDocuments`.
 fn test_add_documents() -> Result<()> {
     let _limit = MaxDocsGuard::set(10);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..10 {
         w.add_document(&Document::new())?;
@@ -206,7 +205,7 @@ fn test_add_documents() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testUpdateDocument`.
 fn test_update_document() -> Result<()> {
     let _limit = MaxDocsGuard::set(10);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..10 {
         w.add_document(&Document::new())?;
@@ -224,7 +223,7 @@ fn test_update_document() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testUpdateDocuments`.
 fn test_update_documents() -> Result<()> {
     let _limit = MaxDocsGuard::set(10);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..10 {
         w.add_document(&Document::new())?;
@@ -253,7 +252,7 @@ fn id_doc(i: i32) -> Document {
 /// Port of `TestIndexWriterMaxDocs.testReclaimedDeletes`.
 fn test_reclaimed_deletes() -> Result<()> {
     let _limit = MaxDocsGuard::set(10);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for i in 0..10 {
         w.add_document(&id_doc(i))?;
@@ -285,7 +284,7 @@ fn test_reclaimed_deletes() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testReclaimedDeletesWholeSegments`.
 fn test_reclaimed_deletes_whole_segments() -> Result<()> {
     let _limit = MaxDocsGuard::set(10);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = iwc_null();
     iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = IndexWriter::new(dir.as_directory(), iwc)?;
@@ -321,14 +320,14 @@ fn test_reclaimed_deletes_whole_segments() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testAddIndexes`.
 fn test_add_indexes() -> Result<()> {
     let _limit = MaxDocsGuard::set(10);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..10 {
         w.add_document(&Document::new())?;
     }
     w.close()?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(dir2.as_directory(), iwc_null())?;
     w2.add_document(&Document::new())?;
     expect_throws(IAE, || w2.add_indexes_dirs(&[dir.as_directory()]));
@@ -362,7 +361,7 @@ fn sub_readers(
 /// Make sure MultiReader lets you search exactly the limit number of docs:
 /// Port of `TestIndexWriterMaxDocs.testMultiReaderExactLimit`.
 fn test_multi_reader_exact_limit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let doc = Document::new();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..100000 {
@@ -371,7 +370,7 @@ fn test_multi_reader_exact_limit() -> Result<()> {
     w.close()?;
 
     let remainder = MAX_DOCS % 100000;
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir2.as_directory(), iwc_null())?;
     for _ in 0..remainder {
         w.add_document(&doc)?;
@@ -396,7 +395,7 @@ fn test_multi_reader_exact_limit() -> Result<()> {
 /// Make sure MultiReader is upset if you exceed the limit
 /// Port of `TestIndexWriterMaxDocs.testMultiReaderBeyondLimit`.
 fn test_multi_reader_beyond_limit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let doc = Document::new();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..100000 {
@@ -409,7 +408,7 @@ fn test_multi_reader_beyond_limit() -> Result<()> {
     // One too many:
     remainder += 1;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir2.as_directory(), iwc_null())?;
     for _ in 0..remainder {
         w.add_document(&doc)?;
@@ -463,7 +462,7 @@ fn check_add_too_many_indexes(result: Result<i64>) -> Result<()> {
 // TODO: can we use the setter to lower the amount of docs to be written here?
 fn test_add_too_many_indexes_dir() -> Result<()> {
     // we cheat and add the same one over again... IW wants a write lock on each
-    let mut dir = LuceneTestCase::new_directory_lock_factory(&*random(), Arc::new(NoLockFactory));
+    let dir = LuceneTestCase::new_directory_lock_factory(&*random(), Arc::new(NoLockFactory));
     let doc = Document::new();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..100000 {
@@ -474,7 +473,7 @@ fn test_add_too_many_indexes_dir() -> Result<()> {
     w.close()?;
 
     // wrap this with disk full, so test fails faster and doesn't fill up real disks.
-    let mut dir2 = LuceneTestCase::new_mock_directory();
+    let dir2 = LuceneTestCase::new_mock_directory();
     let w = IndexWriter::new(dir2.as_directory(), iwc_null())?;
     w.commit()?; // don't confuse checkindex
     dir2.set_max_size_in_bytes(dir2.size_in_bytes()? + 65536); // 64KB
@@ -498,7 +497,7 @@ fn test_add_too_many_indexes_dir() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testAddTooManyIndexesCodecReader`.
 fn test_add_too_many_indexes_codec_reader() -> Result<()> {
     // we cheat and add the same one over again... IW wants a write lock on each
-    let mut dir = LuceneTestCase::new_directory_lock_factory(&*random(), Arc::new(NoLockFactory));
+    let dir = LuceneTestCase::new_directory_lock_factory(&*random(), Arc::new(NoLockFactory));
     let doc = Document::new();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     for _ in 0..100000 {
@@ -509,7 +508,7 @@ fn test_add_too_many_indexes_codec_reader() -> Result<()> {
     w.close()?;
 
     // wrap this with disk full, so test fails faster and doesn't fill up real disks.
-    let mut dir2 = LuceneTestCase::new_mock_directory();
+    let dir2 = LuceneTestCase::new_mock_directory();
     let w = IndexWriter::new(dir2.as_directory(), iwc_null())?;
     w.commit()?; // don't confuse checkindex
     dir2.set_max_size_in_bytes(dir2.size_in_bytes()? + 65536); // 64KB
@@ -546,7 +545,7 @@ fn test_too_large_max_docs() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testDeleteAll`.
 fn test_delete_all() -> Result<()> {
     let _limit = MaxDocsGuard::set(1);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     w.add_document(&Document::new())?;
     expect_throws(IAE, || w.add_document(&Document::new()));
@@ -563,7 +562,7 @@ fn test_delete_all() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testDeleteAllAfterFlush`.
 fn test_delete_all_after_flush() -> Result<()> {
     let _limit = MaxDocsGuard::set(2);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     w.add_document(&Document::new())?;
     directory_reader::open_with_writer(&*w)?.close()?;
@@ -583,7 +582,7 @@ fn test_delete_all_after_flush() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testDeleteAllAfterCommit`.
 fn test_delete_all_after_commit() -> Result<()> {
     let _limit = MaxDocsGuard::set(2);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     w.add_document(&Document::new())?;
     w.commit()?;
@@ -604,7 +603,7 @@ fn test_delete_all_after_commit() -> Result<()> {
 fn test_delete_all_multiple_threads() -> Result<()> {
     let limit = TestUtil::next_int(&*random(), 2, 10);
     let _limit = MaxDocsGuard::set(limit);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
 
     let starting_gun = Arc::new(CountDownLatch::new(1));
@@ -644,7 +643,7 @@ fn test_delete_all_multiple_threads() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testDeleteAllAfterClose`.
 fn test_delete_all_after_close() -> Result<()> {
     let _limit = MaxDocsGuard::set(2);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     w.add_document(&Document::new())?;
     w.close()?;
@@ -666,7 +665,7 @@ fn test_delete_all_after_close() -> Result<()> {
 /// Port of `TestIndexWriterMaxDocs.testAcrossTwoIndexWriters`.
 fn test_across_two_index_writers() -> Result<()> {
     let _limit = MaxDocsGuard::set(1);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     w.add_document(&Document::new())?;
     w.close()?;
@@ -680,7 +679,7 @@ fn test_across_two_index_writers() -> Result<()> {
 /// LUCENE-6299
 /// Port of `TestIndexWriterMaxDocs.testCorruptIndexExceptionTooLarge`.
 fn test_corrupt_index_exception_too_large() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     w.add_document(&Document::new())?;
     w.add_document(&Document::new())?;
@@ -699,7 +698,7 @@ fn test_corrupt_index_exception_too_large() -> Result<()> {
 /// LUCENE-6299
 /// Port of `TestIndexWriterMaxDocs.testCorruptIndexExceptionTooLargeWriter`.
 fn test_corrupt_index_exception_too_large_writer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), iwc_null())?;
     w.add_document(&Document::new())?;
     w.add_document(&Document::new())?;

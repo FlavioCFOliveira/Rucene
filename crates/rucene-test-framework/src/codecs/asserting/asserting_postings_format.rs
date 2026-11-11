@@ -131,7 +131,7 @@ impl FieldsProducer for AssertingFieldsProducer {
         )))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.r#in.close()?;
         self.r#in.close() // close again
     }

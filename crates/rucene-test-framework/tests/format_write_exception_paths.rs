@@ -56,7 +56,7 @@ fn segment_info(dir: Arc<dyn Directory>) -> SegmentInfo {
 
 #[test]
 fn a_failing_field_infos_write_closes_its_output() {
-    let mut dir = throwing_dir();
+    let dir = throwing_dir();
     let si = segment_info(dir.as_directory());
     let infos = FieldInfos::new(vec![FieldInfo::new("f", 0)]).unwrap();
     let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
@@ -73,7 +73,7 @@ fn a_failing_field_infos_write_closes_its_output() {
 
 #[test]
 fn a_failing_compound_write_closes_both_outputs() {
-    let mut dir = throwing_dir();
+    let dir = throwing_dir();
     let si = segment_info(dir.as_directory());
     si.set_files(std::collections::HashSet::new()).unwrap();
     let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
@@ -103,7 +103,7 @@ fn a_failing_compound_write_closes_both_outputs() {
 #[test]
 fn a_failing_simple_text_field_infos_write_closes_its_output() {
     use rucene_codecs::simpletext::SimpleTextFieldInfosFormat;
-    let mut dir = throwing_dir();
+    let dir = throwing_dir();
     let si = segment_info(dir.as_directory());
     let infos = FieldInfos::new(vec![FieldInfo::new("f", 0)]).unwrap();
     let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
@@ -122,7 +122,7 @@ fn a_failing_simple_text_field_infos_write_closes_its_output() {
 fn a_failing_simple_text_segment_info_write_closes_its_output() {
     use rucene::codecs::segment_info::SegmentInfoFormat;
     use rucene_codecs::simpletext::SimpleTextSegmentInfoFormat;
-    let mut dir = throwing_dir();
+    let dir = throwing_dir();
     let si = segment_info(dir.as_directory());
     si.set_files(std::collections::HashSet::new()).unwrap();
     let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
@@ -142,7 +142,7 @@ fn a_failing_simple_text_live_docs_write_closes_its_output() {
     use rucene::codecs::LiveDocsFormat;
     use rucene::index::segment_info::SegmentCommitInfo;
     use rucene_codecs::simpletext::SimpleTextLiveDocsFormat;
-    let mut dir = throwing_dir();
+    let dir = throwing_dir();
     let info = SegmentCommitInfo::new(
         segment_info(dir.as_directory()),
         0,

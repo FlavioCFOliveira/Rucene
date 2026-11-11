@@ -52,7 +52,7 @@ fn test_() -> Result<()> {
         )?),
     );
     mock.set_throttling(Throttling::Never);
-    let mut dir = TestDirectory::Mock(mock);
+    let dir = TestDirectory::Mock(mock);
 
     let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*random()))));
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;

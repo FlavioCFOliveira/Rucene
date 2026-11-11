@@ -61,7 +61,7 @@ fn match_all() -> Arc<dyn Query> {
 }
 
 fn test_query(f: &mut MatchAllDocs) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = writer(f, &dir)?;
     add_doc("one", &iw)?;
     add_doc("two", &iw)?;
@@ -129,7 +129,7 @@ fn add_doc(text: &str, iw: &IndexWriter) -> Result<()> {
 }
 
 fn test_early_termination(f: &mut MatchAllDocs) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = writer(f, &dir)?;
     let num_docs = 500;
     for i in 0..num_docs {

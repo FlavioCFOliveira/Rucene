@@ -465,7 +465,7 @@ mod test_mock_analyzer {
             }),
         ));
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let writer = RandomIndexWriter::new(&*random(), dir.as_directory(), a)?;
         let mut doc = Document::new();
         let ft = FieldType::new();

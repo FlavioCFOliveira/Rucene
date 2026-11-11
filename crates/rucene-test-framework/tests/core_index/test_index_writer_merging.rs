@@ -140,8 +140,8 @@ fn max_and_num_docs(dir: &TestDirectory) -> Result<(i32, i32)> {
 fn test_lucene() -> Result<()> {
     let num = 100;
 
-    let mut index_a = LuceneTestCase::new_directory();
-    let mut index_b = LuceneTestCase::new_directory();
+    let index_a = LuceneTestCase::new_directory();
+    let index_b = LuceneTestCase::new_directory();
 
     fill_index(&*random(), &index_a, 0, num)?;
     let fail = verify_index(&index_a, 0)?;
@@ -155,7 +155,7 @@ fn test_lucene() -> Result<()> {
         Assert::fail("Index b is invalid");
     }
 
-    let mut merged = LuceneTestCase::new_directory();
+    let merged = LuceneTestCase::new_directory();
 
     let writer = IndexWriter::new(merged.as_directory(), log_n_iwc(2)?)?;
     writer.add_indexes_dirs(&[index_a.as_directory(), index_b.as_directory()])?;
@@ -241,7 +241,7 @@ fn force_merge_deletes_types(stored_text: bool) -> Result<(FieldType, FieldType)
 // are required
 /// Port of `TestIndexWriterMerging.testForceMergeDeletes`.
 fn test_force_merge_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), two_docs_iwc()?)?;
     let mut document = Document::new();
 
@@ -319,7 +319,7 @@ fn ninety_eight_docs_half_deleted(dir: &TestDirectory) -> Result<()> {
 // LUCENE-325: test forceMergeDeletes, when many adjacent merges are required
 /// Port of `TestIndexWriterMerging.testForceMergeDeletes2`.
 fn test_force_merge_deletes2() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     ninety_eight_docs_half_deleted(&dir)?;
 
     let writer = IndexWriter::new(dir.as_directory(), log_n_iwc(3)?)?;
@@ -334,7 +334,7 @@ fn test_force_merge_deletes2() -> Result<()> {
 // many adjacent merges are required
 /// Port of `TestIndexWriterMerging.testForceMergeDeletes3`.
 fn test_force_merge_deletes3() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     ninety_eight_docs_half_deleted(&dir)?;
 
     let writer = IndexWriter::new(dir.as_directory(), log_n_iwc(3)?)?;
@@ -423,7 +423,7 @@ fn ten_docs_half_deleted(dir: &TestDirectory, check_readers: bool) -> Result<()>
 
 /// Port of `TestIndexWriterMerging.testForceMergeDeletesWithObserver`.
 fn test_force_merge_deletes_with_observer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     ten_docs_half_deleted(&dir, true)?;
 
     let iw = IndexWriter::new(dir.as_directory(), log_iwc()?)?;
@@ -452,7 +452,7 @@ fn test_force_merge_deletes_with_observer() -> Result<()> {
 
 /// Port of `TestIndexWriterMerging.testMergeObserverNoMerges`.
 fn test_merge_observer_no_merges() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -472,7 +472,7 @@ fn test_merge_observer_no_merges() -> Result<()> {
 
 /// Port of `TestIndexWriterMerging.testMergeObserverAwaitWithTimeout`.
 fn test_merge_observer_await_with_timeout() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(dir.as_directory(), log_iwc()?)?;
     for i in 0..10 {
         let mut doc = Document::new();
@@ -507,7 +507,7 @@ fn test_merge_observer_await_with_timeout() -> Result<()> {
 
 /// Port of `TestIndexWriterMerging.testMergeObserverAwaitTimeout`.
 fn test_merge_observer_await_timeout() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let merge_started = Arc::new(crate::support::CountDownLatch::new(1));
     let allow_merge_to_finish = Arc::new(crate::support::CountDownLatch::new(1));
 
@@ -565,7 +565,7 @@ fn test_merge_observer_await_timeout() -> Result<()> {
 
 /// Port of `TestIndexWriterMerging.testForceMergeDeletesBlockingWithObserver`.
 fn test_force_merge_deletes_blocking_with_observer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     ten_docs_half_deleted(&dir, false)?;
 
     let iw = IndexWriter::new(dir.as_directory(), log_iwc()?)?;
@@ -585,7 +585,7 @@ fn test_force_merge_deletes_blocking_with_observer() -> Result<()> {
 
 /// Port of `TestIndexWriterMerging.testBlockingModeWithNoMerges`.
 fn test_blocking_mode_with_no_merges() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -627,7 +627,7 @@ fn as_log_merge_policy(mp: &Arc<dyn MergePolicy>) -> &LogMergePolicy {
 // LUCENE-1013
 /// Port of `TestIndexWriterMerging.testSetMaxMergeDocs`.
 fn test_set_max_merge_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = mock_iwc();
     conf.set_merge_scheduler(Some(Arc::new(MyMergeScheduler::default())))?;
     conf.set_max_buffered_docs(2)?;
@@ -657,7 +657,7 @@ fn test_set_max_merge_docs() -> Result<()> {
 
 /// Port of `TestIndexWriterMerging.testNoWaitClose`.
 fn test_no_wait_close() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
 
     let mut doc = Document::new();
     let custom_type = FieldType::new_from(TextField::type_not_stored());
@@ -772,7 +772,7 @@ fn test_no_wait_close() -> Result<()> {
 
 /// Port of `TestIndexWriterMerging.testAddEstimatedBytesToMerge`.
 fn test_add_estimated_bytes_to_merge() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
         let mut doc = Document::new();

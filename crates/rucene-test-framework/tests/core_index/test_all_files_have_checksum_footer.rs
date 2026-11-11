@@ -24,7 +24,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestAllFilesHaveChecksumFooter.test`.
 fn test_() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let conf = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         rucene_test_framework::analysis::MockAnalyzer::new(&*random()),
     )));
@@ -50,7 +50,7 @@ fn check_footers(dir: &Arc<dyn Directory>) -> Result<()> {
         }
         if si.info.get_use_compound_file() {
             let codec = si.info.codec().unwrap_or_else(|| npe("si.info.getCodec()"));
-            let mut cfs_dir = codec
+            let cfs_dir = codec
                 .compound_format()
                 .get_compound_reader(&**dir, &si.info)?;
             let outcome = (|| -> Result<()> {

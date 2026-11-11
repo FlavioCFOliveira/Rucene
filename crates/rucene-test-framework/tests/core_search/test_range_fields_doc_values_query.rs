@@ -78,7 +78,7 @@ fn count(searcher: &IndexSearcher, q: Arc<dyn Query>) -> Result<i32> {
 
 /// Port of `TestRangeFieldsDocValuesQuery.testDoubleRangeDocValuesIntersectsQuery`.
 fn test_double_range_doc_values_intersects_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let iters = LuceneTestCase::at_least(10);
     let min = [112.7, 296.0, 512.4];
@@ -122,7 +122,7 @@ fn test_double_range_doc_values_intersects_query() -> Result<()> {
 
 /// Port of `TestRangeFieldsDocValuesQuery.testIntRangeDocValuesIntersectsQuery`.
 fn test_int_range_doc_values_intersects_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let iters = LuceneTestCase::at_least(10);
     let min = [3, 11, 17];
@@ -171,7 +171,7 @@ fn test_int_range_doc_values_intersects_query() -> Result<()> {
 
 /// Port of `TestRangeFieldsDocValuesQuery.testLongRangeDocValuesIntersectQuery`.
 fn test_long_range_doc_values_intersect_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let iters = LuceneTestCase::at_least(10);
     let min = [31i64, 15, 2];
@@ -213,7 +213,7 @@ fn test_long_range_doc_values_intersect_query() -> Result<()> {
 
 /// Port of `TestRangeFieldsDocValuesQuery.testFloatRangeDocValuesIntersectQuery`.
 fn test_float_range_doc_values_intersect_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let iters = LuceneTestCase::at_least(10);
     let min = [3.7f32, 11.0, 33.4];
@@ -294,7 +294,7 @@ fn test_to_string() -> Result<()> {
 
 /// Port of `TestRangeFieldsDocValuesQuery.testNoData`.
 fn test_no_data() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();

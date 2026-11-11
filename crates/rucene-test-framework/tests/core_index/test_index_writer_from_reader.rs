@@ -71,7 +71,7 @@ fn new_writer(dir: &Arc<dyn rucene::store::Directory>) -> Result<Arc<IndexWriter
 /// Pull NRT reader immediately after writer has committed
 /// Port of `TestIndexWriterFromReader.testRightAfterCommit`.
 fn test_right_after_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -100,7 +100,7 @@ fn test_right_after_commit() -> Result<()> {
 /// Open from non-NRT reader
 /// Port of `TestIndexWriterFromReader.testFromNonNRTReader`.
 fn test_from_non_nrt_reader() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -128,7 +128,7 @@ fn test_from_non_nrt_reader() -> Result<()> {
 /// Pull NRT reader from a writer on a new index with no commit:
 /// Port of `TestIndexWriterFromReader.testWithNoFirstCommit`.
 fn test_with_no_first_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -150,7 +150,7 @@ fn test_with_no_first_commit() -> Result<()> {
 /// Pull NRT reader after writer has committed and then indexed another doc:
 /// Port of `TestIndexWriterFromReader.testAfterCommitThenIndex`.
 fn test_after_commit_then_index() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -178,7 +178,7 @@ fn test_after_commit_then_index() -> Result<()> {
 /// NRT rollback: pull NRT reader after writer has committed and then before indexing another doc
 /// Port of `TestIndexWriterFromReader.testNRTRollback`.
 fn test_nrt_rollback() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -209,7 +209,7 @@ fn test_nrt_rollback() -> Result<()> {
 
 /// Port of `TestIndexWriterFromReader.testRandom`.
 fn test_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let num_ops = LuceneTestCase::at_least(100);
@@ -357,7 +357,7 @@ fn test_random() -> Result<()> {
 
 /// Port of `TestIndexWriterFromReader.testConsistentFieldNumbers`.
 fn test_consistent_field_numbers() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     // Empty first commit:
@@ -412,7 +412,7 @@ fn test_consistent_field_numbers() -> Result<()> {
 
 /// Port of `TestIndexWriterFromReader.testInvalidOpenMode`.
 fn test_invalid_open_mode() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -440,7 +440,7 @@ fn test_invalid_open_mode() -> Result<()> {
 
 /// Port of `TestIndexWriterFromReader.testOnClosedReader`.
 fn test_on_closed_reader() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -467,7 +467,7 @@ fn test_on_closed_reader() -> Result<()> {
 
 /// Port of `TestIndexWriterFromReader.testStaleNRTReader`.
 fn test_stale_nrt_reader() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -507,7 +507,7 @@ fn test_stale_nrt_reader() -> Result<()> {
 
 /// Port of `TestIndexWriterFromReader.testAfterRollback`.
 fn test_after_rollback() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = new_writer(&d)?;
     w.add_document(&Document::new())?;
@@ -555,7 +555,7 @@ impl IndexDeletionPolicy for KeepAllCommits {
 /// Pull NRT reader after writer has committed and then indexed another doc:
 /// Port of `TestIndexWriterFromReader.testAfterCommitThenIndexKeepCommits`.
 fn test_after_commit_then_index_keep_commits() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
 

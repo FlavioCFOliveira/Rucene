@@ -67,7 +67,7 @@ fn omits_norms(reader: &Arc<dyn rucene::index::LeafReader>, name: &str) -> bool 
 
 /// Port of `TestOmitNorms.testMixedMergeThrowsError`.
 fn test_mixed_merge_throws_error() -> Result<()> {
-    let mut ram = LuceneTestCase::new_directory();
+    let ram = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         ram.as_directory(),
         config(3, || LuceneTestCase::new_log_merge_policy_merge_factor(2))?,
@@ -137,7 +137,7 @@ fn test_mixed_merge_throws_error() -> Result<()> {
 
 /// Port of `TestOmitNorms.testMixedRAM`.
 fn test_mixed_ram() -> Result<()> {
-    let mut ram = LuceneTestCase::new_directory();
+    let ram = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         ram.as_directory(),
         config(10, || LuceneTestCase::new_log_merge_policy_merge_factor(2))?,
@@ -196,7 +196,7 @@ fn assert_no_nrm(dir: &Arc<dyn Directory>) -> Result<()> {
 
 /// Port of `TestOmitNorms.testNoNrmFile`.
 fn test_no_nrm_file() -> Result<()> {
-    let mut ram = LuceneTestCase::new_directory();
+    let ram = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(
         ram.as_directory(),
         config(3, || Ok(LuceneTestCase::new_log_merge_policy()))?,

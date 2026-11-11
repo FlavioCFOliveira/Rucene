@@ -70,7 +70,7 @@ fn uses_two_phase(searcher: &IndexSearcher, q: Arc<dyn Query>) -> Result<Option<
 
 /// Port of `TestIndexOrDocValuesQuery.testUseIndexForSelectiveQueries`.
 fn test_use_index_for_selective_queries() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = default_codec_writer(&dir)?;
     for i in 0..2000 {
         let mut doc = Document::new();
@@ -127,7 +127,7 @@ fn test_use_index_for_selective_queries() -> Result<()> {
 
 /// Port of `TestIndexOrDocValuesQuery.testUseIndexForSelectiveMultiValueQueries`.
 fn test_use_index_for_selective_multi_value_queries() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = default_codec_writer(&dir)?;
     let num_docs = LuceneTestCase::at_least(1000);
     for i in 0..num_docs {
@@ -198,7 +198,7 @@ fn test_use_index_for_selective_multi_value_queries() -> Result<()> {
 
 /// Port of `TestIndexOrDocValuesQuery.testQueryMatchesCount`.
 fn test_query_matches_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = default_codec_writer(&dir)?;
     let num_docs = random().next_int_bound(5000);
     for _i in 0..num_docs {
@@ -242,7 +242,7 @@ fn rewrites_to<T: 'static>(query: &Arc<dyn Query>, searcher: &IndexSearcher) -> 
 
 /// Port of `TestIndexOrDocValuesQuery.testQueryMatchesAllOrNone`.
 fn test_query_matches_all_or_none() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = default_codec_writer(&dir)?;
     let result = (|| -> Result<()> {
         let num_docs = TestUtil::next_int(&*random(), 1, 100);

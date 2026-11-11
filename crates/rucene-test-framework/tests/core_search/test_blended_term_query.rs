@@ -104,7 +104,7 @@ fn test_to_string() -> Result<()> {
 }
 
 fn test_blended_scores() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut doc = Document::new();

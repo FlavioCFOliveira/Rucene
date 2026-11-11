@@ -23,7 +23,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestCodecHoldsOpenFiles.test`.
 fn test_() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     set_check_index_on_close(&d, false);
     // we nuke files, but verify the reader still works
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;

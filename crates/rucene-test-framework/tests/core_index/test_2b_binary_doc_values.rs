@@ -53,7 +53,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Indexes `IndexWriter.MAX_DOCS` docs with a fixed binary field.
 fn test_fixed_binary() -> Result<()> {
-    let mut dir =
+    let dir =
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("2BFixedBinary"));
     never_throttle(&dir);
 
@@ -112,7 +112,7 @@ fn test_fixed_binary() -> Result<()> {
 
 /// Indexes `IndexWriter.MAX_DOCS` docs with a variable binary field.
 fn test_variable_binary() -> Result<()> {
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(
         "2BVariableBinary",
     ));
     never_throttle(&dir);

@@ -297,7 +297,7 @@ fn test_too_many_clauses() -> Result<()> {
 
 // LUCENE-1630
 fn test_null_or_sub_scorer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(
@@ -339,7 +339,7 @@ fn test_null_or_sub_scorer() -> Result<()> {
 }
 
 fn test_de_morgan() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let iw1 = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir1.as_directory())?;
     let mut doc1 = Document::new();
     doc1.add(Box::new(LuceneTestCase::new_text_field(
@@ -351,7 +351,7 @@ fn test_de_morgan() -> Result<()> {
     let reader1 = iw1.get_reader()?;
     iw1.close()?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let iw2 = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir2.as_directory())?;
     let mut doc2 = Document::new();
     doc2.add(Box::new(LuceneTestCase::new_text_field(
@@ -406,7 +406,7 @@ fn test_de_morgan() -> Result<()> {
 }
 
 fn test_bs2_disjunction_next_vs_advance() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d.as_directory())?;
     let num_docs = LuceneTestCase::at_least(300);
     for _doc_upto in 0..num_docs {
@@ -520,7 +520,7 @@ fn test_bs2_disjunction_next_vs_advance() -> Result<()> {
 }
 
 fn test_min_should_match_leniency() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
@@ -563,7 +563,7 @@ fn text_field(name: &str, value: &str) -> Field {
 }
 
 fn test_filter_clause_behaves_like_must() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = text_field("field", "a b c d");
@@ -689,7 +689,7 @@ fn assert_same_scores_without_filters(searcher: &IndexSearcher, bq: &BooleanQuer
 }
 
 fn test_filter_clause_does_not_impact_score() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = text_field("field", "a b c d");
@@ -763,7 +763,7 @@ fn propagates_approximations(
     occur2: Occur,
     is: fn(&dyn std::any::Any) -> bool,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let f = text_field("field", "a b c");
@@ -828,7 +828,7 @@ fn test_req_opt_propagates_approximations() -> Result<()> {
 
 // LUCENE-9620 Add Weight#count(LeafReaderContext)
 fn test_query_matches_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let random_num_docs = TestUtil::next_int(&*random(), 10, 100);
@@ -933,7 +933,7 @@ fn match_all() -> Arc<dyn Query> {
 }
 
 fn test_conjunction_matches_count() -> Result<()> {
-    let (mut dir, reader, searcher) = two_doc_index(false)?;
+    let (dir, reader, searcher) = two_doc_index(false)?;
 
     let query = two(
         tq("string", "abc"),
@@ -986,7 +986,7 @@ fn test_conjunction_matches_count() -> Result<()> {
 }
 
 fn test_disjunction_matches_count() -> Result<()> {
-    let (mut dir, reader, searcher) = two_doc_index(true)?;
+    let (dir, reader, searcher) = two_doc_index(true)?;
 
     let query = two(
         tq("string", "abc"),
@@ -1145,7 +1145,7 @@ fn test_two_clause_term_disjunction_count_optimization() -> Result<()> {
         doc_content.push(vec!["small".to_string(), "also small".to_string()]);
     }
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     index_string_docs(&dir, "foo", &doc_content)?;
 
     let reader = directory_reader::open(dir.as_directory())?;
@@ -1269,7 +1269,7 @@ fn test_disjunction_two_clauses_matches_count_and_score() -> Result<()> {
     // result sorted by score
     let match_doc_score: [[i32; 2]; 5] = [[0, 2 + 1], [3, 2 + 1], [1, 2], [4, 1], [5, 1]];
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     index_string_docs(&dir, "foo", &doc_content)?;
 
     let reader = directory_reader::open(dir.as_directory())?;
@@ -1317,7 +1317,7 @@ fn test_disjunction_random_clauses_matches_count() -> Result<()> {
         all_docs_count += num_docs;
     }
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let mut doc_content: Vec<Vec<String>> = Vec::new();
     for i in 0..num_field_value {
         for _j in 0..num_docs_per_field_value[i as usize] {
@@ -1352,7 +1352,7 @@ fn test_disjunction_random_clauses_matches_count() -> Result<()> {
 }
 
 fn test_prohibited_matches_count() -> Result<()> {
-    let (mut dir, reader, searcher) = two_doc_index(false)?;
+    let (dir, reader, searcher) = two_doc_index(false)?;
 
     let query = two(
         tq("string", "abc"),
@@ -1407,7 +1407,7 @@ fn test_prohibited_matches_count() -> Result<()> {
 }
 
 fn test_random_boolean_query_matches_count() -> Result<()> {
-    let (mut dir, reader, searcher) = two_doc_index(false)?;
+    let (dir, reader, searcher) = two_doc_index(false)?;
     for _iter in 0..1000 {
         let num_clauses = TestUtil::next_int(&*random(), 2, 5);
         let mut builder = BooleanQueryBuilder::new();

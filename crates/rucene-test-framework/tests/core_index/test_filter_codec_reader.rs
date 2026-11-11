@@ -301,7 +301,7 @@ fn addr<T: ?Sized>(r: &Arc<T>) -> *const () {
 
 /// Port of `TestFilterCodecReader.testGetDelegate`.
 fn test_get_delegate() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         let w = IndexWriter::new(
             dir.as_directory(),

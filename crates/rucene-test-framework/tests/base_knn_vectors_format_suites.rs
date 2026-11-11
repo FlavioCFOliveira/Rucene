@@ -853,7 +853,7 @@ fn lucene99_test_limits() -> Result<()> {
 /// indexes one `vector` under `DOT_PRODUCT`, and answers, when the only leaf
 /// is a `CodecReader`, the field's `getOffHeapByteSize` and its dimension.
 fn simple_off_heap_size(vector: &[f32]) -> Result<Option<(HashMap<String, i64>, i32)>> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config(),
@@ -955,7 +955,7 @@ fn hnsw_sq_test_to_string() -> Result<()> {
 fn hnsw_sq_test_single_vector_case() -> Result<()> {
     let vector = random_vector(LuceneTestCase::random().next_int_range(12, 500));
     for similarity_function in VectorSimilarityFunction::values() {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = IndexWriter::new(
             dir.as_directory(),
             LuceneTestCase::new_index_writer_config(),
@@ -1085,7 +1085,7 @@ fn sq_test_search(suite: &KnnSuite) -> Result<()> {
     let similarity_function = suite.random_similarity();
     let knn_field = KnnFloatVectorField::new(field_name, &vector, similarity_function)?;
     let iwc = LuceneTestCase::new_index_writer_config();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let w = IndexWriter::new(dir.as_directory(), iwc)?;
         for _ in 0..num_vectors {
@@ -1149,7 +1149,7 @@ fn sq_test_quantized_vectors_write_and_read(suite: &KnnSuite) -> Result<()> {
     let vector = random_vector(dims);
     let similarity_function = suite.random_similarity();
     let knn_field = KnnFloatVectorField::new(field_name, &vector, similarity_function)?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     {
         let w = IndexWriter::new(
             dir.as_directory(),
@@ -1300,7 +1300,7 @@ fn nearest_hits(reader: &dyn LeafReader, field: &str) -> Result<usize> {
 
 /// Port of `TestPerFieldKnnVectorsFormat.testMissingFieldReturnsNoResults`.
 fn test_missing_field_returns_no_results() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*LuceneTestCase::random(),
     ))));
@@ -1336,7 +1336,7 @@ fn test_missing_field_returns_no_results() -> Result<()> {
 
 /// Port of `TestPerFieldKnnVectorsFormat.testTwoFieldsTwoFormats`.
 fn test_two_fields_two_formats() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     // we don't use RandomIndexWriter because it might add more values than we expect !!!!1
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*LuceneTestCase::random(),
@@ -1398,7 +1398,7 @@ fn test_two_fields_two_formats() -> Result<()> {
 
 /// Port of `TestPerFieldKnnVectorsFormat.testMergeUsesNewFormat`.
 fn test_merge_uses_new_format() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let initial_config = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(
         MockAnalyzer::new(&*LuceneTestCase::random()),
     )));
@@ -1456,7 +1456,7 @@ fn test_merge_uses_new_format() -> Result<()> {
 
 /// Port of `TestPerFieldKnnVectorsFormat.testMaxDimensionsPerFieldFormat`.
 fn test_max_dimensions_per_field_format() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*LuceneTestCase::random(),
     ))));

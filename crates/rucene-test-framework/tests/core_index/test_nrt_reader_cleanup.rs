@@ -38,7 +38,7 @@ fn test_closing_nrt_reader_does_not_corrupt_your_index() -> Result<()> {
     // open for reading:
     LuceneTestCase::assume_false("this test can't run on Windows", Constants::windows());
 
-    let mut dir = LuceneTestCase::new_mock_directory();
+    let dir = LuceneTestCase::new_mock_directory();
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(MockAnalyzer::new(
         &*random(),
     ))));

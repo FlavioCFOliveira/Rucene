@@ -29,8 +29,7 @@ fn test_find_all() -> Result<()> {
     // `VectorEncoding.values()`.
     let encoding =
         *RandomPicks::random_from(&*random(), &[VectorEncoding::BYTE, VectorEncoding::FLOAT32]);
-    let mut index_store =
-        get_index_store("field", encoding, &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
+    let index_store = get_index_store("field", encoding, &[&[0.0, 1.0], &[1.0, 2.0], &[0.0, 0.0]])?;
     let result = (|| -> Result<()> {
         let reader: Arc<dyn IndexReader> = directory_reader::open(index_store.as_directory())?;
         let result = (|| -> Result<()> {

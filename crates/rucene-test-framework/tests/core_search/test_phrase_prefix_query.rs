@@ -37,7 +37,7 @@ fn body_doc(text: &str) -> Document {
 
 /// Port of `TestPhrasePrefixQuery.testPhrasePrefix`.
 fn test_phrase_prefix() -> Result<()> {
-    let mut index_store = LuceneTestCase::new_directory();
+    let index_store = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), index_store.as_directory())?;
     let doc1 = body_doc("blueberry pie");
     let doc2 = body_doc("blueberry strudel");

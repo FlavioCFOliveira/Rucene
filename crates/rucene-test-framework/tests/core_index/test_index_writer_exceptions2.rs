@@ -175,7 +175,7 @@ fn br(i: i32) -> BytesRef {
 /// Port of `TestIndexWriterExceptions2.testBasics`.
 fn test_basics() -> Result<()> {
     // disable slow things: we don't rely upon sleeps here.
-    let mut dir_owner = LuceneTestCase::new_directory();
+    let dir_owner = LuceneTestCase::new_directory();
     if let Some(mock) = dir_owner.as_mock() {
         let mock: &MockDirectoryWrapper = mock;
         mock.set_throttling(Throttling::Never);

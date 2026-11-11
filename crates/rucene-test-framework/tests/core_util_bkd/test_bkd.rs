@@ -127,7 +127,7 @@ fn with_directory(
     num_points: i32,
     body: impl FnOnce(&Arc<dyn Directory>) -> Result<()>,
 ) -> Result<()> {
-    let mut dir = get_directory(num_points);
+    let dir = get_directory(num_points);
     let result = body(&dir.as_directory());
     let closed = dir.close();
     result.and(closed)
@@ -462,7 +462,7 @@ fn test_with_exceptions() -> Result<()> {
     // Keep retrying until we 1) we allow a big enough heap, and 2) we hit a random IOExc from MDW:
     let mut done = false;
     while !done {
-        let mut dir = LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir());
+        let dir = LuceneTestCase::new_mock_fs_directory(&LuceneTestCase::create_temp_dir());
         dir.set_random_io_exception_rate(0.05);
         dir.set_random_io_exception_rate_on_open(0.05);
         let result = verify_in(
@@ -1448,7 +1448,7 @@ impl Directory for CorruptingDirectory {
     }
     /// `FilterDirectory.close()`: closes the wrapped directory, which the
     /// test's try-with-resources closes itself.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -1468,7 +1468,7 @@ fn test_bit_flipped_on_partition1() -> Result<()> {
     let num_dims = 3;
     let doc_values = fixed_doc_values(num_docs, num_dims, num_bytes_per_dim);
 
-    let mut dir0 = LuceneTestCase::new_mock_directory();
+    let dir0 = LuceneTestCase::new_mock_directory();
     let dir: Arc<dyn Directory> = Arc::new(CorruptingDirectory {
         r#in: dir0.as_directory(),
         corrupted: Mutex::new(false),
@@ -1505,7 +1505,7 @@ fn test_bit_flipped_on_partition2() -> Result<()> {
     let num_dims = 3;
     let doc_values = fixed_doc_values(num_docs, num_dims, num_bytes_per_dim);
 
-    let mut dir0 = LuceneTestCase::new_mock_directory();
+    let dir0 = LuceneTestCase::new_mock_directory();
     let dir: Arc<dyn Directory> = Arc::new(CorruptingDirectory {
         r#in: dir0.as_directory(),
         corrupted: Mutex::new(false),
@@ -1577,7 +1577,7 @@ impl IntersectVisitor for TieBreakVisitor {
 }
 
 fn test_tie_break_order() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_docs = 10000;
     let mut w = BKDWriter::new_default(
@@ -1641,7 +1641,7 @@ impl IntersectVisitor for OptimalOrderVisitor {
 }
 
 fn test_check_data_dim_optimal_order() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_values = LuceneTestCase::at_least(5000);
     let max_points_in_leaf_node = TestUtil::next_int(&*random(), 50, 500);
@@ -1733,7 +1733,7 @@ impl IntersectVisitor for CountingVisitor {
 }
 
 fn test_2d_long_ords_offline() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_docs = 100000;
     let mut w = BKDWriter::new_default(
@@ -1777,7 +1777,7 @@ fn test_wasted_leading_bytes() -> Result<()> {
     let bytes_per_dim = MAX_NUM_BYTES;
     let bytes_used = TestUtil::next_int(&*random, 1, 3);
 
-    let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
+    let dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
     let d = dir.as_directory();
     let num_docs = LuceneTestCase::at_least(10000);
     let mut w = BKDWriter::new_default(
@@ -1842,7 +1842,7 @@ impl<F: Fn(&[u8], &[u8]) -> Relation> IntersectVisitor for EstimateVisitor<F> {
 }
 
 fn test_estimate_point_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_values = LuceneTestCase::at_least(10000); // make sure to have multiple leaves
     let max_points_in_leaf_node = TestUtil::next_int(&*random(), 50, 500);
@@ -1998,7 +1998,7 @@ impl MutablePointTree for ConstantPointTree {
 }
 
 fn test_total_point_count_validation() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_values = 10;
     let num_points_added = 50; // exceeds totalPointCount
@@ -2041,7 +2041,7 @@ fn test_total_point_count_validation() -> Result<()> {
 }
 
 fn test_too_many_points() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_values = 10;
     let num_bytes_per_dim = TestUtil::next_int(&*random(), 1, 4);
@@ -2141,7 +2141,7 @@ impl MutablePointTree for ElevenPointTree {
 }
 
 fn test_too_many_points_1d() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let num_values = 10;
     let num_bytes_per_dim = TestUtil::next_int(&*random(), 1, 4);

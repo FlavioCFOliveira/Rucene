@@ -1081,10 +1081,10 @@ fn un_registered_codec() -> FilterCodec {
 /// Port of `TestAddIndexes.testSimpleCase`.
 fn test_simple_case() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // two auxiliary directories
-    let mut aux = LuceneTestCase::new_directory();
-    let mut aux2 = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
+    let aux2 = LuceneTestCase::new_directory();
 
     let mut writer = new_writer(&d(&dir), iwc_mode(OpenMode::CREATE)?)?;
     // add 100 documents
@@ -1123,7 +1123,7 @@ fn test_simple_case() -> Result<()> {
     verify_num_docs(&d(&dir), 190)?;
 
     // now add another set in.
-    let mut aux3 = LuceneTestCase::new_directory();
+    let aux3 = LuceneTestCase::new_directory();
     writer = new_writer(&d(&aux3), new_iwc())?;
     // add 40 documents
     add_docs(&writer, 40)?;
@@ -1157,7 +1157,7 @@ fn test_simple_case() -> Result<()> {
     verify_term_docs(&d(&dir), Term::from_text("content", "bbb"), 50)?;
 
     // now add a single document
-    let mut aux4 = LuceneTestCase::new_directory();
+    let aux4 = LuceneTestCase::new_directory();
     writer = new_writer(&d(&aux4), new_iwc())?;
     add_docs2(&writer, 1)?;
     writer.close()?;
@@ -1219,9 +1219,9 @@ fn verify_pending_deletes(dir: &Arc<dyn Directory>) -> Result<()> {
 /// Port of `TestAddIndexes.testWithPendingDeletes`.
 fn test_with_pending_deletes() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
 
     set_up_dirs(&d(&dir), &d(&aux))?;
     let writer = new_writer(&d(&dir), iwc_mode(OpenMode::APPEND)?)?;
@@ -1246,9 +1246,9 @@ fn test_with_pending_deletes() -> Result<()> {
 /// Port of `TestAddIndexes.testWithPendingDeletes2`.
 fn test_with_pending_deletes2() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
 
     set_up_dirs(&d(&dir), &d(&aux))?;
     let writer = new_writer(&d(&dir), iwc_mode(OpenMode::APPEND)?)?;
@@ -1275,9 +1275,9 @@ fn test_with_pending_deletes2() -> Result<()> {
 /// Port of `TestAddIndexes.testWithPendingDeletes3`.
 fn test_with_pending_deletes3() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
 
     set_up_dirs(&d(&dir), &d(&aux))?;
     let writer = new_writer(&d(&dir), iwc_mode(OpenMode::APPEND)?)?;
@@ -1305,9 +1305,9 @@ fn test_with_pending_deletes3() -> Result<()> {
 /// maxMergeDocs, expect exception.
 fn test_add_self() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
 
     let mut writer = new_writer(&d(&dir), new_iwc())?;
     // add 100 documents
@@ -1349,9 +1349,9 @@ fn test_add_self() -> Result<()> {
 /// merged in addIndexes(); case 1: no tail segments.
 fn test_no_tail_segments() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
 
     set_up_dirs(&d(&dir), &d(&aux))?;
 
@@ -1373,9 +1373,9 @@ fn test_no_tail_segments() -> Result<()> {
 /// invariants hold, no copy.
 fn test_no_copy_segments() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
 
     set_up_dirs(&d(&dir), &d(&aux))?;
 
@@ -1397,9 +1397,9 @@ fn test_no_copy_segments() -> Result<()> {
 /// invariants hold, copy, invariants hold.
 fn test_no_merge_after_copy() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
 
     set_up_dirs(&d(&dir), &d(&aux))?;
 
@@ -1421,9 +1421,9 @@ fn test_no_merge_after_copy() -> Result<()> {
 /// invariants hold, copy, invariants not hold.
 fn test_merge_after_copy() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
 
     set_up_dirs_with_id(&d(&dir), &d(&aux), true)?;
 
@@ -1456,10 +1456,10 @@ fn test_merge_after_copy() -> Result<()> {
 /// invariants not hold.
 fn test_more_merges() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // auxiliary directory
-    let mut aux = LuceneTestCase::new_directory();
-    let mut aux2 = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
+    let aux2 = LuceneTestCase::new_directory();
 
     set_up_dirs_with_id(&d(&dir), &d(&aux), true)?;
 
@@ -1510,7 +1510,7 @@ fn test_more_merges() -> Result<()> {
 
 /// Port of `TestAddIndexes.testHangOnClose`: LUCENE-1270.
 fn test_hang_on_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let lmp = LogMergePolicy::by_byte_size();
     lmp.set_no_cfs_ratio(0.0)?;
     lmp.set_merge_factor(100)?;
@@ -1548,7 +1548,7 @@ fn test_hang_on_close() -> Result<()> {
     }
     writer.close()?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let mut lmp = LogMergePolicy::by_byte_size();
     lmp.set_min_merge_mb(0.0001);
     lmp.set_no_cfs_ratio(0.0)?;
@@ -1669,7 +1669,7 @@ fn test_add_indexes_with_empty_merge_spec() -> Result<()> {
 
 /// Port of `TestAddIndexes.testAddIndexesWithEmptyReaders`.
 fn test_add_indexes_with_empty_readers() -> Result<()> {
-    let mut dest_dir = LuceneTestCase::new_directory();
+    let dest_dir = LuceneTestCase::new_directory();
     let iwc = plain_iwc();
     iwc.set_merge_policy(Some(Arc::new(concurrent_add_indexes_merge_policy())))?;
     let ms = Arc::new(CountingSerialMergeScheduler::new());
@@ -1682,7 +1682,7 @@ fn test_add_indexes_with_empty_readers() -> Result<()> {
     dest_writer.commit()?;
 
     // create empty readers
-    let mut dir = mock_byte_buffers_dir();
+    let dir = mock_byte_buffers_dir();
     let writer = IndexWriter::new(d(&dir), plain_iwc())?;
     writer.close()?;
     let num_readers = 20;
@@ -1728,7 +1728,7 @@ fn test_add_indexes_hitting_max_docs_limit() -> Result<()> {
     index_writer::set_max_docs(writer_max_docs)?;
 
     // create destination writer
-    let mut dest_dir = LuceneTestCase::new_directory();
+    let dest_dir = LuceneTestCase::new_directory();
     let iwc = plain_iwc();
     iwc.set_merge_policy(Some(Arc::new(concurrent_add_indexes_merge_policy())))?;
     let ms = Arc::new(CountingSerialMergeScheduler::new());
@@ -1740,7 +1740,7 @@ fn test_add_indexes_hitting_max_docs_limit() -> Result<()> {
     dest_writer.commit()?;
 
     // create readers to add
-    let mut dir = mock_byte_buffers_dir();
+    let dir = mock_byte_buffers_dir();
     let writer = IndexWriter::new(d(&dir), plain_iwc())?;
     for _ in 0..10 {
         add_doc(&writer)?;
@@ -1949,10 +1949,10 @@ fn test_existing_deletes() -> Result<()> {
 /// Port of `TestAddIndexes.testSimpleCaseCustomCodec`.
 fn test_simple_case_custom_codec() -> Result<()> {
     // main directory
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     // two auxiliary directories
-    let mut aux = LuceneTestCase::new_directory();
-    let mut aux2 = LuceneTestCase::new_directory();
+    let aux = LuceneTestCase::new_directory();
+    let aux2 = LuceneTestCase::new_directory();
     let codec: Arc<dyn Codec> = Arc::new(custom_per_field_codec());
 
     let c = new_iwc();
@@ -2024,7 +2024,7 @@ fn test_non_cfs_leftovers() -> Result<()> {
         directory_reader::open(Arc::clone(&dirs[1]))?,
     ];
 
-    let mut dir = mock_byte_buffers_dir();
+    let dir = mock_byte_buffers_dir();
     let conf = plain_iwc();
     conf.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(true)))?;
     let lmp = conf.merge_policy();
@@ -2049,7 +2049,7 @@ fn test_non_cfs_leftovers() -> Result<()> {
 /// Port of `TestAddIndexes.testAddIndexMissingCodec`: simple test that
 /// ensures we getting expected exceptions.
 fn test_add_index_missing_codec() -> Result<()> {
-    let mut to_add = LuceneTestCase::new_directory();
+    let to_add = LuceneTestCase::new_directory();
     // Disable checkIndex, else we get an exception because
     // of the unregistered codec:
     set_check_index_on_close(&to_add, false);
@@ -2070,7 +2070,7 @@ fn test_add_index_missing_codec() -> Result<()> {
     }
 
     {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let conf = new_iwc();
         conf.set_codec(TestUtil::always_postings_format(Arc::new(
             DirectPostingsFormat::new(),
@@ -2090,7 +2090,7 @@ fn test_add_index_missing_codec() -> Result<()> {
 
 /// Port of `TestAddIndexes.testFieldNamesChanged`: LUCENE-3575.
 fn test_field_names_changed() -> Result<()> {
-    let mut d1 = LuceneTestCase::new_directory();
+    let d1 = LuceneTestCase::new_directory();
     let mut w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&d1))?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -2107,7 +2107,7 @@ fn test_field_names_changed() -> Result<()> {
     let r1 = w.get_reader()?;
     w.close()?;
 
-    let mut d2 = LuceneTestCase::new_directory();
+    let d2 = LuceneTestCase::new_directory();
     w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&d2))?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -2124,7 +2124,7 @@ fn test_field_names_changed() -> Result<()> {
     let r2 = w.get_reader()?;
     w.close()?;
 
-    let mut d3 = LuceneTestCase::new_directory();
+    let d3 = LuceneTestCase::new_directory();
     w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&d3))?;
     TestUtil::add_indexes_slowly(w.w(), &[Arc::clone(&r1), Arc::clone(&r2)])?;
     r1.close()?;
@@ -2150,7 +2150,7 @@ fn test_field_names_changed() -> Result<()> {
 
 /// Port of `TestAddIndexes.testAddEmpty`.
 fn test_add_empty() -> Result<()> {
-    let mut d1 = LuceneTestCase::new_directory();
+    let d1 = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&d1))?;
     w.add_indexes_codec_readers(&[])?;
     w.close()?;
@@ -2170,8 +2170,8 @@ fn test_add_empty() -> Result<()> {
 /// dropped. Still, to validate that addIndexes works with such segments, or
 /// readers that end up in such state, we fake an all deleted segment.
 fn test_fake_all_deleted() -> Result<()> {
-    let mut src = LuceneTestCase::new_directory();
-    let mut dest = LuceneTestCase::new_directory();
+    let src = LuceneTestCase::new_directory();
+    let dest = LuceneTestCase::new_directory();
     let mut w = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&src))?;
     w.add_document(&Document::new())?;
     let leaf = w.get_reader()?.leaves()?[0].leaf_reader();
@@ -2198,12 +2198,12 @@ fn test_fake_all_deleted() -> Result<()> {
 /// Port of `TestAddIndexes.testLocksBlock`: Make sure an open IndexWriter on
 /// an incoming Directory causes a LockObtainFailedException.
 fn test_locks_block() -> Result<()> {
-    let mut src = LuceneTestCase::new_directory();
+    let src = LuceneTestCase::new_directory();
     let w1 = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&src))?;
     w1.add_document(&Document::new())?;
     w1.commit()?;
 
-    let mut dest = LuceneTestCase::new_directory();
+    let dest = LuceneTestCase::new_directory();
 
     let iwc = new_iwc();
     let w2 = RandomIndexWriter::new_with_config(&*random(), d(&dest), iwc)?;
@@ -2252,9 +2252,9 @@ fn string_sorted_writer(dir2: &TestDirectory) -> Result<RandomIndexWriter> {
 
 /// Port of `TestAddIndexes.testIllegalIndexSortChange1`.
 fn test_illegal_index_sort_change1() -> Result<()> {
-    let mut dir1 = int_sorted_index()?;
+    let dir1 = int_sorted_index()?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = string_sorted_writer(&dir2)?;
     let message = expect_throws(IAE, || w2.add_indexes_dirs(&[d(&dir1)]))
         .message()
@@ -2273,9 +2273,9 @@ fn test_illegal_index_sort_change1() -> Result<()> {
 
 /// Port of `TestAddIndexes.testIllegalIndexSortChange2`.
 fn test_illegal_index_sort_change2() -> Result<()> {
-    let mut dir1 = int_sorted_index()?;
+    let dir1 = int_sorted_index()?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = string_sorted_writer(&dir2)?;
     let r1 = directory_reader::open(d(&dir1))?;
     let message = expect_throws(IAE, || {
@@ -2337,11 +2337,11 @@ fn reopen_twice(dir2: &TestDirectory) -> Result<()> {
 
 /// Port of `TestAddIndexes.testAddIndexesDVUpdateSameSegmentName`.
 fn test_add_indexes_dv_update_same_segment_name() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     dv_update_source(&dir1)?;
 
     let iwc2 = new_iwc();
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(d(&dir2), iwc2)?;
     w2.add_indexes_dirs(&[d(&dir1)])?;
     w2.commit()?;
@@ -2354,11 +2354,11 @@ fn test_add_indexes_dv_update_same_segment_name() -> Result<()> {
 
 /// Port of `TestAddIndexes.testAddIndexesDVUpdateNewSegmentName`.
 fn test_add_indexes_dv_update_new_segment_name() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     dv_update_source(&dir1)?;
 
     let iwc2 = new_iwc();
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let w2 = IndexWriter::new(d(&dir2), iwc2)?;
     w2.add_document(&Document::new())?;
     w2.commit()?;
@@ -2374,7 +2374,7 @@ fn test_add_indexes_dv_update_new_segment_name() -> Result<()> {
 
 /// Port of `TestAddIndexes.testAddIndicesWithSoftDeletes`.
 fn test_add_indices_with_soft_deletes() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let iwc1 = new_iwc();
     iwc1.set_soft_deletes_field(Some("soft_delete".to_string()));
     let writer = IndexWriter::new(d(&dir1), iwc1)?;
@@ -2401,7 +2401,7 @@ fn test_add_indices_with_soft_deletes() -> Result<()> {
     // wrappedReader filters out soft deleted docs
     let wrapped_reader =
         SoftDeletesDirectoryReaderWrapper::new("soft_delete").wrap(Arc::clone(&reader))?;
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let num_docs = reader.num_docs();
     let max_doc = reader.max_doc();
     assert_equals(&num_docs, &max_doc);
@@ -2425,7 +2425,7 @@ fn test_add_indices_with_soft_deletes() -> Result<()> {
     assert_equals(&(max_doc - wrapped_reader.num_docs()), &soft_delete_count);
     writer.close()?;
 
-    let mut dir3 = LuceneTestCase::new_directory();
+    let dir3 = LuceneTestCase::new_directory();
     let iwc1 = new_iwc();
     iwc1.set_soft_deletes_field(Some("soft_delete".to_string()));
     let writer = IndexWriter::new(d(&dir3), iwc1)?;
@@ -2479,7 +2479,7 @@ fn test_add_indices_with_blocks() -> Result<()> {
     for perm in 0..add_has_blocks_perm.len() {
         let add_has_blocks = add_has_blocks_perm[perm];
         let base_has_blocks = base_has_blocks_perm[perm];
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&dir))?;
             let num_blocks = random().next_int_range(1, 10);
@@ -2488,7 +2488,7 @@ fn test_add_indices_with_blocks() -> Result<()> {
             writer.close()?;
         }
         {
-            let mut add_dir = LuceneTestCase::new_directory();
+            let add_dir = LuceneTestCase::new_directory();
             let num_blocks = random().next_int_range(1, 10);
             {
                 let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), d(&add_dir))?;
@@ -2564,7 +2564,7 @@ fn test_set_diagnostics() -> Result<()> {
             },
         ),
     );
-    let mut source_dir = LuceneTestCase::new_directory();
+    let source_dir = LuceneTestCase::new_directory();
     {
         let w = IndexWriter::new(d(&source_dir), LuceneTestCase::new_index_writer_config())?;
         let doc = Document::new();
@@ -2575,7 +2575,7 @@ fn test_set_diagnostics() -> Result<()> {
     let codec_reader =
         SlowCodecReaderWrapper::wrap(Arc::clone(&reader).leaves()?[0].leaf_reader())?;
 
-    let mut target_dir = LuceneTestCase::new_directory();
+    let target_dir = LuceneTestCase::new_directory();
     {
         let c = LuceneTestCase::new_index_writer_config();
         c.set_merge_policy(Some(Arc::new(my_merge_policy)))?;
@@ -2622,10 +2622,10 @@ fn parent_field_index(dir1: &TestDirectory) -> Result<()> {
 
 /// Port of `TestAddIndexes.testIllegalParentDocChange`.
 fn test_illegal_parent_doc_change() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     parent_field_index(&dir1)?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let iwc2 = new_iwc();
     iwc2.set_parent_field(Some("foo".to_string()));
     let w2 = RandomIndexWriter::new_with_config(&*random(), d(&dir2), iwc2)?;
@@ -2652,7 +2652,7 @@ fn test_illegal_parent_doc_change() -> Result<()> {
         &message.as_str(),
     );
 
-    let mut dir3 = LuceneTestCase::new_directory();
+    let dir3 = LuceneTestCase::new_directory();
     let iwc3 = new_iwc();
     iwc3.set_parent_field(Some("foobar".to_string()));
     let w3 = RandomIndexWriter::new_with_config(&*random(), d(&dir3), iwc3)?;
@@ -2674,7 +2674,7 @@ fn test_illegal_parent_doc_change() -> Result<()> {
 
 /// Port of `TestAddIndexes.testIllegalNonParentField`.
 fn test_illegal_non_parent_field() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
     let iwc1 = new_iwc();
     let w1 = RandomIndexWriter::new_with_config(&*random(), d(&dir1), iwc1)?;
     let mut parent = Document::new();
@@ -2682,7 +2682,7 @@ fn test_illegal_non_parent_field() -> Result<()> {
     w1.add_document(&parent)?;
     w1.close()?;
 
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let iwc2 = new_iwc();
     iwc2.set_parent_field(Some("foo".to_string()));
     let w2 = RandomIndexWriter::new_with_config(&*random(), d(&dir2), iwc2)?;

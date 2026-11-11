@@ -739,7 +739,7 @@ impl PointsReader for BufferedPointsReader {
     }
 
     /// Equivalent to the empty `close()`: the buffer is owned by the writer.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

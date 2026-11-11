@@ -67,7 +67,7 @@ fn field_infos(sis: &SegmentInfos, i: usize) -> Result<FieldInfos> {
 /// Port of `TestConsistentFieldNumbers.testSameFieldNumbersAcrossSegments`.
 fn test_same_field_numbers_across_segments() -> Result<()> {
     for i in 0..2 {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let mut writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
 
         let mut d1 = Document::new();
@@ -125,8 +125,8 @@ fn test_same_field_numbers_across_segments() -> Result<()> {
 
 /// Port of `TestConsistentFieldNumbers.testAddIndexes`.
 fn test_add_indexes() -> Result<()> {
-    let mut dir1 = LuceneTestCase::new_directory();
-    let mut dir2 = LuceneTestCase::new_directory();
+    let dir1 = LuceneTestCase::new_directory();
+    let dir2 = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir1.as_directory(), no_merge_iwc()?)?;
 
     let mut d1 = Document::new();
@@ -172,7 +172,7 @@ fn test_add_indexes() -> Result<()> {
 fn test_field_number_gaps() -> Result<()> {
     let num_iters = LuceneTestCase::at_least(13);
     for _ in 0..num_iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         {
             let writer = IndexWriter::new(dir.as_directory(), no_merge_iwc()?)?;
             let mut d = Document::new();
@@ -273,7 +273,7 @@ fn test_many_fields() -> Result<()> {
         }
     }
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = IndexWriter::new(dir.as_directory(), mock_iwc())?;
 
     for doc in &docs {

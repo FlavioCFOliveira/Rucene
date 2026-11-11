@@ -538,7 +538,7 @@ fn assert_doc_values_with_skipper(
         2 => || random().next_boolean() && random().next_boolean(),
         _ => randomizedtesting::jdk::exception::throw_without_message("java.lang.AssertionError"),
     };
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     {
         let writer =
             RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
@@ -844,7 +844,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
 
     /// `testMaxValueCountWithSkipper()`.
     fn test_max_value_count_with_skipper(&self) -> Result<()> {
-        let mut directory = LuceneTestCase::new_directory();
+        let directory = LuceneTestCase::new_directory();
         {
             let writer =
                 RandomIndexWriter::new_with_mock_analyzer(&*random(), directory.as_directory())?;
@@ -993,10 +993,10 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
 
     /// `testMismatchedFields()`.
     fn test_mismatched_fields(&self) -> Result<()> {
-        let mut dir1 = LuceneTestCase::new_directory();
+        let dir1 = LuceneTestCase::new_directory();
         // Created where Java creates it; declared here so it outlives the
         // block that releases every handle on it before it closes.
-        let mut dir2;
+        let dir2;
         {
             {
                 let w1 = IndexWriter::new(
@@ -1340,7 +1340,7 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
     ) -> Result<()> {
         let num_docs = LuceneTestCase::at_least(100);
         let mut docs_with_field = 0;
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let outcome = (|| -> Result<()> {
             let w = IndexWriter::new(
                 dir.as_directory(),

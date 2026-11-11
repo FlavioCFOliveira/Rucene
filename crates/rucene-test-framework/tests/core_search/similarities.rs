@@ -116,7 +116,7 @@ fn with_state<T>(
 fn close_state(state: &Mutex<Option<SearcherState>>) -> Result<()> {
     let taken = state.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(SearcherState {
-        mut directory,
+        directory,
         index_reader,
         index_searcher,
     }) = taken
@@ -245,7 +245,7 @@ pub fn boolean_class_def() -> Arc<Class> {
 }
 
 fn test_term_score_is_equal_to_boost() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
@@ -284,7 +284,7 @@ fn test_term_score_is_equal_to_boost() -> Result<()> {
 }
 
 fn test_phrase_score_is_equal_to_boost() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config();
     config.set_similarity(Some(Arc::new(BooleanSimilarity::new())))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;
@@ -821,7 +821,7 @@ fn similarity2_set_up(f: &mut Similarity2) -> Result<()> {
 /// a field that doesnt exist at all test this against a totally empty index,
 /// to make sure sims handle it
 fn test_empty_index(f: &mut Similarity2) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let ir = iw.get_reader()?;
     iw.close()?;
@@ -844,7 +844,7 @@ fn one_doc_one_hit(
     field: rucene::document::Field,
     make: impl Fn() -> Result<Arc<dyn Query>>,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(field));
@@ -897,7 +897,7 @@ fn test_no_norms(f: &mut Similarity2) -> Result<()> {
 
 /// make sure scores are not skewed by docs not containing the field
 fn test_no_field_skew(f: &mut Similarity2) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw_config = LuceneTestCase::new_index_writer_config();
     iw_config.set_merge_policy(Some(Arc::new(LuceneTestCase::new_log_merge_policy())))?;
     let iw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), iw_config)?;
@@ -1189,7 +1189,7 @@ fn similarity_base_tear_down(f: &mut SimilarityBaseTest) -> Result<()> {
     if let Some(reader) = f.reader.take() {
         reader.close()?;
     }
-    if let Some(mut dir) = f.dir.take() {
+    if let Some(dir) = f.dir.take() {
         dir.close()?;
     }
     Ok(())

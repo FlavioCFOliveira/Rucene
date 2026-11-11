@@ -129,7 +129,7 @@ fn throw_uoe() -> ! {
 }
 
 fn test_method() -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
 
     let values = ["1", "2", "3", "4"];
 
@@ -275,7 +275,7 @@ impl BulkScorer for CrazyBulkScorer {
 
 /// Make sure BooleanScorer can embed another BooleanScorer.
 fn test_embedded_boolean_scorer() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(
@@ -322,7 +322,7 @@ fn bulk_is<T: Any>(scorer: &Option<Box<dyn BulkScorer>>) -> bool {
 fn test_optimize_top_level_clause_or_null() -> Result<()> {
     // When there is a single non-null scorer, this scorer should be used
     // directly
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
@@ -670,7 +670,7 @@ impl DocIdSetIterator for CountingDocIdSetIterator {
 }
 
 fn test_optimize_prohibited_clauses() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
@@ -729,7 +729,7 @@ fn test_optimize_prohibited_clauses() -> Result<()> {
 fn test_sparse_clause_optimization() -> Result<()> {
     // When some windows have only one scorer that can match, the scorer will
     // directly call the collector in this window
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let empty_doc = Document::new();
     let num_docs = LuceneTestCase::at_least(10);
@@ -805,7 +805,7 @@ fn scorer_is_css(scorer: &Option<Box<dyn Scorer>>) -> bool {
 }
 
 fn test_filter_constant_score() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(StringField::new("foo", "bar".into(), Store::NO)?));
@@ -917,7 +917,7 @@ fn test_filter_constant_score() -> Result<()> {
 }
 
 fn test_collect_no_threshold_when_only_filter() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let field_type = FieldType::new();
     field_type.set_index_options(IndexOptions::DOCS)?;
@@ -960,7 +960,7 @@ fn test_collect_no_threshold_when_only_filter() -> Result<()> {
 /// Make sure a SHOULD-only BooleanQuery with TOP_SCORES and minShouldMatch > 1 is dispatched to
 /// WandScorer
 fn test_top_scores_with_min_should_match_falls_back_to_wand() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for _i in 0..100 {
         let mut doc = Document::new();

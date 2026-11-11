@@ -36,7 +36,7 @@ pub fn class_def() -> Arc<Class> {
 fn test_indexing() -> Result<()> {
     // `AtomicInteger seq = new AtomicInteger(1)`: an instance field.
     let seq = Arc::new(AtomicI32::new(1));
-    let mut main_dir = LuceneTestCase::new_directory();
+    let main_dir = LuceneTestCase::new_directory();
     if let Some(mock) = main_dir.as_mock() {
         mock.set_assert_no_delete_open_file(true);
     }

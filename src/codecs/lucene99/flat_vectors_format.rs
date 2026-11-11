@@ -41,6 +41,7 @@ use crate::index::vector_values::{
 use crate::index::{segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction};
 use crate::search::vector_scorer::OffHeapVectorScorer;
 use crate::search::{AcceptDocs, DocIdSetIterator, VectorScorer, NO_MORE_DOCS};
+use crate::store::SharedIndexInput;
 use crate::store::{DataAccessHint, DataInput, FileOpenHint, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
 use crate::util::hnsw::scorer::BorrowedBits;
@@ -911,7 +912,7 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
 pub struct Lucene99FlatVectorsReader {
     fields: HashMap<i32, FieldEntry>,
     vector_scorer: Arc<dyn FlatVectorsScorer>,
-    vector_data: Box<dyn IndexInput>,
+    vector_data: SharedIndexInput,
     field_infos: FieldInfos,
     data_context: Box<dyn crate::store::IOContext>,
 }
@@ -986,7 +987,7 @@ impl Lucene99FlatVectorsReader {
         Ok(Self {
             fields,
             vector_scorer: vectors_scorer,
-            vector_data,
+            vector_data: SharedIndexInput::new(vector_data),
             field_infos: state.field_infos.clone(),
             data_context,
         })
@@ -1081,6 +1082,7 @@ impl Lucene99FlatVectorsReader {
     fn update_io_context_for_merge(&self) -> Result<()> {
         let sequential: Arc<dyn FileOpenHint> = Arc::new(DataAccessHint::Sequential);
         self.vector_data
+            .read()
             .update_io_context(self.data_context.with_hints(&[sequential]).as_ref())
     }
 
@@ -1088,7 +1090,7 @@ impl Lucene99FlatVectorsReader {
         Ok(Self {
             fields: self.fields.clone(),
             vector_scorer: Arc::clone(&self.vector_scorer),
-            vector_data: self.vector_data.clone_input()?,
+            vector_data: SharedIndexInput::new(self.vector_data.clone_input()?),
             field_infos: self.field_infos.clone(),
             data_context: self.data_context.with_hints(self.data_context.hints()),
         })
@@ -1136,7 +1138,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
             entry.dimension,
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )
         .map(Some)
     }
@@ -1150,7 +1152,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
             entry.dimension,
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )
         .map(Some)
     }
@@ -1205,12 +1207,13 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     /// needs.
     fn finish_merge(&mut self) -> Result<()> {
         self.vector_data
+            .read()
             .update_io_context(self.data_context.as_ref())
     }
 
     /// Equivalent to `Lucene99FlatVectorsReader.close()`
     /// (`Lucene99FlatVectorsReader.java:307-310`): `IOUtils.close(vectorData)`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         IOUtils::close([Some(|| self.vector_data.close())])
     }
 
@@ -1283,7 +1286,7 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
             entry.dimension,
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )?;
         self.vector_scorer
             .get_random_vector_scorer_float(entry.similarity_function, values, target)
@@ -1302,7 +1305,7 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
             entry.dimension,
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )?;
         self.vector_scorer
             .get_random_vector_scorer_byte(entry.similarity_function, values, target)
@@ -2278,7 +2281,7 @@ pub(crate) mod tests {
             self.inner.obtain_lock(name)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.inner.close()
         }
 

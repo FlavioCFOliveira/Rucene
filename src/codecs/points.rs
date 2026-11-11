@@ -64,7 +64,7 @@ pub trait PointsReader: Send + Sync + fmt::Debug {
     }
 
     /// Closes this reader, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 }
 
 // -----------------------------------------------------------------------------
@@ -210,7 +210,7 @@ impl PointsReader for MergedPointsReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -423,7 +423,7 @@ impl PointsReader for EmptyPointsReader {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -508,7 +508,7 @@ mod tests {
     /// (`codecs/PointsFormat.java:63-66`); it never hands out values.
     #[test]
     fn empty_points_reader_rejects_every_field() {
-        let mut reader = EmptyPointsReader;
+        let reader = EmptyPointsReader;
         match reader.get_values("field") {
             Err(LuceneError {
                 kind: LuceneErrorKind::IllegalArgument { message, .. },

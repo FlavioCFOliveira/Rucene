@@ -234,7 +234,7 @@ fn stored_type() -> Result<FieldType> {
 
 /// Port of `TestIndexWriterDelete.testSimpleCase`.
 fn test_simple_case() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc())?;
 
@@ -268,7 +268,7 @@ fn test_simple_case() -> Result<()> {
 /// test when delete terms only apply to disk segments
 /// Port of `TestIndexWriterDelete.testNonRAMDelete`.
 fn test_non_ram_delete() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc_max_buffered(2)?)?;
     let mut id = 0;
@@ -308,7 +308,7 @@ fn test_ram_deletes() -> Result<()> {
         if verbose() {
             println!("TEST: t={t}");
         }
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let d = dir.as_directory();
         let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc_max_buffered(4)?)?;
         let mut id = 0;
@@ -357,7 +357,7 @@ fn test_ram_deletes() -> Result<()> {
 /// test when delete terms apply to both disk and ram segments
 /// Port of `TestIndexWriterDelete.testBothDeletes`.
 fn test_both_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc_max_buffered(100)?)?;
 
@@ -395,7 +395,7 @@ fn test_both_deletes() -> Result<()> {
 /// test that batched delete terms are flushed together
 /// Port of `TestIndexWriterDelete.testBatchDeletes`.
 fn test_batch_deletes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc_max_buffered(2)?)?;
 
@@ -446,7 +446,7 @@ fn test_delete_all_simple() -> Result<()> {
     if verbose() {
         println!("TEST: now start");
     }
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc_max_buffered(2)?)?;
 
@@ -502,7 +502,7 @@ fn test_delete_all_simple() -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testDeleteAllNoDeadLock`.
 fn test_delete_all_no_dead_lock() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = LuceneTestCase::new_index_writer_config();
     iwc.set_merge_policy(Some(Arc::new(MockRandomMergePolicy::new(&*random()))))?;
@@ -610,7 +610,7 @@ fn test_delete_all_no_dead_lock() -> Result<()> {
 /// test rollback of deleteAll()
 /// Port of `TestIndexWriterDelete.testDeleteAllRollback`.
 fn test_delete_all_rollback() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc_max_buffered(2)?)?;
 
@@ -648,7 +648,7 @@ fn test_delete_all_rollback() -> Result<()> {
 /// test deleteAll() w/ near real-time reader
 /// Port of `TestIndexWriterDelete.testDeleteAllNRT`.
 fn test_delete_all_nrt() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc_max_buffered(2)?)?;
 
@@ -797,7 +797,7 @@ fn do_test_operations_on_disk_full(updates: bool) -> Result<()> {
     let end_count = 144;
 
     // First build up a starting index:
-    let mut start_dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let start_dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
 
     let writer = IndexWriter::new(start_dir.as_directory(), whitespace_iwc())?;
     for i in 0..157 {
@@ -834,7 +834,7 @@ fn do_test_operations_on_disk_full(updates: bool) -> Result<()> {
             println!("TEST: cycle");
         }
         let copy = TestUtil::ram_copy_of(&*start_dir.as_directory())?;
-        let mut dir_holder =
+        let dir_holder =
             TestDirectory::Mock(MockDirectoryWrapper::new(&*random(), Arc::from(copy)));
         let dir = dir_holder.as_mock().expect("MockDirectoryWrapper");
         dir.set_allow_random_file_not_found_exception(false);
@@ -1115,7 +1115,7 @@ fn test_error_after_apply_deletes() -> Result<()> {
 
     // create a couple of files
 
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let d = dir.as_directory();
     let iwc = whitespace_iwc();
     iwc.set_reader_pooling(false);
@@ -1251,7 +1251,7 @@ fn test_error_in_docs_writer_add() -> Result<()> {
 
     // create a couple of files
 
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
     let d = dir.as_directory();
     let modifier = IndexWriter::new(Arc::clone(&d), whitespace_iwc())?;
     modifier.commit()?;
@@ -1284,7 +1284,7 @@ fn test_error_in_docs_writer_add() -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testDeleteNullQuery`.
 fn test_delete_null_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let modifier = IndexWriter::new(
         Arc::clone(&d),
@@ -1305,7 +1305,7 @@ fn test_delete_null_query() -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testDeleteAllSlowly`.
 fn test_delete_all_slowly() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), Arc::clone(&d))?;
     let num_docs = LuceneTestCase::at_least(1000);
@@ -1385,7 +1385,7 @@ fn test_indexing_then_deleting() -> Result<()> {
         field_format == "Direct",
     );
     let r = random();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     // note this test explicitly disables payloads
     let analyzer: Arc<dyn Analyzer> = Arc::new(NoPayloadsAnalyzer {
@@ -1442,7 +1442,7 @@ fn test_indexing_then_deleting() -> Result<()> {
 /// in fact later flushed due to their RAM usage:
 /// Port of `TestIndexWriterDelete.testFlushPushedDeletesByRAM`.
 fn test_flush_pushed_deletes_by_ram() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     // Cannot use RandomIndexWriter because we don't want to
     // ever call commit() for this test:
@@ -1523,7 +1523,7 @@ impl IndexWriterOverrides for ApplyDeletesOnFlushWriter {
 /// much RAM that it forces long tail of tiny segments:
 /// Port of `TestIndexWriterDelete.testApplyDeletesOnFlush`.
 fn test_apply_deletes_on_flush() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     // Cannot use RandomIndexWriter because we don't want to
     // ever call commit() for this test:
@@ -1602,7 +1602,7 @@ fn check_index_output(d: &Arc<dyn Directory>) -> Result<(bool, String)> {
 /// LUCENE-4455
 /// Port of `TestIndexWriterDelete.testDeletesCheckIndexOutput`.
 fn test_deletes_check_index_output() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = plain_iwc();
     iwc.set_merge_policy(Some(NoMergePolicy::instance()))?;
@@ -1650,7 +1650,7 @@ fn test_deletes_check_index_output() -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testTryDeleteDocument`.
 fn test_try_delete_document() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
 
     let iwc = plain_iwc();
@@ -1686,7 +1686,7 @@ fn test_try_delete_document() -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testNRTIsCurrentAfterDelete`.
 fn test_nrt_is_current_after_delete() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let iwc = plain_iwc();
     let w = IndexWriter::new(Arc::clone(&d), iwc)?;
@@ -1747,7 +1747,7 @@ fn add_id_doc(w: &IndexWriter, i: i32) -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testOnlyDeletesTriggersMergeOnClose`.
 fn test_only_deletes_triggers_merge_on_close() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = IndexWriter::new(Arc::clone(&d), log_doc_iwc()?)?;
     for i in 0..38 {
@@ -1770,7 +1770,7 @@ fn test_only_deletes_triggers_merge_on_close() -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testOnlyDeletesTriggersMergeOnGetReader`.
 fn test_only_deletes_triggers_merge_on_get_reader() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = IndexWriter::new(Arc::clone(&d), log_doc_iwc()?)?;
     for i in 0..38 {
@@ -1798,7 +1798,7 @@ fn test_only_deletes_triggers_merge_on_get_reader() -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testOnlyDeletesTriggersMergeOnFlush`.
 fn test_only_deletes_triggers_merge_on_flush() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = IndexWriter::new(Arc::clone(&d), log_doc_iwc()?)?;
     for i in 0..38 {
@@ -1832,7 +1832,7 @@ fn test_only_deletes_triggers_merge_on_flush() -> Result<()> {
 
 /// Port of `TestIndexWriterDelete.testOnlyDeletesDeleteAllDocs`.
 fn test_only_deletes_delete_all_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = IndexWriter::new(Arc::clone(&d), log_doc_iwc()?)?;
     for i in 0..38 {
@@ -1857,7 +1857,7 @@ fn test_only_deletes_delete_all_docs() -> Result<()> {
 /// Make sure merges still kick off after IW.deleteAll!
 /// Port of `TestIndexWriterDelete.testMergingAfterDeleteAll`.
 fn test_merging_after_delete_all() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let w = IndexWriter::new(Arc::clone(&d), log_doc_iwc()?)?;
     for i in 0..10 {

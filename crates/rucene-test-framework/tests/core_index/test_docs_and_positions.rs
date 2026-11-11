@@ -87,7 +87,7 @@ fn writer(
 ///
 /// Port of `TestDocsAndPositions.testPositionsSimple`.
 fn test_positions_simple(inst: &Instance) -> Result<()> {
-    let mut directory = LuceneTestCase::new_directory();
+    let directory = LuceneTestCase::new_directory();
     let writer = writer(&directory, false)?;
     for _ in 0..39 {
         let mut doc = Document::new();
@@ -162,7 +162,7 @@ fn get_docs_and_positions(
 ///
 /// Port of `TestDocsAndPositions.testRandomPositions`.
 fn test_random_positions(inst: &Instance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir, true)?;
     let num_docs = LuceneTestCase::at_least(47);
     let max = 1051;
@@ -260,7 +260,7 @@ fn test_random_positions(inst: &Instance) -> Result<()> {
 
 /// Port of `TestDocsAndPositions.testRandomDocs`.
 fn test_random_docs(inst: &Instance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir, true)?;
     let num_docs = LuceneTestCase::at_least(49);
     let max = 15678;
@@ -373,7 +373,7 @@ fn find_next(docs: &[i32], pos: i32, max: i32) -> i32 {
 ///
 /// Port of `TestDocsAndPositions.testLargeNumberOfPositions`.
 fn test_large_number_of_positions(inst: &Instance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = writer(&dir, false)?;
     let how_many = 1000;
     let custom_type = omit_norms_type()?;
@@ -436,7 +436,7 @@ fn test_large_number_of_positions(inst: &Instance) -> Result<()> {
 
 /// Port of `TestDocsAndPositions.testDocsEnumStart`.
 fn test_docs_enum_start(_inst: &Instance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_string_field(
@@ -479,7 +479,7 @@ fn test_docs_enum_start(_inst: &Instance) -> Result<()> {
 
 /// Port of `TestDocsAndPositions.testDocsAndPositionsEnumStart`.
 fn test_docs_and_positions_enum_start(_inst: &Instance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(

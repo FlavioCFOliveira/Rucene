@@ -1121,7 +1121,7 @@ impl PendingSoftDeletes {
             // (`PendingSoftDeletes.java:234-238`): closed whatever the read
             // did, and a failure to close replaces the read's, as an exception
             // thrown from `finally` does.
-            let mut cfs = codec
+            let cfs = codec
                 .compound_format()
                 .get_compound_reader(seg_info.directory.as_ref(), seg_info)?;
             let read = fis_format.read(&*cfs, seg_info, "", context);
@@ -1598,23 +1598,6 @@ impl ReadersAndUpdates {
             .clone()
     }
 
-    /// Replaces the segment commit info this entry holds with `info`, another
-    /// copy of the same segment's commit.
-    ///
-    /// Java's `ReadersAndUpdates.info` is the very `SegmentCommitInfo` object
-    /// its creator passed (`ReadersAndUpdates.java:90-95`): when that is
-    /// `merge.info`, `IndexWriter.commitMergedDeletesAndUpdates` stamping the
-    /// buffered-deletes generation on `merge.info` (`IndexWriter.java:4600`)
-    /// stamps it on this entry's `info` too. This port holds a copy, so the
-    /// writer hands the stamped commit over here, keeping the two equal where
-    /// Java has one object.
-    pub(crate) fn set_info(&self, info: SegmentCommitInfo) {
-        let mut state = self.state.lock().expect("state mutex poisoned");
-        debug_assert_eq!(state.info.info.name, info.info.name);
-        debug_assert_eq!(state.info.get_del_gen(), info.get_del_gen());
-        state.info = info;
-    }
-
     /// Returns the segment name.
     pub fn segment_name(&self) -> String {
         self.state
@@ -2056,6 +2039,11 @@ impl ReadersAndUpdates {
 
         // Open a reader if we don't have one.  We clone the Arc so `reader`
         // does not borrow `state`, allowing later `state.info` mutations.
+        // `reader` could be null e.g. for a just merged segment: Java opens a
+        // local `READONCE` reader then, and closes it in the `finally`
+        // (`ReadersAndUpdates.java:646-652, 693-697`); `this.reader` is not
+        // set, so the pooled reader is never this confined one.
+        let opened_here = state.reader.is_none();
         let reader_arc: Arc<SegmentReader> = if let Some(r) = state.reader.as_ref() {
             Arc::clone(r)
         } else {
@@ -2065,97 +2053,96 @@ impl ReadersAndUpdates {
                 &*READONCE_IO_CONTEXT,
             )?;
             Self::init_pending_deletes(state, &r)?;
-            let arc = Arc::new(r);
-            state.reader = Some(Arc::clone(&arc));
-            arc
+            Arc::new(r)
         };
-        let reader: &SegmentReader = &reader_arc;
+        let written = (|| -> Result<()> {
+            let reader: &SegmentReader = &reader_arc;
 
-        // Build the new FieldInfos: clone the reader's FieldInfos and add
-        // new fields for any update fields that don't exist in this segment.
-        let reader_field_infos = reader.get_field_infos();
-        let mut by_name: HashMap<String, FieldInfo> = HashMap::new();
-        let mut max_field_number = -1i32;
-        for fi in reader_field_infos.iter() {
-            // Cannot use the builder's `add`, because it does not preserve the
-            // local field number: field numbers can differ from the global ones
-            // when the segment was created externally and brought in through
-            // `addIndexes(Directory)`.
-            by_name.insert(
-                fi.name.clone(),
-                Self::clone_field_info(fi, fi.get_field_number()),
-            );
-            if fi.get_field_number() > max_field_number {
-                max_field_number = fi.get_field_number();
-            }
-        }
-
-        // Create new fields with the right DV type
-        // (`ReadersAndUpdates.java:669-685`).
-        for updates in state.pending_dv_updates.values() {
-            if let Some(update) = updates.first() {
-                if let Some(fi) = by_name.get(&update.field) {
-                    // The field already exists in this segment.
-                    debug_assert_eq!(fi.doc_values_type, update.dv_type);
-                } else {
-                    // The field is not present in this segment, so we clone the
-                    // global field (which is guaranteed to exist) and remap its
-                    // field number locally.
-                    let fi = field_numbers.construct_field_info(
-                        &update.field,
-                        update.dv_type,
-                        max_field_number + 1,
-                    )?;
-                    debug_assert!(fi.is_some());
-                    // Without assertions Java dereferences the null `fi`
-                    // (`ReadersAndUpdates.java:683`).
-                    let fi = fi.ok_or_else(LuceneError::null_pointer)?;
-                    max_field_number += 1;
-                    by_name.insert(fi.name.clone(), fi);
-                }
-            }
-        }
-
-        let field_infos = FieldInfos::new(by_name.into_values().collect::<Vec<_>>())?;
-        let doc_values_format = codec.doc_values_format();
-
-        // Handle each field's DV updates.
-        // `final Map<Integer, Set<String>> newDVFiles = new HashMap<>()`
-        // (`ReadersAndUpdates.java:619`), in Java's iteration order.
-        let mut new_dv_files: JavaIntHashMap<JavaHashSet> = JavaIntHashMap::new();
-
-        // Phase 1: Collect update data from `state.pending_dv_updates` into a
-        // local `Vec` so that Phase 2 can freely mutate `state.info` without
-        // holding an immutable borrow of `state.pending_dv_updates`.
-        struct FieldUpdateData {
-            field: String,
-            dv_type: DocValuesType,
-            bytes: i64,
-            numeric_updates: HashMap<i32, Option<i64>>,
-            binary_updates: HashMap<i32, Option<BytesRef>>,
-        }
-
-        let fields_data: Vec<FieldUpdateData> = {
-            let mut result = Vec::new();
-            for (field, updates) in state.pending_dv_updates.iter() {
-                let dv_type = updates[0].dv_type;
-                // `ReadersAndUpdates.java:297-298`.
-                debug_assert!(
-                    dv_type == DocValuesType::NUMERIC || dv_type == DocValuesType::BINARY,
-                    "unsupported type: {dv_type:?}"
+            // Build the new FieldInfos: clone the reader's FieldInfos and add
+            // new fields for any update fields that don't exist in this segment.
+            let reader_field_infos = reader.get_field_infos();
+            let mut by_name: HashMap<String, FieldInfo> = HashMap::new();
+            let mut max_field_number = -1i32;
+            for fi in reader_field_infos.iter() {
+                // Cannot use the builder's `add`, because it does not preserve the
+                // local field number: field numbers can differ from the global ones
+                // when the segment was created externally and brought in through
+                // `addIndexes(Directory)`.
+                by_name.insert(
+                    fi.name.clone(),
+                    Self::clone_field_info(fi, fi.get_field_number()),
                 );
-
-                let updates_to_apply: Vec<&DocValuesFieldUpdates> = updates
-                    .iter()
-                    .filter(|u| u.del_gen <= max_del_gen)
-                    .collect();
-                if updates_to_apply.is_empty() {
-                    continue;
+                if fi.get_field_number() > max_field_number {
+                    max_field_number = fi.get_field_number();
                 }
+            }
 
-                let bytes: i64 = updates_to_apply.iter().map(|u| u.ram_bytes_used()).sum();
-                if info_stream.is_enabled("BD") {
-                    info_stream.message(
+            // Create new fields with the right DV type
+            // (`ReadersAndUpdates.java:669-685`).
+            for updates in state.pending_dv_updates.values() {
+                if let Some(update) = updates.first() {
+                    if let Some(fi) = by_name.get(&update.field) {
+                        // The field already exists in this segment.
+                        debug_assert_eq!(fi.doc_values_type, update.dv_type);
+                    } else {
+                        // The field is not present in this segment, so we clone the
+                        // global field (which is guaranteed to exist) and remap its
+                        // field number locally.
+                        let fi = field_numbers.construct_field_info(
+                            &update.field,
+                            update.dv_type,
+                            max_field_number + 1,
+                        )?;
+                        debug_assert!(fi.is_some());
+                        // Without assertions Java dereferences the null `fi`
+                        // (`ReadersAndUpdates.java:683`).
+                        let fi = fi.ok_or_else(LuceneError::null_pointer)?;
+                        max_field_number += 1;
+                        by_name.insert(fi.name.clone(), fi);
+                    }
+                }
+            }
+
+            let field_infos = FieldInfos::new(by_name.into_values().collect::<Vec<_>>())?;
+            let doc_values_format = codec.doc_values_format();
+
+            // Handle each field's DV updates.
+            // `final Map<Integer, Set<String>> newDVFiles = new HashMap<>()`
+            // (`ReadersAndUpdates.java:619`), in Java's iteration order.
+            let mut new_dv_files: JavaIntHashMap<JavaHashSet> = JavaIntHashMap::new();
+
+            // Phase 1: Collect update data from `state.pending_dv_updates` into a
+            // local `Vec` so that Phase 2 can freely mutate `state.info` without
+            // holding an immutable borrow of `state.pending_dv_updates`.
+            struct FieldUpdateData {
+                field: String,
+                dv_type: DocValuesType,
+                bytes: i64,
+                numeric_updates: HashMap<i32, Option<i64>>,
+                binary_updates: HashMap<i32, Option<BytesRef>>,
+            }
+
+            let fields_data: Vec<FieldUpdateData> = {
+                let mut result = Vec::new();
+                for (field, updates) in state.pending_dv_updates.iter() {
+                    let dv_type = updates[0].dv_type;
+                    // `ReadersAndUpdates.java:297-298`.
+                    debug_assert!(
+                        dv_type == DocValuesType::NUMERIC || dv_type == DocValuesType::BINARY,
+                        "unsupported type: {dv_type:?}"
+                    );
+
+                    let updates_to_apply: Vec<&DocValuesFieldUpdates> = updates
+                        .iter()
+                        .filter(|u| u.del_gen <= max_del_gen)
+                        .collect();
+                    if updates_to_apply.is_empty() {
+                        continue;
+                    }
+
+                    let bytes: i64 = updates_to_apply.iter().map(|u| u.ram_bytes_used()).sum();
+                    if info_stream.is_enabled("BD") {
+                        info_stream.message(
                         "BD",
                         &format!(
                             "now write {} pending {:?} DV updates for field={}, seg={}, bytes={:.3} MB",
@@ -2166,233 +2153,244 @@ impl ReadersAndUpdates {
                             bytes as f64 / 1_048_576.0
                         ),
                     );
-                }
-
-                let mut numeric_updates: HashMap<i32, Option<i64>> = HashMap::new();
-                let mut binary_updates: HashMap<i32, Option<BytesRef>> = HashMap::new();
-
-                // `DocValuesFieldUpdates.mergedIterator(subs)` over the updates
-                // to apply (`ReadersAndUpdates.java:333-345`): for a document
-                // several packets updated, the one with the highest delGen
-                // wins, whatever order the packets sit in the list — the
-                // updates a merge carried over arrive in hash order.
-                let subs = updates_to_apply
-                    .iter()
-                    .map(|update| update.iterator())
-                    .collect::<Vec<_>>();
-                let mut it = merged_iterator(subs);
-                loop {
-                    let doc_id = it.next_doc()?;
-                    if doc_id == NO_MORE_DOCS {
-                        break;
                     }
-                    if it.has_value() {
-                        if dv_type == DocValuesType::NUMERIC {
-                            numeric_updates.insert(doc_id, Some(it.long_value()));
-                        } else {
-                            binary_updates.insert(doc_id, Some(it.binary_value()));
+
+                    let mut numeric_updates: HashMap<i32, Option<i64>> = HashMap::new();
+                    let mut binary_updates: HashMap<i32, Option<BytesRef>> = HashMap::new();
+
+                    // `DocValuesFieldUpdates.mergedIterator(subs)` over the updates
+                    // to apply (`ReadersAndUpdates.java:333-345`): for a document
+                    // several packets updated, the one with the highest delGen
+                    // wins, whatever order the packets sit in the list — the
+                    // updates a merge carried over arrive in hash order.
+                    let subs = updates_to_apply
+                        .iter()
+                        .map(|update| update.iterator())
+                        .collect::<Vec<_>>();
+                    let mut it = merged_iterator(subs);
+                    loop {
+                        let doc_id = it.next_doc()?;
+                        if doc_id == NO_MORE_DOCS {
+                            break;
                         }
-                    } else if dv_type == DocValuesType::NUMERIC {
-                        numeric_updates.insert(doc_id, None);
+                        if it.has_value() {
+                            if dv_type == DocValuesType::NUMERIC {
+                                numeric_updates.insert(doc_id, Some(it.long_value()));
+                            } else {
+                                binary_updates.insert(doc_id, Some(it.binary_value()));
+                            }
+                        } else if dv_type == DocValuesType::NUMERIC {
+                            numeric_updates.insert(doc_id, None);
+                        } else {
+                            binary_updates.insert(doc_id, None);
+                        }
+                    }
+
+                    result.push(FieldUpdateData {
+                        field: field.clone(),
+                        dv_type,
+                        bytes,
+                        numeric_updates,
+                        binary_updates,
+                    });
+                }
+                result
+            };
+
+            // Phase 2: Write each field's DV updates.  `state.info` can be mutated
+            // freely because `fields_data` is owned locally.
+            //
+            // Java sets `fieldInfo.setDocValuesGen(nextDocValuesGen)` on the very
+            // `FieldInfo` the segment's new `FieldInfos` holds
+            // (`ReadersAndUpdates.java:326-328`), and hands that same object to the
+            // doc-values consumer, so the field-infos generation written afterwards
+            // records each updated field's doc-values generation *and* the
+            // attributes the consumer put — `PerFieldDocValuesFormat` records its
+            // format and suffix there. The port's `FieldInfos` is immutable once
+            // built, so each field's info is collected here as the consumer left
+            // it and swapped in before the field infos are written.
+            let mut written_field_infos: HashMap<String, FieldInfo> = HashMap::new();
+            for fd in &fields_data {
+                // `new TrackingDirectoryWrapper(dir)` per field
+                // (`ReadersAndUpdates.java:331`): only the files this field's
+                // consumer creates belong to its generation.
+                let field_tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+                    SharedDirectory(Arc::clone(dir)),
+                )));
+                let next_dv_gen = state.info.get_next_doc_values_gen();
+                let segment_suffix = radix36(next_dv_gen as u64);
+                let flush_context =
+                    flush_io_context(FlushInfo::new(state.info.info.max_doc()?, fd.bytes));
+                let field_info = field_infos.field_info(&fd.field);
+                debug_assert!(field_info.is_some());
+                // Without assertions Java dereferences the null `fieldInfo`
+                // (`ReadersAndUpdates.java:328`).
+                let field_info = field_info.ok_or_else(LuceneError::null_pointer)?.clone();
+                let mut field_info_mut = field_info;
+                field_info_mut.set_doc_values_gen(next_dv_gen);
+
+                let single_field_infos = FieldInfos::new(vec![field_info_mut.clone()])?;
+
+                let field_number = field_info_mut.get_field_number();
+                // `pendingDeletes.onDocValuesUpdate(fieldInfo, ...)`
+                // (`ReadersAndUpdates.java:349`), made before the consumer writes
+                // the field (Java makes it after opening the consumer, which does
+                // not read the counts it changes): an update to the soft-deletes
+                // field soft-deletes the documents it gives a value, and the
+                // segment's soft-delete count follows.
+                {
+                    let RauState {
+                        info,
+                        pending_deletes,
+                        pending_dv_updates,
+                        ..
+                    } = &mut *state;
+                    let subs = pending_dv_updates
+                        .get(&fd.field)
+                        .map(|updates| {
+                            updates
+                                .iter()
+                                .filter(|u| u.del_gen <= max_del_gen)
+                                .map(DocValuesFieldUpdates::iterator)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let mut updates = merged_iterator(subs);
+                    pending_deletes.on_doc_values_update(&field_info_mut, &mut updates, info)?;
+                }
+
+                {
+                    let empty_updates = crate::codecs::stub::BufferedUpdates::default();
+                    let write_state = SegmentWriteState::with_suffix(
+                        &NoOutputInfoStream,
+                        Arc::clone(&field_tracking) as Arc<dyn Directory>,
+                        &state.info.info,
+                        &single_field_infos,
+                        &empty_updates,
+                        &*flush_context,
+                        segment_suffix.clone(),
+                    );
+
+                    let mut consumer = doc_values_format.fields_consumer(&write_state)?;
+
+                    let merged_producer = MergedDvProducer {
+                        reader: Arc::clone(&reader_arc),
+                        dv_type: fd.dv_type,
+                        field: fd.field.clone(),
+                        numeric_updates: fd.numeric_updates.clone(),
+                        binary_updates: fd.binary_updates.clone(),
+                    };
+
+                    if fd.dv_type == DocValuesType::BINARY {
+                        consumer.add_binary_field(&field_info_mut, &merged_producer)?;
                     } else {
-                        binary_updates.insert(doc_id, None);
+                        consumer.add_numeric_field(&field_info_mut, &merged_producer)?;
+                    }
+                    consumer.close()?;
+                }
+
+                state.info.advance_doc_values_gen();
+                written_field_infos.insert(fd.field.clone(), field_info_mut);
+
+                // `fieldFiles.put(fieldInfo.number, trackingDir.getCreatedFiles())`
+                // (`ReadersAndUpdates.java:459`).
+                debug_assert!(!new_dv_files.contains_key(field_number));
+                new_dv_files.insert(field_number, field_tracking.get_created_files_ordered());
+            }
+            let field_infos = if written_field_infos.is_empty() {
+                field_infos
+            } else {
+                let mut updated = Vec::with_capacity(field_infos.len());
+                for fi in field_infos.iter() {
+                    let fi = match written_field_infos.remove(&fi.name) {
+                        Some(written) => written,
+                        None => Self::clone_field_info(fi, fi.get_field_number()),
+                    };
+                    updated.push(fi);
+                }
+                FieldInfos::new(updated)?
+            };
+
+            // Write the FieldInfos generation file; only the files that write
+            // creates are the field-infos files (`ReadersAndUpdates.java:598-612`).
+            let fi_files = Self::write_field_infos_gen(
+                &mut *state,
+                &field_infos,
+                dir,
+                codec.field_infos_format(),
+            )?;
+            state.info.set_field_infos_files(fi_files);
+
+            // Merge with existing DV updates files.
+            debug_assert!(!new_dv_files.is_empty());
+            let existing: Vec<(i32, JavaHashSet)> = state
+                .info
+                .get_doc_values_updates_files()
+                .iter()
+                .map(|(k, v)| (k, v.clone()))
+                .collect();
+            for (k, v) in existing {
+                if !new_dv_files.contains_key(k) {
+                    new_dv_files.insert(k, v);
+                }
+            }
+            state.info.set_doc_values_updates_files(
+                new_dv_files
+                    .iter()
+                    .map(|(k, v)| (k, v.iter().cloned().collect::<Vec<_>>()))
+                    .collect::<Vec<_>>(),
+            );
+
+            // Prune the now-written DV updates.  We take each Vec out of the map
+            // to avoid simultaneous immutable/mutable borrows of the same Vec.
+            let mut bytes_freed = 0i64;
+            let mut fields_to_remove = Vec::new();
+            for (field_name, updates) in state.pending_dv_updates.iter_mut() {
+                let original = std::mem::take(updates);
+                let mut kept = Vec::new();
+                for update in original {
+                    if update.del_gen > max_del_gen {
+                        // The update itself stays pending, as Java's list keeps
+                        // the same object (`ReadersAndUpdates.java:715-736`), so
+                        // the RAM it was charged is the RAM later freed.
+                        kept.push(update);
+                    } else {
+                        bytes_freed += update.ram_bytes_used();
                     }
                 }
-
-                result.push(FieldUpdateData {
-                    field: field.clone(),
-                    dv_type,
-                    bytes,
-                    numeric_updates,
-                    binary_updates,
-                });
-            }
-            result
-        };
-
-        // Phase 2: Write each field's DV updates.  `state.info` can be mutated
-        // freely because `fields_data` is owned locally.
-        //
-        // Java sets `fieldInfo.setDocValuesGen(nextDocValuesGen)` on the very
-        // `FieldInfo` the segment's new `FieldInfos` holds
-        // (`ReadersAndUpdates.java:326-328`), and hands that same object to the
-        // doc-values consumer, so the field-infos generation written afterwards
-        // records each updated field's doc-values generation *and* the
-        // attributes the consumer put — `PerFieldDocValuesFormat` records its
-        // format and suffix there. The port's `FieldInfos` is immutable once
-        // built, so each field's info is collected here as the consumer left
-        // it and swapped in before the field infos are written.
-        let mut written_field_infos: HashMap<String, FieldInfo> = HashMap::new();
-        for fd in &fields_data {
-            // `new TrackingDirectoryWrapper(dir)` per field
-            // (`ReadersAndUpdates.java:331`): only the files this field's
-            // consumer creates belong to its generation.
-            let field_tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
-                SharedDirectory(Arc::clone(dir)),
-            )));
-            let next_dv_gen = state.info.get_next_doc_values_gen();
-            let segment_suffix = radix36(next_dv_gen as u64);
-            let flush_context =
-                flush_io_context(FlushInfo::new(state.info.info.max_doc()?, fd.bytes));
-            let field_info = field_infos.field_info(&fd.field);
-            debug_assert!(field_info.is_some());
-            // Without assertions Java dereferences the null `fieldInfo`
-            // (`ReadersAndUpdates.java:328`).
-            let field_info = field_info.ok_or_else(LuceneError::null_pointer)?.clone();
-            let mut field_info_mut = field_info;
-            field_info_mut.set_doc_values_gen(next_dv_gen);
-
-            let single_field_infos = FieldInfos::new(vec![field_info_mut.clone()])?;
-
-            let field_number = field_info_mut.get_field_number();
-            // `pendingDeletes.onDocValuesUpdate(fieldInfo, ...)`
-            // (`ReadersAndUpdates.java:349`), made before the consumer writes
-            // the field (Java makes it after opening the consumer, which does
-            // not read the counts it changes): an update to the soft-deletes
-            // field soft-deletes the documents it gives a value, and the
-            // segment's soft-delete count follows.
-            {
-                let RauState {
-                    info,
-                    pending_deletes,
-                    pending_dv_updates,
-                    ..
-                } = &mut *state;
-                let subs = pending_dv_updates
-                    .get(&fd.field)
-                    .map(|updates| {
-                        updates
-                            .iter()
-                            .filter(|u| u.del_gen <= max_del_gen)
-                            .map(DocValuesFieldUpdates::iterator)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let mut updates = merged_iterator(subs);
-                pending_deletes.on_doc_values_update(&field_info_mut, &mut updates, info)?;
-            }
-
-            {
-                let empty_updates = crate::codecs::stub::BufferedUpdates::default();
-                let write_state = SegmentWriteState::with_suffix(
-                    &NoOutputInfoStream,
-                    Arc::clone(&field_tracking) as Arc<dyn Directory>,
-                    &state.info.info,
-                    &single_field_infos,
-                    &empty_updates,
-                    &*flush_context,
-                    segment_suffix.clone(),
-                );
-
-                let mut consumer = doc_values_format.fields_consumer(&write_state)?;
-
-                let merged_producer = MergedDvProducer {
-                    reader: Arc::clone(&reader_arc),
-                    dv_type: fd.dv_type,
-                    field: fd.field.clone(),
-                    numeric_updates: fd.numeric_updates.clone(),
-                    binary_updates: fd.binary_updates.clone(),
-                };
-
-                if fd.dv_type == DocValuesType::BINARY {
-                    consumer.add_binary_field(&field_info_mut, &merged_producer)?;
+                if kept.is_empty() {
+                    fields_to_remove.push(field_name.clone());
                 } else {
-                    consumer.add_numeric_field(&field_info_mut, &merged_producer)?;
+                    *updates = kept;
                 }
-                consumer.close()?;
+            }
+            for f in fields_to_remove {
+                state.pending_dv_updates.remove(&f);
+            }
+            let new_ram = self
+                .ram_bytes_used
+                .fetch_sub(bytes_freed, Ordering::Relaxed)
+                - bytes_freed;
+            // `assert bytes >= 0` (`ReadersAndUpdates.java:739`): evaluated only
+            // in builds with `debug_assertions`, this port's `-ea`, where it fails
+            // as Java's `AssertionError` (no message), which the writer's `catch
+            // (Error)` sites turn into a tragedy.
+            if cfg!(debug_assertions) && new_ram < 0 {
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    String::new(),
+                )));
             }
 
-            state.info.advance_doc_values_gen();
-            written_field_infos.insert(fd.field.clone(), field_info_mut);
-
-            // `fieldFiles.put(fieldInfo.number, trackingDir.getCreatedFiles())`
-            // (`ReadersAndUpdates.java:459`).
-            debug_assert!(!new_dv_files.contains_key(field_number));
-            new_dv_files.insert(field_number, field_tracking.get_created_files_ordered());
-        }
-        let field_infos = if written_field_infos.is_empty() {
-            field_infos
+            Ok(())
+        })();
+        // `finally { if (reader != this.reader) { reader.close(); } }`
+        let closed = if opened_here {
+            crate::index::IndexReader::close(&*reader_arc)
         } else {
-            let mut updated = Vec::with_capacity(field_infos.len());
-            for fi in field_infos.iter() {
-                let fi = match written_field_infos.remove(&fi.name) {
-                    Some(written) => written,
-                    None => Self::clone_field_info(fi, fi.get_field_number()),
-                };
-                updated.push(fi);
-            }
-            FieldInfos::new(updated)?
+            Ok(())
         };
-
-        // Write the FieldInfos generation file; only the files that write
-        // creates are the field-infos files (`ReadersAndUpdates.java:598-612`).
-        let fi_files = Self::write_field_infos_gen(
-            &mut *state,
-            &field_infos,
-            dir,
-            codec.field_infos_format(),
-        )?;
-        state.info.set_field_infos_files(fi_files);
-
-        // Merge with existing DV updates files.
-        debug_assert!(!new_dv_files.is_empty());
-        let existing: Vec<(i32, JavaHashSet)> = state
-            .info
-            .get_doc_values_updates_files()
-            .iter()
-            .map(|(k, v)| (k, v.clone()))
-            .collect();
-        for (k, v) in existing {
-            if !new_dv_files.contains_key(k) {
-                new_dv_files.insert(k, v);
-            }
-        }
-        state.info.set_doc_values_updates_files(
-            new_dv_files
-                .iter()
-                .map(|(k, v)| (k, v.iter().cloned().collect::<Vec<_>>()))
-                .collect::<Vec<_>>(),
-        );
-
-        // Prune the now-written DV updates.  We take each Vec out of the map
-        // to avoid simultaneous immutable/mutable borrows of the same Vec.
-        let mut bytes_freed = 0i64;
-        let mut fields_to_remove = Vec::new();
-        for (field_name, updates) in state.pending_dv_updates.iter_mut() {
-            let original = std::mem::take(updates);
-            let mut kept = Vec::new();
-            for update in original {
-                if update.del_gen > max_del_gen {
-                    // The update itself stays pending, as Java's list keeps
-                    // the same object (`ReadersAndUpdates.java:715-736`), so
-                    // the RAM it was charged is the RAM later freed.
-                    kept.push(update);
-                } else {
-                    bytes_freed += update.ram_bytes_used();
-                }
-            }
-            if kept.is_empty() {
-                fields_to_remove.push(field_name.clone());
-            } else {
-                *updates = kept;
-            }
-        }
-        for f in fields_to_remove {
-            state.pending_dv_updates.remove(&f);
-        }
-        let new_ram = self
-            .ram_bytes_used
-            .fetch_sub(bytes_freed, Ordering::Relaxed)
-            - bytes_freed;
-        // `assert bytes >= 0` (`ReadersAndUpdates.java:739`): evaluated only
-        // in builds with `debug_assertions`, this port's `-ea`, where it fails
-        // as Java's `AssertionError` (no message), which the writer's `catch
-        // (Error)` sites turn into a tragedy.
-        if cfg!(debug_assertions) && new_ram < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::AssertionError(
-                String::new(),
-            )));
-        }
+        written?;
+        closed?;
 
         // Reopen the reader if one is open.
         if state.reader.is_some() {
@@ -2864,7 +2862,7 @@ impl DocValuesProducer for MergedDvProducer {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Err(Self::unsupported("close"))
     }
 }
@@ -3533,26 +3531,25 @@ impl ReaderPool {
     }
 
     /// Returns the pooled reader for `segment_name`, without creating one and
-    /// without taking a reference for the caller.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java has no such method because it
-    /// does not need one: `rld.info` *is* the `SegmentCommitInfo` instance the
-    /// writer's `SegmentInfos` holds, so writing a pooled reader's live docs
-    /// updates the writer's own copy through reference identity. This port
-    /// keeps a clone in the pool, so the writer has to read the updated
-    /// generation and deletion count back out; this is how it reaches them.
+    /// without taking a reference for the caller: the lookup half of
+    /// `ReaderPool.get(info, false)` (`ReaderPool.java:390-412`).
     pub fn peek(&self, segment_name: &str) -> Option<Arc<ReadersAndUpdates>> {
         let map = self.reader_map.lock().expect("reader_map mutex poisoned");
         map.get(segment_name).map(Arc::clone)
     }
 
-    /// Drops all entries from the pool.
+    /// Drops all entries from the pool, dropping each entry's readers.
     ///
-    /// Equivalent to `ReaderPool.dropAll()`.
+    /// Equivalent to `ReaderPool.dropAll()` (`ReaderPool.java:311-338`):
+    /// every entry is removed as it is visited, then `rld.dropReaders()` runs
+    /// on it; the first failure is rethrown once all ran, the later ones
+    /// suppressed. The decRefs need not close the readers: a near-real-time
+    /// reader may still hold them.
     pub fn drop_all(&self) -> Result<()> {
         let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
-        map.clear();
-        Ok(())
+        let entries: Vec<Arc<ReadersAndUpdates>> = map.drain().map(|(_, rld)| rld).collect();
+        drop(map);
+        crate::util::IOUtils::close(entries.iter().map(|rld| Some(move || rld.drop_readers())))
     }
 
     /// Writes all pending doc-values updates for all pooled segments.
@@ -3671,13 +3668,13 @@ impl ReaderPool {
     }
 
     /// Closes the pool and drops all readers.
+    ///
+    /// Equivalent to `ReaderPool.close()` (`ReaderPool.java:229-233`): the
+    /// first close runs [`drop_all`](Self::drop_all).
     pub fn close(&self) -> Result<()> {
-        self.closed.store(true, Ordering::Relaxed);
-        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
-        for rld in map.values() {
-            rld.drop_readers()?;
+        if !self.closed.swap(true, Ordering::Relaxed) {
+            self.drop_all()?;
         }
-        map.clear();
         Ok(())
     }
 }
@@ -4243,7 +4240,7 @@ mod tests {
     #[test]
     fn pending_deletes_with_existing_deletions_not_initialized() {
         let info = make_sci("_0", 10);
-        let mut info = info;
+        let info = info;
         info.set_del_count(3).unwrap();
         // has_deletions() is true → liveDocsInitialized = false
         let pd = PendingDeletes::new(&info);

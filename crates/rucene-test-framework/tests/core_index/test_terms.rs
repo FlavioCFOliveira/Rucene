@@ -32,7 +32,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// Port of `TestTerms.testTermMinMaxBasic`.
 fn test_term_min_max_basic() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     doc.add(Box::new(LuceneTestCase::new_text_field(
@@ -52,7 +52,7 @@ fn test_term_min_max_basic() -> Result<()> {
 
 /// Port of `TestTerms.testTermMinMaxRandom`.
 fn test_term_min_max_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs = LuceneTestCase::at_least(100);
     let mut min_term: Option<BytesRef> = None;

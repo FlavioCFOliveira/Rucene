@@ -116,7 +116,7 @@ fn score(pivot: f64, distance: f64) -> f32 {
 
 /// Port of `testBasics`.
 fn test_basics() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let mut doc = point_doc()?;
 
@@ -179,7 +179,7 @@ fn test_basics() -> Result<()> {
 
 /// Port of `testCrossesDateLine`.
 fn test_crosses_date_line() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let mut doc = point_doc()?;
 
@@ -233,7 +233,7 @@ fn test_missing_field() -> Result<()> {
 
 /// Port of `testMissingValue`.
 fn test_missing_value() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let mut doc = point_doc()?;
 
@@ -283,7 +283,7 @@ fn multi_doc(points: &[[f64; 2]]) -> Result<Document> {
 
 /// Port of `testMultiValued`.
 fn test_multi_valued() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     w.add_document(&multi_doc(&[[0.0, 0.0], [30.0, 30.0], [60.0, 60.0]])?)?;
     w.add_document(&multi_doc(&[
@@ -344,7 +344,7 @@ fn test_multi_valued() -> Result<()> {
 
 /// Port of `testRandom`.
 fn test_random() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(LuceneTestCase::new_log_merge_policy_use_cfs(
         random().next_boolean(),
@@ -383,7 +383,7 @@ fn test_random() -> Result<()> {
 
 /// Port of `testCompareSorting`.
 fn test_compare_sorting() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = writer(&dir)?;
     let mut doc = point_doc()?;
 

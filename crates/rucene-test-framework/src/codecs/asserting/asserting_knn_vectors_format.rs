@@ -299,7 +299,7 @@ impl KnnVectorsReader for AssertingKnnVectorsReader {
         self.delegate.get_off_heap_byte_size(field_info)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         if self.merge_instance.is_some() {
             java_assert!(false); // closing the merge instance it not allowed
             return Ok(());

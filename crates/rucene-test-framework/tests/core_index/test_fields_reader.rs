@@ -113,7 +113,7 @@ fn before_class() -> Result<()> {
 /// `@AfterClass public static void afterClass()`.
 fn after_class() -> Result<()> {
     let mut s = statics();
-    let mut dir = s.dir.take().unwrap_or_else(|| npe("dir"));
+    let dir = s.dir.take().unwrap_or_else(|| npe("dir"));
     dir.close()?;
     s.test_doc = None;
     s.field_infos = None;
@@ -193,7 +193,7 @@ impl FaultyFSDirectory {
     /// `close()`: `in.close()`, closing the `fsDir` the test opened.
     fn close_in(&self) -> Result<()> {
         match self.fs_dir.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            Some(mut fs_dir) => fs_dir.close(),
+            Some(fs_dir) => fs_dir.close(),
             None => Ok(()),
         }
     }
@@ -241,7 +241,7 @@ impl Directory for FaultyFSDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.r#in.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.close_in()
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {

@@ -1568,7 +1568,7 @@ impl CheckIndex {
             result.num_bad_segments += 1;
         } else if let Some(new_segments) = result.new_segments.as_mut() {
             // Keeper.
-            new_segments.add(info.clone())?;
+            new_segments.add(info.java_clone())?;
         }
         Ok(())
     }

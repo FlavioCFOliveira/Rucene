@@ -41,7 +41,7 @@ fn index_and_check(doc: Document) -> Result<()> {
     assert_equals(&2, &doc.get_fields().len());
 
     /* add the doc to a ram index */
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     writer.add_document(&doc)?;
 

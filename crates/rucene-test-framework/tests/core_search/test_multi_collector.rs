@@ -338,7 +338,7 @@ impl CollectorManager for WrapManager {
 fn test_collection_terminated_exception_handling() -> Result<()> {
     let iters = LuceneTestCase::at_least(3);
     for _ in 0..iters {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
         let num_docs = TestUtil::next_int(&*random(), 100, 1000);
         let doc = Document::new();
@@ -517,7 +517,7 @@ fn first_leaf(
 
 /// Port of `TestMultiCollector.testDisablesSetMinScore`.
 fn test_disables_set_min_score() -> Result<()> {
-    let (mut dir, reader) = one_doc_index()?;
+    let (dir, reader) = one_doc_index()?;
 
     let mut scorer = NoSetMinScorable;
 
@@ -543,7 +543,7 @@ fn test_disables_set_min_score() -> Result<()> {
 
 /// Port of `TestMultiCollector.testDisablesSetMinScoreWithEarlyTermination`.
 fn test_disables_set_min_score_with_early_termination() -> Result<()> {
-    let (mut dir, reader) = one_doc_index()?;
+    let (dir, reader) = one_doc_index()?;
 
     let mut scorer = NoSetMinScorable;
 
@@ -907,7 +907,7 @@ fn random_one_doc_index(
 
 /// Port of `TestMultiCollector.testCacheScoresIfNecessary`.
 fn test_cache_scores_if_necessary() -> Result<()> {
-    let (mut dir, reader) = random_one_doc_index(true)?;
+    let (dir, reader) = random_one_doc_index(true)?;
 
     let ctx = first_leaf(&reader)?;
 
@@ -951,7 +951,7 @@ fn test_cache_scores_if_necessary() -> Result<()> {
 
 /// Port of `TestMultiCollector.testScorerWrappingForTopScores`.
 fn test_scorer_wrapping_for_top_scores() -> Result<()> {
-    let (mut dir, reader) = random_one_doc_index(false)?;
+    let (dir, reader) = random_one_doc_index(false)?;
     let ctx = first_leaf(&reader)?;
     let c1 = collector(
         ScoreMode::TOP_SCORES,
@@ -1030,7 +1030,7 @@ fn test_min_competitive_score() -> Result<()> {
 
 /// Port of `TestMultiCollector.testCollectionTermination`.
 fn test_collection_termination() -> Result<()> {
-    let (mut dir, reader) = random_one_doc_index(false)?;
+    let (dir, reader) = random_one_doc_index(false)?;
     let ctx = first_leaf(&reader)?;
     let c1 = DummyCollector::terminating(1, ScoreMode::COMPLETE);
     let c2 = DummyCollector::terminating(2, ScoreMode::COMPLETE);
@@ -1079,7 +1079,7 @@ fn test_set_scorer_on_collection_termination_skip_no_skips() -> Result<()> {
 }
 
 fn do_test_set_scorer_on_collection_termination(allow_skip_non_competitive: bool) -> Result<()> {
-    let (mut dir, reader) = random_one_doc_index(false)?;
+    let (dir, reader) = random_one_doc_index(false)?;
     let ctx = first_leaf(&reader)?;
 
     let mode = if allow_skip_non_competitive {

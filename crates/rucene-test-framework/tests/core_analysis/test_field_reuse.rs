@@ -159,7 +159,7 @@ impl IndexableField for MyField {
 }
 
 fn test_index_writer_actually_reuses() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iwc = IndexWriterConfig::with_analyzer(None);
     let iw = IndexWriter::new(dir.as_directory(), iwc)?;
     let field1 = Arc::new(MyFieldState::default());

@@ -3,16 +3,9 @@
 //! * `MigratingCodecReader extends FilterCodecReader` forwards to a
 //!   `FilterCodecReader` and overrides `getPostingsReader`,
 //!   `getCoreCacheHelper` and `getReaderCacheHelper`.
-//! * **Divergence.** `BaseMigratingFieldsProducer.close()` calls
-//!   `delegate.close()` (`TestMultiTermsEnum.java:233-236`); the delegate
-//!   `super.getPostingsReader()` returns is the reader's own producer,
-//!   shared through an `Arc`, which can only be closed while no other
-//!   handle exists: `close` closes it then, and leaves it to its reader
-//!   otherwise. The merge instance a producer creates is owned and always
-//!   closed.
-//! * `Directory.close()` takes `&mut self`: the bare `ByteBuffersDirectory`
-//!   is closed through its `Arc` once the writer and the reader released
-//!   their handles.
+//! * `BaseMigratingFieldsProducer.close()` calls `delegate.close()`
+//!   (`TestMultiTermsEnum.java:233-236`), whether the delegate is the
+//!   reader's own shared producer or an owned merge instance.
 
 use std::sync::Arc;
 
@@ -61,7 +54,7 @@ fn plain_iwc() -> IndexWriterConfig {
 ///
 /// Port of `TestMultiTermsEnum.testNoTermsInField`.
 fn test_no_terms_in_field() -> Result<()> {
-    let mut directory = Arc::new(ByteBuffersDirectory::new());
+    let directory = Arc::new(ByteBuffersDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&directory) as _, plain_iwc())?;
     let mut document = Document::new();
     document.add(Box::new(StringField::new(
@@ -95,12 +88,7 @@ fn test_no_terms_in_field() -> Result<()> {
     drop(writer);
     let closed_reader = reader.close();
     drop(reader);
-    // `Directory.close` takes the directory mutably: it is closed once the
-    // writer and the reader have released their handles.
-    let closed_directory = match Arc::get_mut(&mut directory) {
-        Some(d) => rucene::store::Directory::close(d),
-        None => Ok(()),
-    };
+    let closed_directory = rucene::store::Directory::close(&*directory);
     closed_writer.and(closed_reader).and(closed_directory)
 }
 
@@ -298,13 +286,10 @@ impl FieldsProducer for MigratingFieldsProducer {
         )))
     }
 
-    fn close(&mut self) -> Result<()> {
-        match &mut self.delegate {
+    fn close(&self) -> Result<()> {
+        match &self.delegate {
             Delegate::Owned(d) => d.close(),
-            Delegate::Shared(d) => match Arc::get_mut(d) {
-                Some(d) => d.close(),
-                None => Ok(()),
-            },
+            Delegate::Shared(d) => d.close(),
         }
     }
 }

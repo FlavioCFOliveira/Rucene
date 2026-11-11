@@ -295,7 +295,7 @@ fn default_reopen(dir: Arc<dyn Directory>, executor: Exec) -> Reopen {
 
 /// The body `testReopen` and `testReopenWithExecutor` share.
 fn reopen_body(executor: Option<&Arc<ThreadPoolExecutor>>, multi_segment: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let run = |dir: &TestDirectory| -> Result<()> {
         create_index(&*random(), &dir.as_directory(), multi_segment)?;
         perform_default_tests(&default_reopen(dir.as_directory(), executor.and_then(exec)))
@@ -330,14 +330,14 @@ fn test_reopen() -> Result<()> {
 // try this once with reopen once recreate, on both RAMDir and FSDir.
 /// Port of `TestDirectoryReaderReopen.testCommitReopen`.
 fn test_commit_reopen() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test_reopen_with_commit(&*random(), &dir.as_directory(), true)?;
     dir.close()
 }
 
 /// Port of `TestDirectoryReaderReopen.testCommitRecreate`.
 fn test_commit_recreate() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     do_test_reopen_with_commit(&*random(), &dir.as_directory(), false)?;
     dir.close()
 }
@@ -472,7 +472,7 @@ fn test_thread_safety() -> Result<()> {
 /// The body `testThreadSafety` and `testThreadSafetyWithExecutor` share;
 /// `executor` is the latter's `executorService`.
 fn thread_safety(executor: Exec) -> Result<()> {
-    let mut dir_holder = LuceneTestCase::new_directory();
+    let dir_holder = LuceneTestCase::new_directory();
     let dir = dir_holder.as_directory();
     // NOTE: this also controls the number of threads!
     let n = TestUtil::next_int(&*random(), 20, 40);
@@ -985,7 +985,7 @@ fn reopen_on_commit(dir: &Arc<dyn Directory>, executor: &Exec) -> Result<()> {
 
 /// Port of `TestDirectoryReaderReopen.testReopenOnCommit`.
 fn test_reopen_on_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     reopen_on_commit(&dir.as_directory(), &None)?;
     dir.close()
 }
@@ -1019,7 +1019,7 @@ fn open_if_changed_nrt_to_commit(dir: &Arc<dyn Directory>, executor: &Exec) -> R
 
 /// Port of `TestDirectoryReaderReopen.testOpenIfChangedNRTToCommit`.
 fn test_open_if_changed_nrt_to_commit() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     open_if_changed_nrt_to_commit(&dir.as_directory(), &None)?;
     dir.close()
 }
@@ -1056,7 +1056,7 @@ impl Failure for FailOnReadLiveDocs {
 
 /// The body `testOverDecRefDuringReopen` and its executor variant share.
 fn over_dec_ref_during_reopen(executor: &Exec) -> Result<()> {
-    let mut dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
+    let dir = TestDirectory::Mock(LuceneTestCase::new_mock_directory());
 
     let iwc = no_merge_iwc()?;
     iwc.set_codec(TestUtil::get_default_codec())?;
@@ -1204,11 +1204,9 @@ fn npe_after_invalid_reindex1(executor: &Exec) -> Result<()> {
     close_dir(&mut dir)
 }
 
-/// `dir.close()` on a `Directory` the test shares as `Arc`: closed once
-/// the readers and writers that held it are dropped, as the ported store
-/// tests do.
+/// `dir.close()` on a `Directory` the test shares as `Arc`.
 fn close_dir(dir: &mut Arc<dyn Directory>) -> Result<()> {
-    Arc::get_mut(dir).map_or(Ok(()), |d| d.close())
+    dir.close()
 }
 
 /// Port of `TestDirectoryReaderReopen.testNPEAfterInvalidReindex1`.
@@ -1301,7 +1299,7 @@ fn snapshot_iwc(no_merge: bool) -> Result<(IndexWriterConfig, Arc<SnapshotDeleti
 ///
 /// The body of `testNRTMdeletes` and its executor variant.
 fn nrtm_deletes(executor: &Exec) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (iwc, snapshotter) = snapshot_iwc(true)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     writer.commit()?; // make sure all index metadata is written out
@@ -1353,7 +1351,7 @@ fn test_nrtm_deletes() -> Result<()> {
 ///
 /// The body of `testNRTMdeletes2` and its executor variant.
 fn nrtm_deletes2(executor: &Exec) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (iwc, snapshotter) = snapshot_iwc(true)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     writer.commit()?; // make sure all index metadata is written out
@@ -1420,7 +1418,7 @@ fn key_dv_doc() -> Result<Document> {
 ///
 /// The body of `testNRTMupdates` and its executor variant.
 fn nrtm_updates(executor: &Exec) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (iwc, snapshotter) = snapshot_iwc(false)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     writer.commit()?; // make sure all index metadata is written out
@@ -1474,7 +1472,7 @@ fn test_nrtm_updates() -> Result<()> {
 ///
 /// The body of `testNRTMupdates2` and its executor variant.
 fn nrtm_updates2(executor: &Exec) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let (iwc, snapshotter) = snapshot_iwc(false)?;
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
     writer.commit()?; // make sure all index metadata is written out
@@ -1681,7 +1679,7 @@ fn test_reopen_with_executor() -> Result<()> {
 
 /// Port of `TestDirectoryReaderReopen.testCommitReopenWithExecutor`.
 fn test_commit_reopen_with_executor() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     with_executor(|e| {
         do_test_reopen_with_commit_executor(&*random(), &dir.as_directory(), true, e)
     })?;
@@ -1753,7 +1751,7 @@ fn do_test_reopen_with_commit_executor(
 
 /// Port of `TestDirectoryReaderReopen.testCommitRecreateWithExecutor`.
 fn test_commit_recreate_with_executor() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     with_executor(|e| {
         do_test_reopen_with_commit_executor(&*random(), &dir.as_directory(), false, e)
     })?;
@@ -1767,7 +1765,7 @@ fn test_thread_safety_with_executor() -> Result<()> {
 
 /// Port of `TestDirectoryReaderReopen.testReopenOnCommitWithExecutor`.
 fn test_reopen_on_commit_with_executor() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     with_executor(|e| {
         reopen_on_commit(&dir.as_directory(), &exec(e))?;
         dir.close()
@@ -1776,7 +1774,7 @@ fn test_reopen_on_commit_with_executor() -> Result<()> {
 
 /// Port of `TestDirectoryReaderReopen.testOpenIfChangedNRTToCommitWithExecutor`.
 fn test_open_if_changed_nrt_to_commit_with_executor() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     with_executor(|e| {
         open_if_changed_nrt_to_commit(&dir.as_directory(), &exec(e))?;
         dir.close()

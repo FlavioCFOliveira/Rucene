@@ -34,7 +34,7 @@ const VERSIONS: [i32; 2] = [BKDWriter::VERSION_META_FILE, BKDWriter::VERSION_CUR
 
 /// `try (Directory dir = newDirectory()) { body }`.
 fn with_directory(body: impl FnOnce(&TestDirectory) -> Result<()>) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = body(&dir);
     let closed = dir.close();
     result.and(closed)
@@ -222,7 +222,7 @@ fn test_crash() -> Result<()> {
     );
     let itrs = LuceneTestCase::at_least(100);
     for _ in 0..itrs {
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let iw = IndexWriter::new(
             dir.as_directory(),
             LuceneTestCase::new_index_writer_config_analyzer(None),

@@ -120,7 +120,7 @@ fn three_segment_writer(
 
 /// Port of `TestTermQuery.testCreateWeightDoesNotSeekIfScoresAreNotNeeded`.
 fn test_create_weight_does_not_seek_if_scores_are_not_needed() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = three_segment_writer(&dir)?;
 
     let reader = w.get_reader()?;
@@ -173,7 +173,7 @@ fn test_create_weight_does_not_seek_if_scores_are_not_needed() -> Result<()> {
 ///
 /// Port of `TestTermQuery.testQueryMatchesCount`.
 fn test_query_matches_count() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let random_num_docs = TestUtil::next_int(&*random(), 10, 100);
@@ -221,7 +221,7 @@ fn test_get_term_states() -> Result<()> {
             .map(|_| "TermStates"),
     );
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = three_segment_writer(&dir)?;
 
     let reader = w.get_reader()?;
@@ -336,7 +336,7 @@ impl Query for RecordingTermQuery {
 
 /// Port of `TestTermQuery.testWithWithDifferentScoreModes`.
 fn test_with_with_different_score_modes() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let config = LuceneTestCase::new_index_writer_config();
     config.set_merge_policy(Some(NoMergePolicy::instance()))?;
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), config)?;

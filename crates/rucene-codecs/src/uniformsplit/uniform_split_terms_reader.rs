@@ -18,6 +18,7 @@
 //! Port of `org.apache.lucene.codecs.uniformsplit.UniformSplitTermsReader`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rucene::codecs::codec_util::{
@@ -27,7 +28,7 @@ use rucene::codecs::{FieldsProducer, PostingsReaderBase, SegmentReadState};
 use rucene::error::{LuceneError, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::{FieldInfos, Fields, Terms};
-use rucene::store::{ByteArrayDataInput, DataInput, IndexInput};
+use rucene::store::{ByteArrayDataInput, DataInput, IndexInput, SharedIndexInput};
 use rucene::util::java_collections::java_compare_to;
 use rucene::util::IOUtils;
 
@@ -91,19 +92,21 @@ pub struct ReaderParameters {
 /// Port of `org.apache.lucene.codecs.uniformsplit.UniformSplitTermsReader`
 /// (`@lucene.experimental`).
 ///
-/// `close()` closes the inputs and the postings reader when this reader is
-/// their last holder; one a live `Terms` or enum still shares is released
-/// when that holder is dropped (see `FSTTermsReader`).
+/// `close()` closes the inputs and the postings reader whoever else (a live
+/// `Terms`, an enum, a merge instance) still shares them, as Java's does.
 pub struct UniformSplitTermsReader {
     pub(crate) postings_reader: Option<Arc<dyn PostingsReaderBase>>,
     pub(crate) version: i32,
-    pub(crate) block_input: Option<Arc<Box<dyn IndexInput>>>,
-    pub(crate) dictionary_input: Option<Arc<Box<dyn IndexInput>>>,
+    pub(crate) block_input: Option<Arc<rucene::store::SharedIndexInput>>,
+    pub(crate) dictionary_input: Option<Arc<rucene::store::SharedIndexInput>>,
 
     pub(crate) field_to_terms_map: HashMap<String, FieldTerms>,
     // Keeps the order of the field names; much more efficient than having a TreeMap for the
     // fieldToTermsMap.
     pub(crate) sorted_field_names: Vec<String>,
+    /// Java's `fieldToTermsMap.clear()` in `close()`, seen by this reader and
+    /// its merge instances (Java's `getMergeInstance()` is `this`).
+    pub(crate) fields_cleared: Arc<AtomicBool>,
 }
 
 impl UniformSplitTermsReader {
@@ -192,8 +195,8 @@ impl UniformSplitTermsReader {
         let (Some(block_input), Some(dictionary_input)) = (block_input, dictionary_input) else {
             return Err(LuceneError::illegal_state("the inputs are opened above"));
         };
-        let block_input = Arc::new(block_input);
-        let dictionary_input = Arc::new(dictionary_input);
+        let block_input = Arc::new(SharedIndexInput::new(block_input));
+        let dictionary_input = Arc::new(SharedIndexInput::new(dictionary_input));
         let postings_reader: Arc<dyn PostingsReaderBase> = Arc::from(postings_reader);
 
         let mut reader = Self {
@@ -203,6 +206,7 @@ impl UniformSplitTermsReader {
             dictionary_input: Some(Arc::clone(&dictionary_input)),
             field_to_terms_map: HashMap::new(),
             sorted_field_names: Vec::new(),
+            fields_cleared: Arc::new(AtomicBool::new(false)),
         };
         let filled = if parameters.shared_terms {
             st_uniform_split_terms_reader::fill_field_map(
@@ -227,9 +231,6 @@ impl UniformSplitTermsReader {
             )
         };
         if let Err(e) = filled {
-            drop(postings_reader);
-            drop(block_input);
-            drop(dictionary_input);
             let _ = reader.close_inputs_while_handling_exception();
             return Err(e);
         }
@@ -310,13 +311,13 @@ impl UniformSplitTermsReader {
         postings_reader: &Arc<dyn PostingsReaderBase>,
         block_decoder: Option<&Arc<dyn BlockDecoder>>,
         dictionary_on_heap: bool,
-        dictionary_input: &Arc<Box<dyn IndexInput>>,
-        block_input: &Arc<Box<dyn IndexInput>>,
+        dictionary_input: &Arc<rucene::store::SharedIndexInput>,
+        block_input: &Arc<rucene::store::SharedIndexInput>,
         field_metadata_collection: Vec<FieldMetadata>,
     ) -> Result<()> {
         for field_metadata in field_metadata_collection {
             let dictionary_browser_supplier = create_dictionary_browser_supplier(
-                dictionary_input.as_ref().as_ref(),
+                &**dictionary_input.read(),
                 &field_metadata,
                 block_decoder,
                 dictionary_on_heap,
@@ -336,25 +337,19 @@ impl UniformSplitTermsReader {
         Ok(())
     }
 
-    /// Closes the inputs and the postings reader when this reader holds them
-    /// alone, keeping the first error.
-    fn close_inputs_while_handling_exception(&mut self) -> Result<()> {
-        self.field_to_terms_map.clear();
-        let mut block_input = self.block_input.take();
-        let mut dictionary_input = self.dictionary_input.take();
-        let mut postings_reader = self.postings_reader.take();
+    /// `IOUtils.closeWhileHandlingException(blockInput, dictionaryInput,
+    /// postingsReader)` of the constructor's failure path.
+    fn close_inputs_while_handling_exception(&self) -> Result<()> {
+        self.fields_cleared.store(true, Ordering::SeqCst);
         IOUtils::close_while_handling_exception([
-            block_input
-                .as_mut()
-                .and_then(Arc::get_mut)
+            self.block_input
+                .as_ref()
                 .and_then(|i| IOUtils::closeable(move || i.close())),
-            dictionary_input
-                .as_mut()
-                .and_then(Arc::get_mut)
+            self.dictionary_input
+                .as_ref()
                 .and_then(|i| IOUtils::closeable(move || i.close())),
-            postings_reader
-                .as_mut()
-                .and_then(Arc::get_mut)
+            self.postings_reader
+                .as_ref()
                 .and_then(|r| IOUtils::closeable(move || r.close())),
         ])
     }
@@ -500,29 +495,23 @@ pub fn seek_fields_metadata(index_input: &mut dyn IndexInput) -> Result<()> {
 
 impl Fields for UniformSplitTermsReader {
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        // `fieldToTermsMap` cleared by `close()`; the sorted names Java keeps
+        // in a separate list are still handed out (`sortedFieldNames`).
         Box::new(self.sorted_field_names.iter().cloned())
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        if self.fields_cleared.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
         Ok(self.field_to_terms_map.get(field).map(FieldTerms::to_terms))
     }
 
     fn size(&self) -> i32 {
+        if self.fields_cleared.load(Ordering::SeqCst) {
+            return 0;
+        }
         self.field_to_terms_map.len() as i32
-    }
-}
-
-impl Drop for UniformSplitTermsReader {
-    /// Runs [`close`](FieldsProducer::close) (`UniformSplitTermsReader.java:266-273`) when this reader, or
-    /// one of its merge instances, goes away (rmp #351). Java's
-    /// `getMergeInstance()` is `this`, so closing the reader closes the files
-    /// a merge instance reads; here a merge instance shares them, the
-    /// reader's `close()` only closes what it holds alone, and the last
-    /// holder to go away closes the rest. `close()` takes what it closes, so
-    /// a reader closed already closes nothing again. A failure is dropped: no
-    /// caller is left to receive it.
-    fn drop(&mut self) {
-        let _ = FieldsProducer::close(self);
     }
 }
 
@@ -555,30 +544,29 @@ impl FieldsProducer for UniformSplitTermsReader {
             dictionary_input: self.dictionary_input.clone(),
             field_to_terms_map: self.field_to_terms_map.clone(),
             sorted_field_names: self.sorted_field_names.clone(),
+            fields_cleared: Arc::clone(&self.fields_cleared),
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    /// `UniformSplitTermsReader.close()` (`UniformSplitTermsReader.java:266-273`):
+    /// the inputs and the postings reader are closed whoever else shares
+    /// them.
+    fn close(&self) -> Result<()> {
         // try { IOUtils.close(blockInput, dictionaryInput, postingsReader) } finally {
         // Clear so refs to terms index is GCable even if app hangs onto us.
         // fieldToTermsMap.clear() }
-        self.field_to_terms_map.clear();
-        let mut block_input = self.block_input.take();
-        let mut dictionary_input = self.dictionary_input.take();
-        let mut postings_reader = self.postings_reader.take();
-        IOUtils::close([
-            block_input
-                .as_mut()
-                .and_then(Arc::get_mut)
+        let closed = IOUtils::close([
+            self.block_input
+                .as_ref()
                 .and_then(|i| IOUtils::closeable(move || i.close())),
-            dictionary_input
-                .as_mut()
-                .and_then(Arc::get_mut)
+            self.dictionary_input
+                .as_ref()
                 .and_then(|i| IOUtils::closeable(move || i.close())),
-            postings_reader
-                .as_mut()
-                .and_then(Arc::get_mut)
+            self.postings_reader
+                .as_ref()
                 .and_then(|r| IOUtils::closeable(move || r.close())),
-        ])
+        ]);
+        self.fields_cleared.store(true, Ordering::SeqCst);
+        closed
     }
 }

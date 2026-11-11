@@ -212,7 +212,7 @@ pub trait BaseLiveDocsFormatTestCase: Send + Sync + 'static {
         let wrapped = WrappedBits(&live_docs);
         let bits: &dyn Bits = if fixed_bit_set { &live_docs } else { &wrapped };
 
-        let mut dir = LuceneTestCase::new_directory();
+        let dir = LuceneTestCase::new_directory();
         let directory = dir.as_directory();
         let si = SegmentInfo::new(
             Arc::clone(&directory),

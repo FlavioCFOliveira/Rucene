@@ -55,7 +55,7 @@ impl IndexWriterOverrides for MyIndexWriter {
 
 /// Port of `TestForceMergeForever.test`.
 fn test_() -> Result<()> {
-    let mut d = LuceneTestCase::new_directory();
+    let d = LuceneTestCase::new_directory();
     let analyzer = MockAnalyzer::new(&*random());
     analyzer.set_max_token_length(TestUtil::next_int(&*random(), 1, MAX_TERM_LENGTH as i32));
     let iwc = LuceneTestCase::new_index_writer_config_analyzer(Some(Arc::new(analyzer)));

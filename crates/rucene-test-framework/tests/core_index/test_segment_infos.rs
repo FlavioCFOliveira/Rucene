@@ -139,7 +139,7 @@ fn test_illegal_created_version() -> Result<()> {
 /// Port of `TestSegmentInfos.testVersionsNoSegments`.
 fn test_versions_no_segments() -> Result<()> {
     let mut sis = SegmentInfos::new(latest_major())?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir, false);
     sis.commit(&*dir.as_directory())?;
     let sis = SegmentInfos::read_latest_commit(dir.as_directory())?;
@@ -152,7 +152,7 @@ fn test_versions_no_segments() -> Result<()> {
 ///
 /// Port of `TestSegmentInfos.testVersionsOneSegment`.
 fn test_versions_one_segment() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir, false);
     let d = dir.as_directory();
     let id = StringHelper::random_id();
@@ -178,7 +178,7 @@ fn test_versions_one_segment() -> Result<()> {
 ///
 /// Port of `TestSegmentInfos.testVersionsTwoSegments`.
 fn test_versions_two_segments() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir, false);
     let d = dir.as_directory();
     let id = StringHelper::random_id();
@@ -242,7 +242,7 @@ fn test_info(
 ///
 /// Port of `TestSegmentInfos.testToString`.
 fn test_to_string() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let codec = default_codec();
 
@@ -319,7 +319,7 @@ fn id_str(id: &[u8]) -> String {
 
 /// Port of `TestSegmentInfos.testIDChangesOnAdvance`.
 fn test_id_changes_on_advance() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
         set_check_index_on_close(&dir, false);
         let id = StringHelper::random_id();
@@ -337,7 +337,7 @@ fn test_id_changes_on_advance() -> Result<()> {
             HashMap::new(),
             Sort::new(),
         )?;
-        let mut commit_info = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, id)?;
+        let commit_info = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, id)?;
         assert_equals(&id_str(&id), &id_str(&commit_info.id()));
         commit_info.advance_del_gen();
         assert_not_equals(&id_str(&id), &id_str(&commit_info.id()));
@@ -349,7 +349,7 @@ fn test_id_changes_on_advance() -> Result<()> {
         let id = commit_info.id();
         commit_info.advance_field_infos_gen();
         assert_not_equals(&id_str(&id), &id_str(&commit_info.id()));
-        let clone = commit_info.clone();
+        let clone = commit_info.java_clone();
         let id = commit_info.id();
         assert_equals(&id_str(&id), &id_str(&commit_info.id()));
         assert_equals(&id_str(&id), &id_str(&clone.id()));
@@ -369,7 +369,7 @@ fn test_id_changes_on_advance() -> Result<()> {
 
 /// Port of `TestSegmentInfos.testBitFlippedTriggersCorruptIndexException`.
 fn test_bit_flipped_triggers_corrupt_index_exception() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     set_check_index_on_close(&dir, false);
     let d = dir.as_directory();
     let id = StringHelper::random_id();
@@ -386,7 +386,7 @@ fn test_bit_flipped_triggers_corrupt_index_exception() -> Result<()> {
 
     sis.commit(&*d)?;
 
-    let mut corrupt_dir = LuceneTestCase::new_directory();
+    let corrupt_dir = LuceneTestCase::new_directory();
     set_check_index_on_close(&corrupt_dir, false);
     let cd = corrupt_dir.as_directory();
     let mut corrupt = false;
@@ -454,7 +454,7 @@ fn test_bit_flipped_triggers_corrupt_index_exception() -> Result<()> {
 ///
 /// Port of `TestSegmentInfos.testAddDiagnostics`.
 fn test_add_diagnostics() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let d = dir.as_directory();
     let codec = default_codec();
 

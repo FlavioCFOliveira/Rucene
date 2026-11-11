@@ -194,7 +194,7 @@ fn test_random_polygons() -> Result<()> {
     let mut num_vertices;
     let num_polys = RandomNumbers::random_int_between(&*random(), 10, 20);
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let mut polygon;
@@ -229,7 +229,7 @@ fn test_random_polygons() -> Result<()> {
 /// standard number of vertices.
 fn test_basic_intersects() -> Result<()> {
     let num_vertices = TestUtil::next_int(&*random(), 50, 100);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // add a random polygon document
@@ -284,7 +284,7 @@ fn test_basic_intersects() -> Result<()> {
 
 /// Port of `testBasicContains`.
 fn test_basic_contains() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // add a random polygon document
@@ -339,7 +339,7 @@ fn inner_hole() -> Result<Polygon> {
 /// Port of `testPolygonWithHole`: test random polygons with a single hole.
 fn test_polygon_with_hole() -> Result<()> {
     let num_vertices = TestUtil::next_int(&*random(), 50, 100);
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // add a random polygon with a hole
@@ -397,7 +397,7 @@ fn test_large_vertex_polygon() -> Result<()> {
         iwc.set_max_buffered_docs(num_vertices / 100)?;
     }
     let simple_name = LuceneTestCase::get_test_class().simple_name().to_string();
-    let mut dir =
+    let dir =
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix(&simple_name));
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
 
@@ -495,7 +495,7 @@ fn date_line_search_polygons() -> Result<Vec<Polygon>> {
 
 /// Port of `testWithinDateLine`.
 fn test_within_date_line() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
 
@@ -552,7 +552,7 @@ fn test_within_date_line() -> Result<()> {
 
 /// Port of `testContainsDateLine`.
 fn test_contains_date_line() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
 
@@ -616,7 +616,7 @@ fn test_contains_date_line() -> Result<()> {
 
 /// Port of `testLUCENE8454`.
 fn test_lucene8454() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     let p = poly(
@@ -650,7 +650,7 @@ fn test_lucene8454() -> Result<()> {
 
 /// Port of `testPointIndexAndQuery`.
 fn test_point_index_and_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut document = Document::new();
     let mut p = geo_test_util::next_point();
@@ -679,7 +679,7 @@ fn test_point_index_and_query() -> Result<()> {
 
 /// Port of `testLUCENE8669`.
 fn test_lucene8669() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
 
@@ -844,7 +844,7 @@ fn test_triangle_touching_edges() -> Result<()> {
 
 /// Port of `testLUCENE8736`.
 fn test_lucene8736() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // test polygons:
@@ -923,7 +923,7 @@ fn test_line_shared_line() -> Result<()> {
 
 /// Port of `testLUCENE9055`.
 fn test_lucene9055() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
 
     // test polygons:
@@ -960,7 +960,7 @@ fn test_lucene9055() -> Result<()> {
 
 /// Port of `testIndexAndQuerySamePolygon`.
 fn test_index_and_query_same_polygon() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let polygon = loop {
@@ -1022,7 +1022,7 @@ fn test_index_and_query_same_polygon() -> Result<()> {
 
 /// Port of `testPointIndexAndDistanceQuery`.
 fn test_point_index_and_distance_query() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut document = Document::new();
     let p = geo_test_util::next_point();
@@ -1084,7 +1084,7 @@ fn test_lucene9239() -> Result<()> {
     ];
     let polygon = poly(&lats, &lons)?;
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut document = Document::new();
     add_polygons_to_doc(FIELDNAME, &mut document, &polygon)?;
@@ -1111,7 +1111,7 @@ fn test_contains_wrapping_boolean_query() -> Result<()> {
     let lons = [-30.0, 30.0, 30.0, -30.0, -30.0];
     let polygon = poly(&lats, &lons)?;
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut document = Document::new();
     add_polygons_to_doc(FIELDNAME, &mut document, &polygon)?;
@@ -1185,7 +1185,7 @@ fn test_flat_polygon_does_not_contain_intersecting_line() -> Result<()> {
     let line = Line::new(vec![0.0, 0.001], vec![0.0, 0.0])?;
 
     // Index the polygon
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let writer = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut document = Document::new();
     add_polygons_to_doc(FIELDNAME, &mut document, &polygon)?;
@@ -1228,7 +1228,7 @@ fn do_test_contains_geometry_collection_intersects(
         .into_iter()
         .map(|f| Arc::new(f) as Arc<dyn IndexableField>)
         .collect::<Vec<_>>();
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let num_docs = random().next_int_bound(1000);
     // index the same multi geometry many times

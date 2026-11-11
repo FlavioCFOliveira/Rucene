@@ -168,7 +168,7 @@ fn with_writer(
     iwc: rucene::index::IndexWriterConfig,
     body: impl FnOnce(&IndexWriter) -> Result<()>,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = match IndexWriter::new(dir.as_directory(), iwc) {
         Ok(iw) => iw,
         Err(e) => {
@@ -397,7 +397,7 @@ fn test_multi_threaded_search(this: &mut Instance) -> Result<()> {
     this.similarity_function = VectorSimilarityFunction::EUCLIDEAN;
     let config = LuceneTestCase::new_index_writer_config();
     config.set_codec(this.float32_codec())?;
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(dir.as_directory(), config)?;
     index_data(this, &iw)?;
 

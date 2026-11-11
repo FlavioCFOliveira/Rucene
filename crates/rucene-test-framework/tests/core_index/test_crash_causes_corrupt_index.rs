@@ -82,17 +82,12 @@ fn index_and_crash_on_create_output_segments2(path: &Path) -> Result<()> {
         crash_after_create_output.r#in.as_ref(),
         "segments_2",
     )?);
-    match Arc::try_unwrap(crash_after_create_output) {
-        Ok(mut dir) => dir.close(),
-        Err(_) => Err(LuceneError::illegal_state(
-            "the directory is still referenced",
-        )),
-    }
+    crash_after_create_output.close()
 }
 
 /// Attempts to index another 1 document.
 fn index_after_restart(path: &Path) -> Result<()> {
-    let mut real_directory = LuceneTestCase::new_fs_directory(path);
+    let real_directory = LuceneTestCase::new_fs_directory(path);
 
     // LUCENE-3627 (before the fix): this line fails because
     // it doesn't know what to do with the created but empty
@@ -112,7 +107,7 @@ fn index_after_restart(path: &Path) -> Result<()> {
 
 /// Run an example search.
 fn search_for_fleas(path: &Path, expected_total_hits: i64) -> Result<()> {
-    let mut real_directory = LuceneTestCase::new_fs_directory(path);
+    let real_directory = LuceneTestCase::new_fs_directory(path);
     let index_reader = crate::support::open_reader(&real_directory)?;
     let index_searcher = LuceneTestCase::new_searcher(Arc::clone(&index_reader));
     let top_docs = Some(index_searcher.search(
@@ -239,7 +234,7 @@ impl Directory for CrashAfterCreateOutput {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.r#in.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.r#in.close()
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {

@@ -79,7 +79,7 @@ impl Directory for CountingPrefetchDirectory {
     /// `FilterDirectory.close()` closes the wrapped directory; the tests never
     /// close this wrapper, only the wrapped directory, through its
     /// try-with-resources.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {

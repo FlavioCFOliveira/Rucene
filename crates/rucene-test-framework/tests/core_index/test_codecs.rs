@@ -319,13 +319,13 @@ fn test_fixed_postings() -> Result<()> {
     let terms = Arc::clone(&field.terms);
     let mut fields = vec![field];
     let field_infos = builder.finish()?;
-    let mut test_dir = LuceneTestCase::new_directory();
+    let test_dir = LuceneTestCase::new_directory();
     let dir = test_dir.as_directory();
     let codec = default_codec();
     let si = new_segment_info(Arc::clone(&dir), Arc::clone(&codec))?;
 
     write(&si, &field_infos, &dir, &mut fields)?;
-    let mut reader = open_producer(&codec, &dir, &si, &field_infos)?;
+    let reader = open_producer(&codec, &dir, &si, &field_infos)?;
 
     {
         let mut fields_enum = reader.iterator();
@@ -394,7 +394,7 @@ fn test_random_postings() -> Result<()> {
         )?);
     }
 
-    let mut test_dir = LuceneTestCase::new_directory();
+    let test_dir = LuceneTestCase::new_directory();
     let dir = test_dir.as_directory();
     let field_infos = builder.finish()?;
 
@@ -433,7 +433,7 @@ fn test_random_postings() -> Result<()> {
     }
     drop(threads);
 
-    let mut terms = match Arc::try_unwrap(terms) {
+    let terms = match Arc::try_unwrap(terms) {
         Ok(terms) => terms,
         Err(_) => Throwable::new(
             "java.lang.IllegalStateException",
@@ -1024,7 +1024,7 @@ impl NormsProducer for FakeNorms {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -1123,7 +1123,7 @@ fn write(
 fn test_docs_only_freq() -> Result<()> {
     // tests that when fields are indexed with DOCS_ONLY, the Codec
     // returns 1 in docsEnum.freq()
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let random = random();
     let writer = IndexWriter::new(
         dir.as_directory(),

@@ -82,7 +82,7 @@ fn unwrapped_searcher(r: &Arc<dyn DirectoryReader>) -> IndexSearcher {
 
 /// Port of `TestNearest.testNearestNeighborWithDeletedDocs`.
 fn test_nearest_neighbor_with_deleted_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
@@ -112,7 +112,7 @@ fn test_nearest_neighbor_with_deleted_docs() -> Result<()> {
 
 /// Port of `TestNearest.testNearestNeighborWithAllDeletedDocs`.
 fn test_nearest_neighbor_with_all_deleted_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
@@ -142,7 +142,7 @@ fn test_nearest_neighbor_with_all_deleted_docs() -> Result<()> {
 
 /// Port of `TestNearest.testTieBreakByDocID`.
 fn test_tie_break_by_doc_id() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = IndexWriter::new(dir.as_directory(), get_index_writer_config())?;
     w.add_document(&point_doc(40.0, 50.0, "0")?)?;
     w.add_document(&point_doc(40.0, 50.0, "1")?)?;
@@ -159,7 +159,7 @@ fn test_tie_break_by_doc_id() -> Result<()> {
 
 /// Port of `TestNearest.testNearestNeighborWithNoDocs`.
 fn test_nearest_neighbor_with_no_docs() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(
         &*random(),
         dir.as_directory(),
@@ -200,7 +200,7 @@ fn distance_of(hit: &FieldDoc) -> f64 {
 /// Port of `TestNearest.testNearestNeighborRandom`.
 fn test_nearest_neighbor_random() -> Result<()> {
     let num_points = LuceneTestCase::at_least(1000);
-    let mut dir: TestDirectory = if num_points > 100000 {
+    let dir: TestDirectory = if num_points > 100000 {
         LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir_prefix("TestNearest"))
     } else {
         LuceneTestCase::new_directory()

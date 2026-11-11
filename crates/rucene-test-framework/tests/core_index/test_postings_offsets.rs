@@ -130,7 +130,7 @@ fn term_postings(
 
 /// Port of `TestPostingsOffsets.testBasic`.
 fn test_basic(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
 
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), inst.take_iwc())?;
     let mut doc = Document::new();
@@ -235,7 +235,7 @@ fn java_substring(s: &str, start: i32, end: i32) -> String {
 
 /// `public void doTestNumbers(boolean withPayloads)`.
 fn do_test_numbers(inst: &mut TestPostingsOffsetsInstance, with_payloads: bool) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = if with_payloads {
         Arc::new(MockPayloadAnalyzer::new())
     } else {
@@ -340,7 +340,7 @@ fn test_random(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
     // token -> docID -> tokens
     let mut actual_tokens: HashMap<String, HashMap<i32, Vec<Token>>> = HashMap::new();
 
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let w = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), inst.take_iwc())?;
 
     let num_docs = LuceneTestCase::at_least(20);
@@ -534,7 +534,7 @@ fn test_random(inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
 
 /// Port of `TestPostingsOffsets.testAddFieldTwice`.
 fn test_add_field_twice(_inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     let mut doc = Document::new();
     let custom_type3 = FieldType::new_from(TextField::type_stored());
@@ -644,7 +644,7 @@ impl Analyzer for CrazyOffsetGapAnalyzer {
 
 /// Port of `TestPostingsOffsets.testCrazyOffsetGap`.
 fn test_crazy_offset_gap(_inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let analyzer: Arc<dyn Analyzer> = Arc::new(CrazyOffsetGapAnalyzer {
         state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
     });
@@ -683,7 +683,7 @@ fn test_crazy_offset_gap(_inst: &mut TestPostingsOffsetsInstance) -> Result<()> 
 
 /// Port of `TestPostingsOffsets.testLegalbutVeryLargeOffsets`.
 fn test_legalbut_very_large_offsets(_inst: &mut TestPostingsOffsetsInstance) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let iw = IndexWriter::new(
         dir.as_directory(),
         LuceneTestCase::new_index_writer_config_analyzer(None),
@@ -727,7 +727,7 @@ fn check_tokens_fields(
     inst: &mut TestPostingsOffsetsInstance,
     fields: Vec<Vec<Token>>,
 ) -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let riw = RandomIndexWriter::new_with_config(&*random(), dir.as_directory(), inst.take_iwc())?;
     let result = (|| -> Result<()> {
         let ft = check_tokens_type()?;

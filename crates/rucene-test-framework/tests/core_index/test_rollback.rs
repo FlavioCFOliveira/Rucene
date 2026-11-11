@@ -30,7 +30,7 @@ pub fn class_def() -> Arc<Class> {
 ///
 /// Port of `TestRollback.testRollbackIntegrityWithBufferFlush`.
 fn test_rollback_integrity_with_buffer_flush() -> Result<()> {
-    let mut dir = LuceneTestCase::new_directory();
+    let dir = LuceneTestCase::new_directory();
     let rw = RandomIndexWriter::new_with_mock_analyzer(&*random(), dir.as_directory())?;
     for i in 0..5 {
         let mut doc = Document::new();

@@ -153,7 +153,7 @@ fn single_instance_test_default_lock_factory() -> Result<()> {
 /// `TestSimpleFSLockFactory.testDeleteLockFile()`: delete the lockfile and
 /// test `ensureValid` fails.
 fn simple_fs_test_delete_lock_file(case: &dyn BaseLockFactoryTestCase) -> Result<()> {
-    let mut dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
+    let dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
     let result = (|| -> Result<()> {
         let lock = dir.obtain_lock("test.lock")?;
         lock.ensure_valid()?;
@@ -182,7 +182,7 @@ fn native_fs_test_lock_file_exists(case: &dyn BaseLockFactoryTestCase) -> Result
     let lock_file = temp_dir.resolve_str("test.lock");
     Files::create_file(&lock_file)?;
 
-    let mut dir = case.get_directory(&temp_dir)?;
+    let dir = case.get_directory(&temp_dir)?;
     let l = dir.obtain_lock("test.lock")?;
     l.close()?;
     drop(l);
@@ -199,7 +199,7 @@ fn as_native_fs_lock(lock: &dyn Lock) -> &NativeFSLock {
 /// `TestNativeFSLockFactory.testInvalidateLock()`: release the lock and test
 /// `ensureValid` fails.
 fn native_fs_test_invalidate_lock(case: &dyn BaseLockFactoryTestCase) -> Result<()> {
-    let mut dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
+    let dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
     let lock = dir.obtain_lock("test.lock")?;
     let native = as_native_fs_lock(&*lock);
     native.ensure_valid()?;
@@ -216,7 +216,7 @@ fn native_fs_test_invalidate_lock(case: &dyn BaseLockFactoryTestCase) -> Result<
 /// `TestNativeFSLockFactory.testInvalidateChannel()`: close the channel and
 /// test `ensureValid` fails.
 fn native_fs_test_invalidate_channel(case: &dyn BaseLockFactoryTestCase) -> Result<()> {
-    let mut dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
+    let dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
     let lock = dir.obtain_lock("test.lock")?;
     let native = as_native_fs_lock(&*lock);
     native.ensure_valid()?;
@@ -235,7 +235,7 @@ fn native_fs_test_invalidate_channel(case: &dyn BaseLockFactoryTestCase) -> Resu
 /// `TestNativeFSLockFactory.testDeleteLockFile()`: delete the lockfile and
 /// test `ensureValid` fails.
 fn native_fs_test_delete_lock_file(case: &dyn BaseLockFactoryTestCase) -> Result<()> {
-    let mut dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
+    let dir = case.get_directory(&LuceneTestCase::create_temp_dir())?;
     let result = (|| -> Result<()> {
         LuceneTestCase::assume_false(
             "we must be able to delete an open file",
@@ -314,7 +314,7 @@ fn native_fs_test_bad_permissions(case: &dyn BaseLockFactoryTestCase) -> Result<
 
     // we should get an IOException (typically NoSuchFileException but no guarantee) with
     // our fake AccessDenied added as suppressed.
-    let mut dir = case.get_directory(&mock_path.resolve_str("indexDir"))?;
+    let dir = case.get_directory(&mock_path.resolve_str("indexDir"))?;
     let expected = expect_throws("java.io.IOException", || dir.obtain_lock("test.lock"));
     // `(AccessDeniedException) expected.getSuppressed()[0]`
     let suppressed = &expected.suppressed()[0];
