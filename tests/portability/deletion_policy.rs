@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Store, StringField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{
@@ -354,9 +354,9 @@ fn rucene_commit_sequence(commits: usize) -> (Vec<i64>, Vec<i64>) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
 
     let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_index_deletion_policy(NoDeletionPolicy::instance())
+        .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .expect("NoDeletionPolicy is a valid deletion policy");
 
     let mut created = Vec::with_capacity(commits);
@@ -448,7 +448,8 @@ fn snapshot_deletion_policy_pins_the_same_commits_as_lucene() {
     assert_eq!(snapshotted, vec![2, 4]);
     assert_eq!(expected, vec![2, 4, 5]);
 
-    let policy = SnapshotDeletionPolicy::new(Arc::new(KeepOnlyLastCommitDeletionPolicy::new()));
+    let policy =
+        SnapshotDeletionPolicy::new(Some(Arc::new(KeepOnlyLastCommitDeletionPolicy::new())));
     let mut pinned = Vec::new();
     let surviving = replay_commits(&policy, &created, |generation| {
         // The Java fixture snapshots right after the 2nd and 4th commit.
@@ -675,7 +676,8 @@ fn release_unpins_the_same_commits_as_lucene() {
     assert_eq!((count_before, count_after), (2, 1));
     assert_eq!(snapshots_after, vec![4]);
 
-    let policy = SnapshotDeletionPolicy::new(Arc::new(KeepOnlyLastCommitDeletionPolicy::new()));
+    let policy =
+        SnapshotDeletionPolicy::new(Some(Arc::new(KeepOnlyLastCommitDeletionPolicy::new())));
     let directory: Arc<dyn Directory> = Arc::new(rucene::store::ByteBuffersDirectory::default());
     let mut live: Vec<Arc<dyn IndexCommit>> = Vec::new();
     policy.on_init(&live).unwrap();
@@ -890,7 +892,9 @@ impl TwoPhaseCommit for Recorder {
     fn prepare_commit(&self) -> Result<i64> {
         self.record("prepare");
         if self.fail_at == Some("prepare") {
-            return Err(LuceneError::Io(std::io::Error::other("prepare exploded")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("prepare exploded"),
+            )));
         }
         Ok(1)
     }
@@ -898,7 +902,9 @@ impl TwoPhaseCommit for Recorder {
     fn commit(&self) -> Result<i64> {
         self.record("commit");
         if self.fail_at == Some("commit") {
-            return Err(LuceneError::Io(std::io::Error::other("commit exploded")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("commit exploded"),
+            )));
         }
         Ok(2)
     }
@@ -989,8 +995,8 @@ impl DataOutput for FailingCloseOutput {
 impl IndexOutput for FailingCloseOutput {
     fn close(&mut self) -> Result<()> {
         self.inner.close()?;
-        Err(LuceneError::Io(std::io::Error::other(
-            "no space left on device",
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("no space left on device"),
         )))
     }
 
@@ -1069,7 +1075,7 @@ impl Directory for FailingCloseDirectory {
         self.inner.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -1135,7 +1141,7 @@ fn persist_close_failure_recovers_as_lucene_does() {
         .snapshot()
         .expect_err("the failing close must be reported, exactly as in Java");
     assert!(
-        matches!(&err, LuceneError::Io(io) if io.to_string().contains("no space left")),
+        matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string().contains("no space left")),
         "unexpected error: {err:?}"
     );
     assert_eq!(policy.get_snapshot_count(), 0);
@@ -1151,7 +1157,7 @@ fn persist_close_failure_recovers_as_lucene_does() {
         .snapshot()
         .expect_err("the leftover blocks the very next attempt, as in Lucene");
     assert!(
-        matches!(&err, LuceneError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+        matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::AlreadyExists),
         "unexpected error: {err:?}"
     );
     assert_eq!(

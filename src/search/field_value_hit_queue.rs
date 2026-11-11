@@ -119,12 +119,12 @@ impl FieldValueHitQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when `fields` is empty, and propagates any error a
     /// [`SortField`] raises while building its comparator.
     pub fn create(fields: Vec<SortField>, size: usize) -> Result<Self> {
         if fields.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Sort must contain at least one field".to_string(),
             ));
         }
@@ -227,6 +227,7 @@ impl FieldValueHitQueue {
     /// `OneComparatorFieldValueHitQueue` and
     /// `MultiComparatorsFieldValueHitQueue`.
     fn less_than(&self, hit_a: &Entry, hit_b: &Entry) -> bool {
+        debug_assert!(!std::ptr::eq(hit_a, hit_b));
         debug_assert!(hit_a.slot != hit_b.slot);
         if self.one_comparator {
             let c = self.reverse_mul[0] * self.comparators[0].compare(hit_a.slot, hit_b.slot);

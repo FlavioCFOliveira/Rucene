@@ -10,6 +10,7 @@
 
 pub mod accountables;
 pub mod annotations;
+pub mod atomic_ref_cell;
 pub mod attribute;
 pub mod automaton;
 pub mod bit_set;
@@ -31,7 +32,7 @@ pub mod info_stream;
 pub mod int_block_pool;
 pub mod io_function;
 pub mod java_collections;
-pub(crate) mod java_fmt;
+pub mod java_fmt;
 pub mod jvm;
 pub mod long_heap;
 pub mod math_util;
@@ -68,8 +69,8 @@ pub mod vector_util;
 pub use accountables::{Accountables, NamedAccountable};
 pub use annotations::{IgnoreRandomChains, SuppressForbidden};
 pub use bit_set::{
-    bit_set_of, check_unpositioned, BitSet, BitSetIterator, DocBaseBitSetIterator, FixedBits,
-    LiveDocs,
+    bit_set_of, check_unpositioned, BitSet, BitSetIterator, BitSetIteratorOverrides,
+    DocBaseBitSetIterator, FixedBits, LiveDocs,
 };
 pub use bytes_ref_array::{
     BytesRefArray, BytesRefBlockPool, BytesRefIterator, EmptyBytesRefIterator,
@@ -170,15 +171,15 @@ use std::{
     cmp::Ordering,
     env,
     fmt::{self, Debug, Display, Formatter},
-    fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
     io,
-    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
     sync::{Arc, LazyLock},
 };
 
-use crate::error::LuceneError;
+use crate::store::java_nio_file as nio;
+
+use crate::error::{LuceneError, LuceneErrorKind};
 use crate::store::{DataInput, DataOutput};
 
 // ---------------------------------------------------------------------------
@@ -199,6 +200,57 @@ pub struct BytesRef {
     pub offset: usize,
     /// Number of valid bytes starting at `offset`.
     pub length: usize,
+}
+
+/// Java's `NumberFormatException` with `message` (`null` for `None`), which
+/// `ArrayUtil.parseInt` throws (`ArrayUtil.java:66-110`).
+fn number_format_exception(message: Option<&str>) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.NumberFormatException",
+        message: message.map(str::to_string),
+        cause: None,
+    })
+}
+
+/// The name `System.arraycopy`'s messages give the component type of an array
+/// of `T`: the Java primitive a Rust primitive stands for, `object array`
+/// otherwise.
+pub(crate) fn java_array_element_type<T>() -> &'static str {
+    match std::any::type_name::<T>() {
+        "u8" | "i8" => "byte",
+        "i16" => "short",
+        "u16" => "char",
+        "i32" => "int",
+        "i64" => "long",
+        "f32" => "float",
+        "f64" => "double",
+        "bool" => "boolean",
+        _ => "object array",
+    }
+}
+
+/// `ArrayUtil.copyOfSubArray(array, offset, offset + length)` for the
+/// `deepCopyOf` methods of the `*Ref` classes (`ArrayUtil.java:654-658` and
+/// its overloads): `System.arraycopy` throws `ArrayIndexOutOfBoundsException`
+/// (`arraycopy: last source index N out of bounds for T[len]`) when the range
+/// runs past the array, which is thrown here as that unchecked exception.
+pub(crate) fn java_copy_of_sub_array<T: Clone>(
+    array: &[T],
+    offset: usize,
+    length: usize,
+    element_type: &str,
+) -> Vec<T> {
+    let end = offset as u64 + length as u64;
+    if end > array.len() as u64 {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            Some(&format!(
+                "arraycopy: last source index {end} out of bounds for {element_type}[{}]",
+                array.len()
+            )),
+        );
+    }
+    array[offset..offset + length].to_vec()
 }
 
 impl BytesRef {
@@ -256,12 +308,17 @@ impl BytesRef {
 
     /// Returns a `BytesRef` whose content is a copy of `other`'s active slice,
     /// with offset zero.
+    ///
+    /// Equivalent to `BytesRef.deepCopyOf(BytesRef)` (`BytesRef.java:176-181`),
+    /// which copies through `ArrayUtil.copyOfSubArray`: an `other` whose
+    /// `offset + length` is past its array throws `System.arraycopy`'s
+    /// `ArrayIndexOutOfBoundsException`.
     pub fn deep_copy_of(other: &BytesRef) -> Self {
-        let slice = other.slice();
+        let bytes = java_copy_of_sub_array(&other.bytes, other.offset, other.length, "byte");
         Self {
-            bytes: slice.to_vec(),
+            bytes,
             offset: 0,
-            length: slice.len(),
+            length: other.length,
         }
     }
 
@@ -279,10 +336,10 @@ impl BytesRef {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the bytes are not valid UTF-8.
+    /// Returns `LuceneErrorKind::IllegalArgument` if the bytes are not valid UTF-8.
     pub fn utf8_to_string(&self) -> Result<String, LuceneError> {
         String::from_utf8(self.slice().to_vec())
-            .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8: {e}")))
+            .map_err(|e| LuceneError::illegal_argument(format!("invalid UTF-8: {e}")))
     }
 
     /// Returns a hex-encoded representation such as `[6c 75 63 65 6e 65]`.
@@ -303,7 +360,7 @@ impl BytesRef {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if any invariant is violated.
+    /// Returns `LuceneErrorKind::IllegalState` if any invariant is violated.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         if self.length > self.bytes.len() {
             return Err(LuceneError::illegal_state(format!(
@@ -440,6 +497,15 @@ impl BytesRefBuilder {
         &self.inner.bytes
     }
 
+    /// Returns the full underlying byte buffer for writing.
+    ///
+    /// Equivalent to `BytesRefBuilder.bytes()` (`BytesRefBuilder.java:41-44`)
+    /// when the caller writes through the returned array, as Java callers
+    /// may.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.inner.bytes
+    }
+
     /// Returns the current number of bytes in the builder.
     pub fn length(&self) -> usize {
         self.inner.length
@@ -497,6 +563,7 @@ impl BytesRefBuilder {
 
     /// Replaces the content with a copy of the provided bytes.
     pub fn copy_bytes(&mut self, b: &[u8], off: usize, len: usize) {
+        debug_assert!(self.inner.offset == 0);
         self.inner.offset = 0;
         self.inner.length = len;
         self.grow_no_copy(len);
@@ -556,8 +623,17 @@ pub struct NumericUtils;
 
 impl NumericUtils {
     /// Converts a `double` to a sortable signed `long`.
+    ///
+    /// Equivalent to `NumericUtils.doubleToSortableLong` (`NumericUtils.java:47-49`),
+    /// which reads the bits with `Double.doubleToLongBits`: every NaN collapses
+    /// to the canonical `0x7ff8000000000000`.
     pub fn double_to_sortable_long(value: f64) -> i64 {
-        Self::sortable_double_bits(value.to_bits() as i64)
+        let bits = if value.is_nan() {
+            0x7ff8_0000_0000_0000_i64
+        } else {
+            value.to_bits() as i64
+        };
+        Self::sortable_double_bits(bits)
     }
 
     /// Converts a sortable `long` back to a `double`.
@@ -566,8 +642,17 @@ impl NumericUtils {
     }
 
     /// Converts a `float` to a sortable signed `int`.
+    ///
+    /// Equivalent to `NumericUtils.floatToSortableInt` (`NumericUtils.java:69-71`),
+    /// which reads the bits with `Float.floatToIntBits`: every NaN collapses to
+    /// the canonical `0x7fc00000`.
     pub fn float_to_sortable_int(value: f32) -> i32 {
-        Self::sortable_float_bits(value.to_bits() as i32)
+        let bits = if value.is_nan() {
+            0x7fc0_0000_i32
+        } else {
+            value.to_bits() as i32
+        };
+        Self::sortable_float_bits(bits)
     }
 
     /// Converts a sortable `int` back to a `float`.
@@ -623,7 +708,7 @@ impl NumericUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] `"a < b"` when `a < b`, the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] `"a < b"` when `a < b`, the
     /// `IllegalArgumentException` Java throws (`NumericUtils.java:124-126`).
     pub fn subtract(
         bytes_per_dim: usize,
@@ -659,7 +744,7 @@ impl NumericUtils {
         }
 
         if borrow != 0 {
-            return Err(LuceneError::IllegalArgument("a < b".to_string()));
+            return Err(LuceneError::illegal_argument("a < b".to_string()));
         }
         Ok(())
     }
@@ -671,7 +756,7 @@ impl NumericUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] on overflow, the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] on overflow, the
     /// `IllegalArgumentException` Java throws (`NumericUtils.java:165-167`).
     pub fn add(
         bytes_per_dim: usize,
@@ -705,7 +790,7 @@ impl NumericUtils {
         }
 
         if carry != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "a + b overflows bytesPerDim={bytes_per_dim}"
             )));
         }
@@ -829,7 +914,7 @@ impl BitUtil {
 
     /// Returns true if `x` (treated as unsigned) is zero or a power of two.
     pub fn is_zero_or_power_of_two(x: i32) -> bool {
-        (x & (x - 1)) == 0
+        (x & x.wrapping_sub(1)) == 0
     }
 
     /// Reads a little-endian `i16` from `src` at `offset`.
@@ -1256,7 +1341,7 @@ impl GroupVIntUtil {
     /// # Errors
     ///
     /// Returns any error raised by the underlying output, and
-    /// [`LuceneError::Arithmetic`] with the message `integer overflow` when a
+    /// [`LuceneErrorKind::Arithmetic`] with the message `integer overflow` when a
     /// value does not fit in an unsigned 32-bit integer: the
     /// `ArithmeticException("integer overflow")` Lucene throws.
     pub fn write_group_vints_output_long<O: DataOutput + ?Sized>(
@@ -1341,7 +1426,7 @@ const UNICODE_DECIMAL_ZEROS: [u32; 36] = [
 /// from ten; `None` — Java's -1 — when the character is neither or its value
 /// is not below `radix`. A character outside the Basic Multilingual Plane is
 /// not a digit, as Java's `char` cannot hold one.
-pub(crate) fn java_character_digit(c: char, radix: u32) -> Option<u32> {
+pub fn java_character_digit(c: char, radix: u32) -> Option<u32> {
     let code = c as u32;
     let value = match code {
         0x30..=0x39 => code - 0x30,
@@ -1427,12 +1512,26 @@ impl ArrayUtil {
 
     /// Returns a size greater than or equal to `min_target_size`, generally
     /// over-allocating exponentially.
+    ///
+    /// Equivalent to `ArrayUtil.oversize(int, int)` (`ArrayUtil.java:134-193`).
+    /// Java's `minTargetSize < 0` check has no counterpart, as a `usize`
+    /// cannot be negative.
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's `IllegalArgumentException` when `min_target_size`
+    /// exceeds [`Self::MAX_ARRAY_LENGTH`].
     pub fn oversize(min_target_size: usize, bytes_per_element: usize) -> usize {
-        if min_target_size > Self::MAX_ARRAY_LENGTH {
-            return Self::MAX_ARRAY_LENGTH;
-        }
         if min_target_size == 0 {
+            // wait until at least one element is requested
             return 0;
+        }
+        if min_target_size > Self::MAX_ARRAY_LENGTH {
+            panic!(
+                "java.lang.IllegalArgumentException: requested array size {min_target_size} \
+                 exceeds maximum array in java ({})",
+                Self::MAX_ARRAY_LENGTH
+            );
         }
         let mut extra = min_target_size >> 3;
         if extra < 3 {
@@ -1490,38 +1589,40 @@ impl ArrayUtil {
 
     /// Returns a new `Vec<u8>` of exactly `new_length` containing a copy of `array`.
     pub fn grow_exact(array: &[u8], new_length: usize) -> Vec<u8> {
-        let mut copy = vec![0u8; new_length];
-        copy[..array.len()].copy_from_slice(array);
-        copy
+        Self::grow_exact_generic(array, new_length)
     }
 
     /// Returns a new `Vec<i32>` of exactly `new_length` containing a copy of `array`.
     pub fn grow_exact_int(array: &[i32], new_length: usize) -> Vec<i32> {
-        let mut copy = vec![0i32; new_length];
-        copy[..array.len()].copy_from_slice(array);
-        copy
+        Self::grow_exact_generic(array, new_length)
     }
 
     /// Returns a new `Vec<i64>` of exactly `new_length` containing a copy of `array`.
     pub fn grow_exact_long(array: &[i64], new_length: usize) -> Vec<i64> {
-        let mut copy = vec![0i64; new_length];
-        copy[..array.len()].copy_from_slice(array);
-        copy
+        Self::grow_exact_generic(array, new_length)
     }
 
     /// Copies a sub-range of a byte array into a new vector.
+    ///
+    /// Equivalent to `ArrayUtil.copyOfSubArray(byte[], int, int)`; see
+    /// [`copy_of_sub_array_generic`](Self::copy_of_sub_array_generic) for the
+    /// exceptions.
     pub fn copy_of_sub_array(array: &[u8], from: usize, to: usize) -> Vec<u8> {
-        array[from..to].to_vec()
+        Self::copy_of_sub_array_generic(array, from, to)
     }
 
     /// Copies a sub-range of an `i32` array into a new vector.
+    ///
+    /// Equivalent to `ArrayUtil.copyOfSubArray(int[], int, int)`.
     pub fn copy_of_sub_array_int(array: &[i32], from: usize, to: usize) -> Vec<i32> {
-        array[from..to].to_vec()
+        Self::copy_of_sub_array_generic(array, from, to)
     }
 
     /// Copies a sub-range of an `i64` array into a new vector.
+    ///
+    /// Equivalent to `ArrayUtil.copyOfSubArray(long[], int, int)`.
     pub fn copy_of_sub_array_long(array: &[i64], from: usize, to: usize) -> Vec<i64> {
-        array[from..to].to_vec()
+        Self::copy_of_sub_array_generic(array, from, to)
     }
 
     /// Grows `array` to hold at least `min_length` elements, without exceeding
@@ -1568,8 +1669,16 @@ impl ArrayUtil {
         max_length: usize,
         bytes_per_element: usize,
     ) -> Result<Vec<T>, LuceneError> {
+        // `assert minLength >= 0 : "length must be positive (got " + minLength +
+        // "): likely integer overflow?"` (`ArrayUtil.java:330-331`): a length
+        // past `i32::MAX` is a negative Java `int`.
+        debug_assert!(
+            i32::try_from(min_length).is_ok(),
+            "length must be positive (got {}): likely integer overflow?",
+            min_length as i32
+        );
         if min_length > max_length {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "requested minimum array length {min_length} is larger than requested maximum array length {max_length}"
             )));
         }
@@ -1587,9 +1696,24 @@ impl ArrayUtil {
 
     /// Returns a copy of `array` grown to exactly `new_length` elements.
     ///
-    /// Equivalent to the `ArrayUtil.growExact` overloads. Java declares one per
-    /// primitive plus a generic one; Rust needs only the generic form.
+    /// Equivalent to the `ArrayUtil.growExact` overloads
+    /// (`ArrayUtil.java:242-246` and the others). Java declares one per
+    /// primitive plus a generic one; Rust needs only the generic form. A
+    /// `new_length` below the array's length makes Java's
+    /// `System.arraycopy(array, 0, copy, 0, array.length)` throw
+    /// `ArrayIndexOutOfBoundsException`, thrown here as that unchecked
+    /// exception.
     pub fn grow_exact_generic<T: Copy + Default>(array: &[T], new_length: usize) -> Vec<T> {
+        if new_length < array.len() {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                Some(&format!(
+                    "arraycopy: last destination index {} out of bounds for {}[{new_length}]",
+                    array.len(),
+                    java_array_element_type::<T>()
+                )),
+            );
+        }
         let mut grown = array.to_vec();
         grown.resize(new_length, T::default());
         grown
@@ -1621,9 +1745,19 @@ impl ArrayUtil {
 
     /// Returns a copy of the elements of `array` in `[from, to)`.
     ///
-    /// Equivalent to the `ArrayUtil.copyOfSubArray` overloads.
-    pub fn copy_of_sub_array_generic<T: Copy>(array: &[T], from: usize, to: usize) -> Vec<T> {
-        array[from..to].to_vec()
+    /// Equivalent to the `ArrayUtil.copyOfSubArray` overloads
+    /// (`ArrayUtil.java:654-658` and the others): `new T[to - from]` throws
+    /// `NegativeArraySizeException` when `to < from`, and `System.arraycopy`
+    /// throws `ArrayIndexOutOfBoundsException` when `to` is past the array;
+    /// both are thrown here as those unchecked exceptions.
+    pub fn copy_of_sub_array_generic<T: Clone>(array: &[T], from: usize, to: usize) -> Vec<T> {
+        if to < from {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.NegativeArraySizeException",
+                Some(&format!("-{}", from - to)),
+            );
+        }
+        java_copy_of_sub_array(array, from, to - from, java_array_element_type::<T>())
     }
 
     /// Parses the UTF-16 code units of `chars[offset..offset + len]` as a signed
@@ -1646,21 +1780,17 @@ impl ArrayUtil {
         // Character.MIN_RADIX / Character.MAX_RADIX: `throw new
         // NumberFormatException()`, whose message is `null`.
         if !(2..=36).contains(&radix) {
-            return Err(LuceneError::IllegalArgument(String::new()));
+            return Err(number_format_exception(None));
         }
         if len == 0 {
-            return Err(LuceneError::IllegalArgument(
-                "chars length is 0".to_string(),
-            ));
+            return Err(number_format_exception(Some("chars length is 0")));
         }
         let mut i = 0usize;
         let negative = chars[offset] == '-';
         if negative {
             i += 1;
             if i == len {
-                return Err(LuceneError::IllegalArgument(
-                    "can't convert to an int".to_string(),
-                ));
+                return Err(number_format_exception(Some("can't convert to an int")));
             }
             offset += 1;
             len -= 1;
@@ -1693,7 +1823,7 @@ impl ArrayUtil {
         radix: u32,
         negative: bool,
     ) -> Result<i32, LuceneError> {
-        let unparsable = || LuceneError::IllegalArgument("Unable to parse".to_string());
+        let unparsable = || number_format_exception(Some("Unable to parse"));
         let max = i32::MIN / radix as i32;
         let mut result: i32 = 0;
         for i in 0..len {
@@ -1951,8 +2081,25 @@ impl Thrown {
     /// as an `Error`, so it is rethrown and never swallowed.
     fn is_java_error(&self) -> bool {
         match self {
-            Self::Error(e) => matches!(e, LuceneError::AssertionError(_)),
+            Self::Error(e) => matches!(
+                e,
+                LuceneError {
+                    kind: LuceneErrorKind::AssertionError(_),
+                    ..
+                }
+            ),
             Self::Panic(_) => true,
+        }
+    }
+
+    /// `this.addSuppressed(other)`.
+    ///
+    /// A panic payload holds no suppressed list, and a panic cannot be kept
+    /// as a [`LuceneError`]: suppressing into a panic, or suppressing a
+    /// panic, drops the suppressed one.
+    fn add_suppressed(&mut self, other: Thrown) {
+        if let (Self::Error(first), Self::Error(second)) = (self, other) {
+            first.add_suppressed(second);
         }
     }
 
@@ -1962,6 +2109,25 @@ impl Thrown {
             Self::Error(e) => e,
             Self::Panic(payload) => std::panic::resume_unwind(payload),
         }
+    }
+}
+
+/// A throwable `IOUtils.useOrSuppress` can add a suppressed one to.
+trait Suppressible {
+    /// `this.addSuppressed(other)`.
+    fn suppress(&mut self, other: Self);
+}
+
+impl Suppressible for Thrown {
+    fn suppress(&mut self, other: Self) {
+        self.add_suppressed(other);
+    }
+}
+
+impl Suppressible for io::Error {
+    fn suppress(&mut self, other: Self) {
+        let first = std::mem::replace(self, io::Error::other(""));
+        *self = nio::add_suppressed(first, &other);
     }
 }
 
@@ -2041,7 +2207,7 @@ impl IOUtils {
     /// `IOUtils.closeWhileHandlingException(Iterable)` (`IOUtils.java:103-136`).
     /// Java's method returns nothing and throws only the first `Error`, which
     /// is unchecked; the port models Java's `AssertionError` as
-    /// [`LuceneError::AssertionError`], so that one comes back as `Err`, and a
+    /// [`LuceneErrorKind::AssertionError`], so that one comes back as `Err`, and a
     /// panic is resumed (see [`Thrown::is_java_error`]). A caller propagates
     /// the `Err` with `?`, as the `Error` propagates out of the Java caller —
     /// out of a `finally` block too, where it replaces the exception in
@@ -2049,127 +2215,151 @@ impl IOUtils {
     ///
     /// # Errors
     ///
-    /// Returns the first [`LuceneError::AssertionError`] a closeable returned.
+    /// Returns the first [`LuceneErrorKind::AssertionError`] a closeable returned.
     pub fn close_while_handling_exception<I, C>(objects: I) -> Result<(), LuceneError>
     where
         I: IntoIterator<Item = Option<C>>,
         C: FnOnce() -> Result<(), LuceneError>,
     {
         let mut first_error: Option<Thrown> = None;
+        let mut first_throwable: Option<Thrown> = None;
         for object in objects.into_iter().flatten() {
             match Self::close_one(object) {
                 Some(t) if t.is_java_error() => {
                     first_error = Some(Self::use_or_suppress(first_error, t));
                 }
-                // Java keeps the first non-Error throwable only to add it to
-                // the Error's suppressed list.
-                _ => {}
+                Some(t) => first_throwable = Some(Self::use_or_suppress(first_throwable, t)),
+                None => {}
             }
         }
         match first_error {
-            Some(first_error) => Err(first_error.rethrow()),
+            Some(mut first_error) => {
+                // we ensure that we bubble up any errors. We can't recover from these but need
+                // to make sure they are bubbled up. if a non-Error is thrown we also add the
+                // suppressed exceptions to it.
+                if let Some(first_throwable) = first_throwable {
+                    first_error.add_suppressed(first_throwable);
+                }
+                Err(first_error.rethrow())
+            }
             None => Ok(()),
         }
     }
 
-    /// Deletes the given files, suppressing all exceptions.
+    /// Deletes all given files, suppressing all thrown exceptions; `None`
+    /// entries are ignored.
+    ///
+    /// Equivalent to `IOUtils.deleteFilesIgnoringExceptions(Collection)`
+    /// (`IOUtils.java:278-290`): `Files.delete` through each path's provider.
     pub fn delete_files_ignoring_exceptions<I, P>(files: I)
     where
         I: IntoIterator<Item = Option<P>>,
-        P: AsRef<Path>,
+        P: nio::IntoNioPath,
     {
         for path in files.into_iter().flatten() {
-            let _ = fs::remove_file(path.as_ref());
+            let path = path.into_nio_path();
+            // `catch (Throwable ignored)`: an unchecked exception is ignored
+            // too.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = nio::Files::delete(&path);
+            }));
         }
     }
 
-    /// Deletes the given files if they exist, propagating the first exception.
+    /// Deletes all given paths if they exist; `None` entries are ignored.
+    /// After everything is deleted, the first exception hit is returned.
+    ///
+    /// Equivalent to `IOUtils.deleteFilesIfExist(Collection)`
+    /// (`IOUtils.java:310-325`): `Files.deleteIfExists` through each path's
+    /// provider.
+    ///
+    /// # Errors
+    ///
+    /// The first failure; the later ones are suppressed.
     pub fn delete_files_if_exist<I, P>(files: I) -> Result<(), LuceneError>
     where
         I: IntoIterator<Item = Option<P>>,
-        P: AsRef<Path>,
+        P: nio::IntoNioPath,
     {
         let mut err: Option<io::Error> = None;
         for path in files.into_iter().flatten() {
-            if let Err(e) = Self::delete_if_exists(path.as_ref()) {
+            if let Err(e) = nio::Files::delete_if_exists(&path.into_nio_path()) {
                 err = Some(Self::use_or_suppress(err, e));
             }
         }
         match err {
-            Some(e) => Err(LuceneError::Io(e)),
+            Some(e) => Err(LuceneError::from(LuceneErrorKind::Io(e))),
             None => Ok(()),
-        }
-    }
-
-    fn delete_if_exists(path: &Path) -> io::Result<()> {
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
         }
     }
 
     /// Forces all writes for the given file to durable storage.
     ///
     /// Equivalent to `IOUtils.fsync(Path, boolean)` (`IOUtils.java:452-484`):
-    /// a regular file is opened for writing, which the fsync needs to have an
-    /// effect; a directory is opened for reading, and a failure of its fsync is
-    /// ignored because not every file system allows it. On Windows a directory
-    /// cannot be opened at all, so only its existence is checked.
+    /// `FileChannel.open(fileToSync, isDir ? READ : WRITE)` through the path's
+    /// provider — a regular file is opened for writing, which the fsync needs
+    /// to have an effect; a directory for reading — then `force(true)`, whose
+    /// failure is ignored for a directory because not every file system
+    /// allows it. On Windows a directory cannot be opened at all, so only its
+    /// existence is checked.
     ///
     /// # Errors
     ///
-    /// Returns the error opening the file raises (`NotFound` for a missing
-    /// file, Java's `NoSuchFileException`), or the error the fsync of a regular
-    /// file raises.
-    pub fn fsync(file_to_sync: &Path, is_dir: bool) -> Result<(), LuceneError> {
+    /// Returns the error opening the file raises (`NoSuchFileException` for a
+    /// missing file), or the error the fsync of a regular file raises.
+    pub fn fsync(file_to_sync: impl nio::IntoNioPath, is_dir: bool) -> Result<(), LuceneError> {
+        let file_to_sync = file_to_sync.into_nio_path();
         if is_dir && Constants::windows() {
             // opening a directory on Windows fails, directories can not be fsynced there
-            if !file_to_sync.exists() {
+            if !nio::Files::exists(&file_to_sync, &[]) {
                 // yet do not suppress trying to fsync directories that do not exist
-                return Err(LuceneError::Io(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    file_to_sync.display().to_string(),
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    nio::no_such_file_exception(file_to_sync.to_string()),
                 )));
             }
             return Ok(());
         }
-        let file = if is_dir {
-            File::open(file_to_sync)?
+        let mode = if is_dir {
+            nio::OpenOption::Read
         } else {
-            OpenOptions::new().write(true).open(file_to_sync)?
+            nio::OpenOption::Write
         };
-        if let Err(e) = file.sync_all() {
-            if is_dir {
-                debug_assert!(
-                    !(Constants::linux() || Constants::mac_os_x()),
-                    "On Linux and MacOSX fsyncing a directory should not throw IOException, \
-                     we just don't want to rely on that in production (undocumented). Got: {e}"
-                );
-                // Ignore exception if it is a directory
-                return Ok(());
+        let file = <dyn nio::FileChannel>::open(&file_to_sync, &[mode])?;
+        // `try (final FileChannel file = ...)`: closed whatever `force`
+        // does; a failure to close is suppressed by the failure of `force`.
+        let forced = file.force(true);
+        let result = match forced {
+            Err(e) => {
+                if is_dir {
+                    debug_assert!(
+                        !(Constants::linux() || Constants::mac_os_x()),
+                        "On Linux and MacOSX fsyncing a directory should not throw IOException, \
+                         we just don't want to rely on that in production (undocumented). Got: {e}"
+                    );
+                    // Ignore exception if it is a directory
+                    Ok(())
+                } else {
+                    // Throw original exception
+                    Err(LuceneError::from(LuceneErrorKind::Io(e)))
+                }
             }
-            // Throw original exception
-            return Err(LuceneError::Io(e));
-        }
+            Ok(()) => Ok(()),
+        };
+        let closed = file.close();
+        result?;
+        closed?;
         Ok(())
     }
 
-    /// Returns `second` when there is no `first`, and `first` otherwise.
+    /// Returns `second` when there is no `first`, and `first` otherwise, with
+    /// `second` added to its suppressed list.
     ///
-    /// Equivalent to `IOUtils.useOrSuppress(T, T)` (`IOUtils.java:490-497`),
-    /// which keeps the first throwable and adds the second to its suppressed
-    /// list.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Neither [`LuceneError`] nor
-    /// [`io::Error`] has a suppressed list, so `second` is dropped; `first` is
-    /// returned unchanged, so the error the caller sees — its class and
-    /// message, Java's `getMessage()` — is the one Java reports.
-    fn use_or_suppress<T>(first: Option<T>, second: T) -> T {
+    /// Equivalent to `IOUtils.useOrSuppress(T, T)` (`IOUtils.java:490-497`).
+    fn use_or_suppress<T: Suppressible>(first: Option<T>, second: T) -> T {
         match first {
             None => second,
-            Some(first) => {
-                drop(second);
+            Some(mut first) => {
+                first.suppress(second);
                 first
             }
         }
@@ -2185,32 +2375,39 @@ impl IOUtils {
     /// returns (`StandardDirectoryReader.java:103-105`): the return value is
     /// that `ex`, unchanged, or — when `ex` is not a Java `Error` and a
     /// closeable hits one — that first `Error`, which Java throws with `ex`
-    /// suppressed into it. Java's `Error` is [`LuceneError::AssertionError`],
+    /// suppressed into it. Java's `Error` is [`LuceneErrorKind::AssertionError`],
     /// or a panic, which is resumed once every closeable is closed (see
-    /// [`Thrown::is_java_error`]).
+    /// [`Thrown::is_java_error`]). Every other failure is suppressed into
+    /// `ex`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java adds every other failure to the
-    /// suppressed list of the throwable it rethrows; [`LuceneError`] has no
-    /// such list, so they are dropped, as in
-    /// [`use_or_suppress`](Self::use_or_suppress).
-    pub fn close_while_suppressing_exceptions<I, C>(ex: LuceneError, objects: I) -> LuceneError
+    /// Java suppresses `ex` into the first `Error` as soon as it is hit, and
+    /// keeps adding to `ex` afterwards through the shared reference; the port
+    /// adds to `ex` while it owns it and suppresses it into the `Error` at the
+    /// end, which yields the same two lists.
+    pub fn close_while_suppressing_exceptions<I, C>(mut ex: LuceneError, objects: I) -> LuceneError
     where
         I: IntoIterator<Item = Option<C>>,
         C: FnOnce() -> Result<(), LuceneError>,
     {
-        let ex_is_error = matches!(ex, LuceneError::AssertionError(_));
+        let ex_is_error = matches!(ex.kind(), LuceneErrorKind::AssertionError(_));
         let mut first_error: Option<Thrown> = None;
         for object in objects.into_iter().flatten() {
             if let Some(e) = Self::close_one(object) {
                 if !ex_is_error && first_error.is_none() && e.is_java_error() {
                     // don't try and suppress it - this Error should be the thing that is thrown
                     first_error = Some(e);
+                } else if let Thrown::Error(e) = e {
+                    ex.add_suppressed(e);
                 }
-                // Otherwise Java's `ex.addSuppressed(e)`.
+                // A suppressed panic is dropped (see `Thrown::add_suppressed`).
             }
         }
         match first_error {
-            Some(first_error) => first_error.rethrow(),
+            Some(mut first_error) => {
+                // `firstError.addSuppressed(ex)`.
+                first_error.add_suppressed(Thrown::Error(ex));
+                first_error.rethrow()
+            }
             None => ex,
         }
     }
@@ -2233,14 +2430,17 @@ impl IOUtils {
         char_set: &str,
     ) -> Result<io::Cursor<String>, LuceneError> {
         if !char_set.eq_ignore_ascii_case(Self::UTF_8) {
-            return Err(LuceneError::UnsupportedOperation(format!(
+            return Err(LuceneError::unsupported_operation(format!(
                 "unsupported charset: {char_set}"
             )));
         }
         let mut bytes = Vec::new();
         stream.read_to_end(&mut bytes)?;
-        let text = String::from_utf8(bytes)
-            .map_err(|e| LuceneError::Other(format!("MalformedInputException: {e}")))?;
+        let text = String::from_utf8(bytes).map_err(|e| {
+            LuceneError::from(LuceneErrorKind::Other(format!(
+                "MalformedInputException: {e}"
+            )))
+        })?;
         Ok(io::Cursor::new(text))
     }
 
@@ -2251,23 +2451,25 @@ impl IOUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::NotFound`] when `resource` is `None`, standing in
+    /// Returns [`LuceneErrorKind::NotFound`] when `resource` is `None`, standing in
     /// for Java's `FileNotFoundException`.
     pub fn require_resource_non_null<T>(resource: Option<T>, name: &str) -> Result<T, LuceneError> {
         match resource {
             Some(resource) => Ok(resource),
-            None => Err(LuceneError::NotFound(format!(
+            None => Err(LuceneError::from(LuceneErrorKind::NotFound(format!(
                 "The resource '{name}' was not found."
-            ))),
+            )))),
         }
     }
 
     /// Deletes one or more files or directories, and everything underneath
     /// them.
     ///
-    /// Equivalent to `IOUtils.rm(Path...)`: every location is attempted, the
-    /// ones that could not be removed are collected in the order they were
-    /// attempted, and a single error naming all of them is raised at the end.
+    /// Equivalent to `IOUtils.rm(Path...)` (`IOUtils.java:333-348`): every
+    /// location is attempted, the ones that could not be removed are collected
+    /// in the order they were attempted, and a single `IOException` naming all
+    /// of them — each with its absolute path and `Throwable.toString()` of its
+    /// failure — is raised at the end.
     ///
     /// # Errors
     ///
@@ -2275,9 +2477,9 @@ impl IOUtils {
     pub fn rm<I, P>(locations: I) -> Result<(), LuceneError>
     where
         I: IntoIterator<Item = P>,
-        P: AsRef<Path>,
+        P: nio::IntoNioPath,
     {
-        let mut unremoved: Vec<(PathBuf, io::Error)> = Vec::new();
+        let mut unremoved: Vec<(nio::Path, io::Error)> = Vec::new();
         Self::rm_into(&mut unremoved, locations);
         if unremoved.is_empty() {
             return Ok(());
@@ -2285,55 +2487,85 @@ impl IOUtils {
         let mut b =
             String::from("Could not remove the following files (in the order of attempts):\n");
         for (path, cause) in &unremoved {
-            let absolute = path.canonicalize().unwrap_or_else(|_| path.clone());
-            b.push_str(&format!("   {}: {cause}\n", absolute.display()));
+            b.push_str(&format!(
+                "   {}: {}\n",
+                path.to_absolute_path(),
+                nio::java_to_string(cause)
+            ));
         }
-        Err(LuceneError::Io(io::Error::other(b)))
+        Err(LuceneError::from(LuceneErrorKind::Io(nio::io_exception(b))))
     }
 
-    /// Equivalent to the private `IOUtils.rm(LinkedHashMap, Path...)`: walks
-    /// each location depth-first, deleting files before the directory that
-    /// holds them, and records — rather than propagates — every failure.
-    fn rm_into<I, P>(unremoved: &mut Vec<(PathBuf, io::Error)>, locations: I)
+    /// Equivalent to the private `IOUtils.rm(LinkedHashMap, Path...)`
+    /// (`IOUtils.java:350-404`): `Files.walkFileTree` over each existing
+    /// location, deleting files before the directory that holds them, and
+    /// recording — rather than propagating — every failure. A path already
+    /// recorded keeps its first position and takes the later failure, as
+    /// `LinkedHashMap.put` does.
+    fn rm_into<I, P>(unremoved: &mut Vec<(nio::Path, io::Error)>, locations: I)
     where
         I: IntoIterator<Item = P>,
-        P: AsRef<Path>,
+        P: nio::IntoNioPath,
     {
-        for location in locations {
-            let location = location.as_ref();
-            // TODO: remove this leniency!
-            if !location.exists() {
-                continue;
-            }
-            Self::rm_walk(unremoved, location);
-        }
-    }
+        struct Visitor<'a>(&'a mut Vec<(nio::Path, io::Error)>);
 
-    /// The file-tree visitor Java hands to `Files.walkFileTree`: post-order, so
-    /// a directory is removed only once its entries have been.
-    fn rm_walk(unremoved: &mut Vec<(PathBuf, io::Error)>, path: &Path) {
-        let is_dir = path.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false);
-        if is_dir {
-            match fs::read_dir(path) {
-                Ok(entries) => {
-                    for entry in entries {
-                        match entry {
-                            Ok(entry) => Self::rm_walk(unremoved, &entry.path()),
-                            Err(e) => unremoved.push((path.to_path_buf(), e)),
-                        }
-                    }
-                }
-                Err(e) => {
-                    // visitFileFailed: the directory could not be opened.
-                    unremoved.push((path.to_path_buf(), e));
-                    return;
+        impl Visitor<'_> {
+            fn put(&mut self, path: &nio::Path, error: io::Error) {
+                match self.0.iter_mut().find(|(p, _)| p == path) {
+                    Some(entry) => entry.1 = error,
+                    None => self.0.push((path.clone(), error)),
                 }
             }
-            if let Err(e) = fs::remove_dir(path) {
-                unremoved.push((path.to_path_buf(), e));
+        }
+
+        impl nio::FileVisitor for Visitor<'_> {
+            fn pre_visit_directory(
+                &mut self,
+                _dir: &nio::Path,
+                _attrs: &nio::BasicFileAttributes,
+            ) -> io::Result<nio::FileVisitResult> {
+                Ok(nio::FileVisitResult::Continue)
             }
-        } else if let Err(e) = fs::remove_file(path) {
-            unremoved.push((path.to_path_buf(), e));
+
+            fn post_visit_directory(
+                &mut self,
+                dir: &nio::Path,
+                impossible: Option<io::Error>,
+            ) -> io::Result<nio::FileVisitResult> {
+                debug_assert!(impossible.is_none());
+                if let Err(e) = nio::Files::delete(dir) {
+                    self.put(dir, e);
+                }
+                Ok(nio::FileVisitResult::Continue)
+            }
+
+            fn visit_file(
+                &mut self,
+                file: &nio::Path,
+                _attrs: &nio::BasicFileAttributes,
+            ) -> io::Result<nio::FileVisitResult> {
+                if let Err(e) = nio::Files::delete(file) {
+                    self.put(file, e);
+                }
+                Ok(nio::FileVisitResult::Continue)
+            }
+
+            fn visit_file_failed(
+                &mut self,
+                file: &nio::Path,
+                exc: io::Error,
+            ) -> io::Result<nio::FileVisitResult> {
+                self.put(file, exc);
+                Ok(nio::FileVisitResult::Continue)
+            }
+        }
+
+        for location in locations {
+            let location = location.into_nio_path();
+            // TODO: remove this leniency!
+            if nio::Files::exists(&location, &[]) {
+                let _ = nio::Files::walk_file_tree(&location, &mut Visitor(unremoved));
+            }
         }
     }
 
@@ -2452,16 +2684,43 @@ impl Accountable for NullAccountable {
 /// runtime class that its chain of `instanceof` tests recognises
 /// (`RamUsageEstimator.java:396-432`).
 ///
-/// Holds the classes the crate's ported callers of `sizeOfObject` pass; a
-/// `null` argument is `None` at the call.
+/// Holds every class of that chain, in its order; a `null` argument is `None`
+/// at the call.
 #[derive(Clone, Copy)]
 pub enum SizedObject<'a> {
     /// An `Accountable`, sized by its own `ramBytesUsed()`.
     Accountable(&'a dyn Accountable),
     /// A `String`, sized by `RamUsageEstimator.sizeOf(String)`.
     String(&'a str),
+    /// A `boolean[]`, sized by `RamUsageEstimator.sizeOf(boolean[])`.
+    BoolArray(&'a [bool]),
+    /// A `byte[]`, sized by `RamUsageEstimator.sizeOf(byte[])`.
+    ByteArray(&'a [u8]),
+    /// A `char[]`, sized by `RamUsageEstimator.sizeOf(char[])`.
+    CharArray(&'a [u16]),
+    /// A `double[]`, sized by `RamUsageEstimator.sizeOf(double[])`.
+    DoubleArray(&'a [f64]),
+    /// A `float[]`, sized by `RamUsageEstimator.sizeOf(float[])`.
+    FloatArray(&'a [f32]),
     /// An `int[]`, sized by `RamUsageEstimator.sizeOf(int[])`.
     IntArray(&'a [i32]),
+    /// A boxed `Integer`, sized by `RamUsageEstimator.sizeOf(Integer)`.
+    Integer(i32),
+    /// A boxed `Long`, sized by `RamUsageEstimator.sizeOf(Long)`.
+    Long(i64),
+    /// A `long[]`, sized by `RamUsageEstimator.sizeOf(long[])`.
+    LongArray(&'a [i64]),
+    /// A `short[]`, sized by `RamUsageEstimator.sizeOf(short[])`.
+    ShortArray(&'a [i16]),
+    /// A `String[]`, sized by `RamUsageEstimator.sizeOf(String[])`.
+    StringArray(&'a [Option<&'a str>]),
+    /// A `Query`, sized by `RamUsageEstimator.sizeOf(Query, long)`.
+    Query(&'a dyn crate::search::Query),
+    /// A `Map`, sized by `RamUsageEstimator.sizeOfMap(Map, int, long)`.
+    Map(&'a dyn SizedMap),
+    /// A `Collection`, sized by
+    /// `RamUsageEstimator.sizeOfCollection(Collection, int, long)`.
+    Collection(&'a dyn SizedCollection),
     /// An instance of a class the `instanceof` chain does not know, such as
     /// `BytesRef`, with the shallow size `RamUsageEstimator.shallowSizeOf`
     /// would measure for it.
@@ -2476,12 +2735,129 @@ impl Debug for SizedObject<'_> {
         match self {
             Self::Accountable(_) => f.write_str("Accountable"),
             Self::String(s) => f.debug_tuple("String").field(s).finish(),
+            Self::BoolArray(arr) => f.debug_tuple("BoolArray").field(&arr.len()).finish(),
+            Self::ByteArray(arr) => f.debug_tuple("ByteArray").field(&arr.len()).finish(),
+            Self::CharArray(arr) => f.debug_tuple("CharArray").field(&arr.len()).finish(),
+            Self::DoubleArray(arr) => f.debug_tuple("DoubleArray").field(&arr.len()).finish(),
+            Self::FloatArray(arr) => f.debug_tuple("FloatArray").field(&arr.len()).finish(),
             Self::IntArray(arr) => f.debug_tuple("IntArray").field(&arr.len()).finish(),
+            Self::Integer(v) => f.debug_tuple("Integer").field(v).finish(),
+            Self::Long(v) => f.debug_tuple("Long").field(v).finish(),
+            Self::LongArray(arr) => f.debug_tuple("LongArray").field(&arr.len()).finish(),
+            Self::ShortArray(arr) => f.debug_tuple("ShortArray").field(&arr.len()).finish(),
+            Self::StringArray(arr) => f.debug_tuple("StringArray").field(&arr.len()).finish(),
+            Self::Query(q) => f.debug_tuple("Query").field(q).finish(),
+            Self::Map(_) => f.write_str("Map"),
+            Self::Collection(_) => f.write_str("Collection"),
             Self::Unknown { shallow_size } => f
                 .debug_struct("Unknown")
                 .field("shallow_size", shallow_size)
                 .finish(),
         }
+    }
+}
+
+/// A `java.util.Map` as `RamUsageEstimator.sizeOfMap` reads it.
+///
+/// Java reads the map's shallow size and its entries' by reflection
+/// (`shallowSizeOf(map)`, `shallowSizeOf(entry)`); Rust has none, so the map
+/// declares both, with its keys and values.
+pub trait SizedMap {
+    /// `RamUsageEstimator.shallowSizeOf(map)`.
+    fn shallow_size(&self) -> i64;
+
+    /// `RamUsageEstimator.shallowSizeOf(entry)` of one `Map.Entry`.
+    fn entry_shallow_size(&self) -> i64;
+
+    /// `map.entrySet()`: each key and value, `null` as `None`.
+    fn entries(&self) -> Vec<(Option<SizedObject<'_>>, Option<SizedObject<'_>>)>;
+}
+
+/// A `java.util.Collection` as `RamUsageEstimator.sizeOfCollection` reads it.
+///
+/// Java reads the collection's shallow size by reflection
+/// (`shallowSizeOf(collection)`); Rust has none, so the collection declares
+/// it, with its elements.
+pub trait SizedCollection {
+    /// `RamUsageEstimator.shallowSizeOf(collection)`.
+    fn shallow_size(&self) -> i64;
+
+    /// The elements in iteration order, `null` as `None`; their count is
+    /// `collection.size()`.
+    fn elements(&self) -> Vec<Option<SizedObject<'_>>>;
+}
+
+/// The visitor `RamUsageEstimator.sizeOf(Query, long)` sums a query tree's
+/// size with.
+///
+/// Equivalent to the private `RamUsageEstimator.RamUsageQueryVisitor`
+/// (`RamUsageEstimator.java:303-352`). `query == root` is an identity test:
+/// the data addresses of the two queries are compared.
+struct RamUsageQueryVisitor {
+    total: i64,
+    def_size: i64,
+    root: *const (),
+}
+
+impl RamUsageQueryVisitor {
+    fn new(root: &dyn crate::search::Query, def_size: i64) -> Self {
+        let total = if def_size > 0 {
+            def_size
+        } else {
+            RamUsageEstimator::shallow_size_of_object(root)
+        };
+        Self {
+            total,
+            def_size,
+            root: root as *const dyn crate::search::Query as *const (),
+        }
+    }
+
+    fn is_root(&self, query: &dyn crate::search::Query) -> bool {
+        std::ptr::eq(
+            query as *const dyn crate::search::Query as *const (),
+            self.root,
+        )
+    }
+}
+
+impl crate::search::QueryVisitor for RamUsageQueryVisitor {
+    fn consume_terms(&mut self, query: &dyn crate::search::Query, terms: &[crate::index::Term]) {
+        if !self.is_root(query) {
+            if self.def_size > 0 {
+                self.total += self.def_size;
+            } else {
+                self.total += RamUsageEstimator::shallow_size_of_object(query);
+            }
+        }
+        // `if (terms != null)`: a slice is never `null`.
+        let accountables: Vec<&dyn Accountable> =
+            terms.iter().map(|t| t as &dyn Accountable).collect();
+        self.total += RamUsageEstimator::size_of_accountables(&accountables);
+    }
+
+    fn visit_leaf(&mut self, query: &dyn crate::search::Query) {
+        if self.is_root(query) {
+            return;
+        }
+        if let Some(accountable) = query.as_accountable() {
+            self.total += accountable.ram_bytes_used();
+        } else if self.def_size > 0 {
+            self.total += self.def_size;
+        } else {
+            self.total += RamUsageEstimator::shallow_size_of_object(query);
+        }
+    }
+
+    fn get_sub_visitor<'a>(
+        &'a mut self,
+        _occur: crate::search::Occur,
+        _parent: &dyn crate::search::Query,
+    ) -> Box<dyn crate::search::QueryVisitor + 'a>
+    where
+        Self: 'a,
+    {
+        Box::new(self)
     }
 }
 
@@ -2500,6 +2876,21 @@ impl RamUsageEstimator {
     pub const ONE_MB: i64 = Self::ONE_KB * Self::ONE_KB;
     /// One gigabyte.
     pub const ONE_GB: i64 = Self::ONE_KB * Self::ONE_MB;
+
+    /// True, iff compressed references (oops) are enabled by this JVM.
+    ///
+    /// Equivalent to `RamUsageEstimator.COMPRESSED_REFS_ENABLED`, which Java
+    /// reads from the running HotSpot VM at class initialisation. This port's
+    /// layout is fixed to a 64-bit HotSpot VM with compressed references (see
+    /// the type documentation), so the constant is `true`.
+    pub const COMPRESSED_REFS_ENABLED: bool = true;
+
+    /// True, iff the running VM is a 64-bit HotSpot VM; for testing only.
+    ///
+    /// Equivalent to the package-private
+    /// `RamUsageEstimator.JVM_IS_HOTSPOT_64BIT`; `true` for the fixed layout
+    /// this port models.
+    pub const JVM_IS_HOTSPOT_64BIT: bool = true;
 
     /// Assumed reference size in bytes on a 64-bit compressed-oop JVM.
     pub const NUM_BYTES_OBJECT_REF: i64 = 4;
@@ -2584,6 +2975,34 @@ impl RamUsageEstimator {
         Self::NUM_BYTES_OBJECT_HEADER + Self::NUM_BYTES_OBJECT_REF + 1 + 4 + 1,
     );
 
+    /// Shallow size of an `Integer` instance.
+    ///
+    /// Equivalent to the package-private `RamUsageEstimator.INTEGER_SIZE`,
+    /// `shallowSizeOfInstance(Integer.class)`: the object header and the `int
+    /// value` field, aligned.
+    pub const INTEGER_SIZE: i64 = Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER + 4);
+
+    /// Shallow size of a `Long` instance.
+    ///
+    /// Equivalent to the package-private `RamUsageEstimator.LONG_SIZE`,
+    /// `shallowSizeOfInstance(Long.class)`: the object header and the `long
+    /// value` field, aligned.
+    pub const LONG_SIZE: i64 = Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER + 8);
+
+    /// Returns the shallow size of an `Integer`, ignoring the `IntegerCache`.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Integer)`.
+    pub fn size_of_integer(_ignored: i32) -> i64 {
+        Self::INTEGER_SIZE
+    }
+
+    /// Returns the shallow size of a `Long`, ignoring the `LongCache`.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Long)`.
+    pub fn size_of_long_object(_ignored: i64) -> i64 {
+        Self::LONG_SIZE
+    }
+
     /// Returns the size in bytes of a `bool` array.
     ///
     /// Equivalent to `RamUsageEstimator.sizeOf(boolean[])`.
@@ -2628,6 +3047,18 @@ impl RamUsageEstimator {
     pub fn size_of_string(s: &str) -> i64 {
         let utf16_len: i64 = s.encode_utf16().count() as i64;
         Self::align_object_size(Self::STRING_SIZE + Self::NUM_BYTES_ARRAY_HEADER + 2 * utf16_len)
+    }
+
+    /// Returns the size in bytes of a `String[]`: its shallow size plus the
+    /// size of every non-`null` string (`None` stands for Java's `null`).
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(String[])`.
+    pub fn size_of_string_array(arr: &[Option<&str>]) -> i64 {
+        let mut size = Self::shallow_size_of(arr);
+        for s in arr.iter().flatten() {
+            size += Self::size_of_string(s);
+        }
+        size
     }
 
     /// Returns the memory an [`Accountable`] reports.
@@ -2680,6 +3111,141 @@ impl RamUsageEstimator {
         // Assume an array-backed collection and add the per-object references.
         size += Self::NUM_BYTES_ARRAY_HEADER + element_count as i64 * Self::NUM_BYTES_OBJECT_REF;
         size += element_count as i64 * size_per_element;
+        Self::align_object_size(size)
+    }
+
+    /// Returns the size in bytes of a `Map`, including the sizes of its keys
+    /// and values, charging [`UNKNOWN_DEFAULT_RAM_BYTES_USED`](Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    /// for a type the estimate does not know; recurses up to
+    /// [`MAX_DEPTH`](Self::MAX_DEPTH).
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfMap(Map)`.
+    pub fn size_of_java_map(map: Option<&dyn SizedMap>) -> i64 {
+        Self::size_of_map_at_depth(map, 0, Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    }
+
+    /// Returns the size in bytes of a `Map`, charging `def_size` for a type the
+    /// estimate does not know.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfMap(Map, long)`.
+    pub fn size_of_java_map_with_def_size(map: Option<&dyn SizedMap>, def_size: i64) -> i64 {
+        Self::size_of_map_at_depth(map, 0, def_size)
+    }
+
+    /// Equivalent to the private `RamUsageEstimator.sizeOfMap(Map, int, long)`
+    /// (`RamUsageEstimator.java:249-266`).
+    fn size_of_map_at_depth(map: Option<&dyn SizedMap>, depth: i32, def_size: i64) -> i64 {
+        let Some(map) = map else {
+            return 0;
+        };
+        let mut size = map.shallow_size();
+        if depth > Self::MAX_DEPTH {
+            return size;
+        }
+        let mut size_of_entry = -1;
+        for (key, value) in map.entries() {
+            if size_of_entry == -1 {
+                size_of_entry = map.entry_shallow_size();
+            }
+            size += size_of_entry;
+            size += Self::size_of_object_at_depth(key, depth, def_size);
+            size += Self::size_of_object_at_depth(value, depth, def_size);
+        }
+        Self::align_object_size(size)
+    }
+
+    /// Returns the size in bytes of a `Collection`, including the sizes of its
+    /// values, charging [`UNKNOWN_DEFAULT_RAM_BYTES_USED`](Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    /// for a type the estimate does not know; recurses up to
+    /// [`MAX_DEPTH`](Self::MAX_DEPTH).
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfCollection(Collection)`.
+    pub fn size_of_java_collection(collection: Option<&dyn SizedCollection>) -> i64 {
+        Self::size_of_collection_at_depth(collection, 0, Self::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    }
+
+    /// Returns the size in bytes of a `Collection`, charging `def_size` for a
+    /// type the estimate does not know.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfCollection(Collection, long)`.
+    pub fn size_of_java_collection_with_def_size(
+        collection: Option<&dyn SizedCollection>,
+        def_size: i64,
+    ) -> i64 {
+        Self::size_of_collection_at_depth(collection, 0, def_size)
+    }
+
+    /// Equivalent to the private
+    /// `RamUsageEstimator.sizeOfCollection(Collection, int, long)`
+    /// (`RamUsageEstimator.java:287-301`).
+    fn size_of_collection_at_depth(
+        collection: Option<&dyn SizedCollection>,
+        depth: i32,
+        def_size: i64,
+    ) -> i64 {
+        let Some(collection) = collection else {
+            return 0;
+        };
+        let mut size = collection.shallow_size();
+        if depth > Self::MAX_DEPTH {
+            return size;
+        }
+        let elements = collection.elements();
+        // assume array-backed collection and add per-object references
+        size += Self::NUM_BYTES_ARRAY_HEADER + elements.len() as i64 * Self::NUM_BYTES_OBJECT_REF;
+        for o in elements {
+            size += Self::size_of_object_at_depth(o, depth, def_size);
+        }
+        Self::align_object_size(size)
+    }
+
+    /// Returns the size in bytes of a query; an unknown query type is
+    /// estimated as [`QUERY_DEFAULT_RAM_BYTES_USED`](Self::QUERY_DEFAULT_RAM_BYTES_USED).
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Query)`.
+    pub fn size_of_query(q: &dyn crate::search::Query) -> i64 {
+        Self::size_of_query_with_def_size(q, Self::QUERY_DEFAULT_RAM_BYTES_USED)
+    }
+
+    /// Returns the size in bytes of a query; an unknown query type is
+    /// estimated with its shallow size, or `def_size` when that is positive.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Query, long)`
+    /// (`RamUsageEstimator.java:367-375`); `q instanceof Accountable` is
+    /// [`Query::as_accountable`](crate::search::Query::as_accountable).
+    pub fn size_of_query_with_def_size(q: &dyn crate::search::Query, def_size: i64) -> i64 {
+        if let Some(accountable) = q.as_accountable() {
+            accountable.ram_bytes_used()
+        } else {
+            let mut visitor = RamUsageQueryVisitor::new(q, def_size);
+            q.visit(&mut visitor);
+            Self::align_object_size(visitor.total)
+        }
+    }
+
+    /// Returns the shallow size of `obj`.
+    ///
+    /// Equivalent to `RamUsageEstimator.shallowSizeOf(Object)` over an object
+    /// that is not an array, `shallowSizeOfInstance(obj.getClass())`; see the
+    /// divergence note on [`shallow_size_of_instance`](Self::shallow_size_of_instance),
+    /// whose measure this applies to the value's dynamic type.
+    pub fn shallow_size_of_object<T: ?Sized>(obj: &T) -> i64 {
+        Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER + size_of_val(obj) as i64)
+    }
+
+    /// Returns the shallow size of an instance of a Java class whose non-static
+    /// fields, its own and its superclasses', have the given widths.
+    ///
+    /// Equivalent to `RamUsageEstimator.shallowSizeOfInstance(Class)` over a
+    /// conventional class: the object header plus
+    /// [`adjust_for_field`](Self::adjust_for_field) of every field, aligned.
+    /// Java reads the fields by reflection; the caller declares them here, a
+    /// reference field as [`NUM_BYTES_OBJECT_REF`](Self::NUM_BYTES_OBJECT_REF).
+    pub fn shallow_size_of_declared_instance(field_sizes: &[i64]) -> i64 {
+        let mut size = Self::NUM_BYTES_OBJECT_HEADER;
+        for field_size in field_sizes {
+            size = Self::adjust_for_field(size, *field_size);
+        }
         Self::align_object_size(size)
     }
 
@@ -2756,15 +3322,37 @@ impl RamUsageEstimator {
     ///
     /// Java dispatches on the runtime class with a chain of `instanceof`
     /// tests. Rust has no runtime class to test, so the caller names it with
-    /// a [`SizedObject`] variant, which holds the cases of that chain the
-    /// crate's callers pass (`Term.java:191`, `BytesRefHash.java:508`,
-    /// `CompiledAutomaton.java:540`); the branch taken for each is Java's.
+    /// a [`SizedObject`] variant, one per case of that chain; the branch taken
+    /// for each is Java's.
     pub fn size_of_object_with_def_size(o: Option<SizedObject<'_>>, def_size: i64) -> i64 {
+        Self::size_of_object_at_depth(o, 0, def_size)
+    }
+
+    /// Equivalent to the private `RamUsageEstimator.sizeOfObject(Object, int,
+    /// long)` (`RamUsageEstimator.java:396-441`).
+    fn size_of_object_at_depth(o: Option<SizedObject<'_>>, depth: i32, def_size: i64) -> i64 {
         Self::do_privileged(|| match o {
             None => 0,
             Some(SizedObject::Accountable(accountable)) => accountable.ram_bytes_used(),
             Some(SizedObject::String(s)) => Self::size_of_string(s),
+            Some(SizedObject::BoolArray(arr)) => Self::size_of_bool(arr),
+            Some(SizedObject::ByteArray(arr)) => Self::size_of(arr),
+            Some(SizedObject::CharArray(arr)) => Self::size_of_char(arr),
+            Some(SizedObject::DoubleArray(arr)) => Self::size_of_double(arr),
+            Some(SizedObject::FloatArray(arr)) => Self::size_of_float(arr),
             Some(SizedObject::IntArray(arr)) => Self::size_of_int(arr),
+            Some(SizedObject::Integer(v)) => Self::size_of_integer(v),
+            Some(SizedObject::Long(v)) => Self::size_of_long_object(v),
+            Some(SizedObject::LongArray(arr)) => Self::size_of_long(arr),
+            Some(SizedObject::ShortArray(arr)) => Self::size_of_short(arr),
+            Some(SizedObject::StringArray(arr)) => Self::size_of_string_array(arr),
+            Some(SizedObject::Query(q)) => Self::size_of_query_with_def_size(q, def_size),
+            Some(SizedObject::Map(map)) => {
+                Self::size_of_map_at_depth(Some(map), depth + 1, def_size)
+            }
+            Some(SizedObject::Collection(collection)) => {
+                Self::size_of_collection_at_depth(Some(collection), depth + 1, def_size)
+            }
             Some(SizedObject::Unknown { shallow_size }) => {
                 if def_size > 0 {
                     def_size
@@ -2803,6 +3391,38 @@ impl RamUsageEstimator {
         } else {
             format!("{bytes} bytes")
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// System properties
+// ---------------------------------------------------------------------------
+
+/// Answers `System.getProperty(key)` from a test runner's property table.
+pub type SystemPropertyHook = fn(&str) -> Option<String>;
+
+/// The hook [`set_system_property_hook`] installed, once per process.
+static SYSTEM_PROPERTY_HOOK: std::sync::OnceLock<SystemPropertyHook> = std::sync::OnceLock::new();
+
+/// Installs the hook through which [`system_property`] reads the JVM's system
+/// properties: a test runner installs its own property table, which its
+/// `System.setProperty` writes, as Lucene's tests set
+/// `lucene.cms.override_core_count`.
+///
+/// Returns `false`, leaving the installed hook in place, when one is already
+/// installed.
+pub fn set_system_property_hook(hook: SystemPropertyHook) -> bool {
+    SYSTEM_PROPERTY_HOOK.set(hook).is_ok()
+}
+
+/// `System.getProperty(key)`: the installed [`SystemPropertyHook`]'s answer, or,
+/// without a hook, the process environment variable of the same name — a Rust
+/// process has no `-D` options, and the environment is where its launcher
+/// passes them.
+pub fn system_property(key: &str) -> Option<String> {
+    match SYSTEM_PROPERTY_HOOK.get() {
+        Some(hook) => hook(key),
+        None => env::var(key).ok(),
     }
 }
 
@@ -2882,7 +3502,15 @@ impl Constants {
     fn platform_prop(property: &str) -> Option<String> {
         match property {
             "os.name" => Some(env::consts::OS.to_string()),
-            "os.arch" => Some(env::consts::ARCH.to_string()),
+            "os.arch" => Some(
+                Self::jvm_os_arch(
+                    env::consts::ARCH,
+                    env::consts::OS,
+                    cfg!(target_endian = "little"),
+                    cfg!(target_pointer_width = "32"),
+                )
+                .to_string(),
+            ),
             "sun.arch.data.model" => Some(if cfg!(target_pointer_width = "64") {
                 "64".to_string()
             } else {
@@ -2948,13 +3576,46 @@ impl Constants {
         env::consts::OS == "freebsd"
     }
 
-    /// Operating-system architecture.
+    /// Operating-system architecture: the `os.arch` system property, or
+    /// `Unknown`.
     ///
-    /// Equivalent to `Constants.OS_ARCH`. Java spells x86-64 `amd64`; the Rust
-    /// runtime spells the same architecture `x86_64`, and the crate compares
-    /// against the Rust spelling throughout.
-    pub fn os_arch() -> &'static str {
-        env::consts::ARCH
+    /// Equivalent to `Constants.OS_ARCH` (`Constants.java:57`). The platform
+    /// value is the JVM's name for the architecture (see
+    /// [`jvm_os_arch`](Self::jvm_os_arch)), so the comparisons Lucene makes
+    /// against `"amd64"` and `"aarch64"` hold as they do in Java.
+    pub fn os_arch() -> String {
+        Self::get_sys_prop_or("os.arch", Self::UNKNOWN)
+    }
+
+    /// The JVM's `os.arch` for a Rust target: `arch` is
+    /// `std::env::consts::ARCH`, `os` is `std::env::consts::OS`.
+    ///
+    /// JDK 25 sets `os.arch` from its build CPU name
+    /// (`make/autoconf/platform.m4`, `PLATFORM_EXTRACT_VARS_FROM_CPU` and
+    /// `OPENJDK_$1_CPU_OSARCH`): the CPU name is the GNU one, with
+    /// `powerpc*` renamed `ppc*`, `sparc64` renamed `sparcv9` and the
+    /// little-endian MIPS and PowerPC 64 variants suffixed `el`/`le`; then
+    /// `x86` is renamed `i386` on Linux and `x86_64` is renamed `amd64` on
+    /// every OS but macOS (and is `x32` under the 32-bit x86-64 ABI). Rust
+    /// names the remaining architectures as the JVM does.
+    pub fn jvm_os_arch(
+        arch: &'static str,
+        os: &str,
+        little_endian: bool,
+        pointer_width_32: bool,
+    ) -> &'static str {
+        match arch {
+            "x86" if os == "linux" => "i386",
+            "x86_64" if pointer_width_32 => "x32",
+            "x86_64" if os != "macos" => "amd64",
+            "mips" if little_endian => "mipsel",
+            "mips64" if little_endian => "mips64el",
+            "powerpc" => "ppc",
+            "powerpc64" if little_endian => "ppc64le",
+            "powerpc64" => "ppc64",
+            "sparc64" => "sparcv9",
+            other => other,
+        }
     }
 
     /// Operating-system version.
@@ -3082,7 +3743,7 @@ impl Constants {
                     return true;
                 }
                 // intel has their act together
-                if Self::os_arch() == "x86_64" && !Self::has_sse4a() {
+                if Self::os_arch() == "amd64" && !Self::has_sse4a() {
                     return true;
                 }
             } else {
@@ -3112,7 +3773,7 @@ impl Constants {
                     return true;
                 }
                 // intel has their act together
-                if Self::os_arch() == "x86_64" && !Self::has_sse4a() {
+                if Self::os_arch() == "amd64" && !Self::has_sse4a() {
                     return true;
                 }
             } else {
@@ -3130,7 +3791,7 @@ impl Constants {
         if Self::os_arch() == "aarch64" && Self::has_sve() {
             return true;
         }
-        if Self::os_arch() == "x86_64" && Self::has_avx2() {
+        if Self::os_arch() == "amd64" && Self::has_avx2() {
             return true;
         }
         false
@@ -3197,7 +3858,10 @@ impl InfoStream for NoOutputInfoStream {
     }
 
     fn message(&self, _component: &str, _message: &str) {
-        // No-op: `message()` should never be called when `is_enabled` is false.
+        debug_assert!(
+            false,
+            "message() should not be called when isEnabled returns false"
+        );
     }
 
     fn is_enabled(&self, _component: &str) -> bool {
@@ -3247,6 +3911,19 @@ pub fn set_default_info_stream(info_stream: std::sync::Arc<dyn InfoStream>) {
 pub trait Bits: Send + Sync + Debug {
     /// Returns the value of the bit at `index`.
     fn get(&self, index: usize) -> bool;
+
+    /// Answers `this instanceof BitSet` with the cast: `Some(self)` for a
+    /// [`BitSet`](crate::util::bit_set::BitSet) implementation, `None` (the
+    /// default) for every other `Bits`.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the runtime
+    /// class of any object; a Rust trait object cannot be narrowed to another
+    /// trait, so each `BitSet` answers with itself. Needed by
+    /// `HnswGraphSearcher.search(RandomVectorScorer, KnnCollector, HnswGraph,
+    /// Bits)` (`HnswGraphSearcher.java:95-105`).
+    fn as_bit_set(&self) -> Option<&dyn crate::util::bit_set::BitSet> {
+        None
+    }
 
     /// Returns the value of the bit at `index`, or the error a wrapper raises
     /// while answering.
@@ -3522,7 +4199,7 @@ impl FixedBitSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Java's message — `The
+    /// Returns [`LuceneErrorKind::IllegalArgument`] with Java's message — `The
     /// given long array is too small  to hold <numBits> bits`, two spaces
     /// included (`FixedBitSet.java:162-167`) — when `stored_bits` holds fewer
     /// than `bits2words(num_bits)` words.
@@ -3537,7 +4214,7 @@ impl FixedBitSet {
     fn from_words(stored_bits: Words, num_bits: usize) -> Result<Self, LuceneError> {
         let num_words = Self::bits2words(num_bits);
         if num_words > stored_bits.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "The given long array is too small  to hold {num_bits} bits"
             )));
         }
@@ -3603,7 +4280,11 @@ impl FixedBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn set(&mut self, index: usize) {
-        assert!(index < self.num_bits, "index {} out of bounds", index);
+        assert!(
+            index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
         self.or_word(word, mask);
@@ -3615,7 +4296,11 @@ impl FixedBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn clear(&mut self, index: usize) {
-        assert!(index < self.num_bits, "index {} out of bounds", index);
+        assert!(
+            index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
         self.and_word(word, !mask);
@@ -3667,12 +4352,19 @@ impl FixedBitSet {
     ///
     /// Equivalent to `FixedBitSet.set(long, long)`.
     ///
-    /// # Panics
-    ///
-    /// Panics if `from > to` or `to` exceeds the bit-set length.
+    /// Java only asserts the bounds (`FixedBitSet.java:776-780`) and does
+    /// nothing for an empty or reversed range; so does this port.
     pub fn set_range(&mut self, from: usize, to: usize) {
-        assert!(from <= to, "from {from} > to {to}");
-        assert!(to <= self.num_bits, "to {to} out of bounds");
+        debug_assert!(
+            from < self.num_bits,
+            "startIndex={from}, numBits={}",
+            self.num_bits
+        );
+        debug_assert!(
+            to <= self.num_bits,
+            "endIndex={to}, numBits={}",
+            self.num_bits
+        );
         if to <= from {
             return;
         }
@@ -4192,7 +4884,11 @@ impl FixedBitSet {
 
     /// Equivalent to the private `FixedBitSet.xor(long[], int)`.
     fn xor_bits(&mut self, other_bits: &[AtomicU64], other_num_words: usize) {
-        debug_assert!(other_num_words <= self.num_words);
+        debug_assert!(
+            other_num_words <= self.num_words,
+            "numWords={}, other.numWords={other_num_words}",
+            self.num_words
+        );
         let mut pos = self.num_words.min(other_num_words);
         while pos > 0 {
             pos -= 1;
@@ -4272,7 +4968,7 @@ impl FixedBitSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the iterator is already
+    /// Returns [`LuceneErrorKind::IllegalState`] when the iterator is already
     /// positioned, and propagates iteration errors.
     pub fn xor_iterator(
         &mut self,
@@ -4302,7 +4998,7 @@ impl FixedBitSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the iterator is already
+    /// Returns [`LuceneErrorKind::IllegalState`] when the iterator is already
     /// positioned, and propagates iteration errors.
     pub fn and_not_iterator(
         &mut self,
@@ -4376,7 +5072,11 @@ impl FixedBitSet {
     ///
     /// Equivalent to `FixedBitSet.flip(int)`.
     pub fn flip(&mut self, index: usize) {
-        debug_assert!(index < self.num_bits);
+        debug_assert!(
+            index < self.num_bits,
+            "index={index} numBits={}",
+            self.num_bits
+        );
         let word_num = index >> 6;
         let bitmask = 1u64 << (index & 63);
         self.xor_word(word_num, bitmask);
@@ -4386,8 +5086,16 @@ impl FixedBitSet {
     ///
     /// Equivalent to `FixedBitSet.clear(int, int)`.
     pub fn clear_range(&mut self, start_index: usize, end_index: usize) {
-        debug_assert!(start_index < self.num_bits);
-        debug_assert!(end_index <= self.num_bits);
+        debug_assert!(
+            start_index < self.num_bits,
+            "startIndex={start_index}, numBits={}",
+            self.num_bits
+        );
+        debug_assert!(
+            end_index <= self.num_bits,
+            "endIndex={end_index}, numBits={}",
+            self.num_bits
+        );
         if end_index <= start_index {
             return;
         }
@@ -4440,7 +5148,7 @@ impl FixedBitSet {
         if length < bit_set.length()
             && BitSet::next_set_bit(bit_set, length as i32) != crate::search::NO_MORE_DOCS
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Some bits are set beyond the end of live docs".to_string(),
             ));
         }
@@ -4632,6 +5340,10 @@ impl Bits for FixedBitSet {
         self.get(index)
     }
 
+    fn as_bit_set(&self) -> Option<&dyn crate::util::bit_set::BitSet> {
+        Some(self)
+    }
+
     fn length(&self) -> usize {
         self.length()
     }
@@ -4786,7 +5498,7 @@ impl<T> RefCount<T> {
     ///
     /// Returns whatever [`Self::release`] raised, having put the reference
     /// back exactly as Java's `finally` block does, or
-    /// [`LuceneError::IllegalState`] when the count went negative, which is
+    /// [`LuceneErrorKind::IllegalState`] when the count went negative, which is
     /// Java's `IllegalStateException`.
     ///
     /// Equivalent to `org.apache.lucene.util.RefCount#decRef`.
@@ -4842,7 +5554,7 @@ impl<T> RefCount<T> {
 /// Thrown by Lucene on detecting that `Thread.interrupt()` had been called.
 /// Unlike [`InterruptedException`], it is unchecked: Lucene's waits catch the
 /// former and throw this, which travels as
-/// [`LuceneError::ThreadInterrupted`].
+/// [`LuceneErrorKind::ThreadInterrupted`].
 ///
 /// Equivalent to `org.apache.lucene.util.ThreadInterruptedException`, a
 /// `RuntimeException` built over its cause; its message, Java's
@@ -4880,8 +5592,48 @@ impl std::error::Error for ThreadInterruptedException {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// `Double.compare(a, b)`, the order `Arrays.sort(double[])` sorts in:
+/// numeric, with `-0.0` before `0.0` and every `NaN` equal to every other and
+/// after everything else (the comparison of `doubleToLongBits`).
+pub fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
+    if a < b {
+        return std::cmp::Ordering::Less;
+    }
+    if a > b {
+        return std::cmp::Ordering::Greater;
+    }
+    let bits = |v: f64| -> i64 {
+        if v.is_nan() {
+            0x7ff8_0000_0000_0000
+        } else {
+            v.to_bits() as i64
+        }
+    };
+    bits(a).cmp(&bits(b))
+}
+
+/// `Float.compare(a, b)`, the order `Arrays.sort(float[])` sorts in; see
+/// [`java_double_compare`].
+pub fn java_float_compare(a: f32, b: f32) -> std::cmp::Ordering {
+    if a < b {
+        return std::cmp::Ordering::Less;
+    }
+    if a > b {
+        return std::cmp::Ordering::Greater;
+    }
+    let bits = |v: f32| -> i32 {
+        if v.is_nan() {
+            0x7fc0_0000
+        } else {
+            v.to_bits() as i32
+        }
+    };
+    bits(a).cmp(&bits(b))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
     /// `new FixedBitSet(new long[1], 65)` throws Java's
     /// `IllegalArgumentException` (`FixedBitSet.java:162-167`). Measured
     /// against `lucene-core-10.5.0.jar` (`oracle/fix/MiscFix.java`, item 20):
@@ -4890,7 +5642,7 @@ mod tests {
     fn fixed_bit_set_from_too_few_words_is_lucenes_illegal_argument() {
         assert!(matches!(
             super::FixedBitSet::from_bits(vec![0u64], 65),
-            Err(super::LuceneError::IllegalArgument(ref message))
+            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. })
                 if message == "The given long array is too small  to hold 65 bits"
         ));
     }
@@ -4911,7 +5663,8 @@ mod tests {
         );
         assert!(matches!(
             super::ArrayUtil::parse_int_radix(&['1'], 0, 1, 1),
-            Err(super::LuceneError::IllegalArgument(ref message)) if message.is_empty()
+            Err(super::LuceneError { kind: super::LuceneErrorKind::Unchecked { class, message: None, .. }, .. })
+                if class == "java.lang.NumberFormatException"
         ));
     }
 
@@ -4923,7 +5676,7 @@ mod tests {
     fn unicode_util_new_string_refuses_an_invalid_code_point_without_a_message() {
         assert!(matches!(
             super::unicode_util::UnicodeUtil::new_string(&[0x11_0000], 0, 1),
-            Err(super::LuceneError::IllegalArgument(ref message)) if message.is_empty()
+            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
         ));
     }
 
@@ -5125,7 +5878,7 @@ mod tests {
                 )
                 .unwrap_err();
                 assert!(
-                    matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                    matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
                     "{error:?}"
                 );
             }
@@ -5135,7 +5888,9 @@ mod tests {
     #[test]
     fn ioutils_close_helpers() {
         fn failing_close() -> Result<(), LuceneError> {
-            Err(LuceneError::Io(io::Error::other("close failed")))
+            Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                "close failed",
+            ))))
         }
 
         let result = IOUtils::close([Some(failing_close), None]);
@@ -5267,8 +6022,55 @@ mod tests {
     fn info_stream_no_op() {
         let stream = NoOutputInfoStream;
         assert!(!stream.is_enabled("component"));
-        stream.message("component", "should be ignored");
         stream.close();
+    }
+
+    /// `NoOutputInfoStream.message` is
+    /// `assert false : "message() should not be called when isEnabled returns false"`
+    /// (`InfoStream.java:36-38`): a debug build fails it.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "message() should not be called when isEnabled returns false")
+    )]
+    fn no_output_info_stream_message_asserts() {
+        NoOutputInfoStream.message("component", "should be ignored");
+    }
+
+    /// `os.arch` is the JVM's name for the architecture (JDK 25
+    /// `make/autoconf/platform.m4`): `IndexWriter` records it in every
+    /// segment's diagnostics and Lucene compares it with `"amd64"`.
+    #[test]
+    fn os_arch_is_the_jvm_name_of_the_architecture() {
+        let jvm = Constants::jvm_os_arch;
+        assert_eq!(jvm("x86_64", "linux", true, false), "amd64");
+        assert_eq!(jvm("x86_64", "windows", true, false), "amd64");
+        assert_eq!(jvm("x86_64", "macos", true, false), "x86_64");
+        assert_eq!(jvm("x86_64", "linux", true, true), "x32");
+        assert_eq!(jvm("x86", "linux", true, true), "i386");
+        assert_eq!(jvm("x86", "windows", true, true), "x86");
+        assert_eq!(jvm("aarch64", "linux", true, false), "aarch64");
+        assert_eq!(jvm("aarch64", "macos", true, false), "aarch64");
+        assert_eq!(jvm("arm", "linux", true, true), "arm");
+        assert_eq!(jvm("powerpc", "linux", false, true), "ppc");
+        assert_eq!(jvm("powerpc64", "linux", false, false), "ppc64");
+        assert_eq!(jvm("powerpc64", "linux", true, false), "ppc64le");
+        assert_eq!(jvm("mips", "linux", false, true), "mips");
+        assert_eq!(jvm("mips", "linux", true, true), "mipsel");
+        assert_eq!(jvm("mips64", "linux", false, false), "mips64");
+        assert_eq!(jvm("mips64", "linux", true, false), "mips64el");
+        assert_eq!(jvm("sparc64", "linux", false, false), "sparcv9");
+        assert_eq!(jvm("s390x", "linux", false, false), "s390x");
+        assert_eq!(jvm("riscv64", "linux", true, false), "riscv64");
+        assert_eq!(jvm("loongarch64", "linux", true, false), "loongarch64");
+        if cfg!(all(
+            target_arch = "x86_64",
+            target_os = "linux",
+            target_pointer_width = "64"
+        )) && std::env::var_os("os.arch").is_none()
+        {
+            assert_eq!(Constants::os_arch(), "amd64");
+        }
     }
 
     #[test]
@@ -5341,12 +6143,12 @@ mod tests {
         let mut result = [0u8; 2];
         let error = NumericUtils::subtract(2, 0, &[0, 1], &[0, 2], &mut result).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(m) if m == "a < b"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "a < b"),
             "{error:?}"
         );
         let error = NumericUtils::add(2, 0, &[0xff, 0xff], &[0, 1], &mut result).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(m) if m == "a + b overflows bytesPerDim=2"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "a + b overflows bytesPerDim=2"),
             "{error:?}"
         );
         NumericUtils::subtract(2, 0, &[0x12, 0x05], &[0x10, 0x00], &mut result).unwrap();
@@ -5381,17 +6183,24 @@ mod tests {
     /// so `IOUtils.close` reports the first close failure.
     #[test]
     fn ioutils_close_reports_the_first_failure() {
-        let first = || Err(LuceneError::Io(io::Error::other("first close failed")));
+        let first = || {
+            Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                "first close failed",
+            ))))
+        };
         let second = || {
-            Err(LuceneError::Io(io::Error::new(
+            Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::NotFound,
                 "second close failed",
-            )))
+            ))))
         };
         let error =
             IOUtils::close([IOUtils::closeable(first), IOUtils::closeable(second)]).unwrap_err();
         match error {
-            LuceneError::Io(e) => {
+            LuceneError {
+                kind: LuceneErrorKind::Io(e),
+                ..
+            } => {
                 assert_eq!(e.to_string(), "first close failed");
                 assert_eq!(e.kind(), io::ErrorKind::Other);
             }
@@ -5410,9 +6219,13 @@ mod tests {
             log.borrow_mut().push(name.to_string());
             match outcome {
                 "ok" => Ok(()),
-                "io" => Err(LuceneError::Io(io::Error::other(name.to_string()))),
+                "io" => Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    name.to_string(),
+                )))),
                 "rte" => Err(LuceneError::illegal_state(name)),
-                "err" => Err(LuceneError::AssertionError(name.to_string())),
+                "err" => Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    name.to_string(),
+                ))),
                 "panic" => panic!("{name}"),
                 other => unreachable!("{other}"),
             }
@@ -5421,9 +6234,18 @@ mod tests {
 
     fn java_class_and_message(error: &LuceneError) -> String {
         let message = match error {
-            LuceneError::Io(e) => e.to_string(),
-            LuceneError::IllegalState { message, .. } => message.clone(),
-            LuceneError::AssertionError(m) => m.clone(),
+            LuceneError {
+                kind: LuceneErrorKind::Io(e),
+                ..
+            } => e.to_string(),
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            } => message.clone(),
+            LuceneError {
+                kind: LuceneErrorKind::AssertionError(m),
+                ..
+            } => m.clone(),
             other => panic!("{other:?}"),
         };
         format!("{}({message})", error.java_simple_name())
@@ -5519,7 +6341,7 @@ mod tests {
     #[test]
     fn ioutils_close_while_suppressing_exceptions_matches_the_java_oracle() {
         let log = std::cell::RefCell::new(Vec::new());
-        let ex = LuceneError::Io(io::Error::other("ex"));
+        let ex = LuceneError::from(LuceneErrorKind::Io(io::Error::other("ex")));
         let thrown = IOUtils::close_while_suppressing_exceptions(
             ex,
             vec![
@@ -5532,7 +6354,7 @@ mod tests {
         assert_eq!(log.borrow().join(","), "a,b");
 
         log.borrow_mut().clear();
-        let ex = LuceneError::Io(io::Error::other("ex"));
+        let ex = LuceneError::from(LuceneErrorKind::Io(io::Error::other("ex")));
         let thrown = IOUtils::close_while_suppressing_exceptions(
             ex,
             vec![
@@ -5544,7 +6366,7 @@ mod tests {
         assert_eq!(log.borrow().join(","), "a,b");
 
         log.borrow_mut().clear();
-        let ex = LuceneError::AssertionError("ex".to_string());
+        let ex = LuceneError::from(LuceneErrorKind::AssertionError("ex".to_string()));
         let thrown = IOUtils::close_while_suppressing_exceptions(
             ex,
             vec![
@@ -5565,7 +6387,9 @@ mod tests {
         let error = IOUtils::apply_to_all(vec![Some(1), None, Some(2), Some(3)], |i| {
             visited.push(format!("v{i}"));
             if i != 3 {
-                return Err(LuceneError::Io(io::Error::other(format!("fail{i}"))));
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    format!("fail{i}"),
+                ))));
             }
             Ok(())
         })
@@ -5631,12 +6455,12 @@ mod tests {
         fs::set_permissions(&file, permissions).unwrap();
         let error = IOUtils::fsync(&file, false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
-        let error = IOUtils::fsync(&tmp.path().join("missing"), false).unwrap_err();
+        let error = IOUtils::fsync(tmp.path().join("missing"), false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::NotFound),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::NotFound),
             "{error:?}"
         );
         IOUtils::fsync(tmp.path(), true).unwrap();
@@ -5657,7 +6481,7 @@ mod tests {
         let dir = crate::store::FSDirectory::open(tmp.path()).unwrap();
         let error = dir.sync(&["ro".to_string()]).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
         dir.sync_metadata().unwrap();
@@ -5701,7 +6525,9 @@ mod tests {
             }
             fn try_get(&self, index: usize) -> Result<bool, LuceneError> {
                 if self.0 {
-                    Err(LuceneError::Other("exiting".to_string()))
+                    Err(LuceneError::from(LuceneErrorKind::Other(
+                        "exiting".to_string(),
+                    )))
                 } else {
                     Ok(self.get(index))
                 }
@@ -5720,7 +6546,7 @@ mod tests {
         );
         let error = EvenBits(true).apply_mask(&mut set, 0).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Other(m) if m == "exiting"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Other(m), .. } if m == "exiting"),
             "{error:?}"
         );
     }
@@ -5850,5 +6676,119 @@ mod pass_e_fixed_bit_set_sharing_tests {
         set.set(2);
         assert!(clone.get(1) && !clone.get(2));
         assert_eq!(clone.get_bits().len(), set.get_bits().len());
+    }
+}
+
+#[cfg(test)]
+mod fixed_bit_set_copy_of_tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// A `Bits` that is neither a `FixedBitSet` nor a `FixedBits`: the
+    /// `else` branch of `FixedBitSet.copyOf` (`FixedBitSet.java:874-882`),
+    /// which copies bit by bit.
+    #[derive(Debug)]
+    struct PlainBits<'a>(&'a FixedBitSet);
+
+    impl Bits for PlainBits<'_> {
+        fn get(&self, index: usize) -> bool {
+            self.0.get(index)
+        }
+        fn length(&self) -> usize {
+            self.0.length()
+        }
+    }
+
+    fn random_set(num_bits: usize, seed: u64) -> FixedBitSet {
+        let mut set = FixedBitSet::new(num_bits);
+        let mut x = seed | 1;
+        for i in 0..num_bits {
+            // xorshift64: a fixed, dependency-free bit pattern.
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            if x & 3 == 0 {
+                set.set(i);
+            }
+        }
+        set
+    }
+
+    fn assert_same_bits(a: &FixedBitSet, b: &FixedBitSet) {
+        assert_eq!(a.length(), b.length());
+        assert_eq!(a.cardinality(), b.cardinality());
+        for i in 0..a.length() {
+            assert_eq!(a.get(i), b.get(i), "bit {i}");
+        }
+    }
+
+    /// rmp #253: `FixedBitSet.copyOf(Bits)` (`FixedBitSet.java:866-883`)
+    /// restores the `FixedBitSet` behind a `FixedBits`, clones a
+    /// `FixedBitSet` word by word (`clone()`, `FixedBitSet.java:829-834`),
+    /// and copies any other `Bits` bit by bit. The three paths give equal
+    /// sets, and the two word copies equal words.
+    #[test]
+    fn copy_of_is_equal_on_every_path() {
+        for num_bits in [0usize, 1, 63, 64, 65, 1000, 4097] {
+            let set = random_set(num_bits, 0x9E37_79B9 + num_bits as u64);
+            let from_set = FixedBitSet::copy_of(&set);
+            let from_view = FixedBitSet::copy_of(&set.as_read_only_bits());
+            assert_same_bits(&set, &from_set);
+            assert_same_bits(&set, &from_view);
+            // The bit-by-bit path starts with `bitSet.set(0, length)`, whose
+            // `assert startIndex >= 0 && startIndex < numBits`
+            // (`FixedBitSet.java:777-778`) fails for an empty set under `-ea`;
+            // `copy_of_an_empty_plain_bits_asserts_as_java` pins that case.
+            if num_bits > 0 {
+                let from_plain = FixedBitSet::copy_of(&PlainBits(&set));
+                assert_same_bits(&set, &from_plain);
+            }
+            let words = |s: &FixedBitSet| -> Vec<u64> {
+                s.get_bits()
+                    .iter()
+                    .map(|w| w.load(AtomicOrdering::Relaxed))
+                    .collect()
+            };
+            assert_eq!(words(&from_set), words(&set));
+            assert_eq!(words(&from_view), words(&set));
+        }
+    }
+
+    /// `FixedBitSet.copyOf` of an empty plain `Bits` calls `set(0, 0)`, which
+    /// asserts `startIndex < numBits` (`FixedBitSet.java:777-778`).
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "startIndex=0, numBits=0"))]
+    fn copy_of_an_empty_plain_bits_asserts_as_java() {
+        let set = FixedBitSet::new(0);
+        let copy = FixedBitSet::copy_of(&PlainBits(&set));
+        assert_eq!(copy.length(), 0);
+    }
+
+    /// rmp #253 measurement: the word copy of a `FixedBitSet` against the
+    /// bit-by-bit copy of the same bits seen through a plain `Bits`. Prints
+    /// the mean time per copy; the two results are equal.
+    #[test]
+    fn copy_of_word_copy_measurement() {
+        const NUM_BITS: usize = 1 << 20;
+        const ROUNDS: u32 = 16;
+        let set = random_set(NUM_BITS, 0xC0FF_EE00);
+        let start = Instant::now();
+        let mut words = FixedBitSet::new(0);
+        for _ in 0..ROUNDS {
+            words = std::hint::black_box(FixedBitSet::copy_of(std::hint::black_box(&set)));
+        }
+        let word_copy = start.elapsed() / ROUNDS;
+        let plain = PlainBits(&set);
+        let start = Instant::now();
+        let mut bitwise = FixedBitSet::new(0);
+        for _ in 0..ROUNDS {
+            bitwise = std::hint::black_box(FixedBitSet::copy_of(std::hint::black_box(&plain)));
+        }
+        let bit_copy = start.elapsed() / ROUNDS;
+        assert_same_bits(&words, &bitwise);
+        println!(
+            "FixedBitSet::copy_of({NUM_BITS} bits): word copy {word_copy:?}, \
+             bit-by-bit copy {bit_copy:?}"
+        );
     }
 }

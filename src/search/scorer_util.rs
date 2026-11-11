@@ -5,6 +5,7 @@
 
 use crate::error::{LuceneError, Result};
 use crate::index::DocAndFloatFeatureBuffer;
+use crate::search::abstract_doc_id_set_iterator::FilterDocIdSetIterator;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::scorable::Scorable;
 use crate::util::bit_sets::{DenseLiveDocs, SparseLiveDocs};
@@ -178,7 +179,7 @@ impl ScorerUtil {
             .checked_sub(min_should_match)
             .and_then(|slack| slack.checked_add(1))
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "minShouldMatch must not exceed numScorers, got minShouldMatch={min_should_match}, numScorers={num_scorers}"
                 ))
             })?;
@@ -193,27 +194,37 @@ impl ScorerUtil {
     /// Optimises a [`DocIdSetIterator`] for the case when it is likely
     /// implemented over an [`ImpactsEnum`](crate::index::ImpactsEnum).
     ///
-    /// Equivalent to `ScorerUtil.likelyImpactsEnum(DocIdSetIterator)`.
+    /// Equivalent to `ScorerUtil.likelyImpactsEnum(DocIdSetIterator)`
+    /// (`ScorerUtil.java:69-75`): an iterator whose class is neither the
+    /// default codec's impacts enum
+    /// ([`Lucene104PostingsFormat::get_impacts_enum_impl`]) nor
+    /// [`FilterDocIdSetIterator`] is wrapped in a `FilterDocIdSetIterator`;
+    /// those two are returned unchanged.
     ///
-    /// **Divergence from Lucene 10.5.0.** The Java method wraps the iterator in
-    /// a `FilterDocIdSetIterator` unless it is already one of two known classes,
-    /// so that the JIT sees at most two receiver types at the call sites of
-    /// `nextDoc`/`advance` and can inline them. That is a HotSpot
-    /// profile-shaping trick with no counterpart in Rust, which resolves
-    /// `dyn` calls through a vtable and gains nothing from a uniform receiver
-    /// type — the extra wrapper would be pure overhead. This port therefore
-    /// returns the iterator unchanged, which is semantically identical because
-    /// `FilterDocIdSetIterator` is a transparent delegation.
+    /// [`Lucene104PostingsFormat::get_impacts_enum_impl`]:
+    ///     crate::codecs::lucene104::postings_format::Lucene104PostingsFormat::get_impacts_enum_impl
     pub fn likely_impacts_enum(it: Box<dyn DocIdSetIterator>) -> Box<dyn DocIdSetIterator> {
+        let class = it.disi_as_any().map(<dyn Any>::type_id);
+        if class != Some(
+            crate::codecs::lucene104::postings_format::Lucene104PostingsFormat::get_impacts_enum_impl(),
+        ) && class != Some(TypeId::of::<FilterDocIdSetIterator>())
+        {
+            return Box::new(FilterDocIdSetIterator::new(it));
+        }
         it
     }
 
     /// Optimises a [`Scorable`] for the case when it is likely implemented by a
     /// term scorer.
     ///
-    /// Equivalent to `ScorerUtil.likelyTermScorer(Scorable)`; see
-    /// [`likely_impacts_enum`](Self::likely_impacts_enum) for why this port
-    /// returns its argument unchanged.
+    /// Equivalent to `ScorerUtil.likelyTermScorer(Scorable)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java wraps a scorable that is
+    /// neither a `TermScorer` nor a `FilterScorable` in a `FilterScorable`
+    /// (`ScorerUtil.java:82-87`), a transparent delegation kept only to make
+    /// `score()` call sites bimorphic for HotSpot. The callers here hold the
+    /// scorer by `&mut` borrow, so no owning wrapper can be returned; the
+    /// scorable is returned unchanged, which scores identically.
     pub fn likely_term_scorer(scorable: &mut dyn Scorable) -> &mut dyn Scorable {
         scorable
     }

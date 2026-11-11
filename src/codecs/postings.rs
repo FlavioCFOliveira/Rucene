@@ -116,15 +116,15 @@ impl TermsEnum for SingleTermsEnum {
         &mut self.atts
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.term.clone())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.term.clone()))
     }
 
     fn postings(
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
 
@@ -145,31 +145,31 @@ impl TermsEnum for SingleTermsEnum {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "ord not supported by SingleTermsEnum".to_string(),
         ))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "doc_freq not supported by SingleTermsEnum".to_string(),
         ))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "total_term_freq not supported by SingleTermsEnum".to_string(),
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "impacts not supported by SingleTermsEnum".to_string(),
         ))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "term_state not supported by SingleTermsEnum".to_string(),
         ))
     }
@@ -218,35 +218,55 @@ pub trait FieldsConsumer {
     /// Propagates whatever the integrity checks, the merged view or
     /// [`write`](Self::write) raise.
     fn merge(&mut self, merge_state: &MergeState, norms: Option<&dyn NormsProducer>) -> Result<()> {
-        let mut fields: Vec<Box<dyn Fields>> = Vec::new();
-        let mut slices: Vec<crate::index::multi_reader::ReaderSlice> = Vec::new();
-
-        let mut doc_base = 0i32;
-
-        for (reader_index, producer) in merge_state.fields_producers.iter().enumerate() {
-            let max_doc = merge_state.max_docs[reader_index];
-            if let Some(producer) = producer {
-                merge_state.check_aborted()?;
-                producer.check_integrity()?;
-                slices.push(crate::index::multi_reader::ReaderSlice::new(
-                    doc_base,
-                    max_doc,
-                    reader_index as i32,
-                ));
-                fields.push(Box::new(SharedFieldsProducer(Arc::clone(producer))));
-            }
-            doc_base += max_doc;
-        }
-
-        let merged_fields = crate::index::mapped_multi_fields::MappedMultiFields::new(
-            Arc::new(merge_state.clone()),
-            crate::index::multi_fields::MultiFields::new(fields, slices),
-        );
-        self.write(&merged_fields, norms)
+        default_merge(self, merge_state, norms)
     }
 
     /// Closes this consumer, releasing all resources.
     fn close(&mut self) -> Result<()>;
+}
+
+/// The body of the default `FieldsConsumer.merge(MergeState, NormsProducer)`
+/// (`FieldsConsumer.java:72-96`), which [`FieldsConsumer::merge`] runs.
+///
+/// A consumer that overrides `merge` and falls back to the default, as
+/// `STUniformSplitTermsWriter.merge` does with `super.merge(mergeState,
+/// normsProducer)`, calls this: Rust cannot call a trait's default body from
+/// an implementation that overrides it.
+///
+/// # Errors
+///
+/// Propagates whatever the integrity checks, the merged view or
+/// [`FieldsConsumer::write`] raise.
+pub fn default_merge<C: FieldsConsumer + ?Sized>(
+    consumer: &mut C,
+    merge_state: &MergeState,
+    norms: Option<&dyn NormsProducer>,
+) -> Result<()> {
+    let mut fields: Vec<Box<dyn Fields>> = Vec::new();
+    let mut slices: Vec<crate::index::multi_reader::ReaderSlice> = Vec::new();
+
+    let mut doc_base = 0i32;
+
+    for (reader_index, producer) in merge_state.fields_producers.iter().enumerate() {
+        let max_doc = merge_state.max_docs[reader_index];
+        if let Some(producer) = producer {
+            merge_state.check_aborted()?;
+            producer.check_integrity()?;
+            slices.push(crate::index::multi_reader::ReaderSlice::new(
+                doc_base,
+                max_doc,
+                reader_index as i32,
+            ));
+            fields.push(Box::new(SharedFieldsProducer(Arc::clone(producer))));
+        }
+        doc_base += max_doc;
+    }
+
+    let merged_fields = crate::index::mapped_multi_fields::MappedMultiFields::new(
+        Arc::new(merge_state.clone()),
+        crate::index::multi_fields::MultiFields::new(fields, slices),
+    );
+    consumer.write(&merged_fields, norms)
 }
 
 /// A postings producer of a merge state, seen as the [`Fields`] it is.
@@ -286,7 +306,12 @@ pub trait FieldsProducer: Fields + Send + Sync {
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>>;
 
     /// Closes this producer, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    ///
+    /// Takes `&self`: Java's `close()` runs on the shared producer object, and
+    /// closes its files whoever else still holds it (a merge instance, a terms
+    /// enum), so implementations close their inputs through interior
+    /// mutability.
+    fn close(&self) -> Result<()>;
 }
 
 // -----------------------------------------------------------------------------
@@ -308,17 +333,34 @@ pub trait PostingsFormat: Send + Sync + fmt::Debug {
 
     /// Creates a reader for an existing segment.
     fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>>;
+
+    /// This format as [`Any`](std::any::Any), for the `instanceof` tests Java
+    /// code makes on a `PostingsFormat` (`TestUtil.getPostingsFormat(Codec, String)` narrows
+    /// to `PerFieldPostingsFormat`, `TestUtil.java:1396-1403`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    /// `PostingsFormat.toString()`: `"PostingsFormat(name=" + name + ")"`,
+    /// which a format overrides as Java's subclass overrides `toString()`
+    /// (`FSTPostingsFormat`, `BlockTreeOrdsPostingsFormat`, the bloom
+    /// formats).
+    fn to_java_string(&self) -> String {
+        format!("PostingsFormat(name={})", self.name())
+    }
 }
 
 impl fmt::Display for dyn PostingsFormat + '_ {
-    /// Port of the concrete `PostingsFormat.toString()`, which every
-    /// implementation inherits: `"PostingsFormat(name=" + name + ")"`.
-    ///
-    /// It hangs off the trait object for the same reason `Codec`'s does: Rust
-    /// cannot give [`fmt::Display`] a default body, but Java's method is
-    /// concrete on the abstract class.
+    /// `toString()` of the format behind the trait object:
+    /// [`PostingsFormat::to_java_string`], Java's virtual call, so an override
+    /// is seen through `dyn PostingsFormat` too.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PostingsFormat(name={})", self.name())
+        f.write_str(&self.to_java_string())
     }
 }
 
@@ -370,6 +412,25 @@ impl PostingsFormatRegistry {
             .ok()
     }
 
+    /// Looks up a postings format by name, failing as Lucene does.
+    ///
+    /// Equivalent to `PostingsFormat.forName(String)`, which is
+    /// `NamedSPILoader.lookup(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
+    /// listing the available names, when no format is registered under
+    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    pub fn lookup(&self, name: &str) -> Result<Arc<dyn PostingsFormat>> {
+        self.formats
+            .read()
+            .map_err(|_| {
+                LuceneError::illegal_state("postings format registry lock was poisoned".to_string())
+            })?
+            .lookup(name)
+    }
+
     /// Returns the names of all registered postings formats, in registration order.
     ///
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
@@ -397,7 +458,7 @@ impl PostingsFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
 /// poisoned.
 pub fn reload_postings_formats(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,
@@ -448,6 +509,19 @@ static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> =
 /// Returns `None` if no format has been registered under the given name.
 pub fn postings_for_name(name: &str) -> Option<Arc<dyn PostingsFormat>> {
     GLOBAL_POSTINGS_REGISTRY.for_name(name)
+}
+
+/// Looks up a postings format by name from the global registry, failing as Lucene
+/// does.
+///
+/// Equivalent to `PostingsFormat.forName(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message when no
+/// format is registered under `name`.
+pub fn postings_lookup(name: &str) -> Result<Arc<dyn PostingsFormat>> {
+    GLOBAL_POSTINGS_REGISTRY.lookup(name)
 }
 
 /// Returns the names of all postings formats registered in the global
@@ -512,7 +586,11 @@ pub trait PostingsReaderBase: Send + Sync + fmt::Display {
     fn check_integrity(&self) -> Result<()>;
 
     /// Closes this reader.
-    fn close(&mut self) -> Result<()>;
+    ///
+    /// Takes `&self`: the reader is shared by its terms dictionary and every
+    /// enum it hands out, and Java's `close()` closes its inputs whoever else
+    /// still holds it.
+    fn close(&self) -> Result<()>;
 }
 
 /// Low-level postings writer used by term dictionaries.
@@ -791,7 +869,9 @@ pub trait PushPostingsWriterBase {
         let write_offsets = self.push_state().write_offsets;
 
         let reuse = self.push_state_mut().postings_enum.take();
-        let mut postings_enum = terms_enum.postings(reuse, enum_flags)?;
+        let postings_enum = terms_enum.postings(reuse, enum_flags)?;
+        debug_assert!(postings_enum.is_some());
+        let mut postings_enum = postings_enum.ok_or_else(LuceneError::null_pointer)?;
         let walked = push_postings(
             self,
             postings_enum.as_mut(),
@@ -956,16 +1036,16 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(BytesRef::default())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::default()))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(StubPostingsEnum::default()))
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(StubPostingsEnum::default())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
@@ -1205,7 +1285,7 @@ mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1290,7 +1370,7 @@ mod tests {
             Ok(())
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1452,7 +1532,7 @@ mod tests {
             .unwrap();
         consumer.close().unwrap();
 
-        let mut producer = format.fields_producer(&read_state).unwrap();
+        let producer = format.fields_producer(&read_state).unwrap();
         assert_eq!(producer.size(), 0);
         producer.check_integrity().unwrap();
         let _merge_instance = producer.get_merge_instance().unwrap();
@@ -1676,20 +1756,20 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(BytesRef::default())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::default()))
         }
 
         fn postings(
             &mut self,
             reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
             self.offered.push(reuse.as_deref().map(identity));
             self.kept.extend(reuse);
             let postings: Box<dyn PostingsEnum> = Box::new(StubPostingsEnum::default());
             self.returned.push(identity(postings.as_ref()));
-            Ok(postings)
+            Ok(Some(postings))
         }
 
         fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
@@ -1856,20 +1936,20 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(BytesRef::default())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::default()))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(OneDocPostingsEnum {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(OneDocPostingsEnum {
                 doc: self.doc,
                 current: -1,
                 freq: self.freq,
-            }))
+            })))
         }
 
         fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {

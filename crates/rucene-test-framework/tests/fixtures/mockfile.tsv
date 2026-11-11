@@ -1,0 +1,121 @@
+# label	OK	result | label	class	message[ <- cause]; $D = temp dir
+LeakFS InputStream toString	OK	InputStream($D/leak-InputStream/f)
+LeakFS InputStream leaked close	java.lang.RuntimeException	file handle leaks: [InputStream($D/leak-InputStream/f)] <- java.lang.Exception: null
+LeakFS InputStream closed close	OK	-
+LeakFS OutputStream toString	OK	OutputStream($D/leak-OutputStream/f)
+LeakFS OutputStream leaked close	java.lang.RuntimeException	file handle leaks: [OutputStream($D/leak-OutputStream/f)] <- java.lang.Exception: null
+LeakFS OutputStream closed close	OK	-
+LeakFS FileChannel toString	OK	FileChannel($D/leak-FileChannel/f)
+LeakFS FileChannel leaked close	java.lang.RuntimeException	file handle leaks: [FileChannel($D/leak-FileChannel/f)] <- java.lang.Exception: null
+LeakFS FileChannel closed close	OK	-
+LeakFS SeekableByteChannel toString	OK	SeekableByteChannel($D/leak-SeekableByteChannel/f)
+LeakFS SeekableByteChannel leaked close	java.lang.RuntimeException	file handle leaks: [SeekableByteChannel($D/leak-SeekableByteChannel/f)] <- java.lang.Exception: null
+LeakFS SeekableByteChannel closed close	OK	-
+LeakFS DirectoryStream toString	OK	DirectoryStream($D/leak-DirectoryStream)
+LeakFS DirectoryStream leaked close	java.lang.RuntimeException	file handle leaks: [DirectoryStream($D/leak-DirectoryStream)] <- java.lang.Exception: null
+LeakFS DirectoryStream closed close	OK	-
+LeakFS AsynchronousFileChannel toString	OK	AsynchronousFileChannel($D/leak-AsynchronousFileChannel/f)
+LeakFS AsynchronousFileChannel leaked close	java.lang.RuntimeException	file handle leaks: [AsynchronousFileChannel($D/leak-AsynchronousFileChannel/f)] <- java.lang.Exception: null
+LeakFS AsynchronousFileChannel closed close	OK	-
+LeakFS provider toString	OK	LeakFS(sun.nio.fs.LinuxFileSystemProvider@HASH)
+LeakFS scheme	OK	leakfs://
+HandleLimitFS count 2	OK	2
+HandleLimitFS third	java.nio.file.FileSystemException	$D/limit/f: Too many open files
+HandleLimitFS count after refusal	OK	1
+HandleLimitFS count after close	OK	0
+HandleLimitFS reopen	OK	0
+HandleLimitFS count end	OK	-1
+HandleLimitFS MAX_OPEN_FILES	OK	2048
+WindowsFS delete open	java.io.IOException	access denied: $D/windows/f
+WindowsFS deleteIfExists open	java.io.IOException	access denied: $D/windows/f
+WindowsFS move open source	java.io.IOException	access denied: $D/windows/f
+WindowsFS move onto open target	OK	$D/windows/f
+WindowsFS close after transfer	OK	-
+WindowsFS delete closed	OK	false
+WindowsFS delete missing	java.nio.file.NoSuchFileException	$D/windows/f
+WindowsFS deleteIfExists missing	OK	false
+WindowsFS resolve CON	java.nio.file.InvalidPathException	File name: CON is one of the reserved file names: CON
+WindowsFS resolve aux	OK	aux
+WindowsFS resolve LPT1	java.nio.file.InvalidPathException	File name: LPT1 is one of the reserved file names: LPT1
+WindowsFS resolve a:b	java.nio.file.InvalidPathException	File name: a:b contains a reserved character: :: a:b
+WindowsFS resolve a<b	java.nio.file.InvalidPathException	File name: a<b contains a reserved character: <: a<b
+WindowsFS resolve q?	java.nio.file.InvalidPathException	File name: q? contains a reserved character: ?: q?
+WindowsFS resolve x*	java.nio.file.InvalidPathException	File name: x* contains a reserved character: *: x*
+WindowsFS resolve ok-name	OK	ok-name
+WindowsFS resolve COM10	OK	COM10
+WindowsFS resolve root	java.lang.NullPointerException	Cannot invoke "java.nio.file.Path.toString()" because the return value of "java.nio.file.Path.getFileName()" is null
+WindowsFS delete open channel	java.io.IOException	access denied: $D/windows/g2
+WindowsFS delete after channel	OK	-
+WindowsFS mismatch	java.nio.file.ProviderMismatchException	mismatch, expected: FilterPath, got: class sun.nio.fs.UnixPath
+WindowsFS mismatch filter	java.nio.file.ProviderMismatchException	mismatch, expected: class org.apache.lucene.tests.mockfile.WindowsFS, got: class org.apache.lucene.tests.mockfile.LeakFS
+VirusCheckingFS salt=0	OK	0:ok 1:ok 2:denied 3:ok 4:ok 5:ok 6:ok 7:ok 8:ok 9:ok 10:ok 11:ok 12:ok 13:ok 14:ok 15:ok 16:ok 17:ok 18:ok 19:ok
+VirusCheckingFS salt=0 refusal message	OK	java.nio.file.AccessDeniedException: VirusCheckingFS is randomly refusing to delete file "$D/virus0/g0"
+VirusCheckingFS salt=0 missing	java.nio.file.NoSuchFileException	$D/virus0/missing
+VirusCheckingFS salt=0 disabled	OK	20 false
+VirusCheckingFS salt=1	OK	0:ok 1:ok 2:ok 3:ok 4:ok 5:ok 6:ok 7:ok 8:ok 9:ok 10:ok 11:ok 12:ok 13:ok 14:ok 15:ok 16:ok 17:ok 18:ok 19:ok
+VirusCheckingFS salt=1 refusal message	OK	java.nio.file.AccessDeniedException: VirusCheckingFS is randomly refusing to delete file "$D/virus1/g1"
+VirusCheckingFS salt=1 missing	java.nio.file.NoSuchFileException	$D/virus1/missing
+VirusCheckingFS salt=1 disabled	OK	20 false
+VirusCheckingFS salt=42	OK	0:ok 1:ok 2:ok 3:ok 4:ok 5:ok 6:ok 7:ok 8:ok 9:ok 10:ok 11:ok 12:ok 13:ok 14:denied 15:ok 16:ok 17:ok 18:ok 19:denied
+VirusCheckingFS salt=42 refusal message	OK	java.nio.file.AccessDeniedException: VirusCheckingFS is randomly refusing to delete file "$D/virus42/g30"
+VirusCheckingFS salt=42 missing	java.nio.file.NoSuchFileException	$D/virus42/missing
+VirusCheckingFS salt=42 disabled	OK	20 false
+VirusCheckingFS salt=-7	OK	0:ok 1:ok 2:ok 3:ok 4:ok 5:ok 6:ok 7:ok 8:denied 9:ok 10:denied 11:ok 12:denied 13:ok 14:ok 15:denied 16:ok 17:denied 18:ok 19:ok
+VirusCheckingFS salt=-7 refusal message	OK	java.nio.file.AccessDeniedException: VirusCheckingFS is randomly refusing to delete file "$D/virus-7/g13"
+VirusCheckingFS salt=-7 missing	java.nio.file.NoSuchFileException	$D/virus-7/missing
+VirusCheckingFS salt=-7 disabled	OK	20 false
+VirusCheckingFS salt=25214903917	OK	0:ok 1:ok 2:ok 3:ok 4:ok 5:ok 6:ok 7:ok 8:ok 9:ok 10:ok 11:ok 12:ok 13:ok 14:denied 15:ok 16:ok 17:ok 18:ok 19:denied
+VirusCheckingFS salt=25214903917 refusal message	OK	java.nio.file.AccessDeniedException: VirusCheckingFS is randomly refusing to delete file "$D/virus25214903917/g30"
+VirusCheckingFS salt=25214903917 missing	java.nio.file.NoSuchFileException	$D/virus25214903917/missing
+VirusCheckingFS salt=25214903917 disabled	OK	20 false
+ShuffleFS seed=0	OK	[a, write.lock, é, c, _0.cfs, b, Z, 2, segments_1, 10]
+ShuffleFS seed=0 glob	OK	[c, b, a]
+ShuffleFS seed=1	OK	[c, é, segments_1, write.lock, a, Z, 10, _0.cfs, 2, b]
+ShuffleFS seed=1 glob	OK	[b, c, a]
+ShuffleFS seed=-1	OK	[write.lock, a, segments_1, 2, é, Z, c, 10, b, _0.cfs]
+ShuffleFS seed=-1 glob	OK	[b, a, c]
+ShuffleFS seed=42	OK	[a, c, Z, 2, segments_1, é, write.lock, b, _0.cfs, 10]
+ShuffleFS seed=42 glob	OK	[b, a, c]
+ShuffleFS seed=-9223372036854775808	OK	[a, write.lock, é, c, _0.cfs, b, Z, 2, segments_1, 10]
+ShuffleFS seed=-9223372036854775808 glob	OK	[c, b, a]
+ShuffleFS seed=3735928559	OK	[a, c, 10, é, 2, _0.cfs, b, Z, write.lock, segments_1]
+ShuffleFS seed=3735928559 glob	OK	[c, a, b]
+ExtrasFS active=true dir=false	OK	[extra0] false
+ExtrasFS active=true dir=false createDirectories	OK	[extra0, q]
+ExtrasFS active=true dir=true	OK	[extra0] true
+ExtrasFS active=true dir=true createDirectories	OK	[extra0, q]
+ExtrasFS active=false dir=true	OK	[] 
+ExtrasFS active=false dir=true createDirectories	OK	[q]
+ExtrasFS isExtra	OK	true false
+DisableFsyncFS force	OK	2
+DisableFsyncFS force closed	OK	no-op
+DisableFsyncFS IOUtils.fsync	OK	-
+VerboseFS op0	OK	FS: createDirectory: $R/d
+VerboseFS op1	java.nio.file.FileAlreadyExistsException	$D/verbose/d	FS: createDirectory: $R/d (FAILED: java.nio.file.FileAlreadyExistsException: $D/verbose/d)
+VerboseFS op2	OK	FS: newOutputStream[]: $R/a
+VerboseFS op3	OK	FS: newOutputStream[CREATE_NEW, WRITE]: $R/b
+VerboseFS op4	OK	FS: newFileChannel[WRITE]: $R/a
+VerboseFS op5	OK	
+VerboseFS op6	java.nio.file.NoSuchFileException	$D/verbose/nope	
+VerboseFS op7	OK	FS: newByteChannel[APPEND, CREATE]: $R/c
+VerboseFS op8	OK	FS: copy[]: $R/a -> $R/e
+VerboseFS op9	OK	FS: move[ATOMIC_MOVE]: $R/e -> $R/g
+VerboseFS op10	OK	FS: createLink: $R/l -> $R/a
+VerboseFS op11	OK	FS: createSymbolicLink: $R/s -> $R/a
+VerboseFS op12	OK	FS: delete: $R/g
+VerboseFS op13	java.nio.file.NoSuchFileException	$D/verbose/g	FS: delete: $R/g (FAILED: java.nio.file.NoSuchFileException: $D/verbose/g)
+VerboseFS op14	OK	FS: deleteIfExists: $R/g
+VerboseFS op15	OK	FS: deleteIfExists: $R/a
+VerboseFS op16	java.lang.IllegalArgumentException	'basic:bogus' not recognized	FS: setAttribute[basic:bogus=1]: $R/b (FAILED: java.lang.IllegalArgumentException: 'basic:bogus' not recognized)
+FilterPath toString	OK	$D/filter/x
+FilterPath equals	OK	false true
+FilterPath unwrap	OK	true
+FilterPath uri	OK	true
+FilterFileSystem separator	OK	/
+FilterFileSystem roots	OK	/
+FilterFileSystem views	OK	[basic, dos, owner, posix, unix, user]
+FilterFileSystem isOpen	OK	true false
+FilterFileSystem matcher	OK	true false
+FilterFileStore	OK	$TYPE $NAME
+readSymbolicLink unwrapped	OK	true
+newFileSystem	OK	true

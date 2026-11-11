@@ -497,7 +497,7 @@ impl TermsEnum for FuzzyTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.actual_enum.postings(reuse, flags)
     }
 
@@ -555,7 +555,7 @@ impl TermsEnum for FuzzyTermsEnum {
         self.actual_enum.seek_ord(ord)
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.actual_enum.term()
     }
 }

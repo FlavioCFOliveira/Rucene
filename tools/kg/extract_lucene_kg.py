@@ -141,7 +141,9 @@ def discover():
             text = full_path.read_text(encoding='utf-8', errors='ignore')
 
             # package declaration
-            m = re.search(r'\n\s*package\s+([a-zA-Z0-9_.]+)\s*;', text)
+            # `\A` too: a file with no licence header (randomizedtesting's) opens
+            # with its package declaration.
+            m = re.search(r'(?:\A|\n)\s*package\s+([a-zA-Z0-9_.]+)\s*;', text)
             if not m:
                 continue
             pkg = m.group(1)

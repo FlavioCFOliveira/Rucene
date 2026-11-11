@@ -89,7 +89,7 @@ impl SegmentMerger {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `context` is not a merge
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a merge
     /// context, as Java does, and whatever building the merge state raises.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -110,7 +110,7 @@ impl SegmentMerger {
                 Context::Flush => "FLUSH",
                 Context::Default => "DEFAULT",
             };
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "IOContext.context should be MERGE; got: {got}"
             )));
         }
@@ -548,6 +548,7 @@ mod tests {
         Document, IntPoint, KnnFloatVectorField, NumericDocValuesField, SortedDocValuesField,
         Store, StoredField, StringField,
     };
+    use crate::error::LuceneErrorKind;
     use crate::index::index_writer::IndexWriter;
     use crate::index::index_writer_config::IndexWriterConfig;
     use crate::index::leaf_reader::LeafReader;
@@ -585,7 +586,7 @@ mod tests {
     fn segments_sorted_by_id(segments: usize) -> (Arc<dyn Directory>, Vec<SegmentCommitInfo>) {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_index_sort(id_sort()).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..segments {
@@ -713,7 +714,10 @@ mod tests {
             Sort::new(),
             no_output(),
         ) {
-            Err(LuceneError::IllegalArgument(message)) => message,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => message,
             other => panic!("expected an IllegalArgument, got {:?}", other.map(|_| ())),
         };
         assert_eq!(
@@ -768,7 +772,10 @@ mod tests {
             None,
             None,
         ) {
-            Err(LuceneError::IllegalState { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "maxDoc was already set: this.maxDoc=3 vs maxDoc=3")
             }
             other => panic!("expected an IllegalState, got {:?}", other.map(|_| ())),
@@ -841,7 +848,10 @@ mod tests {
             id_sort(),
             Arc::new(crate::util::NoOutputInfoStream),
         ) {
-            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "index sort mismatch: merged segment has sort=<string: \"id\"> but \
                  to-be-merged segment has sort=null"
@@ -911,7 +921,13 @@ mod tests {
             for outcome in [compared, provided] {
                 match (outcome, &expected) {
                     (Ok(()), None) => {}
-                    (Err(LuceneError::IllegalState { message, .. }), Some(expected)) => {
+                    (
+                        Err(LuceneError {
+                            kind: LuceneErrorKind::IllegalState { message, .. },
+                            ..
+                        }),
+                        Some(expected),
+                    ) => {
                         assert_eq!(&message, expected)
                     }
                     (other, _) => panic!("{field}: {other:?}"),
@@ -948,6 +964,57 @@ mod tests {
             Some(Version::LUCENE_9_12_1),
             "the oldest of 10.4.0, 9.12.1 and 10.5.0"
         );
+    }
+
+    /// rmp #232 (c): a merge creates the postings consumer only when the
+    /// merged field infos have postings (`SegmentMerger.java:222-226`), so
+    /// merging stored-only segments writes no terms dictionary; segments with
+    /// an indexed field (the positive control) do get one.
+    #[test]
+    fn the_postings_are_merged_only_when_a_field_has_postings() {
+        let terms_files = |target: &Arc<dyn Directory>| -> Vec<String> {
+            target
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .filter(|f| f.starts_with("_m") && (f.ends_with(".tim") || f.ends_with(".doc")))
+                .collect()
+        };
+
+        let (_dir, infos) = stored_only_segments(2);
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LATEST), 10))
+            .collect();
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        merger.merge().unwrap();
+        assert!(!merger.merge_state.merge_field_infos.has_postings());
+        assert_eq!(terms_files(&target), Vec::<String>::new());
+
+        // Positive control: an indexed field has postings, which are merged.
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..2 {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", format!("doc-{i}"), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LATEST), 10))
+            .collect();
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        merger.merge().unwrap();
+        assert!(merger.merge_state.merge_field_infos.has_postings());
+        assert!(!terms_files(&target).is_empty());
     }
 
     /// The merge state and every write state share one `SegmentInfo`: what a
@@ -1042,20 +1109,21 @@ mod tests {
         writer.close().unwrap();
         let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         assert_eq!(infos.size(), 2);
-        let vectors_of = |i: usize| {
+        // The reader stays open while its vectors reader is used: closing the
+        // segment reader closes the core readers it shares.
+        let reader_of = |i: usize| {
             SegmentReader::new(
                 infos.info(i).clone(),
                 infos.index_created_version_major(),
                 &*DEFAULT_IO_CONTEXT,
             )
             .unwrap()
-            .get_vector_reader()
-            .unwrap()
-            .unwrap()
         };
+        let vectors_of = |reader: &SegmentReader| reader.get_vector_reader().unwrap().unwrap();
 
         // Positive control: the segment that has the field answers it.
-        let with_v2 = vectors_of(0);
+        let reader_0 = reader_of(0);
+        let with_v2 = vectors_of(&reader_0);
         assert_eq!(
             with_v2
                 .get_float_vector_values("v2")
@@ -1065,7 +1133,8 @@ mod tests {
             1
         );
 
-        let without_v2 = vectors_of(1);
+        let reader_1 = reader_of(1);
+        let without_v2 = vectors_of(&reader_1);
         let merge_instance = without_v2.get_merge_instance().unwrap();
         for reader in [without_v2.as_ref(), merge_instance.as_ref()] {
             assert!(reader.get_float_vector_values("v2").unwrap().is_none());

@@ -27,10 +27,6 @@
 //!   from these arenas — `RefCountedSharedArena.allocate` throws
 //!   `UnsupportedOperationException` — so the trait models lifetime only, and
 //!   the refusal lives on [`RefCountedSharedArena::allocate`] alone.
-//! * **`MemorySegment.isLoaded()` cannot be answered.** It is backed by
-//!   `mincore`, which has no safe wrapper here; [`MemorySegment::is_loaded`]
-//!   returns `None`, the "no guarantee" answer the `IndexInput` contract
-//!   already allows.
 //! * **`RefCountedSharedArena`'s `onClose` callback holds a
 //!   [`std::sync::Weak`]**, not a strong reference, to the map it removes
 //!   itself from. Java relies on the garbage collector to break that cycle;
@@ -234,7 +230,7 @@ impl RefCountedSharedArena {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `max_permits` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `max_permits` is not
     /// accepted by [`valid_max_permits`](Self::valid_max_permits).
     pub fn with_max_permits(
         segment_name: impl Into<String>,
@@ -242,7 +238,7 @@ impl RefCountedSharedArena {
         max_permits: i32,
     ) -> Result<Self> {
         if !Self::valid_max_permits(max_permits) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid max permits: {max_permits}"
             )));
         }
@@ -325,13 +321,13 @@ impl RefCountedSharedArena {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`], which is Java's
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), which is Java's
     /// `UnsupportedOperationException`.
     ///
     /// Equivalent to
     /// `org.apache.lucene.store.RefCountedSharedArena#allocate`.
     pub fn allocate(&self, _byte_size: i64, _byte_alignment: i64) -> Result<MemorySegment> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "RefCountedSharedArena::allocate".to_string(),
         ))
     }
@@ -388,13 +384,14 @@ pub struct MemorySegment {
 impl MemorySegment {
     /// Maps `len` bytes of `file` starting at `file_offset` into `scope`.
     ///
-    /// Equivalent to `FileChannel.map(MapMode.READ_ONLY, offset, size, arena)`.
+    /// Equivalent to `FileChannel.map(MapMode.READ_ONLY, offset, size, arena)`, on
+    /// the channel the provider opened.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the mapping cannot be created.
+    /// Returns [`LuceneErrorKind::Io`](crate::error::LuceneErrorKind::Io) if the mapping cannot be created.
     pub fn map(
-        file: &std::fs::File,
+        channel: &dyn super::java_nio_file::FileChannel,
         file_offset: u64,
         len: usize,
         scope: Arc<Scope>,
@@ -402,7 +399,7 @@ impl MemorySegment {
         if len == 0 {
             return Ok(Self::empty(scope));
         }
-        let mapping = super::mmap::map_read_only(file, file_offset, len)?;
+        let mapping = channel.map_read_only(file_offset as i64, len as i64)?;
         Ok(Self {
             mapping: Some(Arc::new(mapping)),
             offset: 0,
@@ -492,11 +489,37 @@ impl MemorySegment {
 
     /// Returns whether this segment's contents are resident in physical memory.
     ///
-    /// Equivalent to `MemorySegment.isLoaded()`, which is backed by `mincore`.
-    /// There is no safe wrapper for it here, so the answer is always `None`,
-    /// meaning "unknown".
+    /// Equivalent to `MemorySegment.isLoaded()` on a mapped segment, which the
+    /// JDK answers with `mincore` over the page-aligned range the segment
+    /// covers: a segment with no address or no bytes is loaded, otherwise it is
+    /// loaded when every page is resident. `None` only on targets without
+    /// `mincore` (non-Unix), where this port cannot answer.
+    ///
+    /// **Divergence from Lucene 10.5.0.** If `mincore` fails, the JDK throws
+    /// (`MappedMemoryUtils.isLoaded`); this port answers `Some(false)`,
+    /// because the `IndexInput::is_loaded` contract returns `Option<bool>`
+    /// and cannot carry an error. A live mapping excludes every documented
+    /// `mincore` failure, so the path is not expected to be reached.
     pub fn is_loaded(&self) -> Option<bool> {
-        None
+        // An empty segment has no address at all: loaded, as the JDK answers
+        // for `address == 0 || size == 0`.
+        let Some(mapping) = &self.mapping else {
+            return Some(true);
+        };
+        if self.len == 0 {
+            return Some(true);
+        }
+        #[cfg(unix)]
+        {
+            Some(mincore_all_resident(
+                &mapping[self.offset..self.offset + self.len],
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = mapping;
+            None
+        }
     }
 
     /// Asks the operating system to bring this segment into physical memory.
@@ -507,7 +530,7 @@ impl MemorySegment {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the advice call fails.
+    /// Returns [`LuceneErrorKind::Io`](crate::error::LuceneErrorKind::Io) if the advice call fails.
     pub fn load(&self) -> Result<()> {
         self.advise_os(OsReadAdvice::WillNeed)
     }
@@ -516,7 +539,7 @@ impl MemorySegment {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the advice call fails.
+    /// Returns [`LuceneErrorKind::Io`] if the advice call fails.
     pub(crate) fn advise_os(&self, advice: OsReadAdvice) -> Result<()> {
         // Empty segments are excluded, because they may have no address at all.
         let Some(mapping) = &self.mapping else {
@@ -611,6 +634,56 @@ impl std::fmt::Debug for MemorySegment {
     }
 }
 
+/// Whether every page that `bytes` touches is resident in physical memory.
+///
+/// The `mincore(2)` query `MappedMemoryUtils.isLoaded` performs: the start is
+/// rounded down to its page, the length grows by the same amount, and the
+/// range is loaded when no page's residency byte is zero.
+#[cfg(unix)]
+fn mincore_all_resident(bytes: &[u8]) -> bool {
+    let page_size = page_size();
+    let address = bytes.as_ptr() as usize;
+    let offset = address % page_size;
+    let length = bytes.len() + offset;
+    let pages = length.div_ceil(page_size);
+    let mut residency = vec![0u8; pages];
+    let rc = mincore(address - offset, length, &mut residency);
+    // A live mapping covers the whole range, so `mincore` cannot fail with
+    // ENOMEM; EFAULT and EINVAL are excluded by the vector size and the page
+    // alignment above. Should it fail anyway, nothing is known to be resident.
+    rc == 0 && residency.iter().all(|&page| page != 0)
+}
+
+/// The system page size, `sysconf(_SC_PAGESIZE)`.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn page_size() -> usize {
+    // SAFETY: `sysconf` reads a system constant; it has no memory
+    // preconditions.
+    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    usize::try_from(size).unwrap_or(4096)
+}
+
+/// `mincore(start, length, residency)`, returning its status.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn mincore(start: usize, length: usize, residency: &mut [u8]) -> i32 {
+    debug_assert!(residency.len() >= length.div_ceil(page_size()));
+    // SAFETY: `start` is page-aligned and `[start, start + length)` lies within
+    // a single live `Mmap` (the caller derives both from a slice borrowed from
+    // that mapping, which therefore stays mapped for this call); `mincore`
+    // only reads the kernel's page tables for that range and writes one byte
+    // per page into `residency`, which holds at least
+    // `ceil(length / page_size)` bytes.
+    unsafe {
+        libc::mincore(
+            start as *mut libc::c_void,
+            length,
+            residency.as_mut_ptr().cast(),
+        )
+    }
+}
+
 /// The subset of `madvise` advice values Lucene issues.
 ///
 /// Equivalent to the `POSIX_MADV_*` constants
@@ -648,5 +721,48 @@ impl OsReadAdvice {
             Self::Sequential => memmap2::Advice::Sequential,
             Self::WillNeed => memmap2::Advice::WillNeed,
         }
+    }
+}
+
+#[cfg(test)]
+mod is_loaded_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// `MemorySegment.isLoaded()` (`MemorySegmentIndexInput.java:447-461`,
+    /// `testIsLoaded` in `BaseDirectoryTestCase.java:1626-1682`): an empty
+    /// segment is loaded, and a mapping whose pages are all in the page cache
+    /// — a file just written and read through — is loaded, also when a slice
+    /// starts in the middle of a page. The port answered `None`.
+    #[cfg(unix)]
+    #[test]
+    fn a_resident_mapping_is_loaded() {
+        let scope = Scope::new(None);
+        assert_eq!(
+            MemorySegment::empty(Arc::clone(&scope)).is_loaded(),
+            Some(true)
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("temp.bin");
+        let len = 3 * page_size() + 123;
+        let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mapping = crate::store::mmap::map_read_only(&file, 0, len).unwrap();
+        let segment = MemorySegment {
+            mapping: Some(Arc::new(mapping)),
+            offset: 0,
+            len,
+            scope,
+        };
+        // Touch every page, so that each is resident.
+        assert_eq!(segment.bytes(), &bytes[..]);
+        assert_eq!(segment.is_loaded(), Some(true));
+        let slice = segment.as_slice(1001, (len - 2000) as i64).unwrap();
+        assert_eq!(slice.is_loaded(), Some(true));
     }
 }

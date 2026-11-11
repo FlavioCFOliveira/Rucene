@@ -123,9 +123,9 @@ type Op = Box<dyn Fn(&IndexWriter) -> Result<i64>>;
 fn buffered_deletes_ram_matches_lucene() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..4 {
@@ -213,12 +213,12 @@ fn buffered_deletes_ram_matches_lucene() {
 fn ram_flushes_with_buffered_deletes_cut_segments_as_lucene() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config.set_ram_buffer_size_mb(0.0665).unwrap();
     config.set_max_buffered_docs(16).unwrap();

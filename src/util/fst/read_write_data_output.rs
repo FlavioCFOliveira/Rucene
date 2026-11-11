@@ -42,11 +42,11 @@ impl ReadWriteDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when `block_bits`
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when `block_bits`
     /// is outside `1 ..= 31`, the range `ByteBuffersDataOutput` accepts.
     pub fn new(block_bits: i32) -> Result<Self> {
         if !(1..=31).contains(&block_bits) {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "blockBits must be 1 .. 31; got {block_bits}"
             )));
         }
@@ -170,6 +170,10 @@ impl FSTReader for ReadWriteDataOutput {
         ReadWriteDataOutput::get_reverse_bytes_reader(self)
     }
 
+    fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>> {
+        Ok(owned_reverse_bytes_reader(self, |output| output))
+    }
+
     fn write_to(&self, out: &mut dyn DataOutput) -> Result<()> {
         for block in &self.blocks {
             out.write_bytes(block, 0, block.len())?;
@@ -182,8 +186,8 @@ impl FSTReader for ReadWriteDataOutput {
 ///
 /// Equivalent to the anonymous `FST.BytesReader` subclass returned by
 /// `ReadWriteDataOutput.getReverseBytesReader` for the multi-block case.
-struct BlockReverseBytesReader<'a> {
-    blocks: &'a [Vec<u8>],
+struct BlockReverseBytesReader<B> {
+    blocks: B,
     block_bits: u32,
     block_size: usize,
     block_mask: usize,
@@ -192,8 +196,8 @@ struct BlockReverseBytesReader<'a> {
     next_read: i64,
 }
 
-impl<'a> BlockReverseBytesReader<'a> {
-    fn new(blocks: &'a [Vec<u8>], block_bits: u32, block_size: usize, block_mask: usize) -> Self {
+impl<B: AsRef<[Vec<u8>]>> BlockReverseBytesReader<B> {
+    fn new(blocks: B, block_bits: u32, block_size: usize, block_mask: usize) -> Self {
         Self {
             blocks,
             block_bits,
@@ -209,30 +213,34 @@ impl<'a> BlockReverseBytesReader<'a> {
         if self.next_read == -1 {
             let index = self.next_buffer;
             self.next_buffer = index - 1;
-            if index < 0 || index as usize >= self.blocks.len() {
-                return Err(crate::error::LuceneError::CorruptIndex(format!(
-                    "FST block index {index} is outside the {} available blocks",
-                    self.blocks.len()
-                )));
+            if index < 0 || index as usize >= self.blocks.as_ref().len() {
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::CorruptIndex(format!(
+                        "FST block index {index} is outside the {} available blocks",
+                        self.blocks.as_ref().len()
+                    )),
+                ));
             }
             self.current = index as usize;
             self.next_read = self.block_size as i64 - 1;
         }
         let pos = self.next_read;
         self.next_read = pos - 1;
-        let block = &self.blocks[self.current];
+        let block = &self.blocks.as_ref()[self.current];
         if pos < 0 || pos as usize >= block.len() {
-            return Err(crate::error::LuceneError::CorruptIndex(format!(
-                "FST read position {pos} is outside the {} bytes of block {}",
-                block.len(),
-                self.current
-            )));
+            return Err(crate::error::LuceneError::from(
+                crate::error::LuceneErrorKind::CorruptIndex(format!(
+                    "FST read position {pos} is outside the {} bytes of block {}",
+                    block.len(),
+                    self.current
+                )),
+            ));
         }
         Ok(block[pos as usize])
     }
 }
 
-impl DataInput for BlockReverseBytesReader<'_> {
+impl<B: AsRef<[Vec<u8>]>> DataInput for BlockReverseBytesReader<B> {
     /// `Object.toString()` of `org.apache.lucene.util.fst.ReadWriteDataOutput$1`, the anonymous `FST.BytesReader` of `getReverseBytesReader`, which declares no
     /// `toString()`.
     fn to_java_string(&self) -> String {
@@ -246,7 +254,8 @@ impl DataInput for BlockReverseBytesReader<'_> {
         self.next()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         for i in 0..len {
             b[offset + i] = self.next()?;
         }
@@ -260,7 +269,7 @@ impl DataInput for BlockReverseBytesReader<'_> {
     }
 }
 
-impl BytesReader for BlockReverseBytesReader<'_> {
+impl<B: AsRef<[Vec<u8>]>> BytesReader for BlockReverseBytesReader<B> {
     fn position(&self) -> i64 {
         (self.next_buffer + 1) * self.block_size as i64 + self.next_read
     }
@@ -269,14 +278,66 @@ impl BytesReader for BlockReverseBytesReader<'_> {
         let buffer_index = pos >> self.block_bits;
         if self.next_buffer != buffer_index - 1 {
             self.next_buffer = buffer_index - 1;
-            if buffer_index >= 0 && (buffer_index as usize) < self.blocks.len() {
+            if buffer_index >= 0 && (buffer_index as usize) < self.blocks.as_ref().len() {
                 self.current = buffer_index as usize;
             }
         }
         self.next_read = (pos as usize & self.block_mask) as i64;
+        debug_assert!(
+            self.position() == pos,
+            "pos={pos} getPos()={}",
+            self.position()
+        );
     }
 
     fn as_data_input(&mut self) -> &mut dyn DataInput {
         self
+    }
+}
+
+/// A share of the store that holds a [`ReadWriteDataOutput`], projected onto
+/// that output's blocks.
+struct OwnedBlocks<T: ?Sized> {
+    owner: std::sync::Arc<T>,
+    project: fn(&T) -> &ReadWriteDataOutput,
+}
+
+impl<T: ?Sized> AsRef<[Vec<u8>]> for OwnedBlocks<T> {
+    fn as_ref(&self) -> &[Vec<u8>] {
+        &(self.project)(&self.owner).blocks
+    }
+}
+
+/// [`OwnedBlocks`] projected onto the single block of a one-block output.
+struct OwnedFirstBlock<T: ?Sized>(OwnedBlocks<T>);
+
+impl<T: ?Sized> AsRef<[u8]> for OwnedFirstBlock<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref().first().map_or(&[], |b| b.as_slice())
+    }
+}
+
+/// [`ReadWriteDataOutput::get_reverse_bytes_reader`] over the output that
+/// `project` finds in `owner`, with the reader owning its share of `owner`.
+pub(crate) fn owned_reverse_bytes_reader<T: ?Sized + Send + Sync + 'static>(
+    owner: std::sync::Arc<T>,
+    project: fn(&T) -> &ReadWriteDataOutput,
+) -> Box<dyn BytesReader> {
+    let output = project(&owner);
+    debug_assert!(output.frozen, "freeze() must be called first");
+    let (single, block_bits, block_size, block_mask) = (
+        output.blocks.len() <= 1,
+        output.block_bits,
+        output.block_size,
+        output.block_mask,
+    );
+    let blocks = OwnedBlocks { owner, project };
+    if single {
+        // Use a faster implementation for the single-block case.
+        Box::new(ReverseBytesReader::new(OwnedFirstBlock(blocks)))
+    } else {
+        Box::new(BlockReverseBytesReader::new(
+            blocks, block_bits, block_size, block_mask,
+        ))
     }
 }

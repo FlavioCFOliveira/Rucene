@@ -59,7 +59,12 @@ use crate::util::{BitSet, BitSetIterator, Bits, BytesRef, FixedBitSet, InfoStrea
 /// which reads through the wrapped producers above
 /// (`CodecReader.java:86-290`). The [`LeafReader`] members here forward to the
 /// same bodies in [`final_members`].
+///
+/// As every `FilterCodecReader`, it is an `IndexReader` of its own, with its
+/// own [`IndexReaderCore`] (`FilterCodecReader.java:58-60`).
 pub struct SortingCodecReader {
+    /// This reader's own state.
+    core: IndexReaderCore,
     inner: Arc<dyn CodecReader>,
     doc_map: Arc<SorterDocMap>,
     /// Equivalent to `SortingCodecReader.metaData`: the wrapped reader's
@@ -103,7 +108,7 @@ impl SortingCodecReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `inner.max_doc()` differs from `doc_map.size()`, and propagates
     /// whatever building the new metadata raises.
     pub fn wrap(
@@ -119,7 +124,7 @@ impl SortingCodecReader {
             meta_data.has_blocks(),
         )?;
         if inner.max_doc() != doc_map.size() {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "reader.maxDoc() should be equal to docMap.size(), got {} != {}",
                 inner.max_doc(),
                 doc_map.size()
@@ -132,6 +137,7 @@ impl SortingCodecReader {
             cache: Mutex::new(SortedViewCache::default()),
         });
         Ok(Self {
+            core: IndexReaderCore::new(),
             inner,
             doc_map,
             meta_data,
@@ -153,7 +159,7 @@ impl SortingCodecReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `sort` refers to the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `sort` refers to the
     /// relevance score or names a field that cannot sort an index, and
     /// propagates whatever reading the sort values or building the metadata
     /// raises.
@@ -172,6 +178,7 @@ impl SortingCodecReader {
                     meta_data.has_blocks(),
                 )?;
                 Ok(Arc::new(AlreadySortedCodecReader {
+                    core: IndexReaderCore::new(),
                     inner: reader,
                     meta_data,
                 }))
@@ -268,8 +275,22 @@ impl SortingCodecReader {
 }
 
 impl LeafReader for SortingCodecReader {
+    /// The reader is a `SortingCodecReader`, which Java casts to
+    /// (`TestSortingCodecReader.testSortOnAddIndicesOrd`).
+    fn leaf_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
-        self.inner.core()
+        &self.core
     }
 
     /// `CodecReader.termVectors()`, over this reader's sorted term vectors.
@@ -511,7 +532,12 @@ impl CodecReader for SortingCodecReader {
 /// come from the delegate, and the leaf view is `CodecReader`'s `final` one
 /// over them. javac names the class `org.apache.lucene.index.SortingCodecReader$1`
 /// (measured from `lucene-core-10.5.0.jar`).
+///
+/// A `FilterCodecReader`, so a reader of its own, with its own
+/// [`IndexReaderCore`].
 pub struct AlreadySortedCodecReader {
+    /// This reader's own state.
+    core: IndexReaderCore,
     inner: Arc<dyn CodecReader>,
     meta_data: LeafMetaData,
 }
@@ -533,8 +559,16 @@ impl std::fmt::Display for AlreadySortedCodecReader {
 }
 
 impl LeafReader for AlreadySortedCodecReader {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
-        self.inner.core()
+        &self.core
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
@@ -790,7 +824,7 @@ impl DocIdSetIterator for SortingValuesIterator {
     /// Equivalent to `SortingValuesIterator.advance(int)`, which throws
     /// `UnsupportedOperationException`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingValuesIterator::advance".to_string(),
         ))
     }
@@ -897,14 +931,14 @@ impl SortingCodecReaderState {
     /// slot ever held another type for the same key. This port stores an
     /// `Arc<dyn Any + Send + Sync>` and downcasts it, turning that same
     /// impossible case into an
-    /// [`IllegalState`](crate::error::LuceneError::IllegalState) error rather
+    /// [`IllegalState`](crate::error::LuceneErrorKind::IllegalState) error rather
     /// than a panic. It cannot happen for either caller: a field has exactly
     /// one doc-values type, and norms are cached under a distinct key.
     ///
     /// # Errors
     ///
     /// Propagates whatever `supplier` raises, and returns
-    /// [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState)
     /// if the cached view is not of the requested type.
     fn get_or_create<T, F>(&self, field: &str, norms: bool, supplier: F) -> Result<Arc<T>>
     where
@@ -1033,13 +1067,17 @@ impl std::fmt::Display for SimpleMergedSegmentWarmer {
 }
 
 impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegmentWarmer {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Touches the terms and norms of every indexed field, the doc values of
     /// every doc-values field, and the stored fields and term vectors of the
     /// first document.
     ///
     /// Equivalent to `SimpleMergedSegmentWarmer.warm(LeafReader)`
     /// (`SimpleMergedSegmentWarmer.java:35-90`).
-    fn warm(&self, reader: &dyn LeafReader) -> Result<()> {
+    fn warm(&self, reader: &Arc<dyn LeafReader>) -> Result<()> {
         let start_time = crate::index::merge_scheduler::current_time_millis();
         let mut indexed_count = 0;
         let mut doc_values_count = 0;
@@ -1074,7 +1112,9 @@ impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegm
                     }
                     // Unreachable: the enclosing test excludes it. Java's
                     // `default` arm asserts the same.
-                    crate::index::DocValuesType::NONE => {}
+                    crate::index::DocValuesType::NONE => {
+                        debug_assert!(false); // unknown dv type
+                    }
                 }
                 doc_values_count += 1;
             }
@@ -1120,15 +1160,8 @@ impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegm
 /// the requested type — the norms and doc-values producers answer `None`, as
 /// Java's return that `null`.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's producers `close()` the producers
-/// of the wrapped readers they hold (`IOUtils.close(producers)`). The norms,
-/// doc-values, postings, points and vectors producers of a wrapped reader are
-/// [`Arc`]s it shares with every other holder and closes itself, and a close
-/// needs exclusive access, so the producers built here close through
-/// `IOUtils.close` only the producers they are the last holder of — none,
-/// while the wrapped reader is open; the stored-fields and term-vectors
-/// readers, which each wrapped reader hands out as a fresh instance, are
-/// closed as in Java.
+/// Its producers `close()` the producers of the wrapped readers they hold
+/// (`IOUtils.close(producers)`), whoever else shares them, as Java's do.
 pub struct SlowCompositeCodecReaderWrapper {
     /// This reader's own reference count and identity: Java's wrapper is an
     /// `IndexReader` of its own, distinct from every wrapped reader.
@@ -1188,12 +1221,12 @@ impl SlowCompositeCodecReaderWrapper {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `readers` is empty or the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `readers` is empty or the
     /// readers were created by different major versions, and propagates
     /// whatever merging the readers' field infos raises.
     pub fn wrap(readers: Vec<Arc<dyn CodecReader>>) -> Result<Arc<dyn CodecReader>> {
         match readers.len() {
-            0 => Err(LuceneError::IllegalArgument(
+            0 => Err(LuceneError::illegal_argument(
                 "Must take at least one reader, got 0".to_string(),
             )),
             1 => Ok(Arc::clone(&readers[0])),
@@ -1219,7 +1252,7 @@ impl SlowCompositeCodecReaderWrapper {
             if major_version == -1 {
                 major_version = reader_meta.created_version_major();
             } else if major_version != reader_meta.created_version_major() {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "Cannot combine leaf readers created with different major versions".to_string(),
                 ));
             }
@@ -1230,11 +1263,11 @@ impl SlowCompositeCodecReaderWrapper {
                         min_version = Some(reader_min);
                     }
                 }
-                // Java's `minVersion.onOrAfter(null)` dereferences null.
+                // Java's `minVersion.onOrAfter(null)` dereferences null
+                // (`SlowCompositeCodecReaderWrapper.java:90`, `Version.java:488-489`).
                 (Some(_), None) => {
-                    return Err(LuceneError::illegal_state(
-                        "cannot combine a reader that has no minimum version with one that has"
-                            .to_string(),
+                    return Err(LuceneError::null_pointer_with_message(
+                        "Cannot read field \"encodedValue\" because \"other\" is null",
                     ))
                 }
             }
@@ -1279,12 +1312,12 @@ impl SlowCompositeCodecReaderWrapper {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `doc` is outside
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `doc` is outside
 /// `[0, maxDoc)`, as `Objects.checkIndex` throws.
 fn doc_id_to_reader_id(doc_starts: &[i32], doc: i32) -> Result<usize> {
     let max_doc = doc_starts[doc_starts.len() - 1];
     if doc < 0 || doc >= max_doc {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Index {doc} out of bounds for length {max_doc}"
         )));
     }
@@ -1304,7 +1337,7 @@ fn doc_id_to_reader_id(doc_starts: &[i32], doc: i32) -> Result<usize> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] when the merged field infos lack the
+/// Returns [`LuceneErrorKind::IllegalState`] when the merged field infos lack the
 /// name, where Java would hand the visitor `null`; every field a wrapped
 /// reader reports was merged into them, so this cannot happen.
 fn remap(field_infos: &FieldInfos, info: &FieldInfo) -> Result<FieldInfo> {
@@ -1317,6 +1350,14 @@ fn remap(field_infos: &FieldInfos, info: &FieldInfo) -> Result<FieldInfo> {
 }
 
 impl LeafReader for SlowCompositeCodecReaderWrapper {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
         &self.core
     }
@@ -1625,16 +1666,21 @@ impl StoredFieldsReader for SlowCompositeStoredFieldsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        Box::new(SlowCompositeStoredFieldsReader {
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        Ok(Box::new(SlowCompositeStoredFieldsReader {
             readers: self
                 .readers
                 .iter()
-                .map(|reader| reader.as_ref().map(|reader| reader.clone_reader()))
-                .collect(),
+                .map(|reader| {
+                    reader
+                        .as_ref()
+                        .map(|reader| reader.clone_reader())
+                        .transpose()
+                })
+                .collect::<Result<_>>()?,
             doc_starts: Arc::clone(&self.doc_starts),
             field_infos: self.field_infos.clone(),
-        })
+        }))
     }
 
     fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -1655,21 +1701,18 @@ impl StoredFieldsReader for SlowCompositeStoredFieldsReader {
 }
 
 /// `IOUtils.close(producers)` over producers the wrapped readers share with
-/// this one: every producer this one holds last is closed, in order, and the
-/// first failure is returned once all ran; a producer another holder still
-/// shares is left to it (the close divergence of
-/// [`SlowCompositeCodecReaderWrapper`]).
+/// this one: every producer is closed, in order, whoever else shares it, and
+/// the first failure is returned once all ran.
 fn close_shared<T: ?Sized>(
-    producers: &mut [Option<Arc<T>>],
-    close: impl Fn(&mut T) -> Result<()>,
+    producers: &[Option<Arc<T>>],
+    close: impl Fn(&T) -> Result<()>,
 ) -> Result<()> {
     let close = &close;
-    crate::util::IOUtils::close(producers.iter_mut().map(|producer| {
-        producer
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .map(|producer| move || close(producer))
-    }))
+    crate::util::IOUtils::close(
+        producers
+            .iter()
+            .map(|producer| producer.as_deref().map(|producer| move || close(producer))),
+    )
 }
 
 /// Hands every field a wrapped reader visits to `visitor` under the
@@ -1769,15 +1812,20 @@ impl TermVectorsReader for SlowCompositeTermVectorsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(SlowCompositeTermVectorsReader {
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(SlowCompositeTermVectorsReader {
             readers: self
                 .readers
                 .iter()
-                .map(|reader| reader.as_ref().map(|reader| reader.clone_reader()))
-                .collect(),
+                .map(|reader| {
+                    reader
+                        .as_ref()
+                        .map(|reader| reader.clone_reader())
+                        .transpose()
+                })
+                .collect::<Result<_>>()?,
             doc_starts: Arc::clone(&self.doc_starts),
-        })
+        }))
     }
 
     /// Equivalent to `IOUtils.close(readers)`
@@ -1794,8 +1842,7 @@ impl TermVectorsReader for SlowCompositeTermVectorsReader {
 /// Norms of the composite reader, merged by `MultiDocValues.getNormValues`.
 ///
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositeNormsProducer`
-/// (`SlowCompositeCodecReaderWrapper.java:268-292`). The close divergence of
-/// [`SlowCompositeCodecReaderWrapper`] applies.
+/// (`SlowCompositeCodecReaderWrapper.java:268-292`).
 #[derive(Clone)]
 struct SlowCompositeNormsProducer {
     multi_reader: Arc<dyn IndexReader>,
@@ -1827,11 +1874,10 @@ impl NormsProducer for SlowCompositeNormsProducer {
         Ok(Box::new(self.clone()))
     }
 
-    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:285-288`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.producers, |producer| producer.close())
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:285-288`):
+    /// every producer is closed, whoever else shares it.
+    fn close(&self) -> Result<()> {
+        close_shared(&self.producers, |producer| producer.close())
     }
 }
 
@@ -1839,8 +1885,7 @@ impl NormsProducer for SlowCompositeNormsProducer {
 /// ordinal map of each sorted and sorted-set field cached.
 ///
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositeDocValuesProducerWrapper`
-/// (`SlowCompositeCodecReaderWrapper.java:372-462`). The close divergence of
-/// [`SlowCompositeCodecReaderWrapper`] applies.
+/// (`SlowCompositeCodecReaderWrapper.java:372-462`).
 #[derive(Clone)]
 struct SlowCompositeDocValuesProducer {
     readers: Vec<Arc<dyn CodecReader>>,
@@ -1912,7 +1957,7 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
                 self.doc_starts.to_vec(),
                 map,
                 total_cost,
-            )?)))
+            ))))
         }
     }
 
@@ -1967,7 +2012,7 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
                 self.doc_starts.to_vec(),
                 map,
                 total_cost,
-            )?)))
+            ))))
         }
     }
 
@@ -1976,9 +2021,9 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "This method is for searching not for merging".to_string(),
         ))
     }
@@ -1996,11 +2041,10 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
         Ok(Box::new(self.clone()))
     }
 
-    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:397-400`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.producers, |producer| producer.close())
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:397-400`):
+    /// every producer is closed, whoever else shares it.
+    fn close(&self) -> Result<()> {
+        close_shared(&self.producers, |producer| producer.close())
     }
 }
 
@@ -2027,8 +2071,7 @@ impl Fields for SharedFields {
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositeFieldsProducerWrapper`
 /// (`SlowCompositeCodecReaderWrapper.java:473-517`): the `MultiFields` is built
 /// once, in the constructor, and its per-field memo serves every later
-/// `terms(field)`. The close divergence of [`SlowCompositeCodecReaderWrapper`]
-/// applies.
+/// `terms(field)`.
 struct SlowCompositeFieldsProducer {
     producers: Vec<Option<Arc<dyn FieldsProducer>>>,
     /// Equivalent to `SlowCompositeFieldsProducerWrapper.fields`; shared with
@@ -2087,11 +2130,15 @@ impl FieldsProducer for SlowCompositeFieldsProducer {
         }))
     }
 
-    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:525-528`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.producers, |producer| producer.close())
+    /// Java `IOUtils.close(producers)` (`SlowCompositeCodecReaderWrapper.java:525-528`):
+    /// every producer is closed, whoever else shares it, and the first
+    /// failure is returned once all ran.
+    fn close(&self) -> Result<()> {
+        crate::util::IOUtils::close(
+            self.producers
+                .iter()
+                .map(|producer| producer.as_ref().map(|producer| move || producer.close())),
+        )
     }
 }
 
@@ -2099,8 +2146,7 @@ impl FieldsProducer for SlowCompositeFieldsProducer {
 /// every wrapped reader's tree.
 ///
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositePointsReaderWrapper`
-/// (`SlowCompositeCodecReaderWrapper.java:531-788`). The close divergence of
-/// [`SlowCompositeCodecReaderWrapper`] applies.
+/// (`SlowCompositeCodecReaderWrapper.java:531-788`).
 #[derive(Clone)]
 struct SlowCompositePointsReader {
     readers: Vec<Arc<dyn CodecReader>>,
@@ -2162,11 +2208,10 @@ impl PointsReader for SlowCompositePointsReader {
         Ok(Box::new(self.clone()))
     }
 
-    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:582-585`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.points_readers, |producer| producer.close())
+    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:582-585`):
+    /// every producer is closed, whoever else shares it.
+    fn close(&self) -> Result<()> {
+        close_shared(&self.points_readers, |producer| producer.close())
     }
 }
 
@@ -2403,8 +2448,7 @@ impl IntersectVisitor for DocBaseIntersectVisitor<'_> {
 /// readers' values, concatenated.
 ///
 /// Equivalent to `SlowCompositeCodecReaderWrapper.SlowCompositeKnnVectorsReaderWrapper`
-/// (`SlowCompositeCodecReaderWrapper.java:795-1046`). The close divergence of
-/// [`SlowCompositeCodecReaderWrapper`] applies.
+/// (`SlowCompositeCodecReaderWrapper.java:795-1046`).
 #[derive(Clone)]
 struct SlowCompositeKnnVectorsReader {
     readers: Vec<Arc<dyn CodecReader>>,
@@ -2485,7 +2529,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn search(
         &self,
         _field: &str,
@@ -2493,7 +2537,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "SlowCompositeKnnVectorsReaderWrapper.search".to_string(),
         ))
     }
@@ -2503,7 +2547,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn search_byte(
         &self,
         _field: &str,
@@ -2511,7 +2555,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "SlowCompositeKnnVectorsReaderWrapper.search".to_string(),
         ))
     }
@@ -2537,11 +2581,10 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         map
     }
 
-    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:822-825`), each producer closed only
-    /// when this one is its last holder: see the close divergence of
-    /// [`SlowCompositeCodecReaderWrapper`].
-    fn close(&mut self) -> Result<()> {
-        close_shared(&mut self.vectors_readers, |producer| producer.close())
+    /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:822-825`):
+    /// every producer is closed, whoever else shares it.
+    fn close(&self) -> Result<()> {
+        close_shared(&self.vectors_readers, |producer| producer.close())
     }
 }
 
@@ -2622,7 +2665,7 @@ impl<T: ?Sized + KnnVectorValues> DocIdSetIterator for MergedDocIterator<T> {
     /// Equivalent to `MergedDocIterator.advance(int)`, which throws
     /// `UnsupportedOperationException`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MergedDocIterator.advance".to_string(),
         ))
     }
@@ -2826,6 +2869,7 @@ impl FloatVectorValues for MergedFloatVectorValues {
         // point; any stale value still yields the right sub.
         self.last_sub_index.store(last, Ordering::Relaxed);
         let sub = &self.subs[last];
+        debug_assert!(sub.sub.is_some());
         let values = sub.sub.as_ref().ok_or_else(|| {
             LuceneError::illegal_state(format!("ordinal {ord} falls in a sub without vectors"))
         })?;
@@ -3044,7 +3088,7 @@ impl DocIdSetIterator for SortingNumericDocValues {
     /// Equivalent to `NumericDocValuesWriter.SortingNumericDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc() instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc() instead".to_string(),
         ))
     }
@@ -3135,7 +3179,7 @@ impl DocIdSetIterator for SortingBinaryDocValues {
     /// Equivalent to `BinaryDocValuesWriter.SortingBinaryDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3149,7 +3193,7 @@ impl DocValuesIterator for SortingBinaryDocValues {
     /// Equivalent to `BinaryDocValuesWriter.SortingBinaryDocValues.advanceExact(int)`,
     /// which throws `UnsupportedOperationException("use nextDoc instead")`.
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3245,7 +3289,7 @@ impl DocIdSetIterator for SortingSortedDocValues {
     /// Equivalent to `SortedDocValuesWriter.SortingSortedDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3362,7 +3406,7 @@ impl DocIdSetIterator for SortingSortedNumericDocValues {
     /// Equivalent to `SortedNumericDocValuesWriter.SortingSortedNumericDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3480,7 +3524,7 @@ impl DocIdSetIterator for SortingSortedSetDocValues {
     /// Equivalent to `SortedSetDocValuesWriter.SortingSortedSetDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3549,11 +3593,11 @@ impl StoredFieldsReader for SortingStoredFieldsReader {
         self.delegate.check_integrity()
     }
 
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        Box::new(SortingStoredFieldsReader {
-            delegate: self.delegate.clone_reader(),
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        Ok(Box::new(SortingStoredFieldsReader {
+            delegate: self.delegate.clone_reader()?,
             doc_map: Arc::clone(&self.doc_map),
-        })
+        }))
     }
 
     fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -3589,11 +3633,11 @@ impl TermVectorsReader for SortingTermVectorsReader {
         self.delegate.check_integrity()
     }
 
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(SortingTermVectorsReader {
-            delegate: self.delegate.clone_reader(),
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(SortingTermVectorsReader {
+            delegate: self.delegate.clone_reader()?,
             doc_map: Arc::clone(&self.doc_map),
-        })
+        }))
     }
 
     /// Equivalent to the anonymous reader's `close()`, which closes the
@@ -3657,10 +3701,8 @@ impl Bits for SortingBits {
 /// Equivalent to the anonymous `DocValuesProducer`
 /// `SortingCodecReader.getDocValuesReader()` builds.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `close()` closes the delegate
-/// (`SortingCodecReader.java:708-711`). The delegate here is the [`Arc`] the
-/// wrapped reader shares with every other holder and closes itself, so `close`
-/// releases nothing — as every other producer wrapper of this module does.
+/// `close()` closes the delegate (`SortingCodecReader.java:708-711`), whoever
+/// else shares it.
 struct SortingDocValuesProducer {
     delegate: Arc<dyn DocValuesProducer>,
     doc_map: Arc<SorterDocMap>,
@@ -3765,8 +3807,8 @@ impl DocValuesProducer for SortingDocValuesProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.delegate.close()
     }
 }
 
@@ -3776,8 +3818,8 @@ impl DocValuesProducer for SortingDocValuesProducer {
 /// evict one another's key.
 ///
 /// Equivalent to the anonymous `NormsProducer`
-/// `SortingCodecReader.getNormsReader()` builds. The close divergence of
-/// [`SortingDocValuesProducer`] applies (`SortingCodecReader.java:626-629`).
+/// `SortingCodecReader.getNormsReader()` builds; `close()` closes the delegate
+/// (`SortingCodecReader.java:626-629`).
 struct SortingNormsProducer {
     delegate: Arc<dyn NormsProducer>,
     doc_map: Arc<SorterDocMap>,
@@ -3820,8 +3862,8 @@ impl NormsProducer for SortingNormsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.delegate.close()
     }
 }
 
@@ -3836,10 +3878,8 @@ impl NormsProducer for SortingNormsProducer {
 /// `SortingCodecReader.getPostingsReader()` builds
 /// (`SortingCodecReader.java:448-484`).
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `close()` closes the delegate.
-/// The delegate here is the [`Arc`] the wrapped reader shares with every other
-/// holder, and it is closed by its owner, so `close` releases nothing — as
-/// every other producer wrapper of this module does.
+/// `close()` closes the delegate (`SortingCodecReader.java:456-458`), whoever
+/// else shares it.
 struct SortingFieldsProducer {
     postings_reader: Arc<dyn FieldsProducer>,
     /// `in.getFieldInfos()`, read for each field's index options.
@@ -3894,8 +3934,8 @@ impl FieldsProducer for SortingFieldsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.postings_reader.close()
     }
 }
 
@@ -3904,8 +3944,8 @@ impl FieldsProducer for SortingFieldsProducer {
 ///
 /// Equivalent to the anonymous `PointsReader`
 /// `SortingCodecReader.getPointsReader()` builds
-/// (`SortingCodecReader.java:534-560`). The close divergence of
-/// [`SortingFieldsProducer`] applies.
+/// (`SortingCodecReader.java:534-560`); `close()` closes the delegate
+/// (`:555-558`).
 #[derive(Debug)]
 struct SortingPointsReader {
     delegate: Arc<dyn PointsReader>,
@@ -3938,8 +3978,8 @@ impl PointsReader for SortingPointsReader {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.delegate.close()
     }
 }
 
@@ -4084,8 +4124,8 @@ impl IntersectVisitor for SortingIntersectVisitor<'_> {
 ///
 /// Equivalent to the anonymous `KnnVectorsReader`
 /// `SortingCodecReader.getVectorReader()` builds
-/// (`SortingCodecReader.java:562-606`). The close divergence of
-/// [`SortingFieldsProducer`] applies.
+/// (`SortingCodecReader.java:562-606`); `close()` closes the delegate
+/// (`:601-604`).
 #[derive(Debug)]
 struct SortingKnnVectorsReader {
     delegate: Arc<dyn KnnVectorsReader>,
@@ -4129,7 +4169,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation).
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn search(
         &self,
         _field: &str,
@@ -4137,7 +4177,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingCodecReader's vectors reader does not search".to_string(),
         ))
     }
@@ -4147,7 +4187,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation).
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn search_byte(
         &self,
         _field: &str,
@@ -4155,7 +4195,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingCodecReader's vectors reader does not search".to_string(),
         ))
     }
@@ -4175,8 +4215,8 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
         self.delegate.get_off_heap_byte_size(field_info)
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
+    fn close(&self) -> Result<()> {
+        self.delegate.close()
     }
 }
 
@@ -4215,7 +4255,7 @@ impl KnnVectorValues for SortingFloatVectorValues {
     /// Equivalent to `SortingFloatVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingFloatVectorValues.copy".to_string(),
         ))
     }
@@ -4238,7 +4278,7 @@ impl FloatVectorValues for SortingFloatVectorValues {
     /// Equivalent to `SortingFloatVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingFloatVectorValues.copy".to_string(),
         ))
     }
@@ -4278,7 +4318,7 @@ impl KnnVectorValues for SortingByteVectorValues {
     /// Equivalent to `SortingByteVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingByteVectorValues.copy".to_string(),
         ))
     }
@@ -4300,7 +4340,7 @@ impl ByteVectorValues for SortingByteVectorValues {
     /// Equivalent to `SortingByteVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingByteVectorValues.copy".to_string(),
         ))
     }
@@ -4313,6 +4353,7 @@ mod tests {
         Document, IntPoint, KnnFloatVectorField, NumericDocValuesField, SortedDocValuesField,
         Store, StoredField, StringField,
     };
+    use crate::error::LuceneErrorKind;
     use crate::index::index_sorter::Sorter;
     use crate::index::index_writer::IndexWriter;
     use crate::index::index_writer_config::IndexWriterConfig;
@@ -4407,7 +4448,7 @@ mod tests {
         assert!(terms_enum
             .seek_exact(&BytesRef::new(text.as_bytes().to_vec()))
             .unwrap());
-        let mut postings = terms_enum.postings(None, 0).unwrap();
+        let mut postings = terms_enum.postings(None, 0).unwrap().unwrap();
         let mut docs = Vec::new();
         loop {
             let doc = postings.next_doc().unwrap();
@@ -4584,10 +4625,11 @@ mod tests {
     /// `SortingCodecReader.wrap(CodecReader, Sorter.DocMap, Sort)` asserts
     /// `Sorter.isConsistent(docMap)` once the sizes agree
     /// (`SortingCodecReader.java:434`); a map whose directions do not invert
-    /// each other trips it.
+    /// each other trips the assertion inside `isConsistent` first
+    /// (`Sorter.java:76-77`).
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "the doc map must be consistent")]
+    #[should_panic(expected = "mapping is inconsistent: 1 --oldToNew--> 0 --newToOld--> 0")]
     fn wrapping_with_an_inconsistent_doc_map_trips_the_is_consistent_assertion() {
         let composite = SlowCompositeCodecReaderWrapper::wrap(two_segments()).unwrap();
         let doc_map = Arc::new(
@@ -4632,7 +4674,10 @@ mod tests {
         let mut accept_docs = crate::search::from_live_docs(None, 5).unwrap();
         assert!(matches!(
             sorted.search_nearest_vectors("v", &[0.0, 1.0], &mut collector, &mut accept_docs),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 
@@ -4645,7 +4690,10 @@ mod tests {
         let doc_map = Arc::new(Sorter::sort(4, &reverse).unwrap());
         assert!(matches!(
             SortingCodecReader::wrap(composite, doc_map, None),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -4677,7 +4725,7 @@ mod tests {
             Ok(Box::new(CountingFields(Arc::clone(&self.0))))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -4745,12 +4793,18 @@ mod tests {
         let mut numeric = sorted.get_numeric_doc_values("n").unwrap().unwrap();
         assert!(matches!(
             numeric.advance(1),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         let mut values = sorted.get_sorted_doc_values("s").unwrap().unwrap();
         assert!(matches!(
             values.advance(1),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 
@@ -4783,8 +4837,8 @@ mod tests {
             Ok(())
         }
 
-        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(ClosingStoredFields(Arc::clone(&self.0)))
+        fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(ClosingStoredFields(Arc::clone(&self.0))))
         }
 
         fn close(&mut self) -> Result<()> {

@@ -37,7 +37,7 @@ use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 /// (`MappingMultiPostingsEnum.java:81`, `:110`, `:142`). Measured against
 /// `lucene-core-10.5.0.jar` with a `current` sub whose `postings` is `null`.
 fn null_sub_postings(method: &str, expression: &str) -> LuceneError {
-    LuceneError::illegal_state(format!(
+    LuceneError::null_pointer_with_message(format!(
         "Cannot invoke \"org.apache.lucene.index.PostingsEnum.{method}\" because \"{expression}\" is null"
     ))
 }
@@ -145,7 +145,7 @@ impl MappingMultiPostingsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — Java's
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — Java's
     /// `ArrayIndexOutOfBoundsException` — when `merge_state` has fewer doc maps
     /// than fields producers.
     pub fn new(field: &str, merge_state: Arc<MergeState>) -> Result<Self> {
@@ -153,7 +153,7 @@ impl MappingMultiPostingsEnum {
         let mut all_subs = Vec::with_capacity(count);
         for i in 0..count {
             let doc_map = merge_state.doc_maps.get(i).ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "Index {i} out of bounds for length {}",
                     merge_state.doc_maps.len()
                 ))
@@ -188,11 +188,11 @@ impl MappingMultiPostingsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] — Java's `ClassCastException` —
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — Java's `ClassCastException` —
     /// when `postings_enum` is not a [`MultiPostingsEnum`];
-    /// [`LuceneError::IllegalArgument`] — Java's
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — Java's
     /// `ArrayIndexOutOfBoundsException` — for a slice whose reader index the
-    /// merge has no source segment for, and [`LuceneError::IllegalState`] for a
+    /// merge has no source segment for, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) for a
     /// reader index that appears twice, which Java would alias; and propagates
     /// whatever resetting the merger raises.
     pub fn reset(&mut self, mut postings_enum: Box<dyn PostingsEnum>) -> Result<&mut Self> {
@@ -237,7 +237,7 @@ impl MappingMultiPostingsEnum {
                 .ok()
                 .filter(|&index| index < num_readers)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "Index {reader_index} out of bounds for length {num_readers}"
                     ))
                 })?;
@@ -330,7 +330,7 @@ impl MappingMultiPostingsEnum {
 /// The `NullPointerException` Java raises when a per-document method reads
 /// `current.postings` while `current` is `null`.
 fn null_current() -> LuceneError {
-    LuceneError::illegal_state(
+    LuceneError::null_pointer_with_message(
         "Cannot read field \"postings\" because \"this.current\" is null".to_string(),
     )
 }
@@ -374,7 +374,7 @@ impl DocIdSetIterator for MappingMultiPostingsEnum {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappingMultiPostingsEnum does not support advance".to_string(),
         ))
     }
@@ -488,6 +488,7 @@ impl PostingsEnum for MappingMultiPostingsEnum {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     use std::collections::HashMap;
 
@@ -806,8 +807,13 @@ mod tests {
         // dereferences its `null` current sub (`DocIDMerger.java:123`, `DocIDMerger.java:188`).
         let err = postings.next_doc().unwrap_err();
         assert!(
-            matches!(&err, LuceneError::IllegalState { .. })
-                && err.to_string().contains("because \"this.current\" is null"),
+            matches!(
+                err.kind(),
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ) && err.to_string().contains("because \"this.current\" is null"),
             "unexpected error: {err:?}"
         );
     }
@@ -819,7 +825,7 @@ mod tests {
     #[test]
     fn per_document_methods_report_javas_npe_for_a_null_current_postings() {
         let npe = |method: &str| {
-            LuceneError::illegal_state(format!(
+            LuceneError::null_pointer_with_message(format!(
                 "Cannot invoke \"org.apache.lucene.index.PostingsEnum.{method}\" because \"this.current.postings\" is null"
             ))
             .to_string()
@@ -857,7 +863,10 @@ mod tests {
         let mut postings = mapping(state, subs).unwrap();
         assert!(matches!(
             postings.advance(1),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 
@@ -908,16 +917,18 @@ mod tests {
             ReaderSlice::new(0, 3, 0),
         )];
         let mut postings = mapping(state, subs).unwrap();
-        assert!(matches!(
-            postings.freq(),
-            Err(LuceneError::IllegalState { .. })
-        ));
+        // `current.postings` with `current == null`: Java's
+        // `NullPointerException` (`MappingMultiPostingsEnum.java:81, 110`).
+        let is_npe = |result: Result<i32>| {
+            matches!(result, Err(LuceneError {
+                kind: LuceneErrorKind::Unchecked { class, .. },
+                ..
+            }) if class == "java.lang.NullPointerException")
+        };
+        assert!(is_npe(postings.freq()));
         assert_eq!(postings.start_offset(), -1);
         assert_eq!(postings.end_offset(), -1);
-        assert!(matches!(
-            postings.next_position(),
-            Err(LuceneError::IllegalState { .. })
-        ));
+        assert!(is_npe(postings.next_position()));
     }
 
     #[test]
@@ -931,7 +942,7 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), 0);
         let err = postings.next_position().unwrap_err();
         assert!(
-            matches!(&err, LuceneError::CorruptIndex(m) if m.contains("is negative")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex(m), .. } if m.contains("is negative")),
             "unexpected error: {err:?}"
         );
     }
@@ -947,7 +958,7 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), 0);
         let err = postings.next_position().unwrap_err();
         assert!(
-            matches!(&err, LuceneError::CorruptIndex(m) if m.contains("too large")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex(m), .. } if m.contains("too large")),
             "unexpected error: {err:?}"
         );
     }
@@ -962,7 +973,7 @@ mod tests {
         )];
         let err = mapping(state, subs).unwrap_err();
         assert!(
-            matches!(&err, LuceneError::IllegalArgument(m) if m == "Index 2 out of bounds for length 2"),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "Index 2 out of bounds for length 2"),
             "`allSubs[2]` throws Java's ArrayIndexOutOfBoundsException: {err:?}"
         );
     }
@@ -1002,8 +1013,13 @@ mod tests {
         assert_eq!(postings.cost(), 0);
         let err = postings.next_doc().unwrap_err();
         assert!(
-            matches!(&err, LuceneError::IllegalState { .. })
-                && err.to_string().contains("because \"this.current\" is null"),
+            matches!(
+                err.kind(),
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ) && err.to_string().contains("because \"this.current\" is null"),
             "unexpected error: {err:?}"
         );
     }

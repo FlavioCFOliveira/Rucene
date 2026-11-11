@@ -209,10 +209,10 @@ impl FrequencyTrackingRingBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `max_size` is below 2.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `max_size` is below 2.
     pub fn new(max_size: usize, sentinel: i32) -> Result<Self> {
         if max_size < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxSize must be at least 2".to_string(),
             ));
         }
@@ -257,13 +257,36 @@ impl FrequencyTrackingRingBuffer {
     pub fn as_frequency_map(&self) -> HashMap<i32, i32> {
         self.frequencies.as_map()
     }
+
+    /// Returns the ring of items.
+    ///
+    /// Equivalent to reading the private field
+    /// `FrequencyTrackingRingBuffer.buffer`; public so that the test framework
+    /// can model the Java object.
+    pub fn buffer(&self) -> &[i32] {
+        &self.buffer
+    }
+
+    /// Returns the bag of frequencies.
+    ///
+    /// Equivalent to reading the private field
+    /// `FrequencyTrackingRingBuffer.frequencies`; public so that the test
+    /// framework can model the Java object.
+    pub fn frequencies(&self) -> &IntBag {
+        &self.frequencies
+    }
 }
 
 impl Accountable for FrequencyTrackingRingBuffer {
+    /// `BASE_RAM_BYTES_USED + frequencies.ramBytesUsed() + sizeOf(buffer)`
+    /// (`FrequencyTrackingRingBuffer.java:62-64`), where the shallow size
+    /// covers all four fields (`FrequencyTrackingRingBuffer.java:36-39`): the
+    /// `int maxSize` and `int position` and the two references.
     fn ram_bytes_used(&self) -> i64 {
         RamUsageEstimator::align_object_size(
             RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-                + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+                + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                + 2 * 4,
         ) + self.frequencies.ram_bytes_used()
             + RamUsageEstimator::size_of_int(&self.buffer)
     }
@@ -272,15 +295,26 @@ impl Accountable for FrequencyTrackingRingBuffer {
 /// A bag of integers whose maximum size is known up front, so the backing
 /// storage never has to be resized.
 ///
-/// Port of the nested class `FrequencyTrackingRingBuffer.IntBag`.
+/// Port of the nested class `FrequencyTrackingRingBuffer.IntBag`, private in
+/// Java; public here so that the test framework can model the Java object.
 #[derive(Debug, Clone)]
-struct IntBag {
+pub struct IntBag {
     keys: Vec<i32>,
     freqs: Vec<i32>,
     mask: usize,
 }
 
 impl IntBag {
+    /// Returns the hash table of keys (Java's private field `keys`).
+    pub fn keys(&self) -> &[i32] {
+        &self.keys
+    }
+
+    /// Returns the frequency of each key slot (Java's private field `freqs`).
+    pub fn freqs(&self) -> &[i32] {
+        &self.freqs
+    }
+
     fn new(max_size: usize) -> Self {
         // Load factor of 2/3.
         let mut capacity = (max_size * 3 / 2).max(2);

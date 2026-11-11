@@ -31,6 +31,7 @@ use crate::index::{
 };
 use crate::search::vector_scorer::OffHeapVectorScorer;
 use crate::search::NO_MORE_DOCS;
+use crate::store::SharedIndexInput;
 use crate::store::{IOContext, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
 use crate::util::hnsw::scorer::{
@@ -171,6 +172,10 @@ pub struct OffHeapScalarQuantizedVectorValues {
     /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`
     /// (`OffHeapScalarQuantizedVectorValues.java:377`).
     ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
+    /// call wraps (`OffHeapScalarQuantizedVectorValues.java:346, 378,
+    /// 422-424`); `None` when the field is dense or empty.
+    disi: Option<Arc<Mutex<IndexedDISI>>>,
     byte_size: usize,
     /// Scratch holding the vector last read.
     vector: Vec<u8>,
@@ -211,6 +216,8 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Returns whatever reading the ordinal-to-document addresses raises.
     pub fn load(entry: FieldEntry, slice: Box<dyn IndexInput>) -> Result<Self> {
+        // `OffHeapScalarQuantizedVectorValues.java:213`, after the empty case.
+        debug_assert!(entry.ord_to_doc.is_empty() || entry.centroid.is_some());
         let ord_to_doc = if entry.ord_to_doc.is_empty() || entry.ord_to_doc.is_dense() {
             None
         } else {
@@ -220,7 +227,7 @@ impl OffHeapScalarQuantizedVectorValues {
                     .get_direct_monotonic_reader(slice.as_ref())?,
             )
         };
-        Ok(Self::load_with_ord_to_doc(entry, slice, ord_to_doc, false))
+        Self::load_with_ord_to_doc(entry, slice, ord_to_doc, false)
     }
 
     /// Opens the dense, query-side values an asymmetric encoding writes into a
@@ -229,7 +236,7 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Equivalent to `new OffHeapScalarQuantizedVectorValues.DenseOffHeapVectorValues(true, …)`
     /// (`Lucene104ScalarQuantizedVectorsReader.java:498-509`).
-    fn load_query_side(entry: &FieldEntry, size: i32, slice: Box<dyn IndexInput>) -> Self {
+    fn load_query_side(entry: &FieldEntry, size: i32, slice: Box<dyn IndexInput>) -> Result<Self> {
         let mut query_entry = entry.clone();
         query_entry.size = size;
         query_entry.vector_data_offset = 0;
@@ -240,13 +247,25 @@ impl OffHeapScalarQuantizedVectorValues {
     }
 
     /// As [`load`](Self::load), with the sparse ordinal-to-document reader
-    /// already built; `copy()` shares it this way.
+    /// already built; `copy()` shares it this way. A sparse instance builds
+    /// its own disi, as the sparse constructor does
+    /// (`OffHeapScalarQuantizedVectorValues.java:378`).
     fn load_with_ord_to_doc(
         entry: FieldEntry,
         slice: Box<dyn IndexInput>,
         ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
         is_query_side: bool,
-    ) -> Self {
+    ) -> Result<Self> {
+        debug_assert!(!is_query_side || entry.scalar_encoding.is_asymmetric());
+        // The sparse and empty shapes are never query side
+        // (`OffHeapScalarQuantizedVectorValues.java:374, 467`).
+        debug_assert!(!is_query_side || entry.ord_to_doc.is_dense());
+        let disi = match ord_to_doc {
+            Some(_) => Some(Arc::new(Mutex::new(
+                entry.ord_to_doc.get_indexed_disi(slice.as_ref())?,
+            ))),
+            None => None,
+        };
         let dimension = entry.dimension.max(0);
         let dim_bytes = if is_query_side {
             entry.scalar_encoding.get_query_packed_length(dimension)
@@ -256,11 +275,12 @@ impl OffHeapScalarQuantizedVectorValues {
         .max(0) as usize;
         let byte_size = dim_bytes + 3 * std::mem::size_of::<f32>() + std::mem::size_of::<i32>();
         let quantizer = OptimizedScalarQuantizer::new(entry.similarity_function);
-        Self {
+        Ok(Self {
             entry,
             slice,
             quantizer,
             ord_to_doc,
+            disi,
             byte_size,
             vector: vec![0u8; dim_bytes],
             corrections: QuantizationResult {
@@ -271,7 +291,7 @@ impl OffHeapScalarQuantizedVectorValues {
             },
             loaded_ord: -1,
             is_query_side,
-        }
+        })
     }
 
     /// Returns the centroid the field was quantized against.
@@ -352,12 +372,16 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Equivalent to `OffHeapScalarQuantizedVectorValues.copy()`.
     pub fn copy(&self) -> Result<Self> {
-        Ok(Self::load_with_ord_to_doc(
+        if !self.entry.ord_to_doc.is_dense() {
+            // `SparseOffHeapVectorValues.copy()` (`OffHeapScalarQuantizedVectorValues.java:383`).
+            debug_assert!(!self.is_query_side);
+        }
+        Self::load_with_ord_to_doc(
             self.entry.clone(),
             self.slice.clone_input()?,
             self.ord_to_doc.clone(),
             self.is_query_side,
-        ))
+        )
     }
 
     /// Packs a vector of four-bit components, one per byte, into half as many
@@ -370,18 +394,12 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `unpacked` is not exactly
-    /// twice as long as `packed`, which Java asserts.
+    /// Never: that `unpacked` is exactly twice as long as `packed` is only
+    /// asserted, as in Java.
     ///
     /// Equivalent to `OffHeapScalarQuantizedVectorValues.packNibbles`.
     pub fn pack_nibbles(unpacked: &[u8], packed: &mut [u8]) -> Result<()> {
-        if unpacked.len() != packed.len() * 2 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "unpacked length {} must be twice the packed length {}",
-                unpacked.len(),
-                packed.len()
-            )));
-        }
+        debug_assert!(unpacked.len() == packed.len() * 2);
         for i in 0..packed.len() {
             let x = (unpacked[i] << 4) | unpacked[packed.len() + i];
             packed[i] = x;
@@ -394,18 +412,12 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `unpacked` is not exactly
-    /// twice as long as `packed`, which Java asserts.
+    /// Never: that `unpacked` is exactly twice as long as `packed` is only
+    /// asserted, as in Java.
     ///
     /// Equivalent to `OffHeapScalarQuantizedVectorValues.unpackNibbles`.
     pub fn unpack_nibbles(packed: &[u8], unpacked: &mut [u8]) -> Result<()> {
-        if unpacked.len() != packed.len() * 2 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "unpacked length {} must be twice the packed length {}",
-                unpacked.len(),
-                packed.len()
-            )));
-        }
+        debug_assert!(unpacked.len() == packed.len() * 2);
         for i in 0..packed.len() {
             unpacked[i] = (packed[i] >> 4) & 0x0F;
             unpacked[packed.len() + i] = packed[i] & 0x0F;
@@ -423,7 +435,7 @@ impl OffHeapScalarQuantizedVectorValues {
             return Ok(());
         }
         if ord < 0 || ord >= self.entry.size {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector ordinal {ord} is out of range for {} vectors",
                 self.entry.size
             )));
@@ -434,7 +446,7 @@ impl OffHeapScalarQuantizedVectorValues {
         let offset = self.entry.vector_data_offset + i64::from(ord) * self.byte_size as i64;
         self.slice.seek(offset)?;
         let len = self.vector.len();
-        self.slice.read_bytes(&mut self.vector, 0, len)?;
+        self.slice.read_bytes(Some(&mut self.vector), 0, len)?;
         self.corrections = QuantizationResult {
             lower_interval: f32::from_bits(self.slice.read_int()? as u32),
             upper_interval: f32::from_bits(self.slice.read_int()? as u32),
@@ -450,11 +462,6 @@ impl QuantizedByteVectorValues for OffHeapScalarQuantizedVectorValues {
     fn vector_value(&mut self, ord: i32) -> Result<&[u8]> {
         self.ensure_loaded(ord)?;
         Ok(&self.vector)
-    }
-
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
-        self.ensure_loaded(ord)?;
-        Ok(self.corrections.additional_correction)
     }
 
     fn size(&self) -> i32 {
@@ -495,6 +502,7 @@ impl QuantizedByteVectorValues for OffHeapScalarQuantizedVectorValues {
         if self.entry.ord_to_doc.is_empty() {
             return Ok(None);
         }
+        debug_assert!(!self.is_query_side);
         let copy = OffHeapScalarQuantizedVectorValues::copy(self)?;
         let iterator = QuantizedByteVectorValues::iterator(&copy)?;
         let dense = self.entry.ord_to_doc.is_dense();
@@ -542,13 +550,13 @@ impl QuantizedByteVectorValues for OffHeapScalarQuantizedVectorValues {
         if self.entry.ord_to_doc.is_dense() {
             return Ok(Box::new(DenseDocIndexIterator::new(self.entry.size)));
         }
-        // `IndexedDISI.asDocIndexIterator(disi)`
-        // (`OffHeapScalarQuantizedVectorValues.java:423`).
-        Ok(IndexedDISI::as_doc_index_iterator(
-            self.entry
-                .ord_to_doc
-                .get_indexed_disi(self.slice.as_ref())?,
-        ))
+        // `IndexedDISI.asDocIndexIterator(disi)` over the instance's one
+        // disi (`OffHeapScalarQuantizedVectorValues.java:422-424`).
+        Ok(IndexedDISI::as_doc_index_iterator(Arc::clone(
+            self.disi
+                .as_ref()
+                .expect("INVARIANT: a sparse field has its disi"),
+        )))
     }
 }
 
@@ -590,6 +598,10 @@ pub struct OffHeapScalarQuantizedFloatVectorValues {
     /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`
     /// (`OffHeapScalarQuantizedFloatVectorValues.java:294`).
     ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
+    /// call wraps (`OffHeapScalarQuantizedFloatVectorValues.java:275, 295,
+    /// 337-339`); `None` when dense.
+    disi: Option<Arc<Mutex<IndexedDISI>>>,
     /// Equivalent to the `final VectorSimilarityFunction similarityFunction`
     /// field.
     similarity_function: VectorSimilarityFunction,
@@ -639,12 +651,9 @@ impl OffHeapScalarQuantizedFloatVectorValues {
         }
         // Java asserts `centroid != null` here: a non-empty configuration means
         // the metadata carried a centroid.
-        let centroid = centroid.ok_or_else(|| {
-            LuceneError::corrupt_index(
-                "quantized vectors have no centroid to dequantize against",
-                "quantized vectors metadata",
-            )
-        })?;
+        debug_assert!(centroid.is_some());
+        // Java dereferences the null centroid (an NPE) when assertions are off.
+        let centroid = centroid.expect("quantized vectors have no centroid to dequantize against");
         let dims = dimension.max(0) as usize;
         let packed_length = encoding.get_doc_packed_length(dimension.max(0)).max(0) as usize;
         let byte_size = packed_length + 3 * std::mem::size_of::<f32>() + std::mem::size_of::<i32>();
@@ -653,13 +662,14 @@ impl OffHeapScalarQuantizedFloatVectorValues {
             vector_data_offset,
             vector_data_length,
         )?);
-        let (config, data_input, ord_to_doc) = if config.is_dense() {
-            (None, None, None)
+        let (config, data_input, ord_to_doc, disi) = if config.is_dense() {
+            (None, None, None, None)
         } else {
             (
                 Some(config.clone()),
                 Some(vector_data.clone_input()?),
                 Some(config.get_direct_monotonic_reader(vector_data)?),
+                Some(Arc::new(Mutex::new(config.get_indexed_disi(vector_data)?))),
             )
         };
         let _ = dims;
@@ -674,6 +684,7 @@ impl OffHeapScalarQuantizedFloatVectorValues {
             config,
             data_input,
             ord_to_doc,
+            disi,
             similarity_function,
             vectors_scorer,
         }))
@@ -706,6 +717,13 @@ impl OffHeapScalarQuantizedFloatVectorValues {
                 None => None,
             },
             ord_to_doc: self.ord_to_doc.clone(),
+            // `copy()` builds a new sparse instance, with its own disi.
+            disi: match (&self.config, &self.data_input) {
+                (Some(config), Some(input)) => Some(Arc::new(Mutex::new(
+                    config.get_indexed_disi(input.as_ref())?,
+                ))),
+                _ => None,
+            },
             similarity_function: self.similarity_function,
             vectors_scorer: Arc::clone(&self.vectors_scorer),
         })
@@ -757,17 +775,13 @@ impl KnnVectorValues for OffHeapScalarQuantizedFloatVectorValues {
 
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
         match &self.config {
-            Some(config) => {
-                let data_input = self
-                    .data_input
+            // `IndexedDISI.asDocIndexIterator(disi)` over the instance's one
+            // disi (`OffHeapScalarQuantizedFloatVectorValues.java:337-339`).
+            Some(_) => Ok(IndexedDISI::as_doc_index_iterator(Arc::clone(
+                self.disi
                     .as_ref()
-                    .expect("INVARIANT: sparse values have a data input");
-                // `IndexedDISI.asDocIndexIterator(disi)`
-                // (`OffHeapScalarQuantizedFloatVectorValues.java:338`).
-                Ok(IndexedDISI::as_doc_index_iterator(
-                    config.get_indexed_disi(data_input.as_ref())?,
-                ))
-            }
+                    .expect("INVARIANT: a sparse field has its disi"),
+            ))),
             None => Ok(Box::new(DenseDocIndexIterator::new(self.size))),
         }
     }
@@ -788,7 +802,7 @@ impl FloatVectorValues for OffHeapScalarQuantizedFloatVectorValues {
     /// components each, and `deQuantize` needs one component per byte.
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         if ord < 0 || ord >= self.size {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector ordinal {ord} is out of range for {} vectors",
                 self.size
             )));
@@ -800,8 +814,8 @@ impl FloatVectorValues for OffHeapScalarQuantizedFloatVectorValues {
             let mut slice = self.lock_slice()?;
             slice.seek(i64::from(ord) * self.byte_size as i64)?;
             let len = packed.len();
-            slice.read_bytes(&mut packed, 0, len)?;
-            slice.read_floats(&mut corrective, 0, 3)?;
+            slice.read_bytes(Some(&mut packed), 0, len)?;
+            slice.read_floats(Some(&mut corrective), 0, 3)?;
         }
         let quantized = match self.encoding {
             ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => packed,
@@ -916,7 +930,7 @@ impl Lucene104ScalarQuantizedVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the query and the stored
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the query and the stored
     /// vector have different lengths, and whatever reading the stored vector
     /// and its corrections raises.
     ///
@@ -1022,8 +1036,8 @@ impl Lucene104ScalarQuantizedVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the target's length is not
-    /// the field's dimension, [`LuceneError::IllegalState`] when the field
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the target's length is not
+    /// the field's dimension, [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field
     /// stored no centroid, and whatever quantizing raises.
     pub fn get_random_vector_scorer_quantized(
         similarity_function: VectorSimilarityFunction,
@@ -1233,6 +1247,12 @@ impl KnnVectorValues for ScalarQuantizedVectorValues {
         )))
     }
 
+    /// A `ScalarQuantizedVectorValues`, for the casts Java tests make on the
+    /// values a reader returns.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn encoding(&self) -> VectorEncoding {
         VectorEncoding::FLOAT32
     }
@@ -1336,8 +1356,8 @@ impl ScalarQuantizedVectorScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the encoding is asymmetric,
-    /// which Java asserts, and whatever copying the values raises.
+    /// Returns whatever copying the values raises. An asymmetric encoding is
+    /// only asserted against, as in Java.
     ///
     /// Equivalent to the
     /// `ScalarQuantizedVectorScorerSupplier(QuantizedByteVectorValues, VectorSimilarityFunction)`
@@ -1346,12 +1366,7 @@ impl ScalarQuantizedVectorScorerSupplier {
         values: OffHeapScalarQuantizedVectorValues,
         similarity: VectorSimilarityFunction,
     ) -> Result<Self> {
-        if values.get_scalar_encoding().is_asymmetric() {
-            return Err(LuceneError::illegal_state(format!(
-                "{} encoding is not supported for symmetric quantization",
-                values.get_scalar_encoding().name()
-            )));
-        }
+        debug_assert!(!values.get_scalar_encoding().is_asymmetric());
         let target_values = values.copy()?;
         Ok(Self {
             target_values,
@@ -1410,19 +1425,14 @@ impl AsymmetricQuantizedRandomVectorScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the target encoding is
-    /// symmetric, which Java asserts.
+    /// Never: a symmetric target encoding is only asserted against, as in
+    /// Java.
     pub fn new(
         query_vectors: OffHeapScalarQuantizedVectorValues,
         target_vectors: OffHeapScalarQuantizedVectorValues,
         similarity_function: VectorSimilarityFunction,
     ) -> Result<Self> {
-        if !target_vectors.get_scalar_encoding().is_asymmetric() {
-            return Err(LuceneError::illegal_state(format!(
-                "{} encoding is not asymmetric",
-                target_vectors.get_scalar_encoding().name()
-            )));
-        }
+        debug_assert!(target_vectors.get_scalar_encoding().is_asymmetric());
         Ok(Self {
             query_vectors,
             target_vectors,
@@ -1695,7 +1705,7 @@ pub const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
 pub struct Lucene104ScalarQuantizedVectorsReader {
     /// One entry per field that has quantized vectors, by field name.
     fields: std::collections::BTreeMap<String, FieldEntry>,
-    vector_data: Arc<dyn IndexInput>,
+    vector_data: Arc<SharedIndexInput>,
     /// The reader of the unquantized vectors this one wraps.
     ///
     /// Equivalent to Lucene's `final FlatVectorsReader rawVectorsReader`.
@@ -1718,7 +1728,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when either file's header, footer
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when either file's header, footer
     /// or version disagrees with what the format writes, and whatever reading
     /// the metadata raises.
     ///
@@ -1757,11 +1767,11 @@ impl Lucene104ScalarQuantizedVectorsReader {
         scorer: Arc<Lucene104ScalarQuantizedVectorScorer>,
         access_hint: Option<crate::store::DataAccessHint>,
     ) -> Result<Self> {
-        let mut raw_vectors_reader = raw_vectors_reader;
+        let raw_vectors_reader = raw_vectors_reader;
         match Self::open(state, access_hint) {
             Ok((fields, vector_data)) => Ok(Self {
                 fields,
-                vector_data: Arc::from(vector_data),
+                vector_data: Arc::new(SharedIndexInput::new(vector_data)),
                 raw_vectors_reader,
                 scorer,
             }),
@@ -1811,19 +1821,9 @@ impl Lucene104ScalarQuantizedVectorsReader {
                 Self::read_fields(meta.as_mut(), state.field_infos)?,
             ))
         })();
-        let (version_meta, fields) = match read {
-            Ok(read) => {
-                crate::codecs::codec_util::check_footer(meta.as_mut())?;
-                read
-            }
-            Err(prior) => {
-                return Err(crate::codecs::codec_util::check_footer_with_prior(
-                    meta.as_mut(),
-                    prior,
-                ))
-            }
-        };
-        meta.close()?;
+        let read = crate::codecs::codec_util::check_footer_after(meta.as_mut(), read);
+        // The try-with-resources closes `meta` on every exit.
+        let (version_meta, fields) = crate::store::close_after(meta.as_mut(), read)?;
 
         let mut hints: Vec<Arc<dyn crate::store::FileOpenHint>> = vec![
             Arc::new(crate::store::FileTypeHint::Data),
@@ -1902,7 +1902,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     fn clone_reader(&self) -> Result<Self> {
         Ok(Self {
             fields: self.fields.clone(),
-            vector_data: Arc::from(self.vector_data.clone_input()?),
+            vector_data: Arc::new(SharedIndexInput::new(self.vector_data.clone_input()?)),
             raw_vectors_reader: self.raw_vectors_reader.clone_flat_reader()?,
             scorer: self.scorer.clone(),
         })
@@ -1913,7 +1913,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field is not encoded
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the field is not encoded
     /// as `FLOAT32`, and whatever opening the values raises.
     fn quantized_float_vector_values(
         &self,
@@ -1921,7 +1921,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
         entry: &FieldEntry,
     ) -> Result<Box<dyn FloatVectorValues>> {
         if entry.vector_encoding != VectorEncoding::FLOAT32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as: {:?} expected: FLOAT32",
                 entry.vector_encoding
             )));
@@ -1936,7 +1936,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
             entry.centroid.as_deref(),
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )
     }
 
@@ -1976,8 +1976,8 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the encoding or similarity
-    /// ordinal is not one Lucene writes, [`LuceneError::IllegalState`] when the
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when the encoding or similarity
+    /// ordinal is not one Lucene writes, [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the
     /// similarity disagrees with the field info, and whatever reading the entry
     /// raises.
     ///
@@ -2023,7 +2023,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when either check fails, which is
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when either check fails, which is
     /// Java's `IllegalStateException`.
     ///
     /// Equivalent to
@@ -2065,7 +2065,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the header or the version
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when the header or the version
     /// disagrees with the metadata, and an I/O error when the file cannot be
     /// opened.
     ///
@@ -2127,7 +2127,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
             return Ok(None);
         };
         if entry.vector_encoding != VectorEncoding::FLOAT32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as {:?}, expected FLOAT32",
                 entry.vector_encoding
             )));
@@ -2230,7 +2230,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
                 fi,
                 docs_with_field.cardinality(),
                 values_input,
-            );
+            )?;
             let total_vector_count = vector_values.size();
             let scorer_supplier = AsymmetricQuantizedRandomVectorScorerSupplier::new(
                 score_vector_values,
@@ -2277,8 +2277,8 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `encoding` is symmetric,
-    /// [`LuceneError::IllegalState`] when the field stores no centroid, and
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `encoding` is symmetric,
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field stores no centroid, and
     /// whatever reading the vectors or writing the output raises.
     ///
     /// Equivalent to
@@ -2291,7 +2291,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
         binary_quantizer: &OptimizedScalarQuantizer,
     ) -> Result<DocsWithFieldSet> {
         if !encoding.is_asymmetric() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "encoding and queryEncoding must be different".to_string(),
             ));
         }
@@ -2373,19 +2373,21 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
             return Ok(None);
         };
         if entry.vector_encoding != VectorEncoding::FLOAT32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as: {:?} expected: FLOAT32",
                 entry.vector_encoding
             )));
         }
-        // Java dereferences the delegate's answer without a `null` check.
+        // Java dereferences the delegate's answer without a `null` check
+        // (`Lucene104ScalarQuantizedVectorsReader.java:245-247`).
         let raw = self
             .raw_vectors_reader
             .get_float_vector_values(field)?
             .ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "the raw vectors of field \"{field}\" are missing"
-                ))
+                LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.index.FloatVectorValues.size()\" because \
+                     \"rawFloatVectorValues\" is null",
+                )
             })?;
         if raw.size() == 0 {
             return self.quantized_float_vector_values(field, entry).map(Some);
@@ -2473,13 +2475,11 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
     /// Closes the `.veq` input and the delegate.
     ///
     /// Equivalent to `IOUtils.close(quantizedVectorData, rawVectorsReader)`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         IOUtils::close([
-            // When another view of the same file is still alive, exactly as
-            // when Java's `IndexInput` has been cloned, Lucene closes the
-            // original and lets the clones fall away.
-            Arc::get_mut(&mut self.vector_data)
-                .and_then(|input| IOUtils::closeable(move || input.close())),
+            // Closed whoever else shares it, as Java closes its one
+            // `quantizedVectorData`.
+            IOUtils::closeable(|| self.vector_data.close()),
             IOUtils::closeable(|| self.raw_vectors_reader.close()),
         ])
     }
@@ -2540,7 +2540,7 @@ impl FlatVectorsReader for Lucene104ScalarQuantizedVectorsReader {
     ) -> Result<Box<dyn RandomVectorScorer>> {
         self.random_vector_scorer_float(field, target)?
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!("field=\"{field}\" has no vector values"))
+                LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
             })
     }
 
@@ -2727,7 +2727,7 @@ impl KnnVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
     }
 
     fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        Ok(self.fields_writer_flat(&state.borrow())?)
+        Ok(self.fields_writer_flat(state)?)
     }
 
     fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>> {
@@ -2742,11 +2742,13 @@ impl KnnVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
 impl FlatVectorsFormat for Lucene104ScalarQuantizedVectorsFormat {
     fn fields_writer_flat(
         &self,
-        state: &SegmentWriteState<'_>,
+        state: &OwnedSegmentWriteState,
     ) -> Result<Box<dyn FlatVectorsWriter>> {
+        let borrowed = state.borrow();
         let raw = raw_vector_format().fields_writer_flat(state)?;
         Ok(Box::new(Lucene104ScalarQuantizedVectorsWriter::new(
-            state,
+            &borrowed,
+            Arc::clone(&state.info_stream),
             self.encoding,
             raw,
         )?))
@@ -2837,7 +2839,7 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `max_conn` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `max_conn` or
     /// `beam_width` is out of range, or when `num_merge_workers` is `1` and a
     /// `merge_exec` is given, as Java throws `IllegalArgumentException`.
     pub fn with_merge_exec(
@@ -2851,7 +2853,7 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
         let mut format = Self::with_params(max_conn, beam_width, encoding)?;
         format.tiny_segments_threshold = tiny_segments_threshold;
         if num_merge_workers == 1 && merge_exec.is_some() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "No executor service is needed as we'll use single thread to merge".to_string(),
             ));
         }
@@ -2864,12 +2866,12 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
     /// Creates the format with explicit graph parameters and encoding.
     pub fn with_params(max_conn: i32, beam_width: i32, encoding: ScalarEncoding) -> Result<Self> {
         if max_conn <= 0 || max_conn > 512 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxConn must be in [1, 512], got {max_conn}"
             )));
         }
         if beam_width <= 0 || beam_width > 3200 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "beamWidth must be in [1, 3200], got {beam_width}"
             )));
         }
@@ -3078,8 +3080,7 @@ impl KnnVectorsFormat for Lucene104HnswScalarQuantizedVectorsFormat {
     }
 
     fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        let borrowed = state.borrow();
-        let flat_writer = self.flat.fields_writer_flat(&borrowed)?;
+        let flat_writer = self.flat.fields_writer_flat(state)?;
         Ok(Box::new(
             crate::codecs::lucene99::hnsw_vectors_format::Lucene99HnswVectorsWriter::with_flat_format(
                 state,
@@ -3123,6 +3124,9 @@ pub struct Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// Equivalent to Lucene's `final FlatVectorsWriter rawVectorDelegate`.
     raw_vector_delegate: Option<Box<dyn FlatVectorsWriter>>,
+    /// The `infoStream` of Java's `segmentWriteState`, which `flush` reports
+    /// the vector count on (`Lucene104ScalarQuantizedVectorsWriter.java:150-153`).
+    info_stream: Arc<dyn crate::util::InfoStream>,
     /// Java's `List<FieldWriter> fields`: the float fields, each shared with
     /// whoever added it (`Lucene104ScalarQuantizedVectorsWriter.java:118-129`).
     fields: Vec<Arc<Mutex<SqFieldWriter>>>,
@@ -3154,8 +3158,11 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// Equivalent to
     /// `Lucene104ScalarQuantizedVectorsWriter(SegmentWriteState, ScalarEncoding, FlatVectorsWriter, Lucene104ScalarQuantizedVectorScorer)`.
+    /// `info_stream` is the `infoStream` of Java's `segmentWriteState`,
+    /// which the borrowed `state` cannot lend beyond this call.
     pub fn new(
         state: &SegmentWriteState<'_>,
+        info_stream: Arc<dyn crate::util::InfoStream>,
         encoding: ScalarEncoding,
         raw_vector_delegate: Box<dyn FlatVectorsWriter>,
     ) -> Result<Self> {
@@ -3221,6 +3228,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
             meta: meta_opt,
             vector_data: vector_data_opt,
             raw_vector_delegate: Some(raw_vector_delegate),
+            info_stream,
             fields: Vec::new(),
             segment_max_doc: state.segment_info.max_doc().ok(),
             finished: false,
@@ -3240,7 +3248,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the writer is already closed,
+    /// Returns [`LuceneErrorKind::IllegalState`] when the writer is already closed,
     /// and whatever quantizing or writing raises.
     fn write_field(
         &mut self,
@@ -3289,7 +3297,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the writer is already closed,
+    /// Returns [`LuceneErrorKind::IllegalState`] when the writer is already closed,
     /// and whatever `write` returns.
     fn with_outputs<R>(
         &mut self,
@@ -3380,7 +3388,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when an entry of `ord_map` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when an entry of `ord_map` is
     /// out of range, and whatever quantizing or writing raises.
     ///
     /// Equivalent to
@@ -3409,7 +3417,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
         for &ordinal in ord_map {
             let index = usize::try_from(ordinal).unwrap_or(usize::MAX);
             if index >= count {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "ordinal {ordinal} is out of range for {count} vectors"
                 )));
             }
@@ -3637,7 +3645,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     /// # Errors
     ///
     /// Returns whatever reading a segment's vectors raises, and
-    /// [`LuceneError::IllegalArgument`] when the field's vectors are all zero
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field's vectors are all zero
     /// and the similarity is cosine.
     ///
     /// Equivalent to
@@ -3700,7 +3708,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     /// # Errors
     ///
     /// Returns whatever reading a segment's vectors raises, and
-    /// [`LuceneError::IllegalArgument`] when the vectors sum to zero and the
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the vectors sum to zero and the
     /// similarity is cosine.
     ///
     /// Equivalent to
@@ -3802,6 +3810,13 @@ impl KnnVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
                 if similarity_function == VectorSimilarityFunction::COSINE {
                     vector_util::l2normalize(&mut cluster_center, true)?;
                 }
+            }
+            // `Lucene104ScalarQuantizedVectorsWriter.java:150-153`.
+            if self.info_stream.is_enabled(QUANTIZED_VECTOR_COMPONENT) {
+                self.info_stream.message(
+                    QUANTIZED_VECTOR_COMPONENT,
+                    &format!("Vectors' count:{vector_count}"),
+                );
             }
             let docs_with_field = field.docs_with_field_set().into_owned();
             let quantizer = OptimizedScalarQuantizer::new(similarity_function);
@@ -3920,7 +3935,7 @@ impl FlatVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
     /// # Errors
     ///
     /// Whatever the delegate's `add_field` raises, and
-    /// [`LuceneError::IllegalState`] — Java's `ClassCastException` — when the
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — Java's `ClassCastException` — when the
     /// delegate answers a float field with a writer of byte vectors.
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FlatFieldVectorWriter> {
         let raw_vector_delegate = FlatVectorsWriter::add_field(self.delegate()?, field_info)?;
@@ -4159,15 +4174,6 @@ impl QuantizedByteVectorValues for QuantizedFloatVectorValues {
         }
     }
 
-    /// The port's trait requires this accessor, which
-    /// `QuantizedByteVectorValues` in Lucene 10.5.0 does not declare
-    /// (`QuantizedByteVectorValues.java:205-234`); this view has no such value.
-    fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-        Err(LuceneError::UnsupportedOperation(
-            "QuantizedFloatVectorValues has no score correction constant".to_string(),
-        ))
-    }
-
     fn size(&self) -> i32 {
         self.values.size()
     }
@@ -4384,6 +4390,7 @@ impl std::fmt::Display for Lucene104HnswScalarQuantizedVectorsFormat {
 mod tests {
     use super::*;
     use crate::codecs::knn_vectors::MergedFloat32VectorValues;
+    use crate::error::LuceneErrorKind;
     use crate::index::vector_values::from_floats;
 
     /// Writes `max_doc` documents of one three-dimensional field through this
@@ -4435,7 +4442,9 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         );
         let format = Lucene104ScalarQuantizedVectorsFormat::new();
-        let mut writer = format.fields_writer_flat(&write_state).unwrap();
+        let mut writer = format
+            .fields_writer_flat(&crate::codecs::state::owned_state(&write_state))
+            .unwrap();
         let FieldVectorWriter::Float(mut field_writer) =
             KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
         else {
@@ -4515,7 +4524,7 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene104ScalarQuantizedVectorsFormat::with_encoding(encoding)
-            .fields_writer_flat(&write_state)
+            .fields_writer_flat(&crate::codecs::state::owned_state(&write_state))
             .unwrap();
         let FieldVectorWriter::Float(mut field_writer) =
             KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
@@ -4595,7 +4604,9 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         );
         let format = Lucene104ScalarQuantizedVectorsFormat::new();
-        let mut writer = format.fields_writer_flat(&write_state).unwrap();
+        let mut writer = format
+            .fields_writer_flat(&crate::codecs::state::owned_state(&write_state))
+            .unwrap();
         let FieldVectorWriter::Float(mut field_writer) =
             KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
         else {
@@ -4792,11 +4803,17 @@ mod tests {
         };
         assert!(matches!(
             NormalizedFloatVectorValues::new(empty()),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(matches!(
             quantize(empty()),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
 
         // Positive control: one vector of two dimensions.
@@ -4827,7 +4844,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "No executor service is needed as we'll use single thread to merge".to_string()
             )
             .to_string()
@@ -4889,7 +4906,7 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene104ScalarQuantizedVectorsFormat::new()
-            .fields_writer_flat(&write_state)
+            .fields_writer_flat(&crate::codecs::state::owned_state(&write_state))
             .unwrap();
         let FieldVectorWriter::Float(mut field_writer) =
             KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
@@ -4977,6 +4994,148 @@ mod tests {
         let reader = crate::codecs::knn_vectors::EmptyKnnVectorsReader;
         assert!(Lucene104ScalarQuantizedVectorsWriter::get_centroid(&reader, "v").is_none());
     }
+
+    /// An info stream that keeps the `QVEC` messages.
+    struct QvecInfoStream(Mutex<Vec<String>>);
+
+    impl crate::util::InfoStream for QvecInfoStream {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.tests.util.RecordingInfoStream"
+        }
+
+        fn message(&self, component: &str, message: &str) {
+            assert_eq!(component, QUANTIZED_VECTOR_COMPONENT);
+            self.0.lock().unwrap().push(message.to_string());
+        }
+
+        fn is_enabled(&self, component: &str) -> bool {
+            component == QUANTIZED_VECTOR_COMPONENT
+        }
+
+        fn close(&self) {}
+    }
+
+    /// rmp #232 (a): the flush reports `Vectors' count:<n>` on the `QVEC`
+    /// component of the segment's info stream, as
+    /// `Lucene104ScalarQuantizedVectorsWriter.flush` does
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:150-153`), for the
+    /// writer the vectors chain builds (`fieldsWriter` on the owning state).
+    #[test]
+    fn flush_reports_the_vector_count_on_the_info_stream() {
+        use crate::codecs::knn_vectors::FieldVectorWriter;
+        use crate::codecs::stub::BufferedUpdates;
+        use crate::index::{FieldInfos, SegmentInfo};
+        use crate::store::{ByteBuffersDirectory, DefaultIOContext, Directory};
+        use crate::util::Version;
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let info = SegmentInfo::new(
+            Arc::clone(&directory),
+            Version::LATEST,
+            Some(Version::LATEST),
+            "_qv".to_string(),
+            5,
+            false,
+            false,
+            crate::codecs::default_codec().unwrap(),
+            HashMap::new(),
+            [3u8; 16],
+            HashMap::new(),
+            Default::default(),
+        )
+        .unwrap();
+        let mut field_info = FieldInfo::new("v", 0);
+        field_info.vector_dimension = 2;
+        field_info.vector_encoding = VectorEncoding::FLOAT32;
+        field_info.vector_similarity_function = VectorSimilarityFunction::EUCLIDEAN;
+        let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
+        let stream = Arc::new(QvecInfoStream(Mutex::new(Vec::new())));
+        let state = OwnedSegmentWriteState::new(
+            Arc::clone(&stream) as Arc<dyn crate::util::InfoStream>,
+            Arc::clone(&directory),
+            info,
+            infos,
+            BufferedUpdates::default(),
+            Arc::new(DefaultIOContext::default()),
+        );
+        let format = Lucene104ScalarQuantizedVectorsFormat::new();
+        let mut writer = format.fields_writer(&state).unwrap();
+        let FieldVectorWriter::Float(mut field_writer) = writer.add_field(&field_info).unwrap()
+        else {
+            panic!("a float field writer");
+        };
+        for doc in [0, 2, 4] {
+            field_writer
+                .add_value(doc, vec![doc as f32, 1.0 - doc as f32])
+                .unwrap();
+        }
+        writer.flush(5, None).unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+        assert_eq!(*stream.0.lock().unwrap(), vec!["Vectors' count:3"]);
+    }
+
+    /// rmp #232 (a): the writer `FlatVectorsFormat.fieldsWriter` builds holds
+    /// `state.infoStream` (`Lucene104ScalarQuantizedVectorsWriter.java:99,
+    /// 150-153`) on the flat path too, as it does through `fieldsWriter` of
+    /// the `KnnVectorsFormat`: its flush reports the vector count there.
+    #[test]
+    fn the_flat_writer_holds_the_state_info_stream() {
+        use crate::codecs::knn_vectors::FieldVectorWriter;
+        use crate::codecs::stub::BufferedUpdates;
+        use crate::index::{FieldInfos, SegmentInfo};
+        use crate::store::{ByteBuffersDirectory, DefaultIOContext, Directory};
+        use crate::util::Version;
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let info = SegmentInfo::new(
+            Arc::clone(&directory),
+            Version::LATEST,
+            Some(Version::LATEST),
+            "_qf".to_string(),
+            5,
+            false,
+            false,
+            crate::codecs::default_codec().unwrap(),
+            HashMap::new(),
+            [3u8; 16],
+            HashMap::new(),
+            Default::default(),
+        )
+        .unwrap();
+        let mut field_info = FieldInfo::new("v", 0);
+        field_info.vector_dimension = 2;
+        field_info.vector_encoding = VectorEncoding::FLOAT32;
+        field_info.vector_similarity_function = VectorSimilarityFunction::EUCLIDEAN;
+        let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
+        let stream = Arc::new(QvecInfoStream(Mutex::new(Vec::new())));
+        let state = OwnedSegmentWriteState::new(
+            Arc::clone(&stream) as Arc<dyn crate::util::InfoStream>,
+            Arc::clone(&directory),
+            info,
+            infos,
+            BufferedUpdates::default(),
+            Arc::new(DefaultIOContext::default()),
+        );
+        let format = Lucene104ScalarQuantizedVectorsFormat::new();
+        let mut writer = FlatVectorsFormat::fields_writer_flat(&format, &state).unwrap();
+        let FieldVectorWriter::Float(mut field_writer) =
+            KnnVectorsWriter::add_field(writer.as_mut(), &field_info).unwrap()
+        else {
+            panic!("a float field writer");
+        };
+        for doc in [0, 2, 4] {
+            field_writer
+                .add_value(doc, vec![doc as f32, 1.0 - doc as f32])
+                .unwrap();
+        }
+        writer.flush(5, None).unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+        assert_eq!(*stream.0.lock().unwrap(), vec!["Vectors' count:3"]);
+    }
 }
 
 /// The `IOUtils` close family at the scalar-quantized vectors call sites (#308).
@@ -5034,6 +5193,10 @@ mod close_family_tests {
             .unwrap_err();
         // `meta` closes as its `try`-with-resources ends, before the `.veq`
         // is opened.
-        assert_eq!(closed_of(&log)[before..], ["_0.vemq", "_0.veq", "_0.vec"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(
+            closed_of(&log)[before..],
+            ["_0.vemf", "_0.vemq", "_0.veq", "_0.vec"]
+        );
     }
 }

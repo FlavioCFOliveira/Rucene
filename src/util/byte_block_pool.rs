@@ -72,6 +72,29 @@ pub trait Allocator: std::fmt::Debug + Send + Sync {
     }
 }
 
+/// An [`Allocator`] of [`BYTE_BLOCK_SIZE`] blocks that never recycles.
+///
+/// Equivalent to `ByteBlockPool.DirectAllocator` (`ByteBlockPool.java:74-83`).
+#[derive(Debug, Default)]
+pub struct DirectAllocator;
+
+impl DirectAllocator {
+    /// Equivalent to `new DirectAllocator()`, `super(BYTE_BLOCK_SIZE)`.
+    pub fn new() -> Self {
+        DirectAllocator
+    }
+}
+
+impl Allocator for DirectAllocator {
+    fn block_size(&self) -> usize {
+        BYTE_BLOCK_SIZE
+    }
+
+    /// Equivalent to `DirectAllocator.recycleByteBlocks`, which does
+    /// nothing.
+    fn recycle_byte_blocks(&self, _blocks: &mut [Vec<u8>], _start: usize, _end: usize) {}
+}
+
 /// The counter a [`DirectTrackingAllocator`] charges.
 #[derive(Debug)]
 enum TrackingCounter {
@@ -250,6 +273,14 @@ impl ByteBlockPool {
         self.byte_offset
     }
 
+    /// Returns the length of the `byte[][] buffers` Lucene would be holding.
+    ///
+    /// Reads the private field `ByteBlockPool.buffers`' `length`, which
+    /// `RamUsageTester` reaches by reflection.
+    pub fn buffers_length(&self) -> usize {
+        self.buffers_length
+    }
+
     /// Returns the index of the head block, or `-1` if no block was allocated.
     pub fn buffer_upto(&self) -> i32 {
         self.buffer_upto
@@ -308,7 +339,7 @@ impl ByteBlockPool {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Arithmetic`] (`integer overflow`) when the pool
+    /// Returns [`LuceneErrorKind::Arithmetic`](crate::error::LuceneErrorKind::Arithmetic) (`integer overflow`) when the pool
     /// would exceed the `i32` global-offset space: Java's
     /// `byteOffset = Math.addExact(byteOffset, BYTE_BLOCK_SIZE)`
     /// (`ByteBlockPool.java:187-200`) throws `ArithmeticException`. As there,
@@ -413,17 +444,19 @@ impl ByteBlockPool {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `bytes` is longer than
-    /// [`MAX_TERM_LENGTH`], which is Lucene's
-    /// `BytesRefHash.MaxBytesLengthExceededException`.
+    /// Returns [`LuceneErrorKind::MaxBytesLengthExceeded`](crate::error::LuceneErrorKind::MaxBytesLengthExceeded),
+    /// Lucene's `BytesRefHash.MaxBytesLengthExceededException`, when `bytes`
+    /// is longer than [`MAX_TERM_LENGTH`].
     pub fn add_bytes_ref(&mut self, bytes: &[u8]) -> Result<i32> {
         let length = bytes.len();
         let prefix_len = if length < 128 { 1 } else { 2 };
         let total = length + prefix_len;
         if length > MAX_TERM_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bytes can be at most {MAX_TERM_LENGTH} in length; got {length}"
-            )));
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::MaxBytesLengthExceeded(format!(
+                    "bytes can be at most {MAX_TERM_LENGTH} in length; got {length}"
+                )),
+            ));
         }
         // Lucene compares against `2 + length` for both branches, so a 127-byte
         // value that would fit with a 1-byte prefix still rolls over to a new
@@ -720,6 +753,7 @@ pub fn hash_bytes(bytes: &[u8]) -> i32 {
 #[cfg(test)]
 mod next_buffer_overflow_tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// `nextBuffer` allocates and charges the block and advances `bufferUpto`
     /// and `byteUpto` before `byteOffset = Math.addExact(byteOffset,
@@ -737,7 +771,7 @@ mod next_buffer_overflow_tests {
         let charged_before = bytes_used.load(Ordering::Acquire);
         let error = pool.next_buffer().unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Arithmetic(message) if message == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(message), .. } if message == "integer overflow"),
             "{error:?}"
         );
         assert_eq!(
@@ -755,6 +789,7 @@ mod next_buffer_overflow_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     fn pool() -> ByteBlockPool {
         ByteBlockPool::new(Arc::new(AtomicI64::new(0)))
@@ -844,7 +879,13 @@ mod tests {
         let mut pool = pool();
         let too_long = vec![0u8; MAX_TERM_LENGTH + 1];
         let error = pool.add_bytes_ref(&too_long).expect_err("must be rejected");
-        assert!(matches!(error, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::MaxBytesLengthExceeded(_),
+                ..
+            }
+        ));
         // The longest accepted value still round-trips.
         let longest = vec![1u8; MAX_TERM_LENGTH];
         let start = pool.add_bytes_ref(&longest).expect("longest");

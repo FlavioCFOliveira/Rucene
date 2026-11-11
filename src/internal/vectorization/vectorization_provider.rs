@@ -220,18 +220,22 @@ fn caller_file(location: &Location<'static>) -> String {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] — this crate's stand-in for Java's
-/// `IllegalCallerException` — with Lucene's message, when the caller is not one
+/// Returns Java's `IllegalCallerException` with Lucene's message
+/// (`VectorizationProvider.java`, `ensureCaller`), when the caller is not one
 /// of the known Lucene classes.
 #[track_caller]
 pub fn ensure_caller() -> Result<()> {
     let file = caller_file(Location::caller());
     let valid_caller = VALID_CALLER_FILES.contains(&file.as_str()) || file.starts_with(TEST_DIR);
     if !valid_caller {
-        return Err(LuceneError::illegal_state(
-            "VectorizationProvider is internal and can only be used by known Lucene classes."
-                .to_string(),
-        ));
+        return Err(LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+            class: "java.lang.IllegalCallerException",
+            message: Some(
+                "VectorizationProvider is internal and can only be used by known Lucene classes."
+                    .to_string(),
+            ),
+            cause: None,
+        }));
     }
     Ok(())
 }

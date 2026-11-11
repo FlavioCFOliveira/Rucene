@@ -1,0 +1,5 @@
+# lookup	result
+getName	LuceneFixedGap
+toString	PostingsFormat(name=LuceneFixedGap)
+forName.getClass	org.apache.lucene.tests.codecs.blockterms.LuceneFixedGap
+forName.toString	PostingsFormat(name=LuceneFixedGap)

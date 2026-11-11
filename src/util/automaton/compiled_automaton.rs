@@ -1,7 +1,8 @@
 //! Port of `org.apache.lucene.util.automaton.CompiledAutomaton`.
 
-use crate::codecs::postings::{empty_terms_enum, SingleTermsEnum, Terms, TermsEnum};
+use crate::codecs::postings::{empty_terms_enum, Terms, TermsEnum};
 use crate::error::Result;
+use crate::index::SingleTermsEnum;
 use crate::index::Term;
 use crate::search::{Query, QueryVisitor};
 use crate::util::{
@@ -354,7 +355,10 @@ impl CompiledAutomaton {
                     .as_ref()
                     .expect("INVARIANT: SINGLE always carries a term")
                     .clone();
-                Ok(Box::new(SingleTermsEnum::new(terms.iterator()?, term)))
+                // `new SingleTermsEnum(terms.iterator(), term)`
+                // (`CompiledAutomaton.java:354-355`): the `FilteredTermsEnum`
+                // that seeks to the term and accepts exactly it.
+                Ok(SingleTermsEnum::new(terms.iterator()?, term))
             }
             AutomatonType::Normal => terms.intersect(self, None),
         }

@@ -1,0 +1,18 @@
+[package]
+name = "rucene-codecs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "Apache-2.0"
+description = "Rust port of Apache Lucene 10.5.0 lucene/codecs (org.apache.lucene.codecs.* outside core)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[dependencies]
+rucene = { path = "../.." }
+
+[dev-dependencies]
+# lucene/test-framework and its runner, which the lucene/codecs tests are written against.
+randomizedtesting = { path = "../randomizedtesting" }
+rucene-test-framework = { path = "../rucene-test-framework" }

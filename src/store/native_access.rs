@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 
 use super::memory_segment::{MemorySegment, OsReadAdvice};
 use super::ReadAdvice;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Page size assumed when the operating system cannot be asked for it.
 ///
@@ -29,7 +29,7 @@ pub trait NativeAccess: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the call fails.
+    /// Returns [`LuceneErrorKind::Io`] if the call fails.
     fn madvise(&self, segment: &MemorySegment, read_advice: ReadAdvice) -> Result<()>;
 
     /// Invokes `madvise` for `segment` with `MADV_WILLNEED`.
@@ -38,7 +38,7 @@ pub trait NativeAccess: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the call fails.
+    /// Returns [`LuceneErrorKind::Io`] if the call fails.
     fn madvise_will_need(&self, segment: &MemorySegment) -> Result<()>;
 
     /// Returns the native page size.
@@ -157,7 +157,7 @@ impl PosixNativeAccess {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] on a platform that has no
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] on a platform that has no
     /// such symbol, which is Java's `UnsupportedOperationException`.
     ///
     /// Equivalent to
@@ -170,7 +170,7 @@ impl PosixNativeAccess {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] on a platform that has no
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] on a platform that has no
     /// such symbol, which is Java's `UnsupportedOperationException`.
     ///
     /// Equivalent to
@@ -183,7 +183,7 @@ impl PosixNativeAccess {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] with Lucene's own message
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] with Lucene's own message
     /// when the running platform provides no such symbol.
     ///
     /// # Divergence from Lucene 10.5.0
@@ -213,7 +213,7 @@ impl PosixNativeAccess {
             None
         };
         symbol.ok_or_else(|| {
-            LuceneError::UnsupportedOperation(format!(
+            LuceneError::unsupported_operation(format!(
                 "Platform has no symbol for '{name}' in libc."
             ))
         })
@@ -231,11 +231,11 @@ impl PosixNativeAccess {
         Self::lookup_madvise()?
             .invoke_madvise(segment, advice)
             .map_err(|error| {
-                LuceneError::Io(std::io::Error::other(format!(
+                LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(format!(
                     "Call to madvise with address=0x{:08X} and byteSize={} failed: {error}",
                     segment.address(),
                     segment.byte_size()
-                )))
+                ))))
             })
     }
 }
@@ -267,12 +267,12 @@ impl PosixFunction {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when this handle is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when this handle is not
     /// `posix_madvise` or `advice` is not an advice Lucene issues, and
-    /// [`LuceneError::Io`] when the call fails.
+    /// [`LuceneErrorKind::Io`] when the call fails.
     pub fn invoke_madvise(self, segment: &MemorySegment, advice: i32) -> Result<()> {
         if self != Self::PosixMadvise {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "'{}' is not posix_madvise",
                 self.symbol_name()
             )));
@@ -289,7 +289,7 @@ impl PosixFunction {
             }
             PosixNativeAccess::POSIX_MADV_WILLNEED => OsReadAdvice::WillNeed,
             other => {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "unsupported posix_madvise advice: {other}"
                 )))
             }
@@ -301,11 +301,11 @@ impl PosixFunction {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when this handle is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when this handle is not
     /// `getpagesize`.
     pub fn invoke_get_page_size(self) -> Result<usize> {
         if self != Self::GetPageSize {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "'{}' is not getpagesize",
                 self.symbol_name()
             )));

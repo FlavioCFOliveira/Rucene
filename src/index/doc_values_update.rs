@@ -95,6 +95,7 @@ impl DocValuesUpdate {
         doc_id_up_to: i32,
         value: DocValuesUpdateValue,
     ) -> Self {
+        debug_assert!(doc_id_up_to >= 0, "{doc_id_up_to} must be >= 0");
         Self {
             doc_values_type,
             term,
@@ -148,6 +149,7 @@ impl DocValuesUpdate {
     /// Equivalent to `DocValuesUpdate.writeTo(DataOutput)`, which the frozen
     /// buffer uses to serialise a packet.
     pub fn write_to(&self, output: &mut dyn DataOutput) -> Result<()> {
+        debug_assert!(self.value.has_value());
         match &self.value {
             DocValuesUpdateValue::Numeric(value) => output.write_z_long(*value),
             DocValuesUpdateValue::Binary(bytes) => {

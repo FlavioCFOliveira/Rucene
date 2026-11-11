@@ -22,7 +22,7 @@ impl ByteRunAutomaton {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the automaton is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton is not
     /// deterministic.
     pub fn from_utf32(a: Automaton) -> Result<Self> {
         Self::new(a, false)
@@ -32,7 +32,7 @@ impl ByteRunAutomaton {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the automaton is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton is not
     /// deterministic.
     pub fn new(a: Automaton, is_binary: bool) -> Result<Self> {
         let binary = if is_binary { a } else { Self::convert(&a)? };
@@ -45,12 +45,12 @@ impl ByteRunAutomaton {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the automaton is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton is not
     /// deterministic, and a resource-limit error if determinizing the byte automaton
     /// exceeds the work limit.
     pub fn convert(a: &Automaton) -> Result<Automaton> {
         if !a.is_deterministic() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Automaton must be deterministic".to_string(),
             ));
         }

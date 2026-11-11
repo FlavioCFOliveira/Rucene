@@ -54,30 +54,29 @@ use crate::util::Bits;
 // ParallelLeafReader
 // ---------------------------------------------------------------------------
 
-/// Increments the reference count of a leaf sub-reader held as `dyn LeafReader`.
+/// `IndexReader.incRef()` on a leaf sub-reader held as `dyn LeafReader`.
 ///
-/// The `IndexReader` trait provides `inc_ref`/`dec_ref`/`close`, but the
-/// sub-readers here are stored as `Arc<dyn LeafReader>` and Rust cannot upcast
-/// `Arc<dyn LeafReader>` to `Arc<dyn IndexReader>` (the two traits are related
-/// only by a blanket impl, not by inheritance — see the note in
-/// `leaf_reader.rs`). These helpers replicate the `IndexReader` lifecycle
-/// methods directly from `core()` and `do_close()`, which are `LeafReader`
-/// methods. They are `pub(crate)` so [`ParallelCompositeReader`]'s synthetic
-/// leaves are handled uniformly.
+/// The sub-readers are stored as `Arc<dyn LeafReader>`; [`AsIndexReader`]
+/// hands out the very same allocation as `Arc<dyn IndexReader>`, so the three
+/// helpers below run `IndexReader`'s own `incRef`/`decRef`/`close`. In
+/// particular `decRef` runs `notifyReaderClosedListeners()` after `doClose()`
+/// and reports the close to the parent readers (`IndexReader.java:246-264`),
+/// as Java's sub-reader `decRef()`/`close()` calls in
+/// `ParallelLeafReader.doClose()` (`ParallelLeafReader.java:378-394`) do.
+///
+/// [`AsIndexReader`]: crate::index::leaf_reader::AsIndexReader
 fn leaf_inc_ref(r: &Arc<dyn LeafReader>) -> Result<()> {
-    r.core().inc_ref()
+    Arc::clone(r).as_index_reader().inc_ref()
 }
 
+/// `IndexReader.decRef()` on a leaf sub-reader; see [`leaf_inc_ref`].
 fn leaf_dec_ref(r: &Arc<dyn LeafReader>) -> Result<()> {
-    r.core().dec_ref_with_close(|| r.do_close())
+    Arc::clone(r).as_index_reader().dec_ref()
 }
 
+/// `IndexReader.close()` on a leaf sub-reader; see [`leaf_inc_ref`].
 fn leaf_close(r: &Arc<dyn LeafReader>) -> Result<()> {
-    if !r.core().is_closed() {
-        leaf_dec_ref(r)?;
-        r.core().set_closed();
-    }
-    Ok(())
+    Arc::clone(r).as_index_reader().close()
 }
 
 /// A [`LeafReader`] that reads multiple, parallel indexes over the same doc-ID
@@ -98,7 +97,7 @@ fn leaf_close(r: &Arc<dyn LeafReader>) -> Result<()> {
 ///
 /// # Compatibility checks
 ///
-/// Construction fails with [`LuceneError::IllegalArgument`] when:
+/// Construction fails with [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when:
 /// - `readers` is empty but `stored_fields_readers` is not;
 /// - any reader in the union of `readers` and `stored_fields_readers` has a
 ///   different `maxDoc` from the first;
@@ -136,6 +135,24 @@ pub struct ParallelLeafReader {
     /// created by [`ParallelCompositeReader`] whose `doClose()` is overridden
     /// to do nothing, making the synthetic reader invisible to ref-counting.
     suppress_close: bool,
+    /// The overrides of an anonymous subclass, if any; see
+    /// [`ParallelLeafReaderOverrides`].
+    overrides: Option<Arc<dyn ParallelLeafReaderOverrides>>,
+}
+
+/// The methods an anonymous `ParallelLeafReader` subclass overrides, as
+/// `TestDemoParallelLeafReader.ReindexingReader.getCurrentReader` does with
+/// `getLiveDocs()` and `numDocs()` (`TestDemoParallelLeafReader.java:183-193`).
+///
+/// Rust has no subclassing of the concrete reader; installed with
+/// [`ParallelLeafReader::with_overrides`], each method replaces the
+/// reader's own and receives the reader, Java's `this`.
+pub trait ParallelLeafReaderOverrides: Send + Sync {
+    /// Overrides `getLiveDocs()`.
+    fn get_live_docs(&self, this: &ParallelLeafReader) -> Option<Box<dyn Bits>>;
+
+    /// Overrides `numDocs()`.
+    fn num_docs(&self, this: &ParallelLeafReader) -> i32;
 }
 
 impl Debug for ParallelLeafReader {
@@ -196,7 +213,9 @@ impl ParallelLeafReader {
         close_sub_readers: bool,
         readers: Vec<Arc<dyn LeafReader>>,
     ) -> Result<Self> {
-        Self::with_stored_fields(close_sub_readers, readers, Vec::new())
+        // `this(closeSubReaders, readers, readers)` (`ParallelLeafReader.java:74-76`).
+        let stored_fields_readers = readers.clone();
+        Self::with_stored_fields(close_sub_readers, readers, stored_fields_readers)
     }
 
     /// Expert constructor that splits the parallel sub-readers from the readers
@@ -204,8 +223,8 @@ impl ParallelLeafReader {
     ///
     /// Equivalent to
     /// `ParallelLeafReader(boolean closeSubReaders, LeafReader[] readers,
-    /// LeafReader[] storedFieldsReaders)`. When `stored_fields_readers` is
-    /// empty, stored fields and term vectors are served from `readers`.
+    /// LeafReader[] storedFieldsReaders)`. Stored fields are served from
+    /// `stored_fields_readers` only, as in Java.
     ///
     /// # Errors
     ///
@@ -246,7 +265,7 @@ impl ParallelLeafReader {
         suppress_close: bool,
     ) -> Result<Self> {
         if readers.is_empty() && !stored_fields_readers.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least one main reader if storedFieldsReaders are used."
                     .to_string(),
             ));
@@ -272,7 +291,7 @@ impl ParallelLeafReader {
         let mut complete_reader_set: Vec<Arc<dyn LeafReader>> = Vec::new();
         for r in readers.iter().chain(stored_fields_readers.iter()) {
             if r.max_doc() != max_doc {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "All readers must have same maxDoc: {max_doc}!={}",
                     r.max_doc()
                 )));
@@ -315,9 +334,9 @@ impl ParallelLeafReader {
                     None => index_sort = Some(leaf_sort.clone()),
                     Some(existing) => {
                         if existing != leaf_sort {
-                            return Err(LuceneError::IllegalArgument(format!(
+                            return Err(LuceneError::illegal_argument(format!(
                                 "cannot combine LeafReaders that have different index sorts: saw \
-                                 both sort={existing:?} and {leaf_sort:?}"
+                                 both sort={existing} and {leaf_sort}"
                             )));
                         }
                     }
@@ -329,7 +348,7 @@ impl ParallelLeafReader {
             if created_version_major == -1 {
                 created_version_major = leaf_created;
             } else if created_version_major != leaf_created {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "cannot combine LeafReaders that have different creation versions: saw both \
                      version={created_version_major} and {leaf_created}"
                 )));
@@ -380,21 +399,23 @@ impl ParallelLeafReader {
         let meta_data =
             LeafMetaData::new(created_version_major, min_version, index_sort, has_blocks)?;
 
-        // Finally, adjust ref-counts exactly as Lucene does: when the sub-readers
-        // must outlive this ParallelLeafReader, incRef each one; and register this
-        // reader as a parent so a child close propagates. (Registration of a parent
-        // reader requires an `Arc<dyn IndexReader>` view of `self`, which is not
-        // available until the value is constructed and wrapped; the registration
-        // is therefore deferred to the caller-adjacent path — see
-        // `register_with_subs` used by the construction sites below.)
-        if !close_sub_readers {
-            for r in &complete_reader_set {
+        // Do this finally so any error raised before does not affect
+        // ref-counts (`ParallelLeafReader.java:194-201`): when the sub-readers
+        // must outlive this reader, incRef each one, and register this reader
+        // as a parent of each, so that closing one makes this reader fail
+        // `ensureOpen()`. The registration is taken against this reader's
+        // core, which exists before the reader does; see
+        // `IndexReaderCore::register_parent_core`.
+        let core = IndexReaderCore::new();
+        for r in &complete_reader_set {
+            if !close_sub_readers {
                 leaf_inc_ref(r)?;
             }
+            r.core().register_parent_core(&core)?;
         }
 
         Ok(Self {
-            core: IndexReaderCore::new(),
+            core,
             parallel_readers: readers,
             stored_fields_readers,
             complete_reader_set,
@@ -408,7 +429,15 @@ impl ParallelLeafReader {
             meta_data,
             close_sub_readers,
             suppress_close,
+            overrides: None,
         })
+    }
+
+    /// Installs the overrides of an anonymous subclass; see
+    /// [`ParallelLeafReaderOverrides`].
+    pub fn with_overrides(mut self, overrides: Arc<dyn ParallelLeafReaderOverrides>) -> Self {
+        self.overrides = Some(overrides);
+        self
     }
 
     /// Returns the parallel sub-readers passed at construction.
@@ -454,8 +483,15 @@ impl LeafReader for ParallelLeafReader {
     }
 
     fn num_docs(&self) -> i32 {
+        if let Some(overrides) = &self.overrides {
+            return overrides.num_docs(self);
+        }
         // Don't call ensureOpen() here — mirror Lucene.
         self.num_docs
+    }
+
+    fn as_parallel_leaf_reader(&self) -> Option<&ParallelLeafReader> {
+        Some(self)
     }
 
     fn max_doc(&self) -> i32 {
@@ -633,7 +669,17 @@ impl LeafReader for ParallelLeafReader {
         self.field_infos.clone()
     }
 
+    /// Equivalent to `ParallelLeafReader.getLiveDocs()`
+    /// (`ParallelLeafReader.java:252-256`), which calls `ensureOpen()` first.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once this reader is closed.
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        if let Some(overrides) = &self.overrides {
+            return overrides.get_live_docs(self);
+        }
+        self.core.ensure_open_unchecked();
         // Deletions are taken from the first parallel reader, matching Lucene.
         if self.has_deletions {
             self.parallel_readers
@@ -836,7 +882,7 @@ impl StoredFields for ParallelStoredFields {
 ///
 /// # Compatibility checks
 ///
-/// Construction fails with [`LuceneError::IllegalArgument`] when:
+/// Construction fails with [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when:
 /// - `readers` is empty but `stored_fields_readers` is not;
 /// - any sub-composite's `maxDoc` differs from the first;
 /// - the sub-composites disagree on the number of leaves;
@@ -910,7 +956,10 @@ impl ParallelCompositeReader {
         close_sub_readers: bool,
         readers: Vec<Arc<dyn CompositeReader>>,
     ) -> Result<Self> {
-        Self::with_stored_fields(close_sub_readers, readers, Vec::new())
+        // `this(closeSubReaders, readers, readers)`
+        // (`ParallelCompositeReader.java:60-63`).
+        let stored_fields_readers = readers.clone();
+        Self::with_stored_fields(close_sub_readers, readers, stored_fields_readers)
     }
 
     /// Expert constructor that splits the parallel sub-composites from the
@@ -929,7 +978,7 @@ impl ParallelCompositeReader {
         stored_fields_readers: Vec<Arc<dyn CompositeReader>>,
     ) -> Result<Self> {
         if readers.is_empty() && !stored_fields_readers.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least one main reader if storedFieldsReaders are used."
                     .to_string(),
             ));
@@ -941,16 +990,31 @@ impl ParallelCompositeReader {
         // ParallelLeafReaders, mirroring BaseCompositeReader's constructor.
         let mut starts = Vec::with_capacity(prepared.len());
         let mut max_doc: i64 = 0;
+        // `super(prepareLeafReaders(...), null)`: `BaseCompositeReader`'s
+        // constructor registers this reader as a parent of each synthetic leaf
+        // (`r.registerParentReader(this)`, `BaseCompositeReader.java:86`).
+        let core = IndexReaderCore::new();
         for r in &prepared {
             starts.push(max_doc as i32);
             max_doc += LeafReader::max_doc(r) as i64;
+            LeafReader::core(r).register_parent_core(&core)?;
         }
-        let max_doc = i32::try_from(max_doc).map_err(|_| {
-            LuceneError::IllegalArgument(format!("Composite reader maxDoc {max_doc} overflows i32"))
-        })?;
+        // `if (maxDoc > IndexWriter.getActualMaxDocs())`
+        // (`BaseCompositeReader.java:90-109`): a ParallelCompositeReader is not
+        // a DirectoryReader, so the excess is an IllegalArgumentException.
+        let actual_max_docs = i64::from(crate::index::index_writer::get_actual_max_docs());
+        if max_doc > actual_max_docs {
+            return Err(LuceneError::illegal_argument(format!(
+                "Too many documents: composite IndexReaders cannot exceed {actual_max_docs} \
+                 but readers have total maxDoc={max_doc}"
+            )));
+        }
+        // `this.maxDoc = Math.toIntExact(maxDoc)` (`BaseCompositeReader.java:111`),
+        // which the check above leaves nothing to refuse.
+        let max_doc = crate::error::to_int_exact(max_doc)?;
 
-        // Identity-deduplicated union of the original composites (NOT the
-        // synthetic leaves): these are what we close/decRef on do_close.
+        // Identity-deduplicated union of the original composites, then (below)
+        // the synthetic leaves: what do_close closes or decRefs.
         let mut complete_reader_set: Vec<Arc<dyn IndexReader>> = Vec::new();
         for r in readers.iter().chain(stored_fields_readers.iter()) {
             let as_reader: Arc<dyn IndexReader> = Arc::clone(r) as Arc<dyn IndexReader>;
@@ -974,9 +1038,13 @@ impl ParallelCompositeReader {
             .into_iter()
             .map(|plr| Arc::new(plr) as Arc<dyn IndexReader>)
             .collect();
+        // `completeReaderSet.addAll(getSequentialSubReaders())`
+        // (`ParallelCompositeReader.java:82-84`): the synthetic readers are
+        // closed or decRef'd too; their own `doClose()` does nothing.
+        complete_reader_set.extend(sub_readers.iter().cloned());
 
         Ok(Self {
-            core: IndexReaderCore::new(),
+            core,
             sub_readers,
             starts,
             max_doc,
@@ -1212,21 +1280,21 @@ fn validate(
 ) -> Result<()> {
     for reader in readers {
         if reader.max_doc() != max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "All readers must have same maxDoc: {max_doc}!={}",
                 reader.max_doc()
             )));
         }
         let subs = reader.clone().leaves()?;
         if subs.len() != leaf_max_doc.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "All readers must have same number of leaf readers".to_string(),
             ));
         }
         for (sub_idx, ctx) in subs.iter().enumerate() {
             let r_max = ctx.leaf_reader().max_doc();
             if r_max != leaf_max_doc[sub_idx] {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "All leaf readers must have same corresponding subReader maxDoc".to_string(),
                 ));
             }
@@ -1243,6 +1311,7 @@ fn validate(
 mod tests {
     use super::*;
     use crate::codecs::stub::StoredFieldVisitor;
+    use crate::error::LuceneErrorKind;
     use crate::index::field_infos::FieldInfo;
     use crate::index::index_reader::IndexReader;
     use crate::index::leaf_reader::LeafReader;
@@ -1474,7 +1543,13 @@ mod tests {
         let b = leaf(7, 7, &["b"]);
         let res = ParallelLeafReader::with_close_flag(true, vec![a, b]);
         assert!(
-            matches!(res, Err(LuceneError::IllegalArgument(_))),
+            matches!(
+                res,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                })
+            ),
             "expected IllegalArgument for mismatched maxDoc"
         );
     }
@@ -1564,6 +1639,30 @@ mod tests {
         assert!(LeafReader::get_reader_cache_helper(&plr).is_none());
     }
 
+    /// rmp #358 (`TestXYPointSuiteDraws`, `testSamePointManyTimes`, seed
+    /// C0FFEE): `ParallelLeafReader(boolean, LeafReader...)` and
+    /// `ParallelCompositeReader(boolean, CompositeReader...)` pass `readers`
+    /// as the stored-fields readers too (`ParallelLeafReader.java:74-76`,
+    /// `ParallelCompositeReader.java:60-63`), so a single-reader wrapper
+    /// delegates its cache helpers (`ParallelLeafReader.java:302-312`) and
+    /// serves stored fields; the port passed an empty set, which made the
+    /// wrapper uncacheable and its stored fields empty.
+    #[test]
+    fn the_short_constructors_use_the_readers_for_stored_fields() {
+        let a = leaf(3, 3, &["a"]);
+        let plr = ParallelLeafReader::with_close_flag(true, vec![Arc::clone(&a)]).unwrap();
+        assert_eq!(plr.stored_fields_readers.len(), 1);
+        assert!(Arc::ptr_eq(&plr.stored_fields_readers[0], &a));
+
+        let c0 = composite(&[(2, 2, &["a"])]);
+        let pcr = ParallelCompositeReader::with_close_flag(true, vec![c0]).unwrap();
+        assert_eq!(pcr.source_stored_fields_readers.len(), 1);
+        assert!(Arc::ptr_eq(
+            &pcr.source_readers[0],
+            &pcr.source_stored_fields_readers[0]
+        ));
+    }
+
     #[test]
     fn parallel_leaf_multi_sub_cache_helper_is_none() {
         let a = leaf(3, 3, &["a"]);
@@ -1624,7 +1723,13 @@ mod tests {
     fn parallel_leaf_rejects_stored_fields_without_main_readers() {
         let s = leaf(2, 2, &["s"]);
         let res = ParallelLeafReader::with_stored_fields(true, Vec::new(), vec![s]);
-        assert!(matches!(res, Err(LuceneError::IllegalArgument(_))));
+        assert!(matches!(
+            res,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -1670,7 +1775,7 @@ mod tests {
             &self.core
         }
         fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn num_docs(&self) -> i32 {
             self.leaves.iter().map(|l| LeafReader::num_docs(&**l)).sum()
@@ -1679,7 +1784,7 @@ mod tests {
             self.max_doc
         }
         fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn do_close(&self) -> Result<()> {
             Ok(())
@@ -1688,19 +1793,19 @@ mod tests {
             None
         }
         fn doc_freq(&self, _term: &Term) -> Result<i32> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn total_term_freq(&self, _term: &Term) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn get_doc_count(&self, _field: &str) -> Result<i32> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn build_context(
             self: Arc<Self>,
@@ -1767,7 +1872,13 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(5, 5, &["b"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(res, Err(LuceneError::IllegalArgument(_))));
+        assert!(matches!(
+            res,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1775,7 +1886,13 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(2, 2, &["b"]), (4, 4, &["d"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(res, Err(LuceneError::IllegalArgument(_))));
+        assert!(matches!(
+            res,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1783,7 +1900,13 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(1, 1, &["b"]), (3, 3, &["d"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(res, Err(LuceneError::IllegalArgument(_))));
+        assert!(matches!(
+            res,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -44,7 +44,8 @@ impl Outputs for PositiveIntOutputs {
         if *output1 == NO_OUTPUT || *output2 == NO_OUTPUT {
             NO_OUTPUT
         } else {
-            debug_assert!(*output1 > 0 && *output2 > 0);
+            debug_assert!(*output1 > 0);
+            debug_assert!(*output2 > 0);
             (*output1).min(*output2)
         }
     }

@@ -1,0 +1,995 @@
+# kind	inputs	result
+codepoint	- -	0
+codepoint	- 0061	-1
+codepoint	- 0062	-1
+codepoint	- 0061.0062	-2
+codepoint	- ffff	-1
+codepoint	- d800.dc00	-1
+codepoint	- d800.dc00.0061	-2
+codepoint	- e000	-1
+codepoint	- d7ff	-1
+codepoint	- 0061.0061	-2
+codepoint	0061 -	1
+codepoint	0061 0061	0
+codepoint	0061 0062	-1
+codepoint	0061 0061.0062	-1
+codepoint	0061 ffff	-1
+codepoint	0061 d800.dc00	-1
+codepoint	0061 d800.dc00.0061	-1
+codepoint	0061 e000	-1
+codepoint	0061 d7ff	-1
+codepoint	0061 0061.0061	-1
+codepoint	0062 -	1
+codepoint	0062 0061	1
+codepoint	0062 0062	0
+codepoint	0062 0061.0062	1
+codepoint	0062 ffff	-1
+codepoint	0062 d800.dc00	-1
+codepoint	0062 d800.dc00.0061	-1
+codepoint	0062 e000	-1
+codepoint	0062 d7ff	-1
+codepoint	0062 0061.0061	1
+codepoint	0061.0062 -	2
+codepoint	0061.0062 0061	1
+codepoint	0061.0062 0062	-1
+codepoint	0061.0062 0061.0062	0
+codepoint	0061.0062 ffff	-1
+codepoint	0061.0062 d800.dc00	-1
+codepoint	0061.0062 d800.dc00.0061	-1
+codepoint	0061.0062 e000	-1
+codepoint	0061.0062 d7ff	-1
+codepoint	0061.0062 0061.0061	1
+codepoint	ffff -	1
+codepoint	ffff 0061	1
+codepoint	ffff 0062	1
+codepoint	ffff 0061.0062	1
+codepoint	ffff ffff	0
+codepoint	ffff d800.dc00	-1
+codepoint	ffff d800.dc00.0061	-1
+codepoint	ffff e000	1
+codepoint	ffff d7ff	1
+codepoint	ffff 0061.0061	1
+codepoint	d800.dc00 -	1
+codepoint	d800.dc00 0061	1
+codepoint	d800.dc00 0062	1
+codepoint	d800.dc00 0061.0062	1
+codepoint	d800.dc00 ffff	1
+codepoint	d800.dc00 d800.dc00	0
+codepoint	d800.dc00 d800.dc00.0061	-1
+codepoint	d800.dc00 e000	1
+codepoint	d800.dc00 d7ff	1
+codepoint	d800.dc00 0061.0061	1
+codepoint	d800.dc00.0061 -	2
+codepoint	d800.dc00.0061 0061	1
+codepoint	d800.dc00.0061 0062	1
+codepoint	d800.dc00.0061 0061.0062	1
+codepoint	d800.dc00.0061 ffff	1
+codepoint	d800.dc00.0061 d800.dc00	1
+codepoint	d800.dc00.0061 d800.dc00.0061	0
+codepoint	d800.dc00.0061 e000	1
+codepoint	d800.dc00.0061 d7ff	1
+codepoint	d800.dc00.0061 0061.0061	1
+codepoint	e000 -	1
+codepoint	e000 0061	1
+codepoint	e000 0062	1
+codepoint	e000 0061.0062	1
+codepoint	e000 ffff	-1
+codepoint	e000 d800.dc00	-1
+codepoint	e000 d800.dc00.0061	-1
+codepoint	e000 e000	0
+codepoint	e000 d7ff	1
+codepoint	e000 0061.0061	1
+codepoint	d7ff -	1
+codepoint	d7ff 0061	1
+codepoint	d7ff 0062	1
+codepoint	d7ff 0061.0062	1
+codepoint	d7ff ffff	-1
+codepoint	d7ff d800.dc00	-1
+codepoint	d7ff d800.dc00.0061	-1
+codepoint	d7ff e000	-1
+codepoint	d7ff d7ff	0
+codepoint	d7ff 0061.0061	1
+codepoint	0061.0061 -	2
+codepoint	0061.0061 0061	1
+codepoint	0061.0061 0062	-1
+codepoint	0061.0061 0061.0062	-1
+codepoint	0061.0061 ffff	-1
+codepoint	0061.0061 d800.dc00	-1
+codepoint	0061.0061 d800.dc00.0061	-1
+codepoint	0061.0061 e000	-1
+codepoint	0061.0061 d7ff	-1
+codepoint	0061.0061 0061.0061	0
+bytesRefToString	-	0020.005b.005d
+bytesRefToString	6162	0061.0062.0020.005b.0036.0031.0020.0036.0032.005d
+bytesRefToString	c3a9	00e9.0020.005b.0063.0033.0020.0061.0039.005d
+bytesRefToString	e282ac	20ac.0020.005b.0065.0032.0020.0038.0032.0020.0061.0063.005d
+bytesRefToString	f0908080	d800.dc00.0020.005b.0066.0030.0020.0039.0030.0020.0038.0030.0020.0038.0030.005d
+bytesRefToString	80	005b.0038.0030.005d
+bytesRefToString	f8000000	005b.0066.0038.0020.0030.0020.0030.0020.0030.005d
+bytesRefToString	61bf	005b.0036.0031.0020.0062.0066.005d
+bytesRefToString	efbfbf	ffff.0020.005b.0065.0066.0020.0062.0066.0020.0062.0066.005d
+bytesRefToString	null	(null)
+floatUlpEquals	0 0 0	true
+floatUlpEquals	0 0 1	true
+floatUlpEquals	0 0 2	true
+floatUlpEquals	0 0 32767	true
+floatUlpEquals	0 80000000 0	true
+floatUlpEquals	0 80000000 1	true
+floatUlpEquals	0 80000000 2	true
+floatUlpEquals	0 80000000 32767	true
+floatUlpEquals	0 3f800000 0	false
+floatUlpEquals	0 3f800000 1	false
+floatUlpEquals	0 3f800000 2	false
+floatUlpEquals	0 3f800000 32767	false
+floatUlpEquals	0 3f800001 0	false
+floatUlpEquals	0 3f800001 1	false
+floatUlpEquals	0 3f800001 2	false
+floatUlpEquals	0 3f800001 32767	false
+floatUlpEquals	0 3f7fffff 0	false
+floatUlpEquals	0 3f7fffff 1	false
+floatUlpEquals	0 3f7fffff 2	false
+floatUlpEquals	0 3f7fffff 32767	false
+floatUlpEquals	0 1 0	false
+floatUlpEquals	0 1 1	true
+floatUlpEquals	0 1 2	true
+floatUlpEquals	0 1 32767	true
+floatUlpEquals	0 80000001 0	false
+floatUlpEquals	0 80000001 1	true
+floatUlpEquals	0 80000001 2	true
+floatUlpEquals	0 80000001 32767	true
+floatUlpEquals	0 7fc00000 0	false
+floatUlpEquals	0 7fc00000 1	false
+floatUlpEquals	0 7fc00000 2	false
+floatUlpEquals	0 7fc00000 32767	false
+floatUlpEquals	0 7f800000 0	false
+floatUlpEquals	0 7f800000 1	false
+floatUlpEquals	0 7f800000 2	false
+floatUlpEquals	0 7f800000 32767	false
+floatUlpEquals	0 7f7fffff 0	false
+floatUlpEquals	0 7f7fffff 1	false
+floatUlpEquals	0 7f7fffff 2	false
+floatUlpEquals	0 7f7fffff 32767	false
+floatUlpEquals	0 40600000 0	false
+floatUlpEquals	0 40600000 1	false
+floatUlpEquals	0 40600000 2	false
+floatUlpEquals	0 40600000 32767	false
+floatUlpEquals	80000000 0 0	true
+floatUlpEquals	80000000 0 1	true
+floatUlpEquals	80000000 0 2	true
+floatUlpEquals	80000000 0 32767	true
+floatUlpEquals	80000000 80000000 0	true
+floatUlpEquals	80000000 80000000 1	true
+floatUlpEquals	80000000 80000000 2	true
+floatUlpEquals	80000000 80000000 32767	true
+floatUlpEquals	80000000 3f800000 0	false
+floatUlpEquals	80000000 3f800000 1	false
+floatUlpEquals	80000000 3f800000 2	false
+floatUlpEquals	80000000 3f800000 32767	false
+floatUlpEquals	80000000 3f800001 0	false
+floatUlpEquals	80000000 3f800001 1	false
+floatUlpEquals	80000000 3f800001 2	false
+floatUlpEquals	80000000 3f800001 32767	false
+floatUlpEquals	80000000 3f7fffff 0	false
+floatUlpEquals	80000000 3f7fffff 1	false
+floatUlpEquals	80000000 3f7fffff 2	false
+floatUlpEquals	80000000 3f7fffff 32767	false
+floatUlpEquals	80000000 1 0	false
+floatUlpEquals	80000000 1 1	true
+floatUlpEquals	80000000 1 2	true
+floatUlpEquals	80000000 1 32767	true
+floatUlpEquals	80000000 80000001 0	false
+floatUlpEquals	80000000 80000001 1	true
+floatUlpEquals	80000000 80000001 2	true
+floatUlpEquals	80000000 80000001 32767	true
+floatUlpEquals	80000000 7fc00000 0	false
+floatUlpEquals	80000000 7fc00000 1	false
+floatUlpEquals	80000000 7fc00000 2	false
+floatUlpEquals	80000000 7fc00000 32767	false
+floatUlpEquals	80000000 7f800000 0	false
+floatUlpEquals	80000000 7f800000 1	false
+floatUlpEquals	80000000 7f800000 2	false
+floatUlpEquals	80000000 7f800000 32767	false
+floatUlpEquals	80000000 7f7fffff 0	false
+floatUlpEquals	80000000 7f7fffff 1	false
+floatUlpEquals	80000000 7f7fffff 2	false
+floatUlpEquals	80000000 7f7fffff 32767	false
+floatUlpEquals	80000000 40600000 0	false
+floatUlpEquals	80000000 40600000 1	false
+floatUlpEquals	80000000 40600000 2	false
+floatUlpEquals	80000000 40600000 32767	false
+floatUlpEquals	3f800000 0 0	false
+floatUlpEquals	3f800000 0 1	false
+floatUlpEquals	3f800000 0 2	false
+floatUlpEquals	3f800000 0 32767	false
+floatUlpEquals	3f800000 80000000 0	false
+floatUlpEquals	3f800000 80000000 1	false
+floatUlpEquals	3f800000 80000000 2	false
+floatUlpEquals	3f800000 80000000 32767	false
+floatUlpEquals	3f800000 3f800000 0	true
+floatUlpEquals	3f800000 3f800000 1	true
+floatUlpEquals	3f800000 3f800000 2	true
+floatUlpEquals	3f800000 3f800000 32767	true
+floatUlpEquals	3f800000 3f800001 0	false
+floatUlpEquals	3f800000 3f800001 1	true
+floatUlpEquals	3f800000 3f800001 2	true
+floatUlpEquals	3f800000 3f800001 32767	true
+floatUlpEquals	3f800000 3f7fffff 0	false
+floatUlpEquals	3f800000 3f7fffff 1	true
+floatUlpEquals	3f800000 3f7fffff 2	true
+floatUlpEquals	3f800000 3f7fffff 32767	true
+floatUlpEquals	3f800000 1 0	false
+floatUlpEquals	3f800000 1 1	false
+floatUlpEquals	3f800000 1 2	false
+floatUlpEquals	3f800000 1 32767	false
+floatUlpEquals	3f800000 80000001 0	false
+floatUlpEquals	3f800000 80000001 1	false
+floatUlpEquals	3f800000 80000001 2	false
+floatUlpEquals	3f800000 80000001 32767	false
+floatUlpEquals	3f800000 7fc00000 0	false
+floatUlpEquals	3f800000 7fc00000 1	false
+floatUlpEquals	3f800000 7fc00000 2	false
+floatUlpEquals	3f800000 7fc00000 32767	false
+floatUlpEquals	3f800000 7f800000 0	false
+floatUlpEquals	3f800000 7f800000 1	false
+floatUlpEquals	3f800000 7f800000 2	false
+floatUlpEquals	3f800000 7f800000 32767	false
+floatUlpEquals	3f800000 7f7fffff 0	false
+floatUlpEquals	3f800000 7f7fffff 1	false
+floatUlpEquals	3f800000 7f7fffff 2	false
+floatUlpEquals	3f800000 7f7fffff 32767	false
+floatUlpEquals	3f800000 40600000 0	false
+floatUlpEquals	3f800000 40600000 1	false
+floatUlpEquals	3f800000 40600000 2	false
+floatUlpEquals	3f800000 40600000 32767	false
+floatUlpEquals	3f800001 0 0	false
+floatUlpEquals	3f800001 0 1	false
+floatUlpEquals	3f800001 0 2	false
+floatUlpEquals	3f800001 0 32767	false
+floatUlpEquals	3f800001 80000000 0	false
+floatUlpEquals	3f800001 80000000 1	false
+floatUlpEquals	3f800001 80000000 2	false
+floatUlpEquals	3f800001 80000000 32767	false
+floatUlpEquals	3f800001 3f800000 0	false
+floatUlpEquals	3f800001 3f800000 1	true
+floatUlpEquals	3f800001 3f800000 2	true
+floatUlpEquals	3f800001 3f800000 32767	true
+floatUlpEquals	3f800001 3f800001 0	true
+floatUlpEquals	3f800001 3f800001 1	true
+floatUlpEquals	3f800001 3f800001 2	true
+floatUlpEquals	3f800001 3f800001 32767	true
+floatUlpEquals	3f800001 3f7fffff 0	false
+floatUlpEquals	3f800001 3f7fffff 1	false
+floatUlpEquals	3f800001 3f7fffff 2	true
+floatUlpEquals	3f800001 3f7fffff 32767	true
+floatUlpEquals	3f800001 1 0	false
+floatUlpEquals	3f800001 1 1	false
+floatUlpEquals	3f800001 1 2	false
+floatUlpEquals	3f800001 1 32767	false
+floatUlpEquals	3f800001 80000001 0	false
+floatUlpEquals	3f800001 80000001 1	false
+floatUlpEquals	3f800001 80000001 2	false
+floatUlpEquals	3f800001 80000001 32767	false
+floatUlpEquals	3f800001 7fc00000 0	false
+floatUlpEquals	3f800001 7fc00000 1	false
+floatUlpEquals	3f800001 7fc00000 2	false
+floatUlpEquals	3f800001 7fc00000 32767	false
+floatUlpEquals	3f800001 7f800000 0	false
+floatUlpEquals	3f800001 7f800000 1	false
+floatUlpEquals	3f800001 7f800000 2	false
+floatUlpEquals	3f800001 7f800000 32767	false
+floatUlpEquals	3f800001 7f7fffff 0	false
+floatUlpEquals	3f800001 7f7fffff 1	false
+floatUlpEquals	3f800001 7f7fffff 2	false
+floatUlpEquals	3f800001 7f7fffff 32767	false
+floatUlpEquals	3f800001 40600000 0	false
+floatUlpEquals	3f800001 40600000 1	false
+floatUlpEquals	3f800001 40600000 2	false
+floatUlpEquals	3f800001 40600000 32767	false
+floatUlpEquals	3f7fffff 0 0	false
+floatUlpEquals	3f7fffff 0 1	false
+floatUlpEquals	3f7fffff 0 2	false
+floatUlpEquals	3f7fffff 0 32767	false
+floatUlpEquals	3f7fffff 80000000 0	false
+floatUlpEquals	3f7fffff 80000000 1	false
+floatUlpEquals	3f7fffff 80000000 2	false
+floatUlpEquals	3f7fffff 80000000 32767	false
+floatUlpEquals	3f7fffff 3f800000 0	false
+floatUlpEquals	3f7fffff 3f800000 1	true
+floatUlpEquals	3f7fffff 3f800000 2	true
+floatUlpEquals	3f7fffff 3f800000 32767	true
+floatUlpEquals	3f7fffff 3f800001 0	false
+floatUlpEquals	3f7fffff 3f800001 1	false
+floatUlpEquals	3f7fffff 3f800001 2	true
+floatUlpEquals	3f7fffff 3f800001 32767	true
+floatUlpEquals	3f7fffff 3f7fffff 0	true
+floatUlpEquals	3f7fffff 3f7fffff 1	true
+floatUlpEquals	3f7fffff 3f7fffff 2	true
+floatUlpEquals	3f7fffff 3f7fffff 32767	true
+floatUlpEquals	3f7fffff 1 0	false
+floatUlpEquals	3f7fffff 1 1	false
+floatUlpEquals	3f7fffff 1 2	false
+floatUlpEquals	3f7fffff 1 32767	false
+floatUlpEquals	3f7fffff 80000001 0	false
+floatUlpEquals	3f7fffff 80000001 1	false
+floatUlpEquals	3f7fffff 80000001 2	false
+floatUlpEquals	3f7fffff 80000001 32767	false
+floatUlpEquals	3f7fffff 7fc00000 0	false
+floatUlpEquals	3f7fffff 7fc00000 1	false
+floatUlpEquals	3f7fffff 7fc00000 2	false
+floatUlpEquals	3f7fffff 7fc00000 32767	false
+floatUlpEquals	3f7fffff 7f800000 0	false
+floatUlpEquals	3f7fffff 7f800000 1	false
+floatUlpEquals	3f7fffff 7f800000 2	false
+floatUlpEquals	3f7fffff 7f800000 32767	false
+floatUlpEquals	3f7fffff 7f7fffff 0	false
+floatUlpEquals	3f7fffff 7f7fffff 1	false
+floatUlpEquals	3f7fffff 7f7fffff 2	false
+floatUlpEquals	3f7fffff 7f7fffff 32767	false
+floatUlpEquals	3f7fffff 40600000 0	false
+floatUlpEquals	3f7fffff 40600000 1	false
+floatUlpEquals	3f7fffff 40600000 2	false
+floatUlpEquals	3f7fffff 40600000 32767	false
+floatUlpEquals	1 0 0	false
+floatUlpEquals	1 0 1	true
+floatUlpEquals	1 0 2	true
+floatUlpEquals	1 0 32767	true
+floatUlpEquals	1 80000000 0	false
+floatUlpEquals	1 80000000 1	true
+floatUlpEquals	1 80000000 2	true
+floatUlpEquals	1 80000000 32767	true
+floatUlpEquals	1 3f800000 0	false
+floatUlpEquals	1 3f800000 1	false
+floatUlpEquals	1 3f800000 2	false
+floatUlpEquals	1 3f800000 32767	false
+floatUlpEquals	1 3f800001 0	false
+floatUlpEquals	1 3f800001 1	false
+floatUlpEquals	1 3f800001 2	false
+floatUlpEquals	1 3f800001 32767	false
+floatUlpEquals	1 3f7fffff 0	false
+floatUlpEquals	1 3f7fffff 1	false
+floatUlpEquals	1 3f7fffff 2	false
+floatUlpEquals	1 3f7fffff 32767	false
+floatUlpEquals	1 1 0	true
+floatUlpEquals	1 1 1	true
+floatUlpEquals	1 1 2	true
+floatUlpEquals	1 1 32767	true
+floatUlpEquals	1 80000001 0	false
+floatUlpEquals	1 80000001 1	false
+floatUlpEquals	1 80000001 2	true
+floatUlpEquals	1 80000001 32767	true
+floatUlpEquals	1 7fc00000 0	false
+floatUlpEquals	1 7fc00000 1	false
+floatUlpEquals	1 7fc00000 2	false
+floatUlpEquals	1 7fc00000 32767	false
+floatUlpEquals	1 7f800000 0	false
+floatUlpEquals	1 7f800000 1	false
+floatUlpEquals	1 7f800000 2	false
+floatUlpEquals	1 7f800000 32767	false
+floatUlpEquals	1 7f7fffff 0	false
+floatUlpEquals	1 7f7fffff 1	false
+floatUlpEquals	1 7f7fffff 2	false
+floatUlpEquals	1 7f7fffff 32767	false
+floatUlpEquals	1 40600000 0	false
+floatUlpEquals	1 40600000 1	false
+floatUlpEquals	1 40600000 2	false
+floatUlpEquals	1 40600000 32767	false
+floatUlpEquals	80000001 0 0	false
+floatUlpEquals	80000001 0 1	true
+floatUlpEquals	80000001 0 2	true
+floatUlpEquals	80000001 0 32767	true
+floatUlpEquals	80000001 80000000 0	false
+floatUlpEquals	80000001 80000000 1	true
+floatUlpEquals	80000001 80000000 2	true
+floatUlpEquals	80000001 80000000 32767	true
+floatUlpEquals	80000001 3f800000 0	false
+floatUlpEquals	80000001 3f800000 1	false
+floatUlpEquals	80000001 3f800000 2	false
+floatUlpEquals	80000001 3f800000 32767	false
+floatUlpEquals	80000001 3f800001 0	false
+floatUlpEquals	80000001 3f800001 1	false
+floatUlpEquals	80000001 3f800001 2	false
+floatUlpEquals	80000001 3f800001 32767	false
+floatUlpEquals	80000001 3f7fffff 0	false
+floatUlpEquals	80000001 3f7fffff 1	false
+floatUlpEquals	80000001 3f7fffff 2	false
+floatUlpEquals	80000001 3f7fffff 32767	false
+floatUlpEquals	80000001 1 0	false
+floatUlpEquals	80000001 1 1	false
+floatUlpEquals	80000001 1 2	true
+floatUlpEquals	80000001 1 32767	true
+floatUlpEquals	80000001 80000001 0	true
+floatUlpEquals	80000001 80000001 1	true
+floatUlpEquals	80000001 80000001 2	true
+floatUlpEquals	80000001 80000001 32767	true
+floatUlpEquals	80000001 7fc00000 0	false
+floatUlpEquals	80000001 7fc00000 1	false
+floatUlpEquals	80000001 7fc00000 2	false
+floatUlpEquals	80000001 7fc00000 32767	false
+floatUlpEquals	80000001 7f800000 0	false
+floatUlpEquals	80000001 7f800000 1	false
+floatUlpEquals	80000001 7f800000 2	false
+floatUlpEquals	80000001 7f800000 32767	false
+floatUlpEquals	80000001 7f7fffff 0	false
+floatUlpEquals	80000001 7f7fffff 1	false
+floatUlpEquals	80000001 7f7fffff 2	false
+floatUlpEquals	80000001 7f7fffff 32767	false
+floatUlpEquals	80000001 40600000 0	false
+floatUlpEquals	80000001 40600000 1	false
+floatUlpEquals	80000001 40600000 2	false
+floatUlpEquals	80000001 40600000 32767	false
+floatUlpEquals	7fc00000 0 0	false
+floatUlpEquals	7fc00000 0 1	false
+floatUlpEquals	7fc00000 0 2	false
+floatUlpEquals	7fc00000 0 32767	false
+floatUlpEquals	7fc00000 80000000 0	false
+floatUlpEquals	7fc00000 80000000 1	false
+floatUlpEquals	7fc00000 80000000 2	false
+floatUlpEquals	7fc00000 80000000 32767	false
+floatUlpEquals	7fc00000 3f800000 0	false
+floatUlpEquals	7fc00000 3f800000 1	false
+floatUlpEquals	7fc00000 3f800000 2	false
+floatUlpEquals	7fc00000 3f800000 32767	false
+floatUlpEquals	7fc00000 3f800001 0	false
+floatUlpEquals	7fc00000 3f800001 1	false
+floatUlpEquals	7fc00000 3f800001 2	false
+floatUlpEquals	7fc00000 3f800001 32767	false
+floatUlpEquals	7fc00000 3f7fffff 0	false
+floatUlpEquals	7fc00000 3f7fffff 1	false
+floatUlpEquals	7fc00000 3f7fffff 2	false
+floatUlpEquals	7fc00000 3f7fffff 32767	false
+floatUlpEquals	7fc00000 1 0	false
+floatUlpEquals	7fc00000 1 1	false
+floatUlpEquals	7fc00000 1 2	false
+floatUlpEquals	7fc00000 1 32767	false
+floatUlpEquals	7fc00000 80000001 0	false
+floatUlpEquals	7fc00000 80000001 1	false
+floatUlpEquals	7fc00000 80000001 2	false
+floatUlpEquals	7fc00000 80000001 32767	false
+floatUlpEquals	7fc00000 7fc00000 0	false
+floatUlpEquals	7fc00000 7fc00000 1	false
+floatUlpEquals	7fc00000 7fc00000 2	false
+floatUlpEquals	7fc00000 7fc00000 32767	false
+floatUlpEquals	7fc00000 7f800000 0	false
+floatUlpEquals	7fc00000 7f800000 1	false
+floatUlpEquals	7fc00000 7f800000 2	false
+floatUlpEquals	7fc00000 7f800000 32767	false
+floatUlpEquals	7fc00000 7f7fffff 0	false
+floatUlpEquals	7fc00000 7f7fffff 1	false
+floatUlpEquals	7fc00000 7f7fffff 2	false
+floatUlpEquals	7fc00000 7f7fffff 32767	false
+floatUlpEquals	7fc00000 40600000 0	false
+floatUlpEquals	7fc00000 40600000 1	false
+floatUlpEquals	7fc00000 40600000 2	false
+floatUlpEquals	7fc00000 40600000 32767	false
+floatUlpEquals	7f800000 0 0	false
+floatUlpEquals	7f800000 0 1	false
+floatUlpEquals	7f800000 0 2	false
+floatUlpEquals	7f800000 0 32767	false
+floatUlpEquals	7f800000 80000000 0	false
+floatUlpEquals	7f800000 80000000 1	false
+floatUlpEquals	7f800000 80000000 2	false
+floatUlpEquals	7f800000 80000000 32767	false
+floatUlpEquals	7f800000 3f800000 0	false
+floatUlpEquals	7f800000 3f800000 1	false
+floatUlpEquals	7f800000 3f800000 2	false
+floatUlpEquals	7f800000 3f800000 32767	false
+floatUlpEquals	7f800000 3f800001 0	false
+floatUlpEquals	7f800000 3f800001 1	false
+floatUlpEquals	7f800000 3f800001 2	false
+floatUlpEquals	7f800000 3f800001 32767	false
+floatUlpEquals	7f800000 3f7fffff 0	false
+floatUlpEquals	7f800000 3f7fffff 1	false
+floatUlpEquals	7f800000 3f7fffff 2	false
+floatUlpEquals	7f800000 3f7fffff 32767	false
+floatUlpEquals	7f800000 1 0	false
+floatUlpEquals	7f800000 1 1	false
+floatUlpEquals	7f800000 1 2	false
+floatUlpEquals	7f800000 1 32767	false
+floatUlpEquals	7f800000 80000001 0	false
+floatUlpEquals	7f800000 80000001 1	false
+floatUlpEquals	7f800000 80000001 2	false
+floatUlpEquals	7f800000 80000001 32767	false
+floatUlpEquals	7f800000 7fc00000 0	false
+floatUlpEquals	7f800000 7fc00000 1	false
+floatUlpEquals	7f800000 7fc00000 2	false
+floatUlpEquals	7f800000 7fc00000 32767	false
+floatUlpEquals	7f800000 7f800000 0	true
+floatUlpEquals	7f800000 7f800000 1	true
+floatUlpEquals	7f800000 7f800000 2	true
+floatUlpEquals	7f800000 7f800000 32767	true
+floatUlpEquals	7f800000 7f7fffff 0	false
+floatUlpEquals	7f800000 7f7fffff 1	true
+floatUlpEquals	7f800000 7f7fffff 2	true
+floatUlpEquals	7f800000 7f7fffff 32767	true
+floatUlpEquals	7f800000 40600000 0	false
+floatUlpEquals	7f800000 40600000 1	false
+floatUlpEquals	7f800000 40600000 2	false
+floatUlpEquals	7f800000 40600000 32767	false
+floatUlpEquals	7f7fffff 0 0	false
+floatUlpEquals	7f7fffff 0 1	false
+floatUlpEquals	7f7fffff 0 2	false
+floatUlpEquals	7f7fffff 0 32767	false
+floatUlpEquals	7f7fffff 80000000 0	false
+floatUlpEquals	7f7fffff 80000000 1	false
+floatUlpEquals	7f7fffff 80000000 2	false
+floatUlpEquals	7f7fffff 80000000 32767	false
+floatUlpEquals	7f7fffff 3f800000 0	false
+floatUlpEquals	7f7fffff 3f800000 1	false
+floatUlpEquals	7f7fffff 3f800000 2	false
+floatUlpEquals	7f7fffff 3f800000 32767	false
+floatUlpEquals	7f7fffff 3f800001 0	false
+floatUlpEquals	7f7fffff 3f800001 1	false
+floatUlpEquals	7f7fffff 3f800001 2	false
+floatUlpEquals	7f7fffff 3f800001 32767	false
+floatUlpEquals	7f7fffff 3f7fffff 0	false
+floatUlpEquals	7f7fffff 3f7fffff 1	false
+floatUlpEquals	7f7fffff 3f7fffff 2	false
+floatUlpEquals	7f7fffff 3f7fffff 32767	false
+floatUlpEquals	7f7fffff 1 0	false
+floatUlpEquals	7f7fffff 1 1	false
+floatUlpEquals	7f7fffff 1 2	false
+floatUlpEquals	7f7fffff 1 32767	false
+floatUlpEquals	7f7fffff 80000001 0	false
+floatUlpEquals	7f7fffff 80000001 1	false
+floatUlpEquals	7f7fffff 80000001 2	false
+floatUlpEquals	7f7fffff 80000001 32767	false
+floatUlpEquals	7f7fffff 7fc00000 0	false
+floatUlpEquals	7f7fffff 7fc00000 1	false
+floatUlpEquals	7f7fffff 7fc00000 2	false
+floatUlpEquals	7f7fffff 7fc00000 32767	false
+floatUlpEquals	7f7fffff 7f800000 0	false
+floatUlpEquals	7f7fffff 7f800000 1	true
+floatUlpEquals	7f7fffff 7f800000 2	true
+floatUlpEquals	7f7fffff 7f800000 32767	true
+floatUlpEquals	7f7fffff 7f7fffff 0	true
+floatUlpEquals	7f7fffff 7f7fffff 1	true
+floatUlpEquals	7f7fffff 7f7fffff 2	true
+floatUlpEquals	7f7fffff 7f7fffff 32767	true
+floatUlpEquals	7f7fffff 40600000 0	false
+floatUlpEquals	7f7fffff 40600000 1	false
+floatUlpEquals	7f7fffff 40600000 2	false
+floatUlpEquals	7f7fffff 40600000 32767	false
+floatUlpEquals	40600000 0 0	false
+floatUlpEquals	40600000 0 1	false
+floatUlpEquals	40600000 0 2	false
+floatUlpEquals	40600000 0 32767	false
+floatUlpEquals	40600000 80000000 0	false
+floatUlpEquals	40600000 80000000 1	false
+floatUlpEquals	40600000 80000000 2	false
+floatUlpEquals	40600000 80000000 32767	false
+floatUlpEquals	40600000 3f800000 0	false
+floatUlpEquals	40600000 3f800000 1	false
+floatUlpEquals	40600000 3f800000 2	false
+floatUlpEquals	40600000 3f800000 32767	false
+floatUlpEquals	40600000 3f800001 0	false
+floatUlpEquals	40600000 3f800001 1	false
+floatUlpEquals	40600000 3f800001 2	false
+floatUlpEquals	40600000 3f800001 32767	false
+floatUlpEquals	40600000 3f7fffff 0	false
+floatUlpEquals	40600000 3f7fffff 1	false
+floatUlpEquals	40600000 3f7fffff 2	false
+floatUlpEquals	40600000 3f7fffff 32767	false
+floatUlpEquals	40600000 1 0	false
+floatUlpEquals	40600000 1 1	false
+floatUlpEquals	40600000 1 2	false
+floatUlpEquals	40600000 1 32767	false
+floatUlpEquals	40600000 80000001 0	false
+floatUlpEquals	40600000 80000001 1	false
+floatUlpEquals	40600000 80000001 2	false
+floatUlpEquals	40600000 80000001 32767	false
+floatUlpEquals	40600000 7fc00000 0	false
+floatUlpEquals	40600000 7fc00000 1	false
+floatUlpEquals	40600000 7fc00000 2	false
+floatUlpEquals	40600000 7fc00000 32767	false
+floatUlpEquals	40600000 7f800000 0	false
+floatUlpEquals	40600000 7f800000 1	false
+floatUlpEquals	40600000 7f800000 2	false
+floatUlpEquals	40600000 7f800000 32767	false
+floatUlpEquals	40600000 7f7fffff 0	false
+floatUlpEquals	40600000 7f7fffff 1	false
+floatUlpEquals	40600000 7f7fffff 2	false
+floatUlpEquals	40600000 7f7fffff 32767	false
+floatUlpEquals	40600000 40600000 0	true
+floatUlpEquals	40600000 40600000 1	true
+floatUlpEquals	40600000 40600000 2	true
+floatUlpEquals	40600000 40600000 32767	true
+doubleUlpEquals	0 0 0	true
+doubleUlpEquals	0 0 1	true
+doubleUlpEquals	0 0 2	true
+doubleUlpEquals	0 0 2147483647	true
+doubleUlpEquals	0 8000000000000000 0	true
+doubleUlpEquals	0 8000000000000000 1	true
+doubleUlpEquals	0 8000000000000000 2	true
+doubleUlpEquals	0 8000000000000000 2147483647	true
+doubleUlpEquals	0 3ff0000000000000 0	false
+doubleUlpEquals	0 3ff0000000000000 1	false
+doubleUlpEquals	0 3ff0000000000000 2	false
+doubleUlpEquals	0 3ff0000000000000 2147483647	false
+doubleUlpEquals	0 3ff0000000000001 0	false
+doubleUlpEquals	0 3ff0000000000001 1	false
+doubleUlpEquals	0 3ff0000000000001 2	false
+doubleUlpEquals	0 3ff0000000000001 2147483647	false
+doubleUlpEquals	0 3fefffffffffffff 0	false
+doubleUlpEquals	0 3fefffffffffffff 1	false
+doubleUlpEquals	0 3fefffffffffffff 2	false
+doubleUlpEquals	0 3fefffffffffffff 2147483647	false
+doubleUlpEquals	0 1 0	false
+doubleUlpEquals	0 1 1	true
+doubleUlpEquals	0 1 2	true
+doubleUlpEquals	0 1 2147483647	true
+doubleUlpEquals	0 8000000000000001 0	false
+doubleUlpEquals	0 8000000000000001 1	true
+doubleUlpEquals	0 8000000000000001 2	true
+doubleUlpEquals	0 8000000000000001 2147483647	true
+doubleUlpEquals	0 7ff8000000000000 0	false
+doubleUlpEquals	0 7ff8000000000000 1	false
+doubleUlpEquals	0 7ff8000000000000 2	false
+doubleUlpEquals	0 7ff8000000000000 2147483647	false
+doubleUlpEquals	0 fff0000000000000 0	false
+doubleUlpEquals	0 fff0000000000000 1	false
+doubleUlpEquals	0 fff0000000000000 2	false
+doubleUlpEquals	0 fff0000000000000 2147483647	false
+doubleUlpEquals	0 400c000000000000 0	false
+doubleUlpEquals	0 400c000000000000 1	false
+doubleUlpEquals	0 400c000000000000 2	false
+doubleUlpEquals	0 400c000000000000 2147483647	false
+doubleUlpEquals	8000000000000000 0 0	true
+doubleUlpEquals	8000000000000000 0 1	true
+doubleUlpEquals	8000000000000000 0 2	true
+doubleUlpEquals	8000000000000000 0 2147483647	true
+doubleUlpEquals	8000000000000000 8000000000000000 0	true
+doubleUlpEquals	8000000000000000 8000000000000000 1	true
+doubleUlpEquals	8000000000000000 8000000000000000 2	true
+doubleUlpEquals	8000000000000000 8000000000000000 2147483647	true
+doubleUlpEquals	8000000000000000 3ff0000000000000 0	false
+doubleUlpEquals	8000000000000000 3ff0000000000000 1	false
+doubleUlpEquals	8000000000000000 3ff0000000000000 2	false
+doubleUlpEquals	8000000000000000 3ff0000000000000 2147483647	false
+doubleUlpEquals	8000000000000000 3ff0000000000001 0	false
+doubleUlpEquals	8000000000000000 3ff0000000000001 1	false
+doubleUlpEquals	8000000000000000 3ff0000000000001 2	false
+doubleUlpEquals	8000000000000000 3ff0000000000001 2147483647	false
+doubleUlpEquals	8000000000000000 3fefffffffffffff 0	false
+doubleUlpEquals	8000000000000000 3fefffffffffffff 1	false
+doubleUlpEquals	8000000000000000 3fefffffffffffff 2	false
+doubleUlpEquals	8000000000000000 3fefffffffffffff 2147483647	false
+doubleUlpEquals	8000000000000000 1 0	false
+doubleUlpEquals	8000000000000000 1 1	true
+doubleUlpEquals	8000000000000000 1 2	true
+doubleUlpEquals	8000000000000000 1 2147483647	true
+doubleUlpEquals	8000000000000000 8000000000000001 0	false
+doubleUlpEquals	8000000000000000 8000000000000001 1	true
+doubleUlpEquals	8000000000000000 8000000000000001 2	true
+doubleUlpEquals	8000000000000000 8000000000000001 2147483647	true
+doubleUlpEquals	8000000000000000 7ff8000000000000 0	false
+doubleUlpEquals	8000000000000000 7ff8000000000000 1	false
+doubleUlpEquals	8000000000000000 7ff8000000000000 2	false
+doubleUlpEquals	8000000000000000 7ff8000000000000 2147483647	false
+doubleUlpEquals	8000000000000000 fff0000000000000 0	false
+doubleUlpEquals	8000000000000000 fff0000000000000 1	false
+doubleUlpEquals	8000000000000000 fff0000000000000 2	false
+doubleUlpEquals	8000000000000000 fff0000000000000 2147483647	false
+doubleUlpEquals	8000000000000000 400c000000000000 0	false
+doubleUlpEquals	8000000000000000 400c000000000000 1	false
+doubleUlpEquals	8000000000000000 400c000000000000 2	false
+doubleUlpEquals	8000000000000000 400c000000000000 2147483647	false
+doubleUlpEquals	3ff0000000000000 0 0	false
+doubleUlpEquals	3ff0000000000000 0 1	false
+doubleUlpEquals	3ff0000000000000 0 2	false
+doubleUlpEquals	3ff0000000000000 0 2147483647	false
+doubleUlpEquals	3ff0000000000000 8000000000000000 0	false
+doubleUlpEquals	3ff0000000000000 8000000000000000 1	false
+doubleUlpEquals	3ff0000000000000 8000000000000000 2	false
+doubleUlpEquals	3ff0000000000000 8000000000000000 2147483647	false
+doubleUlpEquals	3ff0000000000000 3ff0000000000000 0	true
+doubleUlpEquals	3ff0000000000000 3ff0000000000000 1	true
+doubleUlpEquals	3ff0000000000000 3ff0000000000000 2	true
+doubleUlpEquals	3ff0000000000000 3ff0000000000000 2147483647	true
+doubleUlpEquals	3ff0000000000000 3ff0000000000001 0	false
+doubleUlpEquals	3ff0000000000000 3ff0000000000001 1	true
+doubleUlpEquals	3ff0000000000000 3ff0000000000001 2	true
+doubleUlpEquals	3ff0000000000000 3ff0000000000001 2147483647	true
+doubleUlpEquals	3ff0000000000000 3fefffffffffffff 0	false
+doubleUlpEquals	3ff0000000000000 3fefffffffffffff 1	true
+doubleUlpEquals	3ff0000000000000 3fefffffffffffff 2	true
+doubleUlpEquals	3ff0000000000000 3fefffffffffffff 2147483647	true
+doubleUlpEquals	3ff0000000000000 1 0	false
+doubleUlpEquals	3ff0000000000000 1 1	false
+doubleUlpEquals	3ff0000000000000 1 2	false
+doubleUlpEquals	3ff0000000000000 1 2147483647	false
+doubleUlpEquals	3ff0000000000000 8000000000000001 0	false
+doubleUlpEquals	3ff0000000000000 8000000000000001 1	false
+doubleUlpEquals	3ff0000000000000 8000000000000001 2	false
+doubleUlpEquals	3ff0000000000000 8000000000000001 2147483647	false
+doubleUlpEquals	3ff0000000000000 7ff8000000000000 0	false
+doubleUlpEquals	3ff0000000000000 7ff8000000000000 1	false
+doubleUlpEquals	3ff0000000000000 7ff8000000000000 2	false
+doubleUlpEquals	3ff0000000000000 7ff8000000000000 2147483647	false
+doubleUlpEquals	3ff0000000000000 fff0000000000000 0	false
+doubleUlpEquals	3ff0000000000000 fff0000000000000 1	false
+doubleUlpEquals	3ff0000000000000 fff0000000000000 2	false
+doubleUlpEquals	3ff0000000000000 fff0000000000000 2147483647	false
+doubleUlpEquals	3ff0000000000000 400c000000000000 0	false
+doubleUlpEquals	3ff0000000000000 400c000000000000 1	false
+doubleUlpEquals	3ff0000000000000 400c000000000000 2	false
+doubleUlpEquals	3ff0000000000000 400c000000000000 2147483647	false
+doubleUlpEquals	3ff0000000000001 0 0	false
+doubleUlpEquals	3ff0000000000001 0 1	false
+doubleUlpEquals	3ff0000000000001 0 2	false
+doubleUlpEquals	3ff0000000000001 0 2147483647	false
+doubleUlpEquals	3ff0000000000001 8000000000000000 0	false
+doubleUlpEquals	3ff0000000000001 8000000000000000 1	false
+doubleUlpEquals	3ff0000000000001 8000000000000000 2	false
+doubleUlpEquals	3ff0000000000001 8000000000000000 2147483647	false
+doubleUlpEquals	3ff0000000000001 3ff0000000000000 0	false
+doubleUlpEquals	3ff0000000000001 3ff0000000000000 1	true
+doubleUlpEquals	3ff0000000000001 3ff0000000000000 2	true
+doubleUlpEquals	3ff0000000000001 3ff0000000000000 2147483647	true
+doubleUlpEquals	3ff0000000000001 3ff0000000000001 0	true
+doubleUlpEquals	3ff0000000000001 3ff0000000000001 1	true
+doubleUlpEquals	3ff0000000000001 3ff0000000000001 2	true
+doubleUlpEquals	3ff0000000000001 3ff0000000000001 2147483647	true
+doubleUlpEquals	3ff0000000000001 3fefffffffffffff 0	false
+doubleUlpEquals	3ff0000000000001 3fefffffffffffff 1	false
+doubleUlpEquals	3ff0000000000001 3fefffffffffffff 2	true
+doubleUlpEquals	3ff0000000000001 3fefffffffffffff 2147483647	true
+doubleUlpEquals	3ff0000000000001 1 0	false
+doubleUlpEquals	3ff0000000000001 1 1	false
+doubleUlpEquals	3ff0000000000001 1 2	false
+doubleUlpEquals	3ff0000000000001 1 2147483647	false
+doubleUlpEquals	3ff0000000000001 8000000000000001 0	false
+doubleUlpEquals	3ff0000000000001 8000000000000001 1	false
+doubleUlpEquals	3ff0000000000001 8000000000000001 2	false
+doubleUlpEquals	3ff0000000000001 8000000000000001 2147483647	false
+doubleUlpEquals	3ff0000000000001 7ff8000000000000 0	false
+doubleUlpEquals	3ff0000000000001 7ff8000000000000 1	false
+doubleUlpEquals	3ff0000000000001 7ff8000000000000 2	false
+doubleUlpEquals	3ff0000000000001 7ff8000000000000 2147483647	false
+doubleUlpEquals	3ff0000000000001 fff0000000000000 0	false
+doubleUlpEquals	3ff0000000000001 fff0000000000000 1	false
+doubleUlpEquals	3ff0000000000001 fff0000000000000 2	false
+doubleUlpEquals	3ff0000000000001 fff0000000000000 2147483647	false
+doubleUlpEquals	3ff0000000000001 400c000000000000 0	false
+doubleUlpEquals	3ff0000000000001 400c000000000000 1	false
+doubleUlpEquals	3ff0000000000001 400c000000000000 2	false
+doubleUlpEquals	3ff0000000000001 400c000000000000 2147483647	false
+doubleUlpEquals	3fefffffffffffff 0 0	false
+doubleUlpEquals	3fefffffffffffff 0 1	false
+doubleUlpEquals	3fefffffffffffff 0 2	false
+doubleUlpEquals	3fefffffffffffff 0 2147483647	false
+doubleUlpEquals	3fefffffffffffff 8000000000000000 0	false
+doubleUlpEquals	3fefffffffffffff 8000000000000000 1	false
+doubleUlpEquals	3fefffffffffffff 8000000000000000 2	false
+doubleUlpEquals	3fefffffffffffff 8000000000000000 2147483647	false
+doubleUlpEquals	3fefffffffffffff 3ff0000000000000 0	false
+doubleUlpEquals	3fefffffffffffff 3ff0000000000000 1	true
+doubleUlpEquals	3fefffffffffffff 3ff0000000000000 2	true
+doubleUlpEquals	3fefffffffffffff 3ff0000000000000 2147483647	true
+doubleUlpEquals	3fefffffffffffff 3ff0000000000001 0	false
+doubleUlpEquals	3fefffffffffffff 3ff0000000000001 1	false
+doubleUlpEquals	3fefffffffffffff 3ff0000000000001 2	true
+doubleUlpEquals	3fefffffffffffff 3ff0000000000001 2147483647	true
+doubleUlpEquals	3fefffffffffffff 3fefffffffffffff 0	true
+doubleUlpEquals	3fefffffffffffff 3fefffffffffffff 1	true
+doubleUlpEquals	3fefffffffffffff 3fefffffffffffff 2	true
+doubleUlpEquals	3fefffffffffffff 3fefffffffffffff 2147483647	true
+doubleUlpEquals	3fefffffffffffff 1 0	false
+doubleUlpEquals	3fefffffffffffff 1 1	false
+doubleUlpEquals	3fefffffffffffff 1 2	false
+doubleUlpEquals	3fefffffffffffff 1 2147483647	false
+doubleUlpEquals	3fefffffffffffff 8000000000000001 0	false
+doubleUlpEquals	3fefffffffffffff 8000000000000001 1	false
+doubleUlpEquals	3fefffffffffffff 8000000000000001 2	false
+doubleUlpEquals	3fefffffffffffff 8000000000000001 2147483647	false
+doubleUlpEquals	3fefffffffffffff 7ff8000000000000 0	false
+doubleUlpEquals	3fefffffffffffff 7ff8000000000000 1	false
+doubleUlpEquals	3fefffffffffffff 7ff8000000000000 2	false
+doubleUlpEquals	3fefffffffffffff 7ff8000000000000 2147483647	false
+doubleUlpEquals	3fefffffffffffff fff0000000000000 0	false
+doubleUlpEquals	3fefffffffffffff fff0000000000000 1	false
+doubleUlpEquals	3fefffffffffffff fff0000000000000 2	false
+doubleUlpEquals	3fefffffffffffff fff0000000000000 2147483647	false
+doubleUlpEquals	3fefffffffffffff 400c000000000000 0	false
+doubleUlpEquals	3fefffffffffffff 400c000000000000 1	false
+doubleUlpEquals	3fefffffffffffff 400c000000000000 2	false
+doubleUlpEquals	3fefffffffffffff 400c000000000000 2147483647	false
+doubleUlpEquals	1 0 0	false
+doubleUlpEquals	1 0 1	true
+doubleUlpEquals	1 0 2	true
+doubleUlpEquals	1 0 2147483647	true
+doubleUlpEquals	1 8000000000000000 0	false
+doubleUlpEquals	1 8000000000000000 1	true
+doubleUlpEquals	1 8000000000000000 2	true
+doubleUlpEquals	1 8000000000000000 2147483647	true
+doubleUlpEquals	1 3ff0000000000000 0	false
+doubleUlpEquals	1 3ff0000000000000 1	false
+doubleUlpEquals	1 3ff0000000000000 2	false
+doubleUlpEquals	1 3ff0000000000000 2147483647	false
+doubleUlpEquals	1 3ff0000000000001 0	false
+doubleUlpEquals	1 3ff0000000000001 1	false
+doubleUlpEquals	1 3ff0000000000001 2	false
+doubleUlpEquals	1 3ff0000000000001 2147483647	false
+doubleUlpEquals	1 3fefffffffffffff 0	false
+doubleUlpEquals	1 3fefffffffffffff 1	false
+doubleUlpEquals	1 3fefffffffffffff 2	false
+doubleUlpEquals	1 3fefffffffffffff 2147483647	false
+doubleUlpEquals	1 1 0	true
+doubleUlpEquals	1 1 1	true
+doubleUlpEquals	1 1 2	true
+doubleUlpEquals	1 1 2147483647	true
+doubleUlpEquals	1 8000000000000001 0	false
+doubleUlpEquals	1 8000000000000001 1	false
+doubleUlpEquals	1 8000000000000001 2	true
+doubleUlpEquals	1 8000000000000001 2147483647	true
+doubleUlpEquals	1 7ff8000000000000 0	false
+doubleUlpEquals	1 7ff8000000000000 1	false
+doubleUlpEquals	1 7ff8000000000000 2	false
+doubleUlpEquals	1 7ff8000000000000 2147483647	false
+doubleUlpEquals	1 fff0000000000000 0	false
+doubleUlpEquals	1 fff0000000000000 1	false
+doubleUlpEquals	1 fff0000000000000 2	false
+doubleUlpEquals	1 fff0000000000000 2147483647	false
+doubleUlpEquals	1 400c000000000000 0	false
+doubleUlpEquals	1 400c000000000000 1	false
+doubleUlpEquals	1 400c000000000000 2	false
+doubleUlpEquals	1 400c000000000000 2147483647	false
+doubleUlpEquals	8000000000000001 0 0	false
+doubleUlpEquals	8000000000000001 0 1	true
+doubleUlpEquals	8000000000000001 0 2	true
+doubleUlpEquals	8000000000000001 0 2147483647	true
+doubleUlpEquals	8000000000000001 8000000000000000 0	false
+doubleUlpEquals	8000000000000001 8000000000000000 1	true
+doubleUlpEquals	8000000000000001 8000000000000000 2	true
+doubleUlpEquals	8000000000000001 8000000000000000 2147483647	true
+doubleUlpEquals	8000000000000001 3ff0000000000000 0	false
+doubleUlpEquals	8000000000000001 3ff0000000000000 1	false
+doubleUlpEquals	8000000000000001 3ff0000000000000 2	false
+doubleUlpEquals	8000000000000001 3ff0000000000000 2147483647	false
+doubleUlpEquals	8000000000000001 3ff0000000000001 0	false
+doubleUlpEquals	8000000000000001 3ff0000000000001 1	false
+doubleUlpEquals	8000000000000001 3ff0000000000001 2	false
+doubleUlpEquals	8000000000000001 3ff0000000000001 2147483647	false
+doubleUlpEquals	8000000000000001 3fefffffffffffff 0	false
+doubleUlpEquals	8000000000000001 3fefffffffffffff 1	false
+doubleUlpEquals	8000000000000001 3fefffffffffffff 2	false
+doubleUlpEquals	8000000000000001 3fefffffffffffff 2147483647	false
+doubleUlpEquals	8000000000000001 1 0	false
+doubleUlpEquals	8000000000000001 1 1	false
+doubleUlpEquals	8000000000000001 1 2	true
+doubleUlpEquals	8000000000000001 1 2147483647	true
+doubleUlpEquals	8000000000000001 8000000000000001 0	true
+doubleUlpEquals	8000000000000001 8000000000000001 1	true
+doubleUlpEquals	8000000000000001 8000000000000001 2	true
+doubleUlpEquals	8000000000000001 8000000000000001 2147483647	true
+doubleUlpEquals	8000000000000001 7ff8000000000000 0	false
+doubleUlpEquals	8000000000000001 7ff8000000000000 1	false
+doubleUlpEquals	8000000000000001 7ff8000000000000 2	false
+doubleUlpEquals	8000000000000001 7ff8000000000000 2147483647	false
+doubleUlpEquals	8000000000000001 fff0000000000000 0	false
+doubleUlpEquals	8000000000000001 fff0000000000000 1	false
+doubleUlpEquals	8000000000000001 fff0000000000000 2	false
+doubleUlpEquals	8000000000000001 fff0000000000000 2147483647	false
+doubleUlpEquals	8000000000000001 400c000000000000 0	false
+doubleUlpEquals	8000000000000001 400c000000000000 1	false
+doubleUlpEquals	8000000000000001 400c000000000000 2	false
+doubleUlpEquals	8000000000000001 400c000000000000 2147483647	false
+doubleUlpEquals	7ff8000000000000 0 0	false
+doubleUlpEquals	7ff8000000000000 0 1	false
+doubleUlpEquals	7ff8000000000000 0 2	false
+doubleUlpEquals	7ff8000000000000 0 2147483647	false
+doubleUlpEquals	7ff8000000000000 8000000000000000 0	false
+doubleUlpEquals	7ff8000000000000 8000000000000000 1	false
+doubleUlpEquals	7ff8000000000000 8000000000000000 2	false
+doubleUlpEquals	7ff8000000000000 8000000000000000 2147483647	false
+doubleUlpEquals	7ff8000000000000 3ff0000000000000 0	false
+doubleUlpEquals	7ff8000000000000 3ff0000000000000 1	false
+doubleUlpEquals	7ff8000000000000 3ff0000000000000 2	false
+doubleUlpEquals	7ff8000000000000 3ff0000000000000 2147483647	false
+doubleUlpEquals	7ff8000000000000 3ff0000000000001 0	false
+doubleUlpEquals	7ff8000000000000 3ff0000000000001 1	false
+doubleUlpEquals	7ff8000000000000 3ff0000000000001 2	false
+doubleUlpEquals	7ff8000000000000 3ff0000000000001 2147483647	false
+doubleUlpEquals	7ff8000000000000 3fefffffffffffff 0	false
+doubleUlpEquals	7ff8000000000000 3fefffffffffffff 1	false
+doubleUlpEquals	7ff8000000000000 3fefffffffffffff 2	false
+doubleUlpEquals	7ff8000000000000 3fefffffffffffff 2147483647	false
+doubleUlpEquals	7ff8000000000000 1 0	false
+doubleUlpEquals	7ff8000000000000 1 1	false
+doubleUlpEquals	7ff8000000000000 1 2	false
+doubleUlpEquals	7ff8000000000000 1 2147483647	false
+doubleUlpEquals	7ff8000000000000 8000000000000001 0	false
+doubleUlpEquals	7ff8000000000000 8000000000000001 1	false
+doubleUlpEquals	7ff8000000000000 8000000000000001 2	false
+doubleUlpEquals	7ff8000000000000 8000000000000001 2147483647	false
+doubleUlpEquals	7ff8000000000000 7ff8000000000000 0	false
+doubleUlpEquals	7ff8000000000000 7ff8000000000000 1	false
+doubleUlpEquals	7ff8000000000000 7ff8000000000000 2	false
+doubleUlpEquals	7ff8000000000000 7ff8000000000000 2147483647	false
+doubleUlpEquals	7ff8000000000000 fff0000000000000 0	false
+doubleUlpEquals	7ff8000000000000 fff0000000000000 1	false
+doubleUlpEquals	7ff8000000000000 fff0000000000000 2	false
+doubleUlpEquals	7ff8000000000000 fff0000000000000 2147483647	false
+doubleUlpEquals	7ff8000000000000 400c000000000000 0	false
+doubleUlpEquals	7ff8000000000000 400c000000000000 1	false
+doubleUlpEquals	7ff8000000000000 400c000000000000 2	false
+doubleUlpEquals	7ff8000000000000 400c000000000000 2147483647	false
+doubleUlpEquals	fff0000000000000 0 0	false
+doubleUlpEquals	fff0000000000000 0 1	false
+doubleUlpEquals	fff0000000000000 0 2	false
+doubleUlpEquals	fff0000000000000 0 2147483647	false
+doubleUlpEquals	fff0000000000000 8000000000000000 0	false
+doubleUlpEquals	fff0000000000000 8000000000000000 1	false
+doubleUlpEquals	fff0000000000000 8000000000000000 2	false
+doubleUlpEquals	fff0000000000000 8000000000000000 2147483647	false
+doubleUlpEquals	fff0000000000000 3ff0000000000000 0	false
+doubleUlpEquals	fff0000000000000 3ff0000000000000 1	false
+doubleUlpEquals	fff0000000000000 3ff0000000000000 2	false
+doubleUlpEquals	fff0000000000000 3ff0000000000000 2147483647	false
+doubleUlpEquals	fff0000000000000 3ff0000000000001 0	false
+doubleUlpEquals	fff0000000000000 3ff0000000000001 1	false
+doubleUlpEquals	fff0000000000000 3ff0000000000001 2	false
+doubleUlpEquals	fff0000000000000 3ff0000000000001 2147483647	false
+doubleUlpEquals	fff0000000000000 3fefffffffffffff 0	false
+doubleUlpEquals	fff0000000000000 3fefffffffffffff 1	false
+doubleUlpEquals	fff0000000000000 3fefffffffffffff 2	false
+doubleUlpEquals	fff0000000000000 3fefffffffffffff 2147483647	false
+doubleUlpEquals	fff0000000000000 1 0	false
+doubleUlpEquals	fff0000000000000 1 1	false
+doubleUlpEquals	fff0000000000000 1 2	false
+doubleUlpEquals	fff0000000000000 1 2147483647	false
+doubleUlpEquals	fff0000000000000 8000000000000001 0	false
+doubleUlpEquals	fff0000000000000 8000000000000001 1	false
+doubleUlpEquals	fff0000000000000 8000000000000001 2	false
+doubleUlpEquals	fff0000000000000 8000000000000001 2147483647	false
+doubleUlpEquals	fff0000000000000 7ff8000000000000 0	false
+doubleUlpEquals	fff0000000000000 7ff8000000000000 1	false
+doubleUlpEquals	fff0000000000000 7ff8000000000000 2	false
+doubleUlpEquals	fff0000000000000 7ff8000000000000 2147483647	false
+doubleUlpEquals	fff0000000000000 fff0000000000000 0	true
+doubleUlpEquals	fff0000000000000 fff0000000000000 1	true
+doubleUlpEquals	fff0000000000000 fff0000000000000 2	true
+doubleUlpEquals	fff0000000000000 fff0000000000000 2147483647	true
+doubleUlpEquals	fff0000000000000 400c000000000000 0	false
+doubleUlpEquals	fff0000000000000 400c000000000000 1	false
+doubleUlpEquals	fff0000000000000 400c000000000000 2	false
+doubleUlpEquals	fff0000000000000 400c000000000000 2147483647	false
+doubleUlpEquals	400c000000000000 0 0	false
+doubleUlpEquals	400c000000000000 0 1	false
+doubleUlpEquals	400c000000000000 0 2	false
+doubleUlpEquals	400c000000000000 0 2147483647	false
+doubleUlpEquals	400c000000000000 8000000000000000 0	false
+doubleUlpEquals	400c000000000000 8000000000000000 1	false
+doubleUlpEquals	400c000000000000 8000000000000000 2	false
+doubleUlpEquals	400c000000000000 8000000000000000 2147483647	false
+doubleUlpEquals	400c000000000000 3ff0000000000000 0	false
+doubleUlpEquals	400c000000000000 3ff0000000000000 1	false
+doubleUlpEquals	400c000000000000 3ff0000000000000 2	false
+doubleUlpEquals	400c000000000000 3ff0000000000000 2147483647	false
+doubleUlpEquals	400c000000000000 3ff0000000000001 0	false
+doubleUlpEquals	400c000000000000 3ff0000000000001 1	false
+doubleUlpEquals	400c000000000000 3ff0000000000001 2	false
+doubleUlpEquals	400c000000000000 3ff0000000000001 2147483647	false
+doubleUlpEquals	400c000000000000 3fefffffffffffff 0	false
+doubleUlpEquals	400c000000000000 3fefffffffffffff 1	false
+doubleUlpEquals	400c000000000000 3fefffffffffffff 2	false
+doubleUlpEquals	400c000000000000 3fefffffffffffff 2147483647	false
+doubleUlpEquals	400c000000000000 1 0	false
+doubleUlpEquals	400c000000000000 1 1	false
+doubleUlpEquals	400c000000000000 1 2	false
+doubleUlpEquals	400c000000000000 1 2147483647	false
+doubleUlpEquals	400c000000000000 8000000000000001 0	false
+doubleUlpEquals	400c000000000000 8000000000000001 1	false
+doubleUlpEquals	400c000000000000 8000000000000001 2	false
+doubleUlpEquals	400c000000000000 8000000000000001 2147483647	false
+doubleUlpEquals	400c000000000000 7ff8000000000000 0	false
+doubleUlpEquals	400c000000000000 7ff8000000000000 1	false
+doubleUlpEquals	400c000000000000 7ff8000000000000 2	false
+doubleUlpEquals	400c000000000000 7ff8000000000000 2147483647	false
+doubleUlpEquals	400c000000000000 fff0000000000000 0	false
+doubleUlpEquals	400c000000000000 fff0000000000000 1	false
+doubleUlpEquals	400c000000000000 fff0000000000000 2	false
+doubleUlpEquals	400c000000000000 fff0000000000000 2147483647	false
+doubleUlpEquals	400c000000000000 400c000000000000 0	true
+doubleUlpEquals	400c000000000000 400c000000000000 1	true
+doubleUlpEquals	400c000000000000 400c000000000000 2	true
+doubleUlpEquals	400c000000000000 400c000000000000 2147483647	true

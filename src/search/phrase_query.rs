@@ -170,6 +170,15 @@ impl Ord for PostingsAndFreq {
     }
 }
 
+/// The `NullPointerException` of `Objects.requireNonNull(term, "Cannot add a
+/// null term to PhraseQuery")` (`PhraseQuery.java:127,177,215,224`).
+fn null_term() -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.NullPointerException",
+        "Cannot add a null term to PhraseQuery",
+    )
+}
+
 /// A builder for phrase queries.
 ///
 /// Equivalent to `PhraseQuery.Builder`.
@@ -230,6 +239,25 @@ impl Builder {
         self.add_at(term, position)
     }
 
+    /// [`add`](Self::add) over a term that may be Java's `null` (`None`).
+    ///
+    /// Equivalent to `Builder.add(Term)` called with a possibly null term:
+    /// `Builder.add(Term, int)` starts with
+    /// `Objects.requireNonNull(term, "Cannot add a null term to PhraseQuery")`
+    /// (`PhraseQuery.java:127`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `java.lang.NullPointerException` (as
+    /// [`LuceneErrorKind::Unchecked`](crate::error::LuceneErrorKind::Unchecked)) for `None`; otherwise as
+    /// [`add`](Self::add).
+    pub fn add_nullable(&mut self, term: Option<Term>) -> Result<&mut Self> {
+        match term {
+            Some(term) => self.add(term),
+            None => Err(null_term()),
+        }
+    }
+
     /// Adds a term to the end of the query phrase at an explicit position,
     /// which must be greater than or equal to that of the previously added
     /// term.
@@ -242,26 +270,26 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the position is negative,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the position is negative,
     /// when it goes backwards, when the term is on another field than the first
     /// one, or when the maximum number of terms is exceeded — the four
     /// `IllegalArgumentException`s Java throws.
     pub fn add_at(&mut self, term: Term, position: i32) -> Result<&mut Self> {
         if position < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Positions must be >= 0, got {position}"
             )));
         }
         if let Some(&last_position) = self.positions.last() {
             if position < last_position {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Positions must be added in order, got {position} after {last_position}"
                 )));
             }
         }
         if let Some(first) = self.terms.first() {
             if term.field() != first.field() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "All terms must be on the same field, got {} and {}",
                     term.field(),
                     first.field()
@@ -269,7 +297,7 @@ impl Builder {
             }
         }
         if self.max_terms > 0 && self.terms.len() >= self.max_terms as usize {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "The current number of terms is {}, which exceeds the limit of {}",
                 self.terms.len(),
                 self.max_terms
@@ -323,39 +351,39 @@ impl PhraseQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when there are not as many
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when there are not as many
     /// terms as positions, when the slop is negative, when the terms are not
     /// all on the same field, when a position is negative, or when the
     /// positions go backwards — the five `IllegalArgumentException`s Java
     /// throws.
     pub fn new(slop: i32, terms: Vec<Term>, positions: Vec<i32>) -> Result<Self> {
         if terms.len() != positions.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Must have as many terms as positions".to_string(),
             ));
         }
         if slop < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Slop must be >= 0, got {slop}"
             )));
         }
         for i in 1..terms.len() {
             if terms[i - 1].field() != terms[i].field() {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "All terms should have the same field".to_string(),
                 ));
             }
         }
         for &position in &positions {
             if position < 0 {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Positions must be >= 0, got {position}"
                 )));
             }
         }
         for i in 1..positions.len() {
             if positions[i] < positions[i - 1] {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Positions should not go backwards, got {} before {}",
                     positions[i - 1],
                     positions[i]
@@ -407,6 +435,48 @@ impl PhraseQuery {
             .iter()
             .map(|b| Term::new(field, b.clone()))
             .collect()
+    }
+
+    /// [`from_strings`](Self::from_strings) over term strings that may be
+    /// Java's `null` (`None`).
+    ///
+    /// Equivalent to `PhraseQuery(String, String...)`, whose private
+    /// `toTerms(String, String...)` checks each string with
+    /// `Objects.requireNonNull(termStrings[i], "Cannot add a null term to
+    /// PhraseQuery")` (`PhraseQuery.java:215`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `java.lang.NullPointerException` (as
+    /// [`LuceneErrorKind::Unchecked`](crate::error::LuceneErrorKind::Unchecked)) for a `None` string; otherwise as
+    /// [`new`](Self::new).
+    pub fn from_nullable_strings(field: &str, terms: &[Option<&str>]) -> Result<Self> {
+        let mut strings = Vec::with_capacity(terms.len());
+        for t in terms {
+            strings.push(t.ok_or_else(null_term)?);
+        }
+        Self::from_strings(field, &strings)
+    }
+
+    /// [`from_bytes`](Self::from_bytes) over term bytes that may be Java's
+    /// `null` (`None`).
+    ///
+    /// Equivalent to `PhraseQuery(String, BytesRef...)`, whose private
+    /// `toTerms(String, BytesRef...)` checks each term with
+    /// `Objects.requireNonNull(termBytes[i], "Cannot add a null term to
+    /// PhraseQuery")` (`PhraseQuery.java:224`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `java.lang.NullPointerException` (as
+    /// [`LuceneErrorKind::Unchecked`](crate::error::LuceneErrorKind::Unchecked)) for a `None` term; otherwise as
+    /// [`new`](Self::new).
+    pub fn from_nullable_bytes(field: &str, terms: &[Option<BytesRef>]) -> Result<Self> {
+        let mut bytes = Vec::with_capacity(terms.len());
+        for t in terms {
+            bytes.push(t.clone().ok_or_else(null_term)?);
+        }
+        Self::from_bytes(field, &bytes)
     }
 
     /// Returns whether `term` is absent from `reader`.
@@ -768,7 +838,10 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
             let postings: Box<dyn ImpactsEnum> = if self.score_mode == ScoreMode::TOP_SCORES {
                 te.impacts(flags)?
             } else {
-                Box::new(SlowImpactsEnum::new(te.postings(None, flags)?))
+                Box::new(SlowImpactsEnum::new(
+                    te.postings(None, flags)?
+                        .ok_or_else(LuceneError::null_pointer)?,
+                ))
             };
             postings_freqs.push(PostingsAndFreq::new(
                 SharedPostings::new(postings),

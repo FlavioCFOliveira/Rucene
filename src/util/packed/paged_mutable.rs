@@ -45,7 +45,7 @@ impl AbstractPagedMutable {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_BLOCK_SIZE, MAX_BLOCK_SIZE]`, or when `size` is
     /// negative or too large for that page size.
     pub fn new(bits_per_value: i32, size: i64, page_size: usize) -> Result<Self> {
@@ -367,7 +367,7 @@ impl PagedMutable {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when the page size or the size
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the page size or the size
     /// is out of bounds, or the chosen format cannot store the width.
     pub fn new(
         size: i64,
@@ -398,7 +398,7 @@ impl PagedMutable {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when the page size or the size
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the page size or the size
     /// is out of bounds.
     pub fn with_format(
         size: i64,
@@ -518,7 +518,7 @@ impl PagedGrowableWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when the page size or the size
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the page size or the size
     /// is out of bounds, or `start_bits_per_value` is not a usable width.
     pub fn new(
         size: i64,
@@ -542,7 +542,7 @@ impl PagedGrowableWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when the page size or the size
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the page size or the size
     /// is out of bounds, or `start_bits_per_value` is not a usable width.
     pub fn with_fill(
         size: i64,

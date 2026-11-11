@@ -58,14 +58,18 @@ impl BitsSlice {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `slice.start` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `slice.start` or
     /// `slice.length` is negative.
     pub fn new(parent: Box<dyn Bits>, slice: ReaderSlice) -> Result<Self> {
+        debug_assert!(slice.length >= 0, "length={}", slice.length);
         let start = usize::try_from(slice.start).map_err(|_| {
-            LuceneError::IllegalArgument(format!("slice start must be >= 0; got {}", slice.start))
+            LuceneError::illegal_argument(format!("slice start must be >= 0; got {}", slice.start))
         })?;
         let length = usize::try_from(slice.length).map_err(|_| {
-            LuceneError::IllegalArgument(format!("slice length must be >= 0; got {}", slice.length))
+            LuceneError::illegal_argument(format!(
+                "slice length must be >= 0; got {}",
+                slice.length
+            ))
         })?;
         Ok(Self {
             parent,
@@ -183,7 +187,7 @@ impl MultiBits {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`]
+    /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed)
     /// when `reader` has deletions and is closed, as Java's `reader.leaves()`
     /// fails.
     pub fn get_live_docs(reader: &Arc<dyn IndexReader>) -> Result<Option<Box<dyn Bits>>> {
@@ -250,26 +254,20 @@ impl Bits for MultiBits {
     /// bit, or [`default_value`](Self::default_value) when that sub-reader
     /// contributed no bitset.
     ///
+    /// Equivalent to `MultiBits.get(int)` (`MultiBits.java:89-99`).
+    ///
     /// # Panics
     ///
-    /// Panics if `doc` is outside `0..length()`. Java raises
-    /// `ArrayIndexOutOfBoundsException` from the same situation, having walked
-    /// off the end of its `subs` array; the bound is checked up front here so
-    /// the failure names the real problem.
+    /// Panics if `doc` is not below `length()`: `subs[reader]` indexes past
+    /// the end of the subs, where Java raises
+    /// `ArrayIndexOutOfBoundsException` from the same lookup.
     fn get(&self, doc: usize) -> bool {
-        let length = self.length();
-        assert!(
-            doc < length,
-            "doc {doc} out of bounds for reader with maxDoc {length}"
-        );
-
-        // `doc < length` and `length` came from an `i32`, so this is lossless.
         let reader = reader_util::sub_index(doc as i32, &self.starts);
-        let sub = self
-            .subs
-            .get(reader)
-            .expect("INVARIANT: doc < length() keeps sub_index() inside subs");
-        match sub {
+        debug_assert!(reader != -1);
+        let reader = reader as usize;
+        // `subs[reader]`: past the last sub this panics as Java's array access
+        // throws `ArrayIndexOutOfBoundsException`.
+        match &self.subs[reader] {
             None => self.default_value,
             Some(bits) => {
                 debug_assert!(self.check_length(reader, doc));
@@ -287,17 +285,12 @@ impl Bits for MultiBits {
     ///
     /// As [`get`](Self::get).
     fn try_get(&self, doc: usize) -> Result<bool> {
-        let length = self.length();
-        assert!(
-            doc < length,
-            "doc {doc} out of bounds for reader with maxDoc {length}"
-        );
         let reader = reader_util::sub_index(doc as i32, &self.starts);
-        let sub = self
-            .subs
-            .get(reader)
-            .expect("INVARIANT: doc < length() keeps sub_index() inside subs");
-        match sub {
+        debug_assert!(reader != -1);
+        let reader = reader as usize;
+        // `subs[reader]`: past the last sub this panics as Java's array access
+        // throws `ArrayIndexOutOfBoundsException`.
+        match &self.subs[reader] {
             None => Ok(self.default_value),
             Some(bits) => {
                 debug_assert!(self.check_length(reader, doc));
@@ -348,6 +341,7 @@ impl Debug for MultiBits {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use std::collections::HashSet;
 
     use crate::codecs::stub::StoredFieldVisitor;
@@ -731,18 +725,31 @@ mod tests {
         let _ = slice.get(0);
     }
 
+    /// `BitsSlice(Bits, ReaderSlice)` asserts `length >= 0`
+    /// (`BitsSlice.java:37`): a debug build fails it; without assertions this
+    /// port refuses the slice.
     #[test]
-    fn bits_slice_rejects_negative_bounds() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "length=-1"))]
+    fn bits_slice_asserts_a_negative_length() {
         let negative_length = BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(0, -1, 0));
         assert!(matches!(
             negative_length,
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
+    }
 
+    #[test]
+    fn bits_slice_rejects_a_negative_start() {
         let negative_start = BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(-1, 1, 0));
         assert!(matches!(
             negative_start,
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -856,14 +863,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "doc 9 out of bounds for reader with maxDoc 9")]
+    #[should_panic(expected = "index out of bounds: the len is 3 but the index is 3")]
     fn multi_bits_rejects_doc_at_max_doc() {
-        // Java walks off the end of its subs array here; the bound is named.
+        // Java walks off the end of its subs array here
+        // (`ArrayIndexOutOfBoundsException`), and so does the port.
         let _ = three_subs().get(9);
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds for reader with maxDoc 9")]
+    #[should_panic(expected = "index out of bounds: the len is 3 but the index is 3")]
     fn multi_bits_rejects_doc_past_max_doc() {
         let _ = three_subs().get(100);
     }

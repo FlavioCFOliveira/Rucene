@@ -400,7 +400,7 @@ fn buffered_checksum_index_input_reads_and_checksums_as_java() {
     let i = input.read_int().unwrap();
     let l = input.read_long().unwrap();
     let mut dst = [0i64; 7];
-    input.read_longs(&mut dst, 1, 5).unwrap();
+    input.read_longs(Some(&mut dst), 1, 5).unwrap();
     let tail = input.read_short().unwrap();
     let checksum = input.get_checksum().unwrap();
     let dst_text = format!(
@@ -457,7 +457,7 @@ fn buffered_checksum_index_input_checksums_only_whole_values() {
             "short" => input.read_short().map(|_| ()),
             "int" => input.read_int().map(|_| ()),
             "long" => input.read_long().map(|_| ()),
-            _ => input.read_longs(&mut [0i64; 2], 0, 2),
+            _ => input.read_longs(Some(&mut [0i64; 2]), 0, 2),
         };
         assert_eq!(
             if outcome.is_ok() { "read" } else { "eof" },
@@ -484,7 +484,7 @@ fn stored_fields_impl_builds_the_format_java_builds() {
         (Mode::BestSpeed, "BEST_SPEED"),
         (Mode::BestCompression, "BEST_COMPRESSION"),
     ] {
-        let format = Lucene90StoredFieldsFormat::with_mode(mode);
+        let format = Lucene90StoredFieldsFormat::with_mode(Some(mode)).unwrap();
         assert_eq!(
             format.impl_for_mode(mode).to_string(),
             row("sfimpl", name)[0],
@@ -775,10 +775,23 @@ fn pattern_errors_carry_java_messages() {
         let pattern = unhex(&r[2]);
         let mut args = HashMap::from([("pattern".to_string(), pattern.clone())]);
         match AbstractAnalysisFactory::get_pattern(&mut args, "pattern", PROBE_FACTORY) {
-            Err(rucene::error::LuceneError::IllegalArgumentWithCause { message, cause }) => {
+            Err(rucene::error::LuceneError {
+                kind:
+                    rucene::error::LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            }) => {
                 assert_eq!(message, r[3], "{pattern:?}");
                 assert!(
-                    matches!(&*cause, rucene::error::LuceneError::IllegalArgument(_)),
+                    matches!(
+                        &*cause,
+                        rucene::error::LuceneError {
+                            kind: rucene::error::LuceneErrorKind::IllegalArgument { .. },
+                            ..
+                        }
+                    ),
                     "{pattern:?}: {cause:?}"
                 );
             }
@@ -789,7 +802,10 @@ fn pattern_errors_carry_java_messages() {
 
     let mut empty = HashMap::new();
     match AbstractAnalysisFactory::get_pattern(&mut empty, "pattern", PROBE_FACTORY) {
-        Err(rucene::error::LuceneError::IllegalArgument(message)) => {
+        Err(rucene::error::LuceneError {
+            kind: rucene::error::LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        }) => {
             assert_eq!(message, row("pat", "missing")[0])
         }
         other => panic!("a missing argument must be refused, got {other:?}"),
@@ -887,43 +903,64 @@ fn char_array_map_entry_set_writes_as_java() {
     assert_eq!(map.create_entry_set().size().to_string(), get("size"));
 
     let set_a = {
-        let mut entries = map.create_entry_set();
-        let mut entry = entries
-            .iter_mut()
-            .find(|e| e.get_key() == ['a'])
-            .expect("a is mapped");
-        let old = entry.set_value(10).unwrap();
-        format!("old={old},entry={entry}")
+        let mut iterator = map.create_entry_set().iterator();
+        let mut found = None;
+        while iterator.has_next(&map) {
+            let e = iterator.next(&map);
+            if e.get_key(&map) == [u16::from(b'a')] {
+                found = Some(e);
+                break;
+            }
+        }
+        let entry = found.expect("a is mapped");
+        let old = entry
+            .set_value(&mut map, 10)
+            .unwrap()
+            .expect("a had a value");
+        format!("old={old},entry={}", entry.to_string(&map))
     };
     assert_eq!(set_a, get("set_a"));
     assert_eq!(map.get("a").unwrap().to_string(), get("get_a"));
     assert_eq!(
-        map.create_entry_set().contains(&['a'], &10).to_string(),
+        map.create_entry_set()
+            .contains(&[u16::from(b'a')], &10)
+            .to_string(),
         get("contains_a10")
     );
     assert_eq!(
-        map.create_entry_set().contains(&['a'], &1).to_string(),
+        map.create_entry_set()
+            .contains(&[u16::from(b'a')], &1)
+            .to_string(),
         get("contains_a1")
     );
 
     let mut read_only = CharArrayMap::unmodifiable_map(map.copy());
     let set_ro = {
-        let mut entries = read_only.create_entry_set();
-        let mut entry = entries
-            .iter_mut()
-            .find(|e| e.get_key() == ['b'])
-            .expect("b is mapped");
-        match entry.set_value(20) {
-            Err(rucene::error::LuceneError::UnsupportedOperation(_)) => {
-                "UnsupportedOperationException".to_string()
+        let mut iterator = read_only.create_entry_set().iterator();
+        let mut found = None;
+        while iterator.has_next(&read_only) {
+            let e = iterator.next(&read_only);
+            if e.get_key(&read_only) == [u16::from(b'b')] {
+                found = Some(e);
+                break;
             }
+        }
+        let entry = found.expect("b is mapped");
+        match entry.set_value(&mut read_only, 20) {
+            Err(rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            }) => "UnsupportedOperationException".to_string(),
             other => format!("{other:?}"),
         }
     };
     assert_eq!(set_ro, get("set_ro"));
     assert_eq!(read_only.get("b").unwrap().to_string(), get("get_b"));
     let clear_ro = match read_only.create_entry_set().clear() {
-        Err(rucene::error::LuceneError::UnsupportedOperation(_)) => "UnsupportedOperationException",
+        Err(rucene::error::LuceneError {
+            kind: rucene::error::LuceneErrorKind::UnsupportedOperation { .. },
+            ..
+        }) => "UnsupportedOperationException",
         Err(_) => "other error",
         Ok(()) => "cleared",
     };

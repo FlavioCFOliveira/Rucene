@@ -99,9 +99,9 @@ fn build_index(name: &str) -> Arc<dyn DirectoryReader> {
     std::fs::create_dir_all(&tmp).expect("create the index directory");
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).expect("open the directory"));
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("no merges, so the segment layout is the one written");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..DOC_COUNT {

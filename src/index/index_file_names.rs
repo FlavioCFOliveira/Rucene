@@ -2,7 +2,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Name of the index segment file.
 ///
@@ -229,20 +229,38 @@ pub fn get_extension(filename: &str) -> Option<&str> {
 
 /// Returns the generation encoded in `filename`, or `0` if absent.
 ///
-/// Equivalent to `IndexFileNames.parseGeneration`.
+/// Equivalent to `IndexFileNames.parseGeneration` (`IndexFileNames.java:146-160`),
+/// which only asserts that `filename` starts with `'_'`.
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if the filename does not start with
-/// `'_'`.
+/// Returns Java's `StringIndexOutOfBoundsException` when the name without its
+/// extension is empty (`substring(1)`), and `LuceneErrorKind::IllegalArgument`
+/// (Java's `NumberFormatException`) when the generation is not base 36.
 pub fn parse_generation(filename: &str) -> Result<i64> {
-    if !filename.starts_with('_') {
-        return Err(LuceneError::IllegalArgument(format!(
-            "filename must start with '_': {filename}"
+    debug_assert!(filename.starts_with('_'));
+    let stripped = strip_extension(filename);
+    // `stripExtension(filename).substring(1)`.
+    let mut chars = stripped.chars();
+    if chars.next().is_none() {
+        return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+            "Range [1, 0) out of bounds for length 0".to_string(),
         )));
     }
-    let stripped = strip_extension(filename);
-    let parts: Vec<&str> = stripped[1..].split('_').collect();
+    let rest = chars.as_str();
+    // `String.split("_")`: without a match, the whole string; otherwise the
+    // pieces without the trailing empty ones.
+    let mut parts: Vec<&str> = rest.split('_').collect();
+    if parts.len() > 1 {
+        while parts.last() == Some(&"") {
+            parts.pop();
+        }
+    }
+    // 4 cases:
+    // segment.ext
+    // segment_gen.ext
+    // segment_codec_suffix.ext
+    // segment_gen_codec_suffix.ext
     if parts.len() == 2 || parts.len() == 4 {
         parse_radix36(parts[1])
     } else {
@@ -310,8 +328,9 @@ fn radix36(value: u64) -> String {
 
 /// Parses a base-36 string into an `i64`.
 fn parse_radix36(s: &str) -> Result<i64> {
-    i64::from_str_radix(s, 36)
-        .map_err(|e| LuceneError::IllegalArgument(format!("invalid base-36 generation '{s}': {e}")))
+    i64::from_str_radix(s, 36).map_err(|e| {
+        LuceneError::illegal_argument(format!("invalid base-36 generation '{s}': {e}"))
+    })
 }
 
 // -----------------------------------------------------------------------------
@@ -386,8 +405,22 @@ mod tests {
         assert!(!is_codec_file("_0"));
     }
 
+    /// Java only asserts the leading `'_'` (`IndexFileNames.java:147`): with
+    /// assertions enabled (debug builds) the assert fails; without, the first
+    /// character is dropped whatever it is.
     #[test]
-    fn parse_generation_rejects_missing_underscore() {
-        assert!(parse_generation("0.si").is_err());
+    #[cfg_attr(debug_assertions, should_panic(expected = "filename.starts_with('_')"))]
+    fn parse_generation_asserts_the_leading_underscore() {
+        assert_eq!(parse_generation("0_1.si").unwrap(), 1);
+    }
+
+    /// `String.split` drops trailing empty strings, and `substring(1)` of an
+    /// empty name throws.
+    #[test]
+    fn parse_generation_splits_as_java() {
+        assert_eq!(parse_generation("_0_.si").unwrap(), 0);
+        assert_eq!(parse_generation("_0__.si").unwrap(), 0);
+        assert_eq!(parse_generation("_0_1_.si").unwrap(), 1);
+        assert!(matches!(parse_generation("_.si"), Ok(0)));
     }
 }

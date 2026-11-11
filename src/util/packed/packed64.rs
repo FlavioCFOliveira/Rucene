@@ -49,19 +49,20 @@ impl Packed64 {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
-    /// or `bits_per_value` is outside `[1, 64]`, the bounds Lucene asserts.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
+    /// (Java's `NegativeArraySizeException`); the width is only asserted, as in
+    /// Lucene's `MutableImpl` constructor.
     pub fn new(value_count: i32, bits_per_value: i32) -> Result<Self> {
         if value_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
-        if !(1..=64).contains(&bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bitsPerValue must be in [1, 64], got {bits_per_value}"
-            )));
-        }
+        // `PackedInts.MutableImpl(int, int)` (`PackedInts.java:522-526`).
+        debug_assert!(
+            bits_per_value > 0 && bits_per_value <= 64,
+            "bitsPerValue={bits_per_value}"
+        );
         let long_count =
             Format::Packed.long_count(PackedInts::VERSION_CURRENT, value_count, bits_per_value)?;
         Ok(Self {
@@ -95,6 +96,10 @@ impl Packed64 {
 }
 
 impl PackedIntsReader for Packed64 {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get(&self, index: i32) -> i64 {
         // The abstract index in a bit stream
         let major_bit_pos = i64::from(index) * i64::from(self.bits_per_value);
@@ -408,6 +413,14 @@ impl Packed64SingleBlock {
             .is_ok()
     }
 
+    /// Returns the backing blocks.
+    ///
+    /// Equivalent to reading the package-private `Packed64SingleBlock.blocks`
+    /// field; public so that the test framework can model the Java object.
+    pub fn blocks(&self) -> &[i64] {
+        &self.blocks
+    }
+
     /// Returns the number of blocks needed for `value_count` values.
     ///
     /// Equivalent to `Packed64SingleBlock.requiredCapacity(int, int)`.
@@ -422,16 +435,16 @@ impl Packed64SingleBlock {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
     /// or `bits_per_value` is not a supported width.
     pub fn create(value_count: i32, bits_per_value: i32) -> Result<Self> {
         if value_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
         if !Self::is_supported(bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Unsupported number of bits per value: {bits_per_value}"
             )));
         }
@@ -447,6 +460,10 @@ impl Packed64SingleBlock {
 }
 
 impl PackedIntsReader for Packed64SingleBlock {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get(&self, index: i32) -> i64 {
         let o = (index / self.values_per_block) as usize;
         let b = index % self.values_per_block;
@@ -595,6 +612,7 @@ impl PackedIntsMutable for Packed64SingleBlock {
     fn fill(&mut self, from_index: i32, to_index: i32, val: i64) {
         debug_assert!(from_index >= 0);
         debug_assert!(from_index <= to_index);
+        debug_assert!(PackedInts::unsigned_bits_required(val) <= self.bits_per_value);
 
         let values_per_block = self.values_per_block;
         if to_index - from_index <= values_per_block << 1 {
@@ -675,7 +693,7 @@ impl PackedInts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
     /// or the resulting width is not one the chosen format supports.
     pub fn get_mutable(
         value_count: i32,
@@ -697,13 +715,14 @@ impl PackedInts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
     /// or `bits_per_value` is not a width `format` supports.
     pub fn get_mutable_with_format(
         value_count: i32,
         bits_per_value: i32,
         format: Format,
     ) -> Result<Box<dyn PackedIntsMutable>> {
+        debug_assert!(value_count >= 0);
         match format {
             Format::PackedSingleBlock => Ok(Box::new(Packed64SingleBlock::create(
                 value_count,

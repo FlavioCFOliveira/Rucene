@@ -218,21 +218,34 @@ impl MultiCollectorManager {
     /// Wraps the given collector managers.
     ///
     /// Equivalent to
-    /// `MultiCollectorManager(CollectorManager<? extends Collector, ?>...)`.
-    /// Java's per-element null check has no counterpart, because a
-    /// `Box<dyn ErasedCollectorManager>` cannot be null.
+    /// `MultiCollectorManager(CollectorManager<? extends Collector, ?>...)`;
+    /// a Java `null` element is [`None`].
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when no manager is supplied,
-    /// which is the `IllegalArgumentException` Java throws.
-    pub fn new(collector_managers: Vec<Box<dyn ErasedCollectorManager>>) -> Result<Self> {
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
+    /// no manager is supplied or when one of them is absent, which is the
+    /// `IllegalArgumentException` Java throws.
+    pub fn new(collector_managers: Vec<Option<Box<dyn ErasedCollectorManager>>>) -> Result<Self> {
         if collector_managers.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least one collector manager".to_string(),
             ));
         }
-        Ok(Self { collector_managers })
+        let mut present = Vec::with_capacity(collector_managers.len());
+        for collector_manager in collector_managers {
+            match collector_manager {
+                Some(collector_manager) => present.push(collector_manager),
+                None => {
+                    return Err(LuceneError::illegal_argument(
+                        "Collector managers should all be non-null".to_string(),
+                    ))
+                }
+            }
+        }
+        Ok(Self {
+            collector_managers: present,
+        })
     }
 }
 

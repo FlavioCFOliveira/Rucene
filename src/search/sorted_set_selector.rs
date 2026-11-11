@@ -98,7 +98,7 @@ impl SortedSetSelector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] for a field containing
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for a field containing
     /// [`i32::MAX`] or more unique terms, and propagates any I/O error raised
     /// while reading the value count.
     pub fn wrap(
@@ -106,7 +106,7 @@ impl SortedSetSelector {
         selector: SortedSetSelectorType,
     ) -> Result<Box<dyn SortedDocValues>> {
         if sorted_set.get_value_count()? >= i64::from(i32::MAX) {
-            return Err(LuceneError::UnsupportedOperation(format!(
+            return Err(LuceneError::unsupported_operation(format!(
                 "fields containing more than {} unique terms are unsupported",
                 i32::MAX - 1
             )));
@@ -182,7 +182,7 @@ impl DocIdSetIterator for SelectedValue {
         self.inner.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.inner.doc_id_run_end()
     }
 }

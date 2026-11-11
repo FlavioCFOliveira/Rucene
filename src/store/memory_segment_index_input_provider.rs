@@ -5,8 +5,6 @@
 //! `MMapDirectory.MMapIndexInputProvider`.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use super::memory_segment::{
@@ -15,7 +13,7 @@ use super::memory_segment::{
 use super::memory_segment_index_input::{MemorySegmentIndexInput, ToReadAdvice};
 use super::native_access;
 use super::{IOContext, ReadAdvice};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Name of the setting that caps how many files may share one arena.
 ///
@@ -115,14 +113,14 @@ impl MemorySegmentIndexInputProvider {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the file needs more chunks
-    /// than can be addressed, and [`LuceneError::Io`] if the file cannot be
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the file needs more chunks
+    /// than can be addressed, and [`LuceneErrorKind::Io`] if the file cannot be
     /// opened or mapped. A mapping failure is reported with the same diagnostic
     /// advice Lucene attaches in `convertMapFailedIOException`.
     #[allow(clippy::too_many_arguments)]
     pub fn open_input(
         &self,
-        path: &Path,
+        path: impl crate::store::java_nio_file::IntoNioPath,
         chunk_size_power: i32,
         context: &dyn IOContext,
         to_read_advice: ToReadAdvice,
@@ -131,7 +129,12 @@ impl MemorySegmentIndexInputProvider {
         group: Option<&str>,
         arenas: &SharedArenas,
     ) -> Result<MemorySegmentIndexInput> {
-        let resource_description = format!("MemorySegmentIndexInput(path=\"{}\")", path.display());
+        let path = path.into_nio_path();
+        let resource_description = format!("MemorySegmentIndexInput(path=\"{path}\")");
+
+        // Work around for JDK-8259028: we need to unwrap our test-only file
+        // system layers.
+        let path = path.unwrap_all();
 
         let arena: Arc<dyn Arena> = if confined {
             Arc::new(ConfinedArena::new())
@@ -140,26 +143,37 @@ impl MemorySegmentIndexInputProvider {
         };
 
         let opened = (|| -> Result<MemorySegmentIndexInput> {
-            let file = File::open(path)?;
-            let file_size = file.metadata()?.len() as i64;
-            let segments = self.map(
-                &arena,
-                &resource_description,
-                &file,
-                to_read_advice(context),
-                chunk_size_power,
-                preload,
-                file_size,
+            // `try (var fc = FileChannel.open(path, StandardOpenOption.READ))`:
+            // the channel is closed once the input exists, or on failure.
+            let fc = <dyn crate::store::java_nio_file::FileChannel>::open(
+                &path,
+                &[crate::store::java_nio_file::OpenOption::Read],
             )?;
-            MemorySegmentIndexInput::new_instance(
-                resource_description.clone(),
-                Arc::clone(&arena),
-                segments,
-                file_size,
-                chunk_size_power,
-                confined,
-                Arc::clone(&to_read_advice),
-            )
+            let input = (|| -> Result<MemorySegmentIndexInput> {
+                let file_size = fc.size()?;
+                let segments = self.map(
+                    &arena,
+                    &resource_description,
+                    &*fc,
+                    to_read_advice(context),
+                    chunk_size_power,
+                    preload,
+                    file_size,
+                )?;
+                MemorySegmentIndexInput::new_instance(
+                    resource_description.clone(),
+                    Arc::clone(&arena),
+                    segments,
+                    file_size,
+                    chunk_size_power,
+                    confined,
+                    Arc::clone(&to_read_advice),
+                )
+            })();
+            let closed = fc.close();
+            let input = input?;
+            closed?;
+            Ok(input)
         })();
 
         if opened.is_err() {
@@ -176,14 +190,14 @@ impl MemorySegmentIndexInputProvider {
         &self,
         arena: &Arc<dyn Arena>,
         resource_description: &str,
-        file: &File,
+        file: &dyn crate::store::java_nio_file::FileChannel,
         read_advice: ReadAdvice,
         chunk_size_power: i32,
         preload: bool,
         length: i64,
     ) -> Result<Vec<MemorySegment>> {
         if (length >> chunk_size_power) >= i32::MAX as i64 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "File too big for chunk size: {resource_description}"
             )));
         }
@@ -362,11 +376,11 @@ impl MemorySegmentIndexInputProvider {
         } else {
             "Please review 'ulimit -v', 'ulimit -m' (both should return 'unlimited'). "
         };
-        LuceneError::Io(std::io::Error::other(format!(
+        LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(format!(
             "{error}: {resource_description} [this may be caused by lack of enough unfragmented \
              virtual address space or too restrictive virtual memory limits enforced by the \
              operating system, preventing us to map a chunk of {buf_size} bytes. {more_info}More \
              information: https://blog.thetaphi.de/2012/07/use-lucenes-mmapdirectory-on-64bit.html]"
-        )))
+        ))))
     }
 }

@@ -12,7 +12,7 @@ use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::dense_conjunction_bulk_scorer::WINDOW_SIZE;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::score_mode::ScoreMode;
-use crate::search::scorer::Scorer;
+use crate::search::scorer::{Scorer, ScorerAsScorable};
 use crate::search::two_phase_iterator::TwoPhaseIterator;
 use crate::util::{Bits, FixedBitSet, MathUtil};
 
@@ -101,7 +101,7 @@ impl ConstantScoreBulkScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `score_mode` needs scores,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `score_mode` needs scores,
     /// which is the `IllegalArgumentException` Java throws.
     pub fn from_iterator(
         score: f32,
@@ -109,6 +109,13 @@ impl ConstantScoreBulkScorer {
         iterator: Box<dyn DocIdSetIterator>,
     ) -> Result<Self> {
         Self::check_score_mode(score_mode)?;
+        // `twoPhase == null && TwoPhaseIterator.unwrap(iterator) != null`
+        // (`ConstantScoreBulkScorer.java:54-56`).
+        if iterator.wraps_two_phase_iterator() {
+            return Err(LuceneError::illegal_argument(
+                "Iterator must not wrap a TwoPhaseIterator".to_string(),
+            ));
+        }
         let cost = iterator.cost();
         Ok(Self {
             scorer: ConstantScoreScorer::from_iterator(score, score_mode, iterator),
@@ -147,7 +154,7 @@ impl ConstantScoreBulkScorer {
 
     fn check_score_mode(score_mode: ScoreMode) -> Result<()> {
         if score_mode.needs_scores() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "ScoreMode must not need scores: {score_mode:?}"
             )));
         }
@@ -199,7 +206,7 @@ impl ConstantScoreBulkScorer {
                 true
             };
             if confirmed {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut self.scorer))?;
             }
 
             doc = approximation(&mut self.scorer, two_phase).next_doc()?;
@@ -243,7 +250,7 @@ impl ConstantScoreBulkScorer {
 
             {
                 let mut stream = BitSetDocIdStream::new(window_matches, window_base);
-                collector.collect_stream(&mut stream, scorer.as_scorable())?;
+                collector.collect_stream(&mut stream, &mut ScorerAsScorable::new(scorer))?;
             }
             window_matches.clear_all();
 
@@ -254,6 +261,11 @@ impl ConstantScoreBulkScorer {
 }
 
 impl BulkScorer for ConstantScoreBulkScorer {
+    /// This bulk scorer answers with itself: Java tests `instanceof ConstantScoreBulkScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn cost(&self) -> i64 {
         self.cost
     }
@@ -265,7 +277,7 @@ impl BulkScorer for ConstantScoreBulkScorer {
         min: i32,
         max: i32,
     ) -> CollectionResult<i32> {
-        collector.set_scorer(self.scorer.as_scorable())?;
+        collector.set_scorer(&mut ScorerAsScorable::new(&mut self.scorer))?;
         let competitive_iterator = collector.competitive_iterator()?;
         match competitive_iterator {
             Some(mut competitive_iterator) => {

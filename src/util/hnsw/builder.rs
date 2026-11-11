@@ -30,6 +30,18 @@ pub const DEFAULT_BEAM_WIDTH: i32 = 100;
 /// Default seed for reproducible level generation.
 pub const DEFAULT_RAND_SEED: u64 = 42;
 
+/// Random seed for level generation; public to expose for testing.
+///
+/// Equivalent to the mutable `public static long randSeed =
+/// DEFAULT_RAND_SEED` of `HnswGraphBuilder` (`HnswGraphBuilder.java:63-65`),
+/// which `Lucene99HnswVectorsWriter`, `HnswConcurrentMergeBuilder`,
+/// `IncrementalHnswGraphMerger` and `InitializedHnswGraphBuilder.initGraph`
+/// read and `HnswGraphTestCase` assigns. Java's `long` is kept as its bits
+/// in a `u64`, the seed type of this port; a Java static field needs a
+/// process-wide atomic in Rust.
+static RAND_SEED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_RAND_SEED);
+
 const MAX_BULK_SCORE_NODES: usize = 8;
 
 /// Builder interface for `OnHeapHnswGraph`.
@@ -136,16 +148,16 @@ pub const HNSW_COMPONENT: &str = "HNSW";
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `m` or `beam_width` is not
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `m` or `beam_width` is not
 /// positive.
 pub(crate) fn check_params(m: i32, beam_width: i32) -> Result<()> {
     if m <= 0 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "M (max connections) must be positive".to_string(),
         ));
     }
     if beam_width <= 0 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "beamWidth must be positive".to_string(),
         ));
     }
@@ -153,6 +165,16 @@ pub(crate) fn check_params(m: i32, beam_width: i32) -> Result<()> {
 }
 
 impl HnswGraphBuilder {
+    /// Reads `HnswGraphBuilder.randSeed`; see [`RAND_SEED`].
+    pub fn rand_seed() -> u64 {
+        RAND_SEED.load(Ordering::Relaxed)
+    }
+
+    /// Assigns `HnswGraphBuilder.randSeed = seed`; see [`RAND_SEED`].
+    pub fn set_rand_seed(seed: u64) {
+        RAND_SEED.store(seed, Ordering::Relaxed);
+    }
+
     /// Creates a builder with a known graph size (-1 means unbounded).
     pub fn create(
         scorer_supplier: &dyn RandomVectorScorerSupplier,
@@ -228,7 +250,7 @@ impl HnswGraphBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when another builder still shares
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when another builder still shares
     /// the graph, which happens only while a concurrent merge's workers are
     /// alive.
     pub fn into_graph(mut self) -> Result<OnHeapHnswGraph> {
@@ -539,7 +561,7 @@ impl HnswGraphBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once the builder is frozen, and
+    /// Returns [`LuceneErrorKind::IllegalState`] once the builder is frozen, and
     /// propagates whatever adding a node raises.
     pub(crate) fn build_skipping(
         &mut self,
@@ -894,6 +916,7 @@ impl HnswGraphBuilder {
                 continue;
             }
             let c_score = candidates.score(i as i32);
+            debug_assert!(c_node <= hnsw.max_node_id());
             scorer.set_scoring_ordinal(c_node)?;
             if Self::diversity_check(scorer, bulk_score_nodes, bulk_scores, c_score, neighbors)? {
                 mask[i] = true;
@@ -971,7 +994,7 @@ impl GraphBuilderKnnCollector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `k < 1`, as Java's
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `k < 1`, as Java's
     /// `NeighborQueue` constructor throws `IllegalArgumentException`; see
     /// [`NeighborQueue::new`].
     pub fn new(k: i32) -> Result<Self> {

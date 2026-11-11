@@ -123,11 +123,11 @@ impl NormalizationH1 {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `c` is not finite or is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `c` is not finite or is
     /// negative, with the message Java's `IllegalArgumentException` carries.
     pub fn with_c(c: f32) -> Result<Self> {
         if !c.is_finite() || c < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal c value: {}, must be a non-negative finite value",
                 java_fmt::float_to_string(c)
             )));
@@ -212,11 +212,11 @@ impl NormalizationH2 {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `c` is not finite or is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `c` is not finite or is
     /// negative.
     pub fn with_c(c: f32) -> Result<Self> {
         if !c.is_finite() || c < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal c value: {}, must be a non-negative finite value",
                 java_fmt::float_to_string(c)
             )));
@@ -297,11 +297,11 @@ impl NormalizationH3 {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `mu` is not finite or is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `mu` is not finite or is
     /// negative.
     pub fn with_mu(mu: f32) -> Result<Self> {
         if !mu.is_finite() || mu < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal mu value: {}, must be a non-negative finite value",
                 java_fmt::float_to_string(mu)
             )));
@@ -395,11 +395,11 @@ impl NormalizationZ {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `z` is NaN or outside the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `z` is NaN or outside the
     /// open interval `(0, 0.5)`.
     pub fn with_z(z: f32) -> Result<Self> {
         if z.is_nan() || z <= 0.0 || z >= 0.5 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal z value: {}, must be in the range (0 .. 0.5)",
                 java_fmt::float_to_string(z)
             )));

@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Store, StringField};
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
@@ -85,9 +85,9 @@ fn doc(id: i32) -> Document {
 
 /// `WriterStateFixture.config()`.
 fn config() -> IndexWriterConfig {
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
 }
@@ -106,7 +106,7 @@ fn writer_state_queries_match_lucene() {
         w.add_document(&doc(0)).unwrap();
         w.commit().unwrap();
         w.close().unwrap();
-        let mut create = config();
+        let create = config();
         create.set_open_mode(OpenMode::CREATE).unwrap();
         let w = IndexWriter::new(Arc::clone(&dir), create).unwrap();
         lines.push(format!("create={}", w.has_uncommitted_changes().unwrap()));
@@ -144,18 +144,21 @@ fn writer_state_queries_match_lucene() {
         w.close().unwrap();
         let closed = match w.has_deletions() {
             Ok(_) => "ok",
-            Err(LuceneError::AlreadyClosed { .. }) => "AlreadyClosedException",
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            }) => "AlreadyClosedException",
             Err(_) => "other",
         };
         lines.push(format!("closed={closed}"));
     }
     {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut pooling = config();
+        let pooling = config();
         pooling.set_reader_pooling(true);
         // No merge may fold the deletion away before the question is asked.
         pooling
-            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
         let w = IndexWriter::new(Arc::clone(&dir), pooling).unwrap();
         w.add_document(&doc(0)).unwrap();
@@ -310,7 +313,7 @@ impl Directory for ObservingDirectory {
             closed_at_release: Arc::clone(&self.closed_at_release),
         }))
     }
-    fn close(&mut self) -> rucene::error::Result<()> {
+    fn close(&self) -> rucene::error::Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> rucene::error::Result<std::collections::HashSet<String>> {

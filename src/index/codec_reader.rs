@@ -120,7 +120,12 @@ pub trait CodecReader: LeafReader {
 /// [`LeafReader`] members to these functions. A wrapper that substitutes its
 /// own producers — `SortingCodecReader`, `SlowCompositeCodecReaderWrapper` —
 /// thereby answers leaf queries from the substituted producers, as in Java.
-pub(crate) mod final_members {
+///
+/// The module is public because the `FilterCodecReader` subclasses of the
+/// test framework (`MergingCodecReader`, `MismatchedCodecReader`, in the
+/// `rucene-test-framework` crate) substitute producers too, and must answer
+/// their leaf queries through them as Java's inherited `final` members do.
+pub mod final_members {
     use crate::codecs::stored_fields::StoredFieldsReader;
     use crate::error::{LuceneError, Result};
     use crate::index::codec_reader::CodecReader;
@@ -145,23 +150,25 @@ pub(crate) mod final_members {
 
     impl CodecStoredFields {
         /// Equivalent to `Objects.checkIndex(docID, maxDoc())`, then the
-        /// dereference of the possibly-null fields reader.
-        fn checked(&self, doc_id: i32) -> Result<&dyn StoredFieldsReader> {
-            if doc_id < 0 || doc_id >= self.max_doc {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "Index {doc_id} out of bounds for length {}",
-                    self.max_doc
-                )));
-            }
+        /// dereference of the possibly-null fields reader, which fails with
+        /// the JDK's helpful `NullPointerException` naming the `invoked`
+        /// method of `StoredFields` and the captured `reader` variable.
+        fn checked(&self, doc_id: i32, invoked: &str) -> Result<&dyn StoredFieldsReader> {
+            check_index(doc_id, self.max_doc)?;
             self.reader.as_deref().ok_or_else(|| {
-                LuceneError::illegal_state("this reader has no stored fields reader".to_string())
+                LuceneError::unchecked(
+                    "java.lang.NullPointerException",
+                    format!(
+                        "Cannot invoke \"org.apache.lucene.index.StoredFields.{invoked}\" because \"this.val$reader\" is null"
+                    ),
+                )
             })
         }
     }
 
     impl StoredFields for CodecStoredFields {
         fn prefetch(&mut self, doc_id: i32) -> Result<()> {
-            self.checked(doc_id)?.prefetch(doc_id)
+            self.checked(doc_id, "prefetch(int)")?.prefetch(doc_id)
         }
 
         fn document_with_visitor(
@@ -169,8 +176,34 @@ pub(crate) mod final_members {
             doc_id: i32,
             visitor: &mut dyn StoredFieldVisitor,
         ) -> Result<()> {
-            self.checked(doc_id)?.document(doc_id, visitor)
+            self.checked(
+                doc_id,
+                "document(int, org.apache.lucene.index.StoredFieldVisitor)",
+            )?
+            .document(doc_id, visitor)
         }
+    }
+
+    /// Equivalent to `Objects.checkIndex(docID, maxDoc())`, which every access
+    /// of the `StoredFields` view of `CodecReader.storedFields()` runs first
+    /// (`index/CodecReader.java:91-102`): a `java.lang.IndexOutOfBoundsException`
+    /// with the JDK's message.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar` on JDK 25:
+    /// `Index 2 out of bounds for length 2`, and `Index -1 out of bounds for
+    /// length 2`.
+    ///
+    /// # Errors
+    ///
+    /// The `IndexOutOfBoundsException` when `doc_id` is outside `0..max_doc`.
+    pub fn check_index(doc_id: i32, max_doc: i32) -> Result<()> {
+        if doc_id < 0 || doc_id >= max_doc {
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!("Index {doc_id} out of bounds for length {max_doc}"),
+            ));
+        }
+        Ok(())
     }
 
     /// Equivalent to `CodecReader.storedFields()` (`index/CodecReader.java:86-104`).
@@ -178,9 +211,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// Propagates whatever asking for the fields reader raises.
-    pub(crate) fn stored_fields<R: CodecReader + ?Sized>(
-        reader: &R,
-    ) -> Result<Box<dyn StoredFields>> {
+    pub fn stored_fields<R: CodecReader + ?Sized>(reader: &R) -> Result<Box<dyn StoredFields>> {
         Ok(Box::new(CodecStoredFields {
             reader: reader.get_fields_reader()?,
             max_doc: reader.max_doc(),
@@ -193,9 +224,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// Propagates whatever asking for the term-vectors reader raises.
-    pub(crate) fn term_vectors<R: CodecReader + ?Sized>(
-        reader: &R,
-    ) -> Result<Box<dyn TermVectors>> {
+    pub fn term_vectors<R: CodecReader + ?Sized>(reader: &R) -> Result<Box<dyn TermVectors>> {
         Ok(match reader.get_term_vectors_reader()? {
             Some(reader) => reader as Box<dyn TermVectors>,
             None => Box::new(EmptyTermVectors),
@@ -206,9 +235,9 @@ pub(crate) mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the postings reader raises.
-    pub(crate) fn terms<R: CodecReader + ?Sized>(
+    pub fn terms<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn Terms>>> {
@@ -230,9 +259,9 @@ pub(crate) mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the doc-values producer raises.
-    pub(crate) fn numeric_doc_values<R: CodecReader + ?Sized>(
+    pub fn numeric_doc_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn NumericDocValues>>> {
@@ -252,7 +281,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// As [`numeric_doc_values`].
-    pub(crate) fn binary_doc_values<R: CodecReader + ?Sized>(
+    pub fn binary_doc_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn BinaryDocValues>>> {
@@ -272,7 +301,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// As [`numeric_doc_values`].
-    pub(crate) fn sorted_doc_values<R: CodecReader + ?Sized>(
+    pub fn sorted_doc_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn SortedDocValues>>> {
@@ -292,7 +321,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// As [`numeric_doc_values`].
-    pub(crate) fn sorted_numeric_doc_values<R: CodecReader + ?Sized>(
+    pub fn sorted_numeric_doc_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
@@ -312,7 +341,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// As [`numeric_doc_values`].
-    pub(crate) fn sorted_set_doc_values<R: CodecReader + ?Sized>(
+    pub fn sorted_set_doc_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
@@ -332,7 +361,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// As [`numeric_doc_values`].
-    pub(crate) fn doc_values_skipper<R: CodecReader + ?Sized>(
+    pub fn doc_values_skipper<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn DocValuesSkipper>>> {
@@ -353,9 +382,9 @@ pub(crate) mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the norms producer raises.
-    pub(crate) fn norm_values<R: CodecReader + ?Sized>(
+    pub fn norm_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn NumericDocValues>>> {
@@ -377,9 +406,9 @@ pub(crate) mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the points reader raises.
-    pub(crate) fn point_values<R: CodecReader + ?Sized>(
+    pub fn point_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn PointValues>>> {
@@ -414,9 +443,9 @@ pub(crate) mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the vectors reader raises.
-    pub(crate) fn float_vector_values<R: CodecReader + ?Sized>(
+    pub fn float_vector_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn FloatVectorValues>>> {
@@ -436,7 +465,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// As [`float_vector_values`].
-    pub(crate) fn byte_vector_values<R: CodecReader + ?Sized>(
+    pub fn byte_vector_values<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
     ) -> Result<Option<Box<dyn ByteVectorValues>>> {
@@ -455,9 +484,9 @@ pub(crate) mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the vectors reader's search raises.
-    pub(crate) fn search_nearest_vectors<R: CodecReader + ?Sized>(
+    pub fn search_nearest_vectors<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
         target: &[f32],
@@ -480,7 +509,7 @@ pub(crate) mod final_members {
     /// # Errors
     ///
     /// As [`search_nearest_vectors`].
-    pub(crate) fn search_nearest_vectors_byte<R: CodecReader + ?Sized>(
+    pub fn search_nearest_vectors_byte<R: CodecReader + ?Sized>(
         reader: &R,
         field: &str,
         target: &[u8],
@@ -502,9 +531,9 @@ pub(crate) mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates the first integrity failure.
-    pub(crate) fn check_integrity<R: CodecReader + ?Sized>(reader: &R) -> Result<()> {
+    pub fn check_integrity<R: CodecReader + ?Sized>(reader: &R) -> Result<()> {
         reader.core().ensure_open()?;
         // terms/postings
         if let Some(postings) = reader.get_postings_reader()? {
@@ -535,5 +564,96 @@ pub(crate) mod final_members {
             vectors.check_integrity()?;
         }
         Ok(())
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::error::LuceneErrorKind;
+
+        /// The `StoredFields` view over a null fields reader, measured against
+        /// `lucene-core-10.5.0.jar` on JDK 25 (a `FilterCodecReader` whose
+        /// `getFieldsReader()` returns `null`, over a two-document segment):
+        /// the bounds are checked first, then the dereference fails with the
+        /// JDK's helpful `NullPointerException` naming the captured `reader`.
+        #[test]
+        fn a_null_fields_reader_fails_as_the_jdk_does() {
+            let mut view = CodecStoredFields {
+                reader: None,
+                max_doc: 2,
+            };
+            let class_message = |e: LuceneError| match e {
+                LuceneError {
+                    kind: LuceneErrorKind::Unchecked { class, message, .. },
+                    ..
+                } => (class, message.unwrap()),
+                other => panic!("expected an unchecked exception, got {other:?}"),
+            };
+            let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
+            assert_eq!(
+                class_message(view.document_with_visitor(0, &mut visitor).unwrap_err()),
+                (
+                    "java.lang.NullPointerException",
+                    "Cannot invoke \"org.apache.lucene.index.StoredFields.document(int, \
+                     org.apache.lucene.index.StoredFieldVisitor)\" because \"this.val$reader\" \
+                     is null"
+                        .to_string()
+                )
+            );
+            assert_eq!(
+                class_message(view.prefetch(0).unwrap_err()),
+                (
+                    "java.lang.NullPointerException",
+                    "Cannot invoke \"org.apache.lucene.index.StoredFields.prefetch(int)\" \
+                     because \"this.val$reader\" is null"
+                        .to_string()
+                )
+            );
+            assert_eq!(
+                class_message(view.document_with_visitor(5, &mut visitor).unwrap_err()),
+                (
+                    "java.lang.IndexOutOfBoundsException",
+                    "Index 5 out of bounds for length 2".to_string()
+                )
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::final_members::check_index;
+    use crate::error::{LuceneError, LuceneErrorKind};
+
+    fn unchecked(e: LuceneError) -> (String, Option<String>) {
+        match e {
+            LuceneError {
+                kind: LuceneErrorKind::Unchecked { class, message, .. },
+                ..
+            } => (class.to_string(), message),
+            other => panic!("expected an unchecked exception, got {other:?}"),
+        }
+    }
+
+    /// `Objects.checkIndex(docID, maxDoc())` of `CodecReader.storedFields()`
+    /// (`CodecReader.java:91-102`), measured against `lucene-core-10.5.0.jar`
+    /// on JDK 25 over a two-document segment: `Index 2 out of bounds for
+    /// length 2` and `Index -1 out of bounds for length 2`, both
+    /// `java.lang.IndexOutOfBoundsException`.
+    #[test]
+    fn check_index_raises_the_jdk_index_out_of_bounds_exception() {
+        assert!(check_index(0, 2).is_ok());
+        assert!(check_index(1, 2).is_ok());
+        for (doc, message) in [
+            (2, "Index 2 out of bounds for length 2"),
+            (-1, "Index -1 out of bounds for length 2"),
+        ] {
+            assert_eq!(
+                unchecked(check_index(doc, 2).unwrap_err()),
+                (
+                    "java.lang.IndexOutOfBoundsException".to_string(),
+                    Some(message.to_string())
+                )
+            );
+        }
     }
 }

@@ -31,7 +31,7 @@ impl Point2D {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when a coordinate is out
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when a coordinate is out
     /// of range, which the encoders reject.
     pub fn create_from_point(point: &Point) -> Result<Arc<dyn Component2D>> {
         // Points behave as rectangles

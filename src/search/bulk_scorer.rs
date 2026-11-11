@@ -14,7 +14,7 @@ use crate::error::Result;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::search::scorer::Scorer;
+use crate::search::scorer::{Scorer, ScorerAsScorable};
 use crate::util::Bits;
 
 /// Scores a range of documents at once.
@@ -67,6 +67,19 @@ pub trait BulkScorer {
     /// Equivalent to `BulkScorer.cost()`, the bulk-scorer analogue of
     /// [`DocIdSetIterator::cost`].
     fn cost(&self) -> i64;
+
+    /// Returns this bulk scorer as [`Any`](std::any::Any), so that a caller can
+    /// test its concrete type, or `None` when the type does not take part in
+    /// such a test.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests a bulk scorer's class
+    /// with `instanceof` — `AssertingBulkScorer.wrap` returns its argument when
+    /// it already is an `AssertingBulkScorer`. Rust cannot downcast a
+    /// `dyn BulkScorer`, so the escape hatch is declared; its default answers
+    /// `None`, Java's `false` branch, and a type that is tested overrides it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// Wraps a [`Scorer`] and performs top scoring with it.
@@ -195,7 +208,7 @@ impl DefaultBulkScorer {
         let mut doc = self.lead_doc_id();
         while doc < max {
             if Self::accepted(accept_docs, doc) {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut *self.scorer))?;
             }
             doc = self.lead_next_doc()?;
         }
@@ -212,7 +225,7 @@ impl DefaultBulkScorer {
         let mut doc = self.lead_doc_id();
         while doc < max {
             if Self::accepted(accept_docs, doc) && self.matches()? {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut *self.scorer))?;
             }
             doc = self.lead_next_doc()?;
         }
@@ -239,7 +252,7 @@ impl DefaultBulkScorer {
             }
 
             if Self::accepted(accept_docs, doc) {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut *self.scorer))?;
             }
 
             doc = self.lead_next_doc()?;
@@ -267,7 +280,7 @@ impl DefaultBulkScorer {
             }
 
             if Self::accepted(accept_docs, doc) && self.matches()? {
-                collector.collect(doc, self.scorer.as_scorable())?;
+                collector.collect(doc, &mut ScorerAsScorable::new(&mut *self.scorer))?;
             }
 
             doc = self.lead_next_doc()?;
@@ -277,6 +290,11 @@ impl DefaultBulkScorer {
 }
 
 impl BulkScorer for DefaultBulkScorer {
+    /// This bulk scorer answers with itself: Java tests `instanceof DefaultBulkScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn cost(&self) -> i64 {
         self.cost
     }
@@ -288,7 +306,7 @@ impl BulkScorer for DefaultBulkScorer {
         min: i32,
         max: i32,
     ) -> CollectionResult<i32> {
-        collector.set_scorer(self.scorer.as_scorable())?;
+        collector.set_scorer(&mut ScorerAsScorable::new(&mut *self.scorer))?;
         let mut competitive_iterator = collector.competitive_iterator()?;
 
         let mut min = min;

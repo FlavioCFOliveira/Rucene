@@ -89,7 +89,7 @@ impl KnnByteVectorQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `k` is less than 1.
     pub fn with_strategy(
         field: impl Into<String>,

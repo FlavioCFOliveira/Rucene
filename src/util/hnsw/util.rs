@@ -113,9 +113,10 @@ impl HnswUtil {
         mut not_fully_connected: Option<&mut FixedBitSet>,
         max_conn: i32,
     ) -> Result<Vec<Component>> {
+        debug_assert!(graph.size() == graph.get_nodes_on_level(0)?.size());
         let num_levels = graph.num_levels()?;
         if level < 0 || level >= num_levels {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "level {} too large for graph with {} levels",
                 level, num_levels
             )));
@@ -176,6 +177,7 @@ impl HnswUtil {
                     max_conn,
                     next_clear as i32,
                 )?;
+                debug_assert!(component.size() > 0);
                 components.push(component);
                 total += component.size();
                 next_clear = connected_nodes.next_clear_bit(component.start() as usize);
@@ -195,15 +197,17 @@ impl HnswUtil {
                     max_conn,
                     node,
                 )?;
+                debug_assert!(component.start() == node);
+                debug_assert!(component.size() > 0);
                 components.push(component);
                 total += component.size();
             }
         }
 
-        debug_assert_eq!(
-            total,
-            graph.get_nodes_on_level(level)?.size(),
-            "component total must equal level node count"
+        debug_assert!(
+            total == graph.get_nodes_on_level(level)?.size(),
+            "total={total} level nodes on level {level} = {}",
+            graph.get_nodes_on_level(level)?.size()
         );
         Ok(components)
     }

@@ -162,7 +162,10 @@ fn file_name_helpers_survive_every_hostile_name() {
         let ext = get_extension(&name);
         let _ = is_codec_file(&name);
         let _ = matches_extension(&name, "si");
-        let _ = parse_generation(&name);
+        // `parseGeneration` asserts its precondition (`IndexFileNames.java:147`).
+        if name.starts_with('_') {
+            let _ = parse_generation(&name);
+        }
 
         // Whatever they return must be a real slice of the input, so that a
         // caller re-slicing it cannot land mid-character.
@@ -423,11 +426,14 @@ fn a_corrupt_older_commit_is_an_error_not_an_abort() {
     }
 }
 
-/// A `SegmentInfos` that names no commit file leaves the deleter with nothing to
-/// adopt, and that must be a clean no-op rather than a failure.
+/// A `SegmentInfos` with no commit yet leaves the deleter with nothing to
+/// adopt, and that must not be a failure.
 ///
-/// This is the fresh-index case: `IndexWriter` on an empty directory builds the
-/// deleter before any `segments_N` exists.
+/// This is the fresh-index case: `IndexWriter` on a directory without a commit
+/// builds the deleter before any `segments_N` exists. A new `SegmentInfos`
+/// has generation 0, so its segments file is `segments` (`SegmentInfos.java:132-133,
+/// 169-179`): the deleter scans the directory and removes the codec files no
+/// commit references (`IndexFileDeleter.java:139-225`).
 #[test]
 fn a_segment_infos_naming_no_commit_file_is_a_clean_no_op() {
     let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
@@ -439,7 +445,11 @@ fn a_segment_infos_naming_no_commit_file_is_a_clean_no_op() {
     }
 
     let mut infos = SegmentInfos::new(10).unwrap();
-    assert_eq!(infos.segments_file_name(), None, "premise: no commit yet");
+    assert_eq!(
+        infos.segments_file_name().as_deref(),
+        Some("segments"),
+        "premise: no commit yet"
+    );
 
     let files = directory.list_all().unwrap();
     let deleter = IndexFileDeleter::new(
@@ -456,8 +466,8 @@ fn a_segment_infos_naming_no_commit_file_is_a_clean_no_op() {
     .expect("an index with no commit yet must not fail the deleter");
 
     assert!(deleter.commits().is_empty());
-    // Nothing was adopted, so nothing may have been deleted either.
-    assert!(directory
+    // Nothing was adopted, and the orphan no commit references is deleted.
+    assert!(!directory
         .list_all()
         .unwrap()
         .contains(&"_0.fdt".to_string()));

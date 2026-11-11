@@ -46,6 +46,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::codecs::codec_util;
 use crate::codecs::lucene90::indexed_disi::{
@@ -54,11 +55,14 @@ use crate::codecs::lucene90::indexed_disi::{
 use crate::codecs::norms::{NormsConsumer, NormsFormat, NormsProducer};
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::doc_values::{DocValues, DocValuesIterator, NumericDocValues};
 use crate::index::index_file_names::{segment_file_name, NORMS_EXTENSION, NORMS_META_EXTENSION};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::{IndexInput, IndexOutput, RandomAccessInput};
+use crate::store::{DataInput, IndexInput, IndexOutput, RandomAccessInput};
+use crate::util::packed::{
+    lock_random_access_input, shared_random_access_input, SharedRandomAccessInput,
+};
 use crate::util::IOUtils;
 
 const DATA_CODEC: &str = "Lucene90NormsData";
@@ -119,6 +123,10 @@ pub struct Lucene90NormsConsumer {
     data: Box<dyn IndexOutput>,
     meta: Box<dyn IndexOutput>,
     max_doc: i32,
+    /// Set once [`close`](NormsConsumer::close) ran: Java nulls `meta` and
+    /// `data` in its `finally` (`Lucene90NormsConsumer.java:86`), so a second
+    /// close does nothing.
+    closed: bool,
 }
 
 impl fmt::Debug for Lucene90NormsConsumer {
@@ -185,6 +193,7 @@ impl Lucene90NormsConsumer {
             data: data.expect(expect),
             meta: meta.expect(expect),
             max_doc,
+            closed: false,
         })
     }
 
@@ -292,8 +301,14 @@ impl NormsConsumer for Lucene90NormsConsumer {
     }
 
     /// Equivalent to `Lucene90NormsConsumer.close()`
-    /// (`Lucene90NormsConsumer.java:68-88`).
+    /// (`Lucene90NormsConsumer.java:68-88`): the outputs are nulled in the
+    /// `finally` (`:86`), whatever the outcome, so a second call finds them
+    /// null and does nothing.
     fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
         Self::close_outputs(Some(&mut self.data), Some(&mut self.meta))
     }
 }
@@ -402,8 +417,23 @@ struct NormsEntry {
 pub struct Lucene90NormsProducer {
     norms: HashMap<i32, NormsEntry>,
     max_doc: i32,
-    data: Box<dyn IndexInput>,
+    data: crate::store::SharedIndexInput,
+    /// `merging`: set on the instance `getMergeInstance()` returns.
+    merging: bool,
+    /// `disiInputs`: the docs-with-field inputs a merge instance opened, by
+    /// field number.
+    disi_inputs: Mutex<HashMap<i32, SharedIndexInput>>,
+    /// `disiJumpTables`: the jump tables a merge instance opened, by field
+    /// number.
+    disi_jump_tables: Mutex<HashMap<i32, SharedRandomAccessInput>>,
+    /// `dataInputs`: the values slices a merge instance opened, by field
+    /// number.
+    data_inputs: Mutex<HashMap<i32, SharedRandomAccessInput>>,
 }
+
+/// An `IndexInput` several readers of a merge instance share (Java shares the
+/// object; a Rust input reads through `&mut self`, hence the lock).
+type SharedIndexInput = Arc<Mutex<Box<dyn IndexInput>>>;
 
 impl fmt::Debug for Lucene90NormsProducer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -445,23 +475,23 @@ impl Lucene90NormsProducer {
             }
             Err(error) => Err(error),
         };
-        let version = match parsed {
-            Ok(version) => {
-                codec_util::check_footer(meta.as_mut())?;
-                version
-            }
-            Err(prior) => {
-                return Err(codec_util::check_footer_with_prior(meta.as_mut(), prior));
-            }
-        };
-        drop(meta);
+        let parsed = codec_util::check_footer_after(meta.as_mut(), parsed);
+        // The try-with-resources closes `in` on every exit.
+        let version = crate::store::close_after(meta.as_mut(), parsed)?;
 
         let data_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
             NORMS_EXTENSION,
         );
-        let mut data = state.directory.open_input(&data_name, state.context)?;
+        let mut data = state.directory.open_input(
+            &data_name,
+            /* withHints, `Lucene90NormsProducer.java:85` */
+            state
+                .context
+                .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                .as_ref(),
+        )?;
         let checked = (|| -> Result<()> {
             let version2 = codec_util::check_index_header(
                 data.as_mut(),
@@ -472,9 +502,9 @@ impl Lucene90NormsProducer {
                 &state.segment_suffix,
             )?;
             if version != version2 {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "Format versions mismatch: meta={version}, data={version2}"
-                )));
+                ))));
             }
             // Cheap structural check of the data footer; the actual checksum is
             // verified by `check_integrity` on demand.
@@ -491,15 +521,68 @@ impl Lucene90NormsProducer {
         Ok(Self {
             norms,
             max_doc,
-            data,
+            data: crate::store::SharedIndexInput::new(data),
+            merging: false,
+            disi_inputs: Mutex::new(HashMap::new()),
+            disi_jump_tables: Mutex::new(HashMap::new()),
+            data_inputs: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Opens the packed-values slice of one field.
+    /// The instance `getMergeInstance()` returns
+    /// (`Lucene90NormsProducer.java:116-130`): a clone sharing the entries,
+    /// over a clone of the data input, with empty caches and `merging` set.
+    fn merge_instance(&self) -> Result<Self> {
+        Ok(Self {
+            norms: self.norms.clone(),
+            max_doc: self.max_doc,
+            data: crate::store::SharedIndexInput::new(self.data.clone_input()?),
+            merging: true,
+            disi_inputs: Mutex::new(HashMap::new()),
+            disi_jump_tables: Mutex::new(HashMap::new()),
+            data_inputs: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Opens (or, on a merge instance, reuses) the packed-values slice of
+    /// one field.
     ///
-    /// Equivalent to `Lucene90NormsProducer.getDataInput`, without the
-    /// merge-instance cache: Rucene's merge instance clones the whole input, so
-    /// there is no shared slice to reuse.
+    /// Equivalent to `Lucene90NormsProducer.getDataInput`
+    /// (`Lucene90NormsProducer.java:246-265`): a merge instance keeps the
+    /// slice of each field and hands it out again; a new slice prefetches its
+    /// first page.
+    fn get_data_input(
+        &self,
+        field: &FieldInfo,
+        entry: &NormsEntry,
+    ) -> Result<Box<dyn RandomAccessInput>> {
+        let mut slice: Option<SharedRandomAccessInput> = None;
+        if self.merging {
+            slice = lock(&self.data_inputs).get(&field.number).cloned();
+        }
+        let slice = match slice {
+            Some(slice) => slice,
+            None => {
+                let slice = self.data_input(entry)?;
+                // Prefetch the first page of data. Following pages are
+                // expected to get prefetched through read-ahead.
+                if slice.length() > 0 {
+                    slice.prefetch(0, 1)?;
+                }
+                if !self.merging {
+                    return Ok(slice);
+                }
+                let slice = shared_random_access_input(slice);
+                lock(&self.data_inputs).insert(field.number, Arc::clone(&slice));
+                slice
+            }
+        };
+        Ok(Box::new(SharedRandomAccessSlice::new(slice)))
+    }
+
+    /// Opens the packed-values slice of one field:
+    /// `data.randomAccessSlice(entry.normsOffset, entry.numDocsWithField *
+    /// (long) entry.bytesPerNorm)`.
     fn data_input(&self, entry: &NormsEntry) -> Result<Box<dyn RandomAccessInput>> {
         // `read_fields` has already restricted `bytes_per_norm` to 0, 1, 2, 4
         // or 8, so the product of an `i32` and it cannot leave `i64`; what can
@@ -509,24 +592,23 @@ impl Lucene90NormsProducer {
         // that caused it.
         let length = entry.num_docs_with_field as i64 * entry.bytes_per_norm as i64;
         if length < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "invalid norms slice: numDocsWithField={}, bytesPerNorm={}",
                 entry.num_docs_with_field, entry.bytes_per_norm
-            )));
+            ))));
         }
-        self.data.random_access_slice(entry.norms_offset, length)
+        self.data
+            .read()
+            .random_access_slice(entry.norms_offset, length)
     }
 
     /// Opens the data-blocks slice of one sparse field's docs-with-field
     /// stream.
     ///
-    /// Divergence: Lucene keeps a per-field cache of these inputs while it is
-    /// serving a merge, and hands out an offset-tracking wrapper over the
-    /// cached one so two norms instances pulled in parallel do not fight over
-    /// its file pointer (`Lucene90NormsProducer.java:267-356`). Rucene's merge
-    /// instance clones the whole input, so there is no shared input to cache or
-    /// to guard, and a fresh slice is opened every time — the same policy the
-    /// sibling [`data_input`](Self::data_input) already follows.
+    /// A merge instance keeps the slice of each field and hands out an
+    /// offset-tracking wrapper over it ([`MergingDisiInput`]), so that two
+    /// norms instances pulled in parallel do not fight over its file pointer
+    /// (`Lucene90NormsProducer.java:267-356`).
     ///
     /// # Errors
     ///
@@ -534,27 +616,43 @@ impl Lucene90NormsProducer {
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene90.Lucene90NormsProducer#getDisiInput`.
-    fn get_disi_input(
-        &self,
-        _field: &FieldInfo,
-        entry: &NormsEntry,
-    ) -> Result<Box<dyn IndexInput>> {
-        create_block_slice(
-            self.data.as_ref(),
-            "docs",
-            entry.docs_with_field_offset,
-            entry.docs_with_field_length,
-            entry.jump_table_entry_count as i32,
-        )
+    fn get_disi_input(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<Box<dyn IndexInput>> {
+        if !self.merging {
+            return create_block_slice(
+                &**self.data.read(),
+                "docs",
+                entry.docs_with_field_offset,
+                entry.docs_with_field_length,
+                entry.jump_table_entry_count as i32,
+            );
+        }
+
+        let mut disi_inputs = lock(&self.disi_inputs);
+        let r#in = match disi_inputs.get(&field.number) {
+            Some(r#in) => Arc::clone(r#in),
+            None => {
+                let r#in = Arc::new(Mutex::new(create_block_slice(
+                    &**self.data.read(),
+                    "docs",
+                    entry.docs_with_field_offset,
+                    entry.docs_with_field_length,
+                    entry.jump_table_entry_count as i32,
+                )?));
+                disi_inputs.insert(field.number, Arc::clone(&r#in));
+                r#in
+            }
+        };
+
+        // Wrap so that reads can be interleaved from the same thread if two
+        // norms instances are pulled and consumed in parallel. Merging usually
+        // doesn't need this feature but CheckIndex might, plus we need merge
+        // instances to behave well and not be trappy.
+        Ok(Box::new(MergingDisiInput { r#in, offset: 0 }))
     }
 
-    /// Opens the jump table of one sparse field's docs-with-field stream, or
-    /// `None` when it was written without one.
-    ///
-    /// Divergence: as in [`get_disi_input`](Self::get_disi_input), Lucene's
-    /// per-field merge cache (`Lucene90NormsProducer.java:358-375`) has no
-    /// counterpart here, because the merge instance owns its own clone of the
-    /// data input.
+    /// Opens (or, on a merge instance, reuses) the jump table of one sparse
+    /// field's docs-with-field stream, or `None` when it was written without
+    /// one (`Lucene90NormsProducer.java:358-375`).
     ///
     /// # Errors
     ///
@@ -564,15 +662,34 @@ impl Lucene90NormsProducer {
     /// `org.apache.lucene.codecs.lucene90.Lucene90NormsProducer#getDisiJumpTable`.
     fn get_disi_jump_table(
         &self,
-        _field: &FieldInfo,
+        field: &FieldInfo,
         entry: &NormsEntry,
     ) -> Result<Option<Box<dyn RandomAccessInput>>> {
-        create_jump_table(
-            self.data.as_ref(),
-            entry.docs_with_field_offset,
-            entry.docs_with_field_length,
-            entry.jump_table_entry_count as i32,
-        )
+        let mut jump_table: Option<SharedRandomAccessInput> = None;
+        if self.merging {
+            jump_table = lock(&self.disi_jump_tables).get(&field.number).cloned();
+        }
+        let jump_table = match jump_table {
+            Some(jump_table) => jump_table,
+            None => {
+                let Some(jump_table) = create_jump_table(
+                    &**self.data.read(),
+                    entry.docs_with_field_offset,
+                    entry.docs_with_field_length,
+                    entry.jump_table_entry_count as i32,
+                )?
+                else {
+                    return Ok(None);
+                };
+                if !self.merging {
+                    return Ok(Some(jump_table));
+                }
+                let jump_table = shared_random_access_input(jump_table);
+                lock(&self.disi_jump_tables).insert(field.number, Arc::clone(&jump_table));
+                jump_table
+            }
+        };
+        Ok(Some(Box::new(SharedRandomAccessSlice::new(jump_table))))
     }
 
     /// Opens the docs-with-field iterator of one sparse field.
@@ -605,13 +722,15 @@ fn read_fields(
             break;
         }
         let info = infos.field_info_by_number(field_number).ok_or_else(|| {
-            LuceneError::CorruptIndex(format!("Invalid field number: {field_number}"))
+            LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                "Invalid field number: {field_number}"
+            )))
         })?;
         if !info.has_norms() {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Invalid field: {} (no norms)",
                 info.name
-            )));
+            ))));
         }
         let mut entry = NormsEntry {
             docs_with_field_offset: meta.read_long()?,
@@ -625,10 +744,10 @@ fn read_fields(
         match entry.bytes_per_norm {
             0 | 1 | 2 | 4 | 8 => {}
             _ => {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "Invalid bytesPerNorm: {}, field: {}",
                     entry.bytes_per_norm, info.name
-                )))
+                ))))
             }
         }
         entry.norms_offset = meta.read_long()?;
@@ -641,7 +760,7 @@ impl Lucene90NormsProducer {
     /// The body of `Lucene90NormsProducer.getNorms(FieldInfo)`.
     fn norms_of(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         let entry = self.norms.get(&field.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("no norms for field {}", field.name))
+            LuceneError::illegal_argument(format!("no norms for field {}", field.name))
         })?;
 
         if entry.docs_with_field_offset == -2 {
@@ -657,7 +776,7 @@ impl Lucene90NormsProducer {
                     entry.norms_offset,
                 )));
             }
-            let slice = self.data_input(entry)?;
+            let slice = self.get_data_input(field, entry)?;
             return Ok(Box::new(DenseNormsIterator::new(
                 self.max_doc,
                 slice,
@@ -673,7 +792,7 @@ impl Lucene90NormsProducer {
                 entry.norms_offset,
             )));
         }
-        let slice = self.data_input(entry)?;
+        let slice = self.get_data_input(field, entry)?;
         Ok(Box::new(SparseNormsIterator::new(
             disi,
             slice,
@@ -695,16 +814,237 @@ impl NormsProducer for Lucene90NormsProducer {
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
-        let cloned_data = self.data.clone_input()?;
-        Ok(Box::new(Self {
-            norms: self.norms.clone(),
-            max_doc: self.max_doc,
-            data: cloned_data,
-        }))
+        Ok(Box::new(self.merge_instance()?))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.data.close()
+    }
+}
+
+/// Locks one of a merge instance's caches; a panic while it was held leaves
+/// a map that is still whole.
+fn lock<T>(cache: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    cache.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A slice a merge instance shares between the readers it hands out: every
+/// read goes to the one shared input, as Java's readers share the one
+/// `RandomAccessInput` object (`Lucene90NormsProducer.java:246-265, 358-375`).
+struct SharedRandomAccessSlice {
+    input: SharedRandomAccessInput,
+    resource_description: String,
+}
+
+impl SharedRandomAccessSlice {
+    fn new(input: SharedRandomAccessInput) -> Self {
+        let resource_description = lock_random_access_input(&input)
+            .resource_description()
+            .to_string();
+        Self {
+            input,
+            resource_description,
+        }
+    }
+}
+
+impl DataInput for SharedRandomAccessSlice {
+    fn read_byte(&mut self) -> Result<u8> {
+        lock_random_access_input(&self.input).read_byte()
+    }
+
+    fn to_java_string(&self) -> String {
+        self.resource_description.clone()
+    }
+
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        lock_random_access_input(&self.input).read_bytes(b, offset, len)
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        lock_random_access_input(&self.input).skip_bytes(num_bytes)
+    }
+}
+
+impl IndexInput for SharedRandomAccessSlice {
+    fn close(&mut self) -> Result<()> {
+        lock_random_access_input(&self.input).close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        lock_random_access_input(&self.input).file_pointer()
+    }
+
+    fn length(&self) -> i64 {
+        lock_random_access_input(&self.input).length()
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        lock_random_access_input(&self.input).seek(pos)
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        lock_random_access_input(&self.input).slice(slice_description, offset, length)
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        lock_random_access_input(&self.input).clone_input()
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
+        lock_random_access_input(&self.input).prefetch(offset, length)
+    }
+}
+
+impl RandomAccessInput for SharedRandomAccessSlice {
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
+        lock_random_access_input(&self.input).read_byte_at(pos)
+    }
+
+    fn read_bytes_at(
+        &mut self,
+        pos: i64,
+        bytes: &mut [u8],
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        lock_random_access_input(&self.input).read_bytes_at(pos, bytes, offset, len)
+    }
+
+    fn read_short_at(&mut self, pos: i64) -> Result<i16> {
+        lock_random_access_input(&self.input).read_short_at(pos)
+    }
+
+    fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        lock_random_access_input(&self.input).read_int_at(pos)
+    }
+
+    fn read_long_at(&mut self, pos: i64) -> Result<i64> {
+        lock_random_access_input(&self.input).read_long_at(pos)
+    }
+}
+
+/// The anonymous `IndexInput("docs")` of
+/// `Lucene90NormsProducer.getDisiInput` on a merge instance
+/// (`Lucene90NormsProducer.java:290-355`): keeps its own offset over the
+/// shared docs-with-field input, seeking it before each read, and supports
+/// only what `IndexedDISI` uses.
+#[derive(Clone)]
+struct MergingDisiInput {
+    /// `inF`.
+    r#in: SharedIndexInput,
+    offset: i64,
+}
+
+/// `new UnsupportedOperationException("Unused by IndexedDISI")`.
+fn unused_by_indexed_disi<T>() -> Result<T> {
+    Err(LuceneError::unsupported_operation(
+        "Unused by IndexedDISI".to_string(),
+    ))
+}
+
+impl MergingDisiInput {
+    fn shared(&self) -> std::sync::MutexGuard<'_, Box<dyn IndexInput>> {
+        self.r#in.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `inF.seek(offset); offset += n;` then `read` on `inF`.
+    fn read_at<T>(
+        &mut self,
+        n: i64,
+        read: impl FnOnce(&mut dyn IndexInput) -> Result<T>,
+    ) -> Result<T> {
+        let offset = self.offset;
+        let shared = Arc::clone(&self.r#in);
+        let mut r#in = shared.lock().unwrap_or_else(PoisonError::into_inner);
+        r#in.seek(offset)?;
+        self.offset += n;
+        read(r#in.as_mut())
+    }
+}
+
+impl DataInput for MergingDisiInput {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, off: usize, len: usize) -> Result<()> {
+        self.read_at(len as i64, |r#in| r#in.read_bytes(b, off, len))
+    }
+
+    fn read_byte(&mut self) -> Result<u8> {
+        unused_by_indexed_disi()
+    }
+
+    fn to_java_string(&self) -> String {
+        "docs".to_string()
+    }
+
+    /// `IndexInput.skipBytes`: `seek(getFilePointer() + numBytes)`.
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "numBytes must be >= 0, got {num_bytes}"
+            )));
+        }
+        let skip_to = self.offset + num_bytes;
+        self.seek(skip_to)
+    }
+
+    fn read_short(&mut self) -> Result<i16> {
+        self.read_at(2, |r#in| r#in.read_short())
+    }
+
+    fn read_long(&mut self) -> Result<i64> {
+        self.read_at(8, |r#in| r#in.read_long())
+    }
+}
+
+impl IndexInput for MergingDisiInput {
+    fn close(&mut self) -> Result<()> {
+        unused_by_indexed_disi()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.offset
+    }
+
+    fn length(&self) -> i64 {
+        self.shared().length()
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        self.offset = pos;
+        Ok(())
+    }
+
+    fn slice(
+        &self,
+        _slice_description: &str,
+        _offset: i64,
+        _length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        unused_by_indexed_disi()
+    }
+
+    /// Java's `IndexInput.clone()` (`Object.clone()`): a shallow copy over
+    /// the same shared input, at the same offset.
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        Ok(Box::new(self.clone()))
+    }
+
+    fn resource_description(&self) -> &str {
+        "docs"
+    }
+
+    fn prefetch(&self, _offset: i64, _length: i64) -> Result<()> {
+        // Not delegating to the wrapped instance on purpose. This is only used for merging.
+        Ok(())
     }
 }
 
@@ -726,9 +1066,9 @@ fn read_norm_at(slice: &mut dyn RandomAccessInput, index: i32, bytes_per_norm: i
         4 => Ok(slice.read_int_at(index << 2)? as i64),
         8 => slice.read_long_at(index << 3),
         // `read_fields` rejects every other width before an entry is stored.
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid bytes per norm: {bytes_per_norm}"
-        ))),
+        )))),
     }
 }
 
@@ -1055,7 +1395,7 @@ mod tests {
     use super::*;
     use crate::codecs::state::{SegmentReadState, SegmentWriteState};
     use crate::codecs::stub::BufferedUpdates;
-    use crate::error::LuceneError;
+    use crate::error::{LuceneError, LuceneErrorKind};
     use crate::index::{DocValuesType, FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
     use crate::store::{ByteBuffersDirectory, Directory};
@@ -1225,7 +1565,7 @@ mod tests {
             }))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1266,7 +1606,7 @@ mod tests {
             consumer.close().unwrap();
         }
 
-        let mut producer = Lucene90NormsFormat::new()
+        let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
         let mut values = producer.get_norms(&body).unwrap().unwrap();
@@ -1274,6 +1614,35 @@ mod tests {
         assert_eq!(collected, vec![Some(1), Some(2), Some(3), Some(4), Some(5)]);
         producer.check_integrity().unwrap();
         let _merge = producer.get_merge_instance().unwrap();
+        producer.close().unwrap();
+    }
+
+    /// `close()` nulls `meta` and `data` in its `finally`
+    /// (`Lucene90NormsConsumer.java:86`), so the second close of
+    /// `AssertingNormsConsumer.close` (`AssertingNormsFormat.java:78-79`) does
+    /// nothing: no error, and both files keep the bytes of the first close.
+    #[test]
+    fn close_twice_is_a_no_op() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let info = test_segment_info("_0", 2);
+        let body = norm_field("body", 0);
+        let fis = field_infos(vec![body.clone()]);
+        let values = VecNormsProducer::new(HashMap::from([(0, vec![(0, 3), (1, 4)])]));
+        let mut consumer = Lucene90NormsFormat::new()
+            .norms_consumer(&write_state(&dir, &info, &fis))
+            .unwrap();
+        consumer.add_norms_field(&body, &values).unwrap();
+        consumer.close().unwrap();
+        let lengths = |dir: &Arc<dyn Directory>| {
+            ["_0.nvd", "_0.nvm"].map(|name| dir.file_length(name).unwrap())
+        };
+        let first = lengths(&dir);
+        consumer.close().unwrap();
+        assert_eq!(lengths(&dir), first);
+        let producer = Lucene90NormsFormat::new()
+            .norms_producer(&read_state(&dir, &info, &fis))
+            .unwrap();
+        producer.check_integrity().unwrap();
         producer.close().unwrap();
     }
 
@@ -1482,7 +1851,13 @@ mod tests {
         let err = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &empty_fis))
             .unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1509,7 +1884,13 @@ mod tests {
         let err = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
     }
     // -----------------------------------------------------------------------
     // Regression tests
@@ -1526,7 +1907,7 @@ mod tests {
             .unwrap();
         let length = input.length() as usize;
         let mut bytes = vec![0u8; length];
-        input.read_bytes(&mut bytes, 0, length).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, length).unwrap();
         // Entries end four bytes (the `-1` marker) before the sixteen-byte
         // footer; there is exactly one, thirty-six bytes long.
         let entry_start = length - 16 - 4 - 36;
@@ -1759,6 +2140,51 @@ mod tests {
         assert_eq!(collect_values(&mut *merged, 50), expected);
     }
 
+    /// rmp #232 (d): the merge instance runs in Java's `merging` mode
+    /// (`Lucene90NormsProducer.java:116-130, 246-375`): it opens the
+    /// docs-with-field input and the values slice of a field once and serves
+    /// every later `getNorms` from them, two iterators pulled in parallel
+    /// reading their own documents through the offset-tracking wrapper; the
+    /// search instance (the positive control) caches nothing.
+    #[test]
+    fn the_merge_instance_caches_the_inputs_of_each_field() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let body = write_one_field(
+            &dir,
+            50,
+            (0..50)
+                .filter(|d| d % 5 == 1)
+                .map(|d| (d, 300 + d as i64))
+                .collect(),
+        );
+        let info = test_segment_info("_0", 50);
+        let fis = field_infos(vec![body.clone()]);
+        let producer = Lucene90NormsProducer::new(&read_state(&dir, &info, &fis)).unwrap();
+        let mut direct = producer.get_norms(&body).unwrap().unwrap();
+        let expected = collect_values(&mut *direct, 50);
+        assert!(!producer.merging);
+        assert!(lock(&producer.disi_inputs).is_empty());
+        assert!(lock(&producer.data_inputs).is_empty());
+
+        let merge = producer.merge_instance().unwrap();
+        assert!(merge.merging);
+        let mut first = merge.get_norms(&body).unwrap().unwrap();
+        let mut second = merge.get_norms(&body).unwrap().unwrap();
+        assert_eq!(lock(&merge.disi_inputs).len(), 1);
+        assert_eq!(lock(&merge.data_inputs).len(), 1);
+        // Interleaved: each iterator keeps its own position over the shared
+        // inputs.
+        assert_eq!(first.next_doc().unwrap(), 1);
+        assert_eq!(second.next_doc().unwrap(), 1);
+        assert_eq!(second.next_doc().unwrap(), 6);
+        assert_eq!(first.long_value().unwrap(), 301);
+        assert_eq!(second.long_value().unwrap(), 306);
+        assert_eq!(
+            collect_values(&mut *merge.get_norms(&body).unwrap().unwrap(), 50),
+            expected
+        );
+    }
+
     #[test]
     fn the_value_width_follows_the_signed_range_of_the_norms() {
         // `numBytesPerValue` is derived from the signed minimum and maximum, so
@@ -1806,7 +2232,7 @@ mod tests {
                 .unwrap();
             let length = input.length() as usize;
             let mut bytes = vec![0u8; length];
-            input.read_bytes(&mut bytes, 0, length).unwrap();
+            input.read_bytes(Some(&mut bytes), 0, length).unwrap();
             bytes
         };
         let data = read("_0.nvd");
@@ -1872,8 +2298,9 @@ mod tests {
     #[test]
     fn a_metadata_file_whose_checksum_fails_reports_the_corruption() {
         // With the footer left alone the same patch makes the file genuinely
-        // corrupt, and then the corruption is what explains it — with the entry
-        // failure folded in rather than lost.
+        // corrupt, and then the corruption is what explains it; the entry
+        // failure is only suppressed into it (`CodecUtil.java:506-508`), so it
+        // is not part of the message.
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         let patched = patch_metadata(&dir, false, |body| {
@@ -1891,8 +2318,8 @@ mod tests {
             "the corruption must be the one reported, got: {message}"
         );
         assert!(
-            message.contains("Invalid bytesPerNorm"),
-            "the entry failure must be folded into the message, got: {message}"
+            !message.contains("Invalid bytesPerNorm"),
+            "the entry failure is suppressed, not in the message: {message}"
         );
     }
 
@@ -2007,6 +2434,7 @@ mod close_family_tests {
         let before = log.closed().len();
         rewrite_file(&tracking, "_0.nvd", |bytes| bytes[6] ^= 0xff);
         Lucene90NormsProducer::new(&read_state(&*dir, &info, &fis)).unwrap_err();
-        assert_eq!(log.closed()[before..], ["_0.nvd"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(log.closed()[before..], ["_0.nvm", "_0.nvd"]);
     }
 }

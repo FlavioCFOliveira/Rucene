@@ -45,7 +45,7 @@ use rucene::store::{
     BufferedChecksumIndexInput, ByteBuffersDataOutput, ByteBuffersDirectory, Directory, IndexInput,
     NIOFSDirectory, DEFAULT_IO_CONTEXT,
 };
-use rucene::LuceneError;
+use rucene::{LuceneError, LuceneErrorKind};
 
 /// `CodecHeaderFixture.ID`.
 const ID: [u8; 16] = [0; 16];
@@ -92,7 +92,12 @@ fn report(
     input.close().unwrap();
     match outcome {
         Ok(_) => writeln!(out, "{label}: ok").unwrap(),
-        Err(error @ LuceneError::IndexFormatTooOld { .. }) => {
+        Err(
+            error @ LuceneError {
+                kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                ..
+            },
+        ) => {
             writeln!(out, "{label}: IndexFormatTooOldException: {error}").unwrap();
             writeln!(
                 out,
@@ -105,7 +110,12 @@ fn report(
             )
             .unwrap();
         }
-        Err(error @ LuceneError::IndexFormatTooNew { .. }) => {
+        Err(
+            error @ LuceneError {
+                kind: LuceneErrorKind::IndexFormatTooNew { .. },
+                ..
+            },
+        ) => {
             writeln!(out, "{label}: IndexFormatTooNewException: {error}").unwrap();
             writeln!(
                 out,
@@ -117,7 +127,10 @@ fn report(
             )
             .unwrap();
         }
-        Err(LuceneError::CorruptIndex(message)) => {
+        Err(LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(message),
+            ..
+        }) => {
             writeln!(out, "{label}: CorruptIndexException: {}", escaped(&message)).unwrap();
         }
         Err(other) => panic!("{label}: unexpected {other:?}"),
@@ -137,7 +150,10 @@ fn report_checksum(
     input.close().unwrap();
     match outcome {
         Ok(_) => writeln!(out, "{label}: ok").unwrap(),
-        Err(LuceneError::CorruptIndex(message)) => {
+        Err(LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(message),
+            ..
+        }) => {
             writeln!(out, "{label}: CorruptIndexException: {}", escaped(&message)).unwrap();
         }
         Err(other) => panic!("{label}: unexpected {other:?}"),

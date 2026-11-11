@@ -66,7 +66,10 @@ from kgio import item_labels, kg_target, read as kg_read, unwind, unwind_items
 # and **zero** nested types share a name with a member of their own enclosing
 # type. So the short spelling denotes one type or no type, never a guess between
 # two, and never a member mistaken for a type (`CLAUDE.md` 7).
-FQN_FULL = r"org\.apache\.lucene\.[A-Za-z0-9_.$]+"
+# The full name of a type of any port module (`port_modules_kg.PORT_MODULES`):
+# Lucene's `org.apache.lucene.` and randomizedtesting's
+# `com.carrotsearch.randomizedtesting.`, which sprint 9's workspace crates claim.
+FQN_FULL = r"(?:org\.apache\.lucene|com\.carrotsearch\.randomizedtesting)\.[A-Za-z0-9_.$]+"
 NESTED_SHORT = r"[A-Z][A-Za-z0-9_]*(?:[.$][A-Z][A-Za-z0-9_]*)+"
 # The crate often quotes the Java declaration rather than just the name --
 # ``Equivalent to the `final class MultiTermQuery.TopTermsScoringBooleanQueryRewrite`.``
@@ -242,7 +245,8 @@ def claim_in(text: str):
 # the same two spellings every other claim is -- a full `org.apache.lucene…` name
 # or a capitalised `Outer.Inner` chain. A bare simple name in a table row is
 # still refused, so the table can never resolve a name by coincidence.
-RE_TABLE_HEADER = re.compile(r"^\s*\|\s*Rucene\s*\|\s*Apache Lucene Core 10\.5\.0\s*\|\s*$")
+RE_TABLE_HEADER = re.compile(
+    r"^\s*\|\s*Rucene\s*\|\s*(?:Apache Lucene Core 10\.5\.0|randomizedtesting 2\.8\.1)\s*\|\s*$")
 RE_TABLE_ROW = re.compile(r"^\s*\|\s*\[`([^`\]]+)`\](?:\([^)]*\))?\s*\|\s*`([^`]+)`\s*\|\s*$")
 
 
@@ -399,8 +403,11 @@ def _item_paragraph_claims(block, item_name):
 
 
 def extract(root: Path):
+    """The claims of the root crate's `src/` and of every workspace member's
+    `crates/<dir>/src/` (`extract_rucene_kg.WORKSPACE`)."""
+    import extract_rucene_kg as ex
     claims = []
-    for base in ("src",):
+    for base in ("src", *[f"{d}/src" for d in ex.load_workspace(root)]):
         for dp, _d, names in os.walk(root / base):
             for fn in sorted(names):
                 if fn.endswith(".rs"):

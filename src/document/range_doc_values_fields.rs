@@ -44,7 +44,7 @@ macro_rules! range_doc_values_field {
             ///
             /// # Errors
             ///
-            /// Returns [`LuceneError::IllegalArgument`] when `min` and `max` are
+            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `min` and `max` are
             /// empty, disagree in length, exceed the four dimensions a range
             /// field allows, or when some `min[d]` is greater than `max[d]` —
             /// which is what `checkArgs` and
@@ -72,7 +72,7 @@ macro_rules! range_doc_values_field {
             ///
             /// # Errors
             ///
-            /// Returns [`LuceneError::IllegalArgument`] when `dimension` is out
+            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `dimension` is out
             /// of range, which Java reports as
             /// `"Dimension out of valid range"`.
             pub fn get_min(&self, dimension: usize) -> Result<$prim> {
@@ -174,7 +174,7 @@ macro_rules! range_doc_values_field {
             ///
             /// # Errors
             ///
-            /// Returns [`LuceneError::IllegalArgument`] when the bounds are
+            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the bounds are
             /// malformed, which is what
             #[doc = concat!("`", stringify!($range), ".verifyAndEncode` throws.")]
             pub fn new(
@@ -259,7 +259,7 @@ macro_rules! range_doc_values_field {
             ///
             /// # Errors
             ///
-            /// Returns [`LuceneError::IllegalArgument`] when a minimum exceeds
+            /// Returns [`LuceneErrorKind::IllegalArgument`] when a minimum exceeds
             /// its maximum or a bound is not a number, which
             #[doc = concat!("`", stringify!($range), ".verifyAndEncode` throws.")]
             fn encode_ranges(min: &[$prim], max: &[$prim]) -> Result<Vec<u8>> {
@@ -283,18 +283,18 @@ macro_rules! range_doc_values_field {
 /// doc-values fields.
 fn check_args<T: PartialOrd + std::fmt::Debug>(min: &[T], max: &[T]) -> Result<()> {
     if min.is_empty() || max.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "min/max range values cannot be null or empty".to_string(),
         ));
     }
     if min.len() != max.len() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "min/max ranges must agree".to_string(),
         ));
     }
     for i in 0..min.len() {
         if min[i] > max[i] {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "min should be less than max but min = {:?} and max = {:?}",
                 min[i], max[i]
             )));
@@ -307,7 +307,7 @@ fn check_args<T: PartialOrd + std::fmt::Debug>(min: &[T], max: &[T]) -> Result<(
 /// `getMin`/`getMax` accessors apply.
 fn check_dimension(dimension: usize, dimensions: usize) -> Result<()> {
     if dimension > MAX_DIMENSION_INDEX || dimension >= dimensions {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "Dimension out of valid range".to_string(),
         ));
     }

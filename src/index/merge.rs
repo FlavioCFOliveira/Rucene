@@ -261,7 +261,7 @@ impl MergeState {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a sort field cannot sort
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a sort field cannot sort
     /// an index, and propagates whatever reading the sort values raises.
     pub fn build_doc_maps_for(
         readers: &[Arc<dyn CodecReader>],
@@ -289,7 +289,7 @@ impl MergeState {
         let mut reverse_muls = Vec::with_capacity(index_sort.fields().len());
         for field in index_sort.fields() {
             let sorter = field.get_index_sorter().ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "Cannot use sort field {field} for index sorting"
                 ))
             })?;
@@ -333,7 +333,7 @@ impl MergeState {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] naming both sorts
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] naming both sorts
     /// when one does not match.
     pub fn verify_index_sort(
         index_sort: Option<&crate::search::Sort>,
@@ -350,7 +350,7 @@ impl MergeState {
                 }
             };
             if !congruent {
-                return Err(crate::error::LuceneError::IllegalArgument(format!(
+                return Err(crate::error::LuceneError::illegal_argument(format!(
                     "index sort mismatch: merged segment has sort={index_sort} but to-be-merged \
                      segment has sort={}",
                     match segment_sort {
@@ -406,13 +406,13 @@ impl MergeState {
     ///
     /// Equivalent to `MergeState.checkAborted()` (`MergeState.java:247-251`):
     /// once the writer has aborted [`one_merge`](Self::one_merge), this fails
-    /// with [`LuceneError::MergeAborted`], Java's
+    /// with [`LuceneErrorKind::MergeAborted`](crate::error::LuceneErrorKind::MergeAborted), Java's
     /// `MergePolicy.MergeAbortedException`. It is a no-op when the state
     /// belongs to no merge.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::MergeAborted`] once the merge was aborted.
+    /// Returns [`LuceneErrorKind::MergeAborted`](crate::error::LuceneErrorKind::MergeAborted) once the merge was aborted.
     pub fn check_aborted(&self) -> Result<()> {
         if let Some(one_merge) = &self.one_merge {
             one_merge.check_aborted()?;
@@ -441,9 +441,9 @@ impl MergeState {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a reader's index sort is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a reader's index sort is
     /// not congruent with the merged segment's, or a sort field cannot sort an
-    /// index; [`LuceneError::IllegalState`] when `segment_info`'s `maxDoc` is
+    /// index; [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when `segment_info`'s `maxDoc` is
     /// already set; and propagates whatever pulling a reader, building its
     /// merge instance or reading the sort values raises.
     pub fn from_readers(
@@ -492,16 +492,14 @@ impl MergeState {
                 Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
                 None => None,
             });
-            stored_fields_readers.push(
-                reader
-                    .get_fields_reader()?
-                    .map(|fields_reader| Arc::from(fields_reader.get_merge_instance())),
-            );
-            term_vectors_readers.push(
-                reader
-                    .get_term_vectors_reader()?
-                    .map(|vectors_reader| Arc::from(vectors_reader.get_merge_instance())),
-            );
+            stored_fields_readers.push(match reader.get_fields_reader()? {
+                Some(fields_reader) => Some(Arc::from(fields_reader.get_merge_instance()?)),
+                None => None,
+            });
+            term_vectors_readers.push(match reader.get_term_vectors_reader()? {
+                Some(vectors_reader) => Some(Arc::from(vectors_reader.get_merge_instance()?)),
+                None => None,
+            });
             fields_producers.push(match reader.get_postings_reader()? {
                 Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
                 None => None,
@@ -600,7 +598,7 @@ pub trait DocIDMergerSub {
 /// The `NullPointerException` Java's `DocIDMerger.next()` raises when it is
 /// called again after it answered `null`.
 fn exhausted_merger() -> LuceneError {
-    LuceneError::illegal_state(
+    LuceneError::null_pointer_with_message(
         "Cannot invoke \"org.apache.lucene.index.DocIDMerger$Sub.nextMappedDoc()\" because \"this.current\" is null"
             .to_string(),
     )
@@ -779,7 +777,7 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// `null` `current` (`DocIDMerger.java:123`, `DocIDMerger.java:188`),
     /// as they do on the first call over an empty list, and the
     /// `NullPointerException` is reported here as
-    /// [`LuceneError::IllegalState`] with the JDK's message.
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) with the JDK's message.
     pub fn next_sub(&mut self) -> Result<Option<&mut T>> {
         match &mut self.state {
             MergerState::Sequential {
@@ -828,6 +826,11 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
                         *current = Some(previous_top);
                     }
                     queue.sort_by_key(|&idx| self.subs[idx].mapped_doc_id());
+                    // `assert a.mappedDocID != b.mappedDocID` in the queue's
+                    // `lessThan` (`DocIDMerger.java:151`).
+                    debug_assert!(queue.windows(2).all(|pair| {
+                        self.subs[pair[0]].mapped_doc_id() != self.subs[pair[1]].mapped_doc_id()
+                    }));
                 }
 
                 *queue_min_doc_id = queue
@@ -868,6 +871,7 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::util::MatchAllBits;
 
     struct VecSub {
@@ -1180,7 +1184,12 @@ mod tests {
 
         merge.set_aborted();
         match state.check_aborted() {
-            Err(error @ LuceneError::MergeAborted(_)) => {
+            Err(
+                error @ LuceneError {
+                    kind: LuceneErrorKind::MergeAborted(_),
+                    ..
+                },
+            ) => {
                 // `MergeAbortedException.getMessage()`, with nothing added.
                 let message = error.to_string();
                 assert_eq!(message, format!("merge is aborted: {}", merge.seg_string()));

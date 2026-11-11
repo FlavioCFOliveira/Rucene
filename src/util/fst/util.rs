@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::rc::Rc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
 use crate::util::{BytesRef, BytesRefBuilder, IntsRef, IntsRefBuilder};
 
 use super::fst::{
@@ -207,8 +207,10 @@ where
 /// Builds the default path comparator: compare with `comparator` first, then
 /// break ties on the path input.
 ///
-/// Equivalent to the record `Util.TieBreakByInputComparator<T>`.
-fn tie_break_by_input_comparator<T: Clone + Default + 'static>(
+/// Equivalent to the record `Util.TieBreakByInputComparator<T>`
+/// (package-private in Java; public for the port of `TestFSTs`, whose
+/// anonymous `TopNSearcher` subclasses use it as their default).
+pub fn tie_break_by_input_comparator<T: Clone + Default + 'static>(
     comparator: OutputComparator<T>,
 ) -> PathComparator<T> {
     Rc::new(move |a: &FSTPath<T>, b: &FSTPath<T>| {
@@ -286,6 +288,7 @@ impl<'a, O: Outputs, H: TopNSearcherHooks<O::Output>> TopNSearcher<'a, O, H> {
     ///
     /// Equivalent to the protected `TopNSearcher.addIfCompetitive`.
     fn add_if_competitive(&mut self, path: &mut FSTPath<O::Output>) {
+        debug_assert!(self.queue.is_some());
         let queue = match &self.queue {
             Some(queue) => queue,
             None => return,
@@ -308,7 +311,7 @@ impl<'a, O: Outputs, H: TopNSearcherHooks<O::Output>> TopNSearcher<'a, O, H> {
                 path.input.set_length(path.input.length() - 1);
 
                 // Duplicates should never be seen.
-                debug_assert_ne!(cmp, 0);
+                debug_assert!(cmp != 0);
 
                 if cmp < 0 {
                     // Does not compete.
@@ -918,19 +921,22 @@ impl Util {
     /// Equivalent to `Util.toBytesRef`. Lucene allows `-128` to `255`, which
     /// this port reproduces.
     ///
+    /// A value that does not fit into a byte fails Lucene's assertion, here a
+    /// `debug_assert!`; without assertions the value is truncated to its low
+    /// byte, as Java's `(byte)` cast does.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a value does not fit into
-    /// a byte; Lucene fails the same case with an assertion.
+    /// Never; the `Result` is kept for the callers' signature.
     pub fn to_bytes_ref(input: &IntsRef, scratch: &mut BytesRefBuilder) -> Result<BytesRef> {
         scratch.grow_no_copy(input.length);
         for i in 0..input.length {
             let value = input.ints[i + input.offset];
-            if !(-128..=255).contains(&value) {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "value {value} doesn't fit into byte"
-                )));
-            }
+            // NOTE: we allow -128 to 255
+            debug_assert!(
+                (-128..=255).contains(&value),
+                "value {value} doesn't fit into byte"
+            );
             scratch.set_byte_at(i, value as u8);
         }
         scratch.set_length(input.length);
@@ -970,10 +976,12 @@ impl Util {
                 } else {
                     if BitTable::is_bit_set(target_index, arc, input)? {
                         fst.read_arc_by_direct_addressing(arc, input, target_index)?;
+                        debug_assert!(arc.label() == label);
                     } else {
                         let ceil_index = BitTable::next_bit_set(target_index, arc, input)?;
-                        debug_assert_ne!(ceil_index, -1);
+                        debug_assert!(ceil_index != -1);
                         fst.read_arc_by_direct_addressing(arc, input, ceil_index)?;
+                        debug_assert!(arc.label() > label);
                     }
                     return Ok(true);
                 }
@@ -985,6 +993,7 @@ impl Util {
                     return Ok(true);
                 } else {
                     fst.read_arc_by_continuous(arc, input, target_index)?;
+                    debug_assert!(arc.label() == label);
                     return Ok(true);
                 }
             }
@@ -1024,7 +1033,8 @@ impl Util {
 /// index of the arc carrying `target_label`, or `-1 - idx` where `idx` is the
 /// index of the arc with the next highest label, or the total number of arcs
 /// when the target label exceeds the maximum.
-pub(crate) fn binary_search<O: Outputs>(
+/// Public (Java: package-private) for the port of the FST `TestUtil`.
+pub fn binary_search<O: Outputs>(
     fst: &FST<O>,
     arc: &Arc<O::Output>,
     target_label: i32,

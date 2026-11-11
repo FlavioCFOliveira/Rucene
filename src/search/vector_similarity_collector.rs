@@ -69,12 +69,15 @@ impl VectorSimilarityCollector {
     ) -> Self {
         debug_assert!(
             !result_similarity.is_nan(),
-            "resultSimilarity must have a valid value"
+            "resultSimilarity must have a valid value; got {result_similarity}"
         );
-        debug_assert!(!decay.is_nan(), "decay must have a valid value");
+        debug_assert!(
+            !decay.is_nan(),
+            "decay must have a valid value; got {decay}"
+        );
         debug_assert!(
             (DECAY_MAX_APPROXIMATION..=DECAY_MAX_QUALITY).contains(&decay),
-            "decay must lie in range [DECAY_MAX_APPROXIMATION = 0, DECAY_MAX_QUALITY = 1]"
+            "decay must lie in range [DECAY_MAX_APPROXIMATION = 0, DECAY_MAX_QUALITY = 1]; got {decay}"
         );
         Self {
             base: AbstractKnnCollectorState::new(

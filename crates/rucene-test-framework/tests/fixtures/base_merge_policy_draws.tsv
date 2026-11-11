@@ -1,0 +1,22 @@
+# seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestMergePolicySuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	-8073323186765603867
+DEADBEEF	#counts	run=5 fail=0 assume=0	-
+DEADBEEF	testFindForcedDeletesMerges	next	-5417341717630429017
+DEADBEEF	testForceMergeNotNeeded	next	-7272495648396410364
+DEADBEEF	testNoPathologicalMerges	next	254664945272111233
+DEADBEEF	testSimulateAppendOnly	next	6304247488073486584
+DEADBEEF	testSimulateUpdates	next	-3825546995022096946
+1	#class	next	-7407130248523848504
+1	#counts	run=5 fail=0 assume=0	-
+1	testFindForcedDeletesMerges	next	3619112974531259693
+1	testForceMergeNotNeeded	next	110154718980302984
+1	testNoPathologicalMerges	next	4233115069232758178
+1	testSimulateAppendOnly	next	7907661987193295312
+1	testSimulateUpdates	next	-1198873297113921025
+C0FFEE	#class	next	5107375323717939497
+C0FFEE	#counts	run=5 fail=0 assume=0	-
+C0FFEE	testFindForcedDeletesMerges	next	-969160188781594598
+C0FFEE	testForceMergeNotNeeded	next	9202532628784201487
+C0FFEE	testNoPathologicalMerges	next	-6914980311685818974
+C0FFEE	testSimulateAppendOnly	next	-4605539093249020730
+C0FFEE	testSimulateUpdates	next	1948736134928916011

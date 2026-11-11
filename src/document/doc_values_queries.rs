@@ -84,6 +84,7 @@ impl DocValuesLongHashSet {
         let table_size = 1usize
             << PackedInts::bits_required(wanted)
                 .expect("INVARIANT: a length times 3/2 is never negative");
+        debug_assert!(table_size as i64 >= values.len() as i64 * 3 / 2);
         let mut set = Self {
             table: vec![MISSING; table_size],
             mask: table_size - 1,
@@ -92,6 +93,7 @@ impl DocValuesLongHashSet {
             min_value: i64::MAX,
             max_value: i64::MIN,
         };
+        let mut previous_value = i64::MIN; // for assert
         for &value in values {
             if value == MISSING {
                 if !set.has_missing_value {
@@ -101,6 +103,11 @@ impl DocValuesLongHashSet {
             } else if set.add(value) {
                 set.size += 1;
             }
+            debug_assert!(
+                value >= previous_value,
+                "values must be provided in sorted order"
+            );
+            previous_value = value;
         }
         if !values.is_empty() {
             set.min_value = values[0];
@@ -121,6 +128,7 @@ impl DocValuesLongHashSet {
     /// Calling this on a table with no free slot would never return — which is
     /// why the sizing must stay faithful to Lucene's.
     fn add(&mut self, value: i64) -> bool {
+        debug_assert!(value != MISSING);
         let mut slot = (hash_long(value) as usize) & self.mask;
         loop {
             if self.table[slot] == MISSING {
@@ -277,11 +285,18 @@ pub struct SortedNumericDocValuesSetQuery {
 }
 
 impl SortedNumericDocValuesSetQuery {
-    /// Creates the query from `values`, which must be sorted ascending.
+    /// Creates the query from `values`, in any order.
+    ///
+    /// Equivalent to `SortedNumericDocValuesSetQuery(String, long[])`, which
+    /// sorts the numbers before building the set (`Arrays.sort(numbers)`,
+    /// `SortedNumericDocValuesSetQuery.java:47-51`); Java sorts the copy its
+    /// callers pass (`values.clone()`), so this sorts a copy too.
     pub fn new(field: impl Into<String>, values: &[i64]) -> Self {
+        let mut numbers = values.to_vec();
+        numbers.sort_unstable();
         Self {
             field: field.into(),
-            values: DocValuesLongHashSet::new(values),
+            values: DocValuesLongHashSet::new(&numbers),
         }
     }
 
@@ -341,10 +356,10 @@ impl SortedSetDocValuesRangeQuery {
     ) -> Self {
         Self {
             field: field.into(),
-            // An exclusive open bound is the same as an inclusive one, as Java
-            // normalises in its constructor.
-            lower_inclusive: lower_inclusive || lower_value.is_none(),
-            upper_inclusive: upper_inclusive || upper_value.is_none(),
+            // An open bound is exclusive: `lowerInclusive && lowerValue !=
+            // null` (`SortedSetDocValuesRangeQuery.java:61-62`).
+            lower_inclusive: lower_inclusive && lower_value.is_some(),
+            upper_inclusive: upper_inclusive && upper_value.is_some(),
             lower_value,
             upper_value,
         }
@@ -989,6 +1004,11 @@ impl Query for SortedNumericDocValuesSetQuery {
         self
     }
 
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
+    }
+
     fn rewrite(&self, _searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         if self.values.size() == 0 {
             return Ok(Some(Arc::new(MatchNoDocsQuery::new(""))));
@@ -1342,11 +1362,22 @@ trait SkipperRangeSource: Debug {
 /// a boundary interval is not exact for the range, the supplier scans forward
 /// from it to the first document that really satisfies the comparison, so the
 /// interval it hands out is tight.
+///
+/// Java computes the skipper bounds lazily, on the first `cost()`, `get` or
+/// `bulkScorer()` (`SortedSkipperScorerSupplier.java`); `cost` takes `&self`
+/// here, so the skipper, the source and the bounds sit behind a [`Mutex`] that
+/// every one of them locks.
 struct SortedSkipperScorerSupplier {
-    skipper: Box<dyn DocValuesSkipper>,
-    reverse: bool,
+    state: std::sync::Mutex<SkipperRangeState>,
     score_mode: ScoreMode,
     score: f32,
+}
+
+/// The mutable part of a [`SortedSkipperScorerSupplier`]: the skipper, the
+/// query's value source and the bounds `computeSkipperDocIds` derives.
+struct SkipperRangeState {
+    skipper: Box<dyn DocValuesSkipper>,
+    reverse: bool,
     source: Box<dyn SkipperRangeSource>,
     skipper_min_doc_id: i32,
     skipper_max_doc_id: i32,
@@ -1357,7 +1388,7 @@ struct SortedSkipperScorerSupplier {
 impl Debug for SortedSkipperScorerSupplier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SortedSkipperScorerSupplier")
-            .field("reverse", &self.reverse)
+            .field("score", &self.score)
             .finish_non_exhaustive()
     }
 }
@@ -1377,10 +1408,34 @@ impl SortedSkipperScorerSupplier {
         source: Box<dyn SkipperRangeSource>,
     ) -> Self {
         Self {
-            skipper,
-            reverse,
+            state: std::sync::Mutex::new(SkipperRangeState::new(skipper, reverse, source)),
             score_mode,
             score,
+        }
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, SkipperRangeState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Equivalent to the private `SortedSkipperScorerSupplier.range()`.
+    fn range(&self) -> Result<DocIdRange> {
+        self.lock_state().range()
+    }
+}
+
+impl SkipperRangeState {
+    /// The state of a fresh supplier: no bounds computed yet.
+    fn new(
+        skipper: Box<dyn DocValuesSkipper>,
+        reverse: bool,
+        source: Box<dyn SkipperRangeSource>,
+    ) -> Self {
+        Self {
+            skipper,
+            reverse,
             source,
             skipper_min_doc_id: -1,
             skipper_max_doc_id: -1,
@@ -1548,7 +1603,7 @@ impl ScorerSupplier for SortedSkipperScorerSupplier {
     fn bulk_scorer(&mut self) -> Result<Box<dyn BulkScorer>> {
         let range = self.range()?;
         if range.min_doc_id == range.max_doc_id {
-            return Ok(Self::empty_bulk_scorer());
+            return Ok(SkipperRangeState::empty_bulk_scorer());
         }
         let iterator = Box::new(crate::search::doc_id_set_iterator::range(
             range.min_doc_id,
@@ -1562,18 +1617,23 @@ impl ScorerSupplier for SortedSkipperScorerSupplier {
         )?))
     }
 
+    /// Equivalent to `SortedSkipperScorerSupplier.cost()`: the skipper bounds
+    /// are computed on first use, and an `IOException` doing so is thrown as
+    /// `UncheckedIOException`.
     fn cost(&self) -> i64 {
-        // Java computes the skipper bounds lazily here; this port cannot,
-        // because `cost` takes `&self` while `computeSkipperDocIds` mutates.
-        // The supplier's users — `get` and `bulk_scorer` — compute them first,
-        // and until they have, the whole field is the honest upper bound.
-        if self.skipper_min_doc_id == -1 {
-            return i64::from(self.skipper.global_doc_count());
+        let mut state = self.lock_state();
+        if state.skipper_min_doc_id == -1 {
+            if let Err(e) = state.compute_skipper_doc_ids() {
+                crate::store::java_nio_file::throw_unchecked(
+                    "java.io.UncheckedIOException",
+                    Some(&e.to_string()),
+                );
+            }
         }
-        if self.skipper_max_doc_id_exact {
-            return i64::from(self.skipper_max_doc_id - self.skipper_min_doc_id);
+        if state.skipper_max_doc_id_exact {
+            return i64::from(state.skipper_max_doc_id - state.skipper_min_doc_id);
         }
-        i64::from(self.skipper_max_doc_id - self.skipper_min_doc_id + self.skipper.doc_count(0))
+        i64::from(state.skipper_max_doc_id - state.skipper_min_doc_id + state.skipper.doc_count(0))
     }
 }
 

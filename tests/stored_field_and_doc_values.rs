@@ -43,7 +43,7 @@ use rucene::index::IndexableField;
 use rucene::search::{SortField, SortFieldType, SortedNumericSortField, SortedSetSortField};
 use rucene::store::{ByteBuffersDirectory, Directory, FSDirectory};
 use rucene::util::BytesRef;
-use rucene::LuceneError;
+use rucene::{LuceneError, LuceneErrorKind};
 
 /// `StoredDocValuesFixture.KINDS`.
 const KINDS: [&str; 5] = [
@@ -135,7 +135,7 @@ fn write(root: &Path) {
             ));
             std::fs::create_dir_all(&path).unwrap();
             let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&path).unwrap());
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             if sorted {
                 config.set_index_sort(sort(kind)).unwrap();
             }
@@ -216,8 +216,18 @@ fn lucene_reads_rucene_stored_fields_combined_with_every_doc_values_type() {
 /// `error` stands for.
 fn java_exception(error: &LuceneError) -> String {
     let message = match error {
-        LuceneError::IllegalArgument(message) => message.clone(),
-        LuceneError::IllegalState { message, .. } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { message, .. },
+            ..
+        } => message.clone().unwrap_or_else(|| "null".to_string()),
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())
@@ -236,7 +246,7 @@ fn add(out: &mut String, w: &IndexWriter, label: &str, fields: Vec<Box<dyn Index
 
 fn memory_writer(sort: Option<rucene::search::Sort>) -> Arc<IndexWriter> {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if let Some(sort) = sort {
         config.set_index_sort(sort).unwrap();
     }
@@ -260,7 +270,7 @@ fn typed(name: &str, value: &str, field_type: &FieldType) -> Box<dyn IndexableFi
 }
 
 fn stored_type(frozen: bool) -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_stored(true).unwrap();
     if frozen {
         field_type.freeze();
@@ -715,16 +725,9 @@ fn rucene_flush() -> String {
 /// `DocValues.checkField` throws (`DocValues.java:206-222`) — and when the
 /// field has no `FieldInfo` because its only document failed validation,
 /// where Java's reader dereferences the missing `FieldInfo`
-/// (`IndexingChain.java:187`). Either failure aborts the writer.
-///
-/// That last failure is Java's `NullPointerException`, which this port
-/// reports as `IllegalStateException` with the JVM's message; the oracle's
-/// line is mapped accordingly.
+/// (`IndexingChain.java:187`), a `NullPointerException` with the JVM's
+/// message. Either failure aborts the writer.
 #[test]
 fn a_sort_over_a_field_without_doc_values_fails_the_flush_as_lucene_does() {
-    let java = run_java(&["flush"]).replace(
-        "M commit: NullPointerException: ",
-        "M commit: IllegalStateException: ",
-    );
-    assert_eq!(rucene_flush(), java);
+    assert_eq!(rucene_flush(), run_java(&["flush"]));
 }

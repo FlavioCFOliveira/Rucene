@@ -1,0 +1,19 @@
+# seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestLiveDocsSuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	2160655631810921569
+DEADBEEF	#counts	run=4 fail=0 assume=1	-
+DEADBEEF	testDenseLiveDocs	next	1937618386882407097
+DEADBEEF	testEmptyLiveDocs	next	-5768588904259973172
+DEADBEEF	testOverflow	A	'monster' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Monster("Uses lots of memory"))
+DEADBEEF	testSparseLiveDocs	next	-5532742598713383247
+1	#class	next	-6530885542513572511
+1	#counts	run=4 fail=0 assume=1	-
+1	testDenseLiveDocs	next	-3191001917138643829
+1	testEmptyLiveDocs	next	-5711845432246994117
+1	testOverflow	A	'monster' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Monster("Uses lots of memory"))
+1	testSparseLiveDocs	next	696843143735733687
+C0FFEE	#class	next	-4227423130442329040
+C0FFEE	#counts	run=4 fail=0 assume=1	-
+C0FFEE	testDenseLiveDocs	next	-7701917702345213022
+C0FFEE	testEmptyLiveDocs	next	6533161959204391655
+C0FFEE	testOverflow	A	'monster' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Monster("Uses lots of memory"))
+C0FFEE	testSparseLiveDocs	next	5334924581998699504

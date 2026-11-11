@@ -1,0 +1,2563 @@
+# method	value	result
+int	-1000	minus one thousand, 
+int	-999	minus nine hundred ninety-nine 
+int	-998	minus nine hundred ninety-eight 
+int	-997	minus nine hundred ninety-seven 
+int	-996	minus nine hundred ninety-six 
+int	-995	minus nine hundred ninety-five 
+int	-994	minus nine hundred ninety-four 
+int	-993	minus nine hundred ninety-three 
+int	-992	minus nine hundred ninety-two 
+int	-991	minus nine hundred ninety-one 
+int	-990	minus nine hundred ninety 
+int	-989	minus nine hundred eighty-nine 
+int	-988	minus nine hundred eighty-eight 
+int	-987	minus nine hundred eighty-seven 
+int	-986	minus nine hundred eighty-six 
+int	-985	minus nine hundred eighty-five 
+int	-984	minus nine hundred eighty-four 
+int	-983	minus nine hundred eighty-three 
+int	-982	minus nine hundred eighty-two 
+int	-981	minus nine hundred eighty-one 
+int	-980	minus nine hundred eighty 
+int	-979	minus nine hundred seventy-nine 
+int	-978	minus nine hundred seventy-eight 
+int	-977	minus nine hundred seventy-seven 
+int	-976	minus nine hundred seventy-six 
+int	-975	minus nine hundred seventy-five 
+int	-974	minus nine hundred seventy-four 
+int	-973	minus nine hundred seventy-three 
+int	-972	minus nine hundred seventy-two 
+int	-971	minus nine hundred seventy-one 
+int	-970	minus nine hundred seventy 
+int	-969	minus nine hundred sixty-nine 
+int	-968	minus nine hundred sixty-eight 
+int	-967	minus nine hundred sixty-seven 
+int	-966	minus nine hundred sixty-six 
+int	-965	minus nine hundred sixty-five 
+int	-964	minus nine hundred sixty-four 
+int	-963	minus nine hundred sixty-three 
+int	-962	minus nine hundred sixty-two 
+int	-961	minus nine hundred sixty-one 
+int	-960	minus nine hundred sixty 
+int	-959	minus nine hundred fifty-nine 
+int	-958	minus nine hundred fifty-eight 
+int	-957	minus nine hundred fifty-seven 
+int	-956	minus nine hundred fifty-six 
+int	-955	minus nine hundred fifty-five 
+int	-954	minus nine hundred fifty-four 
+int	-953	minus nine hundred fifty-three 
+int	-952	minus nine hundred fifty-two 
+int	-951	minus nine hundred fifty-one 
+int	-950	minus nine hundred fifty 
+int	-949	minus nine hundred forty-nine 
+int	-948	minus nine hundred forty-eight 
+int	-947	minus nine hundred forty-seven 
+int	-946	minus nine hundred forty-six 
+int	-945	minus nine hundred forty-five 
+int	-944	minus nine hundred forty-four 
+int	-943	minus nine hundred forty-three 
+int	-942	minus nine hundred forty-two 
+int	-941	minus nine hundred forty-one 
+int	-940	minus nine hundred forty 
+int	-939	minus nine hundred thirty-nine 
+int	-938	minus nine hundred thirty-eight 
+int	-937	minus nine hundred thirty-seven 
+int	-936	minus nine hundred thirty-six 
+int	-935	minus nine hundred thirty-five 
+int	-934	minus nine hundred thirty-four 
+int	-933	minus nine hundred thirty-three 
+int	-932	minus nine hundred thirty-two 
+int	-931	minus nine hundred thirty-one 
+int	-930	minus nine hundred thirty 
+int	-929	minus nine hundred twenty-nine 
+int	-928	minus nine hundred twenty-eight 
+int	-927	minus nine hundred twenty-seven 
+int	-926	minus nine hundred twenty-six 
+int	-925	minus nine hundred twenty-five 
+int	-924	minus nine hundred twenty-four 
+int	-923	minus nine hundred twenty-three 
+int	-922	minus nine hundred twenty-two 
+int	-921	minus nine hundred twenty-one 
+int	-920	minus nine hundred twenty 
+int	-919	minus nine hundred nineteen 
+int	-918	minus nine hundred eighteen 
+int	-917	minus nine hundred seventeen 
+int	-916	minus nine hundred sixteen 
+int	-915	minus nine hundred fifteen 
+int	-914	minus nine hundred fourteen 
+int	-913	minus nine hundred thirteen 
+int	-912	minus nine hundred twelve 
+int	-911	minus nine hundred eleven 
+int	-910	minus nine hundred ten 
+int	-909	minus nine hundred nine 
+int	-908	minus nine hundred eight 
+int	-907	minus nine hundred seven 
+int	-906	minus nine hundred six 
+int	-905	minus nine hundred five 
+int	-904	minus nine hundred four 
+int	-903	minus nine hundred three 
+int	-902	minus nine hundred two 
+int	-901	minus nine hundred one 
+int	-900	minus nine hundred 
+int	-899	minus eight hundred ninety-nine 
+int	-898	minus eight hundred ninety-eight 
+int	-897	minus eight hundred ninety-seven 
+int	-896	minus eight hundred ninety-six 
+int	-895	minus eight hundred ninety-five 
+int	-894	minus eight hundred ninety-four 
+int	-893	minus eight hundred ninety-three 
+int	-892	minus eight hundred ninety-two 
+int	-891	minus eight hundred ninety-one 
+int	-890	minus eight hundred ninety 
+int	-889	minus eight hundred eighty-nine 
+int	-888	minus eight hundred eighty-eight 
+int	-887	minus eight hundred eighty-seven 
+int	-886	minus eight hundred eighty-six 
+int	-885	minus eight hundred eighty-five 
+int	-884	minus eight hundred eighty-four 
+int	-883	minus eight hundred eighty-three 
+int	-882	minus eight hundred eighty-two 
+int	-881	minus eight hundred eighty-one 
+int	-880	minus eight hundred eighty 
+int	-879	minus eight hundred seventy-nine 
+int	-878	minus eight hundred seventy-eight 
+int	-877	minus eight hundred seventy-seven 
+int	-876	minus eight hundred seventy-six 
+int	-875	minus eight hundred seventy-five 
+int	-874	minus eight hundred seventy-four 
+int	-873	minus eight hundred seventy-three 
+int	-872	minus eight hundred seventy-two 
+int	-871	minus eight hundred seventy-one 
+int	-870	minus eight hundred seventy 
+int	-869	minus eight hundred sixty-nine 
+int	-868	minus eight hundred sixty-eight 
+int	-867	minus eight hundred sixty-seven 
+int	-866	minus eight hundred sixty-six 
+int	-865	minus eight hundred sixty-five 
+int	-864	minus eight hundred sixty-four 
+int	-863	minus eight hundred sixty-three 
+int	-862	minus eight hundred sixty-two 
+int	-861	minus eight hundred sixty-one 
+int	-860	minus eight hundred sixty 
+int	-859	minus eight hundred fifty-nine 
+int	-858	minus eight hundred fifty-eight 
+int	-857	minus eight hundred fifty-seven 
+int	-856	minus eight hundred fifty-six 
+int	-855	minus eight hundred fifty-five 
+int	-854	minus eight hundred fifty-four 
+int	-853	minus eight hundred fifty-three 
+int	-852	minus eight hundred fifty-two 
+int	-851	minus eight hundred fifty-one 
+int	-850	minus eight hundred fifty 
+int	-849	minus eight hundred forty-nine 
+int	-848	minus eight hundred forty-eight 
+int	-847	minus eight hundred forty-seven 
+int	-846	minus eight hundred forty-six 
+int	-845	minus eight hundred forty-five 
+int	-844	minus eight hundred forty-four 
+int	-843	minus eight hundred forty-three 
+int	-842	minus eight hundred forty-two 
+int	-841	minus eight hundred forty-one 
+int	-840	minus eight hundred forty 
+int	-839	minus eight hundred thirty-nine 
+int	-838	minus eight hundred thirty-eight 
+int	-837	minus eight hundred thirty-seven 
+int	-836	minus eight hundred thirty-six 
+int	-835	minus eight hundred thirty-five 
+int	-834	minus eight hundred thirty-four 
+int	-833	minus eight hundred thirty-three 
+int	-832	minus eight hundred thirty-two 
+int	-831	minus eight hundred thirty-one 
+int	-830	minus eight hundred thirty 
+int	-829	minus eight hundred twenty-nine 
+int	-828	minus eight hundred twenty-eight 
+int	-827	minus eight hundred twenty-seven 
+int	-826	minus eight hundred twenty-six 
+int	-825	minus eight hundred twenty-five 
+int	-824	minus eight hundred twenty-four 
+int	-823	minus eight hundred twenty-three 
+int	-822	minus eight hundred twenty-two 
+int	-821	minus eight hundred twenty-one 
+int	-820	minus eight hundred twenty 
+int	-819	minus eight hundred nineteen 
+int	-818	minus eight hundred eighteen 
+int	-817	minus eight hundred seventeen 
+int	-816	minus eight hundred sixteen 
+int	-815	minus eight hundred fifteen 
+int	-814	minus eight hundred fourteen 
+int	-813	minus eight hundred thirteen 
+int	-812	minus eight hundred twelve 
+int	-811	minus eight hundred eleven 
+int	-810	minus eight hundred ten 
+int	-809	minus eight hundred nine 
+int	-808	minus eight hundred eight 
+int	-807	minus eight hundred seven 
+int	-806	minus eight hundred six 
+int	-805	minus eight hundred five 
+int	-804	minus eight hundred four 
+int	-803	minus eight hundred three 
+int	-802	minus eight hundred two 
+int	-801	minus eight hundred one 
+int	-800	minus eight hundred 
+int	-799	minus seven hundred ninety-nine 
+int	-798	minus seven hundred ninety-eight 
+int	-797	minus seven hundred ninety-seven 
+int	-796	minus seven hundred ninety-six 
+int	-795	minus seven hundred ninety-five 
+int	-794	minus seven hundred ninety-four 
+int	-793	minus seven hundred ninety-three 
+int	-792	minus seven hundred ninety-two 
+int	-791	minus seven hundred ninety-one 
+int	-790	minus seven hundred ninety 
+int	-789	minus seven hundred eighty-nine 
+int	-788	minus seven hundred eighty-eight 
+int	-787	minus seven hundred eighty-seven 
+int	-786	minus seven hundred eighty-six 
+int	-785	minus seven hundred eighty-five 
+int	-784	minus seven hundred eighty-four 
+int	-783	minus seven hundred eighty-three 
+int	-782	minus seven hundred eighty-two 
+int	-781	minus seven hundred eighty-one 
+int	-780	minus seven hundred eighty 
+int	-779	minus seven hundred seventy-nine 
+int	-778	minus seven hundred seventy-eight 
+int	-777	minus seven hundred seventy-seven 
+int	-776	minus seven hundred seventy-six 
+int	-775	minus seven hundred seventy-five 
+int	-774	minus seven hundred seventy-four 
+int	-773	minus seven hundred seventy-three 
+int	-772	minus seven hundred seventy-two 
+int	-771	minus seven hundred seventy-one 
+int	-770	minus seven hundred seventy 
+int	-769	minus seven hundred sixty-nine 
+int	-768	minus seven hundred sixty-eight 
+int	-767	minus seven hundred sixty-seven 
+int	-766	minus seven hundred sixty-six 
+int	-765	minus seven hundred sixty-five 
+int	-764	minus seven hundred sixty-four 
+int	-763	minus seven hundred sixty-three 
+int	-762	minus seven hundred sixty-two 
+int	-761	minus seven hundred sixty-one 
+int	-760	minus seven hundred sixty 
+int	-759	minus seven hundred fifty-nine 
+int	-758	minus seven hundred fifty-eight 
+int	-757	minus seven hundred fifty-seven 
+int	-756	minus seven hundred fifty-six 
+int	-755	minus seven hundred fifty-five 
+int	-754	minus seven hundred fifty-four 
+int	-753	minus seven hundred fifty-three 
+int	-752	minus seven hundred fifty-two 
+int	-751	minus seven hundred fifty-one 
+int	-750	minus seven hundred fifty 
+int	-749	minus seven hundred forty-nine 
+int	-748	minus seven hundred forty-eight 
+int	-747	minus seven hundred forty-seven 
+int	-746	minus seven hundred forty-six 
+int	-745	minus seven hundred forty-five 
+int	-744	minus seven hundred forty-four 
+int	-743	minus seven hundred forty-three 
+int	-742	minus seven hundred forty-two 
+int	-741	minus seven hundred forty-one 
+int	-740	minus seven hundred forty 
+int	-739	minus seven hundred thirty-nine 
+int	-738	minus seven hundred thirty-eight 
+int	-737	minus seven hundred thirty-seven 
+int	-736	minus seven hundred thirty-six 
+int	-735	minus seven hundred thirty-five 
+int	-734	minus seven hundred thirty-four 
+int	-733	minus seven hundred thirty-three 
+int	-732	minus seven hundred thirty-two 
+int	-731	minus seven hundred thirty-one 
+int	-730	minus seven hundred thirty 
+int	-729	minus seven hundred twenty-nine 
+int	-728	minus seven hundred twenty-eight 
+int	-727	minus seven hundred twenty-seven 
+int	-726	minus seven hundred twenty-six 
+int	-725	minus seven hundred twenty-five 
+int	-724	minus seven hundred twenty-four 
+int	-723	minus seven hundred twenty-three 
+int	-722	minus seven hundred twenty-two 
+int	-721	minus seven hundred twenty-one 
+int	-720	minus seven hundred twenty 
+int	-719	minus seven hundred nineteen 
+int	-718	minus seven hundred eighteen 
+int	-717	minus seven hundred seventeen 
+int	-716	minus seven hundred sixteen 
+int	-715	minus seven hundred fifteen 
+int	-714	minus seven hundred fourteen 
+int	-713	minus seven hundred thirteen 
+int	-712	minus seven hundred twelve 
+int	-711	minus seven hundred eleven 
+int	-710	minus seven hundred ten 
+int	-709	minus seven hundred nine 
+int	-708	minus seven hundred eight 
+int	-707	minus seven hundred seven 
+int	-706	minus seven hundred six 
+int	-705	minus seven hundred five 
+int	-704	minus seven hundred four 
+int	-703	minus seven hundred three 
+int	-702	minus seven hundred two 
+int	-701	minus seven hundred one 
+int	-700	minus seven hundred 
+int	-699	minus six hundred ninety-nine 
+int	-698	minus six hundred ninety-eight 
+int	-697	minus six hundred ninety-seven 
+int	-696	minus six hundred ninety-six 
+int	-695	minus six hundred ninety-five 
+int	-694	minus six hundred ninety-four 
+int	-693	minus six hundred ninety-three 
+int	-692	minus six hundred ninety-two 
+int	-691	minus six hundred ninety-one 
+int	-690	minus six hundred ninety 
+int	-689	minus six hundred eighty-nine 
+int	-688	minus six hundred eighty-eight 
+int	-687	minus six hundred eighty-seven 
+int	-686	minus six hundred eighty-six 
+int	-685	minus six hundred eighty-five 
+int	-684	minus six hundred eighty-four 
+int	-683	minus six hundred eighty-three 
+int	-682	minus six hundred eighty-two 
+int	-681	minus six hundred eighty-one 
+int	-680	minus six hundred eighty 
+int	-679	minus six hundred seventy-nine 
+int	-678	minus six hundred seventy-eight 
+int	-677	minus six hundred seventy-seven 
+int	-676	minus six hundred seventy-six 
+int	-675	minus six hundred seventy-five 
+int	-674	minus six hundred seventy-four 
+int	-673	minus six hundred seventy-three 
+int	-672	minus six hundred seventy-two 
+int	-671	minus six hundred seventy-one 
+int	-670	minus six hundred seventy 
+int	-669	minus six hundred sixty-nine 
+int	-668	minus six hundred sixty-eight 
+int	-667	minus six hundred sixty-seven 
+int	-666	minus six hundred sixty-six 
+int	-665	minus six hundred sixty-five 
+int	-664	minus six hundred sixty-four 
+int	-663	minus six hundred sixty-three 
+int	-662	minus six hundred sixty-two 
+int	-661	minus six hundred sixty-one 
+int	-660	minus six hundred sixty 
+int	-659	minus six hundred fifty-nine 
+int	-658	minus six hundred fifty-eight 
+int	-657	minus six hundred fifty-seven 
+int	-656	minus six hundred fifty-six 
+int	-655	minus six hundred fifty-five 
+int	-654	minus six hundred fifty-four 
+int	-653	minus six hundred fifty-three 
+int	-652	minus six hundred fifty-two 
+int	-651	minus six hundred fifty-one 
+int	-650	minus six hundred fifty 
+int	-649	minus six hundred forty-nine 
+int	-648	minus six hundred forty-eight 
+int	-647	minus six hundred forty-seven 
+int	-646	minus six hundred forty-six 
+int	-645	minus six hundred forty-five 
+int	-644	minus six hundred forty-four 
+int	-643	minus six hundred forty-three 
+int	-642	minus six hundred forty-two 
+int	-641	minus six hundred forty-one 
+int	-640	minus six hundred forty 
+int	-639	minus six hundred thirty-nine 
+int	-638	minus six hundred thirty-eight 
+int	-637	minus six hundred thirty-seven 
+int	-636	minus six hundred thirty-six 
+int	-635	minus six hundred thirty-five 
+int	-634	minus six hundred thirty-four 
+int	-633	minus six hundred thirty-three 
+int	-632	minus six hundred thirty-two 
+int	-631	minus six hundred thirty-one 
+int	-630	minus six hundred thirty 
+int	-629	minus six hundred twenty-nine 
+int	-628	minus six hundred twenty-eight 
+int	-627	minus six hundred twenty-seven 
+int	-626	minus six hundred twenty-six 
+int	-625	minus six hundred twenty-five 
+int	-624	minus six hundred twenty-four 
+int	-623	minus six hundred twenty-three 
+int	-622	minus six hundred twenty-two 
+int	-621	minus six hundred twenty-one 
+int	-620	minus six hundred twenty 
+int	-619	minus six hundred nineteen 
+int	-618	minus six hundred eighteen 
+int	-617	minus six hundred seventeen 
+int	-616	minus six hundred sixteen 
+int	-615	minus six hundred fifteen 
+int	-614	minus six hundred fourteen 
+int	-613	minus six hundred thirteen 
+int	-612	minus six hundred twelve 
+int	-611	minus six hundred eleven 
+int	-610	minus six hundred ten 
+int	-609	minus six hundred nine 
+int	-608	minus six hundred eight 
+int	-607	minus six hundred seven 
+int	-606	minus six hundred six 
+int	-605	minus six hundred five 
+int	-604	minus six hundred four 
+int	-603	minus six hundred three 
+int	-602	minus six hundred two 
+int	-601	minus six hundred one 
+int	-600	minus six hundred 
+int	-599	minus five hundred ninety-nine 
+int	-598	minus five hundred ninety-eight 
+int	-597	minus five hundred ninety-seven 
+int	-596	minus five hundred ninety-six 
+int	-595	minus five hundred ninety-five 
+int	-594	minus five hundred ninety-four 
+int	-593	minus five hundred ninety-three 
+int	-592	minus five hundred ninety-two 
+int	-591	minus five hundred ninety-one 
+int	-590	minus five hundred ninety 
+int	-589	minus five hundred eighty-nine 
+int	-588	minus five hundred eighty-eight 
+int	-587	minus five hundred eighty-seven 
+int	-586	minus five hundred eighty-six 
+int	-585	minus five hundred eighty-five 
+int	-584	minus five hundred eighty-four 
+int	-583	minus five hundred eighty-three 
+int	-582	minus five hundred eighty-two 
+int	-581	minus five hundred eighty-one 
+int	-580	minus five hundred eighty 
+int	-579	minus five hundred seventy-nine 
+int	-578	minus five hundred seventy-eight 
+int	-577	minus five hundred seventy-seven 
+int	-576	minus five hundred seventy-six 
+int	-575	minus five hundred seventy-five 
+int	-574	minus five hundred seventy-four 
+int	-573	minus five hundred seventy-three 
+int	-572	minus five hundred seventy-two 
+int	-571	minus five hundred seventy-one 
+int	-570	minus five hundred seventy 
+int	-569	minus five hundred sixty-nine 
+int	-568	minus five hundred sixty-eight 
+int	-567	minus five hundred sixty-seven 
+int	-566	minus five hundred sixty-six 
+int	-565	minus five hundred sixty-five 
+int	-564	minus five hundred sixty-four 
+int	-563	minus five hundred sixty-three 
+int	-562	minus five hundred sixty-two 
+int	-561	minus five hundred sixty-one 
+int	-560	minus five hundred sixty 
+int	-559	minus five hundred fifty-nine 
+int	-558	minus five hundred fifty-eight 
+int	-557	minus five hundred fifty-seven 
+int	-556	minus five hundred fifty-six 
+int	-555	minus five hundred fifty-five 
+int	-554	minus five hundred fifty-four 
+int	-553	minus five hundred fifty-three 
+int	-552	minus five hundred fifty-two 
+int	-551	minus five hundred fifty-one 
+int	-550	minus five hundred fifty 
+int	-549	minus five hundred forty-nine 
+int	-548	minus five hundred forty-eight 
+int	-547	minus five hundred forty-seven 
+int	-546	minus five hundred forty-six 
+int	-545	minus five hundred forty-five 
+int	-544	minus five hundred forty-four 
+int	-543	minus five hundred forty-three 
+int	-542	minus five hundred forty-two 
+int	-541	minus five hundred forty-one 
+int	-540	minus five hundred forty 
+int	-539	minus five hundred thirty-nine 
+int	-538	minus five hundred thirty-eight 
+int	-537	minus five hundred thirty-seven 
+int	-536	minus five hundred thirty-six 
+int	-535	minus five hundred thirty-five 
+int	-534	minus five hundred thirty-four 
+int	-533	minus five hundred thirty-three 
+int	-532	minus five hundred thirty-two 
+int	-531	minus five hundred thirty-one 
+int	-530	minus five hundred thirty 
+int	-529	minus five hundred twenty-nine 
+int	-528	minus five hundred twenty-eight 
+int	-527	minus five hundred twenty-seven 
+int	-526	minus five hundred twenty-six 
+int	-525	minus five hundred twenty-five 
+int	-524	minus five hundred twenty-four 
+int	-523	minus five hundred twenty-three 
+int	-522	minus five hundred twenty-two 
+int	-521	minus five hundred twenty-one 
+int	-520	minus five hundred twenty 
+int	-519	minus five hundred nineteen 
+int	-518	minus five hundred eighteen 
+int	-517	minus five hundred seventeen 
+int	-516	minus five hundred sixteen 
+int	-515	minus five hundred fifteen 
+int	-514	minus five hundred fourteen 
+int	-513	minus five hundred thirteen 
+int	-512	minus five hundred twelve 
+int	-511	minus five hundred eleven 
+int	-510	minus five hundred ten 
+int	-509	minus five hundred nine 
+int	-508	minus five hundred eight 
+int	-507	minus five hundred seven 
+int	-506	minus five hundred six 
+int	-505	minus five hundred five 
+int	-504	minus five hundred four 
+int	-503	minus five hundred three 
+int	-502	minus five hundred two 
+int	-501	minus five hundred one 
+int	-500	minus five hundred 
+int	-499	minus four hundred ninety-nine 
+int	-498	minus four hundred ninety-eight 
+int	-497	minus four hundred ninety-seven 
+int	-496	minus four hundred ninety-six 
+int	-495	minus four hundred ninety-five 
+int	-494	minus four hundred ninety-four 
+int	-493	minus four hundred ninety-three 
+int	-492	minus four hundred ninety-two 
+int	-491	minus four hundred ninety-one 
+int	-490	minus four hundred ninety 
+int	-489	minus four hundred eighty-nine 
+int	-488	minus four hundred eighty-eight 
+int	-487	minus four hundred eighty-seven 
+int	-486	minus four hundred eighty-six 
+int	-485	minus four hundred eighty-five 
+int	-484	minus four hundred eighty-four 
+int	-483	minus four hundred eighty-three 
+int	-482	minus four hundred eighty-two 
+int	-481	minus four hundred eighty-one 
+int	-480	minus four hundred eighty 
+int	-479	minus four hundred seventy-nine 
+int	-478	minus four hundred seventy-eight 
+int	-477	minus four hundred seventy-seven 
+int	-476	minus four hundred seventy-six 
+int	-475	minus four hundred seventy-five 
+int	-474	minus four hundred seventy-four 
+int	-473	minus four hundred seventy-three 
+int	-472	minus four hundred seventy-two 
+int	-471	minus four hundred seventy-one 
+int	-470	minus four hundred seventy 
+int	-469	minus four hundred sixty-nine 
+int	-468	minus four hundred sixty-eight 
+int	-467	minus four hundred sixty-seven 
+int	-466	minus four hundred sixty-six 
+int	-465	minus four hundred sixty-five 
+int	-464	minus four hundred sixty-four 
+int	-463	minus four hundred sixty-three 
+int	-462	minus four hundred sixty-two 
+int	-461	minus four hundred sixty-one 
+int	-460	minus four hundred sixty 
+int	-459	minus four hundred fifty-nine 
+int	-458	minus four hundred fifty-eight 
+int	-457	minus four hundred fifty-seven 
+int	-456	minus four hundred fifty-six 
+int	-455	minus four hundred fifty-five 
+int	-454	minus four hundred fifty-four 
+int	-453	minus four hundred fifty-three 
+int	-452	minus four hundred fifty-two 
+int	-451	minus four hundred fifty-one 
+int	-450	minus four hundred fifty 
+int	-449	minus four hundred forty-nine 
+int	-448	minus four hundred forty-eight 
+int	-447	minus four hundred forty-seven 
+int	-446	minus four hundred forty-six 
+int	-445	minus four hundred forty-five 
+int	-444	minus four hundred forty-four 
+int	-443	minus four hundred forty-three 
+int	-442	minus four hundred forty-two 
+int	-441	minus four hundred forty-one 
+int	-440	minus four hundred forty 
+int	-439	minus four hundred thirty-nine 
+int	-438	minus four hundred thirty-eight 
+int	-437	minus four hundred thirty-seven 
+int	-436	minus four hundred thirty-six 
+int	-435	minus four hundred thirty-five 
+int	-434	minus four hundred thirty-four 
+int	-433	minus four hundred thirty-three 
+int	-432	minus four hundred thirty-two 
+int	-431	minus four hundred thirty-one 
+int	-430	minus four hundred thirty 
+int	-429	minus four hundred twenty-nine 
+int	-428	minus four hundred twenty-eight 
+int	-427	minus four hundred twenty-seven 
+int	-426	minus four hundred twenty-six 
+int	-425	minus four hundred twenty-five 
+int	-424	minus four hundred twenty-four 
+int	-423	minus four hundred twenty-three 
+int	-422	minus four hundred twenty-two 
+int	-421	minus four hundred twenty-one 
+int	-420	minus four hundred twenty 
+int	-419	minus four hundred nineteen 
+int	-418	minus four hundred eighteen 
+int	-417	minus four hundred seventeen 
+int	-416	minus four hundred sixteen 
+int	-415	minus four hundred fifteen 
+int	-414	minus four hundred fourteen 
+int	-413	minus four hundred thirteen 
+int	-412	minus four hundred twelve 
+int	-411	minus four hundred eleven 
+int	-410	minus four hundred ten 
+int	-409	minus four hundred nine 
+int	-408	minus four hundred eight 
+int	-407	minus four hundred seven 
+int	-406	minus four hundred six 
+int	-405	minus four hundred five 
+int	-404	minus four hundred four 
+int	-403	minus four hundred three 
+int	-402	minus four hundred two 
+int	-401	minus four hundred one 
+int	-400	minus four hundred 
+int	-399	minus three hundred ninety-nine 
+int	-398	minus three hundred ninety-eight 
+int	-397	minus three hundred ninety-seven 
+int	-396	minus three hundred ninety-six 
+int	-395	minus three hundred ninety-five 
+int	-394	minus three hundred ninety-four 
+int	-393	minus three hundred ninety-three 
+int	-392	minus three hundred ninety-two 
+int	-391	minus three hundred ninety-one 
+int	-390	minus three hundred ninety 
+int	-389	minus three hundred eighty-nine 
+int	-388	minus three hundred eighty-eight 
+int	-387	minus three hundred eighty-seven 
+int	-386	minus three hundred eighty-six 
+int	-385	minus three hundred eighty-five 
+int	-384	minus three hundred eighty-four 
+int	-383	minus three hundred eighty-three 
+int	-382	minus three hundred eighty-two 
+int	-381	minus three hundred eighty-one 
+int	-380	minus three hundred eighty 
+int	-379	minus three hundred seventy-nine 
+int	-378	minus three hundred seventy-eight 
+int	-377	minus three hundred seventy-seven 
+int	-376	minus three hundred seventy-six 
+int	-375	minus three hundred seventy-five 
+int	-374	minus three hundred seventy-four 
+int	-373	minus three hundred seventy-three 
+int	-372	minus three hundred seventy-two 
+int	-371	minus three hundred seventy-one 
+int	-370	minus three hundred seventy 
+int	-369	minus three hundred sixty-nine 
+int	-368	minus three hundred sixty-eight 
+int	-367	minus three hundred sixty-seven 
+int	-366	minus three hundred sixty-six 
+int	-365	minus three hundred sixty-five 
+int	-364	minus three hundred sixty-four 
+int	-363	minus three hundred sixty-three 
+int	-362	minus three hundred sixty-two 
+int	-361	minus three hundred sixty-one 
+int	-360	minus three hundred sixty 
+int	-359	minus three hundred fifty-nine 
+int	-358	minus three hundred fifty-eight 
+int	-357	minus three hundred fifty-seven 
+int	-356	minus three hundred fifty-six 
+int	-355	minus three hundred fifty-five 
+int	-354	minus three hundred fifty-four 
+int	-353	minus three hundred fifty-three 
+int	-352	minus three hundred fifty-two 
+int	-351	minus three hundred fifty-one 
+int	-350	minus three hundred fifty 
+int	-349	minus three hundred forty-nine 
+int	-348	minus three hundred forty-eight 
+int	-347	minus three hundred forty-seven 
+int	-346	minus three hundred forty-six 
+int	-345	minus three hundred forty-five 
+int	-344	minus three hundred forty-four 
+int	-343	minus three hundred forty-three 
+int	-342	minus three hundred forty-two 
+int	-341	minus three hundred forty-one 
+int	-340	minus three hundred forty 
+int	-339	minus three hundred thirty-nine 
+int	-338	minus three hundred thirty-eight 
+int	-337	minus three hundred thirty-seven 
+int	-336	minus three hundred thirty-six 
+int	-335	minus three hundred thirty-five 
+int	-334	minus three hundred thirty-four 
+int	-333	minus three hundred thirty-three 
+int	-332	minus three hundred thirty-two 
+int	-331	minus three hundred thirty-one 
+int	-330	minus three hundred thirty 
+int	-329	minus three hundred twenty-nine 
+int	-328	minus three hundred twenty-eight 
+int	-327	minus three hundred twenty-seven 
+int	-326	minus three hundred twenty-six 
+int	-325	minus three hundred twenty-five 
+int	-324	minus three hundred twenty-four 
+int	-323	minus three hundred twenty-three 
+int	-322	minus three hundred twenty-two 
+int	-321	minus three hundred twenty-one 
+int	-320	minus three hundred twenty 
+int	-319	minus three hundred nineteen 
+int	-318	minus three hundred eighteen 
+int	-317	minus three hundred seventeen 
+int	-316	minus three hundred sixteen 
+int	-315	minus three hundred fifteen 
+int	-314	minus three hundred fourteen 
+int	-313	minus three hundred thirteen 
+int	-312	minus three hundred twelve 
+int	-311	minus three hundred eleven 
+int	-310	minus three hundred ten 
+int	-309	minus three hundred nine 
+int	-308	minus three hundred eight 
+int	-307	minus three hundred seven 
+int	-306	minus three hundred six 
+int	-305	minus three hundred five 
+int	-304	minus three hundred four 
+int	-303	minus three hundred three 
+int	-302	minus three hundred two 
+int	-301	minus three hundred one 
+int	-300	minus three hundred 
+int	-299	minus two hundred ninety-nine 
+int	-298	minus two hundred ninety-eight 
+int	-297	minus two hundred ninety-seven 
+int	-296	minus two hundred ninety-six 
+int	-295	minus two hundred ninety-five 
+int	-294	minus two hundred ninety-four 
+int	-293	minus two hundred ninety-three 
+int	-292	minus two hundred ninety-two 
+int	-291	minus two hundred ninety-one 
+int	-290	minus two hundred ninety 
+int	-289	minus two hundred eighty-nine 
+int	-288	minus two hundred eighty-eight 
+int	-287	minus two hundred eighty-seven 
+int	-286	minus two hundred eighty-six 
+int	-285	minus two hundred eighty-five 
+int	-284	minus two hundred eighty-four 
+int	-283	minus two hundred eighty-three 
+int	-282	minus two hundred eighty-two 
+int	-281	minus two hundred eighty-one 
+int	-280	minus two hundred eighty 
+int	-279	minus two hundred seventy-nine 
+int	-278	minus two hundred seventy-eight 
+int	-277	minus two hundred seventy-seven 
+int	-276	minus two hundred seventy-six 
+int	-275	minus two hundred seventy-five 
+int	-274	minus two hundred seventy-four 
+int	-273	minus two hundred seventy-three 
+int	-272	minus two hundred seventy-two 
+int	-271	minus two hundred seventy-one 
+int	-270	minus two hundred seventy 
+int	-269	minus two hundred sixty-nine 
+int	-268	minus two hundred sixty-eight 
+int	-267	minus two hundred sixty-seven 
+int	-266	minus two hundred sixty-six 
+int	-265	minus two hundred sixty-five 
+int	-264	minus two hundred sixty-four 
+int	-263	minus two hundred sixty-three 
+int	-262	minus two hundred sixty-two 
+int	-261	minus two hundred sixty-one 
+int	-260	minus two hundred sixty 
+int	-259	minus two hundred fifty-nine 
+int	-258	minus two hundred fifty-eight 
+int	-257	minus two hundred fifty-seven 
+int	-256	minus two hundred fifty-six 
+int	-255	minus two hundred fifty-five 
+int	-254	minus two hundred fifty-four 
+int	-253	minus two hundred fifty-three 
+int	-252	minus two hundred fifty-two 
+int	-251	minus two hundred fifty-one 
+int	-250	minus two hundred fifty 
+int	-249	minus two hundred forty-nine 
+int	-248	minus two hundred forty-eight 
+int	-247	minus two hundred forty-seven 
+int	-246	minus two hundred forty-six 
+int	-245	minus two hundred forty-five 
+int	-244	minus two hundred forty-four 
+int	-243	minus two hundred forty-three 
+int	-242	minus two hundred forty-two 
+int	-241	minus two hundred forty-one 
+int	-240	minus two hundred forty 
+int	-239	minus two hundred thirty-nine 
+int	-238	minus two hundred thirty-eight 
+int	-237	minus two hundred thirty-seven 
+int	-236	minus two hundred thirty-six 
+int	-235	minus two hundred thirty-five 
+int	-234	minus two hundred thirty-four 
+int	-233	minus two hundred thirty-three 
+int	-232	minus two hundred thirty-two 
+int	-231	minus two hundred thirty-one 
+int	-230	minus two hundred thirty 
+int	-229	minus two hundred twenty-nine 
+int	-228	minus two hundred twenty-eight 
+int	-227	minus two hundred twenty-seven 
+int	-226	minus two hundred twenty-six 
+int	-225	minus two hundred twenty-five 
+int	-224	minus two hundred twenty-four 
+int	-223	minus two hundred twenty-three 
+int	-222	minus two hundred twenty-two 
+int	-221	minus two hundred twenty-one 
+int	-220	minus two hundred twenty 
+int	-219	minus two hundred nineteen 
+int	-218	minus two hundred eighteen 
+int	-217	minus two hundred seventeen 
+int	-216	minus two hundred sixteen 
+int	-215	minus two hundred fifteen 
+int	-214	minus two hundred fourteen 
+int	-213	minus two hundred thirteen 
+int	-212	minus two hundred twelve 
+int	-211	minus two hundred eleven 
+int	-210	minus two hundred ten 
+int	-209	minus two hundred nine 
+int	-208	minus two hundred eight 
+int	-207	minus two hundred seven 
+int	-206	minus two hundred six 
+int	-205	minus two hundred five 
+int	-204	minus two hundred four 
+int	-203	minus two hundred three 
+int	-202	minus two hundred two 
+int	-201	minus two hundred one 
+int	-200	minus two hundred 
+int	-199	minus one hundred ninety-nine 
+int	-198	minus one hundred ninety-eight 
+int	-197	minus one hundred ninety-seven 
+int	-196	minus one hundred ninety-six 
+int	-195	minus one hundred ninety-five 
+int	-194	minus one hundred ninety-four 
+int	-193	minus one hundred ninety-three 
+int	-192	minus one hundred ninety-two 
+int	-191	minus one hundred ninety-one 
+int	-190	minus one hundred ninety 
+int	-189	minus one hundred eighty-nine 
+int	-188	minus one hundred eighty-eight 
+int	-187	minus one hundred eighty-seven 
+int	-186	minus one hundred eighty-six 
+int	-185	minus one hundred eighty-five 
+int	-184	minus one hundred eighty-four 
+int	-183	minus one hundred eighty-three 
+int	-182	minus one hundred eighty-two 
+int	-181	minus one hundred eighty-one 
+int	-180	minus one hundred eighty 
+int	-179	minus one hundred seventy-nine 
+int	-178	minus one hundred seventy-eight 
+int	-177	minus one hundred seventy-seven 
+int	-176	minus one hundred seventy-six 
+int	-175	minus one hundred seventy-five 
+int	-174	minus one hundred seventy-four 
+int	-173	minus one hundred seventy-three 
+int	-172	minus one hundred seventy-two 
+int	-171	minus one hundred seventy-one 
+int	-170	minus one hundred seventy 
+int	-169	minus one hundred sixty-nine 
+int	-168	minus one hundred sixty-eight 
+int	-167	minus one hundred sixty-seven 
+int	-166	minus one hundred sixty-six 
+int	-165	minus one hundred sixty-five 
+int	-164	minus one hundred sixty-four 
+int	-163	minus one hundred sixty-three 
+int	-162	minus one hundred sixty-two 
+int	-161	minus one hundred sixty-one 
+int	-160	minus one hundred sixty 
+int	-159	minus one hundred fifty-nine 
+int	-158	minus one hundred fifty-eight 
+int	-157	minus one hundred fifty-seven 
+int	-156	minus one hundred fifty-six 
+int	-155	minus one hundred fifty-five 
+int	-154	minus one hundred fifty-four 
+int	-153	minus one hundred fifty-three 
+int	-152	minus one hundred fifty-two 
+int	-151	minus one hundred fifty-one 
+int	-150	minus one hundred fifty 
+int	-149	minus one hundred forty-nine 
+int	-148	minus one hundred forty-eight 
+int	-147	minus one hundred forty-seven 
+int	-146	minus one hundred forty-six 
+int	-145	minus one hundred forty-five 
+int	-144	minus one hundred forty-four 
+int	-143	minus one hundred forty-three 
+int	-142	minus one hundred forty-two 
+int	-141	minus one hundred forty-one 
+int	-140	minus one hundred forty 
+int	-139	minus one hundred thirty-nine 
+int	-138	minus one hundred thirty-eight 
+int	-137	minus one hundred thirty-seven 
+int	-136	minus one hundred thirty-six 
+int	-135	minus one hundred thirty-five 
+int	-134	minus one hundred thirty-four 
+int	-133	minus one hundred thirty-three 
+int	-132	minus one hundred thirty-two 
+int	-131	minus one hundred thirty-one 
+int	-130	minus one hundred thirty 
+int	-129	minus one hundred twenty-nine 
+int	-128	minus one hundred twenty-eight 
+int	-127	minus one hundred twenty-seven 
+int	-126	minus one hundred twenty-six 
+int	-125	minus one hundred twenty-five 
+int	-124	minus one hundred twenty-four 
+int	-123	minus one hundred twenty-three 
+int	-122	minus one hundred twenty-two 
+int	-121	minus one hundred twenty-one 
+int	-120	minus one hundred twenty 
+int	-119	minus one hundred nineteen 
+int	-118	minus one hundred eighteen 
+int	-117	minus one hundred seventeen 
+int	-116	minus one hundred sixteen 
+int	-115	minus one hundred fifteen 
+int	-114	minus one hundred fourteen 
+int	-113	minus one hundred thirteen 
+int	-112	minus one hundred twelve 
+int	-111	minus one hundred eleven 
+int	-110	minus one hundred ten 
+int	-109	minus one hundred nine 
+int	-108	minus one hundred eight 
+int	-107	minus one hundred seven 
+int	-106	minus one hundred six 
+int	-105	minus one hundred five 
+int	-104	minus one hundred four 
+int	-103	minus one hundred three 
+int	-102	minus one hundred two 
+int	-101	minus one hundred one 
+int	-100	minus one hundred 
+int	-99	minus ninety-nine 
+int	-98	minus ninety-eight 
+int	-97	minus ninety-seven 
+int	-96	minus ninety-six 
+int	-95	minus ninety-five 
+int	-94	minus ninety-four 
+int	-93	minus ninety-three 
+int	-92	minus ninety-two 
+int	-91	minus ninety-one 
+int	-90	minus ninety 
+int	-89	minus eighty-nine 
+int	-88	minus eighty-eight 
+int	-87	minus eighty-seven 
+int	-86	minus eighty-six 
+int	-85	minus eighty-five 
+int	-84	minus eighty-four 
+int	-83	minus eighty-three 
+int	-82	minus eighty-two 
+int	-81	minus eighty-one 
+int	-80	minus eighty 
+int	-79	minus seventy-nine 
+int	-78	minus seventy-eight 
+int	-77	minus seventy-seven 
+int	-76	minus seventy-six 
+int	-75	minus seventy-five 
+int	-74	minus seventy-four 
+int	-73	minus seventy-three 
+int	-72	minus seventy-two 
+int	-71	minus seventy-one 
+int	-70	minus seventy 
+int	-69	minus sixty-nine 
+int	-68	minus sixty-eight 
+int	-67	minus sixty-seven 
+int	-66	minus sixty-six 
+int	-65	minus sixty-five 
+int	-64	minus sixty-four 
+int	-63	minus sixty-three 
+int	-62	minus sixty-two 
+int	-61	minus sixty-one 
+int	-60	minus sixty 
+int	-59	minus fifty-nine 
+int	-58	minus fifty-eight 
+int	-57	minus fifty-seven 
+int	-56	minus fifty-six 
+int	-55	minus fifty-five 
+int	-54	minus fifty-four 
+int	-53	minus fifty-three 
+int	-52	minus fifty-two 
+int	-51	minus fifty-one 
+int	-50	minus fifty 
+int	-49	minus forty-nine 
+int	-48	minus forty-eight 
+int	-47	minus forty-seven 
+int	-46	minus forty-six 
+int	-45	minus forty-five 
+int	-44	minus forty-four 
+int	-43	minus forty-three 
+int	-42	minus forty-two 
+int	-41	minus forty-one 
+int	-40	minus forty 
+int	-39	minus thirty-nine 
+int	-38	minus thirty-eight 
+int	-37	minus thirty-seven 
+int	-36	minus thirty-six 
+int	-35	minus thirty-five 
+int	-34	minus thirty-four 
+int	-33	minus thirty-three 
+int	-32	minus thirty-two 
+int	-31	minus thirty-one 
+int	-30	minus thirty 
+int	-29	minus twenty-nine 
+int	-28	minus twenty-eight 
+int	-27	minus twenty-seven 
+int	-26	minus twenty-six 
+int	-25	minus twenty-five 
+int	-24	minus twenty-four 
+int	-23	minus twenty-three 
+int	-22	minus twenty-two 
+int	-21	minus twenty-one 
+int	-20	minus twenty 
+int	-19	minus nineteen 
+int	-18	minus eighteen 
+int	-17	minus seventeen 
+int	-16	minus sixteen 
+int	-15	minus fifteen 
+int	-14	minus fourteen 
+int	-13	minus thirteen 
+int	-12	minus twelve 
+int	-11	minus eleven 
+int	-10	minus ten 
+int	-9	minus nine 
+int	-8	minus eight 
+int	-7	minus seven 
+int	-6	minus six 
+int	-5	minus five 
+int	-4	minus four 
+int	-3	minus three 
+int	-2	minus two 
+int	-1	minus one 
+int	0	zero
+int	1	one 
+int	2	two 
+int	3	three 
+int	4	four 
+int	5	five 
+int	6	six 
+int	7	seven 
+int	8	eight 
+int	9	nine 
+int	10	ten 
+int	11	eleven 
+int	12	twelve 
+int	13	thirteen 
+int	14	fourteen 
+int	15	fifteen 
+int	16	sixteen 
+int	17	seventeen 
+int	18	eighteen 
+int	19	nineteen 
+int	20	twenty 
+int	21	twenty-one 
+int	22	twenty-two 
+int	23	twenty-three 
+int	24	twenty-four 
+int	25	twenty-five 
+int	26	twenty-six 
+int	27	twenty-seven 
+int	28	twenty-eight 
+int	29	twenty-nine 
+int	30	thirty 
+int	31	thirty-one 
+int	32	thirty-two 
+int	33	thirty-three 
+int	34	thirty-four 
+int	35	thirty-five 
+int	36	thirty-six 
+int	37	thirty-seven 
+int	38	thirty-eight 
+int	39	thirty-nine 
+int	40	forty 
+int	41	forty-one 
+int	42	forty-two 
+int	43	forty-three 
+int	44	forty-four 
+int	45	forty-five 
+int	46	forty-six 
+int	47	forty-seven 
+int	48	forty-eight 
+int	49	forty-nine 
+int	50	fifty 
+int	51	fifty-one 
+int	52	fifty-two 
+int	53	fifty-three 
+int	54	fifty-four 
+int	55	fifty-five 
+int	56	fifty-six 
+int	57	fifty-seven 
+int	58	fifty-eight 
+int	59	fifty-nine 
+int	60	sixty 
+int	61	sixty-one 
+int	62	sixty-two 
+int	63	sixty-three 
+int	64	sixty-four 
+int	65	sixty-five 
+int	66	sixty-six 
+int	67	sixty-seven 
+int	68	sixty-eight 
+int	69	sixty-nine 
+int	70	seventy 
+int	71	seventy-one 
+int	72	seventy-two 
+int	73	seventy-three 
+int	74	seventy-four 
+int	75	seventy-five 
+int	76	seventy-six 
+int	77	seventy-seven 
+int	78	seventy-eight 
+int	79	seventy-nine 
+int	80	eighty 
+int	81	eighty-one 
+int	82	eighty-two 
+int	83	eighty-three 
+int	84	eighty-four 
+int	85	eighty-five 
+int	86	eighty-six 
+int	87	eighty-seven 
+int	88	eighty-eight 
+int	89	eighty-nine 
+int	90	ninety 
+int	91	ninety-one 
+int	92	ninety-two 
+int	93	ninety-three 
+int	94	ninety-four 
+int	95	ninety-five 
+int	96	ninety-six 
+int	97	ninety-seven 
+int	98	ninety-eight 
+int	99	ninety-nine 
+int	100	one hundred 
+int	101	one hundred one 
+int	102	one hundred two 
+int	103	one hundred three 
+int	104	one hundred four 
+int	105	one hundred five 
+int	106	one hundred six 
+int	107	one hundred seven 
+int	108	one hundred eight 
+int	109	one hundred nine 
+int	110	one hundred ten 
+int	111	one hundred eleven 
+int	112	one hundred twelve 
+int	113	one hundred thirteen 
+int	114	one hundred fourteen 
+int	115	one hundred fifteen 
+int	116	one hundred sixteen 
+int	117	one hundred seventeen 
+int	118	one hundred eighteen 
+int	119	one hundred nineteen 
+int	120	one hundred twenty 
+int	121	one hundred twenty-one 
+int	122	one hundred twenty-two 
+int	123	one hundred twenty-three 
+int	124	one hundred twenty-four 
+int	125	one hundred twenty-five 
+int	126	one hundred twenty-six 
+int	127	one hundred twenty-seven 
+int	128	one hundred twenty-eight 
+int	129	one hundred twenty-nine 
+int	130	one hundred thirty 
+int	131	one hundred thirty-one 
+int	132	one hundred thirty-two 
+int	133	one hundred thirty-three 
+int	134	one hundred thirty-four 
+int	135	one hundred thirty-five 
+int	136	one hundred thirty-six 
+int	137	one hundred thirty-seven 
+int	138	one hundred thirty-eight 
+int	139	one hundred thirty-nine 
+int	140	one hundred forty 
+int	141	one hundred forty-one 
+int	142	one hundred forty-two 
+int	143	one hundred forty-three 
+int	144	one hundred forty-four 
+int	145	one hundred forty-five 
+int	146	one hundred forty-six 
+int	147	one hundred forty-seven 
+int	148	one hundred forty-eight 
+int	149	one hundred forty-nine 
+int	150	one hundred fifty 
+int	151	one hundred fifty-one 
+int	152	one hundred fifty-two 
+int	153	one hundred fifty-three 
+int	154	one hundred fifty-four 
+int	155	one hundred fifty-five 
+int	156	one hundred fifty-six 
+int	157	one hundred fifty-seven 
+int	158	one hundred fifty-eight 
+int	159	one hundred fifty-nine 
+int	160	one hundred sixty 
+int	161	one hundred sixty-one 
+int	162	one hundred sixty-two 
+int	163	one hundred sixty-three 
+int	164	one hundred sixty-four 
+int	165	one hundred sixty-five 
+int	166	one hundred sixty-six 
+int	167	one hundred sixty-seven 
+int	168	one hundred sixty-eight 
+int	169	one hundred sixty-nine 
+int	170	one hundred seventy 
+int	171	one hundred seventy-one 
+int	172	one hundred seventy-two 
+int	173	one hundred seventy-three 
+int	174	one hundred seventy-four 
+int	175	one hundred seventy-five 
+int	176	one hundred seventy-six 
+int	177	one hundred seventy-seven 
+int	178	one hundred seventy-eight 
+int	179	one hundred seventy-nine 
+int	180	one hundred eighty 
+int	181	one hundred eighty-one 
+int	182	one hundred eighty-two 
+int	183	one hundred eighty-three 
+int	184	one hundred eighty-four 
+int	185	one hundred eighty-five 
+int	186	one hundred eighty-six 
+int	187	one hundred eighty-seven 
+int	188	one hundred eighty-eight 
+int	189	one hundred eighty-nine 
+int	190	one hundred ninety 
+int	191	one hundred ninety-one 
+int	192	one hundred ninety-two 
+int	193	one hundred ninety-three 
+int	194	one hundred ninety-four 
+int	195	one hundred ninety-five 
+int	196	one hundred ninety-six 
+int	197	one hundred ninety-seven 
+int	198	one hundred ninety-eight 
+int	199	one hundred ninety-nine 
+int	200	two hundred 
+int	201	two hundred one 
+int	202	two hundred two 
+int	203	two hundred three 
+int	204	two hundred four 
+int	205	two hundred five 
+int	206	two hundred six 
+int	207	two hundred seven 
+int	208	two hundred eight 
+int	209	two hundred nine 
+int	210	two hundred ten 
+int	211	two hundred eleven 
+int	212	two hundred twelve 
+int	213	two hundred thirteen 
+int	214	two hundred fourteen 
+int	215	two hundred fifteen 
+int	216	two hundred sixteen 
+int	217	two hundred seventeen 
+int	218	two hundred eighteen 
+int	219	two hundred nineteen 
+int	220	two hundred twenty 
+int	221	two hundred twenty-one 
+int	222	two hundred twenty-two 
+int	223	two hundred twenty-three 
+int	224	two hundred twenty-four 
+int	225	two hundred twenty-five 
+int	226	two hundred twenty-six 
+int	227	two hundred twenty-seven 
+int	228	two hundred twenty-eight 
+int	229	two hundred twenty-nine 
+int	230	two hundred thirty 
+int	231	two hundred thirty-one 
+int	232	two hundred thirty-two 
+int	233	two hundred thirty-three 
+int	234	two hundred thirty-four 
+int	235	two hundred thirty-five 
+int	236	two hundred thirty-six 
+int	237	two hundred thirty-seven 
+int	238	two hundred thirty-eight 
+int	239	two hundred thirty-nine 
+int	240	two hundred forty 
+int	241	two hundred forty-one 
+int	242	two hundred forty-two 
+int	243	two hundred forty-three 
+int	244	two hundred forty-four 
+int	245	two hundred forty-five 
+int	246	two hundred forty-six 
+int	247	two hundred forty-seven 
+int	248	two hundred forty-eight 
+int	249	two hundred forty-nine 
+int	250	two hundred fifty 
+int	251	two hundred fifty-one 
+int	252	two hundred fifty-two 
+int	253	two hundred fifty-three 
+int	254	two hundred fifty-four 
+int	255	two hundred fifty-five 
+int	256	two hundred fifty-six 
+int	257	two hundred fifty-seven 
+int	258	two hundred fifty-eight 
+int	259	two hundred fifty-nine 
+int	260	two hundred sixty 
+int	261	two hundred sixty-one 
+int	262	two hundred sixty-two 
+int	263	two hundred sixty-three 
+int	264	two hundred sixty-four 
+int	265	two hundred sixty-five 
+int	266	two hundred sixty-six 
+int	267	two hundred sixty-seven 
+int	268	two hundred sixty-eight 
+int	269	two hundred sixty-nine 
+int	270	two hundred seventy 
+int	271	two hundred seventy-one 
+int	272	two hundred seventy-two 
+int	273	two hundred seventy-three 
+int	274	two hundred seventy-four 
+int	275	two hundred seventy-five 
+int	276	two hundred seventy-six 
+int	277	two hundred seventy-seven 
+int	278	two hundred seventy-eight 
+int	279	two hundred seventy-nine 
+int	280	two hundred eighty 
+int	281	two hundred eighty-one 
+int	282	two hundred eighty-two 
+int	283	two hundred eighty-three 
+int	284	two hundred eighty-four 
+int	285	two hundred eighty-five 
+int	286	two hundred eighty-six 
+int	287	two hundred eighty-seven 
+int	288	two hundred eighty-eight 
+int	289	two hundred eighty-nine 
+int	290	two hundred ninety 
+int	291	two hundred ninety-one 
+int	292	two hundred ninety-two 
+int	293	two hundred ninety-three 
+int	294	two hundred ninety-four 
+int	295	two hundred ninety-five 
+int	296	two hundred ninety-six 
+int	297	two hundred ninety-seven 
+int	298	two hundred ninety-eight 
+int	299	two hundred ninety-nine 
+int	300	three hundred 
+int	301	three hundred one 
+int	302	three hundred two 
+int	303	three hundred three 
+int	304	three hundred four 
+int	305	three hundred five 
+int	306	three hundred six 
+int	307	three hundred seven 
+int	308	three hundred eight 
+int	309	three hundred nine 
+int	310	three hundred ten 
+int	311	three hundred eleven 
+int	312	three hundred twelve 
+int	313	three hundred thirteen 
+int	314	three hundred fourteen 
+int	315	three hundred fifteen 
+int	316	three hundred sixteen 
+int	317	three hundred seventeen 
+int	318	three hundred eighteen 
+int	319	three hundred nineteen 
+int	320	three hundred twenty 
+int	321	three hundred twenty-one 
+int	322	three hundred twenty-two 
+int	323	three hundred twenty-three 
+int	324	three hundred twenty-four 
+int	325	three hundred twenty-five 
+int	326	three hundred twenty-six 
+int	327	three hundred twenty-seven 
+int	328	three hundred twenty-eight 
+int	329	three hundred twenty-nine 
+int	330	three hundred thirty 
+int	331	three hundred thirty-one 
+int	332	three hundred thirty-two 
+int	333	three hundred thirty-three 
+int	334	three hundred thirty-four 
+int	335	three hundred thirty-five 
+int	336	three hundred thirty-six 
+int	337	three hundred thirty-seven 
+int	338	three hundred thirty-eight 
+int	339	three hundred thirty-nine 
+int	340	three hundred forty 
+int	341	three hundred forty-one 
+int	342	three hundred forty-two 
+int	343	three hundred forty-three 
+int	344	three hundred forty-four 
+int	345	three hundred forty-five 
+int	346	three hundred forty-six 
+int	347	three hundred forty-seven 
+int	348	three hundred forty-eight 
+int	349	three hundred forty-nine 
+int	350	three hundred fifty 
+int	351	three hundred fifty-one 
+int	352	three hundred fifty-two 
+int	353	three hundred fifty-three 
+int	354	three hundred fifty-four 
+int	355	three hundred fifty-five 
+int	356	three hundred fifty-six 
+int	357	three hundred fifty-seven 
+int	358	three hundred fifty-eight 
+int	359	three hundred fifty-nine 
+int	360	three hundred sixty 
+int	361	three hundred sixty-one 
+int	362	three hundred sixty-two 
+int	363	three hundred sixty-three 
+int	364	three hundred sixty-four 
+int	365	three hundred sixty-five 
+int	366	three hundred sixty-six 
+int	367	three hundred sixty-seven 
+int	368	three hundred sixty-eight 
+int	369	three hundred sixty-nine 
+int	370	three hundred seventy 
+int	371	three hundred seventy-one 
+int	372	three hundred seventy-two 
+int	373	three hundred seventy-three 
+int	374	three hundred seventy-four 
+int	375	three hundred seventy-five 
+int	376	three hundred seventy-six 
+int	377	three hundred seventy-seven 
+int	378	three hundred seventy-eight 
+int	379	three hundred seventy-nine 
+int	380	three hundred eighty 
+int	381	three hundred eighty-one 
+int	382	three hundred eighty-two 
+int	383	three hundred eighty-three 
+int	384	three hundred eighty-four 
+int	385	three hundred eighty-five 
+int	386	three hundred eighty-six 
+int	387	three hundred eighty-seven 
+int	388	three hundred eighty-eight 
+int	389	three hundred eighty-nine 
+int	390	three hundred ninety 
+int	391	three hundred ninety-one 
+int	392	three hundred ninety-two 
+int	393	three hundred ninety-three 
+int	394	three hundred ninety-four 
+int	395	three hundred ninety-five 
+int	396	three hundred ninety-six 
+int	397	three hundred ninety-seven 
+int	398	three hundred ninety-eight 
+int	399	three hundred ninety-nine 
+int	400	four hundred 
+int	401	four hundred one 
+int	402	four hundred two 
+int	403	four hundred three 
+int	404	four hundred four 
+int	405	four hundred five 
+int	406	four hundred six 
+int	407	four hundred seven 
+int	408	four hundred eight 
+int	409	four hundred nine 
+int	410	four hundred ten 
+int	411	four hundred eleven 
+int	412	four hundred twelve 
+int	413	four hundred thirteen 
+int	414	four hundred fourteen 
+int	415	four hundred fifteen 
+int	416	four hundred sixteen 
+int	417	four hundred seventeen 
+int	418	four hundred eighteen 
+int	419	four hundred nineteen 
+int	420	four hundred twenty 
+int	421	four hundred twenty-one 
+int	422	four hundred twenty-two 
+int	423	four hundred twenty-three 
+int	424	four hundred twenty-four 
+int	425	four hundred twenty-five 
+int	426	four hundred twenty-six 
+int	427	four hundred twenty-seven 
+int	428	four hundred twenty-eight 
+int	429	four hundred twenty-nine 
+int	430	four hundred thirty 
+int	431	four hundred thirty-one 
+int	432	four hundred thirty-two 
+int	433	four hundred thirty-three 
+int	434	four hundred thirty-four 
+int	435	four hundred thirty-five 
+int	436	four hundred thirty-six 
+int	437	four hundred thirty-seven 
+int	438	four hundred thirty-eight 
+int	439	four hundred thirty-nine 
+int	440	four hundred forty 
+int	441	four hundred forty-one 
+int	442	four hundred forty-two 
+int	443	four hundred forty-three 
+int	444	four hundred forty-four 
+int	445	four hundred forty-five 
+int	446	four hundred forty-six 
+int	447	four hundred forty-seven 
+int	448	four hundred forty-eight 
+int	449	four hundred forty-nine 
+int	450	four hundred fifty 
+int	451	four hundred fifty-one 
+int	452	four hundred fifty-two 
+int	453	four hundred fifty-three 
+int	454	four hundred fifty-four 
+int	455	four hundred fifty-five 
+int	456	four hundred fifty-six 
+int	457	four hundred fifty-seven 
+int	458	four hundred fifty-eight 
+int	459	four hundred fifty-nine 
+int	460	four hundred sixty 
+int	461	four hundred sixty-one 
+int	462	four hundred sixty-two 
+int	463	four hundred sixty-three 
+int	464	four hundred sixty-four 
+int	465	four hundred sixty-five 
+int	466	four hundred sixty-six 
+int	467	four hundred sixty-seven 
+int	468	four hundred sixty-eight 
+int	469	four hundred sixty-nine 
+int	470	four hundred seventy 
+int	471	four hundred seventy-one 
+int	472	four hundred seventy-two 
+int	473	four hundred seventy-three 
+int	474	four hundred seventy-four 
+int	475	four hundred seventy-five 
+int	476	four hundred seventy-six 
+int	477	four hundred seventy-seven 
+int	478	four hundred seventy-eight 
+int	479	four hundred seventy-nine 
+int	480	four hundred eighty 
+int	481	four hundred eighty-one 
+int	482	four hundred eighty-two 
+int	483	four hundred eighty-three 
+int	484	four hundred eighty-four 
+int	485	four hundred eighty-five 
+int	486	four hundred eighty-six 
+int	487	four hundred eighty-seven 
+int	488	four hundred eighty-eight 
+int	489	four hundred eighty-nine 
+int	490	four hundred ninety 
+int	491	four hundred ninety-one 
+int	492	four hundred ninety-two 
+int	493	four hundred ninety-three 
+int	494	four hundred ninety-four 
+int	495	four hundred ninety-five 
+int	496	four hundred ninety-six 
+int	497	four hundred ninety-seven 
+int	498	four hundred ninety-eight 
+int	499	four hundred ninety-nine 
+int	500	five hundred 
+int	501	five hundred one 
+int	502	five hundred two 
+int	503	five hundred three 
+int	504	five hundred four 
+int	505	five hundred five 
+int	506	five hundred six 
+int	507	five hundred seven 
+int	508	five hundred eight 
+int	509	five hundred nine 
+int	510	five hundred ten 
+int	511	five hundred eleven 
+int	512	five hundred twelve 
+int	513	five hundred thirteen 
+int	514	five hundred fourteen 
+int	515	five hundred fifteen 
+int	516	five hundred sixteen 
+int	517	five hundred seventeen 
+int	518	five hundred eighteen 
+int	519	five hundred nineteen 
+int	520	five hundred twenty 
+int	521	five hundred twenty-one 
+int	522	five hundred twenty-two 
+int	523	five hundred twenty-three 
+int	524	five hundred twenty-four 
+int	525	five hundred twenty-five 
+int	526	five hundred twenty-six 
+int	527	five hundred twenty-seven 
+int	528	five hundred twenty-eight 
+int	529	five hundred twenty-nine 
+int	530	five hundred thirty 
+int	531	five hundred thirty-one 
+int	532	five hundred thirty-two 
+int	533	five hundred thirty-three 
+int	534	five hundred thirty-four 
+int	535	five hundred thirty-five 
+int	536	five hundred thirty-six 
+int	537	five hundred thirty-seven 
+int	538	five hundred thirty-eight 
+int	539	five hundred thirty-nine 
+int	540	five hundred forty 
+int	541	five hundred forty-one 
+int	542	five hundred forty-two 
+int	543	five hundred forty-three 
+int	544	five hundred forty-four 
+int	545	five hundred forty-five 
+int	546	five hundred forty-six 
+int	547	five hundred forty-seven 
+int	548	five hundred forty-eight 
+int	549	five hundred forty-nine 
+int	550	five hundred fifty 
+int	551	five hundred fifty-one 
+int	552	five hundred fifty-two 
+int	553	five hundred fifty-three 
+int	554	five hundred fifty-four 
+int	555	five hundred fifty-five 
+int	556	five hundred fifty-six 
+int	557	five hundred fifty-seven 
+int	558	five hundred fifty-eight 
+int	559	five hundred fifty-nine 
+int	560	five hundred sixty 
+int	561	five hundred sixty-one 
+int	562	five hundred sixty-two 
+int	563	five hundred sixty-three 
+int	564	five hundred sixty-four 
+int	565	five hundred sixty-five 
+int	566	five hundred sixty-six 
+int	567	five hundred sixty-seven 
+int	568	five hundred sixty-eight 
+int	569	five hundred sixty-nine 
+int	570	five hundred seventy 
+int	571	five hundred seventy-one 
+int	572	five hundred seventy-two 
+int	573	five hundred seventy-three 
+int	574	five hundred seventy-four 
+int	575	five hundred seventy-five 
+int	576	five hundred seventy-six 
+int	577	five hundred seventy-seven 
+int	578	five hundred seventy-eight 
+int	579	five hundred seventy-nine 
+int	580	five hundred eighty 
+int	581	five hundred eighty-one 
+int	582	five hundred eighty-two 
+int	583	five hundred eighty-three 
+int	584	five hundred eighty-four 
+int	585	five hundred eighty-five 
+int	586	five hundred eighty-six 
+int	587	five hundred eighty-seven 
+int	588	five hundred eighty-eight 
+int	589	five hundred eighty-nine 
+int	590	five hundred ninety 
+int	591	five hundred ninety-one 
+int	592	five hundred ninety-two 
+int	593	five hundred ninety-three 
+int	594	five hundred ninety-four 
+int	595	five hundred ninety-five 
+int	596	five hundred ninety-six 
+int	597	five hundred ninety-seven 
+int	598	five hundred ninety-eight 
+int	599	five hundred ninety-nine 
+int	600	six hundred 
+int	601	six hundred one 
+int	602	six hundred two 
+int	603	six hundred three 
+int	604	six hundred four 
+int	605	six hundred five 
+int	606	six hundred six 
+int	607	six hundred seven 
+int	608	six hundred eight 
+int	609	six hundred nine 
+int	610	six hundred ten 
+int	611	six hundred eleven 
+int	612	six hundred twelve 
+int	613	six hundred thirteen 
+int	614	six hundred fourteen 
+int	615	six hundred fifteen 
+int	616	six hundred sixteen 
+int	617	six hundred seventeen 
+int	618	six hundred eighteen 
+int	619	six hundred nineteen 
+int	620	six hundred twenty 
+int	621	six hundred twenty-one 
+int	622	six hundred twenty-two 
+int	623	six hundred twenty-three 
+int	624	six hundred twenty-four 
+int	625	six hundred twenty-five 
+int	626	six hundred twenty-six 
+int	627	six hundred twenty-seven 
+int	628	six hundred twenty-eight 
+int	629	six hundred twenty-nine 
+int	630	six hundred thirty 
+int	631	six hundred thirty-one 
+int	632	six hundred thirty-two 
+int	633	six hundred thirty-three 
+int	634	six hundred thirty-four 
+int	635	six hundred thirty-five 
+int	636	six hundred thirty-six 
+int	637	six hundred thirty-seven 
+int	638	six hundred thirty-eight 
+int	639	six hundred thirty-nine 
+int	640	six hundred forty 
+int	641	six hundred forty-one 
+int	642	six hundred forty-two 
+int	643	six hundred forty-three 
+int	644	six hundred forty-four 
+int	645	six hundred forty-five 
+int	646	six hundred forty-six 
+int	647	six hundred forty-seven 
+int	648	six hundred forty-eight 
+int	649	six hundred forty-nine 
+int	650	six hundred fifty 
+int	651	six hundred fifty-one 
+int	652	six hundred fifty-two 
+int	653	six hundred fifty-three 
+int	654	six hundred fifty-four 
+int	655	six hundred fifty-five 
+int	656	six hundred fifty-six 
+int	657	six hundred fifty-seven 
+int	658	six hundred fifty-eight 
+int	659	six hundred fifty-nine 
+int	660	six hundred sixty 
+int	661	six hundred sixty-one 
+int	662	six hundred sixty-two 
+int	663	six hundred sixty-three 
+int	664	six hundred sixty-four 
+int	665	six hundred sixty-five 
+int	666	six hundred sixty-six 
+int	667	six hundred sixty-seven 
+int	668	six hundred sixty-eight 
+int	669	six hundred sixty-nine 
+int	670	six hundred seventy 
+int	671	six hundred seventy-one 
+int	672	six hundred seventy-two 
+int	673	six hundred seventy-three 
+int	674	six hundred seventy-four 
+int	675	six hundred seventy-five 
+int	676	six hundred seventy-six 
+int	677	six hundred seventy-seven 
+int	678	six hundred seventy-eight 
+int	679	six hundred seventy-nine 
+int	680	six hundred eighty 
+int	681	six hundred eighty-one 
+int	682	six hundred eighty-two 
+int	683	six hundred eighty-three 
+int	684	six hundred eighty-four 
+int	685	six hundred eighty-five 
+int	686	six hundred eighty-six 
+int	687	six hundred eighty-seven 
+int	688	six hundred eighty-eight 
+int	689	six hundred eighty-nine 
+int	690	six hundred ninety 
+int	691	six hundred ninety-one 
+int	692	six hundred ninety-two 
+int	693	six hundred ninety-three 
+int	694	six hundred ninety-four 
+int	695	six hundred ninety-five 
+int	696	six hundred ninety-six 
+int	697	six hundred ninety-seven 
+int	698	six hundred ninety-eight 
+int	699	six hundred ninety-nine 
+int	700	seven hundred 
+int	701	seven hundred one 
+int	702	seven hundred two 
+int	703	seven hundred three 
+int	704	seven hundred four 
+int	705	seven hundred five 
+int	706	seven hundred six 
+int	707	seven hundred seven 
+int	708	seven hundred eight 
+int	709	seven hundred nine 
+int	710	seven hundred ten 
+int	711	seven hundred eleven 
+int	712	seven hundred twelve 
+int	713	seven hundred thirteen 
+int	714	seven hundred fourteen 
+int	715	seven hundred fifteen 
+int	716	seven hundred sixteen 
+int	717	seven hundred seventeen 
+int	718	seven hundred eighteen 
+int	719	seven hundred nineteen 
+int	720	seven hundred twenty 
+int	721	seven hundred twenty-one 
+int	722	seven hundred twenty-two 
+int	723	seven hundred twenty-three 
+int	724	seven hundred twenty-four 
+int	725	seven hundred twenty-five 
+int	726	seven hundred twenty-six 
+int	727	seven hundred twenty-seven 
+int	728	seven hundred twenty-eight 
+int	729	seven hundred twenty-nine 
+int	730	seven hundred thirty 
+int	731	seven hundred thirty-one 
+int	732	seven hundred thirty-two 
+int	733	seven hundred thirty-three 
+int	734	seven hundred thirty-four 
+int	735	seven hundred thirty-five 
+int	736	seven hundred thirty-six 
+int	737	seven hundred thirty-seven 
+int	738	seven hundred thirty-eight 
+int	739	seven hundred thirty-nine 
+int	740	seven hundred forty 
+int	741	seven hundred forty-one 
+int	742	seven hundred forty-two 
+int	743	seven hundred forty-three 
+int	744	seven hundred forty-four 
+int	745	seven hundred forty-five 
+int	746	seven hundred forty-six 
+int	747	seven hundred forty-seven 
+int	748	seven hundred forty-eight 
+int	749	seven hundred forty-nine 
+int	750	seven hundred fifty 
+int	751	seven hundred fifty-one 
+int	752	seven hundred fifty-two 
+int	753	seven hundred fifty-three 
+int	754	seven hundred fifty-four 
+int	755	seven hundred fifty-five 
+int	756	seven hundred fifty-six 
+int	757	seven hundred fifty-seven 
+int	758	seven hundred fifty-eight 
+int	759	seven hundred fifty-nine 
+int	760	seven hundred sixty 
+int	761	seven hundred sixty-one 
+int	762	seven hundred sixty-two 
+int	763	seven hundred sixty-three 
+int	764	seven hundred sixty-four 
+int	765	seven hundred sixty-five 
+int	766	seven hundred sixty-six 
+int	767	seven hundred sixty-seven 
+int	768	seven hundred sixty-eight 
+int	769	seven hundred sixty-nine 
+int	770	seven hundred seventy 
+int	771	seven hundred seventy-one 
+int	772	seven hundred seventy-two 
+int	773	seven hundred seventy-three 
+int	774	seven hundred seventy-four 
+int	775	seven hundred seventy-five 
+int	776	seven hundred seventy-six 
+int	777	seven hundred seventy-seven 
+int	778	seven hundred seventy-eight 
+int	779	seven hundred seventy-nine 
+int	780	seven hundred eighty 
+int	781	seven hundred eighty-one 
+int	782	seven hundred eighty-two 
+int	783	seven hundred eighty-three 
+int	784	seven hundred eighty-four 
+int	785	seven hundred eighty-five 
+int	786	seven hundred eighty-six 
+int	787	seven hundred eighty-seven 
+int	788	seven hundred eighty-eight 
+int	789	seven hundred eighty-nine 
+int	790	seven hundred ninety 
+int	791	seven hundred ninety-one 
+int	792	seven hundred ninety-two 
+int	793	seven hundred ninety-three 
+int	794	seven hundred ninety-four 
+int	795	seven hundred ninety-five 
+int	796	seven hundred ninety-six 
+int	797	seven hundred ninety-seven 
+int	798	seven hundred ninety-eight 
+int	799	seven hundred ninety-nine 
+int	800	eight hundred 
+int	801	eight hundred one 
+int	802	eight hundred two 
+int	803	eight hundred three 
+int	804	eight hundred four 
+int	805	eight hundred five 
+int	806	eight hundred six 
+int	807	eight hundred seven 
+int	808	eight hundred eight 
+int	809	eight hundred nine 
+int	810	eight hundred ten 
+int	811	eight hundred eleven 
+int	812	eight hundred twelve 
+int	813	eight hundred thirteen 
+int	814	eight hundred fourteen 
+int	815	eight hundred fifteen 
+int	816	eight hundred sixteen 
+int	817	eight hundred seventeen 
+int	818	eight hundred eighteen 
+int	819	eight hundred nineteen 
+int	820	eight hundred twenty 
+int	821	eight hundred twenty-one 
+int	822	eight hundred twenty-two 
+int	823	eight hundred twenty-three 
+int	824	eight hundred twenty-four 
+int	825	eight hundred twenty-five 
+int	826	eight hundred twenty-six 
+int	827	eight hundred twenty-seven 
+int	828	eight hundred twenty-eight 
+int	829	eight hundred twenty-nine 
+int	830	eight hundred thirty 
+int	831	eight hundred thirty-one 
+int	832	eight hundred thirty-two 
+int	833	eight hundred thirty-three 
+int	834	eight hundred thirty-four 
+int	835	eight hundred thirty-five 
+int	836	eight hundred thirty-six 
+int	837	eight hundred thirty-seven 
+int	838	eight hundred thirty-eight 
+int	839	eight hundred thirty-nine 
+int	840	eight hundred forty 
+int	841	eight hundred forty-one 
+int	842	eight hundred forty-two 
+int	843	eight hundred forty-three 
+int	844	eight hundred forty-four 
+int	845	eight hundred forty-five 
+int	846	eight hundred forty-six 
+int	847	eight hundred forty-seven 
+int	848	eight hundred forty-eight 
+int	849	eight hundred forty-nine 
+int	850	eight hundred fifty 
+int	851	eight hundred fifty-one 
+int	852	eight hundred fifty-two 
+int	853	eight hundred fifty-three 
+int	854	eight hundred fifty-four 
+int	855	eight hundred fifty-five 
+int	856	eight hundred fifty-six 
+int	857	eight hundred fifty-seven 
+int	858	eight hundred fifty-eight 
+int	859	eight hundred fifty-nine 
+int	860	eight hundred sixty 
+int	861	eight hundred sixty-one 
+int	862	eight hundred sixty-two 
+int	863	eight hundred sixty-three 
+int	864	eight hundred sixty-four 
+int	865	eight hundred sixty-five 
+int	866	eight hundred sixty-six 
+int	867	eight hundred sixty-seven 
+int	868	eight hundred sixty-eight 
+int	869	eight hundred sixty-nine 
+int	870	eight hundred seventy 
+int	871	eight hundred seventy-one 
+int	872	eight hundred seventy-two 
+int	873	eight hundred seventy-three 
+int	874	eight hundred seventy-four 
+int	875	eight hundred seventy-five 
+int	876	eight hundred seventy-six 
+int	877	eight hundred seventy-seven 
+int	878	eight hundred seventy-eight 
+int	879	eight hundred seventy-nine 
+int	880	eight hundred eighty 
+int	881	eight hundred eighty-one 
+int	882	eight hundred eighty-two 
+int	883	eight hundred eighty-three 
+int	884	eight hundred eighty-four 
+int	885	eight hundred eighty-five 
+int	886	eight hundred eighty-six 
+int	887	eight hundred eighty-seven 
+int	888	eight hundred eighty-eight 
+int	889	eight hundred eighty-nine 
+int	890	eight hundred ninety 
+int	891	eight hundred ninety-one 
+int	892	eight hundred ninety-two 
+int	893	eight hundred ninety-three 
+int	894	eight hundred ninety-four 
+int	895	eight hundred ninety-five 
+int	896	eight hundred ninety-six 
+int	897	eight hundred ninety-seven 
+int	898	eight hundred ninety-eight 
+int	899	eight hundred ninety-nine 
+int	900	nine hundred 
+int	901	nine hundred one 
+int	902	nine hundred two 
+int	903	nine hundred three 
+int	904	nine hundred four 
+int	905	nine hundred five 
+int	906	nine hundred six 
+int	907	nine hundred seven 
+int	908	nine hundred eight 
+int	909	nine hundred nine 
+int	910	nine hundred ten 
+int	911	nine hundred eleven 
+int	912	nine hundred twelve 
+int	913	nine hundred thirteen 
+int	914	nine hundred fourteen 
+int	915	nine hundred fifteen 
+int	916	nine hundred sixteen 
+int	917	nine hundred seventeen 
+int	918	nine hundred eighteen 
+int	919	nine hundred nineteen 
+int	920	nine hundred twenty 
+int	921	nine hundred twenty-one 
+int	922	nine hundred twenty-two 
+int	923	nine hundred twenty-three 
+int	924	nine hundred twenty-four 
+int	925	nine hundred twenty-five 
+int	926	nine hundred twenty-six 
+int	927	nine hundred twenty-seven 
+int	928	nine hundred twenty-eight 
+int	929	nine hundred twenty-nine 
+int	930	nine hundred thirty 
+int	931	nine hundred thirty-one 
+int	932	nine hundred thirty-two 
+int	933	nine hundred thirty-three 
+int	934	nine hundred thirty-four 
+int	935	nine hundred thirty-five 
+int	936	nine hundred thirty-six 
+int	937	nine hundred thirty-seven 
+int	938	nine hundred thirty-eight 
+int	939	nine hundred thirty-nine 
+int	940	nine hundred forty 
+int	941	nine hundred forty-one 
+int	942	nine hundred forty-two 
+int	943	nine hundred forty-three 
+int	944	nine hundred forty-four 
+int	945	nine hundred forty-five 
+int	946	nine hundred forty-six 
+int	947	nine hundred forty-seven 
+int	948	nine hundred forty-eight 
+int	949	nine hundred forty-nine 
+int	950	nine hundred fifty 
+int	951	nine hundred fifty-one 
+int	952	nine hundred fifty-two 
+int	953	nine hundred fifty-three 
+int	954	nine hundred fifty-four 
+int	955	nine hundred fifty-five 
+int	956	nine hundred fifty-six 
+int	957	nine hundred fifty-seven 
+int	958	nine hundred fifty-eight 
+int	959	nine hundred fifty-nine 
+int	960	nine hundred sixty 
+int	961	nine hundred sixty-one 
+int	962	nine hundred sixty-two 
+int	963	nine hundred sixty-three 
+int	964	nine hundred sixty-four 
+int	965	nine hundred sixty-five 
+int	966	nine hundred sixty-six 
+int	967	nine hundred sixty-seven 
+int	968	nine hundred sixty-eight 
+int	969	nine hundred sixty-nine 
+int	970	nine hundred seventy 
+int	971	nine hundred seventy-one 
+int	972	nine hundred seventy-two 
+int	973	nine hundred seventy-three 
+int	974	nine hundred seventy-four 
+int	975	nine hundred seventy-five 
+int	976	nine hundred seventy-six 
+int	977	nine hundred seventy-seven 
+int	978	nine hundred seventy-eight 
+int	979	nine hundred seventy-nine 
+int	980	nine hundred eighty 
+int	981	nine hundred eighty-one 
+int	982	nine hundred eighty-two 
+int	983	nine hundred eighty-three 
+int	984	nine hundred eighty-four 
+int	985	nine hundred eighty-five 
+int	986	nine hundred eighty-six 
+int	987	nine hundred eighty-seven 
+int	988	nine hundred eighty-eight 
+int	989	nine hundred eighty-nine 
+int	990	nine hundred ninety 
+int	991	nine hundred ninety-one 
+int	992	nine hundred ninety-two 
+int	993	nine hundred ninety-three 
+int	994	nine hundred ninety-four 
+int	995	nine hundred ninety-five 
+int	996	nine hundred ninety-six 
+int	997	nine hundred ninety-seven 
+int	998	nine hundred ninety-eight 
+int	999	nine hundred ninety-nine 
+int	1000	one thousand, 
+int	-2147483648	minus two billion, one hundred forty-seven million, four hundred eighty-three thousand, six hundred forty-eight 
+int	2147483647	two billion, one hundred forty-seven million, four hundred eighty-three thousand, six hundred forty-seven 
+long	1	one 
+long	-1	minus one 
+long	0	zero
+long	10	ten 
+long	-10	minus ten 
+long	9	nine 
+long	100	one hundred 
+long	-100	minus one hundred 
+long	99	ninety-nine 
+long	1000	one thousand, 
+long	-1000	minus one thousand, 
+long	999	nine hundred ninety-nine 
+long	10000	ten thousand, 
+long	-10000	minus ten thousand, 
+long	9999	nine thousand, nine hundred ninety-nine 
+long	100000	one hundred thousand, 
+long	-100000	minus one hundred thousand, 
+long	99999	ninety-nine thousand, nine hundred ninety-nine 
+long	1000000	one million, 
+long	-1000000	minus one million, 
+long	999999	nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	10000000	ten million, 
+long	-10000000	minus ten million, 
+long	9999999	nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	100000000	one hundred million, 
+long	-100000000	minus one hundred million, 
+long	99999999	ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	1000000000	one billion, 
+long	-1000000000	minus one billion, 
+long	999999999	nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	10000000000	ten billion, 
+long	-10000000000	minus ten billion, 
+long	9999999999	nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	100000000000	one hundred billion, 
+long	-100000000000	minus one hundred billion, 
+long	99999999999	ninety-nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	1000000000000	one trillion, 
+long	-1000000000000	minus one trillion, 
+long	999999999999	nine hundred ninety-nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	10000000000000	ten trillion, 
+long	-10000000000000	minus ten trillion, 
+long	9999999999999	nine trillion, nine hundred ninety-nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	100000000000000	one hundred trillion, 
+long	-100000000000000	minus one hundred trillion, 
+long	99999999999999	ninety-nine trillion, nine hundred ninety-nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	1000000000000000	one quadrillion, 
+long	-1000000000000000	minus one quadrillion, 
+long	999999999999999	nine hundred ninety-nine trillion, nine hundred ninety-nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	10000000000000000	ten quadrillion, 
+long	-10000000000000000	minus ten quadrillion, 
+long	9999999999999999	nine quadrillion, nine hundred ninety-nine trillion, nine hundred ninety-nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	100000000000000000	one hundred quadrillion, 
+long	-100000000000000000	minus one hundred quadrillion, 
+long	99999999999999999	ninety-nine quadrillion, nine hundred ninety-nine trillion, nine hundred ninety-nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	1000000000000000000	one quintillion, 
+long	-1000000000000000000	minus one quintillion, 
+long	999999999999999999	nine hundred ninety-nine quadrillion, nine hundred ninety-nine trillion, nine hundred ninety-nine billion, nine hundred ninety-nine million, nine hundred ninety-nine thousand, nine hundred ninety-nine 
+long	-9223372036854775808	minus 
+long	9223372036854775807	nine quintillion, two hundred twenty-three quadrillion, three hundred seventy-two trillion, thirty-six billion, eight hundred fifty-four million, seven hundred seventy-five thousand, eight hundred seven 
+long	-4962768465676381896	minus four quintillion, nine hundred sixty-two quadrillion, seven hundred sixty-eight trillion, four hundred sixty-five billion, six hundred seventy-six million, three hundred eighty-one thousand, eight hundred ninety-six 
+long	443711378104578476	four hundred forty-three quadrillion, seven hundred eleven trillion, three hundred seventy-eight billion, one hundred four million, five hundred seventy-eight thousand, four hundred seventy-six 
+long	-66884678118488186	minus sixty-six quadrillion, eight hundred eighty-four trillion, six hundred seventy-eight billion, one hundred eighteen million, four hundred eighty-eight thousand, one hundred eighty-six 
+long	-8292973307042192	minus eight quadrillion, two hundred ninety-two trillion, nine hundred seventy-three billion, three hundred seven million, forty-two thousand, one hundred ninety-two 
+long	-742397921120782	minus seven hundred forty-two trillion, three hundred ninety-seven billion, nine hundred twenty-one million, one hundred twenty thousand, seven hundred eighty-two 
+long	61467946520835	sixty-one trillion, four hundred sixty-seven billion, nine hundred forty-six million, five hundred twenty thousand, eight hundred thirty-five 
+long	7105486291024	seven trillion, one hundred five billion, four hundred eighty-six million, two hundred ninety-one thousand, twenty-four 
+long	-27962429685	minus twenty-seven billion, nine hundred sixty-two million, four hundred twenty-nine thousand, six hundred eighty-five 
+long	-22286891443	minus twenty-two billion, two hundred eighty-six million, eight hundred ninety-one thousand, four hundred forty-three 
+long	-1083761183	minus one billion, eighty-three million, seven hundred sixty-one thousand, one hundred eighty-three 
+long	507200542	five hundred seven million, two hundred thousand, five hundred forty-two 
+long	23777327	twenty-three million, seven hundred seventy-seven thousand, three hundred twenty-seven 
+long	2704323	two million, seven hundred four thousand, three hundred twenty-three 
+long	42866	forty-two thousand, eight hundred sixty-six 
+long	-83611	minus eighty-three thousand, six hundred eleven 
+long	-655	minus six hundred fifty-five 
+long	192	one hundred ninety-two 
+long	-69	minus sixty-nine 
+long	7	seven 
+long	-4126310024944755050	minus four quintillion, one hundred twenty-six quadrillion, three hundred ten trillion, twenty-four billion, nine hundred forty-four million, seven hundred fifty-five thousand, fifty 
+long	-17113458386087854	minus seventeen quadrillion, one hundred thirteen trillion, four hundred fifty-eight billion, three hundred eighty-six million, eighty-seven thousand, eight hundred fifty-four 
+long	89878594888851907	eighty-nine quadrillion, eight hundred seventy-eight trillion, five hundred ninety-four billion, eight hundred eighty-eight million, eight hundred fifty-one thousand, nine hundred seven 
+long	-4681020001986070	minus four quadrillion, six hundred eighty-one trillion, twenty billion, one million, nine hundred eighty-six thousand, seventy 
+long	-492247554034933	minus four hundred ninety-two trillion, two hundred forty-seven billion, five hundred fifty-four million, thirty-four thousand, nine hundred thirty-three 
+long	-33702740312557	minus thirty-three trillion, seven hundred two billion, seven hundred forty million, three hundred twelve thousand, five hundred fifty-seven 
+long	-2971948390163	minus two trillion, nine hundred seventy-one billion, nine hundred forty-eight million, three hundred ninety thousand, one hundred sixty-three 
+long	-873085445872	minus eight hundred seventy-three billion, eighty-five million, four hundred forty-five thousand, eight hundred seventy-two 
+long	-18569414885	minus eighteen billion, five hundred sixty-nine million, four hundred fourteen thousand, eight hundred eighty-five 
+long	2470753881	two billion, four hundred seventy million, seven hundred fifty-three thousand, eight hundred eighty-one 
+long	153223081	one hundred fifty-three million, two hundred twenty-three thousand, eighty-one 
+long	-3952337	minus three million, nine hundred fifty-two thousand, three hundred thirty-seven 
+long	-5121607	minus five million, one hundred twenty-one thousand, six hundred seven 
+long	-525674	minus five hundred twenty-five thousand, six hundred seventy-four 
+long	26419	twenty-six thousand, four hundred nineteen 
+long	8540	eight thousand, five hundred forty 
+long	8	eight 
+long	13	thirteen 
+long	6	six 
+long	6249197149364475148	six quintillion, two hundred forty-nine quadrillion, one hundred ninety-seven trillion, one hundred forty-nine billion, three hundred sixty-four million, four hundred seventy-five thousand, one hundred forty-eight 
+long	-259441376181409055	minus two hundred fifty-nine quadrillion, four hundred forty-one trillion, three hundred seventy-six billion, one hundred eighty-one million, four hundred nine thousand, fifty-five 
+long	-5248654530080360	minus five quadrillion, two hundred forty-eight trillion, six hundred fifty-four billion, five hundred thirty million, eighty thousand, three hundred sixty 
+long	-2476551425607728	minus two quadrillion, four hundred seventy-six trillion, five hundred fifty-one billion, four hundred twenty-five million, six hundred seven thousand, seven hundred twenty-eight 
+long	-714661721001260	minus seven hundred fourteen trillion, six hundred sixty-one billion, seven hundred twenty-one million, one thousand, two hundred sixty 
+long	33017457077265	thirty-three trillion, seventeen billion, four hundred fifty-seven million, seventy-seven thousand, two hundred sixty-five 
+long	4013465704250	four trillion, thirteen billion, four hundred sixty-five million, seven hundred four thousand, two hundred fifty 
+long	-268423795128	minus two hundred sixty-eight billion, four hundred twenty-three million, seven hundred ninety-five thousand, one hundred twenty-eight 
+long	1784444511	one billion, seven hundred eighty-four million, four hundred forty-four thousand, five hundred eleven 
+long	-5676192111	minus five billion, six hundred seventy-six million, one hundred ninety-two thousand, one hundred eleven 
+long	-421853139	minus four hundred twenty-one million, eight hundred fifty-three thousand, one hundred thirty-nine 
+long	-52999814	minus fifty-two million, nine hundred ninety-nine thousand, eight hundred fourteen 
+long	3896605	three million, eight hundred ninety-six thousand, six hundred five 
+long	-400123	minus four hundred thousand, one hundred twenty-three 
+long	-10084	minus ten thousand, eighty-four 
+long	262	two hundred sixty-two 
+long	727	seven hundred twenty-seven 
+long	-26	minus twenty-six 
+long	-3	minus three 
+long	-120421011786498678	minus one hundred twenty quadrillion, four hundred twenty-one trillion, eleven billion, seven hundred eighty-six million, four hundred ninety-eight thousand, six hundred seventy-eight 
+long	-215634297376922572	minus two hundred fifteen quadrillion, six hundred thirty-four trillion, two hundred ninety-seven billion, three hundred seventy-six million, nine hundred twenty-two thousand, five hundred seventy-two 
+long	31413243921236279	thirty-one quadrillion, four hundred thirteen trillion, two hundred forty-three billion, nine hundred twenty-one million, two hundred thirty-six thousand, two hundred seventy-nine 
+long	-699704949712600	minus six hundred ninety-nine trillion, seven hundred four billion, nine hundred forty-nine million, seven hundred twelve thousand, six hundred 
+long	-508585904549596	minus five hundred eight trillion, five hundred eighty-five billion, nine hundred four million, five hundred forty-nine thousand, five hundred ninety-six 
+long	-59517652056699	minus fifty-nine trillion, five hundred seventeen billion, six hundred fifty-two million, fifty-six thousand, six hundred ninety-nine 
+long	-3608267860102	minus three trillion, six hundred eight billion, two hundred sixty-seven million, eight hundred sixty thousand, one hundred two 
+long	814288684069	eight hundred fourteen billion, two hundred eighty-eight million, six hundred eighty-four thousand, sixty-nine 
+long	85240191151	eighty-five billion, two hundred forty million, one hundred ninety-one thousand, one hundred fifty-one 
+long	-2714853971	minus two billion, seven hundred fourteen million, eight hundred fifty-three thousand, nine hundred seventy-one 
+long	-918952496	minus nine hundred eighteen million, nine hundred fifty-two thousand, four hundred ninety-six 
+long	-1486258	minus one million, four hundred eighty-six thousand, two hundred fifty-eight 
+long	-566870	minus five hundred sixty-six thousand, eight hundred seventy 
+long	651365	six hundred fifty-one thousand, three hundred sixty-five 
+long	8719	eight thousand, seven hundred nineteen 
+long	1321	one thousand, three hundred twenty-one 
+long	53	fifty-three 
+long	89	eighty-nine 
+long	0	zero
+long	-200753079219431109	minus two hundred quadrillion, seven hundred fifty-three trillion, seventy-nine billion, two hundred nineteen million, four hundred thirty-one thousand, one hundred nine 
+long	-428993608661640201	minus four hundred twenty-eight quadrillion, nine hundred ninety-three trillion, six hundred eight billion, six hundred sixty-one million, six hundred forty thousand, two hundred one 
+long	-91975954271059230	minus ninety-one quadrillion, nine hundred seventy-five trillion, nine hundred fifty-four billion, two hundred seventy-one million, fifty-nine thousand, two hundred thirty 
+long	4713610129296514	four quadrillion, seven hundred thirteen trillion, six hundred ten billion, one hundred twenty-nine million, two hundred ninety-six thousand, five hundred fourteen 
+long	570296198947288	five hundred seventy trillion, two hundred ninety-six billion, one hundred ninety-eight million, nine hundred forty-seven thousand, two hundred eighty-eight 
+long	-27987307385624	minus twenty-seven trillion, nine hundred eighty-seven billion, three hundred seven million, three hundred eighty-five thousand, six hundred twenty-four 
+long	960790331024	nine hundred sixty billion, seven hundred ninety million, three hundred thirty-one thousand, twenty-four 
+long	18770410332	eighteen billion, seven hundred seventy million, four hundred ten thousand, three hundred thirty-two 
+long	65274349543	sixty-five billion, two hundred seventy-four million, three hundred forty-nine thousand, five hundred forty-three 
+long	1600030782	one billion, six hundred million, thirty thousand, seven hundred eighty-two 
+long	-276126513	minus two hundred seventy-six million, one hundred twenty-six thousand, five hundred thirteen 
+long	678266	six hundred seventy-eight thousand, two hundred sixty-six 
+long	5679626	five million, six hundred seventy-nine thousand, six hundred twenty-six 
+long	-864029	minus eight hundred sixty-four thousand, twenty-nine 
+long	-14976	minus fourteen thousand, nine hundred seventy-six 
+long	5113	five thousand, one hundred thirteen 
+long	-231	minus two hundred thirty-one 
+long	-71	minus seventy-one 
+long	-1	minus one 
+long	820707025409634855	eight hundred twenty quadrillion, seven hundred seven trillion, twenty-five billion, four hundred nine million, six hundred thirty-four thousand, eight hundred fifty-five 
+long	-651679369119166253	minus six hundred fifty-one quadrillion, six hundred seventy-nine trillion, three hundred sixty-nine billion, one hundred nineteen million, one hundred sixty-six thousand, two hundred fifty-three 
+long	91644118348086613	ninety-one quadrillion, six hundred forty-four trillion, one hundred eighteen billion, three hundred forty-eight million, eighty-six thousand, six hundred thirteen 
+long	-9099749510027196	minus nine quadrillion, ninety-nine trillion, seven hundred forty-nine billion, five hundred ten million, twenty-seven thousand, one hundred ninety-six 
+long	-884173060080474	minus eight hundred eighty-four trillion, one hundred seventy-three billion, sixty million, eighty thousand, four hundred seventy-four 
+long	67581629534887	sixty-seven trillion, five hundred eighty-one billion, six hundred twenty-nine million, five hundred thirty-four thousand, eight hundred eighty-seven 
+long	8810845966659	eight trillion, eight hundred ten billion, eight hundred forty-five million, nine hundred sixty-six thousand, six hundred fifty-nine 
+long	-546079502178	minus five hundred forty-six billion, seventy-nine million, five hundred two thousand, one hundred seventy-eight 
+long	59540148990	fifty-nine billion, five hundred forty million, one hundred forty-eight thousand, nine hundred ninety 
+long	214993804	two hundred fourteen million, nine hundred ninety-three thousand, eight hundred four 
+long	-551485821	minus five hundred fifty-one million, four hundred eighty-five thousand, eight hundred twenty-one 
+long	-46974107	minus forty-six million, nine hundred seventy-four thousand, one hundred seven 
+long	-7244253	minus seven million, two hundred forty-four thousand, two hundred fifty-three 
+long	433649	four hundred thirty-three thousand, six hundred forty-nine 
+long	71765	seventy-one thousand, seven hundred sixty-five 
+long	-1633	minus one thousand, six hundred thirty-three 
+long	308	three hundred eight 
+long	0	zero
+long	4	four 
+long	-1977178175608504323	minus one quintillion, nine hundred seventy-seven quadrillion, one hundred seventy-eight trillion, one hundred seventy-five billion, six hundred eight million, five hundred four thousand, three hundred twenty-three 
+long	548916577802611154	five hundred forty-eight quadrillion, nine hundred sixteen trillion, five hundred seventy-seven billion, eight hundred two million, six hundred eleven thousand, one hundred fifty-four 
+long	79118911302366022	seventy-nine quadrillion, one hundred eighteen trillion, nine hundred eleven billion, three hundred two million, three hundred sixty-six thousand, twenty-two 
+long	-5763654923426307	minus five quadrillion, seven hundred sixty-three trillion, six hundred fifty-four billion, nine hundred twenty-three million, four hundred twenty-six thousand, three hundred seven 
+long	753542900602498	seven hundred fifty-three trillion, five hundred forty-two billion, nine hundred million, six hundred two thousand, four hundred ninety-eight 
+long	65126691674839	sixty-five trillion, one hundred twenty-six billion, six hundred ninety-one million, six hundred seventy-four thousand, eight hundred thirty-nine 
+long	-6054985639040	minus six trillion, fifty-four billion, nine hundred eighty-five million, six hundred thirty-nine thousand, forty 
+long	-478845785785	minus four hundred seventy-eight billion, eight hundred forty-five million, seven hundred eighty-five thousand, seven hundred eighty-five 
+long	-19473263959	minus nineteen billion, four hundred seventy-three million, two hundred sixty-three thousand, nine hundred fifty-nine 
+long	-7748411135	minus seven billion, seven hundred forty-eight million, four hundred eleven thousand, one hundred thirty-five 
+long	-902496837	minus nine hundred two million, four hundred ninety-six thousand, eight hundred thirty-seven 
+long	57548257	fifty-seven million, five hundred forty-eight thousand, two hundred fifty-seven 
+long	-8481270	minus eight million, four hundred eighty-one thousand, two hundred seventy 
+long	-49607	minus forty-nine thousand, six hundred seven 
+long	-71271	minus seventy-one thousand, two hundred seventy-one 
+long	501	five hundred one 
+long	-573	minus five hundred seventy-three 
+long	-68	minus sixty-eight 
+long	-3	minus three 
+long	-4775523669187539415	minus four quintillion, seven hundred seventy-five quadrillion, five hundred twenty-three trillion, six hundred sixty-nine billion, one hundred eighty-seven million, five hundred thirty-nine thousand, four hundred fifteen 
+long	-679891485821757306	minus six hundred seventy-nine quadrillion, eight hundred ninety-one trillion, four hundred eighty-five billion, eight hundred twenty-one million, seven hundred fifty-seven thousand, three hundred six 
+long	58087384442458050	fifty-eight quadrillion, eighty-seven trillion, three hundred eighty-four billion, four hundred forty-two million, four hundred fifty-eight thousand, fifty 
+long	-4605199251911937	minus four quadrillion, six hundred five trillion, one hundred ninety-nine billion, two hundred fifty-one million, nine hundred eleven thousand, nine hundred thirty-seven 
+long	350893478018831	three hundred fifty trillion, eight hundred ninety-three billion, four hundred seventy-eight million, eighteen thousand, eight hundred thirty-one 
+long	22597505193925	twenty-two trillion, five hundred ninety-seven billion, five hundred five million, one hundred ninety-three thousand, nine hundred twenty-five 
+long	-5288884321442	minus five trillion, two hundred eighty-eight billion, eight hundred eighty-four million, three hundred twenty-one thousand, four hundred forty-two 
+long	-123513612224	minus one hundred twenty-three billion, five hundred thirteen million, six hundred twelve thousand, two hundred twenty-four 
+long	57389438933	fifty-seven billion, three hundred eighty-nine million, four hundred thirty-eight thousand, nine hundred thirty-three 
+long	-8678588235	minus eight billion, six hundred seventy-eight million, five hundred eighty-eight thousand, two hundred thirty-five 
+long	330156035	three hundred thirty million, one hundred fifty-six thousand, thirty-five 
+long	21007525	twenty-one million, seven thousand, five hundred twenty-five 
+long	-5830253	minus five million, eight hundred thirty thousand, two hundred fifty-three 
+long	699592	six hundred ninety-nine thousand, five hundred ninety-two 
+long	-75183	minus seventy-five thousand, one hundred eighty-three 
+long	-1095	minus one thousand, ninety-five 
+long	-859	minus eight hundred fifty-nine 
+long	39	thirty-nine 
+long	6	six 
+long	4621576804961825664	four quintillion, six hundred twenty-one quadrillion, five hundred seventy-six trillion, eight hundred four billion, nine hundred sixty-one million, eight hundred twenty-five thousand, six hundred sixty-four 
+long	-487841914988020261	minus four hundred eighty-seven quadrillion, eight hundred forty-one trillion, nine hundred fourteen billion, nine hundred eighty-eight million, twenty thousand, two hundred sixty-one 
+long	16813573208616107	sixteen quadrillion, eight hundred thirteen trillion, five hundred seventy-three billion, two hundred eight million, six hundred sixteen thousand, one hundred seven 
+long	4880037797499618	four quadrillion, eight hundred eighty trillion, thirty-seven billion, seven hundred ninety-seven million, four hundred ninety-nine thousand, six hundred eighteen 
+long	348031507680930	three hundred forty-eight trillion, thirty-one billion, five hundred seven million, six hundred eighty thousand, nine hundred thirty 
+long	54927281134789	fifty-four trillion, nine hundred twenty-seven billion, two hundred eighty-one million, one hundred thirty-four thousand, seven hundred eighty-nine 
+long	-4455425718838	minus four trillion, four hundred fifty-five billion, four hundred twenty-five million, seven hundred eighteen thousand, eight hundred thirty-eight 
+long	85939749410	eighty-five billion, nine hundred thirty-nine million, seven hundred forty-nine thousand, four hundred ten 
+long	15876846321	fifteen billion, eight hundred seventy-six million, eight hundred forty-six thousand, three hundred twenty-one 
+long	-1988121919	minus one billion, nine hundred eighty-eight million, one hundred twenty-one thousand, nine hundred nineteen 
+long	-858439976	minus eight hundred fifty-eight million, four hundred thirty-nine thousand, nine hundred seventy-six 
+long	15798218	fifteen million, seven hundred ninety-eight thousand, two hundred eighteen 
+long	-8645019	minus eight million, six hundred forty-five thousand, nineteen 
+long	135381	one hundred thirty-five thousand, three hundred eighty-one 
+long	32608	thirty-two thousand, six hundred eight 
+long	-2149	minus two thousand, one hundred forty-nine 
+long	646	six hundred forty-six 
+long	-2	minus two 
+long	-7	minus seven 
+long	-7300345967075961560	minus seven quintillion, three hundred quadrillion, three hundred forty-five trillion, nine hundred sixty-seven billion, seventy-five million, nine hundred sixty-one thousand, five hundred sixty 
+long	503796503686479891	five hundred three quadrillion, seven hundred ninety-six trillion, five hundred three billion, six hundred eighty-six million, four hundred seventy-nine thousand, eight hundred ninety-one 
+long	-89801174872229477	minus eighty-nine quadrillion, eight hundred one trillion, one hundred seventy-four billion, eight hundred seventy-two million, two hundred twenty-nine thousand, four hundred seventy-seven 
+long	-1019362334163299	minus one quadrillion, nineteen trillion, three hundred sixty-two billion, three hundred thirty-four million, one hundred sixty-three thousand, two hundred ninety-nine 
+long	401678674969834	four hundred one trillion, six hundred seventy-eight billion, six hundred seventy-four million, nine hundred sixty-nine thousand, eight hundred thirty-four 
+long	-16634953739017	minus sixteen trillion, six hundred thirty-four billion, nine hundred fifty-three million, seven hundred thirty-nine thousand, seventeen 
+long	357204762418	three hundred fifty-seven billion, two hundred four million, seven hundred sixty-two thousand, four hundred eighteen 
+long	505827016653	five hundred five billion, eight hundred twenty-seven million, sixteen thousand, six hundred fifty-three 
+long	-61096819075	minus sixty-one billion, ninety-six million, eight hundred nineteen thousand, seventy-five 
+long	5310389416	five billion, three hundred ten million, three hundred eighty-nine thousand, four hundred sixteen 
+long	118045125	one hundred eighteen million, forty-five thousand, one hundred twenty-five 
+long	41737991	forty-one million, seven hundred thirty-seven thousand, nine hundred ninety-one 
+long	2583780	two million, five hundred eighty-three thousand, seven hundred eighty 
+long	-731135	minus seven hundred thirty-one thousand, one hundred thirty-five 
+long	-50221	minus fifty thousand, two hundred twenty-one 
+long	5605	five thousand, six hundred five 
+long	-691	minus six hundred ninety-one 
+long	6	six 
+long	8	eight 
+long	1709464157265079686	one quintillion, seven hundred nine quadrillion, four hundred sixty-four trillion, one hundred fifty-seven billion, two hundred sixty-five million, seventy-nine thousand, six hundred eighty-six 
+long	-533799969186945782	minus five hundred thirty-three quadrillion, seven hundred ninety-nine trillion, nine hundred sixty-nine billion, one hundred eighty-six million, nine hundred forty-five thousand, seven hundred eighty-two 
+long	80085052974482832	eighty quadrillion, eighty-five trillion, fifty-two billion, nine hundred seventy-four million, four hundred eighty-two thousand, eight hundred thirty-two 
+long	-3332450412194435	minus three quadrillion, three hundred thirty-two trillion, four hundred fifty billion, four hundred twelve million, one hundred ninety-four thousand, four hundred thirty-five 
+long	-729533560320905	minus seven hundred twenty-nine trillion, five hundred thirty-three billion, five hundred sixty million, three hundred twenty thousand, nine hundred five 
+long	-60460146119693	minus sixty trillion, four hundred sixty billion, one hundred forty-six million, one hundred nineteen thousand, six hundred ninety-three 
+long	8302285056297	eight trillion, three hundred two billion, two hundred eighty-five million, fifty-six thousand, two hundred ninety-seven 
+long	635602442404	six hundred thirty-five billion, six hundred two million, four hundred forty-two thousand, four hundred four 
+long	49694565861	forty-nine billion, six hundred ninety-four million, five hundred sixty-five thousand, eight hundred sixty-one 
+long	-4701205128	minus four billion, seven hundred one million, two hundred five thousand, one hundred twenty-eight 
+long	380305312	three hundred eighty million, three hundred five thousand, three hundred twelve 
+long	27583606	twenty-seven million, five hundred eighty-three thousand, six hundred six 
+long	-1468873	minus one million, four hundred sixty-eight thousand, eight hundred seventy-three 
+long	-576103	minus five hundred seventy-six thousand, one hundred three 
+long	-15365	minus fifteen thousand, three hundred sixty-five 
+long	653	six hundred fifty-three 
+long	360	three hundred sixty 
+long	-78	minus seventy-eight 
+long	0	zero
+long	6119745577970185558	six quintillion, one hundred nineteen quadrillion, seven hundred forty-five trillion, five hundred seventy-seven billion, nine hundred seventy million, one hundred eighty-five thousand, five hundred fifty-eight 
+long	254920912940922875	two hundred fifty-four quadrillion, nine hundred twenty trillion, nine hundred twelve billion, nine hundred forty million, nine hundred twenty-two thousand, eight hundred seventy-five 
+long	17948948449873674	seventeen quadrillion, nine hundred forty-eight trillion, nine hundred forty-eight billion, four hundred forty-nine million, eight hundred seventy-three thousand, six hundred seventy-four 
+long	-3326066702825432	minus three quadrillion, three hundred twenty-six trillion, sixty-six billion, seven hundred two million, eight hundred twenty-five thousand, four hundred thirty-two 
+long	-608887157402637	minus six hundred eight trillion, eight hundred eighty-seven billion, one hundred fifty-seven million, four hundred two thousand, six hundred thirty-seven 
+long	79115836186201	seventy-nine trillion, one hundred fifteen billion, eight hundred thirty-six million, one hundred eighty-six thousand, two hundred one 
+long	8853444392409	eight trillion, eight hundred fifty-three billion, four hundred forty-four million, three hundred ninety-two thousand, four hundred nine 
+long	-314344654260	minus three hundred fourteen billion, three hundred forty-four million, six hundred fifty-four thousand, two hundred sixty 
+long	-84940281844	minus eighty-four billion, nine hundred forty million, two hundred eighty-one thousand, eight hundred forty-four 
+long	-7666389024	minus seven billion, six hundred sixty-six million, three hundred eighty-nine thousand, twenty-four 
+long	-742689305	minus seven hundred forty-two million, six hundred eighty-nine thousand, three hundred five 
+long	69061496	sixty-nine million, sixty-one thousand, four hundred ninety-six 
+long	30264	thirty thousand, two hundred sixty-four 
+long	-572755	minus five hundred seventy-two thousand, seven hundred fifty-five 
+long	-52804	minus fifty-two thousand, eight hundred four 
+long	1277	one thousand, two hundred seventy-seven 
+long	-916	minus nine hundred sixteen 
+long	-56	minus fifty-six 
+long	-3	minus three 
+long	-5135266989296457665	minus five quintillion, one hundred thirty-five quadrillion, two hundred sixty-six trillion, nine hundred eighty-nine billion, two hundred ninety-six million, four hundred fifty-seven thousand, six hundred sixty-five 
+long	629990503676795331	six hundred twenty-nine quadrillion, nine hundred ninety trillion, five hundred three billion, six hundred seventy-six million, seven hundred ninety-five thousand, three hundred thirty-one 
+long	11760896653878269	eleven quadrillion, seven hundred sixty trillion, eight hundred ninety-six billion, six hundred fifty-three million, eight hundred seventy-eight thousand, two hundred sixty-nine 
+long	6443170592819695	six quadrillion, four hundred forty-three trillion, one hundred seventy billion, five hundred ninety-two million, eight hundred nineteen thousand, six hundred ninety-five 
+long	-883790283746332	minus eight hundred eighty-three trillion, seven hundred ninety billion, two hundred eighty-three million, seven hundred forty-six thousand, three hundred thirty-two 
+long	-8059641667843	minus eight trillion, fifty-nine billion, six hundred forty-one million, six hundred sixty-seven thousand, eight hundred forty-three 
+long	-5662802777777	minus five trillion, six hundred sixty-two billion, eight hundred two million, seven hundred seventy-seven thousand, seven hundred seventy-seven 
+long	224348067240	two hundred twenty-four billion, three hundred forty-eight million, sixty-seven thousand, two hundred forty 
+long	-91245647422	minus ninety-one billion, two hundred forty-five million, six hundred forty-seven thousand, four hundred twenty-two 
+long	-1820138817	minus one billion, eight hundred twenty million, one hundred thirty-eight thousand, eight hundred seventeen 
+long	308399580	three hundred eight million, three hundred ninety-nine thousand, five hundred eighty 
+long	64446354	sixty-four million, four hundred forty-six thousand, three hundred fifty-four 
+long	-5623373	minus five million, six hundred twenty-three thousand, three hundred seventy-three 
+long	59832	fifty-nine thousand, eight hundred thirty-two 
+long	47967	forty-seven thousand, nine hundred sixty-seven 
+long	8576	eight thousand, five hundred seventy-six 
+long	749	seven hundred forty-nine 
+long	34	thirty-four 
+long	5	five 
+long	-7826056991558697093	minus seven quintillion, eight hundred twenty-six quadrillion, fifty-six trillion, nine hundred ninety-one billion, five hundred fifty-eight million, six hundred ninety-seven thousand, ninety-three 
+long	310754966767184568	three hundred ten quadrillion, seven hundred fifty-four trillion, nine hundred sixty-six billion, seven hundred sixty-seven million, one hundred eighty-four thousand, five hundred sixty-eight 
+long	68573735778362061	sixty-eight quadrillion, five hundred seventy-three trillion, seven hundred thirty-five billion, seven hundred seventy-eight million, three hundred sixty-two thousand, sixty-one 
+long	4328502305394555	four quadrillion, three hundred twenty-eight trillion, five hundred two billion, three hundred five million, three hundred ninety-four thousand, five hundred fifty-five 
+long	-851450719413992	minus eight hundred fifty-one trillion, four hundred fifty billion, seven hundred nineteen million, four hundred thirteen thousand, nine hundred ninety-two 
+long	65475657240124	sixty-five trillion, four hundred seventy-five billion, six hundred fifty-seven million, two hundred forty thousand, one hundred twenty-four 
+long	5719690575850	five trillion, seven hundred nineteen billion, six hundred ninety million, five hundred seventy-five thousand, eight hundred fifty 
+long	-299842863251	minus two hundred ninety-nine billion, eight hundred forty-two million, eight hundred sixty-three thousand, two hundred fifty-one 
+long	-60730091037	minus sixty billion, seven hundred thirty million, ninety-one thousand, thirty-seven 
+long	2012055452	two billion, twelve million, fifty-five thousand, four hundred fifty-two 
+long	-118739443	minus one hundred eighteen million, seven hundred thirty-nine thousand, four hundred forty-three 
+long	-23001712	minus twenty-three million, one thousand, seven hundred twelve 
+long	-2730112	minus two million, seven hundred thirty thousand, one hundred twelve 
+long	727527	seven hundred twenty-seven thousand, five hundred twenty-seven 
+long	69781	sixty-nine thousand, seven hundred eighty-one 
+long	-8739	minus eight thousand, seven hundred thirty-nine 
+long	7	seven 
+long	6	six 
+long	-3	minus three 
+long	5004746258089555049	five quintillion, four quadrillion, seven hundred forty-six trillion, two hundred fifty-eight billion, eighty-nine million, five hundred fifty-five thousand, forty-nine 
+long	-513365084376602626	minus five hundred thirteen quadrillion, three hundred sixty-five trillion, eighty-four billion, three hundred seventy-six million, six hundred two thousand, six hundred twenty-six 
+long	77383311187690541	seventy-seven quadrillion, three hundred eighty-three trillion, three hundred eleven billion, one hundred eighty-seven million, six hundred ninety thousand, five hundred forty-one 
+long	5364377487206044	five quadrillion, three hundred sixty-four trillion, three hundred seventy-seven billion, four hundred eighty-seven million, two hundred six thousand, forty-four 
+long	451875468735923	four hundred fifty-one trillion, eight hundred seventy-five billion, four hundred sixty-eight million, seven hundred thirty-five thousand, nine hundred twenty-three 
+long	23102049603982	twenty-three trillion, one hundred two billion, forty-nine million, six hundred three thousand, nine hundred eighty-two 
+long	2742914968671	two trillion, seven hundred forty-two billion, nine hundred fourteen million, nine hundred sixty-eight thousand, six hundred seventy-one 
+long	622740686893	six hundred twenty-two billion, seven hundred forty million, six hundred eighty-six thousand, eight hundred ninety-three 
+long	-29963082021	minus twenty-nine billion, nine hundred sixty-three million, eighty-two thousand, twenty-one 
+long	-2865008637	minus two billion, eight hundred sixty-five million, eight thousand, six hundred thirty-seven 
+long	481534955	four hundred eighty-one million, five hundred thirty-four thousand, nine hundred fifty-five 
+long	-70053858	minus seventy million, fifty-three thousand, eight hundred fifty-eight 
+long	9052226	nine million, fifty-two thousand, two hundred twenty-six 
+long	766152	seven hundred sixty-six thousand, one hundred fifty-two 
+long	-26841	minus twenty-six thousand, eight hundred forty-one 
+long	-3318	minus three thousand, three hundred eighteen 
+long	91	ninety-one 
+long	48	forty-eight 
+long	-2	minus two 
+long	7905715447329028654	seven quintillion, nine hundred five quadrillion, seven hundred fifteen trillion, four hundred forty-seven billion, three hundred twenty-nine million, twenty-eight thousand, six hundred fifty-four 
+long	-477435731119096755	minus four hundred seventy-seven quadrillion, four hundred thirty-five trillion, seven hundred thirty-one billion, one hundred nineteen million, ninety-six thousand, seven hundred fifty-five 
+long	-22810780105504390	minus twenty-two quadrillion, eight hundred ten trillion, seven hundred eighty billion, one hundred five million, five hundred four thousand, three hundred ninety 
+long	5398563097200408	five quadrillion, three hundred ninety-eight trillion, five hundred sixty-three billion, ninety-seven million, two hundred thousand, four hundred eight 
+long	-31055461106508	minus thirty-one trillion, fifty-five billion, four hundred sixty-one million, one hundred six thousand, five hundred eight 
+long	-31442322958623	minus thirty-one trillion, four hundred forty-two billion, three hundred twenty-two million, nine hundred fifty-eight thousand, six hundred twenty-three 
+long	-4221713314052	minus four trillion, two hundred twenty-one billion, seven hundred thirteen million, three hundred fourteen thousand, fifty-two 
+long	671168681808	six hundred seventy-one billion, one hundred sixty-eight million, six hundred eighty-one thousand, eight hundred eight 
+long	28846329146	twenty-eight billion, eight hundred forty-six million, three hundred twenty-nine thousand, one hundred forty-six 
+long	5020570882	five billion, twenty million, five hundred seventy thousand, eight hundred eighty-two 
+long	465171643	four hundred sixty-five million, one hundred seventy-one thousand, six hundred forty-three 
+long	264571	two hundred sixty-four thousand, five hundred seventy-one 
+long	4956279	four million, nine hundred fifty-six thousand, two hundred seventy-nine 
+long	445074	four hundred forty-five thousand, seventy-four 
+long	21867	twenty-one thousand, eight hundred sixty-seven 
+long	-3924	minus three thousand, nine hundred twenty-four 
+long	-68	minus sixty-eight 
+long	38	thirty-eight 
+long	-1	minus one 
+long	858984953702183078	eight hundred fifty-eight quadrillion, nine hundred eighty-four trillion, nine hundred fifty-three billion, seven hundred two million, one hundred eighty-three thousand, seventy-eight 
+long	-51041189039673727	minus fifty-one quadrillion, forty-one trillion, one hundred eighty-nine billion, thirty-nine million, six hundred seventy-three thousand, seven hundred twenty-seven 
+long	75317482836827934	seventy-five quadrillion, three hundred seventeen trillion, four hundred eighty-two billion, eight hundred thirty-six million, eight hundred twenty-seven thousand, nine hundred thirty-four 
+long	-8939194325373615	minus eight quadrillion, nine hundred thirty-nine trillion, one hundred ninety-four billion, three hundred twenty-five million, three hundred seventy-three thousand, six hundred fifteen 
+long	19425890197463	nineteen trillion, four hundred twenty-five billion, eight hundred ninety million, one hundred ninety-seven thousand, four hundred sixty-three 
+long	26790138055896	twenty-six trillion, seven hundred ninety billion, one hundred thirty-eight million, fifty-five thousand, eight hundred ninety-six 
+long	-2726377905668	minus two trillion, seven hundred twenty-six billion, three hundred seventy-seven million, nine hundred five thousand, six hundred sixty-eight 
+long	466714243954	four hundred sixty-six billion, seven hundred fourteen million, two hundred forty-three thousand, nine hundred fifty-four 
+long	40327475475	forty billion, three hundred twenty-seven million, four hundred seventy-five thousand, four hundred seventy-five 
+long	2618506400	two billion, six hundred eighteen million, five hundred six thousand, four hundred 
+long	-348488077	minus three hundred forty-eight million, four hundred eighty-eight thousand, seventy-seven 
+long	58341464	fifty-eight million, three hundred forty-one thousand, four hundred sixty-four 
+long	-8522626	minus eight million, five hundred twenty-two thousand, six hundred twenty-six 
+long	-890241	minus eight hundred ninety thousand, two hundred forty-one 
+long	-83752	minus eighty-three thousand, seven hundred fifty-two 
+long	6793	six thousand, seven hundred ninety-three 
+long	268	two hundred sixty-eight 
+long	40	forty 
+long	6	six 
+long	-1605640584389120939	minus one quintillion, six hundred five quadrillion, six hundred forty trillion, five hundred eighty-four billion, three hundred eighty-nine million, one hundred twenty thousand, nine hundred thirty-nine 
+long	-795527866694814632	minus seven hundred ninety-five quadrillion, five hundred twenty-seven trillion, eight hundred sixty-six billion, six hundred ninety-four million, eight hundred fourteen thousand, six hundred thirty-two 
+long	-23034205269516833	minus twenty-three quadrillion, thirty-four trillion, two hundred five billion, two hundred sixty-nine million, five hundred sixteen thousand, eight hundred thirty-three 
+long	-6409500192903294	minus six quadrillion, four hundred nine trillion, five hundred billion, one hundred ninety-two million, nine hundred three thousand, two hundred ninety-four 
+long	917323783859412	nine hundred seventeen trillion, three hundred twenty-three billion, seven hundred eighty-three million, eight hundred fifty-nine thousand, four hundred twelve 
+long	76964120242119	seventy-six trillion, nine hundred sixty-four billion, one hundred twenty million, two hundred forty-two thousand, one hundred nineteen 
+long	-6124087172458	minus six trillion, one hundred twenty-four billion, eighty-seven million, one hundred seventy-two thousand, four hundred fifty-eight 
+long	28930515115	twenty-eight billion, nine hundred thirty million, five hundred fifteen thousand, one hundred fifteen 
+long	30413339735	thirty billion, four hundred thirteen million, three hundred thirty-nine thousand, seven hundred thirty-five 
+long	-4738070527	minus four billion, seven hundred thirty-eight million, seventy thousand, five hundred twenty-seven 
+long	-132232817	minus one hundred thirty-two million, two hundred thirty-two thousand, eight hundred seventeen 
+long	71861909	seventy-one million, eight hundred sixty-one thousand, nine hundred nine 
+long	6899196	six million, eight hundred ninety-nine thousand, one hundred ninety-six 
+long	133537	one hundred thirty-three thousand, five hundred thirty-seven 
+long	23026	twenty-three thousand, twenty-six 
+long	-8669	minus eight thousand, six hundred sixty-nine 
+long	-126	minus one hundred twenty-six 
+long	3	three 
+long	6	six 
+long	-7699420010600227299	minus seven quintillion, six hundred ninety-nine quadrillion, four hundred twenty trillion, ten billion, six hundred million, two hundred twenty-seven thousand, two hundred ninety-nine 
+long	665026705280589856	six hundred sixty-five quadrillion, twenty-six trillion, seven hundred five billion, two hundred eighty million, five hundred eighty-nine thousand, eight hundred fifty-six 
+long	7558545009916245	seven quadrillion, five hundred fifty-eight trillion, five hundred forty-five billion, nine million, nine hundred sixteen thousand, two hundred forty-five 
+long	-4193290617900144	minus four quadrillion, one hundred ninety-three trillion, two hundred ninety billion, six hundred seventeen million, nine hundred thousand, one hundred forty-four 
+long	55043670260519	fifty-five trillion, forty-three billion, six hundred seventy million, two hundred sixty thousand, five hundred nineteen 
+long	-88018703538769	minus eighty-eight trillion, eighteen billion, seven hundred three million, five hundred thirty-eight thousand, seven hundred sixty-nine 
+long	7135856249683	seven trillion, one hundred thirty-five billion, eight hundred fifty-six million, two hundred forty-nine thousand, six hundred eighty-three 
+long	-610659481410	minus six hundred ten billion, six hundred fifty-nine million, four hundred eighty-one thousand, four hundred ten 
+long	-71543690924	minus seventy-one billion, five hundred forty-three million, six hundred ninety thousand, nine hundred twenty-four 
+long	4450705445	four billion, four hundred fifty million, seven hundred five thousand, four hundred forty-five 
+long	727106403	seven hundred twenty-seven million, one hundred six thousand, four hundred three 
+long	-941872	minus nine hundred forty-one thousand, eight hundred seventy-two 
+long	5371260	five million, three hundred seventy-one thousand, two hundred sixty 
+long	251434	two hundred fifty-one thousand, four hundred thirty-four 
+long	80706	eighty thousand, seven hundred six 
+long	-7524	minus seven thousand, five hundred twenty-four 
+long	168	one hundred sixty-eight 
+long	-22	minus twenty-two 
+long	9	nine 
+long	-8648279696612050209	minus eight quintillion, six hundred forty-eight quadrillion, two hundred seventy-nine trillion, six hundred ninety-six billion, six hundred twelve million, fifty thousand, two hundred nine 
+long	-549378245351609367	minus five hundred forty-nine quadrillion, three hundred seventy-eight trillion, two hundred forty-five billion, three hundred fifty-one million, six hundred nine thousand, three hundred sixty-seven 
+long	-75116555875664591	minus seventy-five quadrillion, one hundred sixteen trillion, five hundred fifty-five billion, eight hundred seventy-five million, six hundred sixty-four thousand, five hundred ninety-one 
+long	-1160421466163642	minus one quadrillion, one hundred sixty trillion, four hundred twenty-one billion, four hundred sixty-six million, one hundred sixty-three thousand, six hundred forty-two 
+long	688311337361424	six hundred eighty-eight trillion, three hundred eleven billion, three hundred thirty-seven million, three hundred sixty-one thousand, four hundred twenty-four 
+long	10723060770615	ten trillion, seven hundred twenty-three billion, sixty million, seven hundred seventy thousand, six hundred fifteen 
+long	3264908416820	three trillion, two hundred sixty-four billion, nine hundred eight million, four hundred sixteen thousand, eight hundred twenty 
+long	760887890693	seven hundred sixty billion, eight hundred eighty-seven million, eight hundred ninety thousand, six hundred ninety-three 
+long	-64490302988	minus sixty-four billion, four hundred ninety million, three hundred two thousand, nine hundred eighty-eight 
+long	-5319479682	minus five billion, three hundred nineteen million, four hundred seventy-nine thousand, six hundred eighty-two 
+long	-106571914	minus one hundred six million, five hundred seventy-one thousand, nine hundred fourteen 
+long	-9341364	minus nine million, three hundred forty-one thousand, three hundred sixty-four 
+long	-7026508	minus seven million, twenty-six thousand, five hundred eight 
+long	-513701	minus five hundred thirteen thousand, seven hundred one 
+long	5163	five thousand, one hundred sixty-three 
+long	2831	two thousand, eight hundred thirty-one 
+long	170	one hundred seventy 
+long	-11	minus eleven 
+long	-4	minus four 
+long	3467329551260634708	three quintillion, four hundred sixty-seven quadrillion, three hundred twenty-nine trillion, five hundred fifty-one billion, two hundred sixty million, six hundred thirty-four thousand, seven hundred eight 
+long	-81760466254814913	minus eighty-one quadrillion, seven hundred sixty trillion, four hundred sixty-six billion, two hundred fifty-four million, eight hundred fourteen thousand, nine hundred thirteen 
+long	7285862506213244	seven quadrillion, two hundred eighty-five trillion, eight hundred sixty-two billion, five hundred six million, two hundred thirteen thousand, two hundred forty-four 
+long	3875173390025246	three quadrillion, eight hundred seventy-five trillion, one hundred seventy-three billion, three hundred ninety million, twenty-five thousand, two hundred forty-six 
+long	-678439837857818	minus six hundred seventy-eight trillion, four hundred thirty-nine billion, eight hundred thirty-seven million, eight hundred fifty-seven thousand, eight hundred eighteen 
+long	-39984120614451	minus thirty-nine trillion, nine hundred eighty-four billion, one hundred twenty million, six hundred fourteen thousand, four hundred fifty-one 
+long	6666015931596	six trillion, six hundred sixty-six billion, fifteen million, nine hundred thirty-one thousand, five hundred ninety-six 
+long	274625537149	two hundred seventy-four billion, six hundred twenty-five million, five hundred thirty-seven thousand, one hundred forty-nine 
+long	-76651967756	minus seventy-six billion, six hundred fifty-one million, nine hundred sixty-seven thousand, seven hundred fifty-six 
+long	-3074722789	minus three billion, seventy-four million, seven hundred twenty-two thousand, seven hundred eighty-nine 
+long	-606347990	minus six hundred six million, three hundred forty-seven thousand, nine hundred ninety 
+long	74119107	seventy-four million, one hundred nineteen thousand, one hundred seven 
+long	7430493	seven million, four hundred thirty thousand, four hundred ninety-three 
+long	-781580	minus seven hundred eighty-one thousand, five hundred eighty 
+long	40854	forty thousand, eight hundred fifty-four 
+long	-1457	minus one thousand, four hundred fifty-seven 
+long	540	five hundred forty 
+long	-31	minus thirty-one 
+long	1	one 
+long	-4249802838372158016	minus four quintillion, two hundred forty-nine quadrillion, eight hundred two trillion, eight hundred thirty-eight billion, three hundred seventy-two million, one hundred fifty-eight thousand, sixteen 
+long	-837733665009466106	minus eight hundred thirty-seven quadrillion, seven hundred thirty-three trillion, six hundred sixty-five billion, nine million, four hundred sixty-six thousand, one hundred six 
+long	-87510855038679376	minus eighty-seven quadrillion, five hundred ten trillion, eight hundred fifty-five billion, thirty-eight million, six hundred seventy-nine thousand, three hundred seventy-six 
+long	-7497975980136432	minus seven quadrillion, four hundred ninety-seven trillion, nine hundred seventy-five billion, nine hundred eighty million, one hundred thirty-six thousand, four hundred thirty-two 
+long	484066838667904	four hundred eighty-four trillion, sixty-six billion, eight hundred thirty-eight million, six hundred sixty-seven thousand, nine hundred four 
+long	-73062632797729	minus seventy-three trillion, sixty-two billion, six hundred thirty-two million, seven hundred ninety-seven thousand, seven hundred twenty-nine 
+long	1571665058970	one trillion, five hundred seventy-one billion, six hundred sixty-five million, fifty-eight thousand, nine hundred seventy 
+long	-266901547390	minus two hundred sixty-six billion, nine hundred one million, five hundred forty-seven thousand, three hundred ninety 
+long	-34130088647	minus thirty-four billion, one hundred thirty million, eighty-eight thousand, six hundred forty-seven 
+long	5392703102	five billion, three hundred ninety-two million, seven hundred three thousand, one hundred two 
+long	816867615	eight hundred sixteen million, eight hundred sixty-seven thousand, six hundred fifteen 
+long	-47870223	minus forty-seven million, eight hundred seventy thousand, two hundred twenty-three 
+long	-730190	minus seven hundred thirty thousand, one hundred ninety 
+long	903833	nine hundred three thousand, eight hundred thirty-three 
+long	-50205	minus fifty thousand, two hundred five 
+long	8146	eight thousand, one hundred forty-six 
+long	780	seven hundred eighty 
+long	43	forty-three 
+long	-4	minus four 
+long	-5740671271593056691	minus five quintillion, seven hundred forty quadrillion, six hundred seventy-one trillion, two hundred seventy-one billion, five hundred ninety-three million, fifty-six thousand, six hundred ninety-one 
+long	188066103097536829	one hundred eighty-eight quadrillion, sixty-six trillion, one hundred three billion, ninety-seven million, five hundred thirty-six thousand, eight hundred twenty-nine 
+long	-44981900478718874	minus forty-four quadrillion, nine hundred eighty-one trillion, nine hundred billion, four hundred seventy-eight million, seven hundred eighteen thousand, eight hundred seventy-four 
+long	8371004470249050	eight quadrillion, three hundred seventy-one trillion, four billion, four hundred seventy million, two hundred forty-nine thousand, fifty 
+long	-49936040975072	minus forty-nine trillion, nine hundred thirty-six billion, forty million, nine hundred seventy-five thousand, seventy-two 
+long	56356091610381	fifty-six trillion, three hundred fifty-six billion, ninety-one million, six hundred ten thousand, three hundred eighty-one 
+long	4070396125029	four trillion, seventy billion, three hundred ninety-six million, one hundred twenty-five thousand, twenty-nine 
+long	-304518293829	minus three hundred four billion, five hundred eighteen million, two hundred ninety-three thousand, eight hundred twenty-nine 
+long	-59863264968	minus fifty-nine billion, eight hundred sixty-three million, two hundred sixty-four thousand, nine hundred sixty-eight 
+long	-7156834939	minus seven billion, one hundred fifty-six million, eight hundred thirty-four thousand, nine hundred thirty-nine 
+long	32284600	thirty-two million, two hundred eighty-four thousand, six hundred 
+long	-72820234	minus seventy-two million, eight hundred twenty thousand, two hundred thirty-four 
+long	-3070688	minus three million, seventy thousand, six hundred eighty-eight 
+long	508060	five hundred eight thousand, sixty 
+long	52453	fifty-two thousand, four hundred fifty-three 
+long	-8257	minus eight thousand, two hundred fifty-seven 
+long	698	six hundred ninety-eight 
+long	35	thirty-five 
+long	0	zero
+long	7318053033168220206	seven quintillion, three hundred eighteen quadrillion, fifty-three trillion, thirty-three billion, one hundred sixty-eight million, two hundred twenty thousand, two hundred six 
+long	145917374119580140	one hundred forty-five quadrillion, nine hundred seventeen trillion, three hundred seventy-four billion, one hundred nineteen million, five hundred eighty thousand, one hundred forty 
+long	9474069059754352	nine quadrillion, four hundred seventy-four trillion, sixty-nine billion, fifty-nine million, seven hundred fifty-four thousand, three hundred fifty-two 
+long	3700456403319983	three quadrillion, seven hundred trillion, four hundred fifty-six billion, four hundred three million, three hundred nineteen thousand, nine hundred eighty-three 
+long	725293809763915	seven hundred twenty-five trillion, two hundred ninety-three billion, eight hundred nine million, seven hundred sixty-three thousand, nine hundred fifteen 
+long	16745632171356	sixteen trillion, seven hundred forty-five billion, six hundred thirty-two million, one hundred seventy-one thousand, three hundred fifty-six 
+long	8637641792745	eight trillion, six hundred thirty-seven billion, six hundred forty-one million, seven hundred ninety-two thousand, seven hundred forty-five 
+long	-512025169133	minus five hundred twelve billion, twenty-five million, one hundred sixty-nine thousand, one hundred thirty-three 
+long	29782143333	twenty-nine billion, seven hundred eighty-two million, one hundred forty-three thousand, three hundred thirty-three 
+long	-546227288	minus five hundred forty-six million, two hundred twenty-seven thousand, two hundred eighty-eight 
+long	-873685122	minus eight hundred seventy-three million, six hundred eighty-five thousand, one hundred twenty-two 
+long	-88192434	minus eighty-eight million, one hundred ninety-two thousand, four hundred thirty-four 
+long	-8171136	minus eight million, one hundred seventy-one thousand, one hundred thirty-six 
+long	455735	four hundred fifty-five thousand, seven hundred thirty-five 
+long	80263	eighty thousand, two hundred sixty-three 
+long	508	five hundred eight 
+long	-465	minus four hundred sixty-five 
+long	29	twenty-nine 
+long	-5	minus five 
+long	3480003796066431712	three quintillion, four hundred eighty quadrillion, three trillion, seven hundred ninety-six billion, sixty-six million, four hundred thirty-one thousand, seven hundred twelve 
+long	80312428995017797	eighty quadrillion, three hundred twelve trillion, four hundred twenty-eight billion, nine hundred ninety-five million, seventeen thousand, seven hundred ninety-seven 
+long	-6363339888870342	minus six quadrillion, three hundred sixty-three trillion, three hundred thirty-nine billion, eight hundred eighty-eight million, eight hundred seventy thousand, three hundred forty-two 
+long	8843852096945526	eight quadrillion, eight hundred forty-three trillion, eight hundred fifty-two billion, ninety-six million, nine hundred forty-five thousand, five hundred twenty-six 
+long	-259963881581418	minus two hundred fifty-nine trillion, nine hundred sixty-three billion, eight hundred eighty-one million, five hundred eighty-one thousand, four hundred eighteen 
+long	81904602501419	eighty-one trillion, nine hundred four billion, six hundred two million, five hundred one thousand, four hundred nineteen 
+long	5769673920140	five trillion, seven hundred sixty-nine billion, six hundred seventy-three million, nine hundred twenty thousand, one hundred forty 
+long	-570767237009	minus five hundred seventy billion, seven hundred sixty-seven million, two hundred thirty-seven thousand, nine 
+long	11539042167	eleven billion, five hundred thirty-nine million, forty-two thousand, one hundred sixty-seven 
+long	5756199850	five billion, seven hundred fifty-six million, one hundred ninety-nine thousand, eight hundred fifty 
+long	-899341335	minus eight hundred ninety-nine million, three hundred forty-one thousand, three hundred thirty-five 
+long	-77084339	minus seventy-seven million, eighty-four thousand, three hundred thirty-nine 
+long	-7696908	minus seven million, six hundred ninety-six thousand, nine hundred eight 
+long	114310	one hundred fourteen thousand, three hundred ten 
+long	38489	thirty-eight thousand, four hundred eighty-nine 
+long	-7593	minus seven thousand, five hundred ninety-three 
+long	-35	minus thirty-five 
+long	47	forty-seven 
+long	-2	minus two 
+long	9147260119188226075	nine quintillion, one hundred forty-seven quadrillion, two hundred sixty trillion, one hundred nineteen billion, one hundred eighty-eight million, two hundred twenty-six thousand, seventy-five 
+long	-775309995162331013	minus seven hundred seventy-five quadrillion, three hundred nine trillion, nine hundred ninety-five billion, one hundred sixty-two million, three hundred thirty-one thousand, thirteen 
+long	10346309876290307	ten quadrillion, three hundred forty-six trillion, three hundred nine billion, eight hundred seventy-six million, two hundred ninety thousand, three hundred seven 
+long	-7555351992581160	minus seven quadrillion, five hundred fifty-five trillion, three hundred fifty-one billion, nine hundred ninety-two million, five hundred eighty-one thousand, one hundred sixty 
+long	-44512365175304	minus forty-four trillion, five hundred twelve billion, three hundred sixty-five million, one hundred seventy-five thousand, three hundred four 
+long	32794266146611	thirty-two trillion, seven hundred ninety-four billion, two hundred sixty-six million, one hundred forty-six thousand, six hundred eleven 
+long	-9108032911202	minus nine trillion, one hundred eight billion, thirty-two million, nine hundred eleven thousand, two hundred two 
+long	-577777304607	minus five hundred seventy-seven billion, seven hundred seventy-seven million, three hundred four thousand, six hundred seven 
+long	-5355849829	minus five billion, three hundred fifty-five million, eight hundred forty-nine thousand, eight hundred twenty-nine 
+long	4585731666	four billion, five hundred eighty-five million, seven hundred thirty-one thousand, six hundred sixty-six 
+long	-352511126	minus three hundred fifty-two million, five hundred eleven thousand, one hundred twenty-six 
+long	57966899	fifty-seven million, nine hundred sixty-six thousand, eight hundred ninety-nine 
+long	7786015	seven million, seven hundred eighty-six thousand, fifteen 
+long	321409	three hundred twenty-one thousand, four hundred nine 
+long	52621	fifty-two thousand, six hundred twenty-one 
+long	-6264	minus six thousand, two hundred sixty-four 
+long	636	six hundred thirty-six 
+long	-70	minus seventy 
+long	8	eight 
+long	-7850427191471535528	minus seven quintillion, eight hundred fifty quadrillion, four hundred twenty-seven trillion, one hundred ninety-one billion, four hundred seventy-one million, five hundred thirty-five thousand, five hundred twenty-eight 
+long	594787431621723388	five hundred ninety-four quadrillion, seven hundred eighty-seven trillion, four hundred thirty-one billion, six hundred twenty-one million, seven hundred twenty-three thousand, three hundred eighty-eight 
+long	88161499750026608	eighty-eight quadrillion, one hundred sixty-one trillion, four hundred ninety-nine billion, seven hundred fifty million, twenty-six thousand, six hundred eight 
+long	6817473413534271	six quadrillion, eight hundred seventeen trillion, four hundred seventy-three billion, four hundred thirteen million, five hundred thirty-four thousand, two hundred seventy-one 
+long	-710737820642234	minus seven hundred ten trillion, seven hundred thirty-seven billion, eight hundred twenty million, six hundred forty-two thousand, two hundred thirty-four 
+long	11631189173817	eleven trillion, six hundred thirty-one billion, one hundred eighty-nine million, one hundred seventy-three thousand, eight hundred seventeen 

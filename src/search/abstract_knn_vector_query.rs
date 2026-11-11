@@ -72,7 +72,7 @@ impl AbstractKnnVectorQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's message — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's message — when
     /// `k` is less than 1.
     pub fn new(
         field: impl Into<String>,
@@ -81,7 +81,7 @@ impl AbstractKnnVectorQuery {
         search_strategy: Option<KnnSearchStrategy>,
     ) -> Result<Self> {
         if k < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "k must be at least 1, got: {k}"
             )));
         }
@@ -282,7 +282,7 @@ pub trait AbstractKnnVectorQueryImpl: Query {
 /// # Errors
 ///
 /// Propagates any I/O error raised while scoring, and
-/// [`LuceneError::Arithmetic`] when the accept iterator's cost does not fit in
+/// [`LuceneErrorKind::Arithmetic`](crate::error::LuceneErrorKind::Arithmetic) when the accept iterator's cost does not fit in
 /// an `i32`: Java's `Math.toIntExact(acceptIterator.cost())`
 /// (`AbstractKnnVectorQuery.java:313`) throwing
 /// `ArithmeticException("integer overflow")`.
@@ -564,6 +564,8 @@ pub fn knn_vector_query_rewrite(
             &filter_weight,
             &knn_collector_manager_phase2,
         );
+        debug_assert!(leaf_reader_contexts.len() == tasks.len());
+        debug_assert!(per_leaf_results.len() == searcher.get_leaf_contexts().len());
         top_k = run_search_tasks(
             &query,
             tasks,
@@ -692,7 +694,7 @@ fn get_leaf_results(
             Some(scorer) => Ok(into_scorer_iterator(scorer).into_doc_id_set_iterator()),
         }
     };
-    let mut accept_docs = from_iterator_supplier(supplier, live_docs, max_doc)?;
+    let mut accept_docs = from_iterator_supplier(Some(supplier), live_docs, max_doc)?;
     let cost = accept_docs.cost()?;
     let query_timeout = time_limiting_knn_collector_manager
         .get_query_timeout()
@@ -788,14 +790,13 @@ impl KnnCollectorManager for ReentrantKnnCollectorManager {
             Some(field_info) => self.query.create_vector_scorer(ctx, field_info)?,
             None => None,
         };
-        let Some(scorer) = scorer else {
-            // Should not happen: we only come here when there are results. It
-            // is safe to return no seeds.
-            return Ok(delegate_collector);
-        };
-        if seed_top_docs.total_hits.value() == 0 {
+        if seed_top_docs.total_hits.value() == 0 || scorer.is_none() {
+            // shouldn't happen - we only come here when there are results
+            debug_assert!(false);
+            // on the other hand, it should be safe to return no results?
             return Ok(delegate_collector);
         }
+        let scorer = scorer.expect("INVARIANT: checked just above");
         let Some(seed_docs) = crate::search::seeded_knn_vector_query::mapped_seed_ordinals(
             scorer,
             seed_top_docs,
@@ -804,6 +805,7 @@ impl KnnCollectorManager for ReentrantKnnCollectorManager {
         else {
             // The vector iterator is not indexed, so the seed docs cannot be
             // mapped onto vector ordinals; continuing would loop forever.
+            debug_assert!(false);
             return Ok(delegate_collector);
         };
         let strategy = KnnSearchStrategy::Seeded(crate::search::knn::Seeded::new(
@@ -834,6 +836,7 @@ pub fn knn_vector_query_visit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// An iterator over no document whose cost is past an `int`.
     struct CostlyIterator;
@@ -890,7 +893,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
             "{error:?}"
         );
     }

@@ -899,7 +899,7 @@ impl InMemoryPointTree {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `leaves` is empty, when a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `leaves` is empty, when a
     /// leaf is empty, when a packed value has the wrong length, or when a
     /// one-dimensional tree is given points that are not in the order the
     /// [`IntersectVisitor::visit_with_value`] contract requires.
@@ -909,25 +909,25 @@ impl InMemoryPointTree {
         leaves: Vec<Vec<(i32, Vec<u8>)>>,
     ) -> Result<Self> {
         if num_index_dims <= 0 || bytes_per_dim <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "num_index_dims and bytes_per_dim must be positive, got {num_index_dims} and {bytes_per_dim}"
             )));
         }
         if leaves.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "an in-memory point tree needs at least one leaf".to_string(),
             ));
         }
         let packed_len = (num_index_dims * bytes_per_dim) as usize;
         for leaf in &leaves {
             if leaf.is_empty() {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "an in-memory point tree leaf must hold at least one point".to_string(),
                 ));
             }
             for (_, value) in leaf {
                 if value.len() != packed_len {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "packed value length {} does not match {num_index_dims} * {bytes_per_dim}",
                         value.len()
                     )));
@@ -983,7 +983,7 @@ fn check_one_dimensional_order(leaves: &[Vec<(i32, Vec<u8>)>]) -> Result<()> {
                 let out_of_order = value.as_slice() < prev_value
                     || (value.as_slice() == prev_value && *doc_id < prev_doc);
                 if out_of_order {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "one-dimensional points must be visited in increasing value order, \
                          ties by increasing doc id; {prev_value:?}/{prev_doc} is followed by \
                          {value:?}/{doc_id}"
@@ -1309,6 +1309,7 @@ impl PointValues for InMemoryPointValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::search::DocIdSetIterator;
     use crate::util::IntsRef;
 
@@ -2135,7 +2136,9 @@ mod tests {
         struct FailingVisitor;
         impl IntersectVisitor for FailingVisitor {
             fn visit(&mut self, _doc_id: i32) -> Result<()> {
-                Err(LuceneError::CorruptIndex("boom".to_string()))
+                Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                    "boom".to_string(),
+                )))
             }
             fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
                 Ok(())

@@ -1,0 +1,25 @@
+[package]
+name = "randomizedtesting"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "Apache-2.0"
+description = "Rust port of randomizedtesting 2.8.1 (com.carrotsearch.randomizedtesting), the runner of Apache Lucene's tests."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[dependencies]
+
+# The runner oracle: Rust suites under the ported RandomizedRunner against the
+# trace of the same Java suites under randomizedtesting 2.8.1.
+[[test]]
+name = "runner_oracle"
+harness = false
+
+# randomizedtesting 2.8.1's own test suite (randomized-runner/src/test), run
+# by the ported runner and compared with the Java classes' outcomes.
+[[test]]
+name = "self_tests"
+path = "tests/self_tests/main.rs"
+harness = false

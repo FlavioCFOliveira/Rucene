@@ -16,6 +16,15 @@
 //!   the port panicked. The Java side is measured on `ForUtil` directly; the
 //!   Rust side on a `.doc` file whose full block was corrupted, which is the
 //!   path that reaches it (`Lucene104PostingsReader.java:594-597`).
+//! * **rmp #351.** A level's impacts are the bytes its last skip entry
+//!   read, `levelNSerializedImpacts.length = numImpactBytes`
+//!   (`Lucene104PostingsReader.java:702, 751, 850`), decoded from
+//!   `scratch.reset(bytes, 0, length)` (line 1398). The port decoded the
+//!   whole buffer, so a block with fewer impact bytes than an earlier one
+//!   returned the earlier block's tail as extra, unordered impacts. The test
+//!   reads a Lucene-written index whose level-0 and level-1 blocks alternate
+//!   many and one competitive pairs, and compares every level's impacts after
+//!   each `advanceShallow`.
 //!
 //! # Where the expected values come from
 //!
@@ -67,6 +76,8 @@ const TARGETS: [i32; 16] = [
 /// What the fixture printed, and the index it wrote.
 struct JavaRun {
     dir: PathBuf,
+    /// `PostingsSkipFixture.writeAndReadImpacts`'s index.
+    impacts_dir: PathBuf,
     lines: Vec<String>,
     _tmp: tempfile::TempDir,
 }
@@ -93,11 +104,13 @@ fn java_run() -> &'static JavaRun {
         );
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("index");
+        let impacts_dir = tmp.path().join("impacts");
         let output = Command::new("java")
             .arg("-cp")
             .arg(lucene_jar())
             .arg(&fixture)
             .arg(&dir)
+            .arg(&impacts_dir)
             .output()
             .expect("a JDK is required to run the Lucene oracle");
         assert!(
@@ -112,6 +125,7 @@ fn java_run() -> &'static JavaRun {
             .collect();
         JavaRun {
             dir,
+            impacts_dir,
             lines,
             _tmp: tmp,
         }
@@ -206,6 +220,68 @@ fn advance_reads_the_position_skip_data_lucene_wrote() {
         java_lines("walk"),
         "the interleaved walk must match"
     );
+}
+
+/// `PostingsSkipFixture.IMPACT_TARGETS`.
+const IMPACT_TARGETS: [i32; 22] = [
+    0, 100, 255, 256, 300, 511, 512, 513, 1000, 8191, 8192, 8193, 9000, 16383, 16384, 16385, 16700,
+    17000, 24575, 24576, 25000, 25575,
+];
+
+/// `PostingsSkipFixture.describe(Impacts)`: `level:docIdUpTo:freq/norm,...`
+/// per level.
+fn describe_impacts(impacts: &dyn rucene::index::Impacts) -> String {
+    let mut out = String::new();
+    for level in 0..impacts.num_levels() {
+        let buffer = impacts.get_impacts(level);
+        if level > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("{level}:{}:", impacts.doc_id_up_to(level)));
+        for k in 0..buffer.size {
+            if k > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("{}/{}", buffer.freqs[k], buffer.norms[k]));
+        }
+    }
+    out
+}
+
+/// rmp #351: every level's impacts after each `advanceShallow` over the
+/// Lucene-written index of alternating rich and poor blocks are Lucene's,
+/// so a poor block never shows the tail of the rich block read before it
+/// (`Lucene104PostingsReader.java:702, 751, 850, 1398`).
+#[test]
+fn impacts_of_each_level_match_lucene() {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let directory: Arc<dyn Directory> =
+        Arc::new(NIOFSDirectory::open(&java_run().impacts_dir).unwrap());
+    let reader = directory_reader::open(directory).unwrap();
+    assert!(java_run().lines.iter().any(|l| l == "impacts leaves=1"));
+    let searcher = IndexSearcher::new(reader as Arc<dyn IndexReader>).unwrap();
+    let leaves = searcher.get_leaf_contexts();
+    assert_eq!(leaves.len(), 1);
+    let terms = leaves[0].leaf_reader().terms("imp").unwrap().unwrap();
+    let mut terms_enum = terms.iterator().unwrap();
+    assert!(terms_enum
+        .seek_exact(&BytesRef::new(b"a".to_vec()))
+        .unwrap());
+    let mut impacts = terms_enum.impacts(POSTINGS_ENUM_FREQS).unwrap();
+    let mut rust = Vec::new();
+    for target in IMPACT_TARGETS {
+        impacts.advance_shallow(target).unwrap();
+        rust.push(format!(
+            "{target} {}",
+            describe_impacts(impacts.get_impacts().unwrap().as_ref())
+        ));
+    }
+    let java: Vec<String> = java_lines("impacts")
+        .into_iter()
+        .filter(|l| !l.starts_with("leaves="))
+        .collect();
+    assert_eq!(java.len(), IMPACT_TARGETS.len());
+    assert_eq!(rust, java, "every level's impacts must match Lucene's");
 }
 
 /// Round 2, item 3: a docs-and-freqs enumeration walks every block through
@@ -307,9 +383,9 @@ fn drain_docs(postings: &mut dyn PostingsEnum) -> Vec<i32> {
 fn two_reuse_segments() -> Arc<dyn DirectoryReader> {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for _ in 0..2 {
@@ -349,10 +425,13 @@ fn the_block_postings_enum_is_reused_exactly_when_lucene_reuses_it() {
 
     let mut body = leaf0.terms("body").unwrap().unwrap().iterator().unwrap();
     body.next().unwrap();
-    let p1 = body.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+    let p1 = body.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
     let p1_identity = identity(p1.as_ref());
     body.next().unwrap();
-    let mut p2 = body.postings(Some(p1), POSTINGS_ENUM_FREQS).unwrap();
+    let mut p2 = body
+        .postings(Some(p1), POSTINGS_ENUM_FREQS)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         identity(p2.as_ref()),
         p1_identity,
@@ -361,27 +440,39 @@ fn the_block_postings_enum_is_reused_exactly_when_lucene_reuses_it() {
     assert_eq!(drain_docs(p2.as_mut()), vec![0, 1, 2]);
 
     let p2_identity = identity(p2.as_ref());
-    let mut p3 = body.postings(Some(p2), POSTINGS_ENUM_POSITIONS).unwrap();
+    let mut p3 = body
+        .postings(Some(p2), POSTINGS_ENUM_POSITIONS)
+        .unwrap()
+        .unwrap();
     assert_ne!(identity(p3.as_ref()), p2_identity, "other flags");
     assert_eq!(drain_docs(p3.as_mut()), vec![0, 1, 2]);
 
     let mut id = leaf0.terms("id").unwrap().unwrap().iterator().unwrap();
     id.next().unwrap();
-    let q1 = id.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+    let q1 = id.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
     let q1_identity = identity(q1.as_ref());
-    let q2 = body.postings(Some(q1), POSTINGS_ENUM_FREQS).unwrap();
+    let q2 = body
+        .postings(Some(q1), POSTINGS_ENUM_FREQS)
+        .unwrap()
+        .unwrap();
     assert_ne!(identity(q2.as_ref()), q1_identity, "other index options");
 
     let mut body1 = leaf1.terms("body").unwrap().unwrap().iterator().unwrap();
     body1.next().unwrap();
     let q2_identity = identity(q2.as_ref());
-    let mut other = body1.postings(Some(q2), POSTINGS_ENUM_FREQS).unwrap();
+    let mut other = body1
+        .postings(Some(q2), POSTINGS_ENUM_FREQS)
+        .unwrap()
+        .unwrap();
     assert_ne!(identity(other.as_ref()), q2_identity, "other reader");
     assert_eq!(drain_docs(other.as_mut()), vec![0, 1, 2]);
 
     let impacts: Box<dyn PostingsEnum> = body.impacts(POSTINGS_ENUM_FREQS).unwrap();
     let impacts_identity = identity(impacts.as_ref());
-    let after_impacts = body.postings(Some(impacts), POSTINGS_ENUM_FREQS).unwrap();
+    let after_impacts = body
+        .postings(Some(impacts), POSTINGS_ENUM_FREQS)
+        .unwrap()
+        .unwrap();
     assert_ne!(
         identity(after_impacts.as_ref()),
         impacts_identity,
@@ -401,7 +492,7 @@ fn the_block_postings_enum_is_reused_exactly_when_lucene_reuses_it() {
 fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
@@ -427,7 +518,10 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
         .iterator()
         .unwrap();
     assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
-    let mut postings = terms.postings(None, POSTINGS_ENUM_OFFSETS).unwrap();
+    let mut postings = terms
+        .postings(None, POSTINGS_ENUM_OFFSETS)
+        .unwrap()
+        .unwrap();
     assert_eq!(postings.next_doc().unwrap(), 0);
     assert_eq!(postings.freq().unwrap(), 1);
     postings.next_position().unwrap();
@@ -437,6 +531,7 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
     assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
     let reused = terms
         .postings(Some(postings), POSTINGS_ENUM_OFFSETS)
+        .unwrap()
         .unwrap();
     assert_eq!(identity(reused.as_ref()), first, "the enum is reused");
     assert_eq!((reused.start_offset(), reused.end_offset()), (0, 3));
@@ -483,7 +578,7 @@ impl rucene::analysis::TokenStream for PayloadTokens {
         self.source
             .get_attribute_mut::<PackedTokenAttributeImpl>()
             .unwrap()
-            .append_string(term);
+            .append_string(Some(term));
         self.source
             .get_attribute_mut::<PayloadAttributeImpl>()
             .unwrap()
@@ -518,7 +613,7 @@ impl rucene::analysis::TokenStream for PayloadTokens {
 fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
@@ -529,8 +624,11 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
         vec![("aaa", vec![1u8, 2]), ("bbb", vec![3u8])],
         vec![("bbb", vec![4u8])],
     ] {
-        let stream: std::rc::Rc<std::cell::RefCell<dyn rucene::analysis::TokenStream>> =
-            std::rc::Rc::new(std::cell::RefCell::new(PayloadTokens::new(tokens)));
+        let stream: std::sync::Arc<
+            rucene::util::atomic_ref_cell::AtomicRefCell<dyn rucene::analysis::TokenStream>,
+        > = std::sync::Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(
+            PayloadTokens::new(tokens),
+        ));
         let mut doc = Document::new();
         doc.add(Box::new(
             Field::new_with_token_stream("f", stream, field_type.clone()).unwrap(),
@@ -549,7 +647,10 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
         .iterator()
         .unwrap();
     assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
-    let mut postings = terms.postings(None, POSTINGS_ENUM_PAYLOADS).unwrap();
+    let mut postings = terms
+        .postings(None, POSTINGS_ENUM_PAYLOADS)
+        .unwrap()
+        .unwrap();
     assert_eq!(postings.next_doc().unwrap(), 0);
     postings.next_position().unwrap();
     assert_eq!(postings.get_payload().unwrap(), Some(&[1u8, 2][..]));
@@ -558,6 +659,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
     assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
     let reused = terms
         .postings(Some(postings), POSTINGS_ENUM_PAYLOADS)
+        .unwrap()
         .unwrap();
     assert_eq!(identity(reused.as_ref()), first, "the enum is reused");
     assert_eq!(reused.get_payload().unwrap(), Some(&[1u8, 2][..]));
@@ -572,7 +674,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
 fn a_fresh_block_postings_enum_answers_offsets_of_zero_as_lucene_does() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
@@ -598,7 +700,10 @@ fn a_fresh_block_postings_enum_answers_offsets_of_zero_as_lucene_does() {
         .iterator()
         .unwrap();
     terms.next().unwrap();
-    let mut postings = terms.postings(None, POSTINGS_ENUM_OFFSETS).unwrap();
+    let mut postings = terms
+        .postings(None, POSTINGS_ENUM_OFFSETS)
+        .unwrap()
+        .unwrap();
     assert_eq!((postings.start_offset(), postings.end_offset()), (0, 0));
     postings.next_doc().unwrap();
     assert_eq!((postings.start_offset(), postings.end_offset()), (0, 0));
@@ -670,7 +775,7 @@ impl TermsEnum for RecordingTermsEnum<'_> {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> rucene::error::Result<BytesRef> {
+    fn term(&self) -> rucene::error::Result<Option<BytesRef>> {
         self.inner.term()
     }
 
@@ -690,16 +795,19 @@ impl TermsEnum for RecordingTermsEnum<'_> {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> rucene::error::Result<Box<dyn PostingsEnum>> {
+    ) -> rucene::error::Result<Option<Box<dyn PostingsEnum>>> {
         let offered = reuse.as_deref().map(identity);
-        let mut postings = self.inner.postings(reuse, flags)?;
+        let mut postings = self
+            .inner
+            .postings(reuse, flags)?
+            .expect("the codec's postings enum is never null");
         self.log.lock().unwrap().push(Offer {
             field: self.field.clone(),
             offered,
             returned: identity(postings.as_ref()),
             kind: kind_of(postings.as_mut()),
         });
-        Ok(postings)
+        Ok(Some(postings))
     }
 
     fn impacts(&mut self, flags: i32) -> rucene::error::Result<Box<dyn ImpactsEnum>> {
@@ -942,7 +1050,7 @@ fn a_merge_reuses_the_mapping_postings_enum_of_the_previous_term() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let log: OfferLog = Arc::new(Mutex::new(Vec::new()));
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_codec(Arc::new(RecordingCodec::new(&log)))
         .unwrap();
@@ -976,7 +1084,7 @@ fn a_sorted_flush_reuses_the_sorting_postings_enum_of_the_previous_term() {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let log: OfferLog = Arc::new(Mutex::new(Vec::new()));
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_codec(Arc::new(RecordingCodec::new(&log)))
         .unwrap();

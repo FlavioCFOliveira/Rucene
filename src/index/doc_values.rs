@@ -21,6 +21,7 @@ use crate::error::{LuceneError, Result};
 use std::fmt::Debug;
 
 use crate::index::automaton_terms_enum::AutomatonTermsEnum;
+use crate::index::index_reader::CacheKey;
 use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::reader_context::LeafReaderContext;
@@ -73,6 +74,26 @@ pub trait NumericDocValues: DocValuesIterator {
     /// returned `false`.
     fn long_value(&self) -> Result<i64>;
 
+    /// Bulk retrieval of numeric doc values, reading the doc IDs from the
+    /// start of `docs` and writing the values from the start of `values`.
+    ///
+    /// Equivalent to `NumericDocValues.longValues(int, int[], long[], long)`
+    /// (`NumericDocValues.java:82-85`): `longValues(size, docs, 0, values, 0,
+    /// defaultValue)`. Rust has no overloading, hence the name.
+    ///
+    /// # Errors
+    ///
+    /// As [`long_values`](Self::long_values).
+    fn long_values_no_offsets(
+        &mut self,
+        size: i32,
+        docs: &[i32],
+        values: &mut [i64],
+        default_value: i64,
+    ) -> Result<()> {
+        self.long_values(size, docs, 0, values, 0, default_value)
+    }
+
     /// Bulk retrieval of numeric doc values.
     ///
     /// Equivalent to `NumericDocValues.longValues(int, int[], int, long[], int, long)`.
@@ -83,7 +104,7 @@ pub trait NumericDocValues: DocValuesIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `size` is negative or if the
+    /// Returns `LuceneErrorKind::IllegalArgument` if `size` is negative or if the
     /// provided slices are too short for the requested offsets and size.
     fn long_values(
         &mut self,
@@ -95,18 +116,18 @@ pub trait NumericDocValues: DocValuesIterator {
         default_value: i64,
     ) -> Result<()> {
         if size < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "size must be >= 0, got {size}"
             )));
         }
         let size = size as usize;
         if docs.len() < docs_offset as usize + size {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "docs buffer too small for requested size/offset".to_string(),
             ));
         }
         if values.len() < values_offset as usize + size {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "values buffer too small for requested size/offset".to_string(),
             ));
         }
@@ -604,7 +625,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] naming the actual and the expected
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) naming the actual and the expected
     /// types, as Java's `IllegalStateException` does.
     pub fn check_field(
         reader: &dyn LeafReader,
@@ -634,7 +655,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_numeric(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn NumericDocValues>> {
         match reader.get_numeric_doc_values(field)? {
@@ -653,7 +674,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_binary(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn BinaryDocValues>> {
         match reader.get_binary_doc_values(field)? {
@@ -672,7 +693,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_sorted(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn SortedDocValues>> {
         match reader.get_sorted_doc_values(field)? {
@@ -692,7 +713,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_sorted_numeric(
         reader: &dyn LeafReader,
@@ -721,7 +742,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_sorted_set(
         reader: &dyn LeafReader,
@@ -842,6 +863,7 @@ impl DocValuesIterator for EmptyNumericDocValues {
 
 impl NumericDocValues for EmptyNumericDocValues {
     fn long_value(&self) -> Result<i64> {
+        debug_assert!(false);
         Err(LuceneError::illegal_state(
             "long_value called on empty numeric doc values".to_string(),
         ))
@@ -887,6 +909,7 @@ impl DocValuesIterator for EmptyBinaryDocValues {
 
 impl BinaryDocValues for EmptyBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
+        debug_assert!(false);
         Err(LuceneError::illegal_state(
             "binary_value called on empty binary doc values".to_string(),
         ))
@@ -932,6 +955,7 @@ impl DocValuesIterator for EmptySortedDocValues {
 
 impl SortedDocValues for EmptySortedDocValues {
     fn ord_value(&self) -> Result<i32> {
+        debug_assert!(false);
         Err(LuceneError::illegal_state(
             "ord_value called on empty sorted doc values".to_string(),
         ))
@@ -1237,6 +1261,12 @@ impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
 /// `dyn Trait` is expected. This mirrors Java's polymorphic references and
 /// avoids manual unboxing at every call site.
 impl<T: DocIdSetIterator + ?Sized> DocIdSetIterator for Box<T> {
+    /// Forwarded: `TwoPhaseIterator.unwrap` tests the boxed iterator itself
+    /// (`ConstantScoreBulkScorer.java:54-56` among its callers).
+    fn wraps_two_phase_iterator(&self) -> bool {
+        (**self).wraps_two_phase_iterator()
+    }
+
     fn doc_id(&self) -> i32 {
         (&**self).doc_id()
     }
@@ -1255,6 +1285,14 @@ impl<T: DocIdSetIterator + ?Sized> DocIdSetIterator for Box<T> {
 
     fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
         (&mut **self).into_bit_set(up_to, bit_set, offset)
+    }
+
+    /// Forwarded as every overridable member is: Java calls the iterator's
+    /// own `docIDRunEnd()` (`BlockPostingsEnum` overrides it,
+    /// `Lucene104PostingsReader.java:1100-1128`), which the trait default
+    /// would hide behind the box.
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        (**self).doc_id_run_end()
     }
 
     /// The box is a Rust handle Java does not have: the boxed iterator is the
@@ -1611,7 +1649,7 @@ impl SortedSetDocValues for FilterSortedSetDocValues {
 /// (`index/EmptyDocValuesProducer.java:22-70`). Every member throws
 /// `UnsupportedOperationException` there: the class only exists so that an
 /// anonymous subclass overrides the one getter it serves. Here every member
-/// returns [`LuceneError::UnsupportedOperation`] for the same reason; a Rust
+/// returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for the same reason; a Rust
 /// producer that serves one kind of values implements [`DocValuesProducer`]
 /// itself.
 #[derive(Debug, Default, Clone, Copy)]
@@ -1620,7 +1658,7 @@ pub struct EmptyDocValuesProducer;
 impl EmptyDocValuesProducer {
     /// The `UnsupportedOperationException` every member throws.
     fn unsupported(method: &str) -> LuceneError {
-        LuceneError::UnsupportedOperation(format!("EmptyDocValuesProducer.{method}"))
+        LuceneError::unsupported_operation(format!("EmptyDocValuesProducer.{method}"))
     }
 }
 
@@ -1630,7 +1668,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = { Err(Self::unsupported("getNumeric")) };
         Ok(Some(values?))
@@ -1641,7 +1679,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> = { Err(Self::unsupported("getBinary")) };
         Ok(Some(values?))
@@ -1652,7 +1690,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         let values: Result<Box<dyn SortedDocValues>> = { Err(Self::unsupported("getSorted")) };
         Ok(Some(values?))
@@ -1663,7 +1701,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_sorted_numeric(
         &self,
         _field: &FieldInfo,
@@ -1678,7 +1716,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         let values: Result<Box<dyn SortedSetDocValues>> =
             { Err(Self::unsupported("getSortedSet")) };
@@ -1690,7 +1728,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         Err(Self::unsupported("getSkipper"))
     }
@@ -1700,7 +1738,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn check_integrity(&self) -> Result<()> {
         Err(Self::unsupported("checkIntegrity"))
     }
@@ -1716,8 +1754,8 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
-    fn close(&mut self) -> Result<()> {
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
+    fn close(&self) -> Result<()> {
         Err(Self::unsupported("close"))
     }
 }
@@ -1733,6 +1771,12 @@ impl DocValuesProducer for EmptyDocValuesProducer {
 /// This is a costly operation that merge-sorts all terms. It is better to operate
 /// in segment-private ordinal space when possible.
 pub struct OrdinalMap {
+    /// Cache key of the reader this map was built for, `None` for Java's
+    /// `null`.
+    ///
+    /// Equivalent to the public final field `OrdinalMap.owner`
+    /// (`OrdinalMap.java:183`).
+    pub owner: Option<CacheKey>,
     value_count: i64,
     global_ord_deltas: Box<dyn LongValues + Send + Sync>,
     first_segments: Box<dyn LongValues + Send + Sync>,
@@ -1757,8 +1801,10 @@ impl OrdinalMap {
     /// Build an ordinal map using the value counts of each [`SortedDocValues`]
     /// instance as weights.
     ///
-    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedDocValues[], float)`.
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedDocValues[], float)`
+    /// (`OrdinalMap.java:127-137`); `owner` is `None` for Java's `null`.
     pub fn build_sorted(
+        owner: Option<CacheKey>,
         values: Vec<Box<dyn SortedDocValues>>,
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
@@ -1769,14 +1815,16 @@ impl OrdinalMap {
             subs.push(SortedDocValuesTermsEnum::new(dv));
             weights.push(weight);
         }
-        Self::build(subs, &weights, acceptable_overhead_ratio)
+        Self::build(owner, subs, &weights, acceptable_overhead_ratio)
     }
 
     /// Build an ordinal map using the value counts of each [`SortedSetDocValues`]
     /// instance as weights.
     ///
-    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedSetDocValues[], float)`.
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedSetDocValues[], float)`
+    /// (`OrdinalMap.java:145-155`); `owner` is `None` for Java's `null`.
     pub fn build_sorted_set(
+        owner: Option<CacheKey>,
         values: Vec<Box<dyn SortedSetDocValues>>,
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
@@ -1787,22 +1835,25 @@ impl OrdinalMap {
             subs.push(SortedSetDocValuesTermsEnum::new(dv));
             weights.push(weight);
         }
-        Self::build(subs, &weights, acceptable_overhead_ratio)
+        Self::build(owner, subs, &weights, acceptable_overhead_ratio)
     }
 
     /// Build an ordinal map that maps ords to/from a merged space from `subs`.
     ///
-    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, TermsEnum[], long[], float)`.
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, TermsEnum[], long[], float)`
+    /// (`OrdinalMap.java:167-177`); `owner`, `None` for Java's `null`, is kept
+    /// in [`owner`](Self::owner).
     ///
     /// `subs` must support [`TermsEnum::ord`]. They need not be dense (for example,
     /// they may be filtered terms enums).
     pub fn build(
+        owner: Option<CacheKey>,
         subs: Vec<Box<dyn TermsEnum>>,
         weights: &[i64],
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
         if subs.len() != weights.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "subs and weights must have the same length".to_string(),
             ));
         }
@@ -1971,6 +2022,7 @@ impl OrdinalMap {
         }
 
         Ok(Self {
+            owner,
             value_count,
             global_ord_deltas,
             first_segments,
@@ -2003,6 +2055,53 @@ impl OrdinalMap {
     /// Returns the total number of unique values in global ordinal space.
     pub fn get_value_count(&self) -> i64 {
         self.value_count
+    }
+    /// Returns the map from global ordinal to the index of the first segment
+    /// holding it, in the weight-sorted segment order.
+    ///
+    /// Equivalent to reading the package-private `firstSegments` field
+    /// (`OrdinalMap.java`); public here so the tests of the `index` package
+    /// can read it.
+    pub fn first_segments(&self) -> &(dyn LongValues + Send + Sync) {
+        self.first_segments.as_ref()
+    }
+
+    /// Returns the map from global ordinal to the delta to its first
+    /// segment's ordinal.
+    ///
+    /// Equivalent to reading the package-private `globalOrdDeltas` field
+    /// (`OrdinalMap.java`); public here so the tests of the `index` package
+    /// can read it.
+    pub fn global_ord_deltas(&self) -> &(dyn LongValues + Send + Sync) {
+        self.global_ord_deltas.as_ref()
+    }
+
+    /// Returns, for every segment in the weight-sorted order, the map from
+    /// segment ordinal to global ordinal.
+    ///
+    /// Equivalent to reading the package-private `segmentToGlobalOrds` field
+    /// (`OrdinalMap.java:193`); public so that the test framework can model
+    /// the Java object.
+    pub fn segment_to_global_ords(&self) -> &[Box<dyn LongValues + Send + Sync>] {
+        &self.segment_to_global_ords
+    }
+
+    /// Returns `segmentMap.newToOld`, the segments by descending weight.
+    ///
+    /// Equivalent to reading the private field `SegmentMap.newToOld`
+    /// (`OrdinalMap.java:97`); public so that the test framework can model
+    /// the Java object.
+    pub fn segment_map_new_to_old(&self) -> &[i32] {
+        &self.segment_map.new_to_old
+    }
+
+    /// Returns `segmentMap.oldToNew`, the inverse of `newToOld`.
+    ///
+    /// Equivalent to reading the private field `SegmentMap.oldToNew`
+    /// (`OrdinalMap.java:97`); public so that the test framework can model
+    /// the Java object.
+    pub fn segment_map_old_to_new(&self) -> &[i32] {
+        &self.segment_map.old_to_new
     }
 }
 
@@ -2092,6 +2191,14 @@ impl SegmentMap {
         for (new, &old) in new_to_old.iter().enumerate() {
             old_to_new[old as usize] = new as i32;
         }
+        // `assert Arrays.equals(newToOld, inverse(oldToNew))`.
+        debug_assert!({
+            let mut inverse = vec![0i32; old_to_new.len()];
+            for (old, &new) in old_to_new.iter().enumerate() {
+                inverse[new as usize] = old as i32;
+            }
+            inverse == new_to_old
+        });
         Self {
             new_to_old,
             old_to_new,
@@ -2119,22 +2226,48 @@ impl PriorityQueueComparator<TermsEnumIndex> for TermsEnumIndexComparator {
 }
 
 /// The anonymous `LongValues` of `OrdinalMap` over plain packed deltas:
-/// `ord + newDeltas.get((int) ord)` (`OrdinalMap.java:376-382`).
-struct PackedDeltaLongValues(Box<dyn crate::util::packed::PackedIntsMutable>);
+/// `ord + newDeltas.get((int) ord)` (`OrdinalMap.java:376-382`), the Java
+/// class `OrdinalMap$1`.
+pub struct PackedDeltaLongValues(Box<dyn crate::util::packed::PackedIntsMutable>);
+
+impl PackedDeltaLongValues {
+    /// Returns the deltas, the anonymous class's captured `newDeltas`; public
+    /// so that the test framework can model the Java object.
+    pub fn deltas(&self) -> &dyn crate::util::packed::PackedIntsMutable {
+        self.0.as_ref()
+    }
+}
 
 impl LongValues for PackedDeltaLongValues {
     fn get(&self, index: i64) -> i64 {
         index + self.0.get(index as i32)
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// The anonymous `LongValues` of `OrdinalMap` over monotonic deltas:
-/// `ord + deltas.get(ord)` (`OrdinalMap.java:385-391`).
-struct MonotonicDeltaLongValues(crate::util::packed::MonotonicLongValues);
+/// `ord + deltas.get(ord)` (`OrdinalMap.java:385-391`), the Java class
+/// `OrdinalMap$2`.
+pub struct MonotonicDeltaLongValues(crate::util::packed::MonotonicLongValues);
+
+impl MonotonicDeltaLongValues {
+    /// Returns the deltas, the anonymous class's captured `deltas`; public so
+    /// that the test framework can model the Java object.
+    pub fn deltas(&self) -> &crate::util::packed::MonotonicLongValues {
+        &self.0
+    }
+}
 
 impl LongValues for MonotonicDeltaLongValues {
     fn get(&self, index: i64) -> i64 {
         index + LongValues::get(&self.0, index)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -2218,8 +2351,9 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
         let value_count = self.values.get_value_count()? as i64;
+        debug_assert!(ord >= 0 && ord < value_count);
         if ord < 0 || ord >= value_count {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "ord {ord} out of range [0, {value_count})"
             )));
         }
@@ -2229,8 +2363,8 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.scratch.get())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.scratch.get()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2238,13 +2372,13 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "docFreq not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "totalTermFreq not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
@@ -2253,24 +2387,25 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        Err(LuceneError::unsupported_operation(
             "postings not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "impacts not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        debug_assert!(state.as_any().is::<OrdTermState>());
         let state = state
             .as_any()
             .downcast_ref::<OrdTermState>()
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("state must be an OrdTermState".to_string())
+                LuceneError::illegal_argument("state must be an OrdTermState".to_string())
             })?;
         self.seek_ord(state.ord)
     }
@@ -2369,8 +2504,9 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
         let value_count = self.values.get_value_count()?;
+        debug_assert!(ord >= 0 && ord < value_count);
         if ord < 0 || ord >= value_count {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "ord {ord} out of range [0, {value_count})"
             )));
         }
@@ -2380,8 +2516,8 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(self.scratch.get())
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.scratch.get()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2389,13 +2525,13 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "docFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "totalTermFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
@@ -2404,24 +2540,25 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        Err(LuceneError::unsupported_operation(
             "postings not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "impacts not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        debug_assert!(state.as_any().is::<OrdTermState>());
         let state = state
             .as_any()
             .downcast_ref::<OrdTermState>()
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("state must be an OrdTermState".to_string())
+                LuceneError::illegal_argument("state must be an OrdTermState".to_string())
             })?;
         self.seek_ord(state.ord)
     }
@@ -2674,7 +2811,7 @@ mod tests {
 
         fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
             if ord < 0 || ord as usize >= self.dictionary.len() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "ordinal {ord} out of range [0, {})",
                     self.dictionary.len()
                 )));
@@ -2868,7 +3005,7 @@ mod tests {
 
         fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
             if ord < 0 || ord as usize >= self.dictionary.len() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "ordinal {ord} out of range [0, {})",
                     self.dictionary.len()
                 )));
@@ -2984,7 +3121,11 @@ mod tests {
         assert_eq!(values.next_ord().unwrap(), 1);
     }
 
+    /// Java's empty doc values `longValue()` body is `assert false`
+    /// (`DocValues.java:100-101`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_numeric_doc_values_returns_no_docs() {
         let mut values = EmptyNumericDocValues::new();
         assert_eq!(values.doc_id(), -1);
@@ -2995,14 +3136,22 @@ mod tests {
         assert!(values.long_value().is_err());
     }
 
+    /// Java's empty doc values `binaryValue()` body is `assert false`
+    /// (`DocValues.java:61-62`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_binary_doc_values_returns_no_docs() {
         let mut values = EmptyBinaryDocValues::new();
         assert_eq!(values.advance(10).unwrap(), NO_MORE_DOCS);
         assert!(values.binary_value().is_err());
     }
 
+    /// Java's empty doc values `ordValue()` body is `assert false`
+    /// (`DocValues.java:141-142`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_sorted_doc_values_has_empty_dictionary() {
         let values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);
@@ -3121,10 +3270,16 @@ mod tests {
     /// none hands out values.
     fn empty_doc_values_producer_is_unsupported_throughout() {
         use crate::codecs::doc_values::DocValuesProducer;
-        use crate::error::LuceneError;
+        use crate::error::{LuceneError, LuceneErrorKind};
 
         fn unsupported<T>(result: Result<T>) -> bool {
-            matches!(result, Err(LuceneError::UnsupportedOperation(_)))
+            matches!(
+                result,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                })
+            )
         }
 
         let producer = EmptyDocValuesProducer;
@@ -3136,7 +3291,7 @@ mod tests {
         assert!(unsupported(producer.get_sorted_set(&field)));
         assert!(unsupported(producer.get_skipper(&field)));
         assert!(unsupported(producer.check_integrity()));
-        let mut clone = producer.get_merge_instance().unwrap();
+        let clone = producer.get_merge_instance().unwrap();
         assert!(unsupported(clone.close()));
     }
 
@@ -3214,16 +3369,16 @@ mod tests {
         let mut terms = SortedDocValuesTermsEnum::new(values);
         assert_eq!(terms.next().unwrap().unwrap().slice(), b"a");
         assert_eq!(terms.ord().unwrap(), 0);
-        assert_eq!(terms.term().unwrap().slice(), b"a");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"a");
         assert_eq!(
             terms.seek_ceil(&BytesRef::new(b"bb".to_vec())).unwrap(),
             SeekStatus::NOT_FOUND
         );
-        assert_eq!(terms.term().unwrap().slice(), b"c");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"c");
         assert!(terms.seek_exact(&BytesRef::new(b"b".to_vec())).unwrap());
         assert_eq!(terms.ord().unwrap(), 1);
         terms.seek_ord(2).unwrap();
-        assert_eq!(terms.term().unwrap().slice(), b"c");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"c");
         let state = terms.term_state().unwrap();
         terms
             .seek_term_state(&BytesRef::new(Vec::new()), state.as_ref())
@@ -3240,7 +3395,7 @@ mod tests {
         let mut terms = SortedSetDocValuesTermsEnum::new(values);
         assert_eq!(terms.next().unwrap().unwrap().slice(), b"a");
         assert_eq!(terms.ord().unwrap(), 0);
-        assert_eq!(terms.term().unwrap().slice(), b"a");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"a");
         assert!(!terms.seek_exact(&BytesRef::new(b"z".to_vec())).unwrap());
         assert_eq!(
             terms.seek_ceil(&BytesRef::new(b"b".to_vec())).unwrap(),
@@ -3248,7 +3403,7 @@ mod tests {
         );
         assert_eq!(terms.ord().unwrap(), 1);
         terms.seek_ord(2).unwrap();
-        assert_eq!(terms.term().unwrap().slice(), b"c");
+        assert_eq!(terms.term().unwrap().unwrap().slice(), b"c");
         let state = terms.term_state().unwrap();
         terms
             .seek_term_state(&BytesRef::new(Vec::new()), state.as_ref())
@@ -3269,7 +3424,7 @@ mod tests {
             vec![b"b".to_vec(), b"d".to_vec()],
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
-        let map = OrdinalMap::build_sorted(vec![seg0, seg1], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, vec![seg0, seg1], 0.0).unwrap();
 
         let floor = ORDINAL_MAP_BASE_RAM_BYTES_USED + SEGMENT_MAP_BASE_RAM_BYTES_USED;
         assert!(
@@ -3298,7 +3453,7 @@ mod tests {
             vec![b"a".to_vec(), b"b".to_vec()],
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
-        let map = OrdinalMap::build_sorted(vec![only], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, vec![only], 0.0).unwrap();
         let expected = ORDINAL_MAP_BASE_RAM_BYTES_USED
             + map.segment_map.ram_bytes_used()
             + RamUsageEstimator::align_object_size(
@@ -3325,7 +3480,7 @@ mod tests {
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
 
-        let map = OrdinalMap::build_sorted(vec![seg0, seg1, seg2], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, vec![seg0, seg1, seg2], 0.0).unwrap();
         // Global order: a, b, c, d, e -> 5 unique values
         assert_eq!(map.get_value_count(), 5);
 
@@ -3370,7 +3525,7 @@ mod tests {
             vec![vec![0, 1, 2], vec![]],
         )) as Box<dyn SortedSetDocValues>;
 
-        let map = OrdinalMap::build_sorted_set(vec![seg0, seg1], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted_set(None, vec![seg0, seg1], 0.0).unwrap();
         // Global order: a, b, c -> 3 unique values
         assert_eq!(map.get_value_count(), 3);
 
@@ -3421,7 +3576,7 @@ mod ordinal_map_packed_tests {
     #[test]
     fn ram_bytes_used_is_javas() {
         let ram = |values: Vec<Box<dyn SortedDocValues>>, ratio: f32| {
-            let map = OrdinalMap::build_sorted(values, ratio).unwrap();
+            let map = OrdinalMap::build_sorted(None, values, ratio).unwrap();
             (map.ram_bytes_used(), map.get_value_count())
         };
         assert_eq!(
@@ -3462,7 +3617,7 @@ mod ordinal_map_packed_tests {
             (38560, 14371)
         );
         // The mappings still resolve as before.
-        let map = OrdinalMap::build_sorted(big(), PackedInts::DEFAULT).unwrap();
+        let map = OrdinalMap::build_sorted(None, big(), PackedInts::DEFAULT).unwrap();
         let mut seen = 0;
         for (segment, len) in [(0usize, 2000i64), (1, 1000), (2, 1000)] {
             for ord in 0..len {
@@ -3484,8 +3639,9 @@ mod ordinal_map_packed_tests {
     /// two segments.
     #[test]
     fn child_resources_are_javas_named_segment_map() {
-        let map = OrdinalMap::build_sorted(vec![letters(&["a", "c"]), letters(&["b", "d"])], 0.0)
-            .unwrap();
+        let map =
+            OrdinalMap::build_sorted(None, vec![letters(&["a", "c"]), letters(&["b", "d"])], 0.0)
+                .unwrap();
         let children = map.child_resources();
         assert_eq!(children.len(), 1);
         let description = children[0].accountable_to_string();

@@ -47,7 +47,7 @@ impl SortRescorer {
     /// # Errors
     ///
     /// Propagates any I/O error raised while collecting, and
-    /// [`LuceneError::IllegalState`] when a first-pass hit falls outside every
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a first-pass hit falls outside every
     /// leaf of the searcher — which is Java's `IndexOutOfBoundsException`.
     pub fn rescore_sorted(
         &self,
@@ -167,10 +167,16 @@ impl Rescorer for SortRescorer {
         for (i, sort_field) in self.sort.fields().iter().enumerate() {
             subs.push(Explanation::matched(
                 0.0f32,
+                // `"... value=" + fieldDoc.fields[i]`: the boxed value's
+                // `toString()` (`SortRescorer.java:118-120`).
                 format!(
-                    "sort field {} value={:?}",
+                    "sort field {} value={}",
                     sort_field,
-                    field_doc.fields.as_ref().and_then(|fields| fields.get(i))
+                    field_doc
+                        .fields
+                        .as_ref()
+                        .and_then(|fields| fields.get(i))
+                        .map_or_else(|| "null".to_string(), ToString::to_string)
                 ),
                 Vec::new(),
             ));

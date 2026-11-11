@@ -312,7 +312,7 @@ impl BooleanQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a clause is not a
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a clause is not a
     /// [`TermQuery`] — the caller must check
     /// [`is_two_clause_pure_disjunction_with_terms`](Self::is_two_clause_pure_disjunction_with_terms)
     /// first, which is what Java's cast asserts — and propagates any I/O error
@@ -1008,6 +1008,10 @@ impl Query for BooleanQuery {
     }
 
     fn query_hash(&self) -> u64 {
-        self.compute_hash_code()
+        // Java caches the code and asserts it is not zero
+        // (`BooleanQuery.java:745-752`); the port recomputes it every call.
+        let hash_code = self.compute_hash_code();
+        debug_assert!(hash_code != 0);
+        hash_code
     }
 }

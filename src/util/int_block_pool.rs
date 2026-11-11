@@ -20,6 +20,7 @@
 
 use std::sync::Arc;
 
+use crate::error::{LuceneError, Result};
 use crate::util::concurrent::Counter;
 use crate::util::{ArrayUtil, RamUsageEstimator, BYTE_BLOCK_SIZE};
 
@@ -246,11 +247,14 @@ impl IntBlockPool {
     /// [`IntBlockPool::reset`] with `reuse_first`, the pool is already on its
     /// first block.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when the global offset would overflow, which is Java's
-    /// `Math.addExact`.
-    pub fn next_buffer(&mut self) {
+    /// Returns [`LuceneErrorKind::Arithmetic`](crate::error::LuceneErrorKind::Arithmetic) (`integer overflow`) when the
+    /// global offset would overflow: Java's `intOffset =
+    /// Math.addExact(intOffset, INT_BLOCK_SIZE)` (`IntBlockPool.java:157`)
+    /// throws `ArithmeticException`. As there, the pool has already advanced
+    /// to the new block, and only `intOffset` keeps its old value.
+    pub fn next_buffer(&mut self) -> Result<()> {
         if 1 + self.buffer_upto == self.buffers.len() as i32 {
             let new_len = (self.buffers.len() as f64 * 1.5) as usize;
             self.buffers
@@ -265,7 +269,8 @@ impl IntBlockPool {
         self.int_offset = self
             .int_offset
             .checked_add(INT_BLOCK_SIZE as i32)
-            .expect("INVARIANT: IntBlockPool offset overflows, as Math.addExact would");
+            .ok_or_else(LuceneError::integer_overflow)?;
+        Ok(())
     }
 }
 

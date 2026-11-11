@@ -54,7 +54,7 @@ use std::time::Duration;
 
 use rucene::codecs::Lucene104Codec;
 use rucene::document::{Document, Field, FieldType, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, MergedSegmentWarmer};
@@ -176,9 +176,18 @@ fn id_doc(id: i32) -> Document {
 fn outcome<T>(result: &Result<T>) -> &'static str {
     match result {
         Ok(_) => "ok",
-        Err(LuceneError::Io(_)) => "IOException",
-        Err(LuceneError::AlreadyClosed { .. }) => "AlreadyClosedException",
-        Err(LuceneError::IllegalState { .. }) => "IllegalStateException",
+        Err(LuceneError {
+            kind: LuceneErrorKind::Io(_),
+            ..
+        }) => "IOException",
+        Err(LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { .. },
+            ..
+        }) => "AlreadyClosedException",
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalState { .. },
+            ..
+        }) => "IllegalStateException",
         Err(_) => "other",
     }
 }
@@ -189,7 +198,10 @@ fn outcome<T>(result: &Result<T>) -> &'static str {
 fn exception<T>(result: &Result<T>) -> String {
     match result {
         Ok(_) => "ok".to_string(),
-        Err(LuceneError::Io(error)) => format!("IOException: {error}"),
+        Err(LuceneError {
+            kind: LuceneErrorKind::Io(error),
+            ..
+        }) => format!("IOException: {error}"),
         // No other class is expected here; the variant is printed so a
         // mismatch shows what this port raised.
         Err(error) => format!("{error:?}"),
@@ -218,9 +230,9 @@ impl Directory for FailingDirectory {
             && !name.starts_with("segments")
             && !name.starts_with("pending")
         {
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "disk full creating {name}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!("disk full creating {name}")),
+            )));
         }
         self.inner.create_output(name, context)
     }
@@ -231,7 +243,9 @@ impl Directory for FailingDirectory {
         context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
         if self.armed.load(Ordering::SeqCst) {
-            return Err(LuceneError::Io(std::io::Error::other("disk full (temp)")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("disk full (temp)"),
+            )));
         }
         self.inner.create_temp_output(prefix, suffix, context)
     }
@@ -253,7 +267,7 @@ impl Directory for FailingDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.inner.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
@@ -277,9 +291,9 @@ fn a_failed_flush_is_a_writer_tragedy_as_lucene_does() {
         inner: Arc::clone(&ram),
         armed: Arc::clone(&armed),
     });
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -331,9 +345,9 @@ fn a_failed_auto_flush_is_a_writer_tragedy_as_lucene_does() {
         inner: Arc::clone(&ram),
         armed: Arc::clone(&armed),
     });
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config.set_max_buffered_docs(2).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -375,9 +389,9 @@ fn a_failed_flush_next_buffer_is_a_writer_tragedy_as_lucene_does() {
         inner: Arc::clone(&ram),
         armed: Arc::clone(&armed),
     });
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -430,9 +444,9 @@ impl std::fmt::Display for FailingWarmer {
 }
 
 impl MergedSegmentWarmer for FailingWarmer {
-    fn warm(&self, _reader: &dyn LeafReader) -> Result<()> {
-        Err(LuceneError::Io(std::io::Error::other(
-            "warmer failed on purpose",
+    fn warm(&self, _reader: &Arc<dyn LeafReader>) -> Result<()> {
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("warmer failed on purpose"),
         )))
     }
 }
@@ -503,12 +517,12 @@ fn a_tragedy_inside_commit_reenters_the_commit_lock() {
     ensure_codec();
     let log = Arc::new(ThreadLog::default());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(CommitOnlyMergePolicy))
+        .set_merge_policy(Some(Arc::new(CommitOnlyMergePolicy)))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config.set_reader_pooling(true);
     config.set_max_full_flush_merge_wait_millis(10_000);
@@ -625,12 +639,12 @@ fn delete_all_aborts_a_running_merge() {
         on_wait: Arc::clone(&gate),
     });
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
-    let mut policy = LogMergePolicy::by_doc_count();
+    let config = IndexWriterConfig::new();
+    let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -691,9 +705,9 @@ impl Directory for RefusingDirectory {
     }
     fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
         if self.armed.load(Ordering::SeqCst) && name.ends_with(self.extension) {
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "disk full creating {name}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!("disk full creating {name}")),
+            )));
         }
         self.inner.create_output(name, context)
     }
@@ -723,7 +737,7 @@ impl Directory for RefusingDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.inner.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
@@ -737,7 +751,7 @@ impl Directory for RefusingDirectory {
 /// `WriterTragedyFixture.TV_TYPE`: `TextField.TYPE_NOT_STORED` with term
 /// vectors.
 fn tv_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
@@ -772,9 +786,9 @@ fn merge_index_failure(extension: &'static str) {
         extension,
         armed: Arc::clone(&armed),
     });
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&tv_doc(0)).unwrap();
@@ -811,14 +825,30 @@ fn a_merge_that_cannot_create_the_term_vectors_index_leaves_lucenes_files() {
 /// of the Java throwable this port raises `error` in place of.
 fn describe(error: &LuceneError) -> String {
     match error {
-        LuceneError::IllegalArgument(message) if message.starts_with("bytes can be at most") => {
-            format!("MaxBytesLengthExceededException: {message}")
-        }
-        LuceneError::IllegalArgument(message) => format!("IllegalArgumentException: {message}"),
-        LuceneError::IllegalState { message, .. } => format!("IllegalStateException: {message}"),
-        LuceneError::AlreadyClosed { message, .. } => format!("AlreadyClosedException: {message}"),
-        LuceneError::AssertionError(message) => format!("AssertionError: {message}"),
-        LuceneError::Io(error) => format!("IOException: {error}"),
+        LuceneError {
+            kind: LuceneErrorKind::MaxBytesLengthExceeded(message),
+            ..
+        } => format!("MaxBytesLengthExceededException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => format!("IllegalArgumentException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => format!("IllegalStateException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        } => format!("AlreadyClosedException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(message),
+            ..
+        } => format!("AssertionError: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::Io(error),
+            ..
+        } => format!("IOException: {error}"),
         other => format!("{other:?}"),
     }
 }
@@ -876,9 +906,9 @@ impl InfoStream for TragicLog {
 /// document, for `addIndexes(Directory...)`.
 fn committed_index() -> Arc<dyn Directory> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let source = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     source.add_document(&id_doc(100)).unwrap();
@@ -897,9 +927,9 @@ fn an_assertion_failure_in_a_full_flush_is_a_writer_tragedy_as_lucene_under_ea()
     for op in ["commit", "flush", "reader", "add-indexes"] {
         for docs in [0, 1, 3] {
             let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config
-                .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+                .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
                 .unwrap();
             let log = Arc::new(TragicLog::default());
             config
@@ -961,10 +991,9 @@ struct UnreleasableLock {
 impl Lock for UnreleasableLock {
     fn close(&self) -> Result<()> {
         self.inner.close()?;
-        Err(LuceneError::Io(std::io::Error::other(format!(
-            "cannot release {}",
-            self.name
-        ))))
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other(format!("cannot release {}", self.name)),
+        )))
     }
     fn ensure_valid(&self) -> Result<()> {
         self.inner.ensure_valid()
@@ -1013,7 +1042,7 @@ impl Directory for UnreleasableLockDirectory {
             name: name.to_string(),
         }))
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
@@ -1030,9 +1059,9 @@ impl Directory for UnreleasableLockDirectory {
 fn a_lock_release_failure_after_add_indexes_is_raised_as_lucene_does() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -1129,9 +1158,9 @@ impl Directory for GatedFailingDirectory {
                         .1
                         .wait_while(released, |released| !*released)
                         .unwrap();
-                    return Err(LuceneError::Io(std::io::Error::other(format!(
-                        "injected failure creating {name}"
-                    ))));
+                    return Err(LuceneError::from(LuceneErrorKind::Io(
+                        std::io::Error::other(format!("injected failure creating {name}")),
+                    )));
                 }
             }
         }
@@ -1163,7 +1192,7 @@ impl Directory for GatedFailingDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.inner.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
@@ -1296,10 +1325,10 @@ fn rollback_during_a_failing_merge_write(
             merge
         }),
     );
-    let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    let config = IndexWriterConfig::new();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1368,7 +1397,7 @@ fn a_rollback_during_a_failing_segment_info_write_does_not_deadlock() {
     let outcome = watchdog(60, || rollback_during_a_failing_merge_write(".si", 0.0));
     outcome.assert_rolled_back();
     assert!(
-        matches!(&outcome.merged, Err(LuceneError::Io(error)) if error.to_string() == "injected failure creating _2.si"),
+        matches!(&outcome.merged, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. }) if error.to_string() == "injected failure creating _2.si"),
         "{:?}",
         outcome.merged
     );
@@ -1384,9 +1413,9 @@ fn a_rollback_during_a_failing_segment_info_write_does_not_deadlock() {
 fn a_rollback_logs_each_pending_merge_as_the_writer_renders_its_segments() {
     ensure_codec();
     let log = Arc::new(IwLog::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1430,7 +1459,7 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
     ensure_codec();
     let log = Arc::new(IwLog::default());
     let finished: Arc<Mutex<Vec<String>>> = Arc::default();
-    let mut inner = LogMergePolicy::by_doc_count();
+    let inner = LogMergePolicy::by_doc_count();
     inner.set_merge_factor(2).unwrap();
     let recorded = Arc::clone(&finished);
     let policy = OneMergeWrappingMergePolicy::new(
@@ -1453,9 +1482,9 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
                         .unwrap()
                         .push(format!("{names} success={success}"));
                     if names == "_0,_1" {
-                        return Err(LuceneError::Io(std::io::Error::other(format!(
-                            "injected failure finishing {names}"
-                        ))));
+                        return Err(LuceneError::from(LuceneErrorKind::Io(
+                            std::io::Error::other(format!("injected failure finishing {names}")),
+                        )));
                     }
                     Ok(())
                 },
@@ -1463,10 +1492,10 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
             merge
         }),
     );
-    let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    let config = IndexWriterConfig::new();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     config.set_max_full_flush_merge_wait_millis(0);
     config
@@ -1496,7 +1525,7 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
 
     let rolled_back = writer.rollback();
     assert!(
-        matches!(&rolled_back, Err(LuceneError::Io(error)) if error.to_string() == "injected failure finishing _0,_1"),
+        matches!(&rolled_back, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. }) if error.to_string() == "injected failure finishing _0,_1"),
         "{rolled_back:?}"
     );
     let aborted: Vec<String> = log
@@ -1543,12 +1572,12 @@ fn handle_merge_exception_logs_the_writers_rendering_of_the_merged_segments() {
         armed: Arc::clone(&armed),
     });
     let log = Arc::new(IwLog::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(LogMergePolicy::by_doc_count()))
+        .set_merge_policy(Some(Arc::new(LogMergePolicy::by_doc_count())))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1597,7 +1626,7 @@ fn hooked_policy(
     fail_wrap: bool,
     merge_factor: i32,
 ) -> Arc<dyn MergePolicy> {
-    let mut inner = LogMergePolicy::by_doc_count();
+    let inner = LogMergePolicy::by_doc_count();
     inner.set_merge_factor(merge_factor).unwrap();
     let finished = Arc::clone(finished);
     Arc::new(OneMergeWrappingMergePolicy::new(
@@ -1605,8 +1634,8 @@ fn hooked_policy(
         Arc::new(move |mut merge: OneMerge| {
             if fail_wrap {
                 merge.set_wrap_for_merge(Arc::new(|_reader| {
-                    Err(LuceneError::Io(std::io::Error::other(
-                        "wrapForMerge failure",
+                    Err(LuceneError::from(LuceneErrorKind::Io(
+                        std::io::Error::other("wrapForMerge failure"),
                     )))
                 }));
             }
@@ -1627,9 +1656,9 @@ fn hooked_policy(
                         .unwrap()
                         .push(format!("{joined} success={success}"));
                     if fails.is_some_and(|fails| fails == "*" || fails == names[0]) {
-                        return Err(LuceneError::Io(std::io::Error::other(format!(
-                            "injected failure finishing {joined}"
-                        ))));
+                        return Err(LuceneError::from(LuceneErrorKind::Io(
+                            std::io::Error::other(format!("injected failure finishing {joined}")),
+                        )));
                     }
                     Ok(())
                 },
@@ -1668,12 +1697,12 @@ fn merging_names(writer: &IndexWriter) -> String {
 fn a_point_in_time_merge_calls_the_hook_of_the_merge_it_wraps() {
     ensure_codec();
     let finished: Arc<Mutex<Vec<String>>> = Arc::default();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(hooked_policy(&finished, Some("_0"), false, 2))
+        .set_merge_policy(Some(hooked_policy(&finished, Some("_0"), false, 2)))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..4 {
@@ -1734,24 +1763,26 @@ impl MergeScheduler for WrapFailingScheduler {
 fn merge_failure(in_middle: bool, hook_throws: bool) -> String {
     ensure_codec();
     let finished: Arc<Mutex<Vec<String>>> = Arc::default();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     if in_middle {
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
     } else {
         config
-            .set_merge_scheduler(Arc::new(WrapFailingScheduler(SerialMergeScheduler::new())))
+            .set_merge_scheduler(Some(Arc::new(WrapFailingScheduler(
+                SerialMergeScheduler::new(),
+            ))))
             .unwrap();
     }
     config
-        .set_merge_policy(hooked_policy(
+        .set_merge_policy(Some(hooked_policy(
             &finished,
             hook_throws.then_some("*"),
             in_middle,
             10,
-        ))
+        )))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     for id in 0..3 {
@@ -1802,13 +1833,15 @@ fn a_failure_closing_the_merge_readers_hangs_the_merge_thread_as_lucene_does() {
     ensure_codec();
     let finished: Arc<Mutex<Vec<String>>> = Arc::default();
     let log = Arc::new(IwLog::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Arc::new(WrapFailingScheduler(SerialMergeScheduler::new())))
+        .set_merge_scheduler(Some(Arc::new(WrapFailingScheduler(
+            SerialMergeScheduler::new(),
+        ))))
         .unwrap();
     config
-        .set_merge_policy(hooked_policy(&finished, Some("*"), false, 10))
+        .set_merge_policy(Some(hooked_policy(&finished, Some("*"), false, 10)))
         .unwrap();
     config
         .set_info_stream(Arc::clone(&log) as Arc<dyn InfoStream>)
@@ -1934,13 +1967,13 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
         messages: Mutex::new(Vec::new()),
     });
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     config
-        .set_merge_policy(Arc::new(rucene::index::merge_policy::NoMergePolicy::new()))
+        .set_merge_policy(Some(rucene::index::merge_policy::NoMergePolicy::instance()))
         .unwrap();
     config.set_use_compound_file(false).unwrap();
     config
@@ -1952,12 +1985,12 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
         writer.commit().unwrap();
     }
     dir.delete_file("_0.fdt").unwrap();
-    let mut policy = LogMergePolicy::by_doc_count();
+    let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
     let policy: Arc<dyn MergePolicy> = Arc::new(policy);
     let merged = writer.maybe_merge_with(&policy, MergeTrigger::Explicit, -1);
     assert!(
-        matches!(&merged, Err(LuceneError::Io(error))
+        matches!(&merged, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. })
             if error.kind() == std::io::ErrorKind::NotFound && error.to_string().contains("_0.fdt")),
         "{merged:?}"
     );
@@ -2007,13 +2040,13 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
 fn merging_segments_survive_a_rollback_as_lucene_reports_them() {
     ensure_codec();
     let finished: Arc<Mutex<Vec<String>>> = Arc::default();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Arc::new(NoMergeScheduler))
+        .set_merge_scheduler(Some(NoMergeScheduler::instance()))
         .unwrap();
     config
-        .set_merge_policy(hooked_policy(&finished, Some("*"), false, 2))
+        .set_merge_policy(Some(hooked_policy(&finished, Some("*"), false, 2)))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -2049,7 +2082,7 @@ impl rucene::store::DataInput for CloseFailingInput {
     fn read_byte(&mut self) -> Result<u8> {
         self.inner.read_byte()
     }
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.inner.read_bytes(b, offset, len)
     }
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
@@ -2060,8 +2093,8 @@ impl rucene::store::DataInput for CloseFailingInput {
 impl IndexInput for CloseFailingInput {
     fn close(&mut self) -> Result<()> {
         self.inner.close()?;
-        Err(LuceneError::Io(std::io::Error::other(
-            "injected failure closing an input",
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("injected failure closing an input"),
         )))
     }
     fn file_pointer(&self) -> i64 {
@@ -2148,9 +2181,9 @@ impl Directory for CloseFailingDirectory {
             }
             // Record what the merge thread deletes from here on.
             *self.recorded_thread.lock().unwrap() = Some(thread::current().id());
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "injected failure creating {name}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!("injected failure creating {name}")),
+            )));
         }
         self.inner.create_output(name, context)
     }
@@ -2184,7 +2217,7 @@ impl Directory for CloseFailingDirectory {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         self.inner.obtain_lock(name)
     }
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
@@ -2247,10 +2280,10 @@ fn a_merge_aborted_while_building_its_compound_file_deletes_its_files_as_lucene_
             ],
             messages: Mutex::new(Vec::new()),
         });
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
         // Flushed segments without compound files: only the merge builds one.
         config.set_use_compound_file(false).unwrap();
@@ -2261,13 +2294,13 @@ fn a_merge_aborted_while_building_its_compound_file_deletes_its_files_as_lucene_
         inner.set_no_cfs_ratio(1.0).unwrap();
         let capturing = Arc::clone(&captured);
         config
-            .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+            .set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
                 Arc::new(inner),
                 Arc::new(move |merge: OneMerge| {
                     *capturing.lock().unwrap() = Some(merge.clone());
                     merge
                 }),
-            )))
+            ))))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
         for id in 0..3 {
@@ -2318,7 +2351,7 @@ fn a_merge_aborted_while_building_its_compound_file_deletes_its_files_as_lucene_
 ///
 /// `handleMergeException` logs `t.toString()`, which for the `IOException`
 /// the fixture's directory throws is `java.io.IOException: <message>`; this
-/// port's `Display` of the [`LuceneError::Io`] it raises in its place is
+/// port's `Display` of the [`LuceneErrorKind::Io`] it raises in its place is
 /// `I/O error: <message>`, which is mapped to Java's.
 struct CfsFailureLog {
     dir: Arc<CloseFailingDirectory>,
@@ -2368,10 +2401,10 @@ fn a_compound_file_failure_is_handled_inside_merge_middle_as_lucene_does() {
             dir: Arc::clone(&dir),
             messages: Mutex::new(Vec::new()),
         });
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_max_full_flush_merge_wait_millis(0);
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
         // Flushed segments without compound files: only the merge builds one.
         config.set_use_compound_file(false).unwrap();
@@ -2380,7 +2413,7 @@ fn a_compound_file_failure_is_handled_inside_merge_middle_as_lucene_does() {
             .unwrap();
         let policy = LogMergePolicy::by_doc_count();
         policy.set_no_cfs_ratio(1.0).unwrap();
-        config.set_merge_policy(Arc::new(policy)).unwrap();
+        config.set_merge_policy(Some(Arc::new(policy))).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
         for id in 0..3 {
             writer.add_document(&id_doc(id)).unwrap();
@@ -2432,7 +2465,7 @@ impl std::fmt::Display for RollbackWarmer {
 }
 
 impl MergedSegmentWarmer for RollbackWarmer {
-    fn warm(&self, _reader: &dyn LeafReader) -> Result<()> {
+    fn warm(&self, _reader: &Arc<dyn LeafReader>) -> Result<()> {
         let writer = self.writer.lock().unwrap().clone().expect("the writer");
         *self.rollback.lock().unwrap() = Some(start_rollback(&writer));
         let merge = self.captured.lock().unwrap().clone().expect("the merge");
@@ -2452,10 +2485,10 @@ fn warmer_rollback(drop_fails: bool) -> String {
         captured: Arc::clone(&captured),
         rollback: Arc::clone(&rollback),
     });
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_max_full_flush_merge_wait_millis(0);
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config.set_use_compound_file(false).unwrap();
     config.set_reader_pooling(true);
@@ -2467,7 +2500,7 @@ fn warmer_rollback(drop_fails: bool) -> String {
     let capturing = Arc::clone(&captured);
     let recording = Arc::clone(&finished);
     config
-        .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+        .set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
             Arc::new(inner),
             Arc::new(move |mut merge: OneMerge| {
                 let recording = Arc::clone(&recording);
@@ -2491,7 +2524,7 @@ fn warmer_rollback(drop_fails: bool) -> String {
                 *capturing.lock().unwrap() = Some(merge.clone());
                 merge
             }),
-        )))
+        ))))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir) as Arc<dyn Directory>, config).unwrap();
     *warmer.writer.lock().unwrap() = Some(Arc::clone(&writer));
@@ -2634,15 +2667,15 @@ fn a_point_in_time_merge_calls_the_on_merge_complete_of_the_merge_it_wraps() {
         ensure_codec();
         let events: Arc<Mutex<Vec<String>>> = Arc::default();
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
         config.set_max_full_flush_merge_wait_millis(30_000);
         config
-            .set_merge_policy(Arc::new(HookedCommitPolicy {
+            .set_merge_policy(Some(Arc::new(HookedCommitPolicy {
                 events: Arc::clone(&events),
-            }))
+            })))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for id in 0..2 {
@@ -2716,7 +2749,7 @@ impl rucene::analysis::TokenStream for FreqTokens {
             .source
             .get_attribute_mut::<PackedTokenAttributeImpl>()
             .unwrap();
-        packed.append_string(self.terms[self.upto]);
+        packed.append_string(Some(self.terms[self.upto]));
         packed.set_term_frequency(self.freq);
         self.upto += 1;
         Ok(true)
@@ -2738,7 +2771,7 @@ impl rucene::analysis::TokenStream for FreqTokens {
 }
 
 fn chain_field_type(options: IndexOptions, tokenized: bool, vector_positions: bool) -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(tokenized).unwrap();
     field_type.set_index_options(options).unwrap();
     if vector_positions {
@@ -2750,8 +2783,11 @@ fn chain_field_type(options: IndexOptions, tokenized: bool, vector_positions: bo
 }
 
 fn freq_tokens_doc(freq: i32, terms: &[&'static str], field_type: FieldType) -> Document {
-    let stream: std::rc::Rc<std::cell::RefCell<dyn rucene::analysis::TokenStream>> =
-        std::rc::Rc::new(std::cell::RefCell::new(FreqTokens::new(freq, terms)));
+    let stream: std::sync::Arc<
+        rucene::util::atomic_ref_cell::AtomicRefCell<dyn rucene::analysis::TokenStream>,
+    > = std::sync::Arc::new(rucene::util::atomic_ref_cell::AtomicRefCell::new(
+        FreqTokens::new(freq, terms),
+    ));
     let mut doc = Document::new();
     doc.add(Box::new(
         Field::new_with_token_stream("body", stream, field_type).unwrap(),
@@ -2763,10 +2799,18 @@ fn freq_tokens_doc(freq: i32, terms: &[&'static str], field_type: FieldType) -> 
 /// a throwable.
 fn java_line(error: &LuceneError) -> String {
     let message = match error {
-        LuceneError::IllegalArgument(message)
-        | LuceneError::IllegalArgumentWithCause { message, .. }
-        | LuceneError::IllegalState { message, .. }
-        | LuceneError::AlreadyClosed { message, .. } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        }
+        | LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        }
+        | LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        } => message.clone(),
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())
@@ -2939,9 +2983,9 @@ impl rucene::index::IndexableField for BinaryInvertedField {
     }
     fn token_stream(
         &self,
-        analyzer: &dyn rucene::analysis::Analyzer,
-        reuse: Option<&mut dyn rucene::analysis::TokenStream>,
-    ) -> Box<dyn rucene::analysis::TokenStream> {
+        analyzer: Option<&dyn rucene::analysis::Analyzer>,
+        reuse: &mut Option<Box<dyn rucene::analysis::TokenStream>>,
+    ) -> Result<Box<dyn rucene::analysis::TokenStream>> {
         self.0.token_stream(analyzer, reuse)
     }
     fn binary_value(&self) -> Option<rucene::util::BytesRef> {
@@ -2950,7 +2994,7 @@ impl rucene::index::IndexableField for BinaryInvertedField {
     fn string_value(&self) -> Option<String> {
         self.0.string_value()
     }
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+    fn reader_value(&self) -> Option<rucene::document::SharedReader> {
         None
     }
     fn numeric_value(&self) -> Option<rucene::document::NumericValue> {
@@ -3078,7 +3122,7 @@ fn a_stored_fields_failure_is_the_tragedy_itself_as_in_lucene() {
     assert!(!writer.is_open());
     let tragic = writer.get_tragic_exception().expect("the writer is tragic");
     assert!(
-        matches!(tragic.as_ref(), LuceneError::Io(error) if error.to_string() == "disk full creating _0.fdm"),
+        matches!(tragic.as_ref(), LuceneError { kind: LuceneErrorKind::Io(error), .. } if error.to_string() == "disk full creating _0.fdm"),
         "{tragic:?}"
     );
 }

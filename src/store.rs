@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 pub mod exceptions;
+pub mod java_nio_file;
 pub mod lock_stress_test;
 pub mod lock_validating_directory_wrapper;
 pub mod lock_verify_server;
@@ -46,9 +47,7 @@ pub use verifying_lock_factory::VerifyingLockFactory;
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    fs,
-    io::{self, Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    io::{self, Read, Write},
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc, Mutex,
@@ -58,8 +57,10 @@ use std::{
 
 use crc32fast;
 
+use self::java_nio_file as nio;
+use self::java_nio_file::file_time_to_string;
 use crate::{
-    error::{LuceneError, Result},
+    error::{LuceneError, LuceneErrorKind, Result},
     util::java_collections::{
         JavaHashSet, JavaOrderedMap, JavaOrderedSet, JavaStringMap, JavaStringSet,
     },
@@ -94,6 +95,17 @@ fn double_to_long_bits(value: f64) -> u64 {
     }
 }
 
+/// The array a Java `read*(T[] dst, …)` method dereferences: `None` stands
+/// for Java's `null`, which raises `NullPointerException` where Java first
+/// touches the array (`dst.length`, `System.arraycopy`, `MemorySegment.copy`).
+///
+/// # Errors
+///
+/// `NullPointerException` for `None`.
+pub fn require_array<T>(array: Option<&mut [T]>) -> Result<&mut [T]> {
+    array.ok_or_else(LuceneError::null_pointer)
+}
+
 /// Abstract base trait for reading Lucene's low-level data types.
 ///
 /// Equivalent to `org.apache.lucene.store.DataInput`. Implementations are not
@@ -118,7 +130,11 @@ pub trait DataInput {
     fn to_java_string(&self) -> String;
 
     /// Reads `len` bytes into `b[offset..offset + len]`.
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()>;
+    ///
+    /// Equivalent to `DataInput.readBytes(byte[], int, int)`. `b` is `None`
+    /// for Java's `null` array, which raises `NullPointerException` (see
+    /// [`require_array`]); this holds for every array-taking `read*` method.
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()>;
 
     /// Reads `len` bytes into `b[offset..offset + len]`.
     ///
@@ -127,7 +143,7 @@ pub trait DataInput {
     /// override this method to bypass internal buffers.
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         _use_buffer: bool,
@@ -171,7 +187,8 @@ pub trait DataInput {
     #[deprecated(
         note = "no longer called by Lucene; use GroupVIntUtil::read_group_vints_input instead"
     )]
-    fn read_group_vint(&mut self, dst: &mut [i32], offset: usize) -> Result<()> {
+    fn read_group_vint(&mut self, dst: Option<&mut [i32]>, offset: usize) -> Result<()> {
+        let dst = require_array(dst)?;
         crate::util::GroupVIntUtil::read_group_vint_input(self, dst, offset)
     }
 
@@ -252,7 +269,7 @@ pub trait DataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the length is negative: Java
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the length is negative: Java
     /// reaches `new byte[length]` with it and throws
     /// `NegativeArraySizeException` (`DataInput.java:230-234`), which is a
     /// failure, not a value, so this port reports one too.
@@ -270,9 +287,9 @@ pub trait DataInput {
         const CHUNK: usize = 16 * 1024;
         let length = self.read_v_int()?;
         if length < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "invalid string length: {length}"
-            )));
+            ))));
         }
         let mut remaining = length as usize;
         let mut bytes: Vec<u8> = Vec::new();
@@ -280,7 +297,7 @@ pub trait DataInput {
             let take = remaining.min(CHUNK);
             let filled = bytes.len();
             bytes.resize(filled + take, 0u8);
-            self.read_bytes(&mut bytes, filled, take)?;
+            self.read_bytes(Some(&mut bytes), filled, take)?;
             remaining -= take;
         }
         Ok(crate::util::java_fmt::java_utf8_to_string(&bytes))
@@ -329,7 +346,8 @@ pub trait DataInput {
     }
 
     /// Reads `length` little-endian `i32` values into `dst[offset..]`.
-    fn read_ints(&mut self, dst: &mut [i32], offset: usize, length: usize) -> Result<()> {
+    fn read_ints(&mut self, dst: Option<&mut [i32]>, offset: usize, length: usize) -> Result<()> {
+        let dst = require_array(dst)?;
         check_from_index_size(offset, length, dst.len())?;
         for i in 0..length {
             dst[offset + i] = self.read_int()?;
@@ -338,7 +356,8 @@ pub trait DataInput {
     }
 
     /// Reads `length` little-endian `i64` values into `dst[offset..]`.
-    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(&mut self, dst: Option<&mut [i64]>, offset: usize, length: usize) -> Result<()> {
+        let dst = require_array(dst)?;
         check_from_index_size(offset, length, dst.len())?;
         for i in 0..length {
             dst[offset + i] = self.read_long()?;
@@ -347,7 +366,13 @@ pub trait DataInput {
     }
 
     /// Reads `length` `f32` values into `floats[offset..]`.
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(
+        &mut self,
+        floats: Option<&mut [f32]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let floats = require_array(floats)?;
         check_from_index_size(offset, length, floats.len())?;
         for i in 0..length {
             floats[offset + i] = self.read_float()?;
@@ -422,15 +447,15 @@ pub trait DataOutput {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `i` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `i` is negative.
     /// Writes an `i64` in variable-length format.
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `i` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `i` is negative.
     fn write_v_long(&mut self, i: i64) -> Result<()> {
         if i < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cannot write negative vLong (got: {i})"
             )));
         }
@@ -589,7 +614,7 @@ pub trait DataOutput {
     /// # Errors
     ///
     /// Returns any error raised while writing, and
-    /// `LuceneError::IllegalArgument` when a value does not fit in an unsigned
+    /// `LuceneErrorKind::IllegalArgument` when a value does not fit in an unsigned
     /// 32-bit integer.
     #[deprecated(note = "preserved only for backwards codecs")]
     fn write_group_vints_long(&mut self, values: &[i64], limit: usize) -> Result<()> {
@@ -603,18 +628,19 @@ pub trait DataOutput {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` when `num_bytes` is negative, and
+    /// Returns `LuceneErrorKind::IllegalArgument` when `num_bytes` is negative, and
     /// propagates whatever reading or writing raises.
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let mut buffer = vec![0u8; COPY_BUFFER_SIZE];
         while num_bytes > 0 {
             let to_copy = (num_bytes as usize).min(COPY_BUFFER_SIZE);
-            input.read_bytes(&mut buffer, 0, to_copy)?;
+            input.read_bytes(Some(&mut buffer), 0, to_copy)?;
             self.write_bytes(&buffer, 0, to_copy)?;
             num_bytes -= to_copy as i64;
         }
@@ -766,7 +792,7 @@ pub trait IndexInput: DataInput + Send + Sync {
     /// adapter.
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
         let slice = self.slice("randomaccess", offset, length)?;
-        Ok(Box::new(RandomAccessInputAdapter::new(slice)))
+        Ok(Box::new(RandomAccessInputAdapter::new(slice, length)))
     }
 
     /// Returns this input as a [`MemorySegmentAccessInput`] when it is one,
@@ -821,11 +847,14 @@ pub trait IndexInput: DataInput + Send + Sync {
 /// slice does not already support random access.
 struct RandomAccessInputAdapter {
     input: Box<dyn IndexInput>,
+    /// The `length` argument of `randomAccessSlice`, which Java's anonymous
+    /// class captures only to assert it against the slice's length.
+    length: i64,
 }
 
 impl RandomAccessInputAdapter {
-    fn new(input: Box<dyn IndexInput>) -> Self {
-        Self { input }
+    fn new(input: Box<dyn IndexInput>, length: i64) -> Self {
+        Self { input, length }
     }
 }
 
@@ -839,13 +868,13 @@ impl DataInput for RandomAccessInputAdapter {
         self.input.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.input.read_bytes(b, offset, len)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
@@ -880,6 +909,7 @@ impl IndexInput for RandomAccessInputAdapter {
     }
 
     fn length(&self) -> i64 {
+        debug_assert!(self.length == self.input.length());
         self.input.length()
     }
 
@@ -931,7 +961,7 @@ impl RandomAccessInput for RandomAccessInputAdapter {
         len: usize,
     ) -> Result<()> {
         self.input.seek(pos)?;
-        self.input.read_bytes(bytes, offset, len)
+        self.input.read_bytes(Some(bytes), offset, len)
     }
 
     fn read_short_at(&mut self, pos: i64) -> Result<i16> {
@@ -1026,22 +1056,23 @@ impl DataInput for FilterIndexInput {
         self.inner.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.inner.read_bytes(b, offset, len)
     }
 
-    fn read_bytes_buffered(
-        &mut self,
-        b: &mut [u8],
-        offset: usize,
-        len: usize,
-        use_buffer: bool,
-    ) -> Result<()> {
-        self.inner.read_bytes_buffered(b, offset, len, use_buffer)
-    }
+    // `readBytes(byte[], int, int, boolean)` is not overridden: `DataInput`'s
+    // routes it through this class's `readBytes`.
 
+    /// `FilterIndexInput` does not override `skipBytes`, so Java runs
+    /// `IndexInput.skipBytes` (`IndexInput.java:86-92`): a seek on this input.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        self.inner.skip_bytes(num_bytes)
+        if num_bytes < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "numBytes must be >= 0, got {num_bytes}"
+            )));
+        }
+        let skip_to = IndexInput::file_pointer(self) + num_bytes;
+        IndexInput::seek(self, skip_to)
     }
 }
 
@@ -1079,17 +1110,8 @@ impl IndexInput for FilterIndexInput {
         &self.resource_description
     }
 
-    fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
-        self.inner.prefetch(offset, length)
-    }
-
-    fn is_loaded(&self) -> Option<bool> {
-        self.inner.is_loaded()
-    }
-
-    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
-        self.inner.random_access_slice(offset, length)
-    }
+    // `prefetch`, `isLoaded` and `randomAccessSlice` are not overridden
+    // (`FilterIndexInput.java`): `IndexInput`'s defaults apply.
 
     /// A `FilterIndexInput` of class `FilterIndexInput` itself, over its `in`.
     fn as_filter_index_input(&self) -> Option<(std::any::TypeId, &dyn IndexInput)> {
@@ -1138,7 +1160,7 @@ impl BufferedIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `buffer_size` is smaller
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `buffer_size` is smaller
     /// than [`MIN_BUFFER_SIZE`].
     pub fn new(source: Box<dyn IndexInput>, buffer_size: usize) -> Result<Self> {
         Self::check_buffer_size(buffer_size)?;
@@ -1205,12 +1227,12 @@ impl BufferedIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `buffer_size` is smaller
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `buffer_size` is smaller
     /// than [`MIN_BUFFER_SIZE`], which is the `IllegalArgumentException` Java
     /// throws.
     fn check_buffer_size(buffer_size: usize) -> Result<()> {
         if buffer_size < MIN_BUFFER_SIZE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bufferSize must be at least MIN_BUFFER_SIZE (got {buffer_size})"
             )));
         }
@@ -1231,10 +1253,10 @@ impl BufferedIndexInput {
             .min(self.source.length());
         let new_length = end.wrapping_sub(start);
         if new_length <= 0 {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
-            )));
+            ))));
         }
         let new_length = new_length as usize;
         if self.buffer.capacity() < self.buffer_size {
@@ -1271,7 +1293,7 @@ impl BufferedIndexInput {
     /// file Java reports as `EOFException`.
     fn read_internal(&mut self, b: &mut [u8]) -> Result<()> {
         let len = b.len();
-        self.source.read_bytes(b, 0, len)
+        self.source.read_bytes(Some(b), 0, len)
     }
 
     /// Expert: implements seek. Sets the current position in this file, where
@@ -1311,10 +1333,10 @@ impl BufferedIndexInput {
         self.refill()?;
         let result = pos.wrapping_sub(self.buffer_start);
         if result < 0 || result.wrapping_add(width_i64) > self.buffer_limit as i64 {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
-            )));
+            ))));
         }
         Ok(result as usize)
     }
@@ -1334,7 +1356,7 @@ impl BufferedIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the slice is out of
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the slice is out of
     /// bounds, which is the `IllegalArgumentException` the Java constructor
     /// throws.
     pub fn wrap(
@@ -1362,17 +1384,18 @@ impl DataInput for BufferedIndexInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.read_bytes_buffered(b, offset, len, true)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
     ) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let available = self.remaining_in_buffer();
         if len <= available {
             if len > 0 {
@@ -1398,10 +1421,10 @@ impl DataInput for BufferedIndexInput {
                     b[offset..offset + remaining].copy_from_slice(
                         &self.buffer[self.buffer_position..self.buffer_position + remaining],
                     );
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
-                    )));
+                    ))));
                 } else {
                     b[offset..offset + len].copy_from_slice(
                         &self.buffer[self.buffer_position..self.buffer_position + len],
@@ -1411,13 +1434,13 @@ impl DataInput for BufferedIndexInput {
             } else {
                 let after = self.file_pointer() + len as i64;
                 if after > self.source.length() {
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
-                    )));
+                    ))));
                 }
                 self.source.seek(self.file_pointer())?;
-                self.source.read_bytes(b, offset, len)?;
+                self.source.read_bytes(Some(b), offset, len)?;
                 self.buffer_start = after;
                 self.buffer_position = 0;
                 self.buffer_limit = 0;
@@ -1428,7 +1451,7 @@ impl DataInput for BufferedIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -1474,7 +1497,13 @@ impl DataInput for BufferedIndexInput {
         }
     }
 
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(
+        &mut self,
+        floats: Option<&mut [f32]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let floats = crate::store::require_array(floats)?;
         check_from_index_size(offset, length, floats.len())?;
         let mut remaining = length;
         while remaining > 0 {
@@ -1501,7 +1530,13 @@ impl DataInput for BufferedIndexInput {
         Ok(())
     }
 
-    fn read_longs(&mut self, longs: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(
+        &mut self,
+        longs: Option<&mut [i64]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let longs = crate::store::require_array(longs)?;
         check_from_index_size(offset, length, longs.len())?;
         let mut remaining = length;
         while remaining > 0 {
@@ -1528,7 +1563,8 @@ impl DataInput for BufferedIndexInput {
         Ok(())
     }
 
-    fn read_ints(&mut self, ints: &mut [i32], offset: usize, length: usize) -> Result<()> {
+    fn read_ints(&mut self, ints: Option<&mut [i32]>, offset: usize, length: usize) -> Result<()> {
+        let ints = crate::store::require_array(ints)?;
         check_from_index_size(offset, length, ints.len())?;
         let mut remaining = length;
         while remaining > 0 {
@@ -1571,15 +1607,15 @@ impl IndexInput for BufferedIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         if pos > self.source.length() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "seek past EOF",
-            )));
+            ))));
         }
         let end = self.buffer_start + self.buffer_limit as i64;
         if pos >= self.buffer_start && pos < end {
@@ -1643,9 +1679,9 @@ impl RandomAccessInput for BufferedIndexInput {
     ) -> Result<()> {
         let dst_end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if dst_end > bytes.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 bytes.len()
             )));
@@ -1710,7 +1746,7 @@ impl SlicedIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the slice is out of bounds.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the slice is out of bounds.
     pub fn new(
         slice_description: &str,
         base: Box<dyn IndexInput>,
@@ -1718,7 +1754,7 @@ impl SlicedIndexInput {
         length: i64,
     ) -> Result<Self> {
         if offset < 0 || length < 0 || length > base.length() - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice() {slice_description} out of bounds: {}",
                 base.resource_description()
             )));
@@ -1758,10 +1794,10 @@ impl SlicedIndexInput {
         let end = start.wrapping_add(self.buffer_size as i64).min(self.length);
         let new_length = end.wrapping_sub(start);
         if new_length <= 0 {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
-            )));
+            ))));
         }
         let new_length = new_length as usize;
         if self.buffer.capacity() < self.buffer_size {
@@ -1770,7 +1806,8 @@ impl SlicedIndexInput {
         }
         // Java's `fileOffset + start` wraps; the base rejects the result.
         self.base.seek(self.file_offset.wrapping_add(start))?;
-        self.base.read_bytes(&mut self.buffer, 0, new_length)?;
+        self.base
+            .read_bytes(Some(&mut self.buffer), 0, new_length)?;
         self.buffer_start = start;
         self.buffer_position = 0;
         self.buffer_limit = new_length;
@@ -1797,10 +1834,10 @@ impl SlicedIndexInput {
         self.refill()?;
         let result = pos.wrapping_sub(self.buffer_start);
         if result < 0 || result.wrapping_add(width_i64) > self.buffer_limit as i64 {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
-            )));
+            ))));
         }
         Ok(result as usize)
     }
@@ -1821,17 +1858,18 @@ impl DataInput for SlicedIndexInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.read_bytes_buffered(b, offset, len, true)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
     ) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let available = self.remaining_in_buffer();
         if len <= available {
             if len > 0 {
@@ -1857,10 +1895,10 @@ impl DataInput for SlicedIndexInput {
                     b[offset..offset + remaining].copy_from_slice(
                         &self.buffer[self.buffer_position..self.buffer_position + remaining],
                     );
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
-                    )));
+                    ))));
                 } else {
                     b[offset..offset + len].copy_from_slice(
                         &self.buffer[self.buffer_position..self.buffer_position + len],
@@ -1870,13 +1908,13 @@ impl DataInput for SlicedIndexInput {
             } else {
                 let after = self.file_pointer() + len as i64;
                 if after > self.length {
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
-                    )));
+                    ))));
                 }
                 self.base.seek(self.file_offset + self.file_pointer())?;
-                self.base.read_bytes(b, offset, len)?;
+                self.base.read_bytes(Some(b), offset, len)?;
                 self.buffer_start = after;
                 self.buffer_position = 0;
                 self.buffer_limit = 0;
@@ -1887,7 +1925,7 @@ impl DataInput for SlicedIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -1949,15 +1987,15 @@ impl IndexInput for SlicedIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         if pos > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "seek past EOF",
-            )));
+            ))));
         }
         let end = self.buffer_start + self.buffer_limit as i64;
         if pos >= self.buffer_start && pos < end {
@@ -2031,9 +2069,9 @@ impl RandomAccessInput for SlicedIndexInput {
     ) -> Result<()> {
         let dst_end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if dst_end > bytes.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 bytes.len()
             )));
@@ -2104,6 +2142,15 @@ pub trait IndexOutput: DataOutput + Send + Sync {
     /// Returns the name used to create this output.
     fn name(&self) -> &str;
 
+    /// The identity Java's `==` compares on an `IndexOutput`: the address of
+    /// this object. A handle that stands for another stream — several handles
+    /// on one stream, where Java passes the same object several times —
+    /// answers the stream's identity instead, so that Lucene's identity tests
+    /// (`metaOut == indexOut` in `BKDWriter.writeIndex`) see one stream.
+    fn output_identity(&self) -> *const () {
+        self as *const Self as *const ()
+    }
+
     /// Returns this output's delegate when it is a [`FilterIndexOutput`], and
     /// `None` otherwise.
     ///
@@ -2127,7 +2174,7 @@ pub trait IndexOutput: DataOutput + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the alignment is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the alignment is not a
     /// positive power of two, and propagates whatever writing a byte raises.
     fn align_file_pointer(&mut self, alignment_bytes: i32) -> Result<i64> {
         let offset = self.file_pointer();
@@ -2147,26 +2194,29 @@ pub trait IndexOutput: DataOutput + Send + Sync {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `offset` is negative or the
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `offset` is negative or the
 /// alignment is not a positive power of two — the two
-/// `IllegalArgumentException`s Java raises.
+/// `IllegalArgumentException`s Java raises — and
+/// [`LuceneErrorKind::Arithmetic`] (`long overflow`) when the aligned offset
+/// overflows, as `Math.addExact` throws.
 pub fn align_offset(offset: i64, alignment_bytes: i32) -> Result<i64> {
     if offset < 0 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "Offset must be positive".to_string(),
         ));
     }
     if alignment_bytes < 0 || alignment_bytes.count_ones() != 1 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "Alignment must be a power of 2".to_string(),
         ));
     }
     let alignment = i64::from(alignment_bytes);
+    // `Math.addExact(offset - 1L, alignmentBytes) & (-alignmentBytes)`
     match (offset - 1).checked_add(alignment) {
         Some(sum) => Ok(sum & -alignment),
-        None => Err(LuceneError::IllegalArgument(
-            "Offset overflows when aligned".to_string(),
-        )),
+        None => Err(LuceneError::from(LuceneErrorKind::Arithmetic(
+            "long overflow".to_string(),
+        ))),
     }
 }
 
@@ -2285,9 +2335,9 @@ impl std::fmt::Debug for FilterIndexOutput {
 fn check_from_index_size(offset: usize, length: usize, len: usize) -> Result<()> {
     let end = offset
         .checked_add(length)
-        .ok_or_else(|| LuceneError::IllegalArgument("offset + length overflowed".to_string()))?;
+        .ok_or_else(|| LuceneError::illegal_argument("offset + length overflowed".to_string()))?;
     if end > len {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "offset {offset} + length {length} exceeds array length {len}"
         )));
     }
@@ -2336,7 +2386,7 @@ fn check_from_index_size(offset: usize, length: usize, len: usize) -> Result<()>
 /// many words, "NOTE: AIOOBE not EOF if you read too much"
 /// (`ByteArrayDataInput.java:133`, `:139`) — which is an unchecked exception,
 /// so the literal Rust analogue would be a panic on a slice bound. This port
-/// returns [`LuceneError::Io`] with [`io::ErrorKind::UnexpectedEof`] instead.
+/// returns [`LuceneErrorKind::Io`] with [`io::ErrorKind::UnexpectedEof`] instead.
 /// Both are failures and neither is a value, so no caller can tell the two
 /// apart except by how it catches them; but the index bytes that drive `pos`
 /// are attacker-controlled, and this crate's readers are required to answer
@@ -2475,14 +2525,14 @@ impl<'a> ByteArrayDataInput<'a> {
             .checked_add(WIDTH)
             .filter(|end| *end <= self.bytes.len())
             .ok_or_else(|| {
-                LuceneError::Io(io::Error::new(
+                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!(
                         "unexpected EOF reading {WIDTH} bytes at pos {} (buffer {})",
                         self.pos,
                         self.bytes.len()
                     ),
-                ))
+                )))
             })?;
         let mut value = [0u8; WIDTH];
         value.copy_from_slice(&self.bytes[self.pos..end]);
@@ -2502,35 +2552,36 @@ impl DataInput for ByteArrayDataInput<'_> {
 
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.bytes.len() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "unexpected EOF reading byte",
-            )));
+            ))));
         }
         let b = self.bytes[self.pos];
         self.pos += 1;
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
         }
         if self.pos + len > self.bytes.len() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!(
                     "unexpected EOF reading {len} bytes at pos {} (buffer {})",
                     self.pos,
                     self.bytes.len()
                 ),
-            )));
+            ))));
         }
         b[offset..end].copy_from_slice(&self.bytes[self.pos..self.pos + len]);
         self.pos += len;
@@ -2539,16 +2590,16 @@ impl DataInput for ByteArrayDataInput<'_> {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let num_bytes = num_bytes as usize;
         if self.pos + num_bytes > self.bytes.len() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "skip past EOF",
-            )));
+            ))));
         }
         self.pos += num_bytes;
         Ok(())
@@ -2644,9 +2695,9 @@ impl DataOutput for VecDataOutput {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
@@ -2895,44 +2946,57 @@ impl<R: Read> DataInput for InputStreamDataInput<R> {
     fn read_byte(&mut self) -> Result<u8> {
         let mut buf = [0u8; 1];
         self.input.read_exact(&mut buf).map_err(|e| {
-            LuceneError::Io(io::Error::new(
+            LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("read past EOF: {e}"),
-            ))
+            )))
         })?;
         Ok(buf[0])
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
         }
         self.input.read_exact(&mut b[offset..end]).map_err(|e| {
-            LuceneError::Io(io::Error::new(
+            LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("read past EOF: {e}"),
-            ))
+            )))
         })?;
         Ok(())
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        // `InputStreamDataInput.skipBytes` (`InputStreamDataInput.java:58-67`).
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
+            return Err(LuceneError::illegal_argument(format!(
+                "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        io::copy(
+        let skipped = io::copy(
             &mut self.input.by_ref().take(num_bytes as u64),
             &mut io::sink(),
         )
         .map_err(LuceneError::from)?;
+        debug_assert!(skipped as i64 <= num_bytes);
+        if (skipped as i64) < num_bytes {
+            // `throw new EOFException()`
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                crate::store::java_nio_file::JavaIoException::new(
+                    crate::store::java_nio_file::EOF_EXCEPTION,
+                    None,
+                )
+                .into_io_error(),
+            )));
+        }
         Ok(())
     }
 }
@@ -2983,7 +3047,7 @@ impl<W: Write> OutputStreamDataOutput<W> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the buffered bytes cannot be written out.
+    /// Returns [`LuceneErrorKind::Io`] if the buffered bytes cannot be written out.
     pub fn close(mut self) -> Result<()> {
         self.output.flush().map_err(LuceneError::from)
     }
@@ -2997,9 +3061,9 @@ impl<W: Write> DataOutput for OutputStreamDataOutput<W> {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
@@ -3091,7 +3155,7 @@ impl DataInput for MockIndexInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.ensure_open()?;
         let mut view = self.view();
         view.read_bytes(b, offset, len)?;
@@ -3127,16 +3191,16 @@ impl IndexInput for MockIndexInput {
     fn seek(&mut self, pos: i64) -> Result<()> {
         self.ensure_open()?;
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         let pos = pos as usize;
         if pos > self.data.len() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("seek past EOF: position={pos}, length={}", self.data.len()),
-            )));
+            ))));
         }
         self.pos = pos;
         Ok(())
@@ -3149,17 +3213,17 @@ impl IndexInput for MockIndexInput {
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
         if offset < 0 || length < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice offset ({offset}) and length ({length}) must be non-negative"
             )));
         }
         let offset = offset as usize;
         let length = length as usize;
         let end = offset.checked_add(length).ok_or_else(|| {
-            LuceneError::IllegalArgument("slice offset + length overflowed".to_string())
+            LuceneError::illegal_argument("slice offset + length overflowed".to_string())
         })?;
         if end > self.data.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice(offset={offset}, length={length}) out of bounds, input length={}",
                 self.data.len()
             )));
@@ -3561,13 +3625,13 @@ impl DefaultIOContext {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if more than one hint of the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if more than one hint of the
     /// same concrete type is supplied.
     pub fn new(hints: Vec<Arc<dyn FileOpenHint>>) -> Result<Self> {
         for i in 0..hints.len() {
             for j in (i + 1)..hints.len() {
                 if hints[i].same_type(hints[j].as_ref()) {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "multiple hints of type {:?} specified",
                         hints[i]
                     )));
@@ -3747,15 +3811,23 @@ pub trait Lock: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the lock could not be released cleanly.
+    /// Returns [`LuceneErrorKind::Io`] if the lock could not be released cleanly.
     fn close(&self) -> Result<()>;
 
     /// Best-effort check that this lock is still valid.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the lock is no longer valid.
+    /// Returns [`LuceneErrorKind::Io`] if the lock is no longer valid.
     fn ensure_valid(&self) -> Result<()>;
+
+    /// This lock as `&dyn Any`, for the callers that narrow a lock to its
+    /// implementation as a Java cast does (`(NativeFSLock)
+    /// dir.obtainLock(name)` in `TestNativeFSLockFactory`); `None` for the
+    /// implementations that offer no such narrowing.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// A lock that never rejects acquisition and performs no actual locking.
@@ -3800,7 +3872,7 @@ pub trait LockFactory: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::LockObtainFailed`] if the lock cannot be acquired.
+    /// Returns [`LuceneErrorKind::LockObtainFailed`] if the lock cannot be acquired.
     fn obtain_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>>;
 
     /// Returns the concrete type name of this lock factory implementation.
@@ -3847,13 +3919,13 @@ pub trait LockFactory: Send + Sync {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::UnsupportedOperation`] when `dir` is not an
+/// Returns [`LuceneErrorKind::UnsupportedOperation`] when `dir` is not an
 /// `FSDirectory` subclass ([`Directory::as_fs_directory`] answers `None`).
 fn fs_directory_of<F: ?Sized>(dir: &dyn Directory) -> Result<&FSDirectory> {
     dir.as_fs_directory().ok_or_else(|| {
         let full_name = std::any::type_name::<F>();
         let simple_name = full_name.split("::").last().unwrap_or("FSLockFactory");
-        LuceneError::UnsupportedOperation(format!(
+        LuceneError::unsupported_operation(format!(
             "{simple_name} can only be used with FSDirectory subclasses, got: {}",
             dir.directory_to_string()
         ))
@@ -3885,7 +3957,7 @@ pub trait FSLockFactory: LockFactory {
     /// typed `FSDirectory`; this one is a `&dyn Directory` that the
     /// implementations narrow themselves, so a directory that is not an
     /// `FSDirectory` subclass is refused with the
-    /// [`LuceneError::UnsupportedOperation`] that
+    /// [`LuceneErrorKind::UnsupportedOperation`] that
     /// [`LockFactory::obtain_lock`] raises for it. The lock directory is
     /// [`FSDirectory::get_directory`].
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>>;
@@ -4091,7 +4163,7 @@ impl NativeFSLockFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] when the path was not held.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] when the path was not held.
     fn clear_lock_held(path: &str) -> Result<()> {
         let removed = NATIVE_HELD_LOCKS
             .lock()
@@ -4115,34 +4187,46 @@ impl NativeFSLockFactory {
 
 impl FSLockFactory for NativeFSLockFactory {
     /// Equivalent to `NativeFSLockFactory.obtainFSLock(FSDirectory, String)`
-    /// (`NativeFSLockFactory.java:73-128`).
+    /// (`NativeFSLockFactory.java:73-128`); every file operation goes through
+    /// the provider of the directory's path.
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
         let lock_dir = fs_directory_of::<Self>(dir)?.get_directory()?;
 
         // Ensure that lockDir exists and is a directory.
-        std::fs::create_dir_all(lock_dir)?;
-        let lock_file = lock_dir.join(lock_name);
+        // note: this will fail if lockDir is a symlink
+        nio::Files::create_directories(lock_dir)?;
+        let lock_file = lock_dir.resolve_str(lock_name);
 
         // `Files.createFile(lockFile)`: "we must create the file to have a
         // truly canonical path. if it's already created, we don't care. if it
-        // cant be created, it will fail below." Java keeps the failure only to
-        // attach it, suppressed, to a failing `toRealPath`. An existing file is
-        // not opened (`O_CREAT | O_EXCL`), so no descriptor of a file this
-        // process may hold locked is opened and closed here.
-        let _ = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_file);
+        // cant be created, it will fail below." The failure is kept only to
+        // attach it, suppressed, to a failing `toRealPath`
+        // (`NativeFSLockFactory.java:82-100`). An existing file is not opened
+        // (`CREATE_NEW`), so no descriptor of a file this process may hold
+        // locked is opened and closed here.
+        let creation_exception = nio::Files::create_file(&lock_file).err();
 
         // Fails if the lock file does not exist.
-        let real_path = lock_file.canonicalize()?;
+        let real_path = match lock_file.to_real_path(&[]) {
+            Ok(real_path) => real_path,
+            Err(e) => {
+                // If we couldn't resolve the lock file, it might be because we
+                // couldn't create it. So append any exception from createFile
+                // as a suppressed exception, in case it's useful.
+                return Err(match &creation_exception {
+                    Some(creation_exception) => nio::add_suppressed(e, creation_exception),
+                    None => e,
+                }
+                .into());
+            }
+        };
 
         // Used as a best-effort check, to see if the underlying file has
         // changed: read before the path is marked held
         // (`NativeFSLockFactory.java:104-106`).
-        let creation_time = file_creation_time(&std::fs::metadata(&real_path)?)?;
+        let creation_time = nio::Files::read_attributes(&real_path, &[])?.creation_time;
 
-        let real_path_str = real_path.to_string_lossy().to_string();
+        let real_path_str = real_path.to_string();
         let added = NATIVE_HELD_LOCKS
             .lock()
             .expect("native held locks mutex poisoned")
@@ -4157,43 +4241,41 @@ impl FSLockFactory for NativeFSLockFactory {
         // channel.tryLock();`. When no lock results, the `finally` closes the
         // channel and clears the held path last; an exception it raises
         // replaces the one in flight, as a Java `finally` does.
-        let channel = match std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&real_path)
-        {
+        let channel = match <dyn nio::FileChannel>::open(
+            &real_path,
+            &[nio::OpenOption::Create, nio::OpenOption::Write],
+        ) {
             Ok(channel) => channel,
             Err(error) => {
                 Self::clear_lock_held(&real_path_str)?;
                 return Err(error.into());
             }
         };
-        match try_lock_channel(&channel) {
-            Ok(true) => Ok(Box::new(NativeFSLock {
+        let close_channel = |channel: &Arc<dyn nio::FileChannel>| {
+            // `IOUtils.closeWhileHandlingException(channel)`.
+            crate::util::IOUtils::close_while_handling_exception([Some(|| {
+                let _ = channel.close();
+                Ok(())
+            })])
+        };
+        match channel.try_lock_whole() {
+            Ok(Some(lock)) => Ok(Box::new(NativeFSLock {
+                lock,
                 channel: Mutex::new(Some(channel)),
                 path: real_path,
                 path_str: real_path_str,
                 creation_time,
                 closed: AtomicBool::new(false),
             })),
-            Ok(false) => {
-                // `IOUtils.closeWhileHandlingException(channel)`: closing a
-                // `File` is dropping it, which cannot fail.
-                crate::util::IOUtils::close_while_handling_exception([Some(move || {
-                    drop(channel);
-                    Ok(())
-                })])?;
+            Ok(None) => {
+                close_channel(&channel)?;
                 Self::clear_lock_held(&real_path_str)?;
                 Err(LuceneError::lock_obtain_failed(format!(
                     "Lock held by another program: {real_path_str}"
                 )))
             }
             Err(error) => {
-                crate::util::IOUtils::close_while_handling_exception([Some(move || {
-                    drop(channel);
-                    Ok(())
-                })])?;
+                close_channel(&channel)?;
                 Self::clear_lock_held(&real_path_str)?;
                 Err(error.into())
             }
@@ -4238,7 +4320,7 @@ mod channel_lock {
     /// [`NonBlockingLockExclusive`](FlockOperation::NonBlockingLockExclusive)
     /// issues that same `F_SETLK`. A failure is answered by
     /// [`try_lock_failure`].
-    pub(super) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
+    pub(crate) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
         match rustix::fs::fcntl_lock(channel, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => Ok(true),
             Err(errno) => try_lock_failure(errno),
@@ -4291,8 +4373,22 @@ mod channel_lock {
     /// `FileLock.release()`, which `NativeFSLock.close()` runs before it
     /// closes the channel: the JDK's `UnixFileDispatcherImpl.release0`,
     /// `fcntl(fd, F_SETLK, {F_UNLCK, SEEK_SET, 0, 0})`.
-    pub(super) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
+    pub(crate) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
         rustix::fs::fcntl_lock(channel, FlockOperation::NonBlockingUnlock).map_err(io::Error::from)
+    }
+
+    /// `channel.lock()`: `fcntl(fd, F_SETLKW, {F_WRLCK, SEEK_SET, 0, 0})`,
+    /// waiting for the whole-file exclusive lock (`UnixFileDispatcherImpl.lock0`
+    /// with `blocking`); an `EINTR` is retried, as `FileChannelImpl.lock`
+    /// retries an interrupted `lock0` while the channel is open.
+    pub(crate) fn lock_channel(channel: &std::fs::File) -> io::Result<()> {
+        loop {
+            match rustix::fs::fcntl_lock(channel, FlockOperation::LockExclusive) {
+                Ok(()) => return Ok(()),
+                Err(errno) if errno == Errno::INTR => continue,
+                Err(errno) => return Err(io::Error::from(errno)),
+            }
+        }
     }
 
     #[cfg(test)]
@@ -4320,7 +4416,8 @@ mod channel_lock {
             assert_eq!(error.to_string(), expected);
             assert_eq!(error.kind(), io::Error::from(Errno::BADF).kind());
             assert_eq!(
-                crate::error::LuceneError::Io(error).to_string(),
+                crate::error::LuceneError::from(crate::error::LuceneErrorKind::Io(error))
+                    .to_string(),
                 format!("I/O error: {expected}")
             );
         }
@@ -4357,7 +4454,7 @@ mod channel_lock {
     use std::io;
 
     /// `channel.tryLock()`; see the module.
-    pub(super) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
+    pub(crate) fn try_lock_channel(channel: &std::fs::File) -> io::Result<bool> {
         match channel.try_lock() {
             Ok(()) => Ok(true),
             Err(std::fs::TryLockError::WouldBlock) => Ok(false),
@@ -4366,12 +4463,17 @@ mod channel_lock {
     }
 
     /// `FileLock.release()`; see the module.
-    pub(super) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
+    pub(crate) fn release_channel_lock(channel: &std::fs::File) -> io::Result<()> {
         channel.unlock()
+    }
+
+    /// `channel.lock()`; see the module.
+    pub(crate) fn lock_channel(channel: &std::fs::File) -> io::Result<()> {
+        channel.lock()
     }
 }
 
-use channel_lock::{release_channel_lock, try_lock_channel};
+pub(crate) use channel_lock::{lock_channel, release_channel_lock, try_lock_channel};
 
 /// Returns a file's `BasicFileAttributes.creationTime()`, as the two
 /// filesystem lock factories read it to detect a lock file replaced behind
@@ -4387,6 +4489,7 @@ use channel_lock::{release_channel_lock, try_lock_channel};
 ///
 /// Propagates the error of [`std::fs::Metadata::modified`] when the platform
 /// reports neither time.
+#[cfg(test)]
 fn file_creation_time(metadata: &std::fs::Metadata) -> io::Result<SystemTime> {
     metadata.created().or_else(|_| metadata.modified())
 }
@@ -4401,162 +4504,88 @@ static NATIVE_HELD_LOCKS: std::sync::LazyLock<Mutex<HashSet<String>>> =
 
 /// A native OS-level filesystem lock.
 ///
-/// Equivalent to the private `NativeFSLock` inner class of
-/// `org.apache.lucene.store.NativeFSLockFactory`.
-#[derive(Debug)]
-struct NativeFSLock {
-    /// The open handle on the lock file, which holds the lock; `None` once
-    /// [`close`](Lock::close) has released the lock and closed the handle.
-    ///
-    /// Equivalent to `NativeFSLock.channel` together with `NativeFSLock.lock`
-    /// (`NativeFSLockFactory.java:141-142`): Java's `FileLock` is taken on that
-    /// same channel by `channel.tryLock()`, and is valid until it is released
-    /// or the channel is closed, so `lock.isValid()` is the handle still being
-    /// held. `ensureValid` reads the file size through it, `channel.size()`
-    /// (`NativeFSLockFactory.java:169`), which still answers after the path was
-    /// deleted. The mutex also serves as the monitor of Java's `synchronized
-    /// close()`.
-    channel: Mutex<Option<std::fs::File>>,
-    path: PathBuf,
+/// Equivalent to the package-private `NativeFSLock` static inner class of
+/// `org.apache.lucene.store.NativeFSLockFactory`
+/// (`NativeFSLockFactory.java:140-205`). A [`Lock`] obtained from a
+/// [`NativeFSLockFactory`] narrows to it through [`Lock::as_any`].
+pub struct NativeFSLock {
+    /// `NativeFSLock.lock`, the `FileLock` `channel.tryLock()` returned.
+    lock: Box<dyn nio::FileLock>,
+    /// `NativeFSLock.channel`, the channel the lock is held on; `None` once
+    /// [`close`](Lock::close) has closed it. The mutex also serves as the
+    /// monitor of Java's `synchronized close()`.
+    channel: Mutex<Option<Arc<dyn nio::FileChannel>>>,
+    path: nio::Path,
     path_str: String,
     creation_time: SystemTime,
     closed: AtomicBool,
 }
 
+impl NativeFSLock {
+    /// The package-private `final FileLock lock` field
+    /// (`NativeFSLockFactory.java:141`), which `TestNativeFSLockFactory`
+    /// releases behind the lock's back.
+    pub fn lock(&self) -> &dyn nio::FileLock {
+        &*self.lock
+    }
+
+    /// The package-private `final FileChannel channel` field
+    /// (`NativeFSLockFactory.java:142`), which `TestNativeFSLockFactory`
+    /// closes behind the lock's back; `None` once [`close`](Lock::close)
+    /// has closed it.
+    pub fn channel(&self) -> Option<Arc<dyn nio::FileChannel>> {
+        self.channel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(Arc::clone)
+    }
+}
+
+impl std::fmt::Debug for NativeFSLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFSLock")
+            .field("path", &self.path)
+            .field("closed", &self.closed)
+            .finish()
+    }
+}
+
 impl std::fmt::Display for NativeFSLock {
     /// Equivalent to `NativeFSLock.toString()` (`NativeFSLockFactory.java:201-204`):
     /// `"NativeFSLock(path=" + path + ",impl=" + lock + ",creationTime=" +
-    /// creationTime + ")"`.
-    ///
-    /// `lock` is the `java.nio.channels.FileLock` that `channel.tryLock()`
-    /// returns, whose `toString()` is its class name, `[position:size`, the
-    /// mode and whether it is still valid, `]`. `tryLock()` locks the whole
-    /// file — position `0`, size `Long.MAX_VALUE`, exclusive — and the lock is
-    /// valid until `close()` releases it; on the JDK the class is
-    /// `sun.nio.ch.FileLockImpl`. Measured against `lucene-core-10.5.0.jar`
-    /// on OpenJDK 25: `impl=sun.nio.ch.FileLockImpl[0:9223372036854775807
-    /// exclusive valid]`, and `invalid` once the lock is closed. The record
-    /// lock this port holds has no such string, so Java's is rendered from
-    /// the same facts. `creationTime` is a `FileTime`, rendered as
-    /// [`file_time_to_string`] does.
+    /// creationTime + ")"`, the lock rendered by `FileLock.toString()` and the
+    /// creation time by `FileTime.toString()`. Measured against
+    /// `lucene-core-10.5.0.jar` on OpenJDK 25:
+    /// `impl=sun.nio.ch.FileLockImpl[0:9223372036854775807 exclusive valid]`,
+    /// and `invalid` once the lock is closed.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let validity = if self.closed.load(Ordering::SeqCst) {
-            "invalid"
-        } else {
-            "valid"
-        };
         write!(
             f,
-            "NativeFSLock(path={},impl=sun.nio.ch.FileLockImpl[0:{} exclusive {validity}],creationTime={})",
-            self.path.display(),
-            i64::MAX,
+            "NativeFSLock(path={},impl={},creationTime={})",
+            self.path,
+            self.lock.lock_to_string(),
             file_time_to_string(self.creation_time)
         )
     }
 }
 
-/// Renders a point in time as `java.nio.file.attribute.FileTime.toString()`
-/// does.
-///
-/// The ISO-8601 form in UTC, `yyyy-MM-ddTHH:mm:ss[.fraction]Z`: the year has
-/// at least four digits, a year before 1 is written as Java writes it — the
-/// proleptic year minus one, signed, so year 0 is `-0001` — and the fraction
-/// is the nanoseconds with their trailing zeros removed, omitted when they are
-/// zero. The calendar fields come from the same split into 10 000-year cycles
-/// `FileTime.toString()` performs before handing a value to
-/// `LocalDateTime.ofEpochSecond`, so every value renders as on the JDK.
-/// Measured against OpenJDK 25: `1970-01-01T00:00:00Z`,
-/// `1970-01-01T00:00:01.12Z`, `-0002-12-31T23:59:59Z` for one second before
-/// year 0, and `10000-01-01T00:00:00.000000005Z`.
-fn file_time_to_string(time: SystemTime) -> String {
-    use chrono::{Datelike, Timelike};
-
-    /// `FileTime.SECONDS_PER_10000_YEARS`.
-    const SECONDS_PER_10000_YEARS: i64 = 146_097 * 25 * 86_400;
-    /// `FileTime.SECONDS_0000_TO_1970`.
-    const SECONDS_0000_TO_1970: i64 = ((146_097 * 5) - (30 * 365 + 7)) * 86_400;
-
-    // `toInstant().getEpochSecond()` and `getNano()`: the seconds are floored,
-    // and the nanoseconds are never negative.
-    let (secs, nanos) = match time.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(after) => (after.as_secs() as i64, after.subsec_nanos()),
-        Err(before) => {
-            let before = before.duration();
-            let secs = -(before.as_secs() as i64);
-            match before.subsec_nanos() {
-                0 => (secs, 0),
-                nanos => (secs - 1, 1_000_000_000 - nanos),
-            }
-        }
-    };
-    let (hi, lo) = if secs >= -SECONDS_0000_TO_1970 {
-        // Current era.
-        let zero_secs = secs - SECONDS_PER_10000_YEARS + SECONDS_0000_TO_1970;
-        (
-            zero_secs.div_euclid(SECONDS_PER_10000_YEARS) + 1,
-            zero_secs.rem_euclid(SECONDS_PER_10000_YEARS),
-        )
-    } else {
-        // Before the current era.
-        let zero_secs = secs + SECONDS_0000_TO_1970;
-        (
-            zero_secs / SECONDS_PER_10000_YEARS,
-            zero_secs % SECONDS_PER_10000_YEARS,
-        )
-    };
-    let ldt = chrono::DateTime::from_timestamp(lo - SECONDS_0000_TO_1970, nanos)
-        .expect("INVARIANT: a second within one 10 000-year cycle of year 0 is representable")
-        .naive_utc();
-    let mut year = i64::from(ldt.year()) + hi * 10_000;
-    if year <= 0 {
-        year -= 1;
-    }
-    let mut out = String::with_capacity(32);
-    if year < 0 {
-        out.push('-');
-    }
-    let year = year.unsigned_abs();
-    if year < 10_000 {
-        out.push_str(&format!("{year:04}"));
-    } else {
-        out.push_str(&year.to_string());
-    }
-    out.push_str(&format!(
-        "-{:02}-{:02}T{:02}:{:02}:{:02}",
-        ldt.month(),
-        ldt.day(),
-        ldt.hour(),
-        ldt.minute(),
-        ldt.second()
-    ));
-    if nanos != 0 {
-        let fraction = format!("{nanos:09}");
-        out.push('.');
-        out.push_str(fraction.trim_end_matches('0'));
-    }
-    out.push('Z');
-    out
-}
-
 impl Lock for NativeFSLock {
     /// Equivalent to `NativeFSLock.close()` (`NativeFSLockFactory.java:185-199`):
-    /// release the lock, then close the channel, and — in a `finally` — mark
-    /// the lock closed and clear the held path last, whose failure replaces
-    /// any failure to release. "we don't validate, as unlike
+    /// `try (FileChannel channel = this.channel; FileLock lock = this.lock) {}`
+    /// releases the lock, then closes the channel, and — in a `finally` —
+    /// marks the lock closed and clears the held path last, whose failure
+    /// replaces any failure to release. "we don't validate, as unlike
     /// SimpleFSLockFactory, we can't break others locks".
     fn close(&self) -> Result<()> {
         let mut channel = self.channel.lock().expect("native lock mutex poisoned");
         if self.closed.load(Ordering::SeqCst) {
             return Ok(());
         }
-        // `try (FileChannel channel = this.channel; FileLock lock = this.lock)
-        // {}`: the lock is released first, then the channel is closed.
-        let released = match channel.take() {
-            Some(file) => {
-                let released = release_channel_lock(&file);
-                drop(file);
-                released
-            }
+        debug_assert!(channel.is_some());
+        let released = self.lock.close();
+        let closed = match channel.take() {
+            Some(channel) => channel.close(),
             None => Ok(()),
         };
         self.closed.store(true, Ordering::SeqCst);
@@ -4564,6 +4593,7 @@ impl Lock for NativeFSLock {
         drop(channel);
         cleared?;
         released?;
+        closed?;
         Ok(())
     }
 
@@ -4588,21 +4618,22 @@ impl Lock for NativeFSLock {
         }
         drop(held);
 
-        // Check our lock wasn't invalidated, then try to validate the
-        // underlying file descriptor: `channel.size()` throws if something is
-        // wrong. Both go through the one handle the lock is held on.
-        let channel = self.channel.lock().expect("native lock mutex poisoned");
-        let size = match channel.as_ref() {
-            Some(file) => file.metadata().map(|metadata| metadata.len() as i64),
-            None => {
-                drop(channel);
-                return Err(LuceneError::already_closed(format!(
-                    "FileLock invalidated by an external force: {self}"
-                )));
+        // Check our lock wasn't invalidated.
+        if !self.lock.is_valid() {
+            return Err(LuceneError::already_closed(format!(
+                "FileLock invalidated by an external force: {self}"
+            )));
+        }
+
+        // Try to validate the underlying file descriptor: `channel.size()`
+        // throws if something is wrong.
+        let size = {
+            let channel = self.channel.lock().expect("native lock mutex poisoned");
+            match channel.as_ref() {
+                Some(channel) => channel.size(),
+                None => Err(nio::closed_channel_exception()),
             }
-        };
-        drop(channel);
-        let size = size?;
+        }?;
         if size != 0 {
             return Err(LuceneError::already_closed(format!(
                 "Unexpected lock file size: {size}, (lock={self})"
@@ -4613,19 +4644,8 @@ impl Lock for NativeFSLock {
         // the same creation time as when we obtained the lock: Java reads it
         // through the path, `Files.readAttributes(path,
         // BasicFileAttributes.class)` (`NativeFSLockFactory.java:174-177`), so
-        // that a lock file deleted or replaced behind our back is detected;
-        // its `NoSuchFileException` carries the path as its message.
-        let metadata = match std::fs::metadata(&self.path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(LuceneError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    self.path.display().to_string(),
-                )));
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let ctime = file_creation_time(&metadata)?;
+        // that a lock file deleted or replaced behind our back is detected.
+        let ctime = nio::Files::read_attributes(&self.path, &[])?.creation_time;
         if ctime != self.creation_time {
             // `"... at " + ctime + ...` renders the `FileTime`
             // (`NativeFSLockFactory.java:178-181`).
@@ -4636,6 +4656,10 @@ impl Lock for NativeFSLock {
         }
 
         Ok(())
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -4661,26 +4685,29 @@ impl FSLockFactory for SimpleFSLockFactory {
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
         let lock_dir = fs_directory_of::<Self>(dir)?.get_directory()?;
 
-        std::fs::create_dir_all(lock_dir)?;
-        let lock_file = lock_dir.join(lock_name);
+        // Ensure that lockDir exists and is a directory.
+        // note: this will fail if lockDir is a symlink
+        nio::Files::create_directories(lock_dir)?;
+        let lock_file = lock_dir.resolve_str(lock_name);
 
-        match std::fs::File::create_new(&lock_file) {
-            Ok(_) => {}
-            Err(e)
-                if e.kind() == std::io::ErrorKind::AlreadyExists
-                    || e.kind() == std::io::ErrorKind::PermissionDenied =>
+        // create the file: this will fail if it already exists
+        if let Err(e) = nio::Files::create_file(&lock_file) {
+            let class = nio::java_class_of(&e);
+            if class == nio::FILE_ALREADY_EXISTS_EXCEPTION || class == nio::ACCESS_DENIED_EXCEPTION
             {
+                // convert optional specific exception to our optional
+                // specific exception
                 return Err(LuceneError::lock_obtain_failed_with_source(
-                    format!("Lock held elsewhere: {}", lock_file.display()),
+                    format!("Lock held elsewhere: {lock_file}"),
                     e,
                 ));
             }
-            Err(e) => return Err(LuceneError::from(e)),
+            return Err(LuceneError::from(e));
         }
 
         // Used as a best-effort check, to see if the underlying file has
         // changed.
-        let creation_time = file_creation_time(&std::fs::metadata(&lock_file)?)?;
+        let creation_time = nio::Files::read_attributes(&lock_file, &[])?.creation_time;
 
         Ok(Box::new(SimpleFSLock {
             path: lock_file,
@@ -4697,7 +4724,7 @@ impl FSLockFactory for SimpleFSLockFactory {
 /// `org.apache.lucene.store.SimpleFSLockFactory`.
 #[derive(Debug)]
 struct SimpleFSLock {
-    path: PathBuf,
+    path: nio::Path,
     creation_time: SystemTime,
     closed: AtomicBool,
     /// The monitor of Java's `synchronized close()`.
@@ -4712,7 +4739,7 @@ impl std::fmt::Display for SimpleFSLock {
         write!(
             f,
             "SimpleFSLock(path={},creationTime={})",
-            self.path.display(),
+            self.path,
             file_time_to_string(self.creation_time)
         )
     }
@@ -4743,7 +4770,7 @@ impl Lock for SimpleFSLock {
             // We did a best effort check, now try to remove the file. If
             // something goes wrong, we need to make it clear to the user that
             // the directory may still remain locked.
-            Ok(()) => std::fs::remove_file(&self.path).map_err(|e| {
+            Ok(()) => nio::Files::delete(&self.path).map_err(|e| {
                 LuceneError::lock_release_failed_with_source(
                     "Unable to remove lock file. Manual intervention is recommended",
                     e,
@@ -4765,7 +4792,7 @@ impl Lock for SimpleFSLock {
         // Try to validate the backing file name, that it still exists, and has
         // the same creation time as when we obtained the lock. If it differs,
         // someone deleted our lock file (and we are ineffective).
-        let ctime = file_creation_time(&std::fs::metadata(&self.path)?)?;
+        let ctime = nio::Files::read_attributes(&self.path, &[])?.creation_time;
         if ctime != self.creation_time {
             // `"... at " + ctime + ...`: the `FileTime`'s `toString()`
             // (`SimpleFSLockFactory.java:102-106`).
@@ -4829,7 +4856,7 @@ impl BufferedChecksum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `offset + len` exceeds
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `offset + len` exceeds
     /// `bytes.len()`.
     pub fn update_bytes(&mut self, bytes: &[u8], offset: usize, len: usize) -> Result<()> {
         check_from_index_size(offset, len, bytes.len())?;
@@ -4901,7 +4928,7 @@ impl BufferedChecksum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `offset + len` exceeds
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `offset + len` exceeds
     /// `vals.len()`, as [`update_bytes`](Self::update_bytes) does for bytes.
     /// The range is checked before anything is checksummed; Java raises its
     /// `IndexOutOfBoundsException` from the array access itself, after it may
@@ -4983,6 +5010,35 @@ impl std::fmt::Debug for BufferedChecksum {
     }
 }
 
+/// Closes `input` once the body of a Java try-with-resources over it has
+/// produced `result`, and returns what the statement completes with.
+///
+/// **This has no counterpart in Lucene 10.5.0.** It stands for the
+/// `try (IndexInput in = ...) { ... }` statement Lucene's readers open their
+/// files with (JLS 14.20.3): the resource is closed on every exit; when the
+/// body succeeded, a failure to close is the statement's failure; when the
+/// body failed, its failure is kept and the one closing raised is suppressed
+/// into it ([`LuceneError::add_suppressed`]).
+///
+/// # Errors
+///
+/// `result`'s error, else the error closing `input` returned.
+pub fn close_after<T, I: IndexInput + ?Sized>(input: &mut I, result: Result<T>) -> Result<T> {
+    match result {
+        Ok(value) => {
+            input.close()?;
+            Ok(value)
+        }
+        Err(mut error) => {
+            // `error.addSuppressed(closeFailure)`.
+            if let Err(close_failure) = input.close() {
+                error.add_suppressed(close_failure);
+            }
+            Err(error)
+        }
+    }
+}
+
 /// Abstract base trait for checksum-computing inputs.
 ///
 /// Equivalent to `org.apache.lucene.store.ChecksumIndexInput`. This trait extends
@@ -5003,7 +5059,7 @@ pub trait ChecksumIndexInput: IndexInput {
     /// Forward-only seek that updates the checksum over skipped bytes.
     ///
     /// Equivalent to `ChecksumIndexInput.seek` in Lucene 10.5.0. Backward seeks
-    /// are rejected with [`LuceneError::IllegalState`]. Forward seeks advance the
+    /// are rejected with [`LuceneErrorKind::IllegalState`]. Forward seeks advance the
     /// file pointer by reading the skipped bytes through the per-instance skip
     /// buffer, so the digest remains correct.
     fn seek(&mut self, pos: i64) -> Result<()> {
@@ -5041,7 +5097,7 @@ pub trait ChecksumIndexInput: IndexInput {
         let result = (|| -> Result<()> {
             while skipped < num_bytes {
                 let step = ((num_bytes - skipped) as usize).min(buf.len());
-                self.read_bytes_buffered(&mut buf, 0, step, false)?;
+                self.read_bytes_buffered(Some(&mut buf), 0, step, false)?;
                 skipped += step as i64;
             }
             Ok(())
@@ -5075,11 +5131,14 @@ impl std::fmt::Debug for BufferedChecksumIndexInput {
 
 impl BufferedChecksumIndexInput {
     /// Wraps `main` so that all bytes read update an internal CRC-32.
+    ///
+    /// The resource description is `"BufferedChecksumIndexInput(" + main +
+    /// ")"` (`BufferedChecksumIndexInput.java:36`), whose `main` is
+    /// `main.toString()`: [`DataInput::to_java_string`], which differs from
+    /// the resource description for an input that overrides `toString()`
+    /// (`MockIndexInputWrapper`).
     pub fn new(main: Box<dyn IndexInput>) -> Self {
-        let resource_description = format!(
-            "BufferedChecksumIndexInput({})",
-            main.resource_description()
-        );
+        let resource_description = format!("BufferedChecksumIndexInput({})", main.to_java_string());
         Self {
             main,
             digest: BufferedChecksum::new(),
@@ -5101,8 +5160,9 @@ impl DataInput for BufferedChecksumIndexInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
-        self.main.read_bytes(b, offset, len)?;
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
+        self.main.read_bytes(Some(b), offset, len)?;
         self.digest.update_bytes(b, offset, len)?;
         Ok(())
     }
@@ -5135,14 +5195,15 @@ impl DataInput for BufferedChecksumIndexInput {
 
     /// Equivalent to `BufferedChecksumIndexInput.readLongs(long[], int, int)`
     /// (`BufferedChecksumIndexInput.java:71-74`).
-    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
-        self.main.read_longs(dst, offset, length)?;
+    fn read_longs(&mut self, dst: Option<&mut [i64]>, offset: usize, length: usize) -> Result<()> {
+        let dst = crate::store::require_array(dst)?;
+        self.main.read_longs(Some(dst), offset, length)?;
         self.digest.update_longs(dst, offset, length)
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -5200,6 +5261,60 @@ impl ChecksumIndexInput for BufferedChecksumIndexInput {
     }
 }
 
+/// An [`IndexInput`] shared by reference whose owner closes it while other
+/// holders may still exist.
+///
+/// Java's readers keep one input object (a terms dictionary's `termsIn`, a
+/// postings reader's `docIn`), hand clones of it to every enum, and close it in
+/// their own `close()` whoever else still holds the reader. Rust closes an
+/// input through `&mut`; this holder gives shared access for reading (cloning,
+/// slicing, checksumming) and closes the input in place through `&self`, so
+/// the closed input stays in its slot as Java's `final` field keeps it.
+pub struct SharedIndexInput {
+    input: std::sync::RwLock<Box<dyn IndexInput>>,
+}
+
+impl SharedIndexInput {
+    /// Wraps `input`.
+    pub fn new(input: Box<dyn IndexInput>) -> Self {
+        Self {
+            input: std::sync::RwLock::new(input),
+        }
+    }
+
+    /// Shared access to the input.
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Box<dyn IndexInput>> {
+        self.input
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Exclusive access to the input.
+    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, Box<dyn IndexInput>> {
+        self.input
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `input.clone()`.
+    pub fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        self.read().clone_input()
+    }
+
+    /// `input.close()`.
+    pub fn close(&self) -> Result<()> {
+        self.write().close()
+    }
+}
+
+impl std::fmt::Debug for SharedIndexInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SharedIndexInput")
+            .field(&self.read().resource_description())
+            .finish()
+    }
+}
+
 /// Abstraction for a flat file store.
 ///
 /// Equivalent to `org.apache.lucene.store.Directory`. Implementations must be
@@ -5217,21 +5332,21 @@ pub trait Directory: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    /// Returns [`LuceneErrorKind::Io`] with `NotFound` if the file does not exist.
     fn delete_file(&self, name: &str) -> Result<()>;
 
     /// Returns the byte length of the named file.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    /// Returns [`LuceneErrorKind::Io`] with `NotFound` if the file does not exist.
     fn file_length(&self, name: &str) -> Result<i64>;
 
     /// Creates a new file and returns an output stream for appending to it.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `AlreadyExists` if the file exists.
+    /// Returns [`LuceneErrorKind::Io`] with `AlreadyExists` if the file exists.
     fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>>;
 
     /// Creates a new temporary file and returns an output stream for it.
@@ -5255,14 +5370,14 @@ pub trait Directory: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `AlreadyExists` if `dest` exists.
+    /// Returns [`LuceneErrorKind::Io`] with `AlreadyExists` if `dest` exists.
     fn rename(&self, source: &str, dest: &str) -> Result<()>;
 
     /// Opens an existing file for reading.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    /// Returns [`LuceneErrorKind::Io`] with `NotFound` if the file does not exist.
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>>;
 
     /// Opens a checksum-computing input for an existing file.
@@ -5279,11 +5394,18 @@ pub trait Directory: Send + Sync {
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>>;
 
     /// Closes the directory and releases any resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 
     /// Copies `src` from `from` into a new file `dest` in this directory.
     ///
     /// The supplied `context` is used only for opening the destination file.
+    ///
+    /// Equivalent to `Directory.copyFrom` (`Directory.java:177-189`): the
+    /// input and the output are the resources of one `try`, closed in reverse
+    /// order (output, then input) whatever happens, with the first failure
+    /// winning; `dest` is deleted, ignoring failures, unless the copy itself
+    /// succeeded (a failure closing a stream after a successful copy keeps
+    /// the file).
     fn copy_from(
         &self,
         from: &dyn Directory,
@@ -5291,17 +5413,25 @@ pub trait Directory: Send + Sync {
         dest: &str,
         context: &dyn IOContext,
     ) -> Result<()> {
+        let mut success = false;
         let result: Result<()> = (|| {
-            let mut src_input = from.open_input(src, &*READONCE_IO_CONTEXT)?;
-            let len = src_input.length();
-            let mut dest_output = self.create_output(dest, context)?;
-            dest_output.copy_bytes(&mut *src_input, len)?;
-            drop(src_input);
-            dest_output.close()?;
-            Ok(())
+            let mut is = from.open_input(src, &*READONCE_IO_CONTEXT)?;
+            let mut os = match self.create_output(dest, context) {
+                Ok(os) => os,
+                Err(e) => {
+                    let _suppressed = is.close();
+                    return Err(e);
+                }
+            };
+            let len = is.length();
+            let copied = os.copy_bytes(&mut *is, len);
+            success = copied.is_ok();
+            let os_closed = os.close();
+            let is_closed = is.close();
+            copied.and(os_closed).and(is_closed)
         })();
-        if result.is_err() {
-            // Best-effort cleanup of a partial destination file on failure.
+        if !success {
+            // IOUtils.deleteFilesIgnoringExceptions(this, dest)
             let _ = self.delete_file(dest);
         }
         result
@@ -5352,6 +5482,21 @@ pub trait Directory: Send + Sync {
         None
     }
 
+    /// Returns this directory as [`std::any::Any`], for a caller that tests
+    /// its class, or `None` when it does not take part in such tests.
+    ///
+    /// Equivalent to Java's `dir instanceof X` and the cast `(X) dir` for the
+    /// classes `BaseDirectoryTestCase.testIsLoaded` tests
+    /// (`BaseDirectoryTestCase.java:1636-1679`): `FileSwitchDirectory`,
+    /// `MMapDirectory` and `NRTCachingDirectory`, which answer themselves.
+    /// Rust cannot narrow a `dyn Directory` to a concrete type, so the
+    /// question is asked of the directory itself, as
+    /// [`as_fs_directory`](Self::as_fs_directory) is; the default answers
+    /// `None`, the `false` branch of `instanceof`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Returns the concrete type name of this directory implementation.
     ///
     /// Useful for diagnostic messages; the default implementation reports
@@ -5392,7 +5537,7 @@ pub trait Directory: Send + Sync {
     /// Default validation that this directory is still open.
     ///
     /// Concrete directories may override this to throw
-    /// [`LuceneError::IllegalState`] when closed.
+    /// [`LuceneErrorKind::IllegalState`] when closed.
     fn ensure_open(&self) -> Result<()> {
         Ok(())
     }
@@ -5517,7 +5662,7 @@ impl BaseDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] "this Directory is closed".
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] "this Directory is closed".
     pub fn ensure_open(&self) -> Result<()> {
         if !self.is_open() {
             return Err(LuceneError::already_closed(
@@ -5639,7 +5784,7 @@ impl Directory for FilterDirectory {
         self.inner.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -5737,11 +5882,37 @@ impl SimpleRateLimiter {
         slf
     }
 
+    /// `System.nanoTime()`: a monotonic clock read in nanoseconds from a
+    /// fixed, arbitrary origin.
     fn now_ns() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0)
+        static ORIGIN: std::sync::LazyLock<std::time::Instant> =
+            std::sync::LazyLock::new(std::time::Instant::now);
+        ORIGIN.elapsed().as_nanos() as i64
+    }
+
+    /// `Thread.sleep`: waits `duration`, returning early with
+    /// [`InterruptedException`](crate::util::InterruptedException) (status
+    /// cleared) when the thread is interrupted.
+    fn sleep(
+        duration: std::time::Duration,
+    ) -> std::result::Result<(), crate::util::InterruptedException> {
+        let monitor = Mutex::new(());
+        let condvar = Arc::new(std::sync::Condvar::new());
+        let deadline = std::time::Instant::now() + duration;
+        let mut guard = monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Ok(());
+            }
+            let (reacquired, outcome) =
+                crate::util::concurrent::wait_interruptibly(&condvar, guard, Some(deadline - now))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = reacquired;
+            outcome?;
+        }
     }
 
     fn store_f64(atom: &std::sync::atomic::AtomicU64, value: f64) {
@@ -5775,20 +5946,27 @@ impl RateLimiter for SimpleRateLimiter {
         self.min_pause_check_bytes.load(Ordering::Relaxed)
     }
 
+    /// Equivalent to `SimpleRateLimiter.pause(long)` (`RateLimiter.java:98-160`):
+    /// sleeps until the instantaneous rate is back under the cap, in a loop
+    /// because a sleep may end early, each sleep capped at
+    /// `Integer.MAX_VALUE` milliseconds. An interrupt of the sleeping thread
+    /// (see [`InterruptHandle`](crate::util::InterruptHandle)) is rethrown as
+    /// `ThreadInterruptedException`.
     fn pause(&self, bytes: i64) -> Result<i64> {
-        let mb_per_sec = self.get_mb_per_sec();
-        if mb_per_sec <= 0.0 || bytes <= 0 {
-            return Ok(0);
-        }
-
         let start_ns = Self::now_ns();
-        let seconds_to_pause = (bytes as f64 / (1024.0 * 1024.0)) / mb_per_sec;
-        let pause_ns = (seconds_to_pause * 1_000_000_000.0) as i64;
 
+        let seconds_to_pause = (bytes as f64 / 1024. / 1024.) / self.get_mb_per_sec();
+
+        // Sync'd to read + write lastNS:
         let target_ns = {
             let mut last = self.last_ns.lock().expect("last_ns mutex poisoned");
-            let target = *last + pause_ns;
+            // Time we should sleep until; this is purely instantaneous rate
+            // (just adds seconds onto the last time we had paused to).
+            let target = last.wrapping_add((1_000_000_000f64 * seconds_to_pause) as i64);
             if start_ns >= target {
+                // OK, current time is already beyond the target sleep time,
+                // no pausing to do. Set to startNS, not targetNS, to enforce
+                // the instant rate, not the "averaged over all history" rate:
                 *last = start_ns;
                 return Ok(0);
             }
@@ -5796,10 +5974,32 @@ impl RateLimiter for SimpleRateLimiter {
             target
         };
 
-        let duration_ns = (target_ns - start_ns).max(0) as u64;
-        let duration = std::time::Duration::from_nanos(duration_ns);
-        std::thread::sleep(duration);
-        Ok(Self::now_ns().saturating_sub(start_ns))
+        let mut cur_ns = start_ns;
+
+        // While loop because Thread.sleep doesn't always sleep enough:
+        loop {
+            let pause_ns = target_ns.wrapping_sub(cur_ns);
+            if pause_ns > 0 {
+                let (sleep_ms, sleep_ns) = if pause_ns > 100_000i64 * i64::from(i32::MAX) {
+                    // Not really practical (sleeping for 25 days) but we
+                    // shouldn't overflow int:
+                    (i64::from(i32::MAX), 0)
+                } else {
+                    (pause_ns / 1_000_000, pause_ns % 1_000_000)
+                };
+                // `Thread.sleep(sleepMS, sleepNS)`, whose
+                // `InterruptedException` becomes `ThreadInterruptedException`.
+                Self::sleep(
+                    std::time::Duration::from_millis(sleep_ms as u64)
+                        + std::time::Duration::from_nanos(sleep_ns as u64),
+                )
+                .map_err(LuceneError::thread_interrupted)?;
+                cur_ns = Self::now_ns();
+                continue;
+            }
+            break;
+        }
+        Ok(cur_ns.wrapping_sub(start_ns))
     }
 }
 
@@ -5945,7 +6145,7 @@ impl Directory for TrackingDirectoryWrapper {
         self.inner.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -5997,7 +6197,8 @@ pub struct FileSwitchDirectory {
     primary_dir: Box<dyn Directory>,
     secondary_dir: Box<dyn Directory>,
     primary_extensions: HashSet<String>,
-    do_close: bool,
+    /// Java's `doClose` field, cleared by a successful `close()`.
+    do_close: AtomicBool,
 }
 
 impl FileSwitchDirectory {
@@ -6008,7 +6209,7 @@ impl FileSwitchDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `primary_extensions` contains
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `primary_extensions` contains
     /// `"tmp"`, which is reserved for temporary files.
     pub fn new(
         primary_extensions: HashSet<String>,
@@ -6017,7 +6218,7 @@ impl FileSwitchDirectory {
         do_close: bool,
     ) -> Result<Self> {
         if primary_extensions.contains("tmp") {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "tmp is a reserved extension".to_string(),
             ));
         }
@@ -6025,7 +6226,7 @@ impl FileSwitchDirectory {
             primary_dir,
             secondary_dir,
             primary_extensions,
-            do_close,
+            do_close: AtomicBool::new(do_close),
         })
     }
 
@@ -6047,11 +6248,21 @@ impl FileSwitchDirectory {
         let dot = name.rfind('.');
         let ext = dot.map(|i| &name[i + 1..]).unwrap_or("");
         if ext == "tmp" {
-            // Temporary file names look like "prefix_suffix_<ext>.tmp"; recover
-            // the real extension from the portion before ".tmp".
-            let before_tmp = dot.unwrap();
-            if let Some(i) = name[..before_tmp].rfind('.') {
-                return name[i + 1..before_tmp].to_string();
+            // `EXT_PATTERN.matcher(name.substring(0, i + 1)).find()`, the
+            // pattern being `\.([a-zA-Z]+)` (`FileSwitchDirectory.java:51,151`):
+            // the first `.` followed by ASCII letters, and those letters.
+            let head = &name.as_bytes()[..=dot.expect("ext is \"tmp\"")];
+            for (i, &b) in head.iter().enumerate() {
+                if b != b'.' {
+                    continue;
+                }
+                let letters = head[i + 1..]
+                    .iter()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .count();
+                if letters > 0 {
+                    return name[i + 1..i + 1 + letters].to_string();
+                }
             }
         }
         ext.to_string()
@@ -6067,11 +6278,16 @@ impl FileSwitchDirectory {
     }
 
     fn is_not_found(err: &LuceneError) -> bool {
-        matches!(err, LuceneError::Io(io_err) if io_err.kind() == io::ErrorKind::NotFound)
+        matches!(err, LuceneError { kind: LuceneErrorKind::Io(io_err), .. } if io_err.kind() == io::ErrorKind::NotFound)
     }
 }
 
 impl Directory for FileSwitchDirectory {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         let mut files = Vec::new();
         let mut primary_err: Option<LuceneError> = None;
@@ -6171,9 +6387,17 @@ impl Directory for FileSwitchDirectory {
         let source_dir = self.get_directory(source);
         let dest_dir = self.get_directory(dest);
         if !std::ptr::eq(source_dir, dest_dir) {
-            return Err(LuceneError::Io(io::Error::other(format!(
-                "source and dest are in different directories: {source} -> {dest}"
-            ))));
+            // `new AtomicMoveNotSupportedException(source, dest, "source and
+            // dest are in different directories")` (`FileSwitchDirectory.java:222-225`).
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::JavaIoException::file_system(
+                    nio::ATOMIC_MOVE_NOT_SUPPORTED_EXCEPTION,
+                    Some(source.to_string()),
+                    Some(dest.to_string()),
+                    Some("source and dest are in different directories".to_string()),
+                )
+                .into_io_error(),
+            )));
         }
         source_dir.rename(source, dest)
     }
@@ -6189,13 +6413,13 @@ impl Directory for FileSwitchDirectory {
     /// Equivalent to `FileSwitchDirectory.close()` (`FileSwitchDirectory.java:82-88`):
     /// `IOUtils.close(primaryDir, secondaryDir)` closes both, even when the
     /// first fails, and rethrows the first failure, which leaves `doClose` set.
-    fn close(&mut self) -> Result<()> {
-        if self.do_close {
+    fn close(&self) -> Result<()> {
+        if self.do_close.load(Ordering::SeqCst) {
             crate::util::IOUtils::close([
                 crate::util::IOUtils::closeable(|| self.primary_dir.close()),
                 crate::util::IOUtils::closeable(|| self.secondary_dir.close()),
             ])?;
-            self.do_close = false;
+            self.do_close.store(false, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -6251,7 +6475,18 @@ pub struct NRTCachingDirectory {
     shared: Arc<NrtCacheShared>,
     max_merge_size_bytes: i64,
     max_cached_bytes: i64,
+    /// The override of the protected `doCacheWrite(String, IOContext)` an
+    /// anonymous Java subclass declares; `None` keeps Lucene's.
+    do_cache_write_override: Option<NrtDoCacheWrite>,
 }
+
+/// An override of `NRTCachingDirectory.doCacheWrite(String, IOContext)`
+/// (`NRTCachingDirectory.java:230-244`), the `protected` member a Java
+/// subclass overrides: called with the directory (whose
+/// [`NRTCachingDirectory::super_do_cache_write`] is `super.doCacheWrite`),
+/// the file name and the context.
+pub type NrtDoCacheWrite =
+    Arc<dyn Fn(&NRTCachingDirectory, &str, &dyn IOContext) -> bool + Send + Sync>;
 
 /// The part of an [`NRTCachingDirectory`] its cache directory's output-close
 /// callback reads and writes.
@@ -6324,7 +6559,23 @@ impl NRTCachingDirectory {
             shared,
             max_merge_size_bytes: (max_merge_size_mb * 1024.0 * 1024.0) as i64,
             max_cached_bytes: (max_cached_mb * 1024.0 * 1024.0) as i64,
+            do_cache_write_override: None,
         }
+    }
+
+    /// Creates a new NRT caching directory whose `doCacheWrite` is
+    /// `do_cache_write`: the anonymous subclass `new
+    /// NRTCachingDirectory(dir, maxMergeSizeMB, maxCachedMB) { protected
+    /// boolean doCacheWrite(String name, IOContext context) { ... } }`.
+    pub fn with_do_cache_write(
+        inner: Box<dyn Directory>,
+        max_merge_size_mb: f64,
+        max_cached_mb: f64,
+        do_cache_write: NrtDoCacheWrite,
+    ) -> Self {
+        let mut dir = Self::new(inner, max_merge_size_mb, max_cached_mb);
+        dir.do_cache_write_override = Some(do_cache_write);
+        dir
     }
 
     /// Returns the wrapped directory.
@@ -6360,7 +6611,7 @@ impl NRTCachingDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the cache directory is
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] once the cache directory is
     /// closed, as `fileExists` throws `AlreadyClosedException`.
     fn is_cached_file(
         shared: &NrtCacheShared,
@@ -6379,7 +6630,7 @@ impl NRTCachingDirectory {
     /// cached, when its estimated size is at most `maxMergeSizeBytes` and the
     /// cache, with it, stays within `maxCachedBytes`. Java's `long` addition
     /// wraps, as here.
-    fn do_cache_write(&self, _name: &str, context: &dyn IOContext) -> bool {
+    pub fn super_do_cache_write(&self, _name: &str, context: &dyn IOContext) -> bool {
         let bytes = if let Some(merge_info) = context.merge_info() {
             merge_info.estimated_merge_bytes
         } else if let Some(flush_info) = context.flush_info() {
@@ -6390,6 +6641,16 @@ impl NRTCachingDirectory {
         bytes <= self.max_merge_size_bytes
             && bytes.wrapping_add(self.shared.cache_size.load(Ordering::SeqCst))
                 <= self.max_cached_bytes
+    }
+
+    /// The virtual `doCacheWrite(String, IOContext)`: the subclass override
+    /// [`with_do_cache_write`](Self::with_do_cache_write) installed, else
+    /// [`super_do_cache_write`](Self::super_do_cache_write).
+    fn do_cache_write(&self, name: &str, context: &dyn IOContext) -> bool {
+        match &self.do_cache_write_override {
+            Some(f) => f(self, name, context),
+            None => self.super_do_cache_write(name, context),
+        }
     }
 
     /// Moves `file_name` from the cache to the delegate.
@@ -6440,7 +6701,7 @@ impl NRTCachingDirectory {
     /// `NRTCachingDirectory.slowFileExists(Directory, String)`
     /// (`NRTCachingDirectory.java:294-305`): `dir.fileLength(fileName)`, where
     /// only `NoSuchFileException` and `FileNotFoundException` — this port's
-    /// [`LuceneError::Io`] of kind [`io::ErrorKind::NotFound`] — mean `false`.
+    /// [`LuceneErrorKind::Io`] of kind [`io::ErrorKind::NotFound`] — mean `false`.
     ///
     /// # Errors
     ///
@@ -6448,7 +6709,10 @@ impl NRTCachingDirectory {
     fn slow_file_exists(dir: &dyn Directory, name: &str) -> Result<bool> {
         match dir.file_length(name) {
             Ok(_) => Ok(true),
-            Err(LuceneError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            }) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
     }
@@ -6463,6 +6727,11 @@ impl crate::util::Accountable for NRTCachingDirectory {
 }
 
 impl Directory for NRTCachingDirectory {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         let _monitor = self.shared.enter();
         let mut files: BTreeSet<String> = BTreeSet::new();
@@ -6597,7 +6866,7 @@ impl Directory for NRTCachingDirectory {
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.un_cache(source)?;
         if self.cache.file_exists(dest)? {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "target file {dest} already exists"
             )));
         }
@@ -6624,27 +6893,22 @@ impl Directory for NRTCachingDirectory {
     /// directory and the delegate are then closed whatever it raised, and the
     /// first failure is rethrown. Closing again is therefore allowed: it
     /// closes the two directories again.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let closed = &self.closed;
         let cache = &self.cache;
         let shared = &self.shared;
-        let inner = std::cell::RefCell::new(&mut self.inner);
+        let inner = &self.inner;
         crate::util::IOUtils::close([
             crate::util::IOUtils::closeable(|| {
                 if !closed.swap(true, Ordering::SeqCst) {
-                    let inner = inner.borrow();
                     for file_name in cache.list_all()? {
                         Self::un_cache_with(shared, cache, inner.get_delegate(), &file_name)?;
                     }
                 }
                 Ok(())
             }),
-            crate::util::IOUtils::closeable(|| {
-                // `ByteBuffersDirectory.close()` raises nothing.
-                cache.close_shared();
-                Ok(())
-            }),
-            crate::util::IOUtils::closeable(|| inner.borrow_mut().close()),
+            crate::util::IOUtils::closeable(|| cache.close()),
+            crate::util::IOUtils::closeable(|| inner.close()),
         ])
     }
 
@@ -6694,19 +6958,31 @@ impl std::fmt::Debug for NRTCachingDirectory {
 // -----------------------------------------------------------------------------
 
 /// Default minimum block size bits for [`ByteBuffersDataOutput`].
-const DEFAULT_MIN_BITS_PER_BLOCK: usize = 10; // 1024 bytes
+///
+/// Equivalent to `ByteBuffersDataOutput.DEFAULT_MIN_BITS_PER_BLOCK`
+/// (`public static final int`, `ByteBuffersDataOutput.java:46`).
+pub const DEFAULT_MIN_BITS_PER_BLOCK: usize = 10; // 1024 bytes
 
 /// Default maximum block size bits for [`ByteBuffersDataOutput`].
-const DEFAULT_MAX_BITS_PER_BLOCK: usize = 26; // 64 MiB
-
-/// Smallest allowed `min_bits_per_block`.
-const LIMIT_MIN_BITS_PER_BLOCK: usize = 1;
+///
+/// Equivalent to `ByteBuffersDataOutput.DEFAULT_MAX_BITS_PER_BLOCK`
+/// (`public static final int`, `ByteBuffersDataOutput.java:47`).
+pub const DEFAULT_MAX_BITS_PER_BLOCK: usize = 26; // 64 MiB
+/// Smallest allowed `min_bits_per_block`. Equivalent to
+/// `ByteBuffersDataOutput.LIMIT_MIN_BITS_PER_BLOCK`.
+pub const LIMIT_MIN_BITS_PER_BLOCK: usize = 1;
 
 /// Largest allowed `max_bits_per_block`.
-const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;
+///
+/// Equivalent to `ByteBuffersDataOutput.LIMIT_MAX_BITS_PER_BLOCK`
+/// (`public static final int`, `ByteBuffersDataOutput.java:51`).
+pub const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;
 
 /// Number of blocks at the current size before expanding.
-const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
+///
+/// Equivalent to `ByteBuffersDataOutput.MAX_BLOCKS_BEFORE_BLOCK_EXPANSION`
+/// (`public static final int`, `ByteBuffersDataOutput.java:57`).
+pub const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
 
 /// Number of characters converted at a time by
 /// `ByteBuffersDataOutput::write_long_string`.
@@ -6726,6 +7002,10 @@ pub struct ByteBuffersDataInput {
     block_bits: usize,
     block_mask: usize,
     length: usize,
+    /// Java's `offset`: `blocks[0].position()`, where the stream starts
+    /// inside the first block. `pos` here is relative to it (Java's
+    /// `pos - offset`); the block arithmetic adds it back.
+    offset: usize,
     pos: usize,
 }
 
@@ -6754,11 +7034,36 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the buffer layout assumptions
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout assumptions
     /// are violated.
     pub fn new(buffers: Vec<Vec<u8>>) -> Result<Self> {
+        Self::with_first_position(buffers, 0)
+    }
+
+    /// Creates an input over a set of contiguous byte buffers whose first
+    /// buffer is positioned at `first_position`: the stream starts there, and
+    /// the bytes of the first buffer before it are not part of it.
+    ///
+    /// Equivalent to `ByteBuffersDataInput(List<ByteBuffer>)`
+    /// (`ByteBuffersDataInput.java:55-83`) when `buffers.get(0).position()`
+    /// is `first_position`: a Rust buffer carries no position, so it is
+    /// given here, and the first buffer holds `position() + remaining()`
+    /// bytes, what `determineBlockPage` measures.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout
+    /// assumptions are violated or `first_position` exceeds the first buffer.
+    pub fn with_first_position(buffers: Vec<Vec<u8>>, first_position: usize) -> Result<Self> {
         ensure_assumptions(&buffers)?;
-        let length = buffers.iter().map(Vec::len).sum();
+        if first_position > buffers[0].len() {
+            // `Buffer.position(int)`: `newPosition > limit`.
+            return Err(LuceneError::illegal_argument(format!(
+                "newPosition > limit: ({first_position} > {})",
+                buffers[0].len()
+            )));
+        }
+        let length = buffers.iter().map(Vec::len).sum::<usize>() - first_position;
         let (block_bits, block_mask) = if buffers.len() == 1 {
             // Sentinel values for the single-block case; indexing is handled
             // explicitly in `block_index` / `block_offset`.
@@ -6774,6 +7079,7 @@ impl ByteBuffersDataInput {
             block_bits,
             block_mask,
             length,
+            offset: first_position,
             pos: 0,
         })
     }
@@ -6792,14 +7098,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if `position` exceeds
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if `position` exceeds
     /// the stream length.
     pub fn seek(&mut self, position: usize) -> Result<()> {
         if position > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("seek past EOF: position={position}, length={}", self.length),
-            )));
+            ))));
         }
         self.pos = position;
         Ok(())
@@ -6809,14 +7115,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if `pos` is out of
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if `pos` is out of
     /// bounds.
     pub fn read_byte_at(&self, pos: usize) -> Result<u8> {
         if pos >= self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("readByte pos={pos} past EOF (length={})", self.length),
-            )));
+            ))));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -6828,14 +7134,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
     /// extend past the stream length.
     pub fn read_short_at(&self, pos: usize) -> Result<i16> {
         if pos + 2 > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("readShort pos={pos} past EOF (length={})", self.length),
-            )));
+            ))));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -6854,14 +7160,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
     /// extend past the stream length.
     pub fn read_int_at(&self, pos: usize) -> Result<i32> {
         if pos + 4 > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("readInt pos={pos} past EOF (length={})", self.length),
-            )));
+            ))));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -6882,14 +7188,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
     /// extend past the stream length.
     pub fn read_long_at(&self, pos: usize) -> Result<i64> {
         if pos + 8 > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("readLong pos={pos} past EOF (length={})", self.length),
-            )));
+            ))));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -6908,8 +7214,8 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the destination slice is too
-    /// small, or [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the destination slice is too
+    /// small, or [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
     /// extend past the stream length.
     pub fn read_bytes_at(
         &self,
@@ -6920,21 +7226,21 @@ impl ByteBuffersDataInput {
     ) -> Result<()> {
         let dst_end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if dst_end > bytes.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 bytes.len()
             )));
         }
         if pos + len > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!(
                     "readBytes pos={pos} len={len} past EOF (length={})",
                     self.length
                 ),
-            )));
+            ))));
         }
         let mut src_pos = pos;
         let mut dst_pos = offset;
@@ -6956,13 +7262,13 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the slice is out of bounds.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the slice is out of bounds.
     pub fn slice(&self, offset: usize, length: usize) -> Result<Self> {
         let end = offset.checked_add(length).ok_or_else(|| {
-            LuceneError::IllegalArgument("offset + length overflowed".to_string())
+            LuceneError::illegal_argument("offset + length overflowed".to_string())
         })?;
         if end > self.length {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice(offset={offset}, length={length}) out of bounds, input length={}",
                 self.length
             )));
@@ -6973,7 +7279,7 @@ impl ByteBuffersDataInput {
         // owned `Vec<u8>` that carries no position, so the views are joined
         // into the single block that holds the same bytes.
         let mut data = Vec::with_capacity(length);
-        for view in slice_buffer_list(&self.blocks, offset, length)? {
+        for view in slice_buffer_list(&self.blocks, self.offset, offset, length)? {
             data.extend_from_slice(view);
         }
         Self::new(vec![data])
@@ -6995,19 +7301,21 @@ impl ByteBuffersDataInput {
         1usize << self.block_bits
     }
 
+    /// `blockIndex(pos)` of the absolute position of `pos` (`pos + offset`).
     fn block_index(&self, pos: usize) -> usize {
         if self.blocks.len() == 1 {
             0
         } else {
-            pos >> self.block_bits
+            (pos + self.offset) >> self.block_bits
         }
     }
 
+    /// `blockOffset(pos)` of the absolute position of `pos` (`pos + offset`).
     fn block_offset(&self, pos: usize) -> usize {
         if self.blocks.len() == 1 {
-            pos
+            pos + self.offset
         } else {
-            pos & self.block_mask
+            (pos + self.offset) & self.block_mask
         }
     }
 
@@ -7026,7 +7334,7 @@ impl ByteBuffersDataInput {
     /// `org.apache.lucene.store.ByteBuffersDataInput#getFloatBuffer`.
     fn get_float_buffer(&self, pos: usize) -> &[u8] {
         let buffer_index = self.block_index(pos);
-        let alignment = pos & 0x3;
+        let alignment = (pos + self.offset) & 0x3;
         &self.blocks[buffer_index][alignment..]
     }
 
@@ -7041,7 +7349,7 @@ impl ByteBuffersDataInput {
     /// `org.apache.lucene.store.ByteBuffersDataInput#getLongBuffer`.
     fn get_long_buffer(&self, pos: usize) -> &[u8] {
         let buffer_index = self.block_index(pos);
-        let alignment = pos & 0x7;
+        let alignment = (pos + self.offset) & 0x7;
         &self.blocks[buffer_index][alignment..]
     }
 }
@@ -7077,10 +7385,10 @@ impl DataInput for ByteBuffersDataInput {
 
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "unexpected EOF reading byte",
-            )));
+            ))));
         }
         let idx = self.block_index(self.pos);
         let off = self.block_offset(self.pos);
@@ -7089,12 +7397,13 @@ impl DataInput for ByteBuffersDataInput {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let dst_end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if dst_end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
@@ -7103,22 +7412,22 @@ impl DataInput for ByteBuffersDataInput {
         let mut remaining = len;
         while remaining > 0 {
             if self.pos >= self.length {
-                return Err(LuceneError::Io(io::Error::new(
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!(
                         "unexpected EOF reading {len} bytes at pos {} (length {})",
                         self.pos, self.length
                     ),
-                )));
+                ))));
             }
             let idx = self.block_index(self.pos);
             let off = self.block_offset(self.pos);
             let available = self.blocks[idx].len() - off;
             if available == 0 {
-                return Err(LuceneError::Io(io::Error::new(
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "unexpected EOF reading bytes",
-                )));
+                ))));
             }
             let chunk = remaining.min(available);
             b[dst_pos..dst_pos + chunk].copy_from_slice(&self.blocks[idx][off..off + chunk]);
@@ -7131,17 +7440,17 @@ impl DataInput for ByteBuffersDataInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let num_bytes = num_bytes as usize;
         let target = self.pos + num_bytes;
         if target > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "skip past EOF",
-            )));
+            ))));
         }
         self.pos = target;
         Ok(())
@@ -7195,7 +7504,13 @@ impl DataInput for ByteBuffersDataInput {
         }
     }
 
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(
+        &mut self,
+        floats: Option<&mut [f32]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let floats = crate::store::require_array(floats)?;
         check_from_index_size(offset, length, floats.len())?;
         let mut off = offset;
         let mut remaining = length;
@@ -7217,7 +7532,7 @@ impl DataInput for ByteBuffersDataInput {
             }
             let available_floats = available_bytes / 4;
             let chunk = remaining.min(available_floats);
-            let view_off = block_off - (self.pos & 0x3);
+            let view_off = block_off - ((self.pos + self.offset) & 0x3);
             let view = self.get_float_buffer(self.pos);
             for i in 0..chunk {
                 let byte_off = view_off + i * 4;
@@ -7231,7 +7546,13 @@ impl DataInput for ByteBuffersDataInput {
         Ok(())
     }
 
-    fn read_longs(&mut self, longs: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(
+        &mut self,
+        longs: Option<&mut [i64]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
+        let longs = crate::store::require_array(longs)?;
         check_from_index_size(offset, length, longs.len())?;
         let mut off = offset;
         let mut remaining = length;
@@ -7253,7 +7574,7 @@ impl DataInput for ByteBuffersDataInput {
             }
             let available_longs = available_bytes / 8;
             let chunk = remaining.min(available_longs);
-            let view_off = block_off - (self.pos & 0x7);
+            let view_off = block_off - ((self.pos + self.offset) & 0x7);
             let view = self.get_long_buffer(self.pos);
             for i in 0..chunk {
                 let byte_off = view_off + i * 8;
@@ -7304,18 +7625,23 @@ fn determine_block_page(buffers: &[Vec<u8>]) -> usize {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `buffers` violates the block
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `buffers` violates the block
 /// layout assumptions.
-fn slice_buffer_list(buffers: &[Vec<u8>], offset: usize, length: usize) -> Result<Vec<&[u8]>> {
+fn slice_buffer_list(
+    buffers: &[Vec<u8>],
+    first_position: usize,
+    offset: usize,
+    length: usize,
+) -> Result<Vec<&[u8]>> {
     ensure_assumptions(buffers)?;
 
     if buffers.len() == 1 {
-        return Ok(vec![&buffers[0][offset..offset + length]]);
+        let start = first_position + offset;
+        return Ok(vec![&buffers[0][start..start + length]]);
     }
 
-    // Java adds `buffers.get(0).position()` here; a block of this port always
-    // starts at position zero, so the absolute start is the offset itself.
-    let abs_start = offset;
+    // `long absStart = buffers.get(0).position() + offset;`
+    let abs_start = first_position + offset;
     let abs_end = abs_start + length;
 
     let block_bytes = determine_block_page(buffers);
@@ -7346,7 +7672,7 @@ fn slice_buffer_list(buffers: &[Vec<u8>], offset: usize, length: usize) -> Resul
 /// Validates the assumptions required by [`ByteBuffersDataInput`].
 fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
     if buffers.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "Buffer list must not be empty.".to_string(),
         ));
     }
@@ -7355,13 +7681,13 @@ fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
     }
     let block_page = determine_block_page(buffers);
     if !is_power_of_two(block_page) {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "The first buffer must have a power-of-two length: {block_page}"
         )));
     }
     for (i, buffer) in buffers.iter().enumerate().skip(1) {
         if i != buffers.len() - 1 && buffer.len() != block_page {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Intermediate buffers must share an identical power-of-two block size: {block_page}"
             )));
         }
@@ -7369,36 +7695,107 @@ fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
     Ok(())
 }
 
+/// A block allocator of [`ByteBuffersDataOutput`]: given a size, returns an
+/// empty buffer of exactly that capacity.
+///
+/// Equivalent to the `IntFunction<ByteBuffer> blockAllocate` argument of
+/// `ByteBuffersDataOutput(int, int, IntFunction<ByteBuffer>,
+/// Consumer<ByteBuffer>)` (`ByteBuffersDataOutput.java:149-153`).
+pub type BlockAllocator = Arc<dyn Fn(usize) -> Vec<u8> + Send + Sync>;
+
+/// A block reuse strategy of [`ByteBuffersDataOutput`]: receives each block
+/// [`ByteBuffersDataOutput::reset`] releases.
+///
+/// Equivalent to the `Consumer<ByteBuffer> blockReuse` argument of
+/// `ByteBuffersDataOutput(int, int, IntFunction<ByteBuffer>,
+/// Consumer<ByteBuffer>)` (`ByteBuffersDataOutput.java:149-153`).
+pub type BlockReuse = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+
+/// `ByteBuffersDataOutput.NO_REUSE` (`ByteBuffersDataOutput.java:45-48`): "A
+/// singleton instance of \"no-reuse\" buffer strategy." Every call answers
+/// the same instance, which [`ByteBuffersDataOutput::with_allocator`]
+/// recognises by identity.
+///
+/// **Divergence from Lucene 10.5.0 (pre-existing).** Java's consumer throws
+/// `RuntimeException("reset() is not allowed on this buffer.")`; an output
+/// built with this strategy drops its blocks on `reset()` instead, as the
+/// port's default outputs do.
+pub fn no_reuse() -> BlockReuse {
+    static NO_REUSE: std::sync::LazyLock<BlockReuse> =
+        std::sync::LazyLock::new(|| Arc::new(|_block: Vec<u8>| {}));
+    Arc::clone(&NO_REUSE)
+}
+
+/// `ByteBuffersDataOutput.ALLOCATE_BB_ON_HEAP` (`ByteBuffer::allocate`,
+/// `ByteBuffersDataOutput.java:43`): a heap buffer of exactly `size` bytes.
+pub fn allocate_bb_on_heap(size: usize) -> Vec<u8> {
+    Vec::with_capacity(size)
+}
+
 /// Buffer recycler used by resettable [`ByteBuffersDataOutput`] instances.
 ///
 /// Equivalent to the inner `ByteBufferRecycler` class in Lucene's
-/// `ByteBuffersDataOutput`.
-#[derive(Clone, Debug, Default)]
+/// `ByteBuffersDataOutput` (`ByteBuffersDataOutput.java:55-79`): a FIFO
+/// queue of released buffers in front of a delegate allocator.
+#[derive(Clone)]
 pub struct ByteBufferRecycler {
-    reuse: Vec<Vec<u8>>,
+    reuse: std::collections::VecDeque<Vec<u8>>,
+    delegate: BlockAllocator,
+}
+
+impl std::fmt::Debug for ByteBufferRecycler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteBufferRecycler")
+            .field("reuse", &self.reuse.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for ByteBufferRecycler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ByteBufferRecycler {
-    /// Creates an empty recycler.
+    /// Creates an empty recycler over [`allocate_bb_on_heap`]
+    /// (`new ByteBufferRecycler(ALLOCATE_BB_ON_HEAP)`).
     pub fn new() -> Self {
-        Self { reuse: Vec::new() }
+        Self::with_delegate(Arc::new(allocate_bb_on_heap))
     }
 
-    /// Allocates a buffer of exactly `size` bytes, reusing a cached buffer if
-    /// one of the same capacity is available.
+    /// Creates an empty recycler that allocates through `delegate` when no
+    /// released buffer fits.
+    ///
+    /// Equivalent to `ByteBufferRecycler(IntFunction<ByteBuffer> delegate)`.
+    pub fn with_delegate(delegate: BlockAllocator) -> Self {
+        Self {
+            reuse: std::collections::VecDeque::new(),
+            delegate,
+        }
+    }
+
+    /// Allocates a buffer of exactly `size` bytes: the first released buffer
+    /// of that size, discarding the ones of another size it meets first, or
+    /// else a buffer of the delegate.
+    ///
+    /// Equivalent to `ByteBufferRecycler.allocate(int)`.
     pub fn allocate(&mut self, size: usize) -> Vec<u8> {
-        while let Some(buf) = self.reuse.pop() {
+        while let Some(buf) = self.reuse.pop_front() {
+            // If we don't have a buffer of exactly the requested size, discard it.
             if buf.capacity() == size {
                 return buf;
             }
         }
-        Vec::with_capacity(size)
+        (self.delegate)(size)
     }
 
     /// Returns a buffer to the recycler.
+    ///
+    /// Equivalent to `ByteBufferRecycler.reuse(ByteBuffer)`.
     pub fn reuse(&mut self, mut buffer: Vec<u8>) {
         buffer.clear();
-        self.reuse.push(buffer);
+        self.reuse.push_back(buffer);
     }
 }
 
@@ -7407,14 +7804,31 @@ impl ByteBufferRecycler {
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataOutput`. Blocks are
 /// heap-allocated and grow from a small initial size up to a configured
 /// maximum.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ByteBuffersDataOutput {
     min_bits: usize,
     max_bits: usize,
     block_bits: usize,
     completed: Vec<Vec<u8>>,
     current: Vec<u8>,
-    recycler: Option<ByteBufferRecycler>,
+    /// `blockAllocate`; `None` is `ALLOCATE_BB_ON_HEAP`.
+    block_allocate: Option<BlockAllocator>,
+    /// `blockReuse`; `None` is `NO_REUSE`.
+    block_reuse: Option<BlockReuse>,
+}
+
+impl std::fmt::Debug for ByteBuffersDataOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteBuffersDataOutput")
+            .field("min_bits", &self.min_bits)
+            .field("max_bits", &self.max_bits)
+            .field("block_bits", &self.block_bits)
+            .field("completed", &self.completed)
+            .field("current", &self.current)
+            .field("block_allocate", &self.block_allocate.is_some())
+            .field("block_reuse", &self.block_reuse.is_some())
+            .finish()
+    }
 }
 
 /// Accounts for the blocks this output has allocated.
@@ -7464,21 +7878,95 @@ impl ByteBuffersDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the bit parameters are
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the bit parameters are
     /// inconsistent or out of range.
     pub fn with_config(min_bits: usize, max_bits: usize, reuse: bool) -> Result<Self> {
+        if reuse {
+            let reuser = Arc::new(Mutex::new(ByteBufferRecycler::new()));
+            let allocate = Arc::clone(&reuser);
+            Self::with_allocator(
+                min_bits,
+                max_bits,
+                Some(Arc::new(move |size| {
+                    allocate
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .allocate(size)
+                })),
+                Some(Arc::new(move |block| {
+                    reuser
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .reuse(block)
+                })),
+            )
+        } else {
+            Self::with_allocator_opt(min_bits, max_bits, None, None)
+        }
+    }
+
+    /// Expert: creates a new output with custom parameters, allocating its
+    /// blocks through `block_allocate` and handing the blocks
+    /// [`reset`](Self::reset) releases to `block_reuse` ([`no_reuse`]: the
+    /// blocks are dropped).
+    ///
+    /// Equivalent to `ByteBuffersDataOutput(int minBitsPerBlock, int
+    /// maxBitsPerBlock, IntFunction<ByteBuffer> blockAllocate,
+    /// Consumer<ByteBuffer> blockReuse)` (`ByteBuffersDataOutput.java:149-183`).
+    /// A Java `null` argument is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the bit parameters are
+    /// inconsistent or out of range, and a `java.lang.NullPointerException`
+    /// ("Block allocator must not be null." / "Block reuse must not be
+    /// null.") for a `None` argument, as `Objects.requireNonNull` throws
+    /// after the bit checks (`ByteBuffersDataOutput.java:180-181`).
+    pub fn with_allocator(
+        min_bits: usize,
+        max_bits: usize,
+        block_allocate: Option<BlockAllocator>,
+        block_reuse: Option<BlockReuse>,
+    ) -> Result<Self> {
+        Self::with_allocator_opt(min_bits, max_bits, None, None)?;
+        let Some(block_allocate) = block_allocate else {
+            return Err(LuceneError::unchecked(
+                "java.lang.NullPointerException",
+                "Block allocator must not be null.",
+            ));
+        };
+        let Some(block_reuse) = block_reuse else {
+            return Err(LuceneError::unchecked(
+                "java.lang.NullPointerException",
+                "Block reuse must not be null.",
+            ));
+        };
+        let block_reuse = if Arc::ptr_eq(&block_reuse, &no_reuse()) {
+            None
+        } else {
+            Some(block_reuse)
+        };
+        Self::with_allocator_opt(min_bits, max_bits, Some(block_allocate), block_reuse)
+    }
+
+    fn with_allocator_opt(
+        min_bits: usize,
+        max_bits: usize,
+        block_allocate: Option<BlockAllocator>,
+        block_reuse: Option<BlockReuse>,
+    ) -> Result<Self> {
         if min_bits < LIMIT_MIN_BITS_PER_BLOCK {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minBitsPerBlock ({min_bits}) too small, must be at least {LIMIT_MIN_BITS_PER_BLOCK}"
             )));
         }
         if max_bits > LIMIT_MAX_BITS_PER_BLOCK {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxBitsPerBlock ({max_bits}) too large, must not exceed {LIMIT_MAX_BITS_PER_BLOCK}"
             )));
         }
         if min_bits > max_bits {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minBitsPerBlock ({min_bits}) cannot exceed maxBitsPerBlock ({max_bits})"
             )));
         }
@@ -7488,11 +7976,8 @@ impl ByteBuffersDataOutput {
             block_bits: min_bits,
             completed: Vec::new(),
             current: Vec::new(),
-            recycler: if reuse {
-                Some(ByteBufferRecycler::new())
-            } else {
-                None
-            },
+            block_allocate,
+            block_reuse,
         })
     }
 
@@ -7581,7 +8066,7 @@ impl ByteBuffersDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the resulting buffer layout
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the resulting buffer layout
     /// violates the input assumptions (should not happen for normal output).
     pub fn to_data_input(&self) -> Result<ByteBuffersDataInput> {
         let mut buffers: Vec<Vec<u8>> = self.completed.to_vec();
@@ -7600,7 +8085,7 @@ impl ByteBuffersDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Other`] — Java's plain `RuntimeException`, for
+    /// Returns [`LuceneErrorKind::Other`] — Java's plain `RuntimeException`, for
     /// which this port has no dedicated variant — with Java's message `Data
     /// exceeds maximum size of a single byte array: <size>` when the content
     /// is larger than `Integer.MAX_VALUE` bytes, the largest Java array
@@ -7608,9 +8093,9 @@ impl ByteBuffersDataOutput {
     pub fn to_array_copy(&self) -> Result<Vec<u8>> {
         let size = self.size();
         if size as u64 > i32::MAX as u64 {
-            return Err(LuceneError::Other(format!(
+            return Err(LuceneError::from(LuceneErrorKind::Other(format!(
                 "Data exceeds maximum size of a single byte array: {size}"
-            )));
+            ))));
         }
         let mut result = Vec::with_capacity(size);
         for block in &self.completed {
@@ -7635,24 +8120,30 @@ impl ByteBuffersDataOutput {
 
     /// Resets this output to a clean (zero-size) state, publishing buffers to
     /// the recycler if one was configured.
+    ///
+    /// Equivalent to `ByteBuffersDataOutput.reset()`
+    /// (`ByteBuffersDataOutput.java:469-476`): every allocated block (Java's
+    /// `blocks`, here `completed` and an allocated `current`) goes to the
+    /// recycler, `ramBytesUsed` drops to zero and `currentBlock` becomes
+    /// `EMPTY`. The block size (`blockBits`) is kept.
     pub fn reset(&mut self) {
-        if let Some(recycler) = &mut self.recycler {
+        let current = std::mem::take(&mut self.current);
+        if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                recycler.reuse(block);
+                reuse(block);
             }
-            recycler.reuse(std::mem::take(&mut self.current));
+            if current.capacity() > 0 {
+                reuse(current);
+            }
         } else {
             self.completed.clear();
-            self.current.clear();
         }
-        self.block_bits = self.min_bits;
     }
 
     fn allocate(&mut self, size: usize) -> Vec<u8> {
-        if let Some(recycler) = &mut self.recycler {
-            recycler.allocate(size)
-        } else {
-            Vec::with_capacity(size)
+        match &self.block_allocate {
+            Some(allocate) => allocate(size),
+            None => allocate_bb_on_heap(size),
         }
     }
 
@@ -7677,12 +8168,16 @@ impl ByteBuffersDataOutput {
 
         let required_size = 1usize << self.block_bits;
         self.current = self.allocate(required_size);
+        debug_assert!(self.current.capacity() == required_size);
     }
 
     fn rewrite_to_block_size(&mut self, target_bits: usize) {
-        assert!(target_bits <= self.max_bits);
+        debug_assert!(target_bits <= self.max_bits);
+        // `new ByteBuffersDataOutput(targetBlockBits, targetBlockBits,
+        // blockAllocate, NO_REUSE)`.
         let mut cloned =
-            Self::with_config(target_bits, target_bits, false).expect("target bits valid");
+            Self::with_allocator_opt(target_bits, target_bits, self.block_allocate.clone(), None)
+                .expect("target bits valid");
         for block in &self.completed {
             cloned.write_bytes(block, 0, block.len()).unwrap();
         }
@@ -7691,15 +8186,16 @@ impl ByteBuffersDataOutput {
                 .write_bytes(&self.current, 0, self.current.len())
                 .unwrap();
         }
-        if let Some(recycler) = &mut self.recycler {
+        if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                recycler.reuse(block);
+                reuse(block);
             }
-            recycler.reuse(std::mem::take(&mut self.current));
+            reuse(std::mem::take(&mut self.current));
         } else {
             self.completed.clear();
             self.current.clear();
         }
+        debug_assert!(self.completed.is_empty());
         self.block_bits = target_bits;
         self.completed = cloned.completed;
         self.current = cloned.current;
@@ -7766,9 +8262,9 @@ impl DataOutput for ByteBuffersDataOutput {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
@@ -7846,8 +8342,9 @@ impl DataOutput for ByteBuffersDataOutput {
     }
 
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -7859,7 +8356,7 @@ impl DataOutput for ByteBuffersDataOutput {
             let chunk = (num_bytes as usize).min(space);
             let off = self.current.len();
             self.current.resize(off + chunk, 0);
-            input.read_bytes(&mut self.current, off, chunk)?;
+            input.read_bytes(Some(&mut self.current), off, chunk)?;
             num_bytes -= chunk as i64;
         }
         Ok(())
@@ -7981,13 +8478,12 @@ impl FileEntry {
     fn open_input(&self) -> Result<Box<dyn IndexInput>> {
         let content = self.content.lock().expect("content mutex poisoned");
         let input = content.as_ref().ok_or_else(|| {
-            LuceneError::Io(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "Can't open a file still open for writing: {}",
-                    self.file_name
-                ),
-            ))
+            // `new AccessDeniedException("Can't open a file still open for
+            // writing: " + fileName)` (`ByteBuffersDirectory.java:244`).
+            LuceneError::from(LuceneErrorKind::Io(nio::access_denied_exception(format!(
+                "Can't open a file still open for writing: {}",
+                self.file_name
+            ))))
         })?;
         input.clone_input()
     }
@@ -8043,18 +8539,6 @@ impl ByteBuffersDirectory {
     pub fn lock_factory(&self) -> &dyn LockFactory {
         self.base.lock_factory()
     }
-
-    /// The body of `ByteBuffersDirectory.close()`
-    /// (`ByteBuffersDirectory.java:216-219`): `isOpen = false;
-    /// files.clear();`.
-    ///
-    /// [`Directory::close`] takes `&mut self`; this needs only shared access,
-    /// which an owner that shares the directory — `NRTCachingDirectory`, whose
-    /// cache directory its own callback reaches — closes it through.
-    fn close_shared(&self) {
-        self.base.set_open(false);
-        self.files.lock().expect("files mutex poisoned").clear();
-    }
 }
 
 impl Default for ByteBuffersDirectory {
@@ -8076,9 +8560,9 @@ impl Directory for ByteBuffersDirectory {
         self.ensure_open()?;
         let mut files = self.files.lock().expect("files mutex poisoned");
         if files.remove(name).is_none() {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                name,
+            // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:134`).
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(name),
             )));
         }
         Ok(())
@@ -8087,9 +8571,10 @@ impl Directory for ByteBuffersDirectory {
     fn file_length(&self, name: &str) -> Result<i64> {
         self.ensure_open()?;
         let files = self.files.lock().expect("files mutex poisoned");
-        let entry = files
-            .get(name)
-            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, name)))?;
+        // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:143`).
+        let entry = files.get(name).ok_or_else(|| {
+            LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(name)))
+        })?;
         Ok(entry.length())
     }
 
@@ -8099,9 +8584,10 @@ impl Directory for ByteBuffersDirectory {
         {
             let mut files = self.files.lock().expect("files mutex poisoned");
             if files.contains_key(name) {
-                return Err(LuceneError::Io(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!("File already exists: {name}"),
+                // `new FileAlreadyExistsException("File already exists: " +
+                // name)` (`ByteBuffersDirectory.java:159`).
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    nio::file_already_exists_exception(format!("File already exists: {name}")),
                 )));
             }
             files.insert(name.to_string(), Arc::clone(&entry));
@@ -8148,14 +8634,14 @@ impl Directory for ByteBuffersDirectory {
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.ensure_open()?;
         let mut files = self.files.lock().expect("files mutex poisoned");
-        let source_entry = files
-            .get(source)
-            .cloned()
-            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, source)))?;
+        // `new NoSuchFileException(source)` and `new
+        // FileAlreadyExistsException(dest)` (`ByteBuffersDirectory.java:183-186`).
+        let source_entry = files.get(source).cloned().ok_or_else(|| {
+            LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(source)))
+        })?;
         if files.contains_key(dest) {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                dest,
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::file_already_exists_exception(dest),
             )));
         }
         files.insert(dest.to_string(), source_entry);
@@ -8170,9 +8656,10 @@ impl Directory for ByteBuffersDirectory {
     fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.ensure_open()?;
         let files = self.files.lock().expect("files mutex poisoned");
-        let entry = files
-            .get(name)
-            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, name)))?;
+        // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:209`).
+        let entry = files.get(name).ok_or_else(|| {
+            LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(name)))
+        })?;
         entry.open_input()
     }
 
@@ -8182,8 +8669,12 @@ impl Directory for ByteBuffersDirectory {
         self.base.obtain_lock(self, name)
     }
 
-    fn close(&mut self) -> Result<()> {
-        self.close_shared();
+    /// Equivalent to `ByteBuffersDirectory.close()`
+    /// (`ByteBuffersDirectory.java:216-219`): `isOpen = false;
+    /// files.clear();`.
+    fn close(&self) -> Result<()> {
+        self.base.set_open(false);
+        self.files.lock().expect("files mutex poisoned").clear();
         Ok(())
     }
 
@@ -8313,13 +8804,13 @@ impl DataInput for ByteBuffersIndexInput {
         self.input_mut()?.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.input_mut()?.read_bytes(b, offset, len)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
@@ -8372,15 +8863,15 @@ impl DataInput for ByteBuffersIndexInput {
         self.input_mut()?.read_set_of_strings()
     }
 
-    fn read_ints(&mut self, dst: &mut [i32], offset: usize, length: usize) -> Result<()> {
+    fn read_ints(&mut self, dst: Option<&mut [i32]>, offset: usize, length: usize) -> Result<()> {
         self.input_mut()?.read_ints(dst, offset, length)
     }
 
-    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(&mut self, dst: Option<&mut [i64]>, offset: usize, length: usize) -> Result<()> {
         self.input_mut()?.read_longs(dst, offset, length)
     }
 
-    fn read_floats(&mut self, dst: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(&mut self, dst: Option<&mut [f32]>, offset: usize, length: usize) -> Result<()> {
         self.input_mut()?.read_floats(dst, offset, length)
     }
 
@@ -8405,7 +8896,7 @@ impl IndexInput for ByteBuffersIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8421,7 +8912,7 @@ impl IndexInput for ByteBuffersIndexInput {
     ) -> Result<Box<dyn IndexInput>> {
         self.ensure_open()?;
         if offset < 0 || length < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice offset ({offset}) and length ({length}) must be non-negative"
             )));
         }
@@ -8453,7 +8944,7 @@ impl IndexInput for ByteBuffersIndexInput {
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
         self.ensure_open()?;
         if offset < 0 || length < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice offset ({offset}) and length ({length}) must be non-negative"
             )));
         }
@@ -8470,7 +8961,7 @@ impl IndexInput for ByteBuffersIndexInput {
 impl RandomAccessInput for ByteBuffersIndexInput {
     fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8485,7 +8976,7 @@ impl RandomAccessInput for ByteBuffersIndexInput {
         len: usize,
     ) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8495,7 +8986,7 @@ impl RandomAccessInput for ByteBuffersIndexInput {
 
     fn read_short_at(&mut self, pos: i64) -> Result<i16> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8504,7 +8995,7 @@ impl RandomAccessInput for ByteBuffersIndexInput {
 
     fn read_int_at(&mut self, pos: i64) -> Result<i32> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8513,7 +9004,7 @@ impl RandomAccessInput for ByteBuffersIndexInput {
 
     fn read_long_at(&mut self, pos: i64) -> Result<i64> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8708,9 +9199,9 @@ impl IndexOutput for ByteBuffersIndexOutput {
 
     fn checksum(&self) -> Result<i64> {
         let hasher = self.checksum.as_ref().ok_or_else(|| {
-            LuceneError::Io(io::Error::other(
+            LuceneError::from(LuceneErrorKind::Io(io::Error::other(
                 "This index output has no checksum computing ability",
-            ))
+            )))
         })?;
         let delegate = self.delegate()?;
         let current_size = delegate.size() as i64;
@@ -8817,7 +9308,7 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `buffer_size` is smaller than
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `buffer_size` is smaller than
     /// [`OUTPUT_STREAM_MIN_BUFFER_SIZE`].
     pub fn new(
         resource_description: impl Into<String>,
@@ -8826,7 +9317,7 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
         buffer_size: usize,
     ) -> Result<Self> {
         if buffer_size < OUTPUT_STREAM_MIN_BUFFER_SIZE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Buffer size too small, need: {OUTPUT_STREAM_MIN_BUFFER_SIZE}"
             )));
         }
@@ -8852,9 +9343,9 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
@@ -8947,10 +9438,12 @@ impl<W: Write + Send + Sync> std::fmt::Debug for OutputStreamIndexOutput<W> {
 
 /// File-based [`IndexOutput`] used by [`FSDirectory`].
 ///
-/// Equivalent to the private `FSIndexOutput` inner class of
-/// `org.apache.lucene.store.FSDirectory`. Writes are broken into 8192-byte
-/// chunks, buffered, and checksummed.
-pub struct FSIndexOutput(OutputStreamIndexOutput<ChunkedOutput<fs::File>>);
+/// Equivalent to the `FSIndexOutput` inner class of
+/// `org.apache.lucene.store.FSDirectory` (`FSDirectory.java:404-427`): an
+/// `OutputStreamIndexOutput` over `Files.newOutputStream(path, options)` —
+/// the provider of the directory's path opens the stream — whose writes are
+/// broken into 8192-byte chunks, buffered, and checksummed.
+pub struct FSIndexOutput(OutputStreamIndexOutput<ChunkedOutput<nio::OutputStreamWriter>>);
 
 impl FSIndexOutput {
     /// Maximum chunk size for file writes.
@@ -8958,19 +9451,35 @@ impl FSIndexOutput {
     /// Equivalent to `org.apache.lucene.store.FSIndexOutput.CHUNK_SIZE`.
     pub const CHUNK_SIZE: usize = FS_INDEX_OUTPUT_CHUNK_SIZE;
 
-    /// Creates a new output for `name` inside `directory`.
+    /// Creates a new output for `name` inside `directory`, opened with
+    /// `WRITE` and `CREATE_NEW`.
     ///
-    /// The file is opened with `WRITE | CREATE_NEW` semantics; if the file
-    /// already exists, this returns an I/O error.
-    pub fn new(name: impl Into<String>, directory: &Path) -> Result<Self> {
+    /// Equivalent to `FSIndexOutput(String name)` (`FSDirectory.java:407-409`).
+    ///
+    /// # Errors
+    ///
+    /// `FileAlreadyExistsException` when the file exists, and the other
+    /// failures of the provider.
+    pub fn new(name: impl Into<String>, directory: &nio::Path) -> Result<Self> {
+        Self::with_options(
+            name,
+            directory,
+            &[nio::OpenOption::Write, nio::OpenOption::CreateNew],
+        )
+    }
+
+    /// Equivalent to `FSIndexOutput(String name, OpenOption... options)`
+    /// (`FSDirectory.java:411-426`).
+    fn with_options(
+        name: impl Into<String>,
+        directory: &nio::Path,
+        options: &[nio::OpenOption],
+    ) -> Result<Self> {
         let name = name.into();
-        let path = directory.join(&name);
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        let resource_description = format!("FSIndexOutput(path=\"{}\")", path.display());
-        let chunked = ChunkedOutput::new(file, Self::CHUNK_SIZE);
+        let resource_description =
+            format!("FSIndexOutput(path=\"{}\")", directory.resolve_str(&name));
+        let stream = nio::Files::new_output_stream(&directory.resolve_str(&name), options)?;
+        let chunked = ChunkedOutput::new(nio::OutputStreamWriter(stream), Self::CHUNK_SIZE);
         Ok(Self(OutputStreamIndexOutput::new(
             resource_description,
             name,
@@ -9003,8 +9512,15 @@ impl DataOutput for FSIndexOutput {
 }
 
 impl IndexOutput for FSIndexOutput {
+    /// `OutputStreamIndexOutput.close()`: `try (OutputStream o = os) { if
+    /// (!flushedOnClose) { flushedOnClose = true; o.flush(); } }` — the stream
+    /// is flushed once and closed on every call, and a failure to close is
+    /// suppressed by a failure to flush.
     fn close(&mut self) -> Result<()> {
-        self.0.close()
+        let flushed = self.0.close();
+        let closed = self.0.out.get_mut().inner.0.close();
+        flushed?;
+        closed.map_err(LuceneError::from)
     }
 
     fn file_pointer(&self) -> i64 {
@@ -9047,7 +9563,10 @@ impl IndexOutput for FSIndexOutput {
 pub struct FSDirectory {
     /// The `BaseDirectory` state this class extends.
     base: BaseDirectory,
-    directory: PathBuf,
+    /// `FSDirectory.directory`: the real path of the directory, a path of the
+    /// filesystem the directory was opened on, through whose provider every
+    /// file operation goes.
+    directory: nio::Path,
     pending_deletes: Mutex<HashSet<String>>,
     ops_since_last_delete: AtomicU64,
     next_temp_file_counter: AtomicU64,
@@ -9086,12 +9605,14 @@ impl FSDirectory {
     /// implementation for the platform, with the default lock factory.
     ///
     /// Equivalent to `FSDirectory.open(Path)` (`FSDirectory.java:151-153`);
-    /// see [`FSDirectoryImpl`] for the selection.
+    /// see [`FSDirectoryImpl`] for the selection. `path` is a
+    /// [`nio::Path`], whose filesystem the directory works on, or a
+    /// standard-library path, a path of the default filesystem.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
-    pub fn open(path: impl AsRef<Path>) -> Result<FSDirectoryImpl> {
+    pub fn open(path: impl nio::IntoNioPath) -> Result<FSDirectoryImpl> {
         // `open(path, FSLockFactory.getDefault())`
         Self::open_with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
@@ -9105,7 +9626,7 @@ impl FSDirectory {
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn open_with_lock_factory(
-        path: impl AsRef<Path>,
+        path: impl nio::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
     ) -> Result<FSDirectoryImpl> {
         FSDirectoryImpl::with_lock_factory(path, lock_factory)
@@ -9115,21 +9636,25 @@ impl FSDirectory {
     ///
     /// Equivalent to the protected `FSDirectory(Path, LockFactory)`
     /// constructor that `MMapDirectory` and `NIOFSDirectory` call
-    /// (`FSDirectory.java:119-127`), which starts with `super(lockFactory)`.
+    /// (`FSDirectory.java:119-127`), which starts with `super(lockFactory)`:
+    /// "If only read access is permitted, createDirectories fails even if the
+    /// directory already exists", so it is created only when
+    /// `Files.isDirectory` is false; the directory is `path.toRealPath()`.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn with_lock_factory(
-        path: impl AsRef<Path>,
+        path: impl nio::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
         let base = BaseDirectory::new(lock_factory);
-        let path = path.as_ref();
-        if !path.is_dir() {
-            fs::create_dir_all(path)?;
+        let path = path.into_nio_path();
+        if !nio::Files::is_directory(&path, &[]) {
+            // create directory, if it doesn't exist
+            nio::Files::create_directories(&path)?;
         }
-        let directory = path.canonicalize()?;
+        let directory = path.to_real_path(&[])?;
         Ok(Self {
             base,
             directory,
@@ -9139,16 +9664,66 @@ impl FSDirectory {
         })
     }
 
-    /// Returns the underlying filesystem directory.
+    /// Lists all files (including subdirectories) in the directory, sorted.
     ///
-    /// Equivalent to `FSDirectory.getDirectory()` (`FSDirectory.java:288-291`):
-    /// `ensureOpen()`, then the canonical path the constructor resolved.
+    /// Equivalent to the static `FSDirectory.listAll(Path)`
+    /// (`FSDirectory.java:165-167`).
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] "this Directory is closed" once
+    /// The failures of the provider.
+    pub fn list_all_in(dir: &nio::Path) -> Result<Vec<String>> {
+        Self::list_all_skipping(dir, None)
+    }
+
+    /// Equivalent to the private `FSDirectory.listAll(Path, Set<String>)`
+    /// (`FSDirectory.java:169-189`): the names of the entries of
+    /// `Files.newDirectoryStream(dir)` not in `skip_names`, sorted "so we don't
+    /// let filesystem specifics leak out of this abstraction".
+    fn list_all_skipping(
+        dir: &nio::Path,
+        skip_names: Option<&HashSet<String>>,
+    ) -> Result<Vec<String>> {
+        let mut entries = Vec::new();
+        let mut stream = nio::Files::new_directory_stream(dir)?;
+        let mut failure: Option<io::Error> = None;
+        for path in stream.iterator() {
+            match path {
+                Ok(path) => {
+                    let name = path
+                        .get_file_name()
+                        .map(|name| name.to_string())
+                        .unwrap_or_default();
+                    if skip_names.is_none_or(|skip| !skip.contains(&name)) {
+                        entries.push(name);
+                    }
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        let closed = stream.close();
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
+        closed?;
+        // `Arrays.sort(String[])`: UTF-16 order.
+        entries.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+        Ok(entries)
+    }
+
+    /// Returns the underlying filesystem directory.
+    ///
+    /// Equivalent to `FSDirectory.getDirectory()` (`FSDirectory.java:288-291`):
+    /// `ensureOpen()`, then the real path the constructor resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] "this Directory is closed" once
     /// the directory is closed.
-    pub fn get_directory(&self) -> Result<&Path> {
+    pub fn get_directory(&self) -> Result<&nio::Path> {
         self.base.ensure_open()?;
         Ok(&self.directory)
     }
@@ -9156,7 +9731,7 @@ impl FSDirectory {
     /// The protected `directory` field (`FSDirectory.java:92`), which the
     /// subclasses and this class read without `ensureOpen`. The public reader
     /// is [`get_directory`](Self::get_directory).
-    pub(crate) fn directory_path(&self) -> &Path {
+    pub(crate) fn directory_path(&self) -> &nio::Path {
         &self.directory
     }
 
@@ -9173,7 +9748,7 @@ impl FSDirectory {
         format!(
             "{}@{} lockFactory={}",
             java_simple_name(dir.directory_type_name()),
-            self.directory.display(),
+            self.directory,
             self.base.lock_factory().lock_factory_to_string()
         )
     }
@@ -9182,27 +9757,40 @@ impl FSDirectory {
         self.base.ensure_open()
     }
 
-    fn ensure_can_read(&self, name: &str) -> Result<()> {
-        let pending = self
-            .pending_deletes
+    fn is_pending(&self, name: &str) -> bool {
+        self.pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned");
-        if pending.contains(name) {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("file \"{name}\" is pending delete and cannot be opened for read"),
+            .expect("pending deletes mutex poisoned")
+            .contains(name)
+    }
+
+    fn remove_pending(&self, name: &str) -> bool {
+        self.pending_deletes
+            .lock()
+            .expect("pending deletes mutex poisoned")
+            .remove(name)
+    }
+
+    /// Equivalent to `FSDirectory.ensureCanRead(String)` (`FSDirectory.java:229-234`).
+    fn ensure_can_read(&self, name: &str) -> Result<()> {
+        if self.is_pending(name) {
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(format!(
+                    "file \"{name}\" is pending delete and cannot be opened for read"
+                )),
             )));
         }
         Ok(())
     }
 
-    fn file_path(&self, name: &str) -> PathBuf {
-        self.directory.join(name)
+    /// `directory.resolve(name)`.
+    fn file_path(&self, name: &str) -> nio::Path {
+        self.directory.resolve_str(name)
     }
 
     /// Equivalent to `FSDirectory.fsync(String)` (`FSDirectory.java:300-302`).
     fn fsync_file(&self, name: &str) -> Result<()> {
-        crate::util::IOUtils::fsync(&self.file_path(name), false)
+        crate::util::IOUtils::fsync(self.file_path(name), false)
     }
 
     /// The fsync of `FSDirectory.syncMetaData()`, `IOUtils.fsync(directory,
@@ -9211,37 +9799,48 @@ impl FSDirectory {
         crate::util::IOUtils::fsync(&self.directory, true)
     }
 
+    /// Equivalent to `FSDirectory.privateDeleteFile(String, boolean)`
+    /// (`FSDirectory.java:349-373`).
     fn private_delete_file(&self, name: &str, is_pending_delete: bool) -> Result<()> {
         let path = self.file_path(name);
-        let mut pending = self
-            .pending_deletes
-            .lock()
-            .expect("pending deletes mutex poisoned");
-        match fs::remove_file(&path) {
+        match nio::Files::delete(&path) {
             Ok(()) => {
-                pending.remove(name);
+                self.remove_pending(name);
                 Ok(())
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                pending.remove(name);
-                if is_pending_delete && cfg!(windows) {
-                    // Windows-specific leniency copied from Lucene 10.5.0.
+            // `catch (NoSuchFileException | FileNotFoundException e)`.
+            Err(e)
+                if nio::java_class_of(&e) == nio::NO_SUCH_FILE_EXCEPTION
+                    || e.kind() == io::ErrorKind::NotFound =>
+            {
+                // We were asked to delete a non-existent file:
+                self.remove_pending(name);
+                if is_pending_delete && crate::util::Constants::windows() {
+                    // LUCENE-6684: we suppress this check for Windows.
                     Ok(())
                 } else {
-                    Err(LuceneError::Io(e))
+                    Err(LuceneError::from(LuceneErrorKind::Io(e)))
                 }
             }
             // `catch (IOException ioe) { pendingDeletes.add(name); }`
             // (`FSDirectory.java:358-372`): the file is retried later and the
             // failure is not raised.
             Err(_) => {
-                pending.insert(name.to_string());
+                self.pending_deletes
+                    .lock()
+                    .expect("pending deletes mutex poisoned")
+                    .insert(name.to_string());
                 Ok(())
             }
         }
     }
 
-    fn delete_pending_files(&self) -> Result<()> {
+    /// Equivalent to `FSDirectory.deletePendingFiles()` (`FSDirectory.java:314-325`).
+    ///
+    /// # Errors
+    ///
+    /// The I/O error of a pending delete that fails again.
+    pub fn delete_pending_files(&self) -> Result<()> {
         let pending = {
             let pending = self
                 .pending_deletes
@@ -9252,12 +9851,15 @@ impl FSDirectory {
             }
             pending.clone()
         };
+        // Clone the set since we mutate it in privateDeleteFile:
         for name in pending {
             self.private_delete_file(&name, true)?;
         }
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.maybeDeletePendingFiles()`
+    /// (`FSDirectory.java:327-338`).
     fn maybe_delete_pending_files(&self) -> Result<()> {
         let should_delete = {
             let pending = self
@@ -9285,76 +9887,60 @@ impl FSDirectory {
 }
 
 impl Directory for FSDirectory {
+    /// Equivalent to `FSDirectory.listAll()` (`FSDirectory.java:191-195`):
+    /// the entries of the directory but those pending delete.
     fn list_all(&self) -> Result<Vec<String>> {
         self.check_open()?;
-        self.maybe_delete_pending_files()?;
         let pending = self
             .pending_deletes
             .lock()
-            .expect("pending deletes mutex poisoned");
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(&self.directory)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !pending.contains(&name) {
-                entries.push(name);
-            }
-        }
-        drop(pending);
-        entries.sort();
-        Ok(entries)
+            .expect("pending deletes mutex poisoned")
+            .clone();
+        Self::list_all_skipping(&self.directory, Some(&pending))
     }
 
+    /// Equivalent to `FSDirectory.deleteFile(String)` (`FSDirectory.java:304-311`).
     fn delete_file(&self, name: &str) -> Result<()> {
         self.check_open()?;
-        {
-            let pending = self
-                .pending_deletes
-                .lock()
-                .expect("pending deletes mutex poisoned");
-            if pending.contains(name) {
-                return Err(LuceneError::Io(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("file \"{name}\" is already pending delete"),
-                )));
-            }
+        if self.is_pending(name) {
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(format!("file \"{name}\" is already pending delete")),
+            )));
         }
         self.private_delete_file(name, false)?;
         self.maybe_delete_pending_files()?;
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.fileLength(String)` (`FSDirectory.java:197-204`):
+    /// `Files.size(directory.resolve(name))`.
     fn file_length(&self, name: &str) -> Result<i64> {
         self.check_open()?;
-        self.ensure_can_read(name)?;
-        let metadata = fs::metadata(self.file_path(name))?;
-        Ok(metadata.len() as i64)
+        if self.is_pending(name) {
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(format!("file \"{name}\" is pending delete")),
+            )));
+        }
+        Ok(nio::Files::size(&self.file_path(name))?)
     }
 
+    /// Equivalent to `FSDirectory.createOutput(String, IOContext)`
+    /// (`FSDirectory.java:206-216`).
     fn create_output(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
         self.check_open()?;
         self.maybe_delete_pending_files()?;
-        {
-            let was_pending = {
-                let mut pending = self
-                    .pending_deletes
-                    .lock()
-                    .expect("pending deletes mutex poisoned");
-                pending.remove(name)
-            };
-            if was_pending {
-                // Best-effort: try to delete again before re-creating.
-                let _ = self.private_delete_file(name, true);
-                let mut pending = self
-                    .pending_deletes
-                    .lock()
-                    .expect("pending deletes mutex poisoned");
-                pending.remove(name);
-            }
+        // If this file was pending delete, we are now bringing it back to life:
+        if self.remove_pending(name) {
+            // try again to delete it - this is the best effort
+            self.private_delete_file(name, true)?;
+            // watch out - if the delete fails it put
+            self.remove_pending(name);
         }
         Ok(Box::new(FSIndexOutput::new(name, &self.directory)?))
     }
 
+    /// Equivalent to `FSDirectory.createTempOutput(String, String, IOContext)`
+    /// (`FSDirectory.java:218-236`).
     fn create_temp_output(
         &self,
         prefix: &str,
@@ -9366,18 +9952,22 @@ impl Directory for FSDirectory {
         loop {
             let counter = self.next_temp_file_counter.fetch_add(1, Ordering::Relaxed);
             let name = Self::get_temp_file_name(prefix, suffix, counter);
-            let pending = self
-                .pending_deletes
-                .lock()
-                .expect("pending deletes mutex poisoned");
-            if pending.contains(&name) {
+            if self.is_pending(&name) {
                 continue;
             }
-            drop(pending);
-            match FSIndexOutput::new(&name, &self.directory) {
+            match FSIndexOutput::with_options(
+                &name,
+                &self.directory,
+                &[nio::OpenOption::Write, nio::OpenOption::CreateNew],
+            ) {
                 Ok(out) => return Ok(Box::new(out)),
-                Err(LuceneError::Io(e)) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    // Retry with next counter.
+                // Retry with next incremented name
+                Err(LuceneError {
+                    kind: LuceneErrorKind::Io(e),
+                    ..
+                }) if nio::java_class_of(&e) == nio::FILE_ALREADY_EXISTS_EXCEPTION
+                    || e.kind() == io::ErrorKind::AlreadyExists =>
+                {
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -9385,6 +9975,7 @@ impl Directory for FSDirectory {
         }
     }
 
+    /// Equivalent to `FSDirectory.sync(Collection)` (`FSDirectory.java:238-246`).
     fn sync(&self, names: &[String]) -> Result<()> {
         self.check_open()?;
         for name in names {
@@ -9394,6 +9985,7 @@ impl Directory for FSDirectory {
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.syncMetaData()` (`FSDirectory.java:271-277`).
     fn sync_metadata(&self) -> Result<()> {
         self.check_open()?;
         self.fsync_directory()?;
@@ -9402,41 +9994,28 @@ impl Directory for FSDirectory {
     }
 
     /// Equivalent to `FSDirectory.rename(String, String)`
-    /// (`FSDirectory.java:256-269`).
+    /// (`FSDirectory.java:256-269`): `Files.move(source, dest, ATOMIC_MOVE)`.
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.check_open()?;
-        // `throw new NoSuchFileException("file \"" + source + "\" is pending
-        // delete and cannot be moved")`.
-        if self
-            .pending_deletes
-            .lock()
-            .expect("pending deletes mutex poisoned")
-            .contains(source)
-        {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("file \"{source}\" is pending delete and cannot be moved"),
+        if self.is_pending(source) {
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(format!(
+                    "file \"{source}\" is pending delete and cannot be moved"
+                )),
             )));
         }
         self.maybe_delete_pending_files()?;
-        {
-            let was_pending = {
-                let mut pending = self
-                    .pending_deletes
-                    .lock()
-                    .expect("pending deletes mutex poisoned");
-                pending.remove(dest)
-            };
-            if was_pending {
-                let _ = self.private_delete_file(dest, true);
-                let mut pending = self
-                    .pending_deletes
-                    .lock()
-                    .expect("pending deletes mutex poisoned");
-                pending.remove(dest);
-            }
+        if self.remove_pending(dest) {
+            // try again to delete it - this is the best effort
+            self.private_delete_file(dest, true)?;
+            // watch out if the delete fails, it's back in here
+            self.remove_pending(dest);
         }
-        fs::rename(self.file_path(source), self.file_path(dest))?;
+        nio::Files::r#move(
+            &self.file_path(source),
+            &self.file_path(dest),
+            &[nio::CopyOption::AtomicMove],
+        )?;
         Ok(())
     }
 
@@ -9444,10 +10023,15 @@ impl Directory for FSDirectory {
         self.check_open()?;
         self.ensure_can_read(name)?;
         let path = self.file_path(name);
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        let metadata = file.metadata()?;
-        let len = metadata.len() as i64;
-        let input = FileIndexInput::new(file, path, len)?;
+        let channel = <dyn nio::FileChannel>::open(&path, &[nio::OpenOption::Read])?;
+        let len = match channel.size() {
+            Ok(len) => len,
+            Err(error) => {
+                let _ = channel.close();
+                return Err(error.into());
+            }
+        };
+        let input = FileIndexInput::new(channel, path, len)?;
         Ok(Box::new(BufferedIndexInput::with_default_size(Box::new(
             input,
         ))?))
@@ -9460,12 +10044,14 @@ impl Directory for FSDirectory {
         self.base.obtain_lock(self, name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    /// Equivalent to `FSDirectory.close()` (`FSDirectory.java:279-283`).
+    fn close(&self) -> Result<()> {
         self.base.set_open(false);
         self.delete_pending_files()?;
         Ok(())
     }
 
+    /// Equivalent to `FSDirectory.getPendingDeletions()` (`FSDirectory.java:429-437`).
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
         self.check_open()?;
         self.delete_pending_files()?;
@@ -9506,25 +10092,44 @@ impl std::fmt::Display for FSDirectory {
 /// File-based [`IndexInput`] used by [`FSDirectory`]'s own `open_input`.
 ///
 /// No Java counterpart: Java's abstract `FSDirectory` opens no inputs (see the
-/// divergence on [`FSDirectory`]). A clone reopens the file by path.
+/// divergence on [`FSDirectory`]). It reads the channel the provider opened at
+/// its own position; a clone reopens the file by path.
 struct FileIndexInput {
-    file: fs::File,
-    path: PathBuf,
+    channel: Arc<dyn nio::FileChannel>,
+    path: nio::Path,
     pos: u64,
     len: i64,
     resource_description: String,
 }
 
 impl FileIndexInput {
-    fn new(file: fs::File, path: PathBuf, len: i64) -> Result<Self> {
-        let resource_description = format!("FileIndexInput(path=\"{}\")", path.display());
+    fn new(channel: Arc<dyn nio::FileChannel>, path: nio::Path, len: i64) -> Result<Self> {
+        let resource_description = format!("FileIndexInput(path=\"{path}\")");
         Ok(Self {
-            file,
+            channel,
             path,
             pos: 0,
             len,
             resource_description,
         })
+    }
+
+    fn read_fully(&mut self, buf: &mut [u8]) -> Result<()> {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let n = self
+                .channel
+                .read_at(&mut buf[done..], self.pos as i64 + done as i64)?;
+            if n < 0 {
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                ))));
+            }
+            done += n as usize;
+        }
+        self.pos += buf.len() as u64;
+        Ok(())
     }
 }
 
@@ -9536,42 +10141,37 @@ impl DataInput for FileIndexInput {
 
     fn read_byte(&mut self) -> Result<u8> {
         let mut buf = [0u8; 1];
-        self.file.read_exact(&mut buf).map_err(LuceneError::from)?;
-        self.pos += 1;
+        self.read_fully(&mut buf)?;
         Ok(buf[0])
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
         }
-        self.file
-            .read_exact(&mut b[offset..end])
-            .map_err(LuceneError::from)?;
-        self.pos += len as u64;
-        Ok(())
+        self.read_fully(&mut b[offset..end])
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let target = self.pos as i64 + num_bytes;
         if target > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "skip past EOF",
-            )));
+            ))));
         }
-        self.file.seek(SeekFrom::Start(target as u64))?;
         self.pos = target as u64;
         Ok(())
     }
@@ -9579,6 +10179,7 @@ impl DataInput for FileIndexInput {
 
 impl IndexInput for FileIndexInput {
     fn close(&mut self) -> Result<()> {
+        self.channel.close()?;
         Ok(())
     }
 
@@ -9592,17 +10193,16 @@ impl IndexInput for FileIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         if pos > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "seek past EOF",
-            )));
+            ))));
         }
-        self.file.seek(SeekFrom::Start(pos as u64))?;
         self.pos = pos as u64;
         Ok(())
     }
@@ -9614,7 +10214,7 @@ impl IndexInput for FileIndexInput {
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
         if offset < 0 || length < 0 || length > self.len - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice({slice_description}) out of bounds"
             )));
         }
@@ -9628,8 +10228,8 @@ impl IndexInput for FileIndexInput {
     }
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        let file = fs::OpenOptions::new().read(true).open(&self.path)?;
-        let mut clone = FileIndexInput::new(file, self.path.clone(), self.len)?;
+        let channel = <dyn nio::FileChannel>::open(&self.path, &[nio::OpenOption::Read])?;
+        let mut clone = FileIndexInput::new(channel, self.path.clone(), self.len)?;
         clone.seek(self.pos as i64)?;
         Ok(Box::new(clone))
     }
@@ -9652,7 +10252,7 @@ impl NIOFSDirectory {
     /// Opens a new `NIOFSDirectory` at `path` using the default lock factory.
     ///
     /// Equivalent to `NIOFSDirectory(Path)` in Lucene 10.5.0.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn open(path: impl nio::IntoNioPath) -> Result<Self> {
         // `this(path, FSLockFactory.getDefault())`
         Self::with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
@@ -9665,7 +10265,7 @@ impl NIOFSDirectory {
     ///
     /// Propagates any I/O error creating or canonicalizing the directory.
     pub fn with_lock_factory(
-        path: impl AsRef<Path>,
+        path: impl nio::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
         let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
@@ -9677,9 +10277,20 @@ impl NIOFSDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
-    pub fn get_directory(&self) -> Result<&Path> {
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] once the directory is closed.
+    pub fn get_directory(&self) -> Result<&nio::Path> {
         self.inner.get_directory()
+    }
+
+    /// `deletePendingFiles()`, inherited from `FSDirectory`
+    /// (`FSDirectory.java:314-325`): tries again to delete the files whose
+    /// deletion failed.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error of a pending delete that fails again.
+    pub fn delete_pending_files(&self) -> Result<()> {
+        self.inner.delete_pending_files()
     }
 }
 
@@ -9721,29 +10332,26 @@ impl Directory for NIOFSDirectory {
         self.inner.rename(source, dest)
     }
 
+    /// Equivalent to `NIOFSDirectory.openInput(String, IOContext)`
+    /// (`NIOFSDirectory.java:73-89`).
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.inner.ensure_open()?;
         self.inner.ensure_can_read(name)?;
-        let path = self.inner.directory_path().join(name);
+        let path = self.inner.get_directory()?.resolve_str(name);
         // `FileChannel fc = FileChannel.open(path, StandardOpenOption.READ)`.
-        let fc: NioChannel = Arc::new(std::sync::RwLock::new(Some(
-            fs::OpenOptions::new().read(true).open(&path)?,
-        )));
+        let fc: NioChannel = <dyn nio::FileChannel>::open(&path, &[nio::OpenOption::Read])?;
         // `try { new NIOFSIndexInput("NIOFSIndexInput(path=\"" + path + "\")",
         // fc, context) } finally { if (success == false)
         // IOUtils.closeWhileHandlingException(fc); }` (`NIOFSDirectory.java:79-89`).
         match NIOFSIndexInput::with_file_channel(
-            format!("NIOFSIndexInput(path=\"{}\")", path.display()),
+            format!("NIOFSIndexInput(path=\"{path}\")"),
             Arc::clone(&fc),
             context,
         ) {
             Ok(input) => Ok(Box::new(input)),
             Err(error) => {
                 crate::util::IOUtils::close_while_handling_exception([Some(|| {
-                    // Closing the channel is dropping its `File`.
-                    fc.write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take();
+                    let _ = fc.close();
                     Ok(())
                 })])?;
                 Err(error)
@@ -9758,7 +10366,7 @@ impl Directory for NIOFSDirectory {
         self.inner.base().obtain_lock(self, name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -9806,38 +10414,47 @@ impl std::fmt::Debug for NIOFSDirectory {
 /// Equivalent to the `FileChannel` that `NIOFSIndexInput` shares with every
 /// clone and slice (`NIOFSDirectory.java:95-123`): reads are positional, so
 /// the inputs never disturb each other, and closing the input that opened the
-/// file closes it for all of them. `None` once closed.
-type NioChannel = Arc<std::sync::RwLock<Option<fs::File>>>;
+/// file closes it for all of them.
+type NioChannel = Arc<dyn nio::FileChannel>;
 
-/// Reads `buf.len()` bytes of `file` at `position`, without moving any file
+/// `NIOFSIndexInput.CHUNK_SIZE`: "The maximum chunk size for reads of 16384
+/// bytes" (`NIOFSDirectory.java:93-94`).
+const NIOFS_CHUNK_SIZE: usize = 16384;
+
+/// Reads `buf.len()` bytes of `channel` at `position`, without moving any
 /// position.
 ///
 /// Equivalent to the `channel.read(ByteBuffer, long)` loop of
-/// `NIOFSIndexInput.readInternal` (`NIOFSDirectory.java:182-210`).
-fn read_channel_at(file: &fs::File, buf: &mut [u8], position: u64) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::FileExt::read_exact_at(file, buf, position)
-    }
-    #[cfg(windows)]
-    {
-        let mut done = 0usize;
-        while done < buf.len() {
-            let read = std::os::windows::fs::FileExt::seek_read(
-                file,
-                &mut buf[done..],
-                position + done as u64,
-            )?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "failed to fill whole buffer",
-                ));
-            }
-            done += read;
+/// `NIOFSIndexInput.readInternal` (`NIOFSDirectory.java:182-210`): at most
+/// [`NIOFS_CHUNK_SIZE`] bytes per read, and an [`io::ErrorKind::UnexpectedEof`]
+/// error when the channel reports the end of the file.
+fn read_channel_at(
+    channel: &dyn nio::FileChannel,
+    buf: &mut [u8],
+    position: u64,
+) -> io::Result<()> {
+    let mut done = 0usize;
+    while done < buf.len() {
+        let to_read = (buf.len() - done).min(NIOFS_CHUNK_SIZE);
+        let i = channel.read_at(
+            &mut buf[done..done + to_read],
+            (position + done as u64) as i64,
+        )?;
+        if i < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "failed to fill whole buffer",
+            ));
         }
-        Ok(())
+        debug_assert!(
+            i > 0,
+            "FileChannel.read with non zero-length bb.remaining() must always read at least \
+             one byte (FileChannel is in blocking mode, see spec of ReadableByteChannel)"
+        );
+        done += i as usize;
     }
+    debug_assert!(done == buf.len());
+    Ok(())
 }
 
 /// Raw unbuffered file input used by [`NIOFSDirectory`]: the
@@ -9880,32 +10497,27 @@ impl RawNioFsIndexInput {
     fn read_internal(&mut self, buf: &mut [u8]) -> Result<()> {
         // `if (pos + b.remaining() > end) throw new EOFException("read past EOF: " + this)`
         if self.pos as i64 + buf.len() as i64 > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("read past EOF: {}", self.resource_description),
-            )));
+            ))));
         }
-        let guard = self
-            .channel
-            .read()
-            .map_err(|_| LuceneError::illegal_state("NIOFS channel lock poisoned".to_string()))?;
-        let Some(file) = guard.as_ref() else {
-            return Err(LuceneError::already_closed(format!(
-                "Already closed: {}",
-                self.resource_description
-            )));
-        };
-        read_channel_at(file, buf, self.off + self.pos).map_err(|e| {
-            if e.kind() == io::ErrorKind::UnexpectedEof {
-                LuceneError::Io(io::Error::new(
+        read_channel_at(&*self.channel, buf, self.off + self.pos).map_err(|e| {
+            if nio::java_class_of(&e) == nio::CLOSED_CHANNEL_EXCEPTION {
+                LuceneError::already_closed(format!(
+                    "Already closed: {}",
+                    self.resource_description
+                ))
+            } else if e.kind() == io::ErrorKind::UnexpectedEof {
+                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!("read past EOF: {}", self.resource_description),
-                ))
+                )))
             } else {
-                LuceneError::Io(io::Error::new(
+                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     e.kind(),
                     format!("{}: {e}", self.resource_description),
-                ))
+                )))
             }
         })?;
         self.pos += buf.len() as u64;
@@ -9925,12 +10537,13 @@ impl DataInput for RawNioFsIndexInput {
         Ok(buf[0])
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
@@ -9940,16 +10553,16 @@ impl DataInput for RawNioFsIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let target = self.pos as i64 + num_bytes;
         if target > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "skip past EOF",
-            )));
+            ))));
         }
         self.pos = target as u64;
         Ok(())
@@ -9960,9 +10573,7 @@ impl IndexInput for RawNioFsIndexInput {
     /// Equivalent to `NIOFSIndexInput.close()`: `if (!isClone) channel.close()`.
     fn close(&mut self) -> Result<()> {
         if !self.is_clone {
-            if let Ok(mut file) = self.channel.write() {
-                file.take();
-            }
+            self.channel.close()?;
         }
         Ok(())
     }
@@ -9977,15 +10588,15 @@ impl IndexInput for RawNioFsIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         if pos > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "seek past EOF",
-            )));
+            ))));
         }
         self.pos = pos as u64;
         Ok(())
@@ -9998,7 +10609,7 @@ impl IndexInput for RawNioFsIndexInput {
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
         if offset < 0 || length < 0 || length > self.len - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice({slice_description}) out of bounds"
             )));
         }
@@ -10055,13 +10666,14 @@ impl NIOFSIndexInput {
     /// # Errors
     ///
     /// Propagates any I/O error opening the file.
-    pub fn new(resource_desc: String, path: PathBuf, context: &dyn IOContext) -> Result<Self> {
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        Self::with_file_channel(
-            resource_desc,
-            Arc::new(std::sync::RwLock::new(Some(file))),
-            context,
-        )
+    pub fn new(
+        resource_desc: String,
+        path: impl nio::IntoNioPath,
+        context: &dyn IOContext,
+    ) -> Result<Self> {
+        let path = path.into_nio_path();
+        let fc = <dyn nio::FileChannel>::open(&path, &[nio::OpenOption::Read])?;
+        Self::with_file_channel(resource_desc, fc, context)
     }
 
     /// Equivalent to `NIOFSIndexInput(String, FileChannel, IOContext)`
@@ -10072,13 +10684,7 @@ impl NIOFSIndexInput {
         fc: NioChannel,
         context: &dyn IOContext,
     ) -> Result<Self> {
-        let len = {
-            let file = fc.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            match file.as_ref() {
-                Some(file) => file.metadata()?.len() as i64,
-                None => return Err(LuceneError::already_closed("channel is closed")),
-            }
-        };
+        let len = fc.size()?;
         Self::with_channel(
             resource_desc,
             fc,
@@ -10115,7 +10721,7 @@ impl NIOFSIndexInput {
     /// starting at `off + offset`, buffered with `getBufferSize()`.
     fn slice_nio(&self, slice_description: &str, offset: i64, length: i64) -> Result<Self> {
         if (length | offset) < 0 || length > self.length() - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice() {slice_description} out of bounds: offset={offset},length={length},fileLength={}: {}",
                 self.length(),
                 self.resource_description()
@@ -10142,13 +10748,13 @@ impl DataInput for NIOFSIndexInput {
         self.inner.read_byte()
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.inner.read_bytes(b, offset, len)
     }
 
     fn read_bytes_buffered(
         &mut self,
-        b: &mut [u8],
+        b: Option<&mut [u8]>,
         offset: usize,
         len: usize,
         use_buffer: bool,
@@ -10304,9 +10910,9 @@ impl Drop for TestFilterInputRegistration {
 pub(crate) fn register_test_secrets() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
     INITIALIZED.call_once(|| {
-        crate::internal::tests_hooks::TestSecrets::set_filter_input_index_access(
+        crate::internal::tests_hooks::TestSecrets::set_filter_input_index_access(Some(
             std::sync::Arc::new(FilterIndexInputAccessImpl),
-        )
+        ))
         .expect("INVARIANT: FilterIndexInput's static initializer runs once, from this file");
     });
 }
@@ -10338,6 +10944,8 @@ pub(crate) fn matches_java_text(actual: &str, pattern: &str) -> bool {
 mod tests {
     use super::*;
     use crate::util::java_collections::JavaHashMap;
+    use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     /// `ByteBuffersDataOutput.toArrayCopy()` refuses content larger than a
@@ -10351,7 +10959,7 @@ mod tests {
         output.completed = vec![vec![0u8; 1 << 30], vec![0u8; 1 << 30]];
         assert!(matches!(
             output.to_array_copy(),
-            Err(LuceneError::Other(ref message))
+            Err(LuceneError { kind: LuceneErrorKind::Other(ref message), .. })
                 if message == "Data exceeds maximum size of a single byte array: 2147483648"
         ));
     }
@@ -10597,7 +11205,7 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&input_src);
         let mut decoded = vec![0u8; data.len()];
         let len = decoded.len();
-        input.read_bytes(&mut decoded, 0, len).unwrap();
+        input.read_bytes(Some(&mut decoded), 0, len).unwrap();
         assert_eq!(decoded, data);
     }
 
@@ -10620,12 +11228,14 @@ mod tests {
         let mut decoded_longs = vec![0i64; longs.len()];
         let mut decoded_floats = vec![0f32; floats.len()];
         let mut decoded_doubles = vec![0f64; doubles.len()];
-        input.read_ints(&mut decoded_ints, 0, ints.len()).unwrap();
         input
-            .read_longs(&mut decoded_longs, 0, longs.len())
+            .read_ints(Some(&mut decoded_ints), 0, ints.len())
             .unwrap();
         input
-            .read_floats(&mut decoded_floats, 0, floats.len())
+            .read_longs(Some(&mut decoded_longs), 0, longs.len())
+            .unwrap();
+        input
+            .read_floats(Some(&mut decoded_floats), 0, floats.len())
             .unwrap();
         input
             .read_doubles(&mut decoded_doubles, 0, doubles.len())
@@ -10669,6 +11279,9 @@ mod tests {
     }
 
     #[test]
+    // `DataOutput.copyBytes` asserts `numBytes >= 0`: a debug build, like Java
+    // under `-ea`, stops there.
+    #[cfg_attr(debug_assertions, should_panic(expected = "numBytes=-1"))]
     fn copy_bytes_rejects_negative() {
         let mut out = VecDataOutput::new();
         let input_src = Vec::new();
@@ -10681,12 +11294,16 @@ mod tests {
         let data = vec![1u8, 2, 3, 4, 5];
         let mut input = ByteArrayDataInput::new(&data);
         let mut buf = vec![0u8; 5];
-        input.read_bytes_buffered(&mut buf, 0, 5, false).unwrap();
+        input
+            .read_bytes_buffered(Some(&mut buf), 0, 5, false)
+            .unwrap();
         assert_eq!(buf, data);
 
         let mut input2 = ByteArrayDataInput::new(&data);
         let mut buf2 = vec![0u8; 5];
-        input2.read_bytes_buffered(&mut buf2, 0, 5, true).unwrap();
+        input2
+            .read_bytes_buffered(Some(&mut buf2), 0, 5, true)
+            .unwrap();
         assert_eq!(buf2, data);
     }
 
@@ -10991,7 +11608,7 @@ mod tests {
         let mut input = out.to_data_input().unwrap();
         let mut decoded = vec![0u8; data.len()];
         let len = decoded.len();
-        input.read_bytes(&mut decoded, 0, len).unwrap();
+        input.read_bytes(Some(&mut decoded), 0, len).unwrap();
         assert_eq!(decoded, data);
     }
 
@@ -11013,12 +11630,14 @@ mod tests {
         let mut decoded_longs = vec![0i64; longs.len()];
         let mut decoded_floats = vec![0f32; floats.len()];
         let mut decoded_doubles = vec![0f64; doubles.len()];
-        input.read_ints(&mut decoded_ints, 0, ints.len()).unwrap();
         input
-            .read_longs(&mut decoded_longs, 0, longs.len())
+            .read_ints(Some(&mut decoded_ints), 0, ints.len())
             .unwrap();
         input
-            .read_floats(&mut decoded_floats, 0, floats.len())
+            .read_longs(Some(&mut decoded_longs), 0, longs.len())
+            .unwrap();
+        input
+            .read_floats(Some(&mut decoded_floats), 0, floats.len())
             .unwrap();
         input
             .read_doubles(&mut decoded_doubles, 0, doubles.len())
@@ -11080,7 +11699,7 @@ mod tests {
         let sliced = input.slice(4, 8).unwrap();
         let mut sub = vec![0u8; 8];
         let mut reader = sliced;
-        reader.read_bytes(&mut sub, 0, 8).unwrap();
+        reader.read_bytes(Some(&mut sub), 0, 8).unwrap();
         assert_eq!(
             sub,
             0x22222222u32
@@ -11123,6 +11742,9 @@ mod tests {
     }
 
     #[test]
+    // `DataOutput.copyBytes` asserts `numBytes >= 0`: a debug build, like Java
+    // under `-ea`, stops there.
+    #[cfg_attr(debug_assertions, should_panic(expected = "numBytes=-1"))]
     fn byte_buffers_copy_bytes_rejects_negative() {
         let mut out = ByteBuffersDataOutput::new();
         let mut input = ByteBuffersDataInput::new(vec![Vec::new()]).unwrap();
@@ -11186,7 +11808,7 @@ mod tests {
         assert_eq!(input.read_byte().unwrap(), 0xAA);
         let mut prefix = vec![0u8; 1021];
         let len = prefix.len();
-        input.read_bytes(&mut prefix, 0, len).unwrap();
+        input.read_bytes(Some(&mut prefix), 0, len).unwrap();
         assert!(prefix.iter().all(|&b| b == 0));
         assert_eq!(input.read_short().unwrap(), 0x1234);
         assert_eq!(input.read_int().unwrap(), 0x12345678);
@@ -11538,16 +12160,16 @@ mod tests {
         .unwrap();
 
         let mut all = vec![0u8; 256];
-        input.read_bytes(&mut all, 0, 256).unwrap();
+        input.read_bytes(Some(&mut all), 0, 256).unwrap();
         assert_eq!(all, data);
 
         // Reset and read via small chunks that straddle refill boundaries.
         input.seek(0).unwrap();
         let mut piece = [0u8; 3];
-        input.read_bytes(&mut piece, 0, 3).unwrap(); // bytes 0..2
+        input.read_bytes(Some(&mut piece), 0, 3).unwrap(); // bytes 0..2
         assert_eq!(piece, [0, 1, 2]);
         input.seek(6).unwrap();
-        input.read_bytes(&mut piece, 0, 3).unwrap(); // bytes 6..8
+        input.read_bytes(Some(&mut piece), 0, 3).unwrap(); // bytes 6..8
         assert_eq!(piece, [6, 7, 8]);
     }
 
@@ -11649,7 +12271,7 @@ mod tests {
     /// lifecycle of create, open, read, write, rename, delete, list and close.
     #[test]
     fn directory_basic_operations() {
-        let mut dir = ByteBuffersDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
 
         // Empty directory.
@@ -11736,8 +12358,285 @@ mod tests {
         let mut input = dst.open_input("dest.bin", ctx).unwrap();
         assert_eq!(input.read_int().unwrap(), 0xDEADBEEFu32 as i32);
         let mut buf = [0u8; 5];
-        input.read_bytes(&mut buf, 0, 5).unwrap();
+        input.read_bytes(Some(&mut buf), 0, 5).unwrap();
         assert_eq!(buf, [1, 2, 3, 4, 5]);
+    }
+
+    /// `Directory.copyFrom` closes the source input and the destination
+    /// output as the resources of one `try` (`Directory.java:177-189`): the
+    /// input is closed on success and when `createOutput` fails, and `dest`
+    /// is deleted only when the copy did not succeed. Regression test for the
+    /// port dropping the input without closing it, which left a
+    /// `MockDirectoryWrapper` input tracked as open.
+    #[test]
+    fn directory_copy_from_closes_its_input() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct Tracked {
+            inner: FilterIndexInput,
+            closes: Arc<AtomicUsize>,
+        }
+        impl DataInput for Tracked {
+            fn to_java_string(&self) -> String {
+                self.inner.to_java_string()
+            }
+            fn read_byte(&mut self) -> Result<u8> {
+                self.inner.read_byte()
+            }
+            fn read_bytes(
+                &mut self,
+                b: Option<&mut [u8]>,
+                offset: usize,
+                len: usize,
+            ) -> Result<()> {
+                self.inner.read_bytes(b, offset, len)
+            }
+            fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+                self.inner.skip_bytes(num_bytes)
+            }
+        }
+        impl IndexInput for Tracked {
+            fn close(&mut self) -> Result<()> {
+                self.closes.fetch_add(1, Ordering::SeqCst);
+                self.inner.close()
+            }
+            fn file_pointer(&self) -> i64 {
+                self.inner.file_pointer()
+            }
+            fn length(&self) -> i64 {
+                self.inner.length()
+            }
+            fn seek(&mut self, pos: i64) -> Result<()> {
+                self.inner.seek(pos)
+            }
+            fn slice(&self, d: &str, offset: i64, length: i64) -> Result<Box<dyn IndexInput>> {
+                self.inner.slice(d, offset, length)
+            }
+            fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+                self.inner.clone_input()
+            }
+            fn resource_description(&self) -> &str {
+                self.inner.resource_description()
+            }
+        }
+        struct TrackingSource {
+            dir: ByteBuffersDirectory,
+            closes: Arc<AtomicUsize>,
+        }
+        impl Directory for TrackingSource {
+            fn list_all(&self) -> Result<Vec<String>> {
+                self.dir.list_all()
+            }
+            fn delete_file(&self, name: &str) -> Result<()> {
+                self.dir.delete_file(name)
+            }
+            fn file_length(&self, name: &str) -> Result<i64> {
+                self.dir.file_length(name)
+            }
+            fn create_output(&self, name: &str, c: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+                self.dir.create_output(name, c)
+            }
+            fn create_temp_output(
+                &self,
+                p: &str,
+                s: &str,
+                c: &dyn IOContext,
+            ) -> Result<Box<dyn IndexOutput>> {
+                self.dir.create_temp_output(p, s, c)
+            }
+            fn sync(&self, names: &[String]) -> Result<()> {
+                self.dir.sync(names)
+            }
+            fn sync_metadata(&self) -> Result<()> {
+                self.dir.sync_metadata()
+            }
+            fn rename(&self, source: &str, dest: &str) -> Result<()> {
+                self.dir.rename(source, dest)
+            }
+            fn open_input(&self, name: &str, c: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+                Ok(Box::new(Tracked {
+                    inner: FilterIndexInput::new("tracked", self.dir.open_input(name, c)?),
+                    closes: Arc::clone(&self.closes),
+                }))
+            }
+            fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+                self.dir.obtain_lock(name)
+            }
+            fn close(&self) -> Result<()> {
+                self.dir.close()
+            }
+            fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+                self.dir.get_pending_deletions()
+            }
+        }
+
+        let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
+        let src = TrackingSource {
+            dir: ByteBuffersDirectory::new(),
+            closes: Arc::new(AtomicUsize::new(0)),
+        };
+        let mut out = src.dir.create_output("a.bin", ctx).unwrap();
+        out.write_bytes(&[7, 8, 9], 0, 3).unwrap();
+        out.close().unwrap();
+
+        let dst = ByteBuffersDirectory::new();
+        dst.copy_from(&src, "a.bin", "b.bin", ctx).unwrap();
+        assert_eq!(
+            src.closes.load(Ordering::SeqCst),
+            1,
+            "copy closes its input"
+        );
+        assert_eq!(dst.file_length("b.bin").unwrap(), 3);
+
+        // `createOutput` fails: the input is still closed, and `dest` is
+        // deleted (here, the file that was already there).
+        let err = dst.copy_from(&src, "a.bin", "b.bin", ctx).unwrap_err();
+        assert!(
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::AlreadyExists),
+            "{err}"
+        );
+        assert_eq!(
+            src.closes.load(Ordering::SeqCst),
+            2,
+            "a failed copy closes its input"
+        );
+        assert!(dst.file_length("b.bin").is_err());
+    }
+
+    /// `ByteBuffersDirectory` throws the `java.nio.file` exceptions Lucene
+    /// throws (`ByteBuffersDirectory.java:134-244`): `NoSuchFileException`,
+    /// `FileAlreadyExistsException` and `AccessDeniedException`, each with
+    /// its message and the `io::ErrorKind` that stands for its class.
+    /// Regression test for the plain `io::Error`s the port raised, whose
+    /// class read back as `java.io.IOException`.
+    #[test]
+    fn byte_buffers_directory_throws_lucenes_exception_classes() {
+        let dir = ByteBuffersDirectory::new();
+        let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
+        let class_and_message = |e: LuceneError| match e {
+            LuceneError {
+                kind: LuceneErrorKind::Io(io),
+                ..
+            } => (
+                nio::java_class_of(&io).to_string(),
+                nio::java_message_of(&io).unwrap(),
+                io.kind(),
+            ),
+            other => panic!("not an IOException: {other}"),
+        };
+        let not_found = |m: &str| {
+            (
+                nio::NO_SUCH_FILE_EXCEPTION.to_string(),
+                m.to_string(),
+                io::ErrorKind::NotFound,
+            )
+        };
+        assert_eq!(
+            class_and_message(dir.delete_file("a").unwrap_err()),
+            not_found("a")
+        );
+        assert_eq!(
+            class_and_message(dir.file_length("b").unwrap_err()),
+            not_found("b")
+        );
+        assert_eq!(
+            class_and_message(dir.open_input("c", ctx).err().unwrap()),
+            not_found("c")
+        );
+        assert_eq!(
+            class_and_message(dir.rename("d", "e").unwrap_err()),
+            not_found("d")
+        );
+
+        let mut out = dir.create_output("f", ctx).unwrap();
+        assert_eq!(
+            class_and_message(dir.open_input("f", ctx).err().unwrap()),
+            (
+                nio::ACCESS_DENIED_EXCEPTION.to_string(),
+                "Can't open a file still open for writing: f".to_string(),
+                io::ErrorKind::PermissionDenied
+            )
+        );
+        out.close().unwrap();
+        let exists = |m: &str| {
+            (
+                nio::FILE_ALREADY_EXISTS_EXCEPTION.to_string(),
+                m.to_string(),
+                io::ErrorKind::AlreadyExists,
+            )
+        };
+        assert_eq!(
+            class_and_message(dir.create_output("f", ctx).err().unwrap()),
+            exists("File already exists: f")
+        );
+        dir.create_output("g", ctx).unwrap().close().unwrap();
+        assert_eq!(
+            class_and_message(dir.rename("f", "g").unwrap_err()),
+            exists("g")
+        );
+    }
+
+    /// `BufferedChecksumIndexInput`'s resource description quotes
+    /// `main.toString()` (`BufferedChecksumIndexInput.java:36`), not the
+    /// resource description of `main`; they differ for an input that
+    /// overrides `toString()`.
+    #[test]
+    fn buffered_checksum_index_input_quotes_main_to_string() {
+        struct Renamed(FilterIndexInput);
+        impl DataInput for Renamed {
+            fn to_java_string(&self) -> String {
+                "Renamed(toString)".to_string()
+            }
+            fn read_byte(&mut self) -> Result<u8> {
+                self.0.read_byte()
+            }
+            fn read_bytes(
+                &mut self,
+                b: Option<&mut [u8]>,
+                offset: usize,
+                len: usize,
+            ) -> Result<()> {
+                self.0.read_bytes(b, offset, len)
+            }
+            fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+                self.0.skip_bytes(num_bytes)
+            }
+        }
+        impl IndexInput for Renamed {
+            fn close(&mut self) -> Result<()> {
+                self.0.close()
+            }
+            fn file_pointer(&self) -> i64 {
+                self.0.file_pointer()
+            }
+            fn length(&self) -> i64 {
+                self.0.length()
+            }
+            fn seek(&mut self, pos: i64) -> Result<()> {
+                self.0.seek(pos)
+            }
+            fn slice(&self, d: &str, offset: i64, length: i64) -> Result<Box<dyn IndexInput>> {
+                self.0.slice(d, offset, length)
+            }
+            fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+                self.0.clone_input()
+            }
+            fn resource_description(&self) -> &str {
+                "Renamed(resourceDescription)"
+            }
+        }
+        let dir = ByteBuffersDirectory::new();
+        dir.create_output("a", &*DEFAULT_IO_CONTEXT)
+            .unwrap()
+            .close()
+            .unwrap();
+        let main = dir.open_input("a", &*DEFAULT_IO_CONTEXT).unwrap();
+        let input =
+            BufferedChecksumIndexInput::new(Box::new(Renamed(FilterIndexInput::new("x", main))));
+        assert_eq!(
+            input.resource_description(),
+            "BufferedChecksumIndexInput(Renamed(toString))"
+        );
     }
 
     /// Verifies the IOContext factory functions and hint semantics.
@@ -11813,10 +12712,13 @@ mod tests {
     /// lockName=x)", "bb closed obtainLock: ok".
     #[test]
     fn byte_buffers_directory_inherits_base_directory_members() {
-        let mut dir = ByteBuffersDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let lock = dir.obtain_lock("x").unwrap();
         match dir.obtain_lock("x") {
-            Err(LuceneError::LockObtainFailed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { message, .. },
+                ..
+            }) => {
                 assert_eq!(
                     message,
                     format!(
@@ -11840,7 +12742,10 @@ mod tests {
 
         dir.close().unwrap();
         match dir.ensure_open() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
@@ -11860,22 +12765,25 @@ mod tests {
     #[test]
     fn a_closed_fs_directory_hands_out_only_non_fs_locks() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut native = NIOFSDirectory::open(tmp.path().join("closed")).unwrap();
+        let native = NIOFSDirectory::open(tmp.path().join("closed")).unwrap();
         native.close().unwrap();
         match native.obtain_lock("y") {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {:?}", other.err()),
         }
-        let mut single = NIOFSDirectory::with_lock_factory(
+        let single = NIOFSDirectory::with_lock_factory(
             tmp.path().join("closed2"),
             Box::new(SingleInstanceLockFactory::new()),
         )
         .unwrap();
         single.close().unwrap();
         single.obtain_lock("y").unwrap().close().unwrap();
-        let mut none =
+        let none =
             NIOFSDirectory::with_lock_factory(tmp.path().join("closed3"), Box::new(NoLockFactory))
                 .unwrap();
         none.close().unwrap();
@@ -11896,14 +12804,17 @@ mod tests {
         .unwrap();
         let lock = dir.obtain_lock("x").unwrap();
         match dir.obtain_lock("x") {
-            Err(LuceneError::LockObtainFailed { message, .. }) => assert!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { message, .. },
+                ..
+            }) => assert!(
                 matches_java_text(
                     &message,
                     &format!(
                         "lock instance already obtained: (dir=NIOFSDirectory@{} \
                          lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{{hash}}, \
                          lockName=x)",
-                        dir.get_directory().unwrap().display()
+                        dir.get_directory().unwrap()
                     )
                 ),
                 "{message}"
@@ -11933,7 +12844,7 @@ mod tests {
         let nio = NIOFSDirectory::open(tmp.path().join("nio")).unwrap();
         let nio_text = format!(
             "NIOFSDirectory@{} lockFactory=org.apache.lucene.store.NativeFSLockFactory@{{hash}}",
-            nio.get_directory().unwrap().display()
+            nio.get_directory().unwrap()
         );
         assert!(
             matches_java_text(&nio.directory_to_string(), &nio_text),
@@ -11950,7 +12861,7 @@ mod tests {
             &simple.directory_to_string(),
             &format!(
                 "NIOFSDirectory@{} lockFactory=org.apache.lucene.store.SimpleFSLockFactory@{{hash}}",
-                simple.get_directory().unwrap().display()
+                simple.get_directory().unwrap()
             )
         ));
         let fs =
@@ -11960,7 +12871,7 @@ mod tests {
             &fs.directory_to_string(),
             &format!(
                 "FSDirectory@{} lockFactory=org.apache.lucene.store.NativeFSLockFactory@{{hash}}",
-                fs.get_directory().unwrap().display()
+                fs.get_directory().unwrap()
             )
         ));
 
@@ -12015,7 +12926,10 @@ mod tests {
         ));
 
         match NativeFSLockFactory.obtain_lock(&bb, "x") {
-            Err(LuceneError::UnsupportedOperation(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!(
                     "NativeFSLockFactory can only be used with FSDirectory subclasses, got: {}",
@@ -12108,7 +13022,10 @@ mod tests {
         dir.delete_file("pending").unwrap();
         assert!(dir.get_pending_deletions().unwrap().contains("pending"));
         match dir.rename("pending", "moved") {
-            Err(LuceneError::Io(error)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            }) => {
                 assert_eq!(error.kind(), io::ErrorKind::NotFound);
                 assert_eq!(
                     error.to_string(),
@@ -12208,7 +13125,10 @@ mod tests {
             file.write_all(b"x").unwrap();
         }
         match lock.ensure_valid() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!("Unexpected lock file size: 1, (lock={})", rendered("valid"))
             ),
@@ -12220,7 +13140,10 @@ mod tests {
 
         lock.close().unwrap();
         match lock.ensure_valid() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!("Lock instance already released: {}", rendered("invalid"))
             ),
@@ -12275,7 +13198,10 @@ mod tests {
             file_time_to_string(original)
         );
         match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(message, expected),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert_eq!(message, expected),
             other => panic!("an AlreadyClosedException, got {other:?}"),
         }
     }
@@ -12296,7 +13222,11 @@ mod tests {
         let lock = SimpleFSLockFactory::instance()
             .obtain_lock(&dir, "write.lock")
             .unwrap();
-        let path = dir.get_directory().unwrap().join("write.lock");
+        let path = dir
+            .get_directory()
+            .unwrap()
+            .as_std_path()
+            .join("write.lock");
         let created = |path: &std::path::Path| {
             std::fs::metadata(path)
                 .unwrap()
@@ -12326,7 +13256,10 @@ mod tests {
             file_time_to_string(original)
         );
         match lock.ensure_valid() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(message, expected),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert_eq!(message, expected),
             other => panic!("an AlreadyClosedException, got {other:?}"),
         }
     }
@@ -12377,7 +13310,7 @@ mod tests {
         .unwrap();
         let released = |lock: &dyn Lock, path: &Path, creation_time: &str| {
             match lock.ensure_valid() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+            Err(LuceneError { kind: LuceneErrorKind::AlreadyClosed { message, .. }, .. }) => assert_eq!(
                 message,
                 format!(
                     "Lock instance already released: SimpleFSLock(path={},creationTime={creation_time})",
@@ -12391,19 +13324,22 @@ mod tests {
             file_time_to_string(file_creation_time(&std::fs::metadata(path).unwrap()).unwrap())
         };
 
-        let a_path = dir.get_directory().unwrap().join("a.lock");
+        let a_path = dir.get_directory().unwrap().as_std_path().join("a.lock");
         let a = dir.obtain_lock("a.lock").unwrap();
         let a_created = creation_time(&a_path);
         a.close().unwrap();
         a.close().expect("a second close is a no-op");
         released(a.as_ref(), &a_path, &a_created);
 
-        let b_path = dir.get_directory().unwrap().join("b.lock");
+        let b_path = dir.get_directory().unwrap().as_std_path().join("b.lock");
         let b = dir.obtain_lock("b.lock").unwrap();
         let b_created = creation_time(&b_path);
         std::fs::remove_file(&b_path).unwrap();
         match b.close() {
-            Err(LuceneError::LockReleaseFailed { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockReleaseFailed { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "Lock file cannot be safely removed. Manual intervention is recommended."
             ),
@@ -12468,7 +13404,10 @@ mod tests {
                 println!("child obtain: ok");
                 lock.close().unwrap();
             }
-            Err(LuceneError::LockObtainFailed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { message, .. },
+                ..
+            }) => {
                 println!("child obtain: LockObtainFailedException: {message}")
             }
             Err(other) => println!("child obtain: {other:?}"),
@@ -12505,7 +13444,7 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         let dir = NIOFSDirectory::open(tmp.path().join("native")).unwrap();
-        let a_path = dir.get_directory().unwrap().join("a.lock");
+        let a_path = dir.get_directory().unwrap().as_std_path().join("a.lock");
         let test_name = concat!(module_path!(), "::native_fs_lock_excludes_another_process")
             .split_once("::")
             .expect("INVARIANT: module_path! starts with the crate name")
@@ -12513,7 +13452,10 @@ mod tests {
         let child = || -> Vec<String> {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
-                .env(NATIVE_LOCK_CHILD_DIR, dir.get_directory().unwrap())
+                .env(
+                    NATIVE_LOCK_CHILD_DIR,
+                    dir.get_directory().unwrap().as_std_path(),
+                )
                 .output()
                 .unwrap();
             assert!(output.status.success(), "{output:?}");
@@ -12566,9 +13508,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = NIOFSDirectory::open(tmp.path().join("native")).unwrap();
         let a = dir.obtain_lock("a.lock").unwrap();
-        let a_path = dir.get_directory().unwrap().join("a.lock");
+        let a_path = dir.get_directory().unwrap().as_std_path().join("a.lock");
         match dir.obtain_lock("a.lock") {
-            Err(LuceneError::LockObtainFailed { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!("Lock held by this virtual machine: {}", a_path.display())
             ),
@@ -12582,10 +13527,13 @@ mod tests {
             .unwrap();
 
         let b = dir.obtain_lock("b.lock").unwrap();
-        let b_path = dir.get_directory().unwrap().join("b.lock");
+        let b_path = dir.get_directory().unwrap().as_std_path().join("b.lock");
         std::fs::remove_file(&b_path).unwrap();
         match b.ensure_valid() {
-            Err(LuceneError::Io(error)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            }) => {
                 assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
                 assert_eq!(error.to_string(), b_path.display().to_string());
             }
@@ -12600,7 +13548,7 @@ mod tests {
         // A lock file replaced by a non-empty one: the handle still sees the
         // empty file the lock was taken on, the path sees the new file.
         let c = dir.obtain_lock("c.lock").unwrap();
-        let c_path = dir.get_directory().unwrap().join("c.lock");
+        let c_path = dir.get_directory().unwrap().as_std_path().join("c.lock");
         let created = |path: &Path| file_creation_time(&std::fs::metadata(path).unwrap()).unwrap();
         let original = created(&c_path);
         let mut ctime = original;
@@ -12617,7 +13565,10 @@ mod tests {
         let result = c.ensure_valid();
         c.close().unwrap();
         match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert!(
                 message.starts_with(&format!(
                     "Underlying file changed by an external force at {}, (lock=NativeFSLock(",
                     file_time_to_string(ctime)
@@ -12684,7 +13635,10 @@ mod tests {
             )
         };
         let refused = |result: Result<Box<dyn Lock>>| match result {
-            Err(LuceneError::UnsupportedOperation(message)) => message,
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
+                ..
+            }) => message,
             other => panic!(
                 "expected UnsupportedOperationException, got {:?}",
                 other.err()
@@ -12713,28 +13667,31 @@ mod tests {
     #[test]
     fn get_directory_refuses_a_closed_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        let closed = |result: Result<&Path>| match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+        let closed = |result: Result<&nio::Path>| match result {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
         };
         let canonical = tmp.path().canonicalize().unwrap();
 
-        let mut fs = FSDirectory::with_lock_factory(tmp.path(), Box::new(NoLockFactory)).unwrap();
-        assert_eq!(fs.get_directory().unwrap(), canonical);
+        let fs = FSDirectory::with_lock_factory(tmp.path(), Box::new(NoLockFactory)).unwrap();
+        assert_eq!(fs.get_directory().unwrap().as_std_path(), canonical);
         fs.close().unwrap();
         closed(fs.get_directory());
 
-        let mut nio = NIOFSDirectory::open(tmp.path()).unwrap();
-        assert_eq!(nio.get_directory().unwrap(), canonical);
+        let nio = NIOFSDirectory::open(tmp.path()).unwrap();
+        assert_eq!(nio.get_directory().unwrap().as_std_path(), canonical);
         nio.close().unwrap();
         closed(nio.get_directory());
 
         #[cfg(feature = "mmap")]
         {
-            let mut mmap = mmap::MMapDirectory::open(tmp.path()).unwrap();
-            assert_eq!(mmap.get_directory().unwrap(), canonical);
+            let mmap = mmap::MMapDirectory::open(tmp.path()).unwrap();
+            assert_eq!(mmap.get_directory().unwrap().as_std_path(), canonical);
             mmap.close().unwrap();
             closed(mmap.get_directory());
         }
@@ -12783,7 +13740,10 @@ mod tests {
         let rendered =
             "org.apache.lucene.store.SingleInstanceLockFactory$SingleInstanceLock@{hash}: x";
         let message = |result: Result<()>| match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => message,
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => message,
             other => panic!("expected AlreadyClosedException, got {other:?}"),
         };
         factory.locks.lock().unwrap().clear();
@@ -12910,8 +13870,8 @@ mod tests {
 
         fn file_length(&self, name: &str) -> Result<i64> {
             if self.fault == "length" {
-                return Err(LuceneError::Io(io::Error::other(format!(
-                    "fileLength refused: {name}"
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    format!("fileLength refused: {name}"),
                 ))));
             }
             self.inner.file_length(name)
@@ -12923,8 +13883,8 @@ mod tests {
             context: &dyn IOContext,
         ) -> Result<Box<dyn IndexOutput>> {
             if self.fault == "create" {
-                return Err(LuceneError::Io(io::Error::other(format!(
-                    "createOutput refused: {name}"
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    format!("createOutput refused: {name}"),
                 ))));
             }
             self.inner.create_output(name, context)
@@ -12959,9 +13919,11 @@ mod tests {
             self.inner.obtain_lock(name)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             if self.fault == "close" {
-                return Err(LuceneError::Io(io::Error::other("close refused")));
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    "close refused",
+                ))));
             }
             self.inner.close()
         }
@@ -13002,26 +13964,32 @@ mod tests {
     #[test]
     fn nrt_caching_directory_closes_and_names_temp_files_as_lucene() {
         let closed_dir = |result: Result<Vec<String>>| match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
         };
         let io_message = |error: LuceneError| match error {
-            LuceneError::Io(error) if error.kind() == io::ErrorKind::Other => error.to_string(),
+            LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            } if error.kind() == io::ErrorKind::Other => error.to_string(),
             other => panic!("expected an IOException, got {other:?}"),
         };
         let flush = flush_io_context(FlushInfo::new(1, 10));
 
         // `ByteBuffersDirectory.getPendingDeletions()` has no `ensureOpen`
         // (`ByteBuffersDirectory.java:221-224`).
-        let mut bb = ByteBuffersDirectory::new();
+        let bb = ByteBuffersDirectory::new();
         bb.close().unwrap();
         assert!(bb.get_pending_deletions().unwrap().is_empty());
 
         // `close()` twice: the second only closes the directories again; the
         // pending deletions are the delegate's (`FilterDirectory.java:119-122`).
-        let mut nrt = NRTCachingDirectory::new(Box::new(ByteBuffersDirectory::new()), 5.0, 60.0);
+        let nrt = NRTCachingDirectory::new(Box::new(ByteBuffersDirectory::new()), 5.0, 60.0);
         nrt.close().unwrap();
         nrt.close().expect("nrt close twice: ok");
         assert!(nrt.get_pending_deletions().unwrap().is_empty());
@@ -13045,8 +14013,7 @@ mod tests {
         // `IOUtils.close(lambda, cacheDirectory, in)`: a failing `unCache`
         // does not stop the two directories from closing, and its failure is
         // the one rethrown; a second close skips the lambda.
-        let mut failing =
-            NRTCachingDirectory::new(Box::new(FaultyDirectory::new("create")), 5.0, 60.0);
+        let failing = NRTCachingDirectory::new(Box::new(FaultyDirectory::new("create")), 5.0, 60.0);
         let mut cached = failing.create_output("c", flush.as_ref()).unwrap();
         cached.write_byte(7).unwrap();
         cached.close().unwrap();
@@ -13135,7 +14102,7 @@ mod tests {
         )));
 
         let mut buf = vec![0u8; payload.len()];
-        input.read_bytes(&mut buf, 0, payload.len()).unwrap();
+        input.read_bytes(Some(&mut buf), 0, payload.len()).unwrap();
         assert_eq!(buf, payload);
 
         assert_eq!(
@@ -13157,7 +14124,7 @@ mod tests {
 
         // Read the first 16 bytes.
         let mut head = [0u8; 16];
-        input.read_bytes(&mut head, 0, 16).unwrap();
+        input.read_bytes(Some(&mut head), 0, 16).unwrap();
         assert_eq!(head, payload[..16]);
 
         // Seek forward far enough to require multiple skip-buffer iterations.
@@ -13167,7 +14134,7 @@ mod tests {
         // Read the rest.
         let remaining = payload.len() - 3000;
         let mut tail = vec![0u8; remaining];
-        input.read_bytes(&mut tail, 0, remaining).unwrap();
+        input.read_bytes(Some(&mut tail), 0, remaining).unwrap();
         assert_eq!(tail, payload[3000..]);
 
         // The checksum must match the full payload, including skipped bytes.
@@ -13189,7 +14156,13 @@ mod tests {
 
         IndexInput::seek(&mut input, 16).unwrap();
         let err = IndexInput::seek(&mut input, 8).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
         assert!(err.to_string().contains("cannot seek backwards"));
         assert!(err.to_string().contains("BufferedChecksumIndexInput"));
     }
@@ -13205,7 +14178,13 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("expected clone to be unsupported"),
         };
-        assert!(matches!(err, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
     }
 
     /// Verifies that `BufferedChecksumIndexInput` does not support slicing.
@@ -13219,7 +14198,13 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("expected slice to be unsupported"),
         };
-        assert!(matches!(err, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
     }
 
     // -------------------------------------------------------------------------
@@ -13389,7 +14374,7 @@ mod tests {
     /// Closing the directory renders it unusable.
     #[test]
     fn byte_buffers_directory_close_unusable() {
-        let mut dir = ByteBuffersDirectory::new();
+        let dir = ByteBuffersDirectory::new();
         let context = &*DEFAULT_IO_CONTEXT;
         {
             let mut out = dir.create_output("x.bin", context).unwrap();
@@ -13431,7 +14416,10 @@ mod tests {
         let path = temp.path().join("index");
         let dir = FSDirectory::open(&path).unwrap();
         assert!(path.is_dir());
-        assert_eq!(dir.get_directory().unwrap(), path.canonicalize().unwrap());
+        assert_eq!(
+            dir.get_directory().unwrap().as_std_path(),
+            path.canonicalize().unwrap()
+        );
     }
 
     /// Writing through `create_output` and reading back with `open_input` round-trips
@@ -13532,7 +14520,7 @@ mod tests {
     #[test]
     fn fs_directory_close_unusable() {
         let temp = TempDir::new().unwrap();
-        let mut dir = FSDirectory::open(&temp).unwrap();
+        let dir = FSDirectory::open(&temp).unwrap();
         let context = &*DEFAULT_IO_CONTEXT;
         {
             let mut out = dir.create_output("x.bin", context).unwrap();
@@ -13711,7 +14699,7 @@ mod tests {
             }
             out.close().unwrap();
         }
-        let path = dir.get_directory().unwrap().join("data.bin");
+        let path = dir.get_directory().unwrap().as_std_path().join("data.bin");
         let merge = merge_io_context(MergeInfo::new(100, 1024, false, 1));
         let input = NIOFSIndexInput::new(
             format!("NIOFSIndexInput(path=\"{}\")", path.display()),
@@ -13741,7 +14729,10 @@ mod tests {
         let default = dir.open_input("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
         assert!(matches!(
             default.slice("u", 500, 100),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -13850,7 +14841,7 @@ mod tests {
         assert_eq!(input.read_v_long().unwrap(), 1_000_000_000_000);
         assert_eq!(input.read_string().unwrap(), "stream test");
         let mut tail = [0u8; 4];
-        input.read_bytes(&mut tail, 0, 4).unwrap();
+        input.read_bytes(Some(&mut tail), 0, 4).unwrap();
         assert_eq!(tail, [0x0A, 0x0B, 0x0C, 0x0D]);
     }
 
@@ -13905,6 +14896,10 @@ mod tests {
         // extension from before ".tmp" when possible.
         assert_eq!(FileSwitchDirectory::get_extension("_0.fdx.tmp"), "fdx");
         assert_eq!(FileSwitchDirectory::get_extension("foo.tmp"), "tmp");
+        // Java's `find()` takes the first `.letters` run: a pending file of
+        // `foo.cfs` (`BaseDirectoryTestCase.testRenameTmpFile`) is a `cfs`.
+        assert_eq!(FileSwitchDirectory::get_extension("foo.cfs__0.tmp"), "cfs");
+        assert_eq!(FileSwitchDirectory::get_extension("a.b.c__1.tmp"), "b");
     }
 
     /// `FileSwitchDirectory` rejects "tmp" as a primary extension.
@@ -14070,7 +15065,10 @@ mod tests {
         log.push(format!("temp name: {}", tmp.name()));
         state(&dir, "temp", &mut log);
         match dir.rename("g", "t_x_0.tmp") {
-            Err(LuceneError::IllegalArgument(message)) => log.push(format!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => log.push(format!(
                 "rename onto cached: IllegalArgumentException: {message}"
             )),
             other => panic!("expected IllegalArgumentException, got {other:?}"),
@@ -14294,7 +15292,13 @@ mod tests {
                 .read_string()
                 .expect_err("a negative length is not a string");
             assert!(
-                matches!(error, LuceneError::CorruptIndex(_)),
+                matches!(
+                    error,
+                    LuceneError {
+                        kind: LuceneErrorKind::CorruptIndex(_),
+                        ..
+                    }
+                ),
                 "length={length}: {error:?}"
             );
         }
@@ -14534,7 +15538,7 @@ mod tests {
         assert_eq!(input.read_string().expect("read"), "rucene");
         assert_eq!(input.read_byte().expect("read"), 0x7f);
         let mut tail = [0u8; 2];
-        input.read_bytes(&mut tail, 0, 2).expect("read");
+        input.read_bytes(Some(&mut tail), 0, 2).expect("read");
         assert_eq!(tail, [2, 3]);
         assert!(input.eof());
     }
@@ -14571,7 +15575,7 @@ mod tests {
         assert!(!input.eof());
 
         let mut read = [0u8; 4];
-        input.read_bytes(&mut read, 0, 4).expect("read");
+        input.read_bytes(Some(&mut read), 0, 4).expect("read");
         assert_eq!(read, [0x01, 0x02, 0x03, 0x04]);
         assert_eq!(input.position(), 6);
         assert!(input.eof(), "the window ends before the buffer does");
@@ -14683,7 +15687,7 @@ mod tests {
         // port an `UnexpectedEof`.
         assert!(input.read_byte().is_err());
         let mut spill = [0u8; 1];
-        assert!(input.read_bytes(&mut spill, 0, 1).is_err());
+        assert!(input.read_bytes(Some(&mut spill), 0, 1).is_err());
         assert!(input.skip_bytes(1).is_err());
     }
 
@@ -14769,7 +15773,7 @@ mod tests {
     /// rethrown, and `doClose` stays set.
     #[test]
     fn file_switch_close_closes_the_secondary_past_a_primary_failure() {
-        let mut fsd = FileSwitchDirectory::new(
+        let fsd = FileSwitchDirectory::new(
             HashSet::from(["fdt".to_string()]),
             Box::new(FaultyDirectory::new("close")),
             Box::new(ByteBuffersDirectory::new()),
@@ -14781,7 +15785,10 @@ mod tests {
         assert!(
             matches!(
                 fsd.secondary_dir().ensure_open(),
-                Err(LuceneError::AlreadyClosed { .. })
+                Err(LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                })
             ),
             "the secondary directory is closed"
         );

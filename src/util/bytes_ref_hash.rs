@@ -417,6 +417,27 @@ impl BytesRefHash {
         }
     }
 
+    /// [`with_bytes_start_array`](Self::with_bytes_start_array), keyed by the
+    /// pool offset of bytes another table already interned, as
+    /// [`new_by_pool_offset`](Self::new_by_pool_offset) is.
+    ///
+    /// Equivalent to `BytesRefHash(ByteBlockPool, int, BytesStartArray)`
+    /// (`BytesRefHash.java:122-142`) for a table only
+    /// [`add_by_pool_offset`](Self::add_by_pool_offset) adds to; see the
+    /// module documentation for why the key is chosen at construction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero or not a power of two.
+    pub fn with_bytes_start_array_by_pool_offset(
+        capacity: usize,
+        bytes_start_array: Box<dyn BytesStartArray>,
+    ) -> Self {
+        let mut hash = Self::with_bytes_start_array(capacity, bytes_start_array);
+        hash.keyed_by_pool_offset = true;
+        hash
+    }
+
     /// Creates an empty table with `capacity` slots whose term start offsets
     /// are kept in a `DirectBytesStartArray`: only the slot array is charged to
     /// `bytes_used`.
@@ -467,6 +488,24 @@ impl BytesRefHash {
         self.keyed_by_pool_offset
     }
 
+    /// Returns the term start offsets, `None` where Java's `bytesStart` is
+    /// `null`.
+    ///
+    /// Reads the package-private field `BytesRefHash.bytesStart`, which
+    /// `RamUsageTester` reaches by reflection.
+    pub fn bytes_start(&self) -> Option<&[i32]> {
+        self.bytes_start.as_deref()
+    }
+
+    /// Returns the hash slots; empty where Java's `ids` is `null`, after
+    /// [`close`](Self::close).
+    ///
+    /// Reads the private field `BytesRefHash.ids`, which `RamUsageTester`
+    /// reaches by reflection.
+    pub fn ids(&self) -> &[i32] {
+        &self.ids
+    }
+
     /// Returns the number of distinct terms in this table.
     pub fn size(&self) -> i32 {
         self.count
@@ -483,6 +522,10 @@ impl BytesRefHash {
     ///
     /// Panics if `term_id` was never returned by [`Self::add`].
     pub fn byte_start(&self, term_id: i32) -> i32 {
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "bytesStart is null - not initialized"
+        );
         // `assert bytesID >= 0 && bytesID < count : bytesID`
         // (`BytesRefHash.java:500`).
         debug_assert!(term_id >= 0 && term_id < self.count, "{term_id}");
@@ -527,14 +570,18 @@ impl BytesRefHash {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when `bytes`
-    /// exceeds [`crate::util::byte_block_pool::MAX_TERM_LENGTH`], and
-    /// [`crate::error::LuceneError::ResourceLimit`] when the pool runs out of
+    /// Returns [`crate::error::LuceneErrorKind::MaxBytesLengthExceeded`] when
+    /// `bytes` exceeds [`crate::util::byte_block_pool::MAX_TERM_LENGTH`], and
+    /// [`crate::error::LuceneErrorKind::ResourceLimit`] when the pool runs out of
     /// addressable space.
     pub fn add(&mut self, pool: &mut ByteBlockPool, bytes: &[u8]) -> Result<i32> {
         debug_assert!(
             !self.keyed_by_pool_offset,
             "a pool-offset-keyed table must be fed through add_by_pool_offset"
+        );
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "Bytesstart is null - not initialized"
         );
         let hashcode = hash_bytes(bytes);
         let hash_pos = self.find_hash(pool, bytes, hashcode);
@@ -546,6 +593,7 @@ impl BytesRefHash {
         let text_start = pool.add_bytes_ref(bytes)?;
         let term_id = self.count;
         self.push_start(text_start);
+        debug_assert!(self.ids[hash_pos] == -1);
         self.ids[hash_pos] = term_id | (hashcode & self.high_mask);
         self.count += 1;
         if self.count as usize == self.hash_half_size {
@@ -571,6 +619,10 @@ impl BytesRefHash {
             self.keyed_by_pool_offset,
             "a bytes-keyed table must be fed through add"
         );
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "Bytesstart is null - not initialized"
+        );
         let mut code = text_start;
         let mut hash_pos = (code & self.hash_mask) as usize;
         let mut entry = self.ids[hash_pos];
@@ -585,6 +637,7 @@ impl BytesRefHash {
 
         let term_id = self.count;
         self.push_start(text_start);
+        debug_assert!(self.ids[hash_pos] == -1);
         // Unlike the bytes-keyed path the slot holds the bare term id: the
         // probe compares `bytes_start[id]` with the offset, so there are no
         // high bits to shortcut it with (`BytesRefHash.java`, the `hashOnData
@@ -686,6 +739,10 @@ impl BytesRefHash {
     /// Panics when `bytes_id` is not a term id this table handed out, which is
     /// what Java's two assertions check.
     pub fn get<'p>(&self, pool: &'p ByteBlockPool, bytes_id: i32) -> &'p [u8] {
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "bytesStart is null - not initialized"
+        );
         let bytes_start = self.starts();
         assert!(
             bytes_id >= 0 && (bytes_id as usize) < bytes_start.len(),
@@ -871,6 +928,10 @@ impl BytesRefHash {
     /// Equivalent to `BytesRefHash.compact()`, which [`sort`](Self::sort) runs
     /// first so it can use the freed tail of the array as scratch space.
     pub fn compact(&mut self) -> &mut [i32] {
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "bytesStart is null - not initialized"
+        );
         // The id is the sequence number the bytes were added to the pool with.
         for i in 0..self.count as usize {
             self.ids[i] = i as i32;
@@ -893,6 +954,11 @@ impl BytesRefHash {
     /// Returns the slot `bytes` hashes to: either the slot holding it, or the
     /// first empty slot on its probe sequence.
     fn find_hash(&self, pool: &ByteBlockPool, bytes: &[u8], hashcode: i32) -> usize {
+        debug_assert!(
+            self.bytes_start.is_some(),
+            "bytesStart is null - not initialized"
+        );
+        debug_assert!(hashcode == hash_bytes(bytes));
         let high_bits = hashcode & self.high_mask;
         let mut code = hashcode;
         let mut hash_pos = (code & self.hash_mask) as usize;
@@ -1145,8 +1211,10 @@ mod tests {
         hash.clear();
         assert_eq!(hash.size(), 0);
         assert!(hash.is_empty());
-        assert_eq!(hash.find(&pool, b"x"), -1);
+        // No `find` here: `findHash` asserts `bytesStart != null`
+        // (`BytesRefHash.java:370`), which `clear()` nulled.
         hash.reinit();
+        assert_eq!(hash.find(&pool, b"x"), -1);
         assert_eq!(hash.add(&mut pool, b"x").expect("x again"), 0);
     }
 

@@ -61,6 +61,38 @@ impl HnswGraphSearcher {
     }
 
     /// Searches an HNSW graph for the nearest neighbours of a query vector,
+    /// deriving the filtered document count from `accept_ords`.
+    ///
+    /// Equivalent to the static `HnswGraphSearcher.search(RandomVectorScorer,
+    /// KnnCollector, HnswGraph, Bits)` (`HnswGraphSearcher.java:95-105`): when
+    /// `acceptOrds instanceof BitSet` ([`Bits::as_bit_set`]), the count is
+    /// `min(bitSet.approximateCardinality(), graph.size())`, else `0`.
+    ///
+    /// # Errors
+    ///
+    /// As [`search`](Self::search).
+    pub fn search_accept_ords(
+        scorer: &mut dyn RandomVectorScorer,
+        knn_collector: &mut dyn KnnCollector,
+        graph: &mut dyn HnswGraph,
+        accept_ords: Option<&dyn Bits>,
+    ) -> Result<()> {
+        let mut filtered_doc_count = 0;
+        if let Some(bit_set) = accept_ords.and_then(|bits| bits.as_bit_set()) {
+            // Use approximate cardinality as this is good enough, but ensure we
+            // don't exceed the graph size as that is illogical
+            filtered_doc_count = (bit_set.approximate_cardinality() as i32).min(graph.size());
+        }
+        Self::search(
+            scorer,
+            knn_collector,
+            graph,
+            accept_ords,
+            filtered_doc_count,
+        )
+    }
+
+    /// Searches an HNSW graph for the nearest neighbours of a query vector,
     /// picking the searcher that suits the filter and the collector's search
     /// strategy.
     ///
@@ -72,11 +104,7 @@ impl HnswGraphSearcher {
     /// Equivalent to the static `HnswGraphSearcher.search(RandomVectorScorer,
     /// KnnCollector, HnswGraph, Bits, int)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java also declares the four-argument
-    /// overload, which derives `filteredDocCount` itself by asking
-    /// `acceptOrds instanceof BitSet` for its approximate cardinality. This
-    /// crate's [`Bits`] carries no such narrowing, and nothing here calls that
-    /// overload, so only the five-argument form is ported.
+    /// Java's four-argument overload is [`search_accept_ords`](Self::search_accept_ords).
     ///
     /// # Errors
     ///
@@ -200,6 +228,7 @@ impl HnswGraphSearcher {
                     friend_ord = graph.next_neighbor()?;
                     friend_ord != NO_MORE_DOCS
                 } {
+                    debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                     if self.visited.get_and_set(friend_ord as usize) {
                         continue;
                     }
@@ -287,6 +316,7 @@ impl HnswGraphSearcher {
                 friend_ord = graph.next_neighbor()?;
                 friend_ord != NO_MORE_DOCS
             } {
+                debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                 if self.visited.get_and_set(friend_ord as usize) {
                     continue;
                 }
@@ -472,6 +502,7 @@ impl OnHeapSearcher {
                     friend_ord = self.graph_next_neighbor();
                     friend_ord != NO_MORE_DOCS
                 } {
+                    debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                     if self.visited.get_and_set(friend_ord as usize) {
                         continue;
                     }
@@ -558,6 +589,7 @@ impl OnHeapSearcher {
                 friend_ord = self.graph_next_neighbor();
                 friend_ord != NO_MORE_DOCS
             } {
+                debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                 if self.visited.get_and_set(friend_ord as usize) {
                     continue;
                 }

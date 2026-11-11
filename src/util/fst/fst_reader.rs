@@ -18,7 +18,11 @@ use super::fst::BytesReader;
 ///   `RuntimeException`; this port reports the failure instead of panicking.
 /// * The returned reader borrows the store, which is what Lucene's readers do
 ///   implicitly by holding a reference to the store's arrays.
-pub trait FSTReader: Accountable {
+/// * The store is `Send + Sync`, as every Lucene store may be: an FST is
+///   immutable once built and is read from many threads (for example by the
+///   terms dictionary of `SimpleTextFieldsReader`, whose `Terms` must be
+///   shareable).
+pub trait FSTReader: Accountable + Send + Sync {
     /// Returns the reverse [`BytesReader`] for this FST.
     ///
     /// Equivalent to `FSTReader.getReverseBytesReader`.
@@ -28,6 +32,20 @@ pub trait FSTReader: Accountable {
     /// Propagates any error raised while opening the underlying storage.
     fn get_reverse_bytes_reader(&self) -> Result<Box<dyn BytesReader + '_>>;
 
+    /// Returns the reverse [`BytesReader`] for this FST, owning a share of
+    /// the store instead of borrowing it.
+    ///
+    /// Equivalent to `FSTReader.getReverseBytesReader` for a caller that
+    /// keeps the reader as long as the store itself: Java's reader holds a
+    /// reference to the store's arrays, which in Rust is a share of the
+    /// `Arc` the store lives in. It reads the same bytes as
+    /// [`get_reverse_bytes_reader`](Self::get_reverse_bytes_reader).
+    ///
+    /// # Errors
+    ///
+    /// As [`get_reverse_bytes_reader`](Self::get_reverse_bytes_reader).
+    fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>>;
+
     /// Writes this FST to another [`DataOutput`].
     ///
     /// Equivalent to `FSTReader.writeTo`.
@@ -35,7 +53,7 @@ pub trait FSTReader: Accountable {
     /// # Errors
     ///
     /// Propagates write errors, and returns
-    /// [`crate::error::LuceneError::UnsupportedOperation`] for stores that
+    /// [`crate::error::LuceneErrorKind::UnsupportedOperation`] for stores that
     /// cannot reproduce their bytes.
     fn write_to(&self, out: &mut dyn DataOutput) -> Result<()>;
 }

@@ -81,8 +81,7 @@ use std::time::Duration;
 
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::Codec;
-use crate::document::Document;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::buffered_updates_stream::{FieldTermIterator, SegmentState};
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
@@ -94,6 +93,7 @@ use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_NONE};
 use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::index::DocValuesType;
+use crate::index::{DocumentsIterable, IndexableFieldIterable, SingleDocument};
 use crate::index::{FieldInfos, SegmentCommitInfo, SegmentInfo, Term};
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::query::{query_to_string, Query, QueryKey};
@@ -136,15 +136,15 @@ pub const SOURCE_FLUSH: &str = "flush";
 /// [`TrackingDirectoryWrapper`] requires.
 ///
 /// Java passes `Directory` references around freely because the JVM owns their
-/// lifetime. In Rucene a `Directory` is shared through an `Arc` and
-/// [`Directory::close`] takes `&mut self`, so a shared handle cannot perform
-/// the close. Closing the directory is the responsibility of whoever created
+/// lifetime. In Rucene a `Directory` is shared through an `Arc`, while
+/// [`TrackingDirectoryWrapper`] owns a `Box<dyn Directory>`. Closing the directory is the responsibility of whoever created
 /// it — the `IndexWriter` — so this adapter reports `close` as a no-op and
 /// delegates everything else.
 ///
 /// `BKDWriter` uses it for the same reason: it wraps the directory it is given
-/// in a [`TrackingDirectoryWrapper`] (`BKDWriter.java:173`).
-pub(crate) struct SharedDirectory(pub(crate) Arc<dyn Directory>);
+/// in a [`TrackingDirectoryWrapper`] (`BKDWriter.java:173`), and so does
+/// `lucene/codecs`' `SimpleTextBKDWriter`, which forks it.
+pub struct SharedDirectory(pub Arc<dyn Directory>);
 
 impl Directory for SharedDirectory {
     fn list_all(&self) -> Result<Vec<String>> {
@@ -197,7 +197,7 @@ impl Directory for SharedDirectory {
     }
 
     /// No-op: a shared handle does not own the directory's lifetime.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 
@@ -306,7 +306,7 @@ impl DeletedTerms {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the term is longer than a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the term is longer than a
     /// pool block can hold, which is Java's
     /// `BytesRefHash.MaxBytesLengthExceededException`.
     pub fn put(&mut self, term: &Term, value: i32) -> Result<()> {
@@ -339,6 +339,15 @@ impl DeletedTerms {
         self.delete_terms.clear();
         self.bytes_used.store(0, Ordering::Release);
         self.terms_size = 0;
+    }
+
+    /// Returns the pool the terms' bytes live in.
+    ///
+    /// Equivalent to the package-private `DeletedTerms.getPool()`
+    /// (`BufferedUpdates.java:275`); public so that the tests of the `index`
+    /// package can read it, as Java's do.
+    pub fn get_pool(&self) -> &ByteBlockPool {
+        &self.pool
     }
 
     /// Returns the number of distinct terms.
@@ -524,7 +533,11 @@ pub struct BufferedUpdates {
     field_updates: HashMap<String, FieldUpdatesBuffer>,
     /// RAM charged to `field_updates`, kept apart exactly as Java keeps
     /// `fieldUpdatesBytesUsed` apart from `bytesUsed`.
-    field_updates_bytes_used: i64,
+    ///
+    /// Equivalent to `BufferedUpdates.fieldUpdatesBytesUsed`
+    /// (`BufferedUpdates.java:71`), the counter every `FieldUpdatesBuffer`
+    /// of this buffer charges directly.
+    field_updates_bytes_used: Arc<crate::util::concurrent::Counter>,
     /// Running RAM estimate for buffered delete queries.
     ///
     /// Equivalent to `BufferedUpdates.bytesUsed` (`BufferedUpdates.java:70`),
@@ -544,6 +557,10 @@ impl BufferedUpdates {
     pub fn new(segment_name: impl Into<String>) -> Self {
         Self {
             segment_name: segment_name.into(),
+            // `Counter.newCounter(true)` (`BufferedUpdates.java:71`).
+            field_updates_bytes_used: Arc::new(crate::util::concurrent::Counter::new_counter_with(
+                true,
+            )),
             ..Self::default()
         }
     }
@@ -629,16 +646,14 @@ impl BufferedUpdates {
         // `buffer.addUpdate(...)` or `addNoValue(...)` unconditionally
         // (`BufferedUpdates.java:134-156`): the update that creates a buffer is
         // recorded by the constructor *and* added again, as in Java.
-        let before = match self.field_updates.get(&update.field) {
-            Some(buffer) => buffer.ram_bytes_used(),
-            None => {
-                let buffer = FieldUpdatesBuffer::new(update.clone(), doc_id_upto)?;
-                self.field_updates_bytes_used += buffer.ram_bytes_used();
-                let before = buffer.ram_bytes_used();
-                self.field_updates.insert(update.field.clone(), buffer);
-                before
-            }
-        };
+        if !self.field_updates.contains_key(&update.field) {
+            let buffer = FieldUpdatesBuffer::new(
+                Arc::clone(&self.field_updates_bytes_used),
+                update.clone(),
+                doc_id_upto,
+            )?;
+            self.field_updates.insert(update.field.clone(), buffer);
+        }
         let buffer = self
             .field_updates
             .get_mut(&update.field)
@@ -656,7 +671,6 @@ impl BufferedUpdates {
                 buffer.add_no_value(&update.term, doc_id_upto)?;
             }
         }
-        self.field_updates_bytes_used += buffer.ram_bytes_used() - before;
         self.num_field_updates += 1;
         Ok(())
     }
@@ -745,7 +759,10 @@ impl BufferedUpdates {
         self.num_field_updates = 0;
         self.field_updates.clear();
         self.bytes_used = 0;
-        self.field_updates_bytes_used = 0;
+        // `fieldUpdatesBytesUsed.addAndGet(-fieldUpdatesBytesUsed.get())`
+        // (`BufferedUpdates.java:168`).
+        self.field_updates_bytes_used
+            .add_and_get(-self.field_updates_bytes_used.get());
     }
 
     /// Returns `true` when anything is buffered.
@@ -763,12 +780,16 @@ impl BufferedUpdates {
             delete_queries: std::mem::take(&mut self.delete_queries),
             num_field_updates: self.num_field_updates,
             field_updates: std::mem::take(&mut self.field_updates),
-            field_updates_bytes_used: self.field_updates_bytes_used,
+            // The taken buffers keep charging the counter they were built
+            // with; this buffer starts over with a fresh one.
+            field_updates_bytes_used: std::mem::replace(
+                &mut self.field_updates_bytes_used,
+                Arc::new(crate::util::concurrent::Counter::new_counter_with(true)),
+            ),
             bytes_used: self.bytes_used,
             gen: self.gen,
         };
         self.num_field_updates = 0;
-        self.field_updates_bytes_used = 0;
         self.bytes_used = 0;
         taken
     }
@@ -780,7 +801,7 @@ impl Accountable for BufferedUpdates {
     /// Lucene keeps apart: the query bytes, the field-update bytes, and the
     /// `DeletedTerms` bytes.
     fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used + self.field_updates_bytes_used + self.delete_terms.ram_bytes_used()
+        self.bytes_used + self.field_updates_bytes_used.get() + self.delete_terms.ram_bytes_used()
     }
 }
 
@@ -933,6 +954,10 @@ impl FrozenBufferedUpdates {
     /// `private_segment_name` is `Some` for segment-private deletes and `None`
     /// for a global packet.
     pub fn new(mut updates: BufferedUpdates, private_segment_name: Option<String>) -> Self {
+        debug_assert!(
+            private_segment_name.is_none() || updates.delete_terms().is_empty(),
+            "segment private packet should only have del queries"
+        );
         // `PrefixCodedTerms.Builder builder = ...;
         // updates.deleteTerms.forEachOrdered((term, doc) -> builder.add(term));`
         // (`FrozenBufferedUpdates.java:87-89`).
@@ -955,19 +980,15 @@ impl FrozenBufferedUpdates {
         // to `fieldUpdatesBytesUsed`, the counter Java shares with the buffer
         // (`FieldUpdatesBuffer.java:208-219`). A buffer is only ever finished
         // here, once, by the packet that takes the `BufferedUpdates` over.
-        let mut finish_charge = 0i64;
         for buffer in updates.field_updates.values_mut() {
-            let before = buffer.ram_bytes_used();
             buffer
                 .finish()
                 .expect("INVARIANT: a field-updates buffer is frozen by exactly one packet");
-            finish_charge += buffer.ram_bytes_used() - before;
         }
-        updates.field_updates_bytes_used += finish_charge;
         let bytes_used = i64::from(
             (delete_terms.ram_bytes_used()
                 + updates.queries_size() as i64 * FROZEN_BYTES_PER_DEL_QUERY
-                + updates.field_updates_bytes_used) as i32,
+                + updates.field_updates_bytes_used.get()) as i32,
         );
         Self {
             updates,
@@ -995,7 +1016,7 @@ impl FrozenBufferedUpdates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the lock is poisoned.
+    /// Returns [`LuceneErrorKind::IllegalState`] when the lock is poisoned.
     pub fn lock_apply(&self) -> Result<MutexGuard<'_, ()>> {
         self.apply_lock.lock().map_err(|_| {
             LuceneError::illegal_state("frozen buffered updates apply lock poisoned".to_string())
@@ -1037,6 +1058,23 @@ impl FrozenBufferedUpdates {
     /// rather than the name transliterated.
     pub fn is_empty(&self) -> bool {
         !self.updates.any()
+    }
+
+    /// `deleteTerms.iterator()`: the frozen delete terms
+    /// (`FrozenBufferedUpdates.deleteTerms`, package private in Java).
+    pub fn delete_terms_iterator(&self) -> crate::index::terms::PrefixCodedTermsIterator {
+        self.delete_terms
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iterator()
+    }
+
+    /// `deleteTerms.size()`: how many delete terms were frozen.
+    pub fn delete_terms_size(&self) -> i64 {
+        self.delete_terms
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .size()
     }
 
     /// Records the generation this packet was pushed with.
@@ -1091,16 +1129,17 @@ impl FrozenBufferedUpdates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the packet has not been
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the packet has not been
     /// pushed yet, and propagates whatever reading a segment's terms or writing
     /// its deletions raises.
     pub fn apply(&self, seg_states: &[SegmentState]) -> Result<i64> {
         if self.del_gen.load(Ordering::Acquire) == -1 {
             // we were not yet pushed
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "gen is not yet set; call BufferedUpdatesStream.push first".to_string(),
             ));
         }
+        debug_assert!(!self.is_applied());
         debug_assert!(
             self.private_segment_name.is_none() || seg_states.len() == 1,
             "a segment-private packet reaches exactly one segment"
@@ -1244,25 +1283,20 @@ impl FrozenBufferedUpdates {
                 continue;
             }
 
-            // Java writes `segState.reader.getContext()`, which for a leaf is a
-            // top-level `LeafReaderContext` with ordinal and doc base zero, and
-            // then builds the searcher over `readerContext.reader()` — the same
-            // reader — so the context handed to the weight is the searcher's
-            // own. Rust cannot widen `Arc<SegmentReader>` into
-            // `Arc<dyn IndexReader>` and `Arc<dyn LeafReader>` at once, so the
-            // context carries one handle per view.
+            // Java writes `final LeafReaderContext readerContext =
+            // segState.reader.getContext()` and builds the searcher over
+            // `readerContext.reader()` (`FrozenBufferedUpdates.java:477-499`),
+            // so the weight is created and scored against the same top-level
+            // context — `TermQuery`'s `termStates.wasBuiltFor` assertion
+            // (`TermQuery.java:121, 207`) depends on it. Holding `context`
+            // keeps the reader's cached context alive, so every
+            // `IndexSearcher::new` below answers this same context.
             let index_reader: Arc<dyn crate::index::IndexReader> =
                 Arc::clone(&seg_state.reader) as _;
-            let leaf_reader: Arc<dyn LeafReader> = Arc::clone(&seg_state.reader) as _;
-            let context = crate::index::reader_context::LeafReaderContext::new(
-                Arc::clone(&index_reader),
-                leaf_reader,
-                None,
-                0,
-                0,
-                0,
-                0,
-            );
+            let context = Arc::clone(&index_reader)
+                .get_context()?
+                .as_leaf()
+                .expect("a leaf reader's top-level context is a LeafReaderContext");
 
             for (query, query_limit) in &delete_queries {
                 let limit = if del_gen == seg_state.del_gen {
@@ -1418,8 +1452,8 @@ impl FrozenBufferedUpdates {
                             // value.getMaxNumeric(), maxDoc)`; both getters
                             // answer 0 for a buffer that holds only resets
                             // (`FieldUpdatesBuffer.java:108-122`).
-                            let min_value = value.min_numeric_value().unwrap_or(0);
-                            let max_value = value.max_numeric_value().unwrap_or(0);
+                            let min_value = value.get_min_numeric();
+                            let max_value = value.get_max_numeric();
                             DocValuesFieldUpdates::new_numeric_with_range(
                                 del_gen,
                                 update_field.clone(),
@@ -1509,20 +1543,26 @@ impl FrozenBufferedUpdates {
 /// borrow across the next call, so [`next_term`](Self::next_term) reports
 /// whether the term exists and the postings are read back through
 /// [`docs`](Self::docs); the reuse is the same.
-struct TermDocsIterator<'a> {
+///
+/// Package-private in Java (`static final class`); `pub` here for the tests
+/// that use it (`TestFrozenBufferedUpdates`).
+pub struct TermDocsIterator<'a> {
     reader: &'a dyn LeafReader,
     field: Option<String>,
     terms_enum: Option<Box<dyn TermsEnum>>,
     postings_enum: Option<Box<dyn PostingsEnum>>,
     sorted_terms: bool,
     reader_term: Option<BytesRef>,
+    /// The last term [`next_term`](Self::next_term) was asked for; kept, as in
+    /// Java, only for the assert-only `assertSorted`.
+    last_term: Option<BytesRef>,
 }
 
 impl<'a> TermDocsIterator<'a> {
     /// Creates an iterator over `reader`'s term dictionary.
     ///
     /// Equivalent to `TermDocsIterator(LeafReader, boolean)`.
-    fn new(reader: &'a dyn LeafReader, sorted_terms: bool) -> Self {
+    pub fn new(reader: &'a dyn LeafReader, sorted_terms: bool) -> Self {
         Self {
             reader,
             field: None,
@@ -1530,7 +1570,30 @@ impl<'a> TermDocsIterator<'a> {
             postings_enum: None,
             sorted_terms,
             reader_term: None,
+            last_term: None,
         }
+    }
+
+    /// Equivalent to the assert-only `TermDocsIterator.assertSorted(BytesRef)`
+    /// (`FrozenBufferedUpdates.java:624-630`); it takes the two fields it uses
+    /// so that it can run while the terms enum is borrowed.
+    fn assert_sorted(
+        last_term: &mut Option<BytesRef>,
+        sorted_terms: bool,
+        term: &BytesRef,
+    ) -> bool {
+        assert!(sorted_terms);
+        assert!(
+            last_term.as_ref().is_none_or(|last| term >= last),
+            "boom: {} last: {}",
+            String::from_utf8_lossy(term.slice()),
+            last_term
+                .as_ref()
+                .map(|last| String::from_utf8_lossy(last.slice()).into_owned())
+                .unwrap_or_default()
+        );
+        *last_term = Some(BytesRef::deep_copy_of(term));
+        true
     }
 
     /// Equivalent to `TermDocsIterator.setField(String)`.
@@ -1542,7 +1605,9 @@ impl<'a> TermDocsIterator<'a> {
                     let mut terms_enum = terms.iterator()?;
                     self.reader_term = if self.sorted_terms {
                         // need to reset, otherwise the sortedness check below
-                        // fails, since we sort per field
+                        // fails, since we sort per field: `assert (lastTerm =
+                        // null) == null;` (`FrozenBufferedUpdates.java:577-578`)
+                        self.last_term = None;
                         terms_enum.next()?
                     } else {
                         None
@@ -1564,12 +1629,17 @@ impl<'a> TermDocsIterator<'a> {
     /// # Errors
     ///
     /// Propagates whatever reading the term dictionary raises.
-    fn next_term(&mut self, field: &str, term: &BytesRef) -> Result<bool> {
+    pub fn next_term(&mut self, field: &str, term: &BytesRef) -> Result<bool> {
         self.set_field(field)?;
         let Some(terms_enum) = self.terms_enum.as_mut() else {
             return Ok(false);
         };
         if self.sorted_terms && !terms_enum.prefer_seek_exact() {
+            debug_assert!(Self::assert_sorted(
+                &mut self.last_term,
+                self.sorted_terms,
+                term
+            ));
             // In the sorted case we can take advantage of the "seeking forward"
             // property; depending on the term dictionary implementation this
             // reuses internal data structures and speeds up iteration over terms
@@ -1587,7 +1657,7 @@ impl<'a> TermDocsIterator<'a> {
                 std::cmp::Ordering::Greater => match terms_enum.seek_ceil(term)? {
                     SeekStatus::FOUND => return self.get_docs(),
                     SeekStatus::NOT_FOUND => {
-                        self.reader_term = Some(terms_enum.term()?);
+                        self.reader_term = terms_enum.term()?;
                         return Ok(false);
                     }
                     SeekStatus::END => {
@@ -1611,7 +1681,11 @@ impl<'a> TermDocsIterator<'a> {
             .as_mut()
             .expect("INVARIANT: a term was positioned, so the enum exists");
         let reuse = self.postings_enum.take();
-        self.postings_enum = Some(terms_enum.postings(reuse, POSTINGS_ENUM_NONE)?);
+        self.postings_enum = Some(
+            terms_enum
+                .postings(reuse, POSTINGS_ENUM_NONE)?
+                .ok_or_else(LuceneError::null_pointer)?,
+        );
         Ok(true)
     }
 
@@ -1620,8 +1694,8 @@ impl<'a> TermDocsIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no term is positioned.
-    fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
+    /// Returns [`LuceneErrorKind::IllegalState`] when no term is positioned.
+    pub fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
         match self.postings_enum.as_mut() {
             Some(postings) => Ok(postings.as_mut()),
             None => Err(LuceneError::illegal_state(
@@ -1770,10 +1844,12 @@ pub trait IndexingChain: Accountable + Send + Debug {
     ///
     /// `is_last_doc` is `false` for every document of a block except the last,
     /// mirroring `IndexingChain.processDocument(int, Iterable, boolean)`.
+    /// `doc` is `None` for a `null` element of the block, which the chain
+    /// dereferences (`NullPointerException`).
     fn process_document(
         &mut self,
         doc_id: i32,
-        doc: &Document,
+        doc: Option<&dyn IndexableFieldIterable>,
         is_last_doc: bool,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()>;
@@ -1787,7 +1863,7 @@ pub trait IndexingChain: Accountable + Send + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] by default, and propagates
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] by default, and propagates
     /// whatever an implementation raises.
     fn process_batch(
         &mut self,
@@ -1796,7 +1872,7 @@ pub trait IndexingChain: Accountable + Send + Debug {
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()> {
         let _ = (base_doc_id, column_batch, field_infos);
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "this indexing chain does not accept column batches".to_string(),
         ))
     }
@@ -2038,7 +2114,7 @@ impl DeleteNode {
                             updates.add_binary_update(update, doc_id_upto)?;
                         }
                         other => {
-                            return Err(LuceneError::IllegalArgument(format!(
+                            return Err(LuceneError::illegal_argument(format!(
                                 "{other:?} DocValues updates not supported yet!"
                             )));
                         }
@@ -2099,6 +2175,18 @@ impl DeleteSlice {
     /// Returns `true` if `node` is this slice's tail.
     pub fn is_tail(&self, node: &Arc<DeleteNode>) -> bool {
         Arc::ptr_eq(&self.tail, node)
+    }
+
+    /// Returns `true` if this slice's tail holds the batch of terms whose
+    /// elements start at `terms`: Java's `isTailItem(Object)`
+    /// (`DocumentsWriterDeleteQueue.java:404-406`), `tail.item == object`,
+    /// asked of the `Term[]` handed to `addDelete(Term...)`.
+    ///
+    /// The batch moves into its node with its heap buffer unchanged, so the
+    /// address of its first element is the identity Java compares. Package
+    /// private in Java; `pub` for `TestDocumentsWriterDeleteQueue`.
+    pub fn is_tail_item_terms(&self, terms: *const Term) -> bool {
+        matches!(&self.tail.item, DeleteItem::Terms(t) if std::ptr::eq(t.as_ptr(), terms))
     }
 
     /// Returns `true` when the slice holds no unapplied deletes.
@@ -2195,7 +2283,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn add_delete_terms(&self, terms: Vec<Term>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new(DeleteItem::Terms(terms)))?;
         self.try_apply_global_slice()?;
@@ -2208,7 +2296,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn add_delete_queries(&self, queries: Vec<Arc<dyn Query>>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new(DeleteItem::Queries(queries)))?;
         self.try_apply_global_slice()?;
@@ -2221,8 +2309,8 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed, or
-    /// [`LuceneError::IllegalArgument`] if an update targets a doc-values kind
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed, or
+    /// [`LuceneErrorKind::IllegalArgument`] if an update targets a doc-values kind
     /// other than `NUMERIC` or `BINARY`.
     pub fn add_doc_values_updates(&self, updates: Vec<DocValuesUpdate>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new_doc_values_updates(updates))?;
@@ -2237,7 +2325,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn add_to_slice(
         &self,
         delete_node: Arc<DeleteNode>,
@@ -2257,7 +2345,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn add(&self, node: Arc<DeleteNode>) -> Result<i64> {
         let mut tail = self.write_tail();
         self.ensure_open()?;
@@ -2297,7 +2385,14 @@ impl DocumentsWriterDeleteQueue {
         if self.start_seq_no < self.next_seq_no.load(Ordering::Acquire) {
             self.last_sequence_number()
         } else {
-            (self.previous_max_seq_id)()
+            // if we haven't advanced the seqNo make sure we fall back to the previous queue
+            let value = (self.previous_max_seq_id)();
+            debug_assert!(
+                value < self.start_seq_no,
+                "illegal max sequence ID: {value} start was: {}",
+                self.start_seq_no
+            );
+            value
         }
     }
 
@@ -2313,7 +2408,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn update_slice(&self, slice: &mut DeleteSlice) -> Result<i64> {
         let tail = self.write_tail();
         self.ensure_open()?;
@@ -2339,7 +2434,15 @@ impl DocumentsWriterDeleteQueue {
         }
     }
 
-    fn try_apply_global_slice(&self) -> Result<()> {
+    /// Applies the global slice to the global buffer when its lock is free.
+    ///
+    /// Equivalent to `DocumentsWriterDeleteQueue.tryApplyGlobalSlice()`;
+    /// package private in Java, `pub` for `TestDocumentsWriterDeleteQueue`.
+    ///
+    /// # Errors
+    ///
+    /// What applying the slice raises.
+    pub fn try_apply_global_slice(&self) -> Result<()> {
         if self.closed.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -2362,7 +2465,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn freeze_global_buffer(
         &self,
         caller_slice: Option<&mut DeleteSlice>,
@@ -2487,7 +2590,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if unapplied deletes remain.
+    /// Returns [`LuceneErrorKind::IllegalState`] if unapplied deletes remain.
     pub fn close(&self) -> Result<()> {
         let mut global = self.lock_global();
         if self.any_changes_locked(&mut global) {
@@ -2497,11 +2600,16 @@ impl DocumentsWriterDeleteQueue {
         }
         self.closed.store(true, Ordering::Release);
         let max = self.max_seq_no.load(Ordering::Acquire);
+        let seq_no = self.next_seq_no.load(Ordering::Acquire);
         debug_assert!(
-            self.next_seq_no.load(Ordering::Acquire) <= max,
-            "maxSeqNo must be greater or equal to nextSeqNo"
+            seq_no <= max,
+            "maxSeqNo must be greater or equal to {seq_no} but was {max}"
         );
-        self.next_seq_no.store(max + 1, Ordering::Release);
+        // `nextSeqNo.set(maxSeqNo + 1)` (`DocumentsWriterDeleteQueue.java:327`):
+        // a queue that was never advanced has `maxSeqNo == Long.MAX_VALUE`, and
+        // Java's `long` addition wraps.
+        self.next_seq_no
+            .store(max.wrapping_add(1), Ordering::Release);
         Ok(())
     }
 
@@ -2530,7 +2638,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the queue was already advanced.
+    /// Returns [`LuceneErrorKind::IllegalState`] if the queue was already advanced.
     pub fn advance_queue(&self, max_num_pending_ops: usize) -> Result<Arc<Self>> {
         let mut advanced = self
             .advanced
@@ -2586,6 +2694,13 @@ impl DocumentsWriterDeleteQueue {
         self.tail
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Takes `globalBufferLock`, held until the returned guard is dropped
+    /// (Java's `globalBufferLock.lock()` … `unlock()`); package private in
+    /// Java, `pub` for `TestDocumentsWriterDeleteQueue`.
+    pub fn global_buffer_lock(&self) -> impl Sized + '_ {
+        self.lock_global()
     }
 
     fn lock_global(&self) -> MutexGuard<'_, GlobalBuffer> {
@@ -2928,10 +3043,15 @@ impl DocumentsWriterStallControl {
         let mut state = self.lock();
         if self.stalled.load(Ordering::Acquire) {
             Self::inc_waiters(&mut state);
+            // `wait(1000)`: the thread is `TIMED_WAITING` while it waits.
+            let waiting = crate::util::concurrent::enter_thread_wait(
+                crate::util::concurrent::ThreadWaitState::TimedWaiting,
+            );
             let (guard, _timeout) = self
                 .healthy
                 .wait_timeout(state, Duration::from_secs(1))
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(waiting);
             state = guard;
             Self::decr_waiters(&mut state);
         }
@@ -2985,6 +3105,14 @@ impl DocumentsWriterStallControl {
     /// Returns `true` if at least one thread is parked right now.
     pub fn has_blocked(&self) -> bool {
         self.lock().num_waiting > 0
+    }
+
+    /// `synchronized (stallControl) { stallControl.notifyAll(); }`: wakes every
+    /// thread waiting on this controller's monitor, which re-checks the stall
+    /// flag (`TestIndexWriter.testIndexWriterBlocksOnStall`).
+    pub fn notify_all(&self) {
+        let _state = self.lock();
+        self.healthy.notify_all();
     }
 
     /// Returns the number of parked threads.
@@ -3080,6 +3208,15 @@ impl FlushControlHandle<'_> {
     pub fn info_stream(&self) -> &dyn InfoStream {
         self.control.info_stream()
     }
+
+    /// Returns a snapshot of every currently active DWPT.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.allActiveWriters()`, which
+    /// takes no lock, so a policy may call it from `onChange`
+    /// (`TestFlushByRamOrCountsPolicy.findPending`).
+    pub fn all_active_writers(&self) -> Vec<Arc<DocumentsWriterPerThread>> {
+        self.control.all_active_writers()
+    }
 }
 
 /// Decides which DWPT must flush after each insert, update or delete.
@@ -3140,9 +3277,18 @@ pub trait FlushPolicy: Send + Sync + Debug {
 /// Flushes on buffered-document count or on buffered RAM, whichever hits first.
 ///
 /// Equivalent to `org.apache.lucene.index.FlushByRamOrCountsPolicy`.
+///
+/// Java's `FlushPolicy.init` keeps a strong reference to the writer's
+/// `LiveIndexWriterConfig`, which itself holds this policy; the garbage
+/// collector reclaims that cycle. With reference counting it would keep the
+/// config — and whatever it holds, such as the `IndexCommit` a writer was
+/// opened on, with that commit's reader and directory — alive after the
+/// writer is gone, so the policy keeps a [`Weak`](std::sync::Weak) reference,
+/// upgraded on use (the config outlives every flush decision, which the
+/// writer makes while it holds the config).
 #[derive(Debug, Default)]
 pub struct FlushByRamOrCountsPolicy {
-    config: OnceLock<Arc<LiveIndexWriterConfig>>,
+    config: OnceLock<std::sync::Weak<LiveIndexWriterConfig>>,
 }
 
 impl FlushByRamOrCountsPolicy {
@@ -3153,16 +3299,22 @@ impl FlushByRamOrCountsPolicy {
 
     /// Returns `true` when flushing by buffered document count is enabled.
     pub fn flush_on_doc_count(&self) -> bool {
-        self.config.get().is_some_and(|config| {
-            config.max_buffered_docs() != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH
-        })
+        self.config
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|config| {
+                config.max_buffered_docs() != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH
+            })
     }
 
     /// Returns `true` when flushing by buffered RAM is enabled.
     pub fn flush_on_ram(&self) -> bool {
-        self.config.get().is_some_and(|config| {
-            config.ram_buffer_size_mb() != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
-        })
+        self.config
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|config| {
+                config.ram_buffer_size_mb() != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
+            })
     }
 
     fn flush_deletes(&self, control: &FlushControlHandle<'_>, config: &LiveIndexWriterConfig) {
@@ -3219,7 +3371,7 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
         control: &mut FlushControlHandle<'_>,
         per_thread: Option<&DocumentsWriterPerThread>,
     ) {
-        let Some(config) = self.config.get().cloned() else {
+        let Some(config) = self.config.get().and_then(std::sync::Weak::upgrade) else {
             debug_assert!(false, "FlushPolicy::init must be called before on_change");
             return;
         };
@@ -3254,7 +3406,7 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
     }
 
     fn init(&self, config: Arc<LiveIndexWriterConfig>) {
-        let _ = self.config.set(config);
+        let _ = self.config.set(Arc::downgrade(&config));
     }
 }
 
@@ -3565,10 +3717,7 @@ impl DocumentsWriterPerThread {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            index_writer_config
-                .index_sort()
-                .cloned()
-                .unwrap_or_default(),
+            index_writer_config.index_sort().unwrap_or_default(),
         )?;
         let delete_slice = delete_queue.new_slice();
         let has_parent_field = index_writer_config.parent_field().is_some();
@@ -3764,6 +3913,7 @@ impl DocumentsWriterPerThread {
     /// Equivalent to `DocumentsWriterPerThread.testPoint(String)`.
     pub fn test_point(&self, message: &str) {
         if self.enable_test_points {
+            debug_assert!(self.info_stream.is_enabled("TP")); // don't enable unless you need them.
             self.info_stream.message("TP", message);
         }
     }
@@ -3776,7 +3926,7 @@ impl DocumentsWriterPerThread {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the reservation would take
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the reservation would take
     /// the index past its document limit.
     fn reserve_docs(&self, n: i32) -> Result<()> {
         debug_assert!(n >= 0);
@@ -3790,7 +3940,7 @@ impl DocumentsWriterPerThread {
             let current = self.pending_num_docs.load(Ordering::Acquire);
             let next = current + i64::from(n);
             if next > max_docs {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "number of documents in the index cannot exceed {max_docs}"
                 )));
             }
@@ -3814,7 +3964,7 @@ impl DocumentsWriterPerThread {
         {
             // Reserve failed: put the one doc back and throw exc.
             self.pending_num_docs.fetch_sub(1, Ordering::AcqRel);
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "number of documents in the index cannot exceed {}",
                 crate::index::index_writer::get_actual_max_docs()
             )));
@@ -3973,12 +4123,12 @@ impl DwptGuard {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the document limit would be
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the document limit would be
     /// exceeded or if a block is indexed without a parent field on a sorted
     /// index, and propagates any error raised by the indexing chain.
     pub fn update_documents<F>(
         &mut self,
-        docs: &[Document],
+        docs: Option<&dyn DocumentsIterable>,
         del_node: Option<Arc<DeleteNode>>,
         notifications: &dyn FlushNotifications,
         on_new_doc_on_ram: F,
@@ -3986,10 +4136,16 @@ impl DwptGuard {
     where
         F: Fn(),
     {
-        let outcome = self.update_documents_inner(docs, del_node, on_new_doc_on_ram);
-        // The `finally`: a failure to abort replaces the outcome.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.update_documents_inner(docs, del_node, on_new_doc_on_ram)
+        }));
+        // The `finally`: a failure to abort replaces the outcome, a thrown
+        // panic included.
         self.maybe_abort("updateDocuments", notifications)?;
-        outcome
+        match outcome {
+            Ok(outcome) => outcome,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     /// Indexes a column-oriented batch of documents, optionally deleting first.
@@ -3999,7 +4155,7 @@ impl DwptGuard {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the document limit would
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the document limit would
     /// be exceeded, and propagates any error raised by the indexing chain.
     pub fn update_batch<F>(
         &mut self,
@@ -4030,6 +4186,10 @@ impl DwptGuard {
             .test_point("DocumentsWriterPerThread addBatch start");
         debug_assert!(
             !self.dwpt.is_aborted(),
+            "DWPT has hit aborting exception but is still indexing"
+        );
+        debug_assert!(
+            self.state().aborting_error.is_none(),
             "DWPT has hit aborting exception but is still indexing"
         );
 
@@ -4074,7 +4234,7 @@ impl DwptGuard {
 
     fn update_documents_inner<F>(
         &mut self,
-        docs: &[Document],
+        docs: Option<&dyn DocumentsIterable>,
         del_node: Option<Arc<DeleteNode>>,
         on_new_doc_on_ram: F,
     ) -> Result<i64>
@@ -4087,19 +4247,30 @@ impl DwptGuard {
             !self.dwpt.is_aborted(),
             "DWPT has hit aborting exception but is still indexing"
         );
+        debug_assert!(
+            self.state().aborting_error.is_none(),
+            "DWPT has hit aborting exception but is still indexing"
+        );
 
         let docs_in_ram_before = self.dwpt.num_docs_in_ram();
         let has_index_sort = self.dwpt.index_writer_config.index_sort().is_some();
+        let mut panicked: Option<Box<dyn std::any::Any + Send>> = None;
         let result = (|| -> Result<()> {
-            for (position, doc) in docs.iter().enumerate() {
-                let is_last_doc = position + 1 == docs.len();
+            // `docs.iterator()` dereferences a `null` block; `hasNext()`,
+            // `next()` and the `hasNext()` that tells the last document run in
+            // Java's order, so an iterator failure interrupts the block where
+            // Java's does (`DocumentsWriterPerThread.java:268-271`).
+            let mut iterator = docs.ok_or_else(LuceneError::null_pointer)?.iterator();
+            while iterator.has_next()? {
+                let doc = iterator.next()?;
+                let is_last_doc = !iterator.has_next()?;
                 if !self.dwpt.has_parent_field
                     && has_index_sort
                     && !is_last_doc
                     && self.dwpt.index_major_version_created
                         >= i32::from(Version::LUCENE_10_0_0.major)
                 {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "a parent field must be set in order to use document blocks with index sorting; see IndexWriterConfig#setParentField".to_string(),
                     ));
                 }
@@ -4109,19 +4280,40 @@ impl DwptGuard {
                     .state
                     .as_mut()
                     .expect("INVARIANT: state is only taken in Drop");
-                let processed = state.indexing_chain.process_document(
-                    doc_id,
-                    doc,
-                    is_last_doc,
-                    &mut state.field_infos,
-                );
+                // `try { consumer.processDocument(..) } finally {
+                // onNewDocOnRAM.run(); }` (`DocumentsWriterPerThread.java:
+                // 281-285`): a panic — this port's carrier of Java's unchecked
+                // throwables — runs the `finally` too, so the writer's count of
+                // documents in RAM stays equal to the DWPT's.
+                let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    state.indexing_chain.process_document(
+                        doc_id,
+                        doc,
+                        is_last_doc,
+                        &mut state.field_infos,
+                    )
+                }));
                 on_new_doc_on_ram();
-                processed?;
+                match processed {
+                    Ok(processed) => processed?,
+                    Err(payload) => {
+                        panicked = Some(payload);
+                        return Ok(());
+                    }
+                }
             }
             Ok(())
         })();
 
         let num_docs = self.dwpt.num_docs_in_ram() - docs_in_ram_before;
+        if let Some(payload) = panicked {
+            // `catch (Throwable t) { if (isAborted() == false) deleteLastDocs(..);
+            // throw t; }` (`DocumentsWriterPerThread.java:287-295`).
+            if !self.dwpt.is_aborted() {
+                self.delete_last_docs(num_docs);
+            }
+            std::panic::resume_unwind(payload);
+        }
         match result {
             Ok(()) => {
                 if num_docs > 1 {
@@ -4201,6 +4393,10 @@ impl DwptGuard {
     /// the one the tragic event carries, which is what Java's invariant
     /// guarantees.
     fn on_aborting_exception(&mut self, error: LuceneError) {
+        debug_assert!(
+            self.state().aborting_error.is_none(),
+            "aborting exception has already been set"
+        );
         self.state_mut().aborting_error = Some(error);
     }
 
@@ -4255,7 +4451,7 @@ impl DwptGuard {
     ///
     /// # Errors
     ///
-    /// Propagates [`LuceneError::AlreadyClosed`] if the delete queue closed.
+    /// Propagates [`LuceneErrorKind::AlreadyClosed`] if the delete queue closed.
     pub fn prepare_flush(&mut self) -> Result<Option<FrozenBufferedUpdates>> {
         debug_assert!(self.dwpt.num_docs_in_ram() > 0);
         let num_docs_in_ram = self.dwpt.num_docs_in_ram();
@@ -4381,7 +4577,7 @@ impl DwptGuard {
                 .as_mut()
                 .expect("INVARIANT: state is only taken in Drop")
                 .indexing_chain
-                .get_has_doc_values(field)?,
+                .get_has_doc_values(&field)?,
             None => None,
         };
         // `final SegmentWriteState flushState = new SegmentWriteState(infoStream,
@@ -4523,8 +4719,11 @@ impl DwptGuard {
                 "DWPT",
                 &format!("flushedFiles=[{}]", flushed_files.join(", ")),
             );
-            // `"flushed codec=" + codec`: `Codec.toString()` is its name.
-            info_stream.message("DWPT", &format!("flushed codec={}", self.dwpt.codec.name()));
+            // `"flushed codec=" + codec`: `Codec.toString()`.
+            info_stream.message(
+                "DWPT",
+                &format!("flushed codec={}", self.dwpt.codec.to_java_string()),
+            );
         }
 
         // `packableSortMap != null ? packableSortMap.pack() : null`: use a
@@ -4789,7 +4988,7 @@ impl DocumentsWriterPerThreadPool {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the pool is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] once the pool is closed, and
     /// propagates factory failures.
     pub fn get_and_lock(&self) -> Result<DwptGuard> {
         self.ensure_open()?;
@@ -4808,6 +5007,10 @@ impl DocumentsWriterPerThreadPool {
     fn new_writer(&self) -> Result<DwptGuard> {
         let mut state = self.lock_state();
         while state.taken_writer_permits > 0 {
+            // `this.wait()`: the thread is `WAITING` while it waits.
+            let _waiting = crate::util::concurrent::enter_thread_wait(
+                crate::util::concurrent::ThreadWaitState::Waiting,
+            );
             state = self
                 .permits_released
                 .wait(state)
@@ -5009,7 +5212,7 @@ impl DocumentsWriterShared {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the queue was already advanced.
+    /// Returns [`LuceneErrorKind::IllegalState`] if the queue was already advanced.
     fn reset_delete_queue(&self, max_num_pending_ops: usize) -> Result<i64> {
         let mut current = self
             .delete_queue
@@ -5019,6 +5222,12 @@ impl DocumentsWriterShared {
         debug_assert!(current.is_advanced());
         debug_assert!(!new_queue.is_advanced());
         debug_assert!(current.last_sequence_number() <= new_queue.last_sequence_number());
+        debug_assert!(
+            current.max_seq_no() <= new_queue.last_sequence_number(),
+            "maxSeqNo: {} vs. {}",
+            current.max_seq_no(),
+            new_queue.last_sequence_number()
+        );
         let old_max_seq_no = current.max_seq_no();
         *current = new_queue;
         Ok(old_max_seq_no)
@@ -5270,6 +5479,7 @@ impl DocumentsWriterFlushControl {
     /// Equivalent to `doOnAbort(DocumentsWriterPerThread)`.
     pub fn do_on_abort(&self, guard: &DwptGuard) {
         let mut inner = self.lock();
+        debug_assert!(self.per_thread_pool.is_registered(guard.dwpt()));
         let bytes = guard.last_committed_bytes_used();
         if guard.is_flush_pending() {
             inner.flush_bytes -= bytes;
@@ -5279,7 +5489,8 @@ impl DocumentsWriterFlushControl {
         debug_assert!(self.assert_memory(&mut inner));
         self.update_stall_state_locked(&mut inner);
         drop(inner);
-        self.per_thread_pool.checkout(guard);
+        let checked_out = self.per_thread_pool.checkout(guard);
+        debug_assert!(checked_out);
     }
 
     /// Accounts a finished flush and wakes anyone waiting for it.
@@ -5287,14 +5498,20 @@ impl DocumentsWriterFlushControl {
     /// Equivalent to `doAfterFlush(DocumentsWriterPerThread)`.
     pub fn do_after_flush(&self, dwpt: &Arc<DocumentsWriterPerThread>) {
         let mut inner = self.lock();
+        debug_assert!(inner
+            .flushing_writers
+            .iter()
+            .any(|candidate| Arc::ptr_eq(candidate, dwpt)));
         inner
             .flushing_writers
             .retain(|candidate| !Arc::ptr_eq(candidate, dwpt));
         inner.flush_bytes -= dwpt.last_committed_bytes_used();
         debug_assert!(self.assert_memory(&mut inner));
         self.update_stall_state_locked(&mut inner);
-        drop(inner);
+        // `notifyAll()` inside the `synchronized` method
+        // (`DocumentsWriterFlushControl.java:298`), with the monitor held.
         self.flush_done.notify_all();
+        drop(inner);
     }
 
     /// Returns a snapshot of every currently active DWPT.
@@ -5315,7 +5532,7 @@ impl DocumentsWriterFlushControl {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// Returns [`LuceneErrorKind::ThreadInterrupted`] when the thread is
     /// interrupted ([`InterruptHandle::interrupt`](crate::util::InterruptHandle::interrupt))
     /// before or while it waits.
     pub fn wait_for_flush(&self) -> Result<()> {
@@ -5343,9 +5560,7 @@ impl DocumentsWriterFlushControl {
         per_thread: &DocumentsWriterPerThread,
         inner: &mut FlushControlInner,
     ) {
-        if per_thread.is_flush_pending() {
-            return;
-        }
+        debug_assert!(!per_thread.is_flush_pending());
         if per_thread.num_docs_in_ram() > 0 {
             per_thread.set_flush_pending();
             let bytes = per_thread.last_committed_bytes_used();
@@ -5404,6 +5619,7 @@ impl DocumentsWriterFlushControl {
             }
         } else {
             if mark_pending {
+                debug_assert!(!guard.is_flush_pending());
                 self.set_flush_pending_locked(guard.dwpt(), inner);
             }
             if guard.is_flush_pending() {
@@ -5414,6 +5630,7 @@ impl DocumentsWriterFlushControl {
     }
 
     fn checkout_and_block(&self, guard: &DwptGuard, inner: &mut FlushControlInner) {
+        debug_assert!(self.per_thread_pool.is_registered(guard.dwpt()));
         debug_assert!(guard.is_flush_pending(), "can not block non-pending DWPT");
         debug_assert!(inner.full_flush, "can not block if fullFlush == false");
         inner.num_pending -= 1;
@@ -5428,6 +5645,7 @@ impl DocumentsWriterFlushControl {
         inner: &mut FlushControlInner,
     ) -> Arc<DocumentsWriterPerThread> {
         debug_assert!(guard.is_flush_pending());
+        debug_assert!(self.per_thread_pool.is_registered(guard.dwpt()));
         Self::add_flushing_dwpt(guard.dwpt(), inner);
         inner.num_pending -= 1;
         let checked_out = self.per_thread_pool.checkout(guard);
@@ -5487,7 +5705,7 @@ impl DocumentsWriterFlushControl {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the flush control is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] once the flush control is closed.
     pub fn obtain_and_lock(&self) -> Result<DwptGuard> {
         while !self.closed.load(Ordering::Acquire) {
             let guard = self.per_thread_pool.get_and_lock()?;
@@ -5513,11 +5731,15 @@ impl DocumentsWriterFlushControl {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if a full flush is already
+    /// Returns [`LuceneErrorKind::IllegalState`] if a full flush is already
     /// running, and propagates delete-queue errors.
     pub fn mark_for_full_flush(&self) -> Result<i64> {
         let (flushing_queue, seq_no) = {
             let mut inner = self.lock();
+            debug_assert!(
+                !inner.full_flush,
+                "called DWFC#markForFullFlush() while full flush is still running"
+            );
             if inner.full_flush {
                 return Err(LuceneError::illegal_state(
                     "called markForFullFlush() while full flush is still running".to_string(),
@@ -5539,7 +5761,10 @@ impl DocumentsWriterFlushControl {
         {
             if guard.num_docs_in_ram() > 0 {
                 let mut inner = self.lock();
-                self.set_flush_pending_locked(guard.dwpt(), &mut inner);
+                // `DocumentsWriterFlushControl.java:585-587`.
+                if !guard.is_flush_pending() {
+                    self.set_flush_pending_locked(guard.dwpt(), &mut inner);
+                }
                 full_flush_buffer.push(self.check_out_for_flush(&guard, &mut inner));
             } else {
                 let checked_out = self.per_thread_pool.checkout(&guard);
@@ -5644,7 +5869,7 @@ impl DocumentsWriterFlushControl {
     /// is the only difference from Java, where `abort()` needs no DWPT lock at
     /// all. As Java's `catch (Exception ex)`, a DWPT's failure to abort is
     /// ignored — best effort — unless it is a Java `Error`
-    /// ([`LuceneError::AssertionError`]), which ends the walk once that DWPT is
+    /// ([`LuceneErrorKind::AssertionError`]), which ends the walk once that DWPT is
     /// accounted for and propagates after the stall state is updated.
     ///
     /// Java walks the two queues in two loops (`DocumentsWriterFlushControl.java:681-706`):
@@ -5657,7 +5882,7 @@ impl DocumentsWriterFlushControl {
     ///
     /// # Errors
     ///
-    /// Returns the [`LuceneError::AssertionError`] a DWPT's abort raised.
+    /// Returns the [`LuceneErrorKind::AssertionError`] a DWPT's abort raised.
     pub fn abort_pending_flushes(&self) -> Result<()> {
         let (flush_queue, blocked_flushes): (Vec<_>, Vec<_>) = {
             let mut inner = self.lock();
@@ -5675,7 +5900,12 @@ impl DocumentsWriterFlushControl {
             let aborted = DocumentsWriterPerThread::lock(dwpt).abort();
             self.do_after_flush(dwpt);
             match aborted {
-                Err(error @ LuceneError::AssertionError(_)) => Err(error),
+                Err(
+                    error @ LuceneError {
+                        kind: LuceneErrorKind::AssertionError(_),
+                        ..
+                    },
+                ) => Err(error),
                 _ => Ok(()),
             }
         };
@@ -6025,6 +6255,7 @@ impl DocumentsWriter {
         flush_notifications: Arc<dyn FlushNotifications>,
         index_created_version_major: i32,
         pending_num_docs: Arc<AtomicI64>,
+        enable_test_points: bool,
         segment_name_supplier: SegmentNameSupplier,
         config: Arc<LiveIndexWriterConfig>,
         directory_orig: Arc<dyn Directory>,
@@ -6035,7 +6266,7 @@ impl DocumentsWriter {
             flush_notifications,
             index_created_version_major,
             pending_num_docs,
-            false,
+            enable_test_points,
             segment_name_supplier,
             config,
             directory_orig,
@@ -6178,10 +6409,10 @@ impl DocumentsWriter {
     /// Propagates indexing, delete-queue and flush errors.
     pub fn update_document(
         &self,
-        doc: &Document,
+        doc: &dyn IndexableFieldIterable,
         del_node: Option<Arc<DeleteNode>>,
     ) -> Result<i64> {
-        self.update_documents(std::slice::from_ref(doc), del_node)
+        self.update_documents(Some(&SingleDocument::new(doc)), del_node)
     }
 
     /// Indexes `docs` as one document block.
@@ -6193,7 +6424,7 @@ impl DocumentsWriter {
     /// Propagates indexing, delete-queue and flush errors.
     pub fn update_documents(
         &self,
-        docs: &[Document],
+        docs: Option<&dyn DocumentsIterable>,
         del_node: Option<Arc<DeleteNode>>,
     ) -> Result<i64> {
         let has_events = self.pre_update()?;
@@ -6338,18 +6569,34 @@ impl DocumentsWriter {
         let mut next = Some(first);
         while let Some(flushing_dwpt) = next {
             debug_assert!(!flushing_dwpt.has_flushed());
+            debug_assert!(
+                self.assert_ticket_queue_modification(flushing_dwpt.delete_queue()),
+                "expected: {:?} but was: {:?} {}",
+                self.lock_full_flush_queue().as_ref(),
+                flushing_dwpt.delete_queue(),
+                self.flush_control.is_full_flush()
+            );
             // `DocumentsWriter.java:566-578`: the backlog check runs inside
-            // the `try` whose `finally` is `doAfterFlush`.
-            let outcome = self.flush_one(&flushing_dwpt).and_then(|()| {
-                if self.ticket_queue.ticket_count() >= self.per_thread_pool.size() {
-                    // This means there is a backlog: the one thread purging
-                    // the queue can't keep up with all other threads flushing
-                    // segments, so it is forced to publish.
-                    self.flush_notifications.on_ticket_backlog()?;
-                }
-                Ok(())
-            });
+            // the `try` whose `finally` is `doAfterFlush` — which runs on
+            // every exit, a panic (the port's unchecked throwable) included:
+            // a DWPT left in `flushingWriters` blocks every `waitForFlush`.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.flush_one(&flushing_dwpt).and_then(|()| {
+                    if self.ticket_queue.ticket_count() >= self.per_thread_pool.size() {
+                        // This means there is a backlog: the one thread
+                        // purging the queue can't keep up with all other
+                        // threads flushing segments, so it is forced to
+                        // publish.
+                        self.flush_notifications.on_ticket_backlog()?;
+                    }
+                    Ok(())
+                })
+            }));
             self.flush_control.do_after_flush(&flushing_dwpt);
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(payload) => std::panic::resume_unwind(payload),
+            };
             outcome?;
             next = self.flush_control.next_pending_flush();
         }
@@ -6368,7 +6615,20 @@ impl DocumentsWriter {
             .add_ticket(|| Ok(Some(FlushTicket::new(guard.prepare_flush()?, true))))?;
 
         let flushing_docs_in_ram = guard.num_docs_in_ram();
-        let flushed = guard.flush(self.flush_notifications.as_ref());
+        // A panic — the port's unchecked throwable — leaves through the same
+        // `finally` blocks as an exception (`DocumentsWriter.java:537-563`)
+        // and is rethrown after them.
+        let mut thrown: Option<Box<dyn std::any::Any + Send>> = None;
+        let flushed = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            guard.flush(self.flush_notifications.as_ref())
+        })) {
+            Ok(flushed) => flushed,
+            Err(payload) => {
+                let error = crate::util::concurrent::panic_to_error(&*payload);
+                thrown = Some(payload);
+                Err(error)
+            }
+        };
         // The DWPT aborted mid-flush when it returns no segment. Lucene
         // attaches a null segment, which leaves the ticket unpublishable for
         // ever; treating it as a failed flush instead lets the queue keep
@@ -6401,13 +6661,19 @@ impl DocumentsWriter {
             Ok(())
         })();
         if let Err(error) = notified {
+            // An exception thrown by the `finally` replaces the throwable in
+            // flight, a panic included.
             outcome = Err(error);
+            thrown = None;
         }
         // The outer `finally` (`DocumentsWriter.java:556-563`).
         if !(dwpt_success && outcome.is_ok()) {
             if let Some(ticket) = &ticket {
                 self.ticket_queue.mark_ticket_failed(ticket);
             }
+        }
+        if let Some(payload) = thrown {
+            std::panic::resume_unwind(payload);
         }
         outcome
     }
@@ -6436,6 +6702,11 @@ impl DocumentsWriter {
             self.assert_set_flushing_delete_queue(Some(Arc::clone(&flushing_delete_queue)))?;
             (flushing_delete_queue, seq_no)
         };
+        debug_assert!(self.lock_full_flush_queue().is_some());
+        debug_assert!(self
+            .lock_full_flush_queue()
+            .as_ref()
+            .is_some_and(|current| !Arc::ptr_eq(current, &self.shared.delete_queue())));
 
         let outcome = (|| -> Result<bool> {
             let anything_flushed = self.maybe_flush()?;
@@ -6445,6 +6716,7 @@ impl DocumentsWriter {
                     self.info_stream
                         .message("DW", "flush naked frozen global deletes");
                 }
+                debug_assert!(self.assert_ticket_queue_modification(&flushing_delete_queue));
                 self.ticket_queue
                     .add_ticket(|| Ok(Self::maybe_freeze_global_buffer(&flushing_delete_queue)))?;
             }
@@ -6454,11 +6726,17 @@ impl DocumentsWriter {
             // `assert_set_flushing_delete_queue` for why a debug build returns
             // the failure. Java's `AssertionError` has no message here.
             if cfg!(debug_assertions) && flushing_delete_queue.any_changes() {
-                return Err(LuceneError::AssertionError(String::new()));
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    String::new(),
+                )));
             }
             Ok(anything_flushed)
         })();
 
+        debug_assert!(self
+            .lock_full_flush_queue()
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &flushing_delete_queue)));
         // All DWPTs of this queue have been processed: the queue is now sealed.
         flushing_delete_queue.close()?;
 
@@ -6512,7 +6790,7 @@ impl DocumentsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// Returns [`LuceneErrorKind::ThreadInterrupted`] when the thread is
     /// interrupted while it waits for the running flushes
     /// ([`DocumentsWriterFlushControl::wait_for_flush`]).
     pub fn abort(&self) -> Result<()> {
@@ -6534,6 +6812,18 @@ impl DocumentsWriter {
             );
             Ok(())
         })();
+        if outcome.is_ok() {
+            debug_assert!(
+                self.flush_control.flushing_bytes() == 0,
+                "flushingBytes has unexpected value 0 != {}",
+                self.flush_control.flushing_bytes()
+            );
+            debug_assert!(
+                self.flush_control.net_bytes() == 0,
+                "netBytes has unexpected value 0 != {}",
+                self.flush_control.net_bytes()
+            );
+        }
         if self.info_stream.is_enabled("DW") {
             self.info_stream
                 .message("DW", &format!("done abort success={}", outcome.is_ok()));
@@ -6565,7 +6855,7 @@ impl DocumentsWriter {
     /// # Errors
     ///
     /// Propagates errors from purging the ticket queue, and returns
-    /// [`LuceneError::ThreadInterrupted`] when the thread is interrupted while
+    /// [`LuceneErrorKind::ThreadInterrupted`] when the thread is interrupted while
     /// it waits for the running flushes
     /// ([`DocumentsWriterFlushControl::wait_for_flush`]).
     pub fn lock_and_abort_all(&self) -> Result<LockAllGuard<'_>> {
@@ -6722,7 +7012,7 @@ impl DocumentsWriter {
     ///
     /// In a build with `debug_assertions` — this port's counterpart of Java's
     /// `-ea` — a queue that is still open fails the assertion with
-    /// [`LuceneError::AssertionError`], the `Error` the writer records as its
+    /// [`LuceneErrorKind::AssertionError`], the `Error` the writer records as its
     /// tragic exception and closes on, as Java's `AssertionError` is under
     /// `-ea`. A full flush that failed, for example on a delete term longer
     /// than 32766 bytes, leaves the queue open and reaches this case. A
@@ -6732,15 +7022,15 @@ impl DocumentsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AssertionError`] when the assertion fails.
+    /// Returns [`LuceneErrorKind::AssertionError`] when the assertion fails.
     fn assert_set_flushing_delete_queue(
         &self,
         session: Option<Arc<DocumentsWriterDeleteQueue>>,
     ) -> Result<()> {
         if cfg!(debug_assertions) && !self.set_flushing_delete_queue(session) {
-            return Err(LuceneError::AssertionError(
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(
                 "Can not replace a full flush queue if the queue is not closed".to_string(),
-            ));
+            )));
         }
         Ok(())
     }
@@ -6797,6 +7087,7 @@ impl Drop for LockAllGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::Document;
 
     use std::sync::atomic::AtomicUsize;
     use std::sync::Once;
@@ -6815,10 +7106,45 @@ mod tests {
         });
     }
 
+    /// Delete terms are sorted per field, so a term of the next field may sort
+    /// before the last term of the previous one. `setField` resets the
+    /// assert-only `lastTerm` with each new field (`assert (lastTerm = null)
+    /// == null;`, `FrozenBufferedUpdates.java:577-578`); without the reset the
+    /// sortedness assert fails with `boom: 0 last: z`.
+    #[test]
+    fn term_docs_iterator_resets_the_sorted_check_per_field() {
+        use crate::document::StringField;
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::{IndexReader, IndexWriterConfig};
+        ensure_default_codec();
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("a", "z".to_string(), Store::NO).unwrap(),
+        ));
+        doc.add(Box::new(
+            StringField::new("b", "0".to_string(), Store::NO).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(dir).unwrap();
+        let reader = Arc::clone(&reader) as Arc<dyn IndexReader>;
+        let leaves = reader.leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let mut term_docs = TermDocsIterator::new(leaf.as_ref(), true);
+        assert!(term_docs
+            .next_term("a", &BytesRef::new(b"z".to_vec()))
+            .unwrap());
+        assert!(term_docs
+            .next_term("b", &BytesRef::new(b"0".to_vec()))
+            .unwrap());
+    }
+
     /// Builds a live config with auto-flush fully under the test's control.
     fn config(max_buffered_docs: i32, ram_buffer_size_mb: f64) -> Arc<LiveIndexWriterConfig> {
         ensure_default_codec();
-        let mut config = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let config = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         if max_buffered_docs != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH {
             config
                 .set_max_buffered_docs(max_buffered_docs)
@@ -6895,16 +7221,20 @@ mod tests {
         fn process_document(
             &mut self,
             doc_id: i32,
-            _doc: &Document,
+            _doc: Option<&dyn IndexableFieldIterable>,
             _is_last_doc: bool,
             _field_infos: &mut FieldInfosBuilder,
         ) -> Result<()> {
             if self.corrupt_on_doc == Some(doc_id) {
-                self.aborting_error = Some(LuceneError::CorruptIndex("scripted".to_string()));
-                return Err(LuceneError::CorruptIndex("scripted".to_string()));
+                self.aborting_error = Some(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                    "scripted".to_string(),
+                )));
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                    "scripted".to_string(),
+                )));
             }
             if self.fail_on_doc == Some(doc_id) {
-                return Err(LuceneError::IllegalArgument("scripted".to_string()));
+                return Err(LuceneError::illegal_argument("scripted".to_string()));
             }
             self.num_docs += 1;
             Ok(())
@@ -7126,7 +7456,7 @@ mod tests {
             );
             updates.add_numeric_update(&update, 3).unwrap();
         }
-        let field_updates_before_finish = updates.field_updates_bytes_used;
+        let field_updates_before_finish = updates.field_updates_bytes_used.get();
 
         let mut builder = crate::index::PrefixCodedTermsBuilder::new();
         builder.add(&term("id", "a")).unwrap();
@@ -7134,7 +7464,7 @@ mod tests {
         let frozen_terms_ram = builder.finish().ram_bytes_used();
 
         let frozen = FrozenBufferedUpdates::new(updates, None);
-        let finished = frozen.updates().field_updates_bytes_used;
+        let finished = frozen.updates().field_updates_bytes_used.get();
         assert!(
             finished > field_updates_before_finish,
             "finish() charged the sort state of the sorted terms"
@@ -7296,7 +7626,13 @@ mod tests {
         let error = queue
             .add_ticket(|| Err(LuceneError::illegal_state("boom".to_string())))
             .unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
         assert_eq!(queue.ticket_count(), 0);
     }
 
@@ -7470,7 +7806,12 @@ mod tests {
         let fixture = new_writer(config(1_000_000, 16.0));
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("hello world")], None, &NoOpFlushNotifications, || {})
+            .update_documents(
+                Some(&[doc("hello world")]),
+                None,
+                &NoOpFlushNotifications,
+                || {},
+            )
             .unwrap();
 
         let children = guard.child_resources();
@@ -7494,7 +7835,7 @@ mod tests {
         for i in 0..5 {
             guard
                 .update_documents(
-                    &[doc(&format!("hello world {i}"))],
+                    Some(&[doc(&format!("hello world {i}"))]),
                     None,
                     &NoOpFlushNotifications,
                     || {},
@@ -7555,19 +7896,19 @@ mod tests {
 
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         guard
-            .update_documents(&[doc("b")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("b")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         // Document 2 fails inside the chain: it stays reserved but is deleted.
         assert!(guard
-            .update_documents(&[doc("c")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("c")]), None, &NoOpFlushNotifications, || {})
             .is_err());
         assert_eq!(guard.deleted_doc_ids(), &[2]);
 
         guard
-            .update_documents(&[doc("d")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("d")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         assert_eq!(guard.num_docs_in_ram(), 4);
 
@@ -7630,10 +7971,10 @@ mod tests {
         let notifications = RecordingNotifications::default();
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &notifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &notifications, || {})
             .unwrap();
         assert!(guard
-            .update_documents(&[doc("b")], None, &notifications, || {})
+            .update_documents(Some(&[doc("b")]), None, &notifications, || {})
             .is_err());
 
         assert!(guard.is_aborted(), "a corrupt chain must abort its DWPT");
@@ -7655,15 +7996,20 @@ mod tests {
         let fixture = new_writer(config(1_000_000, 16.0));
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("first")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("first")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         guard
-            .update_documents(&[doc("second")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("second")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
 
         let node = DeleteNode::new_term(term("id", "1"));
         guard
-            .update_documents(&[doc("third")], Some(node), &NoOpFlushNotifications, || {})
+            .update_documents(
+                Some(&[doc("third")]),
+                Some(node),
+                &NoOpFlushNotifications,
+                || {},
+            )
             .unwrap();
 
         assert_eq!(
@@ -7707,17 +8053,17 @@ mod tests {
 
         let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         guard
-            .update_documents(&[doc("b")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("b")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         let error = guard
-            .update_documents(&[doc("c")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("c")]), None, &NoOpFlushNotifications, || {})
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "number of documents in the index cannot exceed {limit}"
             ))
             .to_string()
@@ -7736,7 +8082,7 @@ mod tests {
         for i in 0..3 {
             guard
                 .update_documents(
-                    &[doc(&format!("{i}"))],
+                    Some(&[doc(&format!("{i}"))]),
                     None,
                     &NoOpFlushNotifications,
                     || {},
@@ -7766,7 +8112,7 @@ mod tests {
         for i in 0..2 {
             guard
                 .update_documents(
-                    &[doc(&format!("{i}"))],
+                    Some(&[doc(&format!("{i}"))]),
                     None,
                     &NoOpFlushNotifications,
                     || {},
@@ -7780,7 +8126,7 @@ mod tests {
         }
 
         guard
-            .update_documents(&[doc("2")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("2")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         let flushing = control
             .do_after_document(&mut guard)
@@ -7806,7 +8152,7 @@ mod tests {
 
         let mut guard = control.obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         assert_eq!(guard.ram_bytes_used(), 1024 * 1024);
         let flushing = control
@@ -7824,7 +8170,7 @@ mod tests {
         let control = fixture.writer.flush_control();
         let mut guard = control.obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         assert!(control.do_after_document(&mut guard).is_none());
         assert_eq!(
@@ -7849,7 +8195,7 @@ mod tests {
 
         let mut guard = control.obtain_and_lock().unwrap();
         guard
-            .update_documents(&[doc("a")], None, &NoOpFlushNotifications, || {})
+            .update_documents(Some(&[doc("a")]), None, &NoOpFlushNotifications, || {})
             .unwrap();
         let flushing = control.do_after_document(&mut guard).expect("flush is due");
         drop(guard);
@@ -8092,7 +8438,13 @@ mod tests {
         let fixture = new_writer(config(1_000_000, 16.0));
         fixture.writer.close();
         let error = fixture.writer.update_document(&doc("a"), None).unwrap_err();
-        assert!(matches!(error, LuceneError::AlreadyClosed { .. }));
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -8133,7 +8485,7 @@ mod tests {
         let mut field_infos = FieldInfosBuilder::new(numbers);
 
         chain
-            .process_document(0, &doc("the quick brown fox"), true, &mut field_infos)
+            .process_document(0, Some(&doc("the quick brown fox")), true, &mut field_infos)
             .unwrap();
         assert_eq!(
             chain.field_term_count("body"),
@@ -8202,7 +8554,9 @@ mod tests {
             Arc::new(move |_config| {
                 let mut chain = ScriptedChain::new(10);
                 if counter.fetch_add(1, Ordering::AcqRel) == 0 {
-                    chain.abort_error = Some(LuceneError::AssertionError("scripted".to_string()));
+                    chain.abort_error = Some(LuceneError::from(LuceneErrorKind::AssertionError(
+                        "scripted".to_string(),
+                    )));
                 }
                 Box::new(chain)
             }),
@@ -8224,7 +8578,10 @@ mod tests {
         assert_eq!(flush_control.num_blocked_flushes(), 2);
 
         match flush_control.abort_pending_flushes() {
-            Err(LuceneError::AssertionError(message)) => assert_eq!(message, "scripted"),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AssertionError(message),
+                ..
+            }) => assert_eq!(message, "scripted"),
             other => panic!("the AssertionError must propagate, got {other:?}"),
         }
         assert_eq!(flush_control.num_blocked_flushes(), 0);

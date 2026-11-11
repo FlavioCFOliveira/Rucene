@@ -125,7 +125,7 @@ impl Directory for RecordingDirectory {
         self.inner.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -138,7 +138,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 
@@ -381,7 +381,7 @@ fn merge_points(max_mb: f64, value: fn(i32) -> [i32; 2]) -> MergeOutcome {
             },
         ),
     );
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(codec).unwrap();
     // Loose files, so the merged points files can be read one by one.
     config.set_use_compound_file(false).unwrap();

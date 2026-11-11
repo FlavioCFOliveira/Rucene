@@ -22,7 +22,7 @@ use crate::{
     },
     util::string_helper::{StringHelper, ID_LENGTH},
     util::BytesRef,
-    Result,
+    LuceneErrorKind, Result,
 };
 
 // -----------------------------------------------------------------------------
@@ -57,7 +57,7 @@ pub const fn footer_length() -> i32 {
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if `codec` is not simple ASCII or is
+/// Returns `LuceneErrorKind::IllegalArgument` if `codec` is not simple ASCII or is
 /// 128 characters or longer.
 ///
 /// Equivalent to `CodecUtil.writeHeader`.
@@ -75,7 +75,7 @@ pub fn write_header(out: &mut dyn DataOutput, codec: &str, version: i32) -> Resu
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if `codec` or `suffix` are not
+/// Returns `LuceneErrorKind::IllegalArgument` if `codec` or `suffix` are not
 /// simple ASCII, if `id` is not exactly 16 bytes, or if `suffix` is 256
 /// characters or longer.
 ///
@@ -88,7 +88,7 @@ pub fn write_index_header(
     suffix: &str,
 ) -> Result<()> {
     if id.len() != ID_LENGTH {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "invalid id length: expected {}, got {}",
             ID_LENGTH,
             id.len()
@@ -126,7 +126,7 @@ pub fn index_header_length(codec: &str, suffix: &str) -> i32 {
 fn validate_codec_name(codec: &str) -> Result<()> {
     let bytes = BytesRef::from_char_sequence(codec);
     if bytes.length != codec.encode_utf16().count() || bytes.length >= 128 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "codec must be simple ASCII, less than 128 characters in length [got {}]",
             codec
         )));
@@ -140,7 +140,7 @@ fn validate_codec_name(codec: &str) -> Result<()> {
 fn validate_suffix(suffix: &str) -> Result<BytesRef> {
     let suffix_bytes = BytesRef::from_char_sequence(suffix);
     if suffix_bytes.length != suffix.encode_utf16().count() || suffix_bytes.length >= 256 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "suffix must be simple ASCII, less than 256 characters in length [got {}]",
             suffix
         )));
@@ -156,8 +156,8 @@ fn validate_suffix(suffix: &str) -> Result<BytesRef> {
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::CorruptIndex` if the magic or codec name do not match,
-/// and `LuceneError::IndexFormatTooOld` or `LuceneError::IndexFormatTooNew` if
+/// Returns `LuceneErrorKind::CorruptIndex` if the magic or codec name do not match,
+/// and `LuceneErrorKind::IndexFormatTooOld` or `LuceneErrorKind::IndexFormatTooNew` if
 /// the version is outside the supported range.
 ///
 /// Equivalent to `CodecUtil.checkHeader` (`CodecUtil.java:182-194`): a magic
@@ -191,10 +191,10 @@ pub fn check_header(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the codec name differs from
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the codec name differs from
 /// `codec` (`CorruptIndexException(String, DataInput)`),
-/// [`LuceneError::IndexFormatTooOld`] when the version is below
-/// `min_version` and [`LuceneError::IndexFormatTooNew`] when it is above
+/// [`LuceneErrorKind::IndexFormatTooOld`] when the version is below
+/// `min_version` and [`LuceneErrorKind::IndexFormatTooNew`] when it is above
 /// `max_version` (their `(DataInput, int, int, int)` constructors), and
 /// propagates any I/O error.
 pub fn check_header_no_magic(
@@ -259,7 +259,7 @@ pub fn check_index_header(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when `input` is too small to hold a
+/// Returns [`LuceneErrorKind::CorruptIndex`] when `input` is too small to hold a
 /// header and a footer, when the first four bytes are not [`CODEC_MAGIC`], or
 /// when the object id does not match `expected_id`; propagates any I/O error.
 /// Each failure is Java's `CorruptIndexException(String, DataInput)`, whose
@@ -305,7 +305,7 @@ pub fn verify_and_copy_index_header(
     // we can't verify extension either, so we pass-through:
     let suffix_length = input.read_byte()? as usize;
     let mut suffix_bytes = vec![0u8; suffix_length];
-    input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
+    input.read_bytes(Some(&mut suffix_bytes), 0, suffix_length)?;
 
     // now write the header we just verified
     write_be_int(out, CODEC_MAGIC)?;
@@ -326,12 +326,12 @@ pub fn verify_and_copy_index_header(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the id differs from
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the id differs from
 /// `expected_id` (`CorruptIndexException(String, DataInput)`, whose resource
 /// is the input's `toString()`), and propagates any I/O error.
 pub fn check_index_header_id(input: &mut dyn DataInput, expected_id: &[u8]) -> Result<()> {
     let mut id = [0u8; ID_LENGTH];
-    input.read_bytes(&mut id, 0, ID_LENGTH)?;
+    input.read_bytes(Some(&mut id), 0, ID_LENGTH)?;
     if id != expected_id {
         return Err(LuceneError::corrupt_index(
             format!(
@@ -353,13 +353,13 @@ pub fn check_index_header_id(input: &mut dyn DataInput, expected_id: &[u8]) -> R
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the suffix differs from
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the suffix differs from
 /// `expected_suffix` (`CorruptIndexException(String, DataInput)`, whose
 /// resource is the input's `toString()`), and propagates any I/O error.
 pub fn check_index_header_suffix(input: &mut dyn DataInput, expected_suffix: &str) -> Result<()> {
     let suffix_length = input.read_byte()? as usize;
     let mut suffix_bytes = vec![0u8; suffix_length];
-    input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
+    input.read_bytes(Some(&mut suffix_bytes), 0, suffix_length)?;
     let suffix = crate::util::java_fmt::java_utf8_to_string(&suffix_bytes);
     if suffix != expected_suffix {
         return Err(LuceneError::corrupt_index(
@@ -391,7 +391,7 @@ pub fn write_footer(out: &mut dyn IndexOutput) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::CorruptIndex` if the footer is malformed or the
+/// Returns `LuceneErrorKind::CorruptIndex` if the footer is malformed or the
 /// checksum does not match.
 ///
 /// Equivalent to `CodecUtil.checkFooter(ChecksumIndexInput)`.
@@ -428,42 +428,119 @@ pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<i64> {
 /// * the checksum passes, or verifying it fails with anything but a
 ///   `CorruptIndexException` — `prior` itself is rethrown, of its own type.
 ///
-/// **Divergence from Lucene 10.5.0.** [`LuceneError`] has no
-/// `Throwable.addSuppressed`. Where the corruption is thrown, `prior` is kept
-/// in its message as `(prior error: ...)`; where `prior` is rethrown, it is
-/// returned unchanged, and the note Java suppresses into it ("checksum passed
-/// (...). possibly transient resource issue, or a Lucene or JVM bug", or
-/// "checksum status indeterminate: unexpected exception") is not carried.
+/// The error returned therefore has Java's class, Java's `getMessage()` and
+/// Java's `getSuppressed()`: `prior` under the thrown corruption, or the note
+/// ("checksum passed (...). possibly transient resource issue, or a Lucene or
+/// JVM bug", none for an `IndexFormatTooOldException`, or "checksum status
+/// indeterminate: unexpected exception") under the rethrown `prior`.
+///
+/// The note's `CorruptIndexException(message, in, t)` carries no cause:
+/// [`LuceneErrorKind::CorruptIndex`] has no cause field (a limit of that variant,
+/// not of this method).
 ///
 /// Returning the error rather than a `Result` mirrors the fact that this is
 /// only ever called when something has already gone wrong.
 pub fn check_footer_with_prior(
     input: &mut dyn ChecksumIndexInput,
-    prior: LuceneError,
+    mut prior: LuceneError,
 ) -> LuceneError {
-    let remaining = input.length() - input.file_pointer();
-    if remaining < footer_length() as i64 {
-        // corruption caused us to read into the checksum footer already: we can't proceed
-        return LuceneError::CorruptIndex(format!(
-            "checksum status indeterminate: remaining={remaining}; please run \
-             checkindex for more details (resource={}) (prior error: {prior})",
-            input.resource_description()
-        ));
+    /// What the `try` block ends with.
+    enum Tried {
+        /// `throw new CorruptIndexException("checksum status indeterminate:
+        /// remaining=...")`, caught by `catch (CorruptIndexException)`.
+        Remaining(i64),
+        /// `checkFooter(in)` returned or threw.
+        Checked(Result<i64>),
     }
-    // Java skips the unread bytes rather than seeking, because the digest must
-    // cover them; this input's `seek` is the forward-only, checksum-preserving
-    // one for the same reason. A failure here is Java's `catch (Throwable t)`:
-    // the prior error is rethrown.
-    let target = input.length() - footer_length() as i64;
-    if ChecksumIndexInput::seek(input, target).is_err() {
-        return prior;
-    }
-    match check_footer(input) {
-        Ok(_) => prior,
-        Err(LuceneError::CorruptIndex(corruption)) => {
-            LuceneError::CorruptIndex(format!("{corruption} (prior error: {prior})"))
+    // `catch (Throwable t)` (`CodecUtil.java:509-511`) also catches the
+    // unchecked throwables the input raises — a panic here, such as the
+    // `RuntimeException` a closed test input throws from `length()`.
+    let tried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let remaining = input.length() - input.file_pointer();
+        if remaining < footer_length() as i64 {
+            // corruption caused us to read into the checksum footer already: we can't proceed
+            return Tried::Remaining(remaining);
         }
-        Err(_) => prior,
+        // Java skips the unread bytes rather than seeking, because the digest must
+        // cover them; this input's `seek` is the forward-only, checksum-preserving
+        // one for the same reason.
+        let target = input.length() - footer_length() as i64;
+        Tried::Checked(ChecksumIndexInput::seek(input, target).and_then(|()| check_footer(input)))
+    }));
+    match tried {
+        Ok(Tried::Remaining(remaining)) => {
+            // (thrown inside the `try`, so `catch (CorruptIndexException)`
+            // suppresses `priorException` into it).
+            let mut corruption = LuceneError::corrupt_index(
+                format!(
+                    "checksum status indeterminate: remaining={remaining}; please run \
+                     checkindex for more details"
+                ),
+                input.resource_description(),
+            );
+            corruption.add_suppressed(prior);
+            corruption
+        }
+        Ok(Tried::Checked(Ok(checksum))) => {
+            if !matches!(prior.kind(), LuceneErrorKind::IndexFormatTooOld { .. }) {
+                // If the index format is too old and no corruption, do not add checksums
+                // matching message since this may tend to unnecessarily alarm people who
+                // see "JVM bug" in their logs
+                prior.add_suppressed(LuceneError::corrupt_index(
+                    format!(
+                        "checksum passed ({checksum:x}). possibly transient resource issue, \
+                         or a Lucene or JVM bug"
+                    ),
+                    input.to_java_string(),
+                ));
+            }
+            prior
+        }
+        // `corruptException.addSuppressed(priorException); throw corruptException;`
+        Ok(Tried::Checked(Err(mut corruption)))
+            if matches!(corruption.kind(), LuceneErrorKind::CorruptIndex(_)) =>
+        {
+            corruption.add_suppressed(prior);
+            corruption
+        }
+        // catch-all for things that shouldn't go wrong (e.g. OOM during readInt) but could...
+        Ok(Tried::Checked(Err(_))) | Err(_) => {
+            prior.add_suppressed(LuceneError::corrupt_index(
+                "checksum status indeterminate: unexpected exception",
+                input.to_java_string(),
+            ));
+            prior
+        }
+    }
+}
+
+/// Validates the footer of a metadata input once its entries were read,
+/// whatever reading them returned.
+///
+/// Equivalent to the idiom every Lucene 10.5.0 metadata reader writes around
+/// its entries (for example `Lucene94FieldInfosFormat.java:134-246`):
+///
+/// ```java
+/// Throwable priorE = null;
+/// try { ... } catch (Throwable exception) { priorE = exception; }
+/// finally { CodecUtil.checkFooter(in, priorE); }
+/// ```
+///
+/// `result` is the outcome of the `try` block: on success the footer is
+/// verified with [`check_footer`] and `result` is returned; on failure
+/// [`check_footer_with_prior`] picks the error to report.
+///
+/// # Errors
+///
+/// The footer's error when `result` is `Ok`, else the error
+/// [`check_footer_with_prior`] chooses.
+pub fn check_footer_after<T>(input: &mut dyn ChecksumIndexInput, result: Result<T>) -> Result<T> {
+    match result {
+        Ok(value) => {
+            check_footer(input)?;
+            Ok(value)
+        }
+        Err(prior) => Err(check_footer_with_prior(input, prior)),
     }
 }
 
@@ -475,7 +552,7 @@ pub fn check_footer_with_prior(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the magic does not match —
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the magic does not match —
 /// Java's `CorruptIndexException(String, DataInput)`, whose resource is the
 /// input's `toString()` (`CodecUtil.java:323-330`) — and propagates any I/O
 /// error.
@@ -498,7 +575,7 @@ pub fn read_index_header(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     let len = header_length(&codec) as usize + ID_LENGTH + 1 + suffix_length;
     let mut bytes = vec![0u8; len];
     input.seek(0)?;
-    input.read_bytes(&mut bytes, 0, len)?;
+    input.read_bytes(Some(&mut bytes), 0, len)?;
     Ok(bytes)
 }
 
@@ -508,7 +585,7 @@ pub fn read_index_header(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the file is too short to hold a
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the file is too short to hold a
 /// footer or the footer is not valid — Java's `CorruptIndexException(String,
 /// DataInput)`, whose resource is the input's `toString()` — and propagates
 /// any I/O error.
@@ -529,7 +606,7 @@ pub fn read_footer(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     input.seek(input.length() - footer_length() as i64)?;
     let len = footer_length() as usize;
     let mut bytes = vec![0u8; len];
-    input.read_bytes(&mut bytes, 0, len)?;
+    input.read_bytes(Some(&mut bytes), 0, len)?;
     Ok(bytes)
 }
 
@@ -540,7 +617,7 @@ pub fn read_footer(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`], naming the input as its resource,
+/// Returns [`LuceneErrorKind::CorruptIndex`], naming the input as its resource,
 /// when the file is too short to hold a footer or the footer is not valid, and
 /// propagates any I/O error.
 pub fn retrieve_checksum(input: &mut dyn IndexInput) -> Result<i64> {
@@ -567,8 +644,8 @@ pub fn retrieve_checksum(input: &mut dyn IndexInput) -> Result<i64> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `expected_length` is below the
-/// footer length, [`LuceneError::CorruptIndex`], naming the input as its
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `expected_length` is below the
+/// footer length, [`LuceneErrorKind::CorruptIndex`], naming the input as its
 /// resource, when the file is not `expected_length` bytes long, and whatever
 /// [`retrieve_checksum`] returns.
 pub fn retrieve_checksum_expected_length(
@@ -576,7 +653,7 @@ pub fn retrieve_checksum_expected_length(
     expected_length: i64,
 ) -> Result<i64> {
     if expected_length < footer_length() as i64 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "expectedLength cannot be less than the footer length".to_string(),
         ));
     }
@@ -610,13 +687,25 @@ pub fn retrieve_checksum_expected_length(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the file is too short to hold a
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the file is too short to hold a
 /// footer — naming `input` itself, not its clone, as Java does — or when the
 /// footer or the checksum is not valid, and propagates any I/O error.
 pub fn checksum_entire_file(input: &mut dyn IndexInput) -> Result<i64> {
+    checksum_entire_file_shared(input)
+}
+
+/// [`checksum_entire_file`] over an input the caller only shares (an input
+/// held behind an `Arc`): Java's `checksumEntireFile` reads a clone, never
+/// `input` itself, so a shared reference is all it needs.
+///
+/// # Errors
+///
+/// As [`checksum_entire_file`].
+pub fn checksum_entire_file_shared(input: &dyn IndexInput) -> Result<i64> {
     let mut clone = input.clone_input()?;
     clone.seek(0)?;
     let mut checksum_input = BufferedChecksumIndexInput::new(clone);
+    debug_assert!(checksum_input.file_pointer() == 0);
     if checksum_input.length() < footer_length() as i64 {
         // `CodecUtil.java:611-617`: Java prints `footerLength==`.
         return Err(LuceneError::corrupt_index(
@@ -689,8 +778,9 @@ fn validate_footer(input: &mut dyn IndexInput) -> Result<()> {
 
 /// Equivalent to the package-private `CodecUtil.readCRC(IndexInput)`
 /// (`CodecUtil.java:629-635`): a value with any of its upper 32 bits set is a
-/// `CorruptIndexException(String, DataInput)` naming the input.
-fn read_crc(input: &mut dyn DataInput) -> Result<i64> {
+/// `CorruptIndexException(String, DataInput)` naming the input. `pub` here,
+/// as tests outside the crate call it the way Java's same-package tests do.
+pub fn read_crc(input: &mut dyn DataInput) -> Result<i64> {
     let value = read_be_long(input)?;
     if (value as u64) > 0xFFFFFFFFu64 {
         return Err(LuceneError::corrupt_index(
@@ -701,7 +791,14 @@ fn read_crc(input: &mut dyn DataInput) -> Result<i64> {
     Ok(value)
 }
 
-fn write_crc(out: &mut dyn IndexOutput) -> Result<()> {
+/// Writes the CRC-32 of `out` as a big-endian long, refusing a checksum with
+/// any of its upper 32 bits set.
+///
+/// Equivalent to the package-private `CodecUtil.writeCRC(IndexOutput)`
+/// (`CodecUtil.java:643-650`): an `IllegalStateException` naming the output.
+/// `pub` here, as tests outside the crate call it the way Java's
+/// same-package tests do.
+pub fn write_crc(out: &mut dyn IndexOutput) -> Result<()> {
     let value = out.checksum()?;
     if (value as u64) > 0xFFFFFFFFu64 {
         return Err(LuceneError::illegal_state(format!(
@@ -871,7 +968,13 @@ mod tests {
         bytes.copy_from_slice(&0i32.to_be_bytes());
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 1).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
         assert!(err.to_string().contains("codec header mismatch"));
     }
 
@@ -886,7 +989,11 @@ mod tests {
 
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "WrongCodec", 1, 10).unwrap_err();
-        let LuceneError::CorruptIndex(message) = &err else {
+        let LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(message),
+            ..
+        } = &err
+        else {
             panic!("{err:?}");
         };
         assert!(
@@ -910,7 +1017,13 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 6, 10).unwrap_err();
         assert!(
-            matches!(err, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{err:?}"
         );
         assert_eq!(
@@ -930,7 +1043,13 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 4).unwrap_err();
         assert!(
-            matches!(err, LuceneError::IndexFormatTooNew { .. }),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooNew { .. },
+                    ..
+                }
+            ),
             "{err:?}"
         );
         assert_eq!(
@@ -969,7 +1088,8 @@ mod tests {
     /// `CodecUtil.checkFooter(in, priorException)` (`CodecUtil.java:470-516`):
     /// a passing checksum rethrows the prior exception itself, of its own
     /// type; a corrupt footer or an unreachable one is thrown as the
-    /// `CorruptIndexException`, with the prior exception carried.
+    /// `CorruptIndexException`, whose message is Java's: the prior exception
+    /// is only suppressed into it, which never reaches `getMessage()`.
     #[test]
     fn check_footer_with_prior_rethrows_the_prior_unless_the_footer_is_corrupt() {
         fn file() -> Vec<u8> {
@@ -979,27 +1099,30 @@ mod tests {
             write_footer(&mut out).unwrap();
             out.into_inner()
         }
-        let prior = || LuceneError::IllegalArgument("bad entry".to_string());
+        let prior = || LuceneError::illegal_argument("bad entry".to_string());
 
         // Checksum passes: the prior error, unchanged.
         let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(file(), "t")));
         input.read_int().unwrap();
         let err = check_footer_with_prior(&mut input, prior());
         assert!(
-            matches!(&err, LuceneError::IllegalArgument(m) if m == "bad entry"),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "bad entry"),
             "{err:?}"
         );
 
-        // Corrupt checksum: the corruption, with the prior error carried.
+        // Corrupt checksum: the corruption, its message Java's alone.
         let mut bytes = file();
         let last = bytes.len() - 1;
         bytes[last] = bytes[last].wrapping_add(1);
         let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(bytes, "t")));
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
-            LuceneError::CorruptIndex(m) => {
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(m),
+                ..
+            } => {
                 assert!(m.starts_with("checksum failed"), "{m}");
-                assert!(m.contains("bad entry"), "{m}");
+                assert!(!m.contains("bad entry"), "{m}");
             }
             other => panic!("expected the corruption, got {other:?}"),
         }
@@ -1009,18 +1132,87 @@ mod tests {
         let len = bytes.len();
         let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(bytes, "t")));
         let mut skip = vec![0u8; len - 8];
-        input.read_bytes(&mut skip, 0, len - 8).unwrap();
+        input.read_bytes(Some(&mut skip), 0, len - 8).unwrap();
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
-            LuceneError::CorruptIndex(m) => {
-                assert!(
-                    m.starts_with("checksum status indeterminate: remaining=8; please run checkindex for more details"),
-                    "{m}"
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(m),
+                ..
+            } => {
+                assert_eq!(
+                    m,
+                    &format!(
+                        "checksum status indeterminate: remaining=8; please run checkindex \
+                         for more details (resource={})",
+                        input.resource_description()
+                    )
                 );
-                assert!(m.contains("bad entry"), "{m}");
             }
             other => panic!("expected the corruption, got {other:?}"),
         }
+    }
+
+    /// `catch (Throwable t)` (`CodecUtil.java:509-511`) catches an unchecked
+    /// throwable the input raises — the test framework's closed input throws
+    /// `RuntimeException("Abusing closed IndexInput!")` from `length()` — and
+    /// rethrows the prior exception with the "unexpected exception" note.
+    /// Here the throwable is a panic, the port's unchecked throwable; before
+    /// the catch it escaped (TestIndexWriter.testThreadInterruptDeadlock, an
+    /// interrupted `metaIn.close()` in the stored-fields reader).
+    #[test]
+    fn check_footer_with_prior_catches_an_unchecked_throwable_from_the_input() {
+        #[derive(Debug)]
+        struct ClosedInput;
+        impl crate::store::DataInput for ClosedInput {
+            fn to_java_string(&self) -> String {
+                "closed".to_string()
+            }
+            fn skip_bytes(&mut self, _num_bytes: i64) -> Result<()> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn read_byte(&mut self) -> Result<u8> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn read_bytes(&mut self, _b: Option<&mut [u8]>, _o: usize, _l: usize) -> Result<()> {
+                panic!("Abusing closed IndexInput!")
+            }
+        }
+        impl IndexInput for ClosedInput {
+            fn close(&mut self) -> Result<()> {
+                Ok(())
+            }
+            fn file_pointer(&self) -> i64 {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn length(&self) -> i64 {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn seek(&mut self, _pos: i64) -> Result<()> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn slice(&self, _d: &str, _o: i64, _l: i64) -> Result<Box<dyn IndexInput>> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+                panic!("Abusing closed IndexInput!")
+            }
+            fn resource_description(&self) -> &str {
+                "closed"
+            }
+        }
+        let mut input = BufferedChecksumIndexInput::new(Box::new(ClosedInput));
+        let prior = LuceneError::thread_interrupted(crate::util::concurrent::InterruptedException);
+        let err = check_footer_with_prior(&mut input, prior);
+        assert!(
+            matches!(err.kind(), LuceneErrorKind::ThreadInterrupted(_)),
+            "the prior exception is rethrown: {err:?}"
+        );
+        assert!(
+            err.get_suppressed().iter().any(|s| s
+                .to_string()
+                .contains("checksum status indeterminate: unexpected exception")),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -1039,7 +1231,13 @@ mod tests {
         let footer_start = checksum_input.length() - footer_length() as i64;
         ChecksumIndexInput::seek(&mut checksum_input, footer_start).unwrap();
         let err = check_footer(&mut checksum_input).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
         assert!(err.to_string().contains("codec footer mismatch"));
     }
 
@@ -1059,7 +1257,13 @@ mod tests {
         let footer_start = checksum_input.length() - footer_length() as i64;
         ChecksumIndexInput::seek(&mut checksum_input, footer_start).unwrap();
         let err = check_footer(&mut checksum_input).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1117,11 +1321,23 @@ mod tests {
     fn codec_name_validation() {
         let mut out = MockIndexOutput::new("test", "test.bin");
         let err = write_header(&mut out, "Bad\u{00E9}Codec", 1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
 
         let mut out = MockIndexOutput::new("test", "test.bin");
         let long = "a".repeat(128);
         let err = write_header(&mut out, &long, 1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 }

@@ -3,7 +3,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::automaton::{CompiledAutomaton, LevenshteinAutomata, MAXIMUM_SUPPORTED_DISTANCE};
 use crate::util::UnicodeUtil;
 
@@ -41,7 +41,7 @@ impl FuzzyAutomatonBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `max_edits` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `max_edits` is outside
     /// `0..=`[`MAXIMUM_SUPPORTED_DISTANCE`] or `prefix_length` is negative,
     /// which are the two `IllegalArgumentException`s Java throws, and
     /// propagates any error the Levenshtein builder raises.
@@ -52,12 +52,12 @@ impl FuzzyAutomatonBuilder {
         transpositions: bool,
     ) -> Result<Self> {
         if !(0..=MAXIMUM_SUPPORTED_DISTANCE).contains(&max_edits) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "max edits must be 0..{MAXIMUM_SUPPORTED_DISTANCE}, inclusive; got: {max_edits}"
             )));
         }
         if prefix_length < 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "prefixLength cannot be less than 0".to_string(),
             ));
         }
@@ -111,7 +111,7 @@ impl FuzzyAutomatonBuilder {
             .to_automaton_with_prefix(n, &self.prefix)
             .map_err(|e| self.too_complex(&e))?
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "max edits must be 0..{MAXIMUM_SUPPORTED_DISTANCE}, inclusive; got: {n}"
                 ))
             })?;
@@ -124,7 +124,10 @@ impl FuzzyAutomatonBuilder {
     /// terms longer than 220 UTF-8 characters, but is also possible with
     /// shorter terms consisting of UTF-32 code points.
     fn too_complex(&self, cause: &LuceneError) -> LuceneError {
-        LuceneError::ResourceLimit(format!("Term too complex: {} ({cause})", self.term))
+        LuceneError::from(LuceneErrorKind::ResourceLimit(format!(
+            "Term too complex: {} ({cause})",
+            self.term
+        )))
     }
 
     /// Returns the number of code points of the term.

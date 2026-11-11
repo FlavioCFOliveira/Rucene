@@ -90,7 +90,7 @@ impl KnnFloatVectorQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `k` is less than 1, or when `target` holds a non-finite value —
     /// which is `VectorUtil.checkFinite`.
     pub fn with_strategy(
@@ -204,7 +204,9 @@ impl Query for KnnFloatVectorQuery {
         buffer.push_str(&format!(
             "{}[{},...]",
             self.base.get_field(),
-            self.target.first().copied().unwrap_or(0.0)
+            // `target[0]`, rendered by `Float.toString`
+            // (`KnnFloatVectorQuery.java` `toString`).
+            crate::util::java_fmt::float_to_string(self.target.first().copied().unwrap_or(0.0))
         ));
         buffer.push_str(&format!("[{}]", self.base.get_k()));
         if let Some(filter) = self.base.get_filter() {

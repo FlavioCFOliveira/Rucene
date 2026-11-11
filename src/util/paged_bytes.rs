@@ -81,6 +81,25 @@ impl PagedBytes {
         self.block_size
     }
 
+    /// Returns the pages added so far (the first `numBlocks` slots of Java's
+    /// private field `blocks`); public so that the test framework can model
+    /// the Java object.
+    pub fn blocks(&self) -> &[Arc<Vec<u8>>] {
+        &self.blocks
+    }
+
+    /// Returns the length of the `byte[][] blocks` array Java holds; public so
+    /// that the test framework can model the Java object.
+    pub fn blocks_length(&self) -> usize {
+        self.blocks_length
+    }
+
+    /// Returns the page being filled (Java's private field `currentBlock`);
+    /// public so that the test framework can model the Java object.
+    pub fn current_block(&self) -> Option<&[u8]> {
+        self.current_block.as_deref()
+    }
+
     /// Equivalent to the private `PagedBytes.addBlock`: `blocks =
     /// ArrayUtil.grow(blocks, numBlocks + 1)`, then the block is appended.
     fn add_block(&mut self, block: Vec<u8>) {
@@ -116,12 +135,12 @@ impl PagedBytes {
                 .as_mut()
                 .expect("INVARIANT: a block was just allocated");
             if (left as i64) < byte_count {
-                input.read_bytes_buffered(block, self.upto, left, false)?;
+                input.read_bytes_buffered(Some(block), self.upto, left, false)?;
                 self.upto = self.block_size;
                 byte_count -= left as i64;
             } else {
                 let n = byte_count as usize;
-                input.read_bytes_buffered(block, self.upto, n, false)?;
+                input.read_bytes_buffered(Some(block), self.upto, n, false)?;
                 self.upto += n;
                 break;
             }
@@ -167,7 +186,7 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the arena was already frozen,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the arena was already frozen,
     /// or when [`PagedBytes::copy`] was used — both reproducing Lucene's
     /// `IllegalStateException`s.
     pub fn freeze(&mut self, trim: bool) -> Result<PagedBytesReader> {
@@ -217,12 +236,12 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the value is 32767 bytes
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the value is 32767 bytes
     /// or longer, or when the page size cannot hold it — both reproducing
     /// Lucene's messages.
     pub fn copy_using_length_prefix(&mut self, bytes: &BytesRef) -> Result<i64> {
         if bytes.length >= 32768 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "max length is 32767 (got {})",
                 bytes.length
             )));
@@ -230,7 +249,7 @@ impl PagedBytes {
 
         if self.upto + bytes.length + 2 > self.block_size {
             if bytes.length + 2 > self.block_size {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "block size {} is too small to store length {} bytes",
                     self.block_size, bytes.length
                 )));
@@ -275,7 +294,7 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the arena is not frozen,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the arena is not frozen,
     /// reproducing Lucene's "must call freeze() before getDataInput".
     pub fn get_data_input(&self) -> Result<PagedBytesDataInput<'_>> {
         if !self.frozen {
@@ -305,7 +324,7 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the arena is not frozen,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the arena is not frozen,
     /// reproducing Lucene's "must call freeze() before getDataInput".
     pub fn get_shared_data_input(&self) -> Result<PagedBytesDataInput<'static>> {
         if !self.frozen {
@@ -327,7 +346,7 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the arena is frozen,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the arena is frozen,
     /// reproducing Lucene's "cannot get DataOutput after freeze()".
     pub fn get_data_output(&mut self) -> Result<PagedBytesDataOutput<'_>> {
         if self.frozen {
@@ -390,6 +409,12 @@ pub struct PagedBytesReader {
 }
 
 impl PagedBytesReader {
+    /// Returns the pages (Java's private field `blocks`); public so that the
+    /// test framework can model the Java object.
+    pub fn blocks(&self) -> &[Arc<Vec<u8>>] {
+        &self.blocks
+    }
+
     /// Returns the `length` bytes stored at `start`.
     ///
     /// Equivalent to `PagedBytes.Reader.fillSlice(BytesRef, long, int)`
@@ -546,7 +571,8 @@ impl DataInput for PagedBytesDataInput<'_> {
         Ok(b)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         debug_assert!(b.len() >= offset + len);
         let offset_end = offset + len;
         let mut offset = offset;
@@ -575,7 +601,7 @@ impl DataInput for PagedBytesDataInput<'_> {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }

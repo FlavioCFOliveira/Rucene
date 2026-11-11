@@ -84,7 +84,7 @@ pub trait DoubleValuesSource: SegmentCacheable + Debug + Send + Sync {
     /// # Errors
     ///
     /// Propagates any I/O error raised while opening the values, and returns
-    /// [`LuceneError::UnsupportedOperation`] for a source that must be
+    /// [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for a source that must be
     /// rewritten first.
     fn get_values<'a>(
         self: Arc<Self>,
@@ -177,9 +177,10 @@ pub fn get_sort_field(source: Arc<dyn DoubleValuesSource>, reverse: bool) -> Res
 /// and `rewrite`. This port has no `SortField` subclassing, so the sort field
 /// is a plain [`SortFieldType::Custom`] sort over the
 /// [`DoubleValuesComparatorSource`] Java installs, which is what decides the
-/// order; the source's own `needsScores` is not reflected in
-/// `SortField::needs_scores`, so a caller that sorts on a scoring source has
-/// to request scores itself.
+/// order. `needsScores` and `rewrite` are Java's: [`SortField::needs_scores`]
+/// and [`SortField::rewrite`] recognise the comparator source and answer the
+/// producer's `needsScores()` and rewrite the producer
+/// ([`DoubleValuesComparatorSource::rewrite_sort_field`]).
 ///
 /// # Errors
 ///
@@ -293,6 +294,7 @@ impl DoubleValuesSource for ScoresValuesSource {
         _ctx: &LeafReaderContext,
         scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
+        debug_assert!(scores.is_some());
         scores.ok_or_else(|| {
             LuceneError::illegal_state("DoubleValuesSource.SCORES requires scores".to_string())
         })
@@ -532,7 +534,7 @@ impl DoubleValuesSource for QueryDoubleValuesSource {
         _ctx: &LeafReaderContext,
         _scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "This DoubleValuesSource must be rewritten".to_string(),
         ))
     }
@@ -864,9 +866,47 @@ impl DoubleValuesComparatorSource {
             missing_value,
         }
     }
+
+    /// `DoubleValuesSortField.rewrite(IndexSearcher)` of `field`, the sort
+    /// field holding this source (`DoubleValuesSource.java:557-566`): `field`
+    /// itself when the producer rewrites to the same instance, else a new sort
+    /// field over the rewritten producer with the same reverse flag and
+    /// missing value.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the producer's rewrite error and the [`SortField`]
+    /// construction error.
+    pub fn rewrite_sort_field<'a>(
+        &self,
+        field: &'a SortField,
+        searcher: &IndexSearcher,
+    ) -> Result<std::borrow::Cow<'a, SortField>> {
+        let rewritten_source = Arc::clone(&self.producer).rewrite(searcher)?;
+        if std::ptr::addr_eq(Arc::as_ptr(&rewritten_source), Arc::as_ptr(&self.producer)) {
+            return Ok(std::borrow::Cow::Borrowed(field));
+        }
+        Ok(std::borrow::Cow::Owned(get_sort_field_with_missing(
+            rewritten_source,
+            field.reverse(),
+            self.missing_value,
+        )?))
+    }
+}
+
+impl DoubleValuesComparatorSource {
+    /// `producer.needsScores()`, which `DoubleValuesSortField.needsScores()`
+    /// answers (`DoubleValuesSource.java:543-546`).
+    pub(crate) fn producer_needs_scores(&self) -> bool {
+        self.producer.needs_scores()
+    }
 }
 
 impl FieldComparatorSource for DoubleValuesComparatorSource {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn new_comparator(
         &self,
         _fieldname: &str,
@@ -1136,13 +1176,13 @@ impl crate::search::DocIdSetIterator for DoubleValuesAsNumericDocValues<'_> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DoubleValuesSource.asNumericDocValues does not iterate".to_string(),
         ))
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DoubleValuesSource.asNumericDocValues does not iterate".to_string(),
         ))
     }

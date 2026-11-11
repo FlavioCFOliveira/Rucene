@@ -10,6 +10,17 @@ repository = "https://github.com/FlavioCFOliveira/Rucene"
 keywords = ["lucene", "search", "index", "information-retrieval", "rust"]
 categories = ["database-implementations", "data-structures", "algorithms"]
 
+# The crates of the port, one per Lucene module (user decision 2026-11-03):
+# `rucene` (lucene/core, this package), `rucene-codecs` (lucene/codecs),
+# `randomizedtesting` (com.carrotsearch.randomizedtesting 2.8.1, the runner of
+# Lucene's tests) and `rucene-test-framework` (lucene/test-framework).
+[workspace]
+members = [
+    "crates/rucene-codecs",
+    "crates/randomizedtesting",
+    "crates/rucene-test-framework",
+]
+
 [features]
 default = ["std", "mmap"]
 std = []
@@ -55,8 +66,6 @@ crc32fast = "1.4"
 # `BEST_COMPRESSION` cannot be byte-compatible with Lucene 10.5.0.
 # `default-features = false` keeps `miniz_oxide` out of the dependency tree.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-# Unicode word segmentation (UAX #29) for the standard tokenizer.
-unicode-segmentation = "1.12"
 # Date/time handling for DateTools, matching Java's GregorianCalendar in GMT.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Regular expressions for `AbstractAnalysisFactory.getPattern`, which compiles a
@@ -81,12 +90,20 @@ fancy-regex = "0.19"
 [target.'cfg(all(unix, not(any(target_os = "emscripten", target_os = "espidf", target_os = "fuchsia", target_os = "horizon", target_os = "redox", target_os = "vita", target_os = "wasi"))))'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["std", "fs"] }
 
+# `mincore(2)` for `MemorySegment::is_loaded` (`src/store/memory_segment.rs`),
+# the query `MemorySegment.isLoaded()` makes on a mapped segment. Neither
+# rustix nor memmap2 wraps it; libc is already in the dependency tree.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio-test = "0.4"
 proptest = "1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 tempfile = "3"
 base64 = "0.22"
+# lucene/test-framework, which Lucene's own core tests are written against.
+rucene-test-framework = { path = "crates/rucene-test-framework" }
 
 [[test]]
 name = "delete_by_query"
@@ -127,6 +144,10 @@ path = "tests/portability/vector_point.rs"
 [[test]]
 name = "portability_bkd_doc_ids"
 path = "tests/portability/bkd_doc_ids.rs"
+
+[[test]]
+name = "portability_bkd_writer_layout"
+path = "tests/portability/bkd_writer_layout.rs"
 
 [[test]]
 name = "portability_deletion_policy"
@@ -244,6 +265,10 @@ name = "portability_fst_arcs_buffer"
 path = "tests/portability/fst_arcs_buffer.rs"
 
 [[test]]
+name = "portability_fst_enum_reader"
+path = "tests/portability/fst_enum_reader.rs"
+
+[[test]]
 name = "portability_byte_block_pool_accounting"
 path = "tests/portability/byte_block_pool_accounting.rs"
 
@@ -258,3 +283,7 @@ path = "tests/portability/prefix_coded_terms.rs"
 [[test]]
 name = "portability_index_interop"
 path = "tests/portability/index_interop.rs"
+
+[[test]]
+name = "portability_utf16_offsets"
+path = "tests/portability/utf16_offsets.rs"

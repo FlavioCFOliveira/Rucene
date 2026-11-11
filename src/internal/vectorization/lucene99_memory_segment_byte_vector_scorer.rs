@@ -64,7 +64,7 @@ pub(crate) fn load_vector(
 /// memory-segment scorer.
 pub(crate) fn check_ordinal(ord: i32, max_ord: i32) -> Result<()> {
     if ord < 0 || ord >= max_ord {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "illegal ordinal: {ord}"
         )));
     }
@@ -81,7 +81,7 @@ pub(crate) fn check_invariants(
     input: &dyn IndexInput,
 ) -> Result<()> {
     if input.length() < (vector_byte_length as i64) * i64::from(max_ord) {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "input length is less than expected vector data".to_string(),
         ));
     }
@@ -141,7 +141,7 @@ impl Lucene99MemorySegmentByteVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the input is shorter than
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the input is shorter than
     /// the vector data it is supposed to hold, matching Lucene's
     /// `checkInvariants`, and propagates any error raised while cloning the
     /// input.
@@ -174,7 +174,7 @@ impl Lucene99MemorySegmentByteVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an ordinal outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an ordinal outside
     /// `[0, maxOrd)`, or an I/O error raised while reading the vector.
     fn get_segment(&mut self, ord: i32) -> Result<VectorBytes> {
         check_ordinal(ord, self.max_ord)?;

@@ -181,7 +181,7 @@ impl DocValuesBulkDecodeSupport for DefaultDocValuesBulkDecodeSupport {
             56 => Self::decode56(bytes, bytes_offset, values, values_offset, count),
             64 => Self::decode64(bytes, bytes_offset, values, values_offset, count),
             _ => {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "unsupported bitsPerValue: {bits_per_value}"
                 )))
             }

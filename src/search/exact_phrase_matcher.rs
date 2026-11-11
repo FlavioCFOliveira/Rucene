@@ -60,7 +60,7 @@ impl ExactPhraseMatcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when fewer than two terms are supplied, which is what
     /// `ConjunctionUtils.intersectIterators` rejects.
     pub fn new(

@@ -48,13 +48,13 @@ use std::sync::{Arc, Mutex};
 use rucene::codecs::hnsw::flat_vectors::FlatVectorsFormat;
 use rucene::codecs::knn_vectors::{KnnVectorsFormat, KnnVectorsWriter};
 use rucene::codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsFormat;
-use rucene::codecs::state::{SegmentReadState, SegmentWriteState};
+use rucene::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use rucene::codecs::stub::BufferedUpdates;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::index::merge::{identity_doc_map, MergeState};
 use rucene::index::{FieldInfo, FieldInfos, SegmentInfo, VectorEncoding, VectorSimilarityFunction};
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
-use rucene::store::{Directory, FSDirectory, DEFAULT_IO_CONTEXT};
+use rucene::store::{DefaultIOContext, Directory, FSDirectory, DEFAULT_IO_CONTEXT};
 use rucene::util::quantization::ScalarEncoding;
 use rucene::util::Version;
 
@@ -85,13 +85,26 @@ fn codec() -> Arc<dyn Codec> {
 /// The vector of `doc`, or `None` when the field is sparse and skips it.
 ///
 /// Mirrors `ScalarQuantizedVectorsFixture.vectorFor` exactly.
-fn vector_for(doc: i32, dim: i32, dense: bool) -> Option<Vec<f32>> {
+///
+/// For `COSINE` (`unit`) the vector is scaled to unit length in `f64`, exactly
+/// as the Java fixture does: the merge-time supplier quantizes the raw stored
+/// vectors, and `OptimizedScalarQuantizer.scalarQuantize` asserts
+/// `VectorUtil.isUnitVector(vector)` for `COSINE`
+/// (`OptimizedScalarQuantizer.java:189`).
+fn vector_for(doc: i32, dim: i32, dense: bool, unit: bool) -> Option<Vec<f32>> {
     if !dense && doc % 3 != 0 {
         return None;
     }
     let mut v = Vec::with_capacity(dim as usize);
     for i in 0..dim {
         v.push(((doc * 31 + i * 17) % 23 - 11) as f32 + (i % 5) as f32 * 0.25);
+    }
+    if unit {
+        let sum_squares: f64 = v.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+        let length = sum_squares.sqrt();
+        for x in &mut v {
+            *x = (f64::from(*x) / length) as f32;
+        }
     }
     Some(v)
 }
@@ -155,13 +168,13 @@ fn write_with_rucene(
         Arc::new(FSDirectory::open(dir).expect("open the output directory"));
     let info = segment_info(&directory);
     let infos = field_infos(dim, similarity);
-    let write_state = SegmentWriteState::new(
-        &rucene::util::NoOutputInfoStream,
+    let write_state = OwnedSegmentWriteState::new(
+        Arc::new(rucene::util::NoOutputInfoStream),
         Arc::clone(&directory),
-        &info,
-        &infos,
-        Box::leak(Box::new(BufferedUpdates::default())),
-        &*DEFAULT_IO_CONTEXT,
+        info.clone(),
+        infos.clone(),
+        BufferedUpdates::default(),
+        Arc::new(DefaultIOContext::default()),
     );
 
     let format = Lucene104ScalarQuantizedVectorsFormat::with_encoding(encoding);
@@ -175,7 +188,12 @@ fn write_with_rucene(
             other => panic!("expected a float field writer, got {other:?}"),
         };
     for doc in 0..MAX_DOC {
-        if let Some(v) = vector_for(doc, dim, dense) {
+        if let Some(v) = vector_for(
+            doc,
+            dim,
+            dense,
+            similarity == VectorSimilarityFunction::COSINE,
+        ) {
             field_writer.add_value(doc, v).expect("add value");
         }
     }
@@ -227,13 +245,13 @@ fn merge_with_rucene(
         Default::default(),
     )
     .expect("merged segment info");
-    let write_state = SegmentWriteState::new(
-        &rucene::util::NoOutputInfoStream,
+    let write_state = OwnedSegmentWriteState::new(
+        Arc::new(rucene::util::NoOutputInfoStream),
         Arc::clone(&directory),
-        &merged_info,
-        &infos,
-        Box::leak(Box::new(BufferedUpdates::default())),
-        &*DEFAULT_IO_CONTEXT,
+        merged_info.clone(),
+        infos.clone(),
+        BufferedUpdates::default(),
+        Arc::new(DefaultIOContext::default()),
     );
     let merge_state = MergeState::new(
         vec![identity_doc_map(MAX_DOC, 0)],
@@ -282,7 +300,13 @@ fn scores_with_rucene(
     let reader = format.fields_reader_flat(&read_state).expect("reader");
     let mut out = Vec::new();
 
-    let query = vector_for(MAX_DOC + 1, dim, true).expect("dense query");
+    let query = vector_for(
+        MAX_DOC + 1,
+        dim,
+        true,
+        similarity == VectorSimilarityFunction::COSINE,
+    )
+    .expect("dense query");
     let mut scorer = reader
         .get_random_vector_scorer_float(FIELD, &query)
         .expect("query scorer");
@@ -315,7 +339,7 @@ fn scores_with_rucene(
         &*DEFAULT_IO_CONTEXT,
     );
     let field_info = infos.field_info_by_number(0).expect("field info").clone();
-    let mut supplier = reader
+    let supplier = reader
         .as_quantized_vectors_reader()
         .expect("a quantized reader")
         .get_random_vector_scorer_supplier_for_merge(&field_info, &score_state)

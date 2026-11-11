@@ -329,12 +329,13 @@ pub trait KnnVectorValues: Send + Sync {
     /// `ords_to_prefetch` are about to be read.
     ///
     /// Equivalent to `KnnVectorValues.prefetch(int[], int)`; the default is a
-    /// no-op, as in Java.
+    /// no-op, as in Java. `None` is Java's `null` array, which the overrides
+    /// check (`OffHeapFloatVectorValues.java:89-92`).
     ///
     /// # Errors
     ///
     /// Returns an error when the underlying storage cannot be hinted.
-    fn prefetch(&self, _ords_to_prefetch: &[i32], _num_ords: i32) -> Result<()> {
+    fn prefetch(&self, _ords_to_prefetch: Option<&[i32]>, _num_ords: i32) -> Result<()> {
         Ok(())
     }
 
@@ -347,6 +348,18 @@ pub trait KnnVectorValues: Send + Sync {
     ///
     /// Returns an error when the underlying input cannot be cloned.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>>;
+
+    /// This instance as [`Any`](std::any::Any), for the casts Java makes on a
+    /// `KnnVectorValues` (`(Lucene104ScalarQuantizedVectorsReader.ScalarQuantizedVectorValues)
+    /// vectorValues` in `TestLucene104ScalarQuantizedVectorsFormat`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java casts any object to
+    /// its run-time class; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, makes every such cast fail.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 
     /// Returns the vector byte length.
     fn vector_byte_length(&self) -> i32 {
@@ -363,10 +376,10 @@ pub trait KnnVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method.
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "KnnVectorValues::iterator".to_string(),
         ))
     }
@@ -611,7 +624,7 @@ pub trait FloatVectorValues: KnnVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `ord` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `ord` is outside
     /// `[0, size())`, which is Java's `IndexOutOfBoundsException`, or an I/O
     /// error when the value cannot be read.
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>>;
@@ -626,13 +639,13 @@ pub trait FloatVectorValues: KnnVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `dest` is not exactly
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `dest` is not exactly
     /// `dimension()` long, or whatever [`vector_value`](Self::vector_value)
     /// returns.
     fn vector_value_into(&self, ord: i32, dest: &mut [f32]) -> Result<()> {
         let value = self.vector_value(ord)?;
         if dest.len() != value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination length {} does not match vector dimension {}",
                 dest.len(),
                 value.len()
@@ -662,10 +675,10 @@ pub trait FloatVectorValues: KnnVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method, or an I/O error raised while opening the scorer.
     fn scorer(&self, _target: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FloatVectorValues::scorer".to_string(),
         ))
     }
@@ -694,7 +707,7 @@ pub trait FloatVectorValues: KnnVectorValues {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] with Lucene's message when the field
+/// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) with Lucene's message when the field
 /// has vectors under a different encoding.
 pub fn check_float_field(reader: &dyn LeafReader, field: &str) -> Result<()> {
     check_field_encoding(reader, field, VectorEncoding::FLOAT32)
@@ -707,7 +720,7 @@ pub fn check_float_field(reader: &dyn LeafReader, field: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] with Lucene's message when the field
+/// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) with Lucene's message when the field
 /// has vectors under a different encoding.
 pub fn check_byte_field(reader: &dyn LeafReader, field: &str) -> Result<()> {
     check_field_encoding(reader, field, VectorEncoding::BYTE)
@@ -808,7 +821,7 @@ pub trait ByteVectorValues: KnnVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `ord` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `ord` is outside
     /// `[0, size())`, or an I/O error when the value cannot be read.
     fn vector_value(&self, ord: i32) -> Result<Vec<u8>>;
 
@@ -818,13 +831,13 @@ pub trait ByteVectorValues: KnnVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `dest` is not exactly
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `dest` is not exactly
     /// `dimension()` long, or whatever [`vector_value`](Self::vector_value)
     /// returns.
     fn vector_value_into(&self, ord: i32, dest: &mut [u8]) -> Result<()> {
         let value = self.vector_value(ord)?;
         if dest.len() != value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination length {} does not match vector dimension {}",
                 dest.len(),
                 value.len()
@@ -851,10 +864,10 @@ pub trait ByteVectorValues: KnnVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method, or an I/O error raised while opening the scorer.
     fn scorer(&self, _target: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "ByteVectorValues::scorer".to_string(),
         ))
     }
@@ -932,7 +945,7 @@ impl ByteVectorValues for ListByteVectorValues {
 /// `vectorValue(int)` is documented to throw.
 fn check_ord(ord: i32, size: usize) -> Result<()> {
     if ord < 0 || ord as usize >= size {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "ordinal {ord} out of range [0, {size})"
         )));
     }
@@ -946,6 +959,7 @@ fn check_ord(ord: i32, size: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::search::DocIdSetIterator;
     use crate::util::MatchAllBits;
 
@@ -1228,7 +1242,7 @@ mod tests {
     #[test]
     fn prefetch_defaults_to_a_no_op() {
         let values = from_floats(vec![vec![1.0]], 1);
-        values.prefetch(&[0], 1).unwrap();
+        values.prefetch(Some(&[0]), 1).unwrap();
     }
 
     #[test]
@@ -1250,7 +1264,10 @@ mod tests {
         }
         assert!(matches!(
             Bare.iterator(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert_eq!(Bare.vector_byte_length(), 16);
     }

@@ -10,7 +10,9 @@ use crate::util::selector::{intro_select, intro_sort, PivotOps, RadixSelector, R
 use crate::util::sorter::{MSBRadixSorter, MSBRadixSorterOps};
 use std::sync::Arc;
 
-use super::{BKDConfig, HeapPointWriter, OfflinePointWriter, PointValue, PointWriter};
+use super::{
+    BKDConfig, HeapPointWriter, OfflinePointWriter, PointReaderResource, PointValue, PointWriter,
+};
 
 /// Size of the histogram.
 const HISTOGRAM_SIZE: usize = 256;
@@ -132,7 +134,7 @@ impl BKDRadixSelector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `partition_point` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `partition_point` is outside
     /// `[from, to)`, and an I/O error if a temporary file cannot be written.
     #[allow(clippy::too_many_arguments)]
     pub fn select(
@@ -179,8 +181,19 @@ impl BKDRadixSelector {
             return Ok((partition, slices));
         }
 
+        // `try (PointWriter left = ...; PointWriter right = ...) { ... }`
+        // (`BKDRadixSelector.java:127-133`): the resources opened are closed
+        // whatever the body does, `right` before `left`; a failure of the
+        // body wins over a failure to close.
         let mut left = self.get_point_writer(partition_point - from, &format!("left{}", dim))?;
-        let mut right = self.get_point_writer(to - partition_point, &format!("right{}", dim))?;
+        let mut right = match self.get_point_writer(to - partition_point, &format!("right{}", dim))
+        {
+            Ok(right) => right,
+            Err(e) => {
+                let _ = crate::util::IOUtils::close([Some(|| left.close())]);
+                return Err(e);
+            }
+        };
         let partition = {
             let mut writer = points.writer.borrow_mut();
             self.build_histogram_and_partition(
@@ -193,10 +206,14 @@ impl BKDRadixSelector {
                 0,
                 dim_common_prefix,
                 dim,
-            )?
+            )
         };
-        left.close()?;
-        right.close()?;
+        let closed = crate::util::IOUtils::close([
+            crate::util::IOUtils::closeable(|| right.close()),
+            crate::util::IOUtils::closeable(|| left.close()),
+        ]);
+        let partition = partition?;
+        closed?;
         let slices = [
             PathSlice::of(left, 0, partition_point - from),
             PathSlice::of(right, 0, to - partition_point),
@@ -208,16 +225,16 @@ impl BKDRadixSelector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `partition_point` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `partition_point` is outside
     /// `[from, to)`.
     pub fn check_args(&self, from: i64, to: i64, partition_point: i64) -> Result<()> {
         if partition_point < from {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "partitionPoint must be >= from".to_string(),
             ));
         }
         if partition_point >= to {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "partitionPoint must be < to".to_string(),
             ));
         }
@@ -241,7 +258,8 @@ impl BKDRadixSelector {
             + std::mem::size_of::<i32>();
         let offset = dim * bytes_per_dim;
         {
-            let mut reader = points.get_reader(from as usize, (to - from) as usize)?;
+            let mut reader =
+                PointReaderResource::new(points.get_reader(from as usize, (to - from) as usize)?);
             debug_assert!(common_prefix_position > dim_common_prefix);
             if !reader.next()? {
                 return Err(LuceneError::illegal_state(
@@ -509,7 +527,8 @@ impl BKDRadixSelector {
         let offset = dim * self.config.bytes_per_dim as usize;
         let mut tiebreak_counter = 0i64;
         {
-            let mut reader = points.get_reader(from as usize, (to - from) as usize)?;
+            let mut reader =
+                PointReaderResource::new(points.get_reader(from as usize, (to - from) as usize)?);
             while reader.next()? {
                 let point_value = reader.point_value().clone();
                 let bucket = self.get_bucket(offset, byte_position, &point_value);
@@ -678,6 +697,7 @@ impl BKDRadixSelector {
                 self.temp_dir.clone(),
                 &self.temp_file_name_prefix,
                 &format!("delta{}", iteration),
+                delta as u64,
             )?))
         }
     }
@@ -719,6 +739,7 @@ impl BKDRadixSelector {
                 self.temp_dir.clone(),
                 &self.temp_file_name_prefix,
                 desc,
+                count as u64,
             )?))
         }
     }

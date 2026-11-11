@@ -43,6 +43,15 @@ impl std::fmt::Debug for PhraseScorer {
 }
 
 impl PhraseScorer {
+    /// Returns the matcher of this scorer.
+    ///
+    /// Equivalent to the package-private field `PhraseScorer.matcher`
+    /// (`PhraseScorer.java:25`), which Java tests read; public because Rust
+    /// has no package-private visibility.
+    pub fn matcher(&mut self) -> &mut dyn PhraseMatcher {
+        &mut *self.matcher
+    }
+
     /// Creates a scorer over the given matcher.
     ///
     /// Equivalent to
@@ -153,6 +162,12 @@ impl TwoPhaseIterator for PhraseScorer {
 }
 
 impl Scorable for PhraseScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `PhraseScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         if self.freq == 0.0 {
             self.freq = self.matcher.sloppy_weight();
@@ -173,8 +188,14 @@ impl Scorable for PhraseScorer {
 }
 
 impl Scorer for PhraseScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
+    /// This scorer answers with itself: Java tests `instanceof PhraseScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// This scorer answers with itself: Java casts to `PhraseScorer`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn doc_id(&self) -> i32 {

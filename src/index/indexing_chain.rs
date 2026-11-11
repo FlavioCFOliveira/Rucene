@@ -70,12 +70,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
-    BytesTermAttributeImpl, CharTermAttributeImpl, OffsetAttribute, OffsetAttributeImpl,
-    PackedTokenAttributeImpl, PayloadAttribute, PayloadAttributeImpl, PositionIncrementAttribute,
-    PositionIncrementAttributeImpl, TermFrequencyAttribute, TermFrequencyAttributeImpl,
+    OffsetAttribute, PayloadAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
     TermToBytesRefAttribute,
 };
-use crate::analysis::Analyzer;
+use crate::analysis::{Analyzer, TokenStream};
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
@@ -84,8 +82,8 @@ use crate::document::column::{
     create_column_field_adapter, BinaryColumn, ColumnBatch, ColumnFieldAdapter, ColumnValidation,
     Density, DictionaryColumn, LongColumn, NumericKind, TypedColumn, VectorColumn,
 };
-use crate::document::{Document, InvertableType, NumericDocValuesField, StoredValueType};
-use crate::error::{LuceneError, Result};
+use crate::document::{InvertableType, NumericDocValuesField, StoredValueType};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::doc_values_writer::DocValuesWriter;
 use crate::index::documents_writer::{
     IndexingChain, SharedIndexingScratch, MAX_STORED_STRING_LENGTH,
@@ -101,7 +99,8 @@ use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
 use crate::index::vector_values_consumer::VectorValuesConsumer;
 use crate::index::{
-    DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo,
+    DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldIterable,
+    IndexableFieldType, SegmentInfo,
 };
 use crate::index::{NumericValue, StoredValue};
 use crate::search::doc_values_iteration::{
@@ -280,6 +279,34 @@ impl FieldInvertState {
             last_start_offset: 0,
             last_position: 0,
         }
+    }
+
+    /// Creates the state of a field with the given statistics.
+    ///
+    /// Equivalent to the nine-argument `FieldInvertState(int, String,
+    /// IndexOptions, int, int, int, int, int, int)` constructor
+    /// (`FieldInvertState.java:63-80`), which tests use to feed
+    /// `Similarity.computeNorm` directly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_statistics(
+        index_created_version_major: i32,
+        name: String,
+        index_options: IndexOptions,
+        position: i32,
+        length: i32,
+        num_overlap: i32,
+        offset: i32,
+        max_term_frequency: i32,
+        unique_term_count: i32,
+    ) -> Self {
+        let mut state = Self::new(index_created_version_major, name, index_options);
+        state.position = position;
+        state.length = length;
+        state.num_overlap = num_overlap;
+        state.offset = offset;
+        state.max_term_frequency = max_term_frequency;
+        state.unique_term_count = unique_term_count;
+        state
     }
 
     /// Re-initialises every statistic for a new document.
@@ -481,7 +508,7 @@ impl crate::codecs::norms::NormsProducer for EmptyNormsProducer {
         Ok(Box::new(*self))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -595,6 +622,13 @@ struct PerField {
     /// `processBatch` uses to refuse two columns of one field claiming the same
     /// feature.
     column_features: u8,
+    /// The token stream this field produced last, handed back to the next
+    /// instance's [`IndexableField::token_stream`] as `reuse`.
+    ///
+    /// Equivalent to `PerField.tokenStream` ("reused",
+    /// `IndexingChain.java:1774-1775`), which `invertTokenStream` assigns from
+    /// `field.tokenStream(analyzer, tokenStream)` (`IndexingChain.java:1908`).
+    token_stream: Option<Box<dyn TokenStream>>,
 }
 
 impl PerField {
@@ -747,7 +781,7 @@ impl FieldSchema {
         expected: &dyn std::fmt::Debug,
         given: &dyn std::fmt::Debug,
     ) -> LuceneError {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "Inconsistency of field data structures across documents for field [{}] of doc \
              [{}]. {label}: expected '{expected:?}', but it has '{given:?}'.",
             self.name, self.doc_id
@@ -934,40 +968,38 @@ impl FieldSchema {
     }
 }
 
-/// Which attributes a field instance's token stream actually carries.
+/// Which attribute interfaces a field instance's token stream actually
+/// carries.
 ///
 /// Resolved once per field instance, exactly where Lucene caches its
-/// `Attribute` references in `FieldInvertState.setAttributeSource`.
+/// `Attribute` references in `FieldInvertState.setAttributeSource`
+/// (`FieldInvertState.java:95-111`). The attributes are held by interface, as
+/// Java's fields are, whatever implementation the stream's factory chose.
 #[derive(Debug, Default, Clone, Copy)]
 struct TokenAttributeLayout {
-    packed: bool,
-    bytes_term: bool,
-    char_term: bool,
+    term: bool,
     position_increment: bool,
     offset: bool,
     payload: bool,
-    /// The stream carries a [`TermFrequencyAttributeImpl`] of its own.
+    /// The stream carries a `TermFrequencyAttribute`.
     ///
-    /// Without one the frequency is read from the [`PackedTokenAttributeImpl`]:
     /// `FieldInvertState.setAttributeSource` calls
-    /// `addAttribute(TermFrequencyAttribute.class)`
-    /// (`FieldInvertState.java:95-111`), which under the default
-    /// `PackedTokenAttributeImpl` factory resolves to the very instance that
-    /// holds the term, and otherwise adds a fresh `TermFrequencyAttributeImpl`
-    /// whose frequency stays at its default of one.
+    /// `addAttribute(TermFrequencyAttribute.class)`, which resolves to the
+    /// stream's own instance when it has one (the `PackedTokenAttributeImpl`
+    /// of the default factory implements the interface) and otherwise adds a
+    /// fresh `TermFrequencyAttributeImpl` whose frequency stays at its
+    /// default of one.
     term_freq: bool,
 }
 
 impl TokenAttributeLayout {
     fn resolve(source: &AttributeSource) -> Self {
         Self {
-            packed: source.has_attribute::<PackedTokenAttributeImpl>(),
-            bytes_term: source.has_attribute::<BytesTermAttributeImpl>(),
-            char_term: source.has_attribute::<CharTermAttributeImpl>(),
-            position_increment: source.has_attribute::<PositionIncrementAttributeImpl>(),
-            offset: source.has_attribute::<OffsetAttributeImpl>(),
-            payload: source.has_attribute::<PayloadAttributeImpl>(),
-            term_freq: source.has_attribute::<TermFrequencyAttributeImpl>(),
+            term: source.has_attribute_interface::<dyn TermToBytesRefAttribute>(),
+            position_increment: source.has_attribute_interface::<dyn PositionIncrementAttribute>(),
+            offset: source.has_attribute_interface::<dyn OffsetAttribute>(),
+            payload: source.has_attribute_interface::<dyn PayloadAttribute>(),
+            term_freq: source.has_attribute_interface::<dyn TermFrequencyAttribute>(),
         }
     }
 }
@@ -993,49 +1025,29 @@ struct RawToken {
 /// defaults here (increment one, offsets zero, frequency one) match the
 /// attribute defaults.
 fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result<RawToken> {
-    let term = if layout.packed {
+    let term = if layout.term {
         source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
-            .get_bytes_ref()
-    } else if layout.bytes_term {
-        source
-            .get_attribute::<BytesTermAttributeImpl>()
-            .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
-            .get_bytes_ref()
-    } else if layout.char_term {
-        source
-            .get_attribute::<CharTermAttributeImpl>()
+            .get_attribute_interface::<dyn TermToBytesRefAttribute>()
             .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
             .get_bytes_ref()
     } else {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "token stream carries no term attribute".to_string(),
         ));
     };
 
-    let position_increment = if layout.packed {
+    let position_increment = if layout.position_increment {
         source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .expect("INVARIANT: presence checked above")
-            .get_position_increment()
-    } else if layout.position_increment {
-        source
-            .get_attribute::<PositionIncrementAttributeImpl>()
+            .get_attribute_interface::<dyn PositionIncrementAttribute>()
             .expect("INVARIANT: presence checked above")
             .get_position_increment()
     } else {
         1
     };
 
-    let (start_offset, end_offset) = if layout.packed {
+    let (start_offset, end_offset) = if layout.offset {
         let attribute = source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .expect("INVARIANT: presence checked above");
-        (attribute.start_offset(), attribute.end_offset())
-    } else if layout.offset {
-        let attribute = source
-            .get_attribute::<OffsetAttributeImpl>()
+            .get_attribute_interface::<dyn OffsetAttribute>()
             .expect("INVARIANT: presence checked above");
         (attribute.start_offset(), attribute.end_offset())
     } else {
@@ -1044,7 +1056,7 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
 
     let payload = if layout.payload {
         source
-            .get_attribute::<PayloadAttributeImpl>()
+            .get_attribute_interface::<dyn PayloadAttribute>()
             .expect("INVARIANT: presence checked above")
             .get_payload()
             .cloned()
@@ -1054,12 +1066,7 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
 
     let term_freq = if layout.term_freq {
         source
-            .get_attribute::<TermFrequencyAttributeImpl>()
-            .expect("INVARIANT: presence checked above")
-            .get_term_frequency()
-    } else if layout.packed {
-        source
-            .get_attribute::<PackedTokenAttributeImpl>()
+            .get_attribute_interface::<dyn TermFrequencyAttribute>()
             .expect("INVARIANT: presence checked above")
             .get_term_frequency()
     } else {
@@ -1082,27 +1089,17 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
 
 /// Reads the end-of-stream position increment and end offset.
 fn read_stream_end(source: &AttributeSource, layout: &TokenAttributeLayout) -> (i32, i32) {
-    let position_increment = if layout.packed {
+    let position_increment = if layout.position_increment {
         source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .map(|attribute| attribute.get_position_increment())
-            .unwrap_or(0)
-    } else if layout.position_increment {
-        source
-            .get_attribute::<PositionIncrementAttributeImpl>()
+            .get_attribute_interface::<dyn PositionIncrementAttribute>()
             .map(|attribute| attribute.get_position_increment())
             .unwrap_or(0)
     } else {
         0
     };
-    let end_offset = if layout.packed {
+    let end_offset = if layout.offset {
         source
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .map(|attribute| attribute.end_offset())
-            .unwrap_or(0)
-    } else if layout.offset {
-        source
-            .get_attribute::<OffsetAttributeImpl>()
+            .get_attribute_interface::<dyn OffsetAttribute>()
             .map(|attribute| attribute.end_offset())
             .unwrap_or(0)
     } else {
@@ -1191,7 +1188,7 @@ impl DefaultIndexingChain {
         // — see `get_or_add_parent_per_field`.
         let parent_field = config
             .parent_field()
-            .map(|name| NumericDocValuesField::new(name, -1));
+            .map(|name| NumericDocValuesField::new(&name, -1));
         Self {
             scratch: SharedIndexingScratch::new(Arc::clone(&bytes_used)),
             terms_writer: FreqProxTermsWriter::new(Arc::clone(&bytes_used)),
@@ -1289,7 +1286,7 @@ impl DefaultIndexingChain {
         })?;
         let Some(value) = value else {
             // Lucene reaches this when `Field.storedValue()` returns null.
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot store a null value".to_string(),
             ));
         };
@@ -1304,7 +1301,7 @@ impl DefaultIndexingChain {
             if text.len() > MAX_STORED_STRING_LENGTH {
                 let length = text.encode_utf16().count();
                 if length > MAX_STORED_STRING_LENGTH {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "stored field \"{}\" is too large ({length} characters) to store",
                         field.name()
                     )));
@@ -1385,8 +1382,8 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a sort field cannot sort an
-    /// index at all, and [`LuceneError::IllegalArgument`] when it names this
+    /// Returns [`LuceneErrorKind::IllegalState`] when a sort field cannot sort an
+    /// index at all, and [`LuceneErrorKind::IllegalArgument`] when it names this
     /// field with the wrong doc-values type.
     fn validate_index_sort_dv_type(
         index_sort: &crate::search::Sort,
@@ -1407,6 +1404,14 @@ impl DefaultIndexingChain {
             // sorted ones, the numeric sorters numeric ones.
             let expected = match (sort_field.kind(), sort_field.field_type()) {
                 (crate::search::SortFieldKind::Binary { .. }, _) => DocValuesType::BINARY,
+                // `SortedSetSortField` reads `DocValues.getSortedSet` and
+                // `SortedNumericSortField` `DocValues.getSortedNumeric`, whose
+                // first call is the reader's `getSortedSetDocValues` /
+                // `getSortedNumericDocValues` (`IndexingChain.java:1620-1648`).
+                (crate::search::SortFieldKind::SortedSet { .. }, _) => DocValuesType::SORTED_SET,
+                (crate::search::SortFieldKind::SortedNumeric { .. }, _) => {
+                    DocValuesType::SORTED_NUMERIC
+                }
                 (_, crate::search::SortFieldType::String) => DocValuesType::SORTED,
                 (
                     _,
@@ -1418,7 +1423,7 @@ impl DefaultIndexingChain {
                 _ => continue,
             };
             if dv_type != expected {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "SortField {sort_field} expected field [{field_to_validate}] to be \
                      {expected:?} but it is [{dv_type:?}]"
                 )));
@@ -1526,9 +1531,9 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] when the sort names a
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] when the sort names a
     /// field no [`IndexSorter`](crate::index::index_sorter::IndexSorter) can
-    /// read, and [`LuceneError::CorruptIndex`] when the parent field has no
+    /// read, and [`LuceneErrorKind::CorruptIndex`] when the parent field has no
     /// doc values or a blocked segment declares no parent field.
     fn maybe_sort_segment(
         &mut self,
@@ -1598,7 +1603,7 @@ impl DefaultIndexingChain {
         let mut comparators: Vec<DocComparator> = Vec::with_capacity(index_sort.fields().len());
         for sort_field in index_sort.fields() {
             let sorter = sort_field.get_index_sorter().ok_or_else(|| {
-                LuceneError::UnsupportedOperation(format!(
+                LuceneError::unsupported_operation(format!(
                     "Cannot sort index using sort field {sort_field}"
                 ))
             })?;
@@ -1659,6 +1664,7 @@ impl DefaultIndexingChain {
             point_values: None,
             knn_field_vectors_writer: None,
             column_features: 0,
+            token_stream: None,
         });
         self.per_field_index.insert(field_name.to_string(), index);
         index
@@ -1674,7 +1680,7 @@ impl DefaultIndexingChain {
     /// # Errors
     ///
     /// Propagates whatever initializing a field raises, and returns
-    /// [`LuceneError::IllegalArgument`] when a schema differs from the field's
+    /// [`LuceneErrorKind::IllegalArgument`] when a schema differs from the field's
     /// `FieldInfo`.
     fn init_and_validate_fields(
         &mut self,
@@ -1705,7 +1711,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the index sort or the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the index sort or the
     /// codec refuses the schema, and propagates whatever registering the
     /// `FieldInfo` or creating the vectors writer raises.
     fn initialize_field_info(
@@ -1723,7 +1729,7 @@ impl DefaultIndexingChain {
             // (`IndexingChain.java:1312-1315`).
             if s.doc_values_type != DocValuesType::NONE {
                 if let Some(index_sort) = self.config.index_sort() {
-                    Self::validate_index_sort_dv_type(index_sort, &field_name, s.doc_values_type)?;
+                    Self::validate_index_sort_dv_type(&index_sort, &field_name, s.doc_values_type)?;
                 }
             }
             // `initializeFieldInfo` asks the codec how many dimensions it can
@@ -1774,6 +1780,7 @@ impl DefaultIndexingChain {
         // copy nobody writes out, and produce an index Lucene cannot open.
         let field_info = field_infos.add(&described)?;
         // `pf.setFieldInfo(fi)`.
+        debug_assert!(self.per_fields[pf].field_info.is_none());
         self.per_fields[pf].field_info = Some(field_info.clone());
         let indexed = field_info.index_options != IndexOptions::NONE;
         if indexed {
@@ -1806,6 +1813,7 @@ impl DefaultIndexingChain {
             // we still write norms for this segment"
             // (`IndexingChain.java:1837-1841`). `has_norms()` is exactly Java's
             // `indexOptions != NONE && omitNorms == false`.
+            debug_assert!(per_field.norms.is_none());
             per_field.norms = field_info
                 .has_norms()
                 .then(|| NormValuesWriter::new(field_info.clone(), Arc::clone(&self.bytes_used)));
@@ -1913,7 +1921,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the instance contradicts
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the instance contradicts
     /// another instance of the same field in the document, asks for term
     /// vectors without being indexed, or asks for a doc-values skip index
     /// without doc values.
@@ -1939,7 +1947,7 @@ impl DefaultIndexingChain {
         } else if field_type.doc_values_skip_index_type()
             != crate::index::DocValuesSkipIndexType::NONE
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field '{}' cannot have docValuesSkipIndexType={:?} without doc values",
                 schema.name,
                 field_type.doc_values_skip_index_type()
@@ -1959,8 +1967,9 @@ impl DefaultIndexingChain {
                 field_type.vector_dimension(),
             )?;
         }
-        if !field_type.attributes().is_empty() {
-            schema.update_attributes(field_type.attributes());
+        let attributes = field_type.attributes();
+        if !attributes.is_empty() {
+            schema.update_attributes(&attributes);
         }
         Ok(())
     }
@@ -1978,12 +1987,12 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `field_name` is the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `field_name` is the
     /// configured parent field.
     fn reject_reserved_parent_field(&self, field_name: &str) -> Result<()> {
         if let Some(parent_field) = self.parent_field.as_ref() {
             if parent_field.name() == field_name {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "\"{field_name}\" is a reserved field and should not be added to any document"
                 )));
             }
@@ -2013,7 +2022,7 @@ impl DefaultIndexingChain {
         doc_id: i32,
         field: &dyn IndexableField,
         pf: usize,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         info_stream: &dyn InfoStream,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<bool> {
@@ -2039,7 +2048,7 @@ impl DefaultIndexingChain {
                     )
                     .add_packed_value(doc_id, &value)?,
                 None => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{}\": point value must not be null",
                         field.name()
                     )))
@@ -2105,7 +2114,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `vector_dim` exceeds
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `vector_dim` exceeds
     /// `max_vector_dim`.
     fn validate_max_vector_dimension(
         field_name: &str,
@@ -2113,7 +2122,7 @@ impl DefaultIndexingChain {
         max_vector_dim: i32,
     ) -> Result<()> {
         if vector_dim > max_vector_dim {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Field [{field_name}] vector's dimensions must be <= [{max_vector_dim}]; got {vector_dim}"
             )));
         }
@@ -2144,7 +2153,7 @@ impl DefaultIndexingChain {
             ),
         ] {
             if requested {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "cannot store {what} for a field that is not indexed (field=\"{name}\")"
                 )));
             }
@@ -2159,7 +2168,7 @@ impl DefaultIndexingChain {
     /// and the shared byte pool are disjoint.
     #[allow(clippy::too_many_arguments)]
     fn invert(
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         info_stream: &dyn InfoStream,
         terms_writer: &mut FreqProxTermsWriter,
         term_vectors: Option<&mut TermVectorsConsumer>,
@@ -2197,7 +2206,7 @@ impl DefaultIndexingChain {
                 first,
                 aborting_error,
             ),
-            None => Err(LuceneError::IllegalArgument(format!(
+            None => Err(LuceneError::illegal_argument(format!(
                 "field \"{}\" is not indexed but reached the inverter",
                 field.name()
             ))),
@@ -2218,7 +2227,7 @@ impl DefaultIndexingChain {
         first: bool,
     ) -> Result<()> {
         let binary_value = field.binary_value().ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "Field {} returns TERM for invertableType() and null for binaryValue(), which is illegal",
                 field.name()
             ))
@@ -2232,7 +2241,7 @@ impl DefaultIndexingChain {
             || field_type.store_term_vector_offsets()
             || field_type.store_term_vector_payloads()
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Fields that are tokenized or index proximity data must produce a non-null TokenStream, but {} did not",
                 field.name()
             )));
@@ -2311,8 +2320,10 @@ impl DefaultIndexingChain {
         // so the carried string is used directly to keep the two messages
         // identical.
         let original_message = match &original {
-            LuceneError::IllegalArgument(message)
-            | LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
+            LuceneError {
+                kind: LuceneErrorKind::MaxBytesLengthExceeded(message),
+                ..
+            } => message.clone(),
             other => other.to_string(),
         };
         let prefix: Vec<String> = term
@@ -2466,7 +2477,7 @@ impl DefaultIndexingChain {
     /// Equivalent to `IndexingChain.PerField.invertTokenStream`.
     #[allow(clippy::too_many_arguments)]
     fn invert_token_stream(
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         info_stream: &dyn InfoStream,
         terms_writer: &mut FreqProxTermsWriter,
         term_vectors: Option<&mut TermVectorsConsumer>,
@@ -2476,9 +2487,31 @@ impl DefaultIndexingChain {
         first: bool,
         aborting_error: &mut Option<LuceneError>,
     ) -> Result<()> {
-        let analyzed = field.field_type().tokenized();
+        // `field.fieldType().tokenized() && analyzer != null`
+        // (`IndexingChain.java:1899`).
+        let analyzed = field.field_type().tokenized() && analyzer.is_some();
         let is_term_doc = per_field.field_info().is_term_doc_field();
-        let mut stream = field.token_stream(analyzer, None);
+        // `field.tokenStream(analyzer, tokenStream)` opens the
+        // try-with-resources whose `finally` logs the failure
+        // (`IndexingChain.java:1907-1908, 2039-2044`), so an exception raised
+        // by the call itself is logged as well. A call that fails leaves the
+        // previous stream in `per_field.token_stream`, as Java's assignment
+        // never happens.
+        let mut stream = match field.token_stream(analyzer, &mut per_field.token_stream) {
+            Ok(stream) => stream,
+            Err(error) => {
+                if info_stream.is_enabled("DW") {
+                    info_stream.message(
+                        "DW",
+                        &format!(
+                            "An exception was thrown while processing field {}",
+                            per_field.field_name
+                        ),
+                    );
+                }
+                return Err(error);
+            }
+        };
         let mut term_vectors = term_vectors;
 
         let outcome = (|| -> Result<()> {
@@ -2496,7 +2529,7 @@ impl DefaultIndexingChain {
                 let position_increment = token.position_increment;
                 state.position += position_increment;
                 if state.position < state.last_position {
-                    return Err(LuceneError::IllegalArgument(if position_increment == 0 {
+                    return Err(LuceneError::illegal_argument(if position_increment == 0 {
                         format!(
                             "first position increment must be > 0 (got 0) for field '{}'",
                             field.name()
@@ -2516,7 +2549,7 @@ impl DefaultIndexingChain {
                     }));
                 }
                 if state.position > MAX_POSITION {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "position {} is too large for field '{}': max allowed position is {MAX_POSITION}",
                         state.position,
                         field.name()
@@ -2530,7 +2563,7 @@ impl DefaultIndexingChain {
                 let start_offset = state.offset + token.start_offset;
                 let end_offset = state.offset + token.end_offset;
                 if start_offset < state.last_start_offset || end_offset < start_offset {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "startOffset must be non-negative, and endOffset must be >= startOffset, and offsets must not go backwards startOffset={start_offset},endOffset={end_offset},lastStartOffset={} for field '{}'",
                         state.last_start_offset,
                         field.name()
@@ -2604,6 +2637,9 @@ impl DefaultIndexingChain {
         })();
 
         let close_outcome = stream.close();
+        // `tokenStream = field.tokenStream(...)`: the stream is kept, closed,
+        // for the next instance of the field (`IndexingChain.java:1908`).
+        per_field.token_stream = Some(stream);
         if outcome.is_err() && info_stream.is_enabled("DW") {
             info_stream.message(
                 "DW",
@@ -2616,7 +2652,7 @@ impl DefaultIndexingChain {
         outcome?;
         close_outcome?;
 
-        if analyzed {
+        if let (true, Some(analyzer)) = (analyzed, analyzer) {
             per_field.invert_state.position +=
                 analyzer.get_position_increment_gap(&per_field.field_name);
             per_field.invert_state.offset += analyzer.get_offset_gap(&per_field.field_name);
@@ -2636,7 +2672,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a field that should have
+    /// Returns [`LuceneErrorKind::IllegalState`] when a field that should have
     /// norms has no buffer, which would mean the chain never saw the field.
     fn write_norms(
         &mut self,
@@ -2653,6 +2689,7 @@ impl DefaultIndexingChain {
         // close runs either way.
         let outcome = (|| -> Result<()> {
             for info in state.field_infos.iter() {
+                debug_assert!(self.per_field_index.contains_key(&info.name));
                 // Java re-reads `omitsNorms()` and `getIndexOptions()` from the
                 // *final* field info rather than trusting the one the writer
                 // was created with; `has_norms()` is exactly that conjunction.
@@ -2665,6 +2702,11 @@ impl DefaultIndexingChain {
                         info.name
                     ))
                 })?;
+                debug_assert!(
+                    self.per_fields[index].norms.is_some(),
+                    "field={}",
+                    info.name
+                );
                 let norms = self.per_fields[index].norms.as_mut().ok_or_else(|| {
                     LuceneError::illegal_state(format!(
                         "field \"{}\" has norms but no norms buffer",
@@ -2708,7 +2750,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] for a per-field state that
+    /// Returns [`LuceneErrorKind::IllegalState`] for a per-field state that
     /// disagrees with the segment's field infos, and propagates whatever the
     /// format's consumer raises while writing the fields.
     fn write_doc_values(
@@ -2826,7 +2868,7 @@ impl DefaultIndexingChain {
     /// (`IndexingChain.java:409-415`). That state cannot exist here:
     /// `Codec::points_format` returns `&dyn PointsFormat`, not an `Option`,
     /// so every codec this crate can hold has one. The check is therefore not
-    /// ported, and no [`LuceneError::IllegalState`] can come from this method.
+    /// ported, and no [`LuceneErrorKind::IllegalState`] can come from this method.
     ///
     /// # Errors
     ///
@@ -2888,7 +2930,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field carries no
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the field carries no
     /// vector of the encoding its type declares — the state Java reaches as a
     /// `ClassCastException` — and propagates whatever the codec's field writer
     /// raises, which is how a document that repeats a vector field, or that
@@ -2907,7 +2949,7 @@ impl DefaultIndexingChain {
         match writer {
             FieldVectorWriter::Float(writer) => {
                 let Some(value) = field.float_vector_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{name}\" is indexed with FLOAT32 vectors but carries no float vector value"
                     )));
                 };
@@ -2916,7 +2958,7 @@ impl DefaultIndexingChain {
             }
             FieldVectorWriter::Byte(writer) => {
                 let Some(value) = field.byte_vector_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{name}\" is indexed with BYTE vectors but carries no byte vector value"
                     )));
                 };
@@ -2940,7 +2982,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the similarity returns `0`
+    /// Returns [`LuceneErrorKind::IllegalState`] when the similarity returns `0`
     /// for a non-empty field, and propagates whatever
     /// [`Similarity::compute_norm`] and [`NormValuesWriter::add_value`] raise.
     fn finish_norms(
@@ -2979,7 +3021,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a cursor returns a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a cursor returns a
     /// document id out of order or outside the batch, and propagates whatever
     /// inverting or storing a value raises.
     fn process_row_columns(
@@ -3048,7 +3090,7 @@ impl DefaultIndexingChain {
             'columns: for i in 0..num_row_cols {
                 let mut head = heads[i];
                 if head < batch_doc_id {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Row column \"{}\" returned out-of-order batch doc-id {head}",
                         adapters[i].name()
                     )));
@@ -3063,7 +3105,7 @@ impl DefaultIndexingChain {
                         seg_doc_id,
                         adapters[i].as_ref(),
                         pf,
-                        analyzer.as_ref(),
+                        analyzer.as_deref(),
                         info_stream.as_ref(),
                         field_infos,
                     ) {
@@ -3142,7 +3184,7 @@ impl DefaultIndexingChain {
         // the end of the batch.
         for i in 0..num_row_cols {
             if heads[i] != NO_MORE_DOCS {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Row column \"{}\" returned batch doc-id {} which is out of range [0, \
                      {num_docs})",
                     adapters[i].name(),
@@ -3167,7 +3209,7 @@ impl DefaultIndexingChain {
         doc_id: i32,
         field: &dyn IndexableField,
         pf: usize,
-        analyzer: &dyn Analyzer,
+        analyzer: Option<&dyn Analyzer>,
         info_stream: &dyn InfoStream,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<bool> {
@@ -3204,7 +3246,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a doc-values type a numeric
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for a doc-values type a numeric
     /// column cannot fill, and propagates whatever reading the column or
     /// writing a buffer raises.
     fn process_long_column(
@@ -3316,7 +3358,7 @@ impl DefaultIndexingChain {
     /// The error Lucene raises for a column whose field declares a doc-values
     /// type that column cannot fill.
     fn incompatible_dv(kind: &str, name: &str, dv_type: DocValuesType) -> LuceneError {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "{kind} \"{name}\" has incompatible docValuesType: {dv_type:?}"
         ))
     }
@@ -3603,7 +3645,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a document id repeats or
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a document id repeats or
     /// goes backwards, when a vector has the wrong dimension, or when the
     /// column names a document outside the batch.
     fn process_vector_column_float(
@@ -3630,6 +3672,18 @@ impl DefaultIndexingChain {
                 batch_doc_id,
                 prev_batch_doc_id,
             )?;
+            // Java casts the value to the array the field type's encoding
+            // writes (`IndexingChain.java:1276,1289`): a column of the other
+            // element type fails there, before the dimension check.
+            if let Some(FieldVectorWriter::Byte(_)) =
+                self.per_fields[pf].knn_field_vectors_writer.as_ref()
+            {
+                return Err(LuceneError::unchecked(
+                    "java.lang.ClassCastException",
+                    "class [F cannot be cast to class [B ([F and [B are in module java.base of \
+                     loader 'bootstrap')",
+                ));
+            }
             let vec = cursor.value();
             ColumnValidation::check_vector_dimension(
                 &name,
@@ -3689,6 +3743,18 @@ impl DefaultIndexingChain {
                 batch_doc_id,
                 prev_batch_doc_id,
             )?;
+            // Java casts the value to the array the field type's encoding
+            // writes (`IndexingChain.java:1276,1289`): a column of the other
+            // element type fails there, before the dimension check.
+            if let Some(FieldVectorWriter::Float(_)) =
+                self.per_fields[pf].knn_field_vectors_writer.as_ref()
+            {
+                return Err(LuceneError::unchecked(
+                    "java.lang.ClassCastException",
+                    "class [B cannot be cast to class [F ([B and [F are in module java.base of \
+                     loader 'bootstrap')",
+                ));
+            }
             let vec = cursor.value();
             ColumnValidation::check_vector_dimension(
                 &name,
@@ -3899,6 +3965,377 @@ impl Accountable for DefaultIndexingChain {
     }
 }
 
+impl DefaultIndexingChain {
+    /// The body of [`process_document`](IndexingChain::process_document);
+    /// `panicked` receives the payload of a panic raised by `invert`.
+    fn process_document_body(
+        &mut self,
+        doc_id: i32,
+        doc: Option<&dyn IndexableFieldIterable>,
+        is_last_doc: bool,
+        field_infos: &mut FieldInfosBuilder,
+        panicked: &mut Option<Box<dyn std::any::Any + Send>>,
+    ) -> Result<()> {
+        let analyzer = self.config.analyzer_arc();
+        let info_stream = self.config.info_stream();
+        let field_gen = self.next_field_gen;
+        self.next_field_gen += 1;
+        // The unique fields of the document whose `FieldInfo` must be
+        // initialized or whose schema must be validated
+        // (`IndexingChain.java:592-593`).
+        let mut fields_need_init_or_validate: Vec<usize> = Vec::new();
+
+        // Handle the parent field first, before the document's own fields: only
+        // the last document of a block carries it. Its schema was set up when
+        // its per-field state was created, so only the doc id moves on, and its
+        // `FieldInfo` is initialized the first time the segment needs it
+        // (`IndexingChain.java:607-614`).
+        let parent_pf = if is_last_doc {
+            self.get_or_add_parent_per_field()?
+        } else {
+            None
+        };
+        if let Some(parent_pf) = parent_pf {
+            self.per_fields[parent_pf].schema.reset_just_doc_id(doc_id);
+            if self.per_fields[parent_pf].field_info.is_none() {
+                fields_need_init_or_validate.push(parent_pf);
+            }
+        }
+
+        // `termsHash.startDocument()` and `startStoredFields(docID)` run before
+        // the `try` block that holds both passes (`IndexingChain.java:604-605`):
+        // the stored-fields writer of a segment is created by its first
+        // document before any field of that document initializes its own
+        // writer, which fixes the order in which a segment's files are created
+        // and so the iteration order of the file set its `.si` records. For the
+        // term-vectors half it only drops whatever the previous document left
+        // pending.
+        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+            consumer.start_document();
+        }
+
+        // Lucene opens a stored-fields frame for every document, before any
+        // field is processed, and closes it in a `finally` block: a document
+        // that stores nothing still occupies its own frame, so the stream stays
+        // aligned with the doc ids.
+        self.start_stored_fields(doc_id)?;
+
+        let mut indexed: Vec<usize> = Vec::new();
+        let mut outcome: Result<()> = Ok(());
+
+        // Two passes, as in Lucene: every instance of a multi-valued field must
+        // be inverted together, because the analyzer may reuse one TokenStream
+        // across fields.
+        //
+        // 1st pass over doc fields – verify that doc schema matches the index
+        // schema; build schema for each unique doc field
+        // (`IndexingChain.java:617-644`). It runs inside Java's `try`, so a
+        // failure is recorded as the outcome and the `finally` tail below
+        // still closes the stored-fields frame.
+        //
+        // `for (IndexableField field : document)` dereferences a `null`
+        // document, and an exception the iterator throws leaves the pass
+        // there.
+        let mut doc_fields: Vec<usize> = Vec::new();
+        'first_pass: for item in doc
+            .map(IndexableFieldIterable::iterator)
+            .unwrap_or_else(|| Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
+        {
+            let field = match item {
+                Ok(field) => field,
+                Err(error) => {
+                    outcome = Err(error);
+                    break 'first_pass;
+                }
+            };
+            let field_name = field.name();
+            let field_type = field.field_type();
+            if let Err(error) = self.reject_reserved_parent_field(field_name) {
+                outcome = Err(error);
+                break 'first_pass;
+            }
+            let pf = self.get_or_add_per_field(field_name);
+            let per_field = &mut self.per_fields[pf];
+            if per_field.field_gen != field_gen {
+                // first time we see this field in this document
+                per_field.field_gen = field_gen;
+                per_field.reset(doc_id, field_type);
+                if per_field.validated_frozen_field_type.is_none() {
+                    fields_need_init_or_validate.push(pf);
+                }
+            } else if per_field.multi_value_forces_deoptimize(field_type) {
+                // Multi-valued field with a different field type than the
+                // cached frozen type. Drop the validated frozen field type to
+                // force the validation path.
+                per_field.validated_frozen_field_type = None;
+                fields_need_init_or_validate.push(pf);
+            }
+            doc_fields.push(pf);
+            if per_field.validated_frozen_field_type.is_none() {
+                if let Err(error) =
+                    Self::update_doc_field_schema(field_name, &mut per_field.schema, field_type)
+                {
+                    outcome = Err(error);
+                    break 'first_pass;
+                }
+            }
+        }
+
+        if outcome.is_ok() && !fields_need_init_or_validate.is_empty() {
+            if let Err(error) =
+                self.init_and_validate_fields(&fields_need_init_or_validate, field_infos)
+            {
+                outcome = Err(error);
+            }
+        }
+
+        // 2nd pass — index the parent field first (`IndexingChain.java:650-657`).
+        // `parent_field` is currently a `NumericDocValuesField`, so
+        // `process_field` always returns `false` here, but the result is checked
+        // defensively in case the parent field's representation changes.
+        if let Some(parent_pf) = parent_pf.filter(|_| outcome.is_ok()) {
+            let parent_field = self
+                .parent_field
+                .take()
+                .expect("INVARIANT: the per-field only exists when the parent field does");
+            let result = self.process_field(
+                doc_id,
+                &parent_field,
+                parent_pf,
+                analyzer.as_deref(),
+                info_stream.as_ref(),
+                field_infos,
+            );
+            self.parent_field = Some(parent_field);
+            match result {
+                Ok(true) => indexed.push(parent_pf),
+                Ok(false) => {}
+                // Java lets the exception leave the `try` block, so the
+                // `finally` tail below still closes the stored-fields frame this
+                // document opened; recording it as the outcome does the same.
+                Err(error) => outcome = Err(error),
+            }
+        }
+
+        // 2nd pass – document fields (`IndexingChain.java:659-667`): a new
+        // iteration over the document, whose failure leaves the pass too.
+        let second_pass = match (&outcome, doc) {
+            (Ok(()), Some(doc)) => Some(doc.iterator()),
+            _ => None,
+        };
+        let mut doc_field_idx = 0;
+        for item in second_pass.into_iter().flatten() {
+            if outcome.is_err() {
+                break;
+            }
+            let field = match item {
+                Ok(field) => field,
+                Err(error) => {
+                    outcome = Err(error);
+                    break;
+                }
+            };
+            let index = doc_fields[doc_field_idx];
+            doc_field_idx += 1;
+            // `IndexingChain.invertAndStore` inverts first and stores second,
+            // for every field instance, in document order.
+            if field.field_type().index_options() != IndexOptions::NONE {
+                let first = self.per_fields[index].first;
+                let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Self::invert(
+                        analyzer.as_deref(),
+                        info_stream.as_ref(),
+                        &mut self.terms_writer,
+                        self.term_vectors_consumer.as_deref_mut(),
+                        &mut self.per_fields[index],
+                        doc_id,
+                        field,
+                        first,
+                        &mut self.aborting_error,
+                    )
+                })) {
+                    Ok(result) => result,
+                    Err(payload) => {
+                        // Stands in for the thrown panic in the control flow
+                        // below; the panic itself is rethrown by
+                        // `process_document`.
+                        *panicked = Some(payload);
+                        Err(LuceneError::null_pointer())
+                    }
+                };
+                // `pf.first = false` and `indexedField = true` run *after*
+                // `pf.invert(...)` returns normally
+                // (`IndexingChain.java:1411-1418`), so a field that threw is
+                // never finished: its partial term vector is not queued and its
+                // `sawPayloads` flag never reaches the field infos. Marking it
+                // first would put bytes on disk for a document both engines
+                // then delete.
+                if result.is_ok() && first {
+                    self.per_fields[index].first = false;
+                    indexed.push(index);
+                }
+                if let Err(error) = result {
+                    // Lucene distinguishes a document-level problem (the
+                    // document is dropped, indexing continues) from a corrupt
+                    // terms hash (the whole DWPT must be aborted). The only
+                    // aborting failures of `invert` are the ones the `catch
+                    // (Throwable th)` around `termsHashPerField.add` hands to
+                    // `onAbortingException` (`IndexingChain.java:2025-2027`),
+                    // which `invert` has already recorded.
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            if field.field_type().stored() {
+                if let Err(error) = self.store_field(index, field) {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            // `processField` runs `indexDocValue` for every instance of a
+            // field that declares doc values, after the invert-and-store half
+            // (`IndexingChain.java:1386-1391`); a validation failure is a
+            // document-level problem exactly like the ones `invert` raises.
+            if field.field_type().doc_values_type() != DocValuesType::NONE {
+                let result = self.per_fields[index].doc_values.as_mut().expect(
+                    "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
+                ).add_value(doc_id, field, &mut self.doc_values_byte_pool);
+                // `indexDocValue` runs outside any `catch`
+                // (`IndexingChain.java:1386-1391, 1660-1693`): whatever it
+                // throws is a document-level failure, never an aborting one.
+                if let Err(error) = result {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            // `processField` then buffers the packed point value of every
+            // instance of a field that declares point dimensions
+            // (`IndexingChain.java:1393-1395`). Java reads
+            // `field.binaryValue()` and lets `addPackedValue` reject a null
+            // with "point value must not be null"; here the absent value is an
+            // `Option`, and the same message is raised for it.
+            if field.field_type().point_dimension_count() != 0 {
+                let result = match field.binary_value() {
+                    Some(value) => self.per_fields[index]
+                        .point_values
+                        .as_mut()
+                        .expect(
+                            "INVARIANT: every field with point dimensions gets a writer in get_or_add_per_field",
+                        )
+                        .add_packed_value(doc_id, &value),
+                    None => Err(LuceneError::illegal_argument(format!(
+                        "field=\"{}\": point value must not be null",
+                        field.name()
+                    ))),
+                };
+                // `pf.pointValuesWriter.addPackedValue(...)` runs outside any
+                // `catch` (`IndexingChain.java:1393-1395`): a failure is a
+                // document-level one, never an aborting one.
+                if let Err(error) = result {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            // `processField` ends with `indexVectorValue` for every instance of
+            // a field that declares vector dimensions
+            // (`IndexingChain.java:1396-1398`). Java switches on the encoding
+            // and downcasts the field to `KnnByteVectorField` or
+            // `KnnFloatVectorField` to read its array
+            // (`IndexingChain.java:1695-1707`); this reads the matching sibling
+            // accessor, and an absent value is the `ClassCastException` Java
+            // would raise for a field whose type promises a vector its class
+            // cannot produce.
+            if field.field_type().vector_dimension() != 0 {
+                let result = Self::index_vector_value(doc_id, &mut self.per_fields[index], field);
+                // `indexVectorValue` runs outside any `catch`
+                // (`IndexingChain.java:1396-1398, 1695-1707`): a failure is a
+                // document-level one, never an aborting one.
+                if let Err(error) = result {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+        }
+
+        // Lucene's `finally` runs the whole tail — finishing every indexed
+        // field, closing the stored-fields frame and finishing the term
+        // vectors — only when no aborting exception was recorded, because in
+        // that case the whole segment is discarded and none of it matters
+        // (`IndexingChain.java:669-686`).
+        if self.aborting_error.is_none() {
+            // `PerField.finish(docID)`: `FreqProxTermsWriterPerField.finish`
+            // records that the field stores payloads, which the field infos
+            // must carry into the segment, and
+            // `TermVectorsConsumerPerField.finish` queues the field's vector.
+            let similarity = self.config.similarity();
+            for index in indexed {
+                // `PerField.finish(docID)` computes the norm *before*
+                // `termsHashPerField.finish()` (`IndexingChain.java:1853-1870`).
+                if let Err(error) =
+                    Self::finish_norms(similarity.as_ref(), &mut self.per_fields[index], doc_id)
+                {
+                    // A norm failure is a document-level problem, exactly like
+                    // the validation errors `invert` raises: the document is
+                    // dropped and indexing continues. Java propagates it out of
+                    // its `finally` and so skips the rest of the tail; this port
+                    // keeps running it, because the stored-fields stream must
+                    // stay aligned with the doc ids for the documents that did
+                    // succeed. The error is still returned to the caller, and
+                    // the first failure is the one reported.
+                    if outcome.is_ok() {
+                        outcome = Err(error);
+                    }
+                }
+                let per_field = &self.per_fields[index];
+                if let Some(writer_index) = per_field.writer_index {
+                    if self.terms_writer.field(writer_index).saw_payloads() {
+                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
+                            info.set_store_payloads();
+                        }
+                    }
+                }
+                if let (Some(consumer), Some(vectors_index)) = (
+                    self.term_vectors_consumer.as_deref_mut(),
+                    per_field.vectors_index,
+                ) {
+                    consumer.finish_field(vectors_index);
+                }
+            }
+
+            self.finish_stored_fields()?;
+
+            // `termsHash.finishDocument(docID)`: a failure here may have left
+            // the on-disk term vectors corrupt, so Lucene routes it straight to
+            // the aborting-exception consumer.
+            if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+                if let Err(error) = consumer.finish_document(doc_id, self.terms_writer.pool()) {
+                    // Java hands the throwable itself to `onAbortingException`.
+                    self.on_aborting_exception(error.duplicate());
+                    return Err(error);
+                }
+                // `TermVectorsConsumerPerField.finishDocument` ends with
+                // `fieldInfo.setStoreTermVectors()`; the field infos this port
+                // writes live in the builder, so the flag is set here instead.
+                for per_field in &self.per_fields {
+                    let Some(vectors_index) = per_field.vectors_index else {
+                        continue;
+                    };
+                    if consumer.field(vectors_index).wrote_vectors() {
+                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
+                            info.set_store_term_vectors()?;
+                        }
+                    }
+                }
+            }
+        }
+        outcome
+    }
+}
+
 impl IndexingChain for DefaultIndexingChain {
     /// Returns an iterator over the documents of this segment that have a
     /// doc-values value for `field`, or `None` when the field has no doc values
@@ -3963,7 +4400,7 @@ impl IndexingChain for DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a column is invalid, when
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a column is invalid, when
     /// two columns of one field claim the same indexing feature, or when a
     /// cursor names a document outside the batch; and propagates whatever
     /// reading a column or writing a buffer raises.
@@ -4048,7 +4485,7 @@ impl IndexingChain for DefaultIndexingChain {
                 // given field name.
                 let overlap = i32::from(self.per_fields[index].column_features) & column_features;
                 if overlap != 0 {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "ColumnBatch has multiple columns for field \"{field_name}\" claiming the \
                          same indexing feature {}; each feature may appear in at most one column.",
                         ColumnValidation::feature_names(overlap)
@@ -4140,7 +4577,7 @@ impl IndexingChain for DefaultIndexingChain {
                     )?;
                 }
                 TypedColumn::TokenStream(tsc) => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Unknown column type: token-stream column \"{}\" has no column-oriented \
                          feature",
                         tsc.column().name()
@@ -4154,306 +4591,20 @@ impl IndexingChain for DefaultIndexingChain {
     fn process_document(
         &mut self,
         doc_id: i32,
-        doc: &Document,
+        doc: Option<&dyn IndexableFieldIterable>,
         is_last_doc: bool,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()> {
-        let analyzer = self.config.analyzer_arc();
-        let info_stream = self.config.info_stream();
-        let field_gen = self.next_field_gen;
-        self.next_field_gen += 1;
-        // The unique fields of the document whose `FieldInfo` must be
-        // initialized or whose schema must be validated
-        // (`IndexingChain.java:592-593`).
-        let mut fields_need_init_or_validate: Vec<usize> = Vec::new();
-
-        // Handle the parent field first, before the document's own fields: only
-        // the last document of a block carries it. Its schema was set up when
-        // its per-field state was created, so only the doc id moves on, and its
-        // `FieldInfo` is initialized the first time the segment needs it
-        // (`IndexingChain.java:607-614`).
-        let parent_pf = if is_last_doc {
-            self.get_or_add_parent_per_field()?
-        } else {
-            None
-        };
-        if let Some(parent_pf) = parent_pf {
-            self.per_fields[parent_pf].schema.reset_just_doc_id(doc_id);
-            if self.per_fields[parent_pf].field_info.is_none() {
-                fields_need_init_or_validate.push(parent_pf);
-            }
-        }
-
-        // Two passes, as in Lucene: every instance of a multi-valued field must
-        // be inverted together, because the analyzer may reuse one TokenStream
-        // across fields.
-        //
-        // 1st pass over doc fields – verify that doc schema matches the index
-        // schema; build schema for each unique doc field
-        // (`IndexingChain.java:617-644`).
-        let mut doc_fields: Vec<usize> = Vec::with_capacity(doc.get_fields().len());
-        for field in doc.get_fields() {
-            let field_name = field.name();
-            let field_type = field.field_type();
-            self.reject_reserved_parent_field(field_name)?;
-            let pf = self.get_or_add_per_field(field_name);
-            let per_field = &mut self.per_fields[pf];
-            if per_field.field_gen != field_gen {
-                // first time we see this field in this document
-                per_field.field_gen = field_gen;
-                per_field.reset(doc_id, field_type);
-                if per_field.validated_frozen_field_type.is_none() {
-                    fields_need_init_or_validate.push(pf);
-                }
-            } else if per_field.multi_value_forces_deoptimize(field_type) {
-                // Multi-valued field with a different field type than the
-                // cached frozen type. Drop the validated frozen field type to
-                // force the validation path.
-                per_field.validated_frozen_field_type = None;
-                fields_need_init_or_validate.push(pf);
-            }
-            doc_fields.push(pf);
-            if per_field.validated_frozen_field_type.is_none() {
-                Self::update_doc_field_schema(field_name, &mut per_field.schema, field_type)?;
-            }
-        }
-
-        if !fields_need_init_or_validate.is_empty() {
-            self.init_and_validate_fields(&fields_need_init_or_validate, field_infos)?;
-        }
-
-        // `termsHash.startDocument()` runs before the stored-fields frame is
-        // opened (`IndexingChain.java:604-605`); for the term-vectors half it
-        // only drops whatever the previous document left pending.
-        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-            consumer.start_document();
-        }
-
-        // Lucene opens a stored-fields frame for every document, before any
-        // field is processed, and closes it in a `finally` block: a document
-        // that stores nothing still occupies its own frame, so the stream stays
-        // aligned with the doc ids.
-        self.start_stored_fields(doc_id)?;
-
-        let mut indexed: Vec<usize> = Vec::new();
-        let mut outcome: Result<()> = Ok(());
-
-        // 2nd pass — index the parent field first (`IndexingChain.java:650-657`).
-        // `parent_field` is currently a `NumericDocValuesField`, so
-        // `process_field` always returns `false` here, but the result is checked
-        // defensively in case the parent field's representation changes.
-        if let Some(parent_pf) = parent_pf {
-            let parent_field = self
-                .parent_field
-                .take()
-                .expect("INVARIANT: the per-field only exists when the parent field does");
-            let result = self.process_field(
-                doc_id,
-                &parent_field,
-                parent_pf,
-                analyzer.as_ref(),
-                info_stream.as_ref(),
-                field_infos,
-            );
-            self.parent_field = Some(parent_field);
-            match result {
-                Ok(true) => indexed.push(parent_pf),
-                Ok(false) => {}
-                // Java lets the exception leave the `try` block, so the
-                // `finally` tail below still closes the stored-fields frame this
-                // document opened; recording it as the outcome does the same.
-                Err(error) => outcome = Err(error),
-            }
-        }
-
-        for (field, index) in doc.get_fields().iter().zip(doc_fields.iter().copied()) {
-            if outcome.is_err() {
-                break;
-            }
-            // `IndexingChain.invertAndStore` inverts first and stores second,
-            // for every field instance, in document order.
-            if field.field_type().index_options() != IndexOptions::NONE {
-                let first = self.per_fields[index].first;
-                let result = Self::invert(
-                    analyzer.as_ref(),
-                    info_stream.as_ref(),
-                    &mut self.terms_writer,
-                    self.term_vectors_consumer.as_deref_mut(),
-                    &mut self.per_fields[index],
-                    doc_id,
-                    field.as_ref(),
-                    first,
-                    &mut self.aborting_error,
-                );
-                // `pf.first = false` and `indexedField = true` run *after*
-                // `pf.invert(...)` returns normally
-                // (`IndexingChain.java:1411-1418`), so a field that threw is
-                // never finished: its partial term vector is not queued and its
-                // `sawPayloads` flag never reaches the field infos. Marking it
-                // first would put bytes on disk for a document both engines
-                // then delete.
-                if result.is_ok() && first {
-                    self.per_fields[index].first = false;
-                    indexed.push(index);
-                }
-                if let Err(error) = result {
-                    // Lucene distinguishes a document-level problem (the
-                    // document is dropped, indexing continues) from a corrupt
-                    // terms hash (the whole DWPT must be aborted). The only
-                    // aborting failures of `invert` are the ones the `catch
-                    // (Throwable th)` around `termsHashPerField.add` hands to
-                    // `onAbortingException` (`IndexingChain.java:2025-2027`),
-                    // which `invert` has already recorded.
-                    outcome = Err(error);
-                    break;
-                }
-            }
-
-            if field.field_type().stored() {
-                if let Err(error) = self.store_field(index, field.as_ref()) {
-                    outcome = Err(error);
-                    break;
-                }
-            }
-
-            // `processField` runs `indexDocValue` for every instance of a
-            // field that declares doc values, after the invert-and-store half
-            // (`IndexingChain.java:1386-1391`); a validation failure is a
-            // document-level problem exactly like the ones `invert` raises.
-            if field.field_type().doc_values_type() != DocValuesType::NONE {
-                let result = self.per_fields[index].doc_values.as_mut().expect(
-                    "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
-                ).add_value(doc_id, field.as_ref(), &mut self.doc_values_byte_pool);
-                // `indexDocValue` runs outside any `catch`
-                // (`IndexingChain.java:1386-1391, 1660-1693`): whatever it
-                // throws is a document-level failure, never an aborting one.
-                if let Err(error) = result {
-                    outcome = Err(error);
-                    break;
-                }
-            }
-
-            // `processField` then buffers the packed point value of every
-            // instance of a field that declares point dimensions
-            // (`IndexingChain.java:1393-1395`). Java reads
-            // `field.binaryValue()` and lets `addPackedValue` reject a null
-            // with "point value must not be null"; here the absent value is an
-            // `Option`, and the same message is raised for it.
-            if field.field_type().point_dimension_count() != 0 {
-                let result = match field.binary_value() {
-                    Some(value) => self.per_fields[index]
-                        .point_values
-                        .as_mut()
-                        .expect(
-                            "INVARIANT: every field with point dimensions gets a writer in get_or_add_per_field",
-                        )
-                        .add_packed_value(doc_id, &value),
-                    None => Err(LuceneError::IllegalArgument(format!(
-                        "field=\"{}\": point value must not be null",
-                        field.name()
-                    ))),
-                };
-                // `pf.pointValuesWriter.addPackedValue(...)` runs outside any
-                // `catch` (`IndexingChain.java:1393-1395`): a failure is a
-                // document-level one, never an aborting one.
-                if let Err(error) = result {
-                    outcome = Err(error);
-                    break;
-                }
-            }
-
-            // `processField` ends with `indexVectorValue` for every instance of
-            // a field that declares vector dimensions
-            // (`IndexingChain.java:1396-1398`). Java switches on the encoding
-            // and downcasts the field to `KnnByteVectorField` or
-            // `KnnFloatVectorField` to read its array
-            // (`IndexingChain.java:1695-1707`); this reads the matching sibling
-            // accessor, and an absent value is the `ClassCastException` Java
-            // would raise for a field whose type promises a vector its class
-            // cannot produce.
-            if field.field_type().vector_dimension() != 0 {
-                let result =
-                    Self::index_vector_value(doc_id, &mut self.per_fields[index], field.as_ref());
-                // `indexVectorValue` runs outside any `catch`
-                // (`IndexingChain.java:1396-1398, 1695-1707`): a failure is a
-                // document-level one, never an aborting one.
-                if let Err(error) = result {
-                    outcome = Err(error);
-                    break;
-                }
-            }
-        }
-
-        // Lucene's `finally` runs the whole tail — finishing every indexed
-        // field, closing the stored-fields frame and finishing the term
-        // vectors — only when no aborting exception was recorded, because in
-        // that case the whole segment is discarded and none of it matters
-        // (`IndexingChain.java:669-686`).
-        if self.aborting_error.is_none() {
-            // `PerField.finish(docID)`: `FreqProxTermsWriterPerField.finish`
-            // records that the field stores payloads, which the field infos
-            // must carry into the segment, and
-            // `TermVectorsConsumerPerField.finish` queues the field's vector.
-            let similarity = self.config.similarity();
-            for index in indexed {
-                // `PerField.finish(docID)` computes the norm *before*
-                // `termsHashPerField.finish()` (`IndexingChain.java:1853-1870`).
-                if let Err(error) =
-                    Self::finish_norms(similarity.as_ref(), &mut self.per_fields[index], doc_id)
-                {
-                    // A norm failure is a document-level problem, exactly like
-                    // the validation errors `invert` raises: the document is
-                    // dropped and indexing continues. Java propagates it out of
-                    // its `finally` and so skips the rest of the tail; this port
-                    // keeps running it, because the stored-fields stream must
-                    // stay aligned with the doc ids for the documents that did
-                    // succeed. The error is still returned to the caller, and
-                    // the first failure is the one reported.
-                    if outcome.is_ok() {
-                        outcome = Err(error);
-                    }
-                }
-                let per_field = &self.per_fields[index];
-                if let Some(writer_index) = per_field.writer_index {
-                    if self.terms_writer.field(writer_index).saw_payloads() {
-                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
-                            info.set_store_payloads();
-                        }
-                    }
-                }
-                if let (Some(consumer), Some(vectors_index)) = (
-                    self.term_vectors_consumer.as_deref_mut(),
-                    per_field.vectors_index,
-                ) {
-                    consumer.finish_field(vectors_index);
-                }
-            }
-
-            self.finish_stored_fields()?;
-
-            // `termsHash.finishDocument(docID)`: a failure here may have left
-            // the on-disk term vectors corrupt, so Lucene routes it straight to
-            // the aborting-exception consumer.
-            if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-                if let Err(error) = consumer.finish_document(doc_id, self.terms_writer.pool()) {
-                    // Java hands the throwable itself to `onAbortingException`.
-                    self.on_aborting_exception(error.duplicate());
-                    return Err(error);
-                }
-                // `TermVectorsConsumerPerField.finishDocument` ends with
-                // `fieldInfo.setStoreTermVectors()`; the field infos this port
-                // writes live in the builder, so the flag is set here instead.
-                for per_field in &self.per_fields {
-                    let Some(vectors_index) = per_field.vectors_index else {
-                        continue;
-                    };
-                    if consumer.field(vectors_index).wrote_vectors() {
-                        if let Some(info) = field_infos.field_info_mut(&per_field.field_name) {
-                            info.set_store_term_vectors()?;
-                        }
-                    }
-                }
-            }
+        // A panic raised while a field is inverted — this port's carrier of
+        // Java's unchecked throwables, an `IndexOutOfBoundsException` of a
+        // token stream for one — leaves the field as Java's exception leaves
+        // `invert`: the `finally` tail still runs (`IndexingChain.java:
+        // 669-686`), and the panic is rethrown afterwards.
+        let mut panicked: Option<Box<dyn std::any::Any + Send>> = None;
+        let outcome =
+            self.process_document_body(doc_id, doc, is_last_doc, field_infos, &mut panicked);
+        if let Some(payload) = panicked {
+            std::panic::resume_unwind(payload);
         }
         outcome
     }
@@ -4589,23 +4740,14 @@ impl IndexingChain for DefaultIndexingChain {
             )?;
         }
 
-        // `termsHash.flush` finishes the term vectors first, through its
-        // `nextTermsHash` (`TermsHash.java:63-69`).
-        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-            consumer.flush_segment(
-                state.segment_info,
-                state.field_infos,
-                state.context,
-                sort_map.as_ref(),
-            )?;
-        }
-
-        // `termsHash.flush(fieldsToFlush, state, sortMap, normsMergeInstance)`
-        // (`IndexingChain.java:358-370`): when the segment has norms, the
-        // postings writer reads them back through the merge instance of a
-        // norms producer opened over the files `write_norms` has just written,
-        // because it folds each document's norm into the impact blocks; the
-        // postings are written in the sorted order through
+        // `try (NormsProducer norms = ...) { termsHash.flush(fieldsToFlush,
+        // state, sortMap, normsMergeInstance); }` (`IndexingChain.java:361-370`):
+        // when the segment has norms, a norms producer is opened over the files
+        // `write_norms` has just written before anything else is flushed,
+        // because the postings writer folds each document's norm into the
+        // impact blocks; then `termsHash.flush` finishes the term vectors
+        // first, through its `nextTermsHash` (`TermsHash.java:63-69`), and the
+        // postings after them, in the sorted order through
         // `FreqProxTermsWriter.SortingTerms`.
         let mut norms = if state.field_infos.has_norms() {
             let read_state = crate::codecs::state::SegmentReadState::new(
@@ -4627,10 +4769,20 @@ impl IndexingChain for DefaultIndexingChain {
         // terms off `state.segUpdates` (`FreqProxTermsWriter.java:43-46`).
         let delete_terms = state.seg_updates.delete_terms();
         let flushed = (|| -> Result<()> {
+            // Use the merge instance in order to reuse the same IndexInput for
+            // all terms.
             let norms_merge_instance = norms
                 .as_ref()
                 .map(|norms| norms.get_merge_instance())
                 .transpose()?;
+            if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+                consumer.flush_segment(
+                    state.segment_info,
+                    state.field_infos,
+                    state.context,
+                    sort_map.as_ref(),
+                )?;
+            }
             self.terms_writer.flush(
                 state,
                 &delete_terms,
@@ -4683,12 +4835,13 @@ impl IndexingChain for DefaultIndexingChain {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use crate::util::atomic_ref_cell::AtomicRefCell;
+
+    use crate::document::Document;
 
     use super::*;
     use crate::analysis::tokenattributes::{
-        CharTermAttribute, PayloadAttributeImpl as PayloadImpl,
+        CharTermAttribute, PackedTokenAttributeImpl, PayloadAttributeImpl as PayloadImpl,
     };
     use crate::analysis::{default_token_attribute_factory, StandardAnalyzer, TokenStream};
     use crate::codecs::{register_codec, Codec, Lucene104Codec};
@@ -4791,7 +4944,7 @@ mod tests {
                     .source
                     .get_attribute_mut::<PackedTokenAttributeImpl>()
                     .expect("packed token attribute");
-                packed.append_string(&token.term);
+                packed.append_string(Some(&token.term));
                 packed.set_position_increment(token.position_increment);
                 packed.set_offset(token.start_offset, token.end_offset);
             }
@@ -4846,13 +4999,13 @@ mod tests {
 
     fn config() -> Arc<LiveIndexWriterConfig> {
         ensure_codec();
-        Arc::new(LiveIndexWriterConfig::new(
-            Arc::new(StandardAnalyzer::new()),
-        ))
+        Arc::new(LiveIndexWriterConfig::new(Some(Arc::new(
+            StandardAnalyzer::new(),
+        ))))
     }
 
     fn field_type(options: IndexOptions) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_omit_norms(true).expect("omit norms");
         field_type
@@ -4867,8 +5020,8 @@ mod tests {
         options: IndexOptions,
         tokens: Vec<Tok>,
     ) -> Box<dyn IndexableField> {
-        let stream: Rc<RefCell<dyn TokenStream>> =
-            Rc::new(RefCell::new(ScriptedTokenStream::new(tokens)));
+        let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
             Field::new_with_token_stream(name, stream, field_type(options))
                 .expect("token stream field"),
@@ -4895,7 +5048,7 @@ mod tests {
                 crate::util::BytesRef::new(b"a".to_vec()),
             )));
             chain
-                .process_document(0, &document, true, &mut field_infos)
+                .process_document(0, Some(&document), true, &mut field_infos)
                 .expect("process document");
             let blocks = chain.doc_values_byte_pool.charged_block_bytes();
             assert!(blocks > 0, "interning the value allocated a block");
@@ -4928,7 +5081,7 @@ mod tests {
                 crate::util::BytesRef::new(tag.as_bytes().to_vec()),
             )));
             chain
-                .process_document(doc_id as i32, &document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
 
@@ -4996,7 +5149,7 @@ mod tests {
             ],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
 
         let state = chain.field_invert_state("body").expect("invert state");
@@ -5034,7 +5187,7 @@ mod tests {
             ));
         }
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
 
         let state = chain.field_invert_state("body").expect("invert state");
@@ -5056,7 +5209,7 @@ mod tests {
             StringField::new("id", "abc".to_string(), Store::NO).expect("string field"),
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
 
         let state = chain.field_invert_state("id").expect("invert state");
@@ -5083,7 +5236,7 @@ mod tests {
             vec![Tok::new("alpha", 0, 0, 5)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         assert!(
             format!("{error}").contains("first position increment must be > 0"),
@@ -5106,7 +5259,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 10, 15), Tok::new("beta", 1, 4, 9)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         assert!(
             format!("{error}").contains("offsets must not go backwards"),
@@ -5133,13 +5286,20 @@ mod tests {
             ],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
-            LuceneError::IllegalArgumentWithCause { message, cause } => {
+            LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            } => {
                 assert_eq!(message, "too many tokens for field \"body\"");
                 assert!(
-                    matches!(&**cause, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
                     "{cause:?}"
                 );
             }
@@ -5167,10 +5327,17 @@ mod tests {
             vec![Tok::new(&immense, 1, 0, 40_000)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
-            LuceneError::IllegalArgumentWithCause { message, cause } => {
+            LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            } => {
                 assert!(
                     message.starts_with(
                         "Document contains at least one immense term in field=\"body\""
@@ -5180,7 +5347,7 @@ mod tests {
                     "{message}"
                 );
                 assert!(
-                    matches!(&**cause, LuceneError::IllegalArgument(m)
+                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::MaxBytesLengthExceeded(m), .. }
                         if m == "bytes can be at most 32766 in length; got 40000"),
                     "{cause:?}"
                 );
@@ -5206,7 +5373,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5).with_payload(&[7, 7])],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         assert!(
             field_infos
@@ -5228,7 +5395,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5)],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         assert!(!field_infos
             .field_info("body")
@@ -5252,7 +5419,7 @@ mod tests {
             vec![Tok::new("b", 1, 0, 1)],
         ));
         chain
-            .process_document(0, &first, true, &mut field_infos)
+            .process_document(0, Some(&first), true, &mut field_infos)
             .expect("doc 0");
 
         let mut second = Document::new();
@@ -5262,7 +5429,7 @@ mod tests {
             vec![Tok::new("c", 1, 0, 1)],
         ));
         chain
-            .process_document(1, &second, true, &mut field_infos)
+            .process_document(1, Some(&second), true, &mut field_infos)
             .expect("doc 1");
 
         assert_eq!(
@@ -5307,7 +5474,7 @@ mod tests {
             TextField::new("body", "ignored".to_string(), Store::YES).expect("text field"),
         ));
         // A stored-only field: index options NONE.
-        let mut stored_type = FieldType::new();
+        let stored_type = FieldType::new();
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
         let mut only_stored = Document::new();
@@ -5315,7 +5482,7 @@ mod tests {
             Field::new("meta", "value".to_string(), stored_type).expect("stored field"),
         ));
         chain
-            .process_document(0, &only_stored, true, &mut field_infos)
+            .process_document(0, Some(&only_stored), true, &mut field_infos)
             .expect("process document");
         assert_eq!(chain.field_term_count("meta"), 0);
         assert_eq!(
@@ -5346,7 +5513,7 @@ mod tests {
 
     impl VectorlessVectorField {
         fn new(name: &str, encoding: VectorEncoding) -> Self {
-            let mut field_type = FieldType::new();
+            let field_type = FieldType::new();
             field_type
                 .set_vector_attributes(3, encoding, VectorSimilarityFunction::EUCLIDEAN)
                 .expect("vector attributes");
@@ -5376,10 +5543,12 @@ mod tests {
         }
         fn token_stream(
             &self,
-            _analyzer: &dyn Analyzer,
-            _reuse: Option<&mut dyn crate::analysis::TokenStream>,
-        ) -> Box<dyn crate::analysis::TokenStream> {
-            Box::new(crate::analysis::StringTokenStream::new(String::new()).expect("stream"))
+            _analyzer: Option<&dyn Analyzer>,
+            _reuse: &mut Option<Box<dyn crate::analysis::TokenStream>>,
+        ) -> Result<Box<dyn crate::analysis::TokenStream>> {
+            Ok(Box::new(
+                crate::analysis::StringTokenStream::new(String::new()).expect("stream"),
+            ))
         }
         fn binary_value(&self) -> Option<BytesRef> {
             None
@@ -5387,7 +5556,7 @@ mod tests {
         fn string_value(&self) -> Option<String> {
             None
         }
-        fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+        fn reader_value(&self) -> Option<crate::document::SharedReader> {
             None
         }
         fn numeric_value(&self) -> Option<crate::document::NumericValue> {
@@ -5415,7 +5584,7 @@ mod tests {
                     .expect("float vector field"),
             ));
             chain
-                .process_document(doc, &document, true, &mut field_infos)
+                .process_document(doc, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
         let created = tracking.get_created_files();
@@ -5446,7 +5615,7 @@ mod tests {
             vec![Tok::new("a", 1, 0, 1)],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         for name in tracking.get_created_files() {
             for extension in [".vec", ".vemf", ".vex", ".vem"] {
@@ -5473,10 +5642,10 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &[3.0, 4.0]).expect("second"),
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a repeated vector field must be rejected");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message.contains("appears more than once in this document")
                     && message.contains('v')),
             "unexpected error: {error:?}"
@@ -5499,10 +5668,10 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &vec![1.0f32; 1025]).expect("wide vector"),
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an over-wide vector field must be rejected");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message == "Field [v] vector's dimensions must be <= [1024]; got 1025"),
             "unexpected error: {error:?}"
         );
@@ -5524,7 +5693,7 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &vec![1.0f32; 1024]).expect("wide vector"),
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("1024 dimensions must be accepted");
     }
 
@@ -5538,10 +5707,10 @@ mod tests {
             let mut document = Document::new();
             document.add(Box::new(VectorlessVectorField::new("v", encoding)));
             let error = chain
-                .process_document(0, &document, true, &mut field_infos)
+                .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("a vector field with no value must be rejected");
             assert!(
-                matches!(&error, LuceneError::IllegalArgument(message)
+                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                     if message.contains("carries no")),
                 "unexpected error for {encoding:?}: {error:?}"
             );
@@ -5552,8 +5721,8 @@ mod tests {
     /// so a vector field must be refused rather than silently dropped.
     #[test]
     fn an_unbound_chain_refuses_a_vector_field() {
-        let mut chain = DefaultIndexingChain::new(Arc::new(LiveIndexWriterConfig::new(Arc::new(
-            StandardAnalyzer::new(),
+        let mut chain = DefaultIndexingChain::new(Arc::new(LiveIndexWriterConfig::new(Some(
+            Arc::new(StandardAnalyzer::new()),
         ))));
         let mut field_infos = builder();
         let mut document = Document::new();
@@ -5561,10 +5730,10 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).expect("vector field"),
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an unbound chain must refuse a vector field");
         assert!(
-            matches!(&error, LuceneError::IllegalState { message, .. }
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalState { message, .. }, .. }
                 if message.contains("not bound to a segment")),
             "unexpected error: {error:?}"
         );
@@ -5583,7 +5752,7 @@ mod tests {
             KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0, 3.0]).expect("vector field"),
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("index the vector");
         let consumer = chain.vector_values_consumer.as_ref().expect("bound chain");
         let vector_bytes = consumer.ram_bytes_used();
@@ -5693,7 +5862,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -5724,7 +5893,7 @@ mod tests {
 
     /// A field type that keeps norms; the shared [`field_type`] omits them.
     fn norm_field_type(options: IndexOptions) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_omit_norms(false).expect("keep norms");
         field_type
@@ -5739,8 +5908,8 @@ mod tests {
         options: IndexOptions,
         tokens: Vec<Tok>,
     ) -> Box<dyn IndexableField> {
-        let stream: Rc<RefCell<dyn TokenStream>> =
-            Rc::new(RefCell::new(ScriptedTokenStream::new(tokens)));
+        let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
             Field::new_with_token_stream(name, stream, norm_field_type(options))
                 .expect("token stream field"),
@@ -5766,14 +5935,18 @@ mod tests {
             &self,
             _state: &SegmentWriteState<'a>,
         ) -> Result<Box<dyn crate::codecs::doc_values::DocValuesConsumer + 'a>> {
-            Err(LuceneError::Other("consumer refused".to_string()))
+            Err(LuceneError::from(LuceneErrorKind::Other(
+                "consumer refused".to_string(),
+            )))
         }
 
         fn fields_producer<'a>(
             &self,
             _state: &crate::codecs::state::SegmentReadState<'a>,
         ) -> Result<Box<dyn crate::codecs::doc_values::DocValuesProducer>> {
-            Err(LuceneError::Other("producer refused".to_string()))
+            Err(LuceneError::from(LuceneErrorKind::Other(
+                "producer refused".to_string(),
+            )))
         }
     }
 
@@ -5784,7 +5957,7 @@ mod tests {
     #[test]
     fn a_failed_doc_values_consumer_is_reported_over_the_field_infos_check() {
         let codec = ensure_codec();
-        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_codec(Arc::new(
             crate::codecs::FilterCodec::new("RefusingCodec", Arc::clone(&codec))
                 .with_doc_values_format(RefusingDocValuesFormat),
@@ -5819,7 +5992,7 @@ mod tests {
         let mut document = Document::new();
         document.add(Box::new(NumericDocValuesField::new("dv", 7)));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         let finished = field_infos.finish().expect("field infos");
         let segment_info = make_info(1);
@@ -5876,7 +6049,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -5936,7 +6109,7 @@ mod tests {
         // the document is dropped, and the segment flushes without norms — so
         // `write_norms`' "has norms but no norms buffer" guard stays
         // unreachable through the ordinary path.
-        let mut stored_type = FieldType::new();
+        let stored_type = FieldType::new();
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
 
@@ -5954,13 +6127,13 @@ mod tests {
         let (mut chain, tracking, segment_info) = bound_chain(2);
         let mut field_infos = builder();
         chain
-            .process_document(0, &first, true, &mut field_infos)
+            .process_document(0, Some(&first), true, &mut field_infos)
             .expect("the stored-only document is fine");
         let error = chain
-            .process_document(1, &second, true, &mut field_infos)
+            .process_document(1, Some(&second), true, &mut field_infos)
             .expect_err("the schema change must be refused");
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m)
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("index options")),
             "unexpected error: {error:?}"
         );
@@ -6147,7 +6320,7 @@ mod tests {
             }
         }
 
-        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_similarity(Arc::new(ZeroSimilarity));
         ensure_codec();
         let config = Arc::new(live);
@@ -6186,10 +6359,10 @@ mod tests {
         ));
         let mut field_infos = builder();
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a zero norm for a non-empty field must be refused");
         assert!(
-            matches!(error, LuceneError::IllegalState { message: ref m, .. }
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
                 if m.contains("return 0 for non-empty field")),
             "unexpected error: {error:?}"
         );
@@ -6215,7 +6388,7 @@ mod tests {
         let (_, norms) = flush_and_read_norms(config(), vec![document]);
         assert_eq!(norms, vec![("body".to_string(), 0, 2)]);
 
-        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        let live = LiveIndexWriterConfig::new(Some(Arc::new(StandardAnalyzer::new())));
         live.set_similarity(Arc::new(
             crate::search::BM25Similarity::with_discount_overlaps(false),
         ));
@@ -6305,7 +6478,7 @@ mod tests {
                 words(2),
             ));
             chain
-                .process_document(doc, &document, true, &mut field_infos)
+                .process_document(doc, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
         assert!(
@@ -6335,7 +6508,7 @@ mod tests {
 
     #[test]
     fn flushing_a_segment_without_postings_writes_only_the_stored_fields() {
-        let mut stored_type = FieldType::new();
+        let stored_type = FieldType::new();
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
         let mut document = Document::new();
@@ -6462,7 +6635,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -6534,7 +6707,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -6588,7 +6761,7 @@ mod tests {
         let mut document = Document::new();
         document.add(stored_text_field("title", "doomed"));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         assert!(
             chain.stored_fields_consumer().expect("bound").has_writer(),
@@ -6607,7 +6780,13 @@ mod tests {
         let error = IndexingChain::bind_segment(&mut chain, tracking, &info)
             .expect_err("a chain writes exactly one segment");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -6619,10 +6798,16 @@ mod tests {
         let mut document = Document::new();
         document.add(stored_text_field("title", "value"));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping stored data would corrupt the segment");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -6639,7 +6824,7 @@ mod tests {
                 vec![Tok::new(&format!("term{doc_id}"), 1, 0, 5)],
             ));
             chain
-                .process_document(doc_id, &document, true, &mut field_infos)
+                .process_document(doc_id, Some(&document), true, &mut field_infos)
                 .expect("process document");
         }
         assert!(chain.ram_bytes_used() > 0);
@@ -6659,7 +6844,7 @@ mod tests {
         offsets: bool,
         payloads: bool,
     ) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_omit_norms(true).expect("omit norms");
         field_type
@@ -6690,8 +6875,8 @@ mod tests {
         payloads: bool,
         tokens: Vec<Tok>,
     ) -> Box<dyn IndexableField> {
-        let stream: Rc<RefCell<dyn TokenStream>> =
-            Rc::new(RefCell::new(ScriptedTokenStream::new(tokens)));
+        let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
             Field::new_with_token_stream(
                 name,
@@ -6744,7 +6929,8 @@ mod tests {
                 let text = String::from_utf8(term.slice().to_vec()).expect("utf-8 term");
                 let mut postings = iterator
                     .postings(None, crate::index::POSTINGS_ENUM_ALL)
-                    .expect("postings");
+                    .expect("postings")
+                    .unwrap();
                 assert_eq!(postings.next_doc().expect("next doc"), 0);
                 let freq = postings.freq().expect("freq");
                 let mut positions = Vec::new();
@@ -6784,6 +6970,93 @@ mod tests {
         Some(decoded)
     }
 
+    /// Regression (rmp #351): `IndexingChain.flush` opens the norms producer
+    /// before `termsHash.flush` finishes the term vectors
+    /// (`IndexingChain.java:361-370`, `TermsHash.java:63-69`), so the norms
+    /// metadata is read back, and its input closed, before the term-vectors
+    /// files are closed; the order of the file operations is what
+    /// `MockDirectoryWrapper`'s random draws follow.
+    #[test]
+    fn flush_opens_the_norms_before_it_finishes_the_term_vectors() {
+        let codec = ensure_codec();
+        let (inner, _closes, log) = crate::codecs::tests::tracking_directory();
+        let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+            crate::index::documents_writer::SharedDirectory(inner),
+        )));
+        let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+        let make_info = |max_doc| {
+            SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                max_doc,
+                false,
+                false,
+                Arc::clone(&codec),
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info")
+        };
+        let mut chain =
+            DefaultIndexingChain::new_for_segment(config(), Arc::clone(&tracking), &make_info(-1))
+                .expect("bind segment");
+        let field_type = FieldType::new();
+        field_type.set_tokenized(true).expect("tokenized");
+        field_type.set_omit_norms(false).expect("keep norms");
+        field_type
+            .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .expect("index options");
+        field_type
+            .set_store_term_vectors(true)
+            .expect("store term vectors");
+        field_type.freeze();
+        let mut field_infos = builder();
+        for doc_id in 0..2 {
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+                Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(vec![
+                    Tok::new("a", 1, 0, 1),
+                    Tok::new("b", 1, 2, 3),
+                ])));
+            let mut document = Document::new();
+            document.add(Box::new(
+                Field::new_with_token_stream("f", stream, field_type.clone())
+                    .expect("token stream field"),
+            ));
+            chain
+                .process_document(doc_id, Some(&document), true, &mut field_infos)
+                .expect("process document");
+        }
+        let finished = field_infos.finish().expect("field infos");
+        let segment_info = make_info(2);
+        let info_stream = NoOutputInfoStream;
+        let context = flush_io_context(FlushInfo::new(2, 0));
+        let seg_updates = segment_updates(&[]);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        chain.flush(&mut state).expect("flush");
+
+        let closed = log.closed();
+        let norms_meta_read = closed
+            .iter()
+            .rposition(|name| name == "_0.nvm")
+            .expect("norms metadata closed");
+        let vectors_closed = closed
+            .iter()
+            .position(|name| name == "_0.tvd")
+            .expect("term vectors closed");
+        assert!(norms_meta_read < vectors_closed, "{closed:?}");
+    }
+
     /// Indexes `documents`, flushes them, and returns the decoded term vectors
     /// of every document alongside the files the flush created.
     fn flush_and_read_vectors(
@@ -6794,7 +7067,7 @@ mod tests {
         let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
-                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .process_document(doc_id as i32, Some(document), true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
@@ -7260,10 +7533,16 @@ mod tests {
             vec![Tok::new("beta", 1, 6, 10)],
         ));
         let error = bound
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("the two instances disagree on storeTermVectorPositions");
         assert!(
-            matches!(error, LuceneError::IllegalArgument(_)),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -7283,10 +7562,10 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("payloads need positions");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message.contains("cannot index term vector payloads without term vector positions")),
             "{error:?}"
         );
@@ -7312,10 +7591,10 @@ mod tests {
                 vec![Tok::new("alpha", 1, 0, 5)],
             ));
             let error = chain
-                .process_document(0, &document, true, &mut field_infos)
+                .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("term vectors were not requested");
             assert!(
-                matches!(&error, LuceneError::IllegalArgument(message)
+                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                     if message.contains(&format!("cannot index term vector {expected} when term vectors are not indexed"))),
                 "{error:?}"
             );
@@ -7327,7 +7606,7 @@ mod tests {
         let (mut chain, _tracking, _) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_stored(true).expect("stored");
         field_type
             .set_store_term_vectors(true)
@@ -7337,10 +7616,10 @@ mod tests {
             Field::new("title", "value".to_string(), field_type).expect("field"),
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a non-indexed field cannot store term vectors");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message.contains("cannot store term vectors for a field that is not indexed")),
             "{error:?}"
         );
@@ -7366,7 +7645,7 @@ mod tests {
             vec![Tok::new("beta", 1, 0, 4)],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         let finished = field_infos.finish().expect("field infos");
         assert!(finished.has_term_vectors());
@@ -7395,7 +7674,7 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5)],
         ));
         chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect("process document");
         assert!(chain
             .term_vectors_consumer()
@@ -7428,10 +7707,16 @@ mod tests {
             vec![Tok::new("alpha", 1, 0, 5)],
         ));
         let error = chain
-            .process_document(0, &document, true, &mut field_infos)
+            .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping term vectors would corrupt the segment");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -7524,10 +7809,9 @@ impl BufferedDocValuesReader {
     > {
         if self.without_field_info.contains(field) {
             // `pf.fieldInfo.getDocValuesType()` on a `PerField` without a
-            // `FieldInfo` throws `NullPointerException`, which this port
-            // reports as `IllegalState` with the JVM's message; the flush that
-            // asked fails, and `DocumentsWriterPerThread.flush` aborts on it.
-            return Err(LuceneError::illegal_state(
+            // `FieldInfo` throws `NullPointerException` with the JVM's
+            // message; the flush that asked fails, and `DocumentsWriterPerThread.flush` aborts on it.
+            return Err(LuceneError::null_pointer_with_message(
                 "Cannot invoke \"org.apache.lucene.index.FieldInfo.getDocValuesType()\" \
                  because \"pf.fieldInfo\" is null"
                     .to_string(),
@@ -7585,7 +7869,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn crate::index::TermVectors>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the buffered doc-values reader has no term vectors".to_string(),
         ))
     }
@@ -7599,13 +7883,13 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn stored_fields(&self) -> Result<Box<dyn crate::index::StoredFields>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the buffered doc-values reader has no stored fields".to_string(),
         ))
     }
 
     fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the buffered doc-values reader has no terms".to_string(),
         ))
     }

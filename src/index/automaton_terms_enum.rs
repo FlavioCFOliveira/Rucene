@@ -154,7 +154,7 @@ impl AutomatonTermsEnum {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the compiled automaton is not a
+    /// Returns `LuceneErrorKind::IllegalArgument` if the compiled automaton is not a
     /// normal automaton (e.g. `NONE`, `ALL`, or `SINGLE`).
     #[allow(clippy::new_ret_no_self)]
     pub fn new(
@@ -183,7 +183,7 @@ impl AutomatonTermsEnum {
         start_term: Option<BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
         if compiled.automaton_type != AutomatonType::Normal {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "AutomatonTermsEnum only supports CompiledAutomaton::Normal; use CompiledAutomaton::get_terms_enum for special cases".to_string(),
             ));
         }
@@ -381,6 +381,12 @@ impl AutomatonTermsEnum {
 }
 
 impl FilteredTermsEnumFilter for AutomatonTermsEnum {
+    /// Answers Java's class check on the enumeration
+    /// (`getClass().getSimpleName()`, `TestWildcardQuery.testPrefixTerm`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus> {
         let suffix_ok = self
             .common_suffix_ref
@@ -497,8 +503,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.terms[self.pos].clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.pos].clone()))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -517,8 +523,8 @@ mod tests {
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum::new()))
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {

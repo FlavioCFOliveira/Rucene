@@ -21,7 +21,6 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
 use memmap2::Mmap;
@@ -118,7 +117,11 @@ pub struct MMapDirectory {
     /// (`MMapDirectory.java:317-318`), so a later
     /// [`set_read_advice`](Self::set_read_advice) reaches inputs already open.
     read_advice: Arc<std::sync::RwLock<ReadAdvicePolicy>>,
-    preload: PreloadPredicate,
+    /// The preload policy. Java's `setPreload` assigns a field of a directory
+    /// that may already be shared, so the policy sits behind a lock and the
+    /// setter takes `&self`, as [`set_read_advice`](Self::set_read_advice)
+    /// does.
+    preload: std::sync::RwLock<PreloadPredicate>,
     grouping_function: GroupingFunction,
 }
 
@@ -127,7 +130,7 @@ impl MMapDirectory {
     /// chunk size.
     ///
     /// Equivalent to `MMapDirectory(Path)` in Lucene 10.5.0.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn open(path: impl crate::store::java_nio_file::IntoNioPath) -> Result<Self> {
         // `this(path, FSLockFactory.getDefault())`
         Self::with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
@@ -141,7 +144,7 @@ impl MMapDirectory {
     ///
     /// As [`with_options`](Self::with_options).
     pub fn with_lock_factory(
-        path: impl AsRef<Path>,
+        path: impl crate::store::java_nio_file::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
         Self::with_options(path, lock_factory, *DEFAULT_MAX_CHUNK_SIZE)
@@ -156,24 +159,24 @@ impl MMapDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a chunk size of zero or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a chunk size of zero or
     /// beyond a Java `long`, and propagates any I/O error creating or
     /// canonicalizing the directory.
     pub fn with_options(
-        path: impl AsRef<Path>,
+        path: impl crate::store::java_nio_file::IntoNioPath,
         lock_factory: Box<dyn LockFactory>,
         max_chunk_size: usize,
     ) -> Result<Self> {
         let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
         if max_chunk_size == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Maximum chunk size for mmap must be >0".to_string(),
             ));
         }
         // Java's `long maxChunkSize` cannot exceed `Long.MAX_VALUE`; a `usize`
         // can, and its power would not be one Java can hold.
         if i64::try_from(max_chunk_size).is_err() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Maximum chunk size for mmap must be <= {} (a Java long)",
                 i64::MAX
             )));
@@ -185,7 +188,7 @@ impl MMapDirectory {
             chunk_size_power,
             attachment: Self::lookup_provider().attachment(),
             read_advice: Arc::new(std::sync::RwLock::new(Box::new(|_filename, _context| None))),
-            preload: Self::no_files(),
+            preload: std::sync::RwLock::new(Self::no_files()),
             grouping_function: Self::group_by_segment(),
         })
     }
@@ -195,15 +198,18 @@ impl MMapDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
-    pub fn get_directory(&self) -> Result<&Path> {
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the directory is closed.
+    pub fn get_directory(&self) -> Result<&crate::store::java_nio_file::Path> {
         self.inner.get_directory()
     }
 
     /// Returns how many shared arenas the directory currently keeps, one per
     /// file group with an input still open.
-    #[cfg(test)]
-    pub(crate) fn shared_arena_count(&self) -> usize {
+    ///
+    /// Equivalent to `((ConcurrentHashMap<?, ?>) attachment).size()`, which
+    /// `TestMMapDirectory.testArenas` reads through the package-private
+    /// `MMapDirectory.attachment` field (`MMapDirectory.java:107`).
+    pub fn shared_arena_count(&self) -> usize {
         self.attachment
             .lock()
             .map(|arenas| arenas.len())
@@ -306,8 +312,11 @@ impl MMapDirectory {
     /// operating-system dependent.
     ///
     /// Equivalent to `org.apache.lucene.store.MMapDirectory#setPreload`.
-    pub fn set_preload(&mut self, preload: PreloadPredicate) {
-        self.preload = preload;
+    pub fn set_preload(&self, preload: PreloadPredicate) {
+        *self
+            .preload
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = preload;
     }
 
     /// Configures the [`ReadAdvice`] certain files are opened with. The default
@@ -366,6 +375,11 @@ impl MMapDirectory {
 }
 
 impl Directory for MMapDirectory {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.inner.list_all()
     }
@@ -411,7 +425,7 @@ impl Directory for MMapDirectory {
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.inner.ensure_open()?;
         self.inner.ensure_can_read(name)?;
-        let path = self.inner.directory_path().join(name);
+        let path = self.inner.get_directory()?.resolve_str(name);
         let read_advice = Arc::clone(&self.read_advice);
         let file_name = name.to_string();
         // `c -> readAdvice.apply(name, c).orElse(Constants.DEFAULT_READADVICE)`
@@ -430,7 +444,10 @@ impl Directory for MMapDirectory {
             to_read_advice,
             // `context.hints().contains(ReadOnceHint.INSTANCE)`
             !hints_of::<ReadOnceHint>(context).is_empty(),
-            (self.preload)(name, context),
+            (self
+                .preload
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner))(name, context),
             (self.grouping_function)(name).as_deref(),
             &self.attachment,
         )?;
@@ -444,7 +461,7 @@ impl Directory for MMapDirectory {
         self.inner.base().obtain_lock(self, name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -492,6 +509,7 @@ impl std::fmt::Debug for MMapDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::store::DEFAULT_IO_CONTEXT;
     use tempfile::TempDir;
 
@@ -611,7 +629,7 @@ mod tests {
         // A bulk read across five chunks.
         input.seek(7).unwrap();
         let mut bulk = vec![0u8; 75];
-        input.read_bytes(&mut bulk, 0, 75).unwrap();
+        input.read_bytes(Some(&mut bulk), 0, 75).unwrap();
         assert_eq!(bulk, (7..82).map(|i| i as u8).collect::<Vec<_>>());
 
         // Seeks back and forth across chunks.
@@ -627,7 +645,7 @@ mod tests {
         slice.seek(3).unwrap();
         assert_eq!(slice.read_long().unwrap(), expected_long(13));
         let mut rest = vec![0u8; 79];
-        slice.read_bytes(&mut rest, 0, 79).unwrap();
+        slice.read_bytes(Some(&mut rest), 0, 79).unwrap();
         assert_eq!(rest, (21..100).map(|i| i as u8).collect::<Vec<_>>());
         assert!(slice.read_byte().is_err(), "the slice ends at its length");
 
@@ -672,11 +690,17 @@ mod tests {
         let temp = TempDir::new().unwrap();
         assert!(matches!(
             MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), usize::MAX),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(matches!(
             MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 0),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert_eq!(
             MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), i64::MAX as usize)

@@ -1356,7 +1356,7 @@ impl Tessellation {
             let x = (b2 * c1 - b1 * c2) / determinant;
             let y = (a1 * c2 - a2 * c1) / determinant;
 
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Polygon self-intersection at lat={y} lon={x}"
             )));
         }
@@ -1373,7 +1373,7 @@ impl Tessellation {
                 self.y(b_next),
             )
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Polygon ring self-intersection at lat={} lon={}",
                 self.y(a),
                 self.x(a)
@@ -1759,7 +1759,7 @@ impl Tessellation {
                     if polygon.len() > 100 {
                         polygon = format!("{}...", &polygon[..100]);
                     }
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Illegal hole detected: {polygon}"
                     )));
                 }
@@ -1948,7 +1948,7 @@ impl Tessellation {
                                     Some(curr_ear),
                                     tessellation,
                                 )?;
-                                return Err(LuceneError::IllegalArgument(
+                                return Err(LuceneError::illegal_argument(
                                     "Unable to Tessellate shape. Possible malformed shape detected."
                                         .to_string(),
                                 ));
@@ -2090,7 +2090,7 @@ impl Tessellator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a malformed shape, an
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a malformed shape, an
     /// illegal hole, a self-intersection (when `check_self_intersections` is
     /// set) or a shape that cannot be tessellated.
     pub fn tessellate(polygon: &Polygon, check_self_intersections: bool) -> Result<Vec<Triangle>> {
@@ -2126,10 +2126,12 @@ impl Tessellator {
             // If an outer node hasn't been detected, the shape is malformed. (must comply with
             // OGC SFA specification)
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("Malformed shape detected in Tessellator!".to_string())
+                LuceneError::illegal_argument(
+                    "Malformed shape detected in Tessellator!".to_string(),
+                )
             })?;
         if outer_node == t.next(outer_node) || outer_node == t.next(t.next(outer_node)) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "at least three non-collinear points required".to_string(),
             ));
         }
@@ -2169,7 +2171,7 @@ impl Tessellator {
         )?;
         if result.is_empty() {
             t.notify_monitor(MONITOR_FAILED, &mut monitor, None, &result)?;
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Unable to Tessellate shape. Possible malformed shape detected.".to_string(),
             ));
         }
@@ -2218,10 +2220,12 @@ impl Tessellator {
                 WindingOrder::CW,
             )?
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("Malformed shape detected in Tessellator!".to_string())
+                LuceneError::illegal_argument(
+                    "Malformed shape detected in Tessellator!".to_string(),
+                )
             })?;
         if outer_node == t.next(outer_node) || outer_node == t.next(t.next(outer_node)) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "at least three non-collinear points required".to_string(),
             ));
         }
@@ -2260,7 +2264,7 @@ impl Tessellator {
         )?;
         if result.is_empty() {
             t.notify_monitor(MONITOR_FAILED, &mut monitor, None, &result)?;
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Unable to Tessellate shape. Possible malformed shape detected.".to_string(),
             ));
         }
@@ -2294,10 +2298,10 @@ impl Tessellator {
             // `NullPointerException`; the port keeps the coplanar check and reports the same
             // `IllegalArgumentException` for a degenerate ring.
             let list = list.ok_or_else(|| {
-                LuceneError::IllegalArgument(format!("Points are all coplanar in hole: {hole:?}"))
+                LuceneError::illegal_argument(format!("Points are all coplanar in hole: {hole:?}"))
             })?;
             if list == t.next(list) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Points are all coplanar in hole: {hole:?}"
                 )));
             }
@@ -2316,7 +2320,9 @@ impl Tessellator {
         let source = HoleSource::Geo(polygon);
         t.eliminate_holes(&mut hole_list, &source, outer_node)?
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("Malformed shape detected in Tessellator!".to_string())
+                LuceneError::illegal_argument(
+                    "Malformed shape detected in Tessellator!".to_string(),
+                )
             })
     }
 
@@ -2359,7 +2365,9 @@ impl Tessellator {
         let source = HoleSource::Xy(polygon);
         t.eliminate_holes(&mut hole_list, &source, outer_node)?
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("Malformed shape detected in Tessellator!".to_string())
+                LuceneError::illegal_argument(
+                    "Malformed shape detected in Tessellator!".to_string(),
+                )
             })
     }
 }

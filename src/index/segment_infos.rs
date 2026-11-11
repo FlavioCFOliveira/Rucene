@@ -14,7 +14,7 @@ use std::io;
 use std::sync::{Arc, RwLock};
 
 use crate::codecs::codec_util;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{file_name_from_generation, PENDING_SEGMENTS, SEGMENTS};
 use crate::index::SegmentCommitInfo;
 use crate::store::{Directory, IndexOutput};
@@ -125,24 +125,29 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the creation version is out of
+    /// Returns `LuceneErrorKind::IllegalArgument` if the creation version is out of
     /// the supported range.
     ///
     /// Equivalent to `SegmentInfos(int)`.
     pub fn new(index_created_version_major: i32) -> Result<Self> {
         if index_created_version_major > Version::LATEST.major as i32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "indexCreatedVersionMajor is in the future: {index_created_version_major}"
             )));
         }
         if index_created_version_major < 6 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "indexCreatedVersionMajor must be >= 6, got: {index_created_version_major}"
             )));
         }
+        // `generation` and `lastGeneration` are left at Java's field default,
+        // 0 (`SegmentInfos.java:132-133, 169-179`): a new instance's segments
+        // file name is `segments`, so an `IndexFileDeleter` built on it scans
+        // the directory and removes the files no commit references
+        // (`IndexFileDeleter.java:139-225`).
         Ok(Self {
-            generation: -1,
-            last_generation: -1,
+            generation: 0,
+            last_generation: 0,
             counter: 0,
             version: 0,
             user_data: JavaStringMap::default(),
@@ -174,11 +179,11 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the wrapped `SegmentInfo` does
+    /// Returns `LuceneErrorKind::IllegalArgument` if the wrapped `SegmentInfo` does
     /// not record `min_version` for an index created on or after Lucene 7.
     pub fn add(&mut self, si: SegmentCommitInfo) -> Result<()> {
         if self.index_created_version_major >= 7 && si.info.min_version().is_none() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "All segments must record the minVersion for indices created on or after Lucene 7: {:?}",
                 si.info
             )));
@@ -204,13 +209,9 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.remove(SegmentCommitInfo)`, which finds the
     /// segment by `List.remove(Object)`. `SegmentCommitInfo` does not override
-    /// `equals`, so Java matches the very instance the writer holds, whatever
-    /// its delete counts and generations are at the time. This port hands out
-    /// clones (the reader pool keeps its own copy of each segment), so the
-    /// instance is recognised by its segment name, which is unique within one
-    /// `SegmentInfos`. Comparing by value instead would miss a segment whose
-    /// pooled copy has a different delete count than the writer's, and leave it
-    /// in the index after its reader was dropped.
+    /// `equals`, so Java matches the very instance, whatever its delete counts
+    /// and generations are at the time; so does this port, as every holder of
+    /// a commit info shares one object (see [`SegmentCommitInfo`]).
     ///
     /// # Warning
     ///
@@ -247,16 +248,14 @@ impl SegmentInfos {
 
     /// Returns the index of the provided `SegmentCommitInfo`, or `None`.
     ///
-    /// Equivalent to `SegmentInfos.indexOf(SegmentCommitInfo)`; the segment is
-    /// recognised by its name, as [`remove`](Self::remove) explains.
+    /// Equivalent to `SegmentInfos.indexOf(SegmentCommitInfo)`: the very
+    /// instance, as [`remove`](Self::remove) explains.
     ///
     /// # Warning
     ///
     /// O(N) cost.
     pub fn index_of(&self, si: &SegmentCommitInfo) -> Option<usize> {
-        self.segments
-            .iter()
-            .position(|s| s.info.name == si.info.name)
+        self.segments.iter().position(|s| s.same_object(si))
     }
 
     /// Returns an iterator over the contained segments.
@@ -287,17 +286,15 @@ impl SegmentInfos {
     /// [`parse_segment_infos`](Self::parse_segment_infos), Java's `DataInput`
     /// is always the commit's `ChecksumIndexInput`, whose `toString()` is the
     /// exception's resource; this takes that input.
-    ///
-    /// **Divergence from Lucene 10.5.0.** For a name that does not start with
-    /// `Lucene`, Java rethrows `Codec.forName`'s `IllegalArgumentException`
-    /// (`SegmentInfos.java:539`); this port still reports
-    /// `IndexFormatNotSupported("Could not load codec '<name>'.")`.
+    /// For a name that does not start with `Lucene`, Java rethrows
+    /// `Codec.forName`'s `IllegalArgumentException` (`SegmentInfos.java:539`),
+    /// as this does.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IndexFormatTooOld`] when a `Lucene` codec cannot
-    /// be resolved, [`LuceneError::IndexFormatNotSupported`] when another
-    /// codec cannot be, and propagates any I/O error.
+    /// Returns [`LuceneErrorKind::IndexFormatTooOld`] when a `Lucene` codec cannot
+    /// be resolved, `Codec.forName`'s [`LuceneErrorKind::IllegalArgument`] when
+    /// another codec cannot be, and propagates any I/O error.
     fn read_codec(
         input: &mut dyn crate::store::ChecksumIndexInput,
     ) -> Result<std::sync::Arc<dyn crate::codecs::Codec>> {
@@ -305,18 +302,18 @@ impl SegmentInfos {
         match crate::codecs::lookup(&name) {
             Ok(codec) => Ok(codec),
             // Maybe it is an old default codec that has moved.
-            Err(LuceneError::IllegalArgument(message)) if name.starts_with("Lucene") => {
-                Err(LuceneError::index_format_too_old_reason(
-                    input.resource_description(),
-                    format!(
-                        "Could not load codec '{name}'. {message}. Did you forget to add \
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) if name.starts_with("Lucene") => Err(LuceneError::index_format_too_old_reason(
+                input.resource_description(),
+                format!(
+                    "Could not load codec '{name}'. {message}. Did you forget to add \
                          lucene-backward-codecs.jar?"
-                    ),
-                ))
-            }
-            Err(LuceneError::IllegalArgument(_)) => Err(LuceneError::IndexFormatNotSupported(
-                format!("Could not load codec '{name}'."),
+                ),
             )),
+            // `throw e;` (`SegmentInfos.java:539`): any other name rethrows
+            // `Codec.forName`'s own `IllegalArgumentException`.
             Err(error) => Err(error),
         }
     }
@@ -399,7 +396,7 @@ impl SegmentInfos {
     /// Sets the version, failing if it would decrease.
     pub fn set_version(&mut self, new_version: i64) -> Result<()> {
         if new_version < self.version {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "newVersion (={new_version}) cannot be less than current version (={})",
                 self.version
             )));
@@ -444,7 +441,7 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the merged segment records
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the merged segment records
     /// no minimum version and the index was created by Lucene 7 or later, which
     /// requires one.
     pub fn apply_merge_changes(
@@ -454,7 +451,7 @@ impl SegmentInfos {
         drop_segment: bool,
     ) -> Result<()> {
         if self.index_created_version_major >= 7 && merged.info.min_version().is_none() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "All segments must record the minVersion for indices created on or after Lucene 7"
                     .to_string(),
             ));
@@ -474,6 +471,7 @@ impl SegmentInfos {
                     new_seg_idx += 1;
                 }
             } else {
+                debug_assert!(seg_idx >= new_seg_idx);
                 self.segments.swap(new_seg_idx, seg_idx);
                 new_seg_idx += 1;
             }
@@ -499,7 +497,7 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Arithmetic`] with the message `integer overflow`
+    /// Returns [`LuceneErrorKind::Arithmetic`] with the message `integer overflow`
     /// when the sum does not fit in an `i32`: Java's `Math.toIntExact(count)`
     /// throwing `ArithmeticException("integer overflow")`.
     ///
@@ -618,7 +616,7 @@ impl SegmentInfos {
     /// Equivalent to `SegmentInfos.generationFromSegmentsFileName(String)`.
     pub fn generation_from_segments_file_name(file_name: &str) -> Result<i64> {
         if file_name == OLD_SEGMENTS_GEN {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "\"{OLD_SEGMENTS_GEN}\" is not a valid segment file name since 4.0"
             )));
         }
@@ -628,12 +626,12 @@ impl SegmentInfos {
         if file_name.starts_with(SEGMENTS) {
             let gen_str = &file_name[1 + SEGMENTS.len()..];
             i64::from_str_radix(gen_str, 36).map_err(|e| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "fileName \"{file_name}\" does not contain a valid generation: {e}"
                 ))
             })
         } else {
-            Err(LuceneError::IllegalArgument(format!(
+            Err(LuceneError::illegal_argument(format!(
                 "fileName \"{file_name}\" is not a segments file"
             )))
         }
@@ -668,13 +666,16 @@ impl SegmentInfos {
         min_supported_major_version: i32,
     ) -> Result<Self> {
         let generation = Self::generation_from_segments_file_name(segment_file_name)?;
+        // `try (ChecksumIndexInput input = directory.openChecksumInput(...))`
+        // (`SegmentInfos.java:296-304`): the input is closed on every exit.
         let mut input = directory.open_checksum_input(segment_file_name)?;
-        Self::read_commit_input(
+        let read = Self::read_commit_input(
             directory,
             input.as_mut(),
             generation,
             min_supported_major_version,
-        )
+        );
+        crate::store::close_after(input.as_mut(), read)
     }
 
     /// Reads a commit from an already opened checksum input.
@@ -704,7 +705,7 @@ impl SegmentInfos {
                 codec_util::check_header_no_magic(input, "segments", VERSION_74, VERSION_CURRENT)?;
 
             let mut id = [0u8; ID_LENGTH];
-            input.read_bytes(&mut id, 0, ID_LENGTH)?;
+            input.read_bytes(Some(&mut id), 0, ID_LENGTH)?;
             codec_util::check_index_header_suffix(input, &radix_36(generation as u64))?;
 
             let lucene_version = Version::from_bits(
@@ -799,7 +800,7 @@ impl SegmentInfos {
         for _ in 0..num_segments {
             let seg_name = input.read_string()?;
             let mut segment_id = [0u8; ID_LENGTH];
-            input.read_bytes(&mut segment_id, 0, ID_LENGTH)?;
+            input.read_bytes(Some(&mut segment_id), 0, ID_LENGTH)?;
             let codec = Self::read_codec(input)?;
 
             let mut info = codec.segment_info_format().read(
@@ -808,7 +809,7 @@ impl SegmentInfos {
                 &segment_id,
                 &*crate::store::READONCE_IO_CONTEXT,
             )?;
-            info.set_codec(codec);
+            info.set_codec(Some(codec))?;
 
             let max_doc = info.max_doc()?;
             total_docs += max_doc as i64;
@@ -848,7 +849,7 @@ impl SegmentInfos {
                 match marker {
                     1 => {
                         let mut buf = [0u8; ID_LENGTH];
-                        input.read_bytes(&mut buf, 0, ID_LENGTH)?;
+                        input.read_bytes(Some(&mut buf), 0, ID_LENGTH)?;
                         buf
                     }
                     0 => StringHelper::random_id(),
@@ -863,7 +864,7 @@ impl SegmentInfos {
                 StringHelper::random_id()
             };
 
-            let mut si_per_commit = SegmentCommitInfo::new(
+            let si_per_commit = SegmentCommitInfo::new(
                 info,
                 del_count,
                 soft_del_count,
@@ -1031,11 +1032,75 @@ impl SegmentInfos {
 
     /// Finds the latest commit, enforcing a minimum supported major version.
     ///
-    /// Equivalent to `SegmentInfos.readLatestCommit(Directory, int)`.
+    /// Equivalent to `SegmentInfos.readLatestCommit(Directory, int)`
+    /// (`SegmentInfos.java:554-562`): [`Self::find_segments_file`] whose body
+    /// is [`Self::read_commit_with_min_version`].
     pub fn read_latest_commit_with_min_version(
         directory: Arc<dyn Directory>,
         min_supported_major_version: i32,
     ) -> Result<Self> {
+        Self::find_segments_file(&directory, |segment_file_name| {
+            Self::read_commit_with_min_version(
+                Arc::clone(&directory),
+                segment_file_name,
+                min_supported_major_version,
+            )
+        })
+    }
+
+    /// Runs `do_body` on `commit`'s segments file name, or, when `commit` is
+    /// `None`, as [`Self::find_segments_file`].
+    ///
+    /// Equivalent to `SegmentInfos.FindSegmentsFile.run(IndexCommit)`
+    /// (`SegmentInfos.java:787-792`): a commit of another directory than
+    /// `directory` (compared by identity, as Java's `!=`) throws
+    /// `IOException("the specified commit does not match the specified
+    /// Directory")`.
+    ///
+    /// # Errors
+    ///
+    /// That `IOException`; otherwise as [`Self::find_segments_file`] or
+    /// `do_body`.
+    pub fn find_segments_file_for_commit<T>(
+        directory: &Arc<dyn Directory>,
+        commit: Option<&dyn crate::index::index_commit::IndexCommit>,
+        mut do_body: impl FnMut(&str) -> Result<T>,
+    ) -> Result<T> {
+        match commit {
+            Some(commit) => {
+                if !std::ptr::addr_eq(Arc::as_ptr(directory), Arc::as_ptr(&commit.get_directory()))
+                {
+                    return Err(LuceneError::from(LuceneErrorKind::Io(
+                        crate::store::java_nio_file::io_exception(
+                            "the specified commit does not match the specified Directory",
+                        ),
+                    )));
+                }
+                do_body(&commit.get_segments_file_name())
+            }
+            None => Self::find_segments_file(directory, do_body),
+        }
+    }
+
+    /// Runs `do_body` on the latest commit's segments file name, retrying on a
+    /// newer commit while an `IOException` shows that a writer deleted the
+    /// commit being loaded.
+    ///
+    /// Equivalent to `SegmentInfos.FindSegmentsFile.run()` with a `null`
+    /// commit (`SegmentInfos.java:787-858`), `do_body` being its
+    /// `doBody(String)`: an error that is not an `IOException` propagates at
+    /// once; an `IOException` is retried while the commit generation moves
+    /// forward, and the first one is thrown when it does not.
+    ///
+    /// # Errors
+    ///
+    /// `IndexNotFoundException` when the directory holds no `segments_N`
+    /// file; the first `IOException` of `do_body` when no newer commit
+    /// appears; any other error of `do_body` or of listing the directory.
+    pub fn find_segments_file<T>(
+        directory: &Arc<dyn Directory>,
+        mut do_body: impl FnMut(&str) -> Result<T>,
+    ) -> Result<T> {
         let mut last_gen = -1i64;
         let mut exc: Option<LuceneError> = None;
 
@@ -1072,18 +1137,16 @@ impl SegmentInfos {
                             "could not build segments file name for generation {gen}"
                         ))
                     })?;
-                match Self::read_commit_with_min_version(
-                    Arc::clone(&directory),
-                    &segment_file_name,
-                    min_supported_major_version,
-                ) {
-                    Ok(infos) => {
+                match do_body(&segment_file_name) {
+                    Ok(t) => {
                         if Self::get_info_stream().is_some() {
                             Self::message(&format!("success on {segment_file_name}"));
                         }
-                        return Ok(infos);
+                        return Ok(t);
                     }
-                    Err(err) => {
+                    // `catch (IOException err)` (`SegmentInfos.java:838`):
+                    // anything else propagates.
+                    Err(err) if err.is_io_exception() => {
                         if Self::get_info_stream().is_some() {
                             Self::message(&format!(
                                 "primary Exception on '{segment_file_name}': {err}'; will retry: gen = {gen}"
@@ -1093,13 +1156,14 @@ impl SegmentInfos {
                             exc = Some(err);
                         }
                     }
+                    Err(err) => return Err(err),
                 }
             } else {
                 return Err(exc.unwrap_or_else(|| {
-                    LuceneError::Io(io::Error::new(
+                    LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::NotFound,
                         "no segments* file found".to_string(),
-                    ))
+                    )))
                 }));
             }
         }
@@ -1271,7 +1335,7 @@ impl SegmentInfos {
             let sci_id = si_per_commit.id();
             out.write_bytes(&sci_id, 0, sci_id.len())?;
 
-            out.write_set_of_strings(si_per_commit.get_field_infos_files())?;
+            out.write_set_of_strings(&si_per_commit.get_field_infos_files())?;
             let dv_updates_files = si_per_commit.get_doc_values_updates_files();
             codec_util::write_be_int(out, dv_updates_files.len() as i32)?;
             for (field_number, files) in dv_updates_files.iter() {
@@ -1356,8 +1420,17 @@ impl SegmentInfos {
     }
 }
 
-impl Clone for SegmentInfos {
-    fn clone(&self) -> Self {
+impl SegmentInfos {
+    /// Another handle on this `SegmentInfos` holding the very same segment
+    /// commit infos, where Java passes the `SegmentInfos` object itself.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java hands the one
+    /// object around by reference; a Rust value cannot alias the writer's
+    /// guarded field, so a caller that Java gives the object itself (a reader
+    /// opened over the writer, `IndexWriter.java:593-609`) gets this copy of
+    /// the list, whose entries are the same objects (see
+    /// [`SegmentCommitInfo`]). [`Clone`] is Java's `clone()`.
+    pub fn shallow_copy(&self) -> Self {
         Self {
             generation: self.generation,
             last_generation: self.last_generation,
@@ -1365,6 +1438,31 @@ impl Clone for SegmentInfos {
             version: self.version,
             user_data: self.user_data.clone(),
             segments: self.segments.to_vec(),
+            id: self.id,
+            lucene_version: self.lucene_version,
+            min_segment_lucene_version: self.min_segment_lucene_version,
+            index_created_version_major: self.index_created_version_major,
+            pending_commit: self.pending_commit,
+        }
+    }
+}
+
+impl Clone for SegmentInfos {
+    fn clone(&self) -> Self {
+        // `SegmentInfos.java:715`, per cloned segment.
+        debug_assert!(self.segments.iter().all(|info| info.info.codec().is_some()));
+        Self {
+            generation: self.generation,
+            last_generation: self.last_generation,
+            counter: self.counter,
+            version: self.version,
+            user_data: self.user_data.clone(),
+            // `sis.add(info.clone())` per segment (`SegmentInfos.java:711-717`).
+            segments: self
+                .segments
+                .iter()
+                .map(SegmentCommitInfo::java_clone)
+                .collect(),
             id: self.id,
             lucene_version: self.lucene_version,
             min_segment_lucene_version: self.min_segment_lucene_version,
@@ -1414,7 +1512,9 @@ fn radix_36(value: u64) -> String {
 mod tests {
     use super::*;
     use crate::codecs::lucene99::Lucene99SegmentInfoFormat;
-    use crate::codecs::tests::{test_segment_commit_info, test_segment_info, DummyCodec};
+    use crate::codecs::tests::{
+        test_segment_commit_info, test_segment_info_with_codec, DummyCodec,
+    };
     use crate::codecs::{Codec, FilterCodec, SegmentInfoFormat};
     use crate::index::index_file_names::{file_name_from_generation, SEGMENTS};
     use crate::index::SegmentCommitInfo;
@@ -1423,6 +1523,81 @@ mod tests {
     use crate::util::string_helper::StringHelper;
     use std::collections::HashSet;
     use std::sync::Arc;
+
+    /// Creates the empty file `name` in `dir`.
+    fn touch(dir: &Arc<dyn Directory>, name: &str) {
+        dir.create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap()
+            .close()
+            .unwrap();
+    }
+
+    /// `FindSegmentsFile.run()` (`SegmentInfos.java:787-858`) retries
+    /// `doBody` on the newer commit when it hits an `IOException` (here the
+    /// `NoSuchFileException` of a segment file a writer deleted) and a newer
+    /// commit has appeared meanwhile.
+    #[test]
+    fn find_segments_file_retries_an_io_exception_on_a_newer_commit() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(&dir, "segments_1");
+        let mut calls = Vec::new();
+        let result = SegmentInfos::find_segments_file(&dir, |name| {
+            calls.push(name.to_string());
+            if calls.len() == 1 {
+                touch(&dir, "segments_2");
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    crate::store::java_nio_file::no_such_file_exception("_0.cfe"),
+                )));
+            }
+            Ok(name.to_string())
+        });
+        assert_eq!(result.unwrap(), "segments_2");
+        assert_eq!(calls, ["segments_1", "segments_2"]);
+    }
+
+    /// Without forward progress on the generation, `run()` throws the first
+    /// `IOException` (`SegmentInfos.java:854-856`).
+    #[test]
+    fn find_segments_file_throws_the_first_io_exception_without_progress() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(&dir, "segments_1");
+        let mut calls = 0;
+        let result: Result<()> = SegmentInfos::find_segments_file(&dir, |_| {
+            calls += 1;
+            Err(LuceneError::from(LuceneErrorKind::Io(
+                crate::store::java_nio_file::no_such_file_exception(format!("_{calls}.cfe")),
+            )))
+        });
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("_1.cfe"), "{err}");
+        assert_eq!(calls, 1);
+    }
+
+    /// `run()` catches only `IOException` (`SegmentInfos.java:838`): any
+    /// other error of `doBody` propagates at once, even when a newer commit
+    /// has appeared.
+    #[test]
+    fn find_segments_file_propagates_a_non_io_error_at_once() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(&dir, "segments_1");
+        let mut calls = 0;
+        let result: Result<()> = SegmentInfos::find_segments_file(&dir, |_| {
+            calls += 1;
+            touch(&dir, "segments_2");
+            Err(LuceneError::illegal_state("boom"))
+        });
+        assert!(
+            matches!(
+                result,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+        assert_eq!(calls, 1);
+    }
 
     /// A directory with no commit fails `readLatestCommit` with
     /// `IndexNotFoundException("no segments* file found in " + directory +
@@ -1438,7 +1613,10 @@ mod tests {
                       lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}";
         let message =
             |dir: &Arc<dyn Directory>| match SegmentInfos::read_latest_commit(Arc::clone(dir)) {
-                Err(LuceneError::IndexNotFound(message)) => message,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IndexNotFound(message),
+                    ..
+                }) => message,
                 other => panic!("expected IndexNotFoundException, got {:?}", other.err()),
             };
         let empty = message(&dir);
@@ -1603,8 +1781,7 @@ mod tests {
     #[test]
     fn round_trip_single_segment() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
-        let mut info = test_segment_info("_0", 42);
-        info.set_codec(test_codec());
+        let mut info = test_segment_info_with_codec("_0", 42, test_codec());
         info.set_index_sort(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
@@ -1669,7 +1846,11 @@ mod tests {
         assert_eq!(cloned.size(), 1);
         assert_eq!(cloned.generation(), sis.generation());
         assert_eq!(cloned.id(), sis.id());
-        cloned.remove(&sci);
+        // `SegmentInfos.clone()` clones every segment: the original instance is
+        // not in the copy, which removes only its own.
+        assert!(!cloned.remove(&sci));
+        let own = cloned.info(0).clone();
+        assert!(cloned.remove(&own));
         assert_eq!(cloned.size(), 0);
         assert_eq!(sis.size(), 1);
     }
@@ -1693,7 +1874,7 @@ mod tests {
         } else {
             let error = total.unwrap().unwrap_err();
             assert!(
-                matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
                 "{error:?}"
             );
         }
@@ -1703,8 +1884,7 @@ mod tests {
     /// the bytes of its `segments_1`.
     fn committed_single_segment() -> (Arc<dyn Directory>, Vec<u8>) {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
-        let mut info = test_segment_info("_0", 42);
-        info.set_codec(test_codec());
+        let info = test_segment_info_with_codec("_0", 42, test_codec());
         info.set_files(HashSet::from(["_0.fnm".to_string()]))
             .unwrap();
         write_segment_info_file(dir.as_ref(), &info).unwrap();
@@ -1720,7 +1900,7 @@ mod tests {
             .unwrap();
         let mut bytes = vec![0u8; input.length() as usize];
         let length = bytes.len();
-        input.read_bytes(&mut bytes, 0, length).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, length).unwrap();
         input.close().unwrap();
         (dir, bytes)
     }
@@ -1839,7 +2019,13 @@ mod tests {
         let error = SegmentInfos::read_commit_with_min_version(Arc::clone(&dir), "segments_1", 11)
             .unwrap_err();
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(
@@ -1858,7 +2044,13 @@ mod tests {
         bytes[3] ^= 1;
         let (error, resource) = read_patched(&dir, bytes);
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(
@@ -1889,7 +2081,13 @@ mod tests {
         bytes[3] ^= 1;
         let (error, resource) = read_as_written(&dir, bytes);
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(
@@ -1908,7 +2106,13 @@ mod tests {
         bytes[16] = 8;
         let (error, resource) = read_as_written(&dir, bytes);
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "the header's refusal, not the footer's checksum failure: {error:?}"
         );
         assert_eq!(
@@ -1944,7 +2148,13 @@ mod tests {
         bytes[at[0]..at[0] + 9].copy_from_slice(b"Lucene000");
         let (error, resource) = read_patched(&dir, bytes);
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         let message = error.to_string();
@@ -2034,7 +2244,13 @@ impl SegmentInfos {
     /// a non-optional `Arc<dyn Codec>`, so a `SegmentCommitInfo` without one
     /// cannot be built.
     pub fn create_backup_segment_infos(&self) -> Vec<SegmentCommitInfo> {
-        self.segments.to_vec()
+        // `SegmentInfos.java:1126`, per backed-up segment.
+        debug_assert!(self.segments.iter().all(|info| info.info.codec().is_some()));
+        // `list.add(info.clone())` (`SegmentInfos.java:1127`).
+        self.segments
+            .iter()
+            .map(SegmentCommitInfo::java_clone)
+            .collect()
     }
 }
 

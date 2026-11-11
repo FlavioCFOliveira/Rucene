@@ -28,11 +28,10 @@
 //! * Positive control: one flipped byte in a copy of `R` makes Lucene's
 //!   `CheckIndex` report the index as not clean.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rucene::analysis::tokenattributes::{
@@ -125,7 +124,7 @@ fn byte_vector(i: i32) -> Vec<u8> {
 
 /// `IndexInteropFixture.BODY_TYPE`.
 fn body_type() -> FieldType {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_tokenized(true).unwrap();
     t.set_stored(true).unwrap();
     t.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
@@ -136,7 +135,7 @@ fn body_type() -> FieldType {
 
 /// `IndexInteropFixture.TV_TYPE`.
 fn tv_type() -> FieldType {
-    let mut t = FieldType::new();
+    let t = FieldType::new();
     t.set_tokenized(true).unwrap();
     t.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
         .unwrap();
@@ -161,8 +160,8 @@ fn doc(i: i32) -> Document {
     let mut d = Document::new();
     d.add(Box::new(StringField::new("id", id(i), Store::YES).unwrap()));
     d.add(Box::new(Field::new("body", body(i), body_type()).unwrap()));
-    let stream: Rc<RefCell<dyn TokenStream>> =
-        Rc::new(RefCell::new(ScriptedTokenStream::new(tv_tokens(i))));
+    let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+        Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tv_tokens(i))));
     d.add(Box::new(
         Field::new_with_token_stream("tv", stream, tv_type()).unwrap(),
     ));
@@ -253,10 +252,10 @@ fn add_batch(w: &IndexWriter, batch: usize) {
 fn write_corpus(path: &Path) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(path).unwrap());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let w = IndexWriter::new(dir, config).unwrap();
     add_batch(&w, 0);
@@ -420,7 +419,7 @@ fn print_stored(out: &mut String, stored: &dyn StoredFields, doc: i32) {
 }
 
 fn print_doc_values(out: &mut String, leaves: &[Arc<LeafReaderContext>], doc: i32) {
-    let ctx = &leaves[sub_index_from_leaves(doc, leaves)];
+    let ctx = &leaves[sub_index_from_leaves(doc, leaves) as usize];
     let leaf = ctx.leaf_reader();
     let local = doc - ctx.doc_base();
 
@@ -504,7 +503,7 @@ fn print_term_vectors(out: &mut String, reader: &Arc<dyn IndexReader>, doc: i32)
                 utf8(&text),
                 te.total_term_freq().unwrap()
             );
-            let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+            let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
             pe.next_doc().unwrap();
             for _ in 0..pe.freq().unwrap() {
                 let pos = pe.next_position().unwrap();
@@ -541,7 +540,7 @@ fn print_postings(out: &mut String, leaves: &[Arc<LeafReaderContext>], field: &s
         if !te.seek_exact(&bytes(text)).unwrap() {
             continue;
         }
-        let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+        let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
         let mut d = pe.next_doc().unwrap();
         while d != NO_MORE_DOCS {
             let freq = pe.freq().unwrap();
@@ -806,7 +805,7 @@ impl TokenStream for ScriptedTokenStream {
                 .attributes
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .expect("packed attribute");
-            packed.append_string(&token.term);
+            packed.append_string(Some(&token.term));
             packed.set_position_increment(1);
             packed.set_offset(token.start, token.end);
         }
@@ -1169,12 +1168,12 @@ fn write_forced_deletes(path: &Path) {
     policy.set_floor_segment_mb(0.001).unwrap();
     policy.set_segments_per_tier(50.0).unwrap();
     policy.set_target_search_concurrency(2).unwrap();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::CREATE).unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     let w = IndexWriter::new(dir, config).unwrap();
     for s in 0..10 {
         for i in s * 20..s * 20 + 20 {

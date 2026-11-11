@@ -152,11 +152,11 @@ impl RangeDocIdStream {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `min >= max`, matching the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `min >= max`, matching the
     /// `IllegalArgumentException` Java throws.
     pub fn new(min: i32, max: i32) -> Result<Self> {
         if min >= max {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "min = {min} >= max = {max}"
             )));
         }

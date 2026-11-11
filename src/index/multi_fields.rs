@@ -50,6 +50,7 @@ use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, Terms, TermsEnum};
 use crate::index::terms_enum_index::TermsEnumIndex;
 use crate::index::{IndexReader, ReaderSlice};
 use crate::search::DocIdSetIterator;
+use crate::store::java_nio_file::throw_unchecked;
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::BytesRef;
@@ -445,7 +446,7 @@ impl MultiTerms {
         if let Some(terms) = Self::get_terms(reader, field)? {
             let mut te = terms.iterator()?;
             if te.seek_exact(term)? {
-                return Ok(Some(te.postings(None, flags)?));
+                return te.postings(None, flags);
             }
         }
         Ok(None)
@@ -547,7 +548,9 @@ impl Terms for MultiTerms {
         Ok({
             let mut sum: i64 = 0;
             for sub in &self.subs {
-                sum += sub.sum_total_term_freq()?;
+                let v = sub.sum_total_term_freq()?;
+                debug_assert!(v != -1);
+                sum += v;
             }
             sum
         })
@@ -557,7 +560,9 @@ impl Terms for MultiTerms {
         Ok({
             let mut sum: i64 = 0;
             for sub in &self.subs {
-                sum += sub.sum_doc_freq()?;
+                let v = sub.sum_doc_freq()?;
+                debug_assert!(v != -1);
+                sum += v;
             }
             sum
         })
@@ -567,7 +572,9 @@ impl Terms for MultiTerms {
         Ok({
             let mut sum: i32 = 0;
             for sub in &self.subs {
-                sum = sum.wrapping_add(sub.doc_count()?);
+                let v = sub.doc_count()?;
+                debug_assert!(v != -1);
+                sum = sum.wrapping_add(v);
             }
             sum
         })
@@ -732,7 +739,7 @@ static NEXT_MULTI_TERMS_ENUM_ID: AtomicU64 = AtomicU64::new(0);
 /// against `lucene-core-10.5.0.jar` by setting the field to `null` through
 /// reflection.
 fn null_sub_terms_enum(method: &str, expression: &str) -> LuceneError {
-    LuceneError::illegal_state(format!(
+    LuceneError::null_pointer_with_message(format!(
         "Cannot invoke \"org.apache.lucene.index.TermsEnum.{method}\" because \"{expression}\" is null"
     ))
 }
@@ -988,7 +995,7 @@ impl MultiTermsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `slices` is too large for
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `slices` is too large for
     /// a `PriorityQueue`, as Java's constructor throws.
     pub fn new(slices: &[ReaderSlice]) -> Result<Self> {
         let n = slices.len();
@@ -1045,7 +1052,7 @@ impl MultiTermsEnum {
     /// # Errors
     ///
     /// Propagates whatever advancing a sub-enum raises, and returns
-    /// [`LuceneError::IllegalArgument`] — Java's
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — Java's
     /// `ArrayIndexOutOfBoundsException` — for a sub index this enum has no
     /// slice for.
     pub fn reset(&mut self, terms_enums_index: Vec<TermsEnumIndex>) -> Result<Option<&mut Self>> {
@@ -1059,7 +1066,7 @@ impl MultiTermsEnum {
             if has_term {
                 let sub_index = terms_enum_index.sub_index();
                 let entry = self.queue.subs_mut().get_mut(sub_index).ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "Index {sub_index} out of bounds for length {num_slices}"
                     ))
                 })?;
@@ -1080,7 +1087,10 @@ impl MultiTermsEnum {
 
     /// Reads the term `current` refers to: the current term of the enum of
     /// sub `sub`, as it stands now (see [`current`](Self#structfield.current)).
-    fn sub_term(&self, sub: usize) -> Result<BytesRef> {
+    fn sub_term(&self, sub: usize) -> Result<Option<BytesRef>> {
+        // Java's `current` is the `BytesRef` the sub's `term()` returned; it is
+        // read as it stands, without calling `term()` again
+        // (`MultiTermsEnum.java:208, 249, 279-281`).
         self.queue.subs()[sub]
             .base
             .terms_enum()
@@ -1089,7 +1099,7 @@ impl MultiTermsEnum {
                     "INVARIANT: a sub that supplied a term holds an enum".to_string(),
                 )
             })?
-            .term()
+            .term_buffer()
     }
 
     /// Extracts every sub that sits on the top term out of the queue into
@@ -1109,7 +1119,7 @@ impl MultiTermsEnum {
         // call next() on each top, and reorder queue
         for _ in 0..self.top.len() {
             let top = self.queue.top().ok_or_else(|| {
-                LuceneError::illegal_state(
+                LuceneError::null_pointer_with_message(
                     "Cannot invoke \"org.apache.lucene.index.MultiTermsEnum$TermsEnumWithSlice.next()\" because \"top\" is null"
                         .to_string(),
                 )
@@ -1265,27 +1275,26 @@ impl TermsEnum for MultiTermsEnum {
     /// Equivalent to `MultiTermsEnum.seekExact(long)`, which throws
     /// `UnsupportedOperationException`.
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MultiTermsEnum does not support seekOrd".to_string(),
         ))
     }
 
     /// Equivalent to `MultiTermsEnum.term()`, which answers the `current`
     /// field: the current term of the sub that supplied it, read now (see
-    /// [`MultiTermsEnum`]'s `current`); its `null` is an error here.
-    fn term(&self) -> Result<BytesRef> {
+    /// [`MultiTermsEnum`]'s `current`), or `None` for Java's `null` when the
+    /// enum is not positioned.
+    fn term(&self) -> Result<Option<BytesRef>> {
         match self.current {
             Some(sub) => self.sub_term(sub),
-            None => Err(LuceneError::illegal_state(
-                "MultiTermsEnum.term() called with no current term".to_string(),
-            )),
+            None => Ok(None),
         }
     }
 
     /// Equivalent to `MultiTermsEnum.ord()`, which throws
     /// `UnsupportedOperationException`.
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MultiTermsEnum does not support ord".to_string(),
         ))
     }
@@ -1343,7 +1352,7 @@ impl TermsEnum for MultiTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         // Can only reuse if incoming enum is also a MultiDocsEnum ... and was
         // previously created w/ this MultiTermsEnum:
         let mut docs_enum: Box<dyn PostingsEnum> = match reuse {
@@ -1401,6 +1410,8 @@ impl TermsEnum for MultiTermsEnum {
                     )
                 })?
                 .postings(reuse_sub, flags)?;
+            debug_assert!(sub_postings_enum.is_some());
+            let sub_postings_enum = sub_postings_enum.ok_or_else(LuceneError::null_pointer)?;
             // Java stores the enum both in `subPostingsEnums[subIndex]` and in
             // `subDocs[upto]`; here it lives in the slot, and goes back to
             // `subPostingsEnums` on the next reuse.
@@ -1416,13 +1427,16 @@ impl TermsEnum for MultiTermsEnum {
         multi.reset(sub_docs);
         // Rust-only: the `subPostingsEnums` slot each live enum returns to.
         multi.live_sub_indices = sub_indices.into_iter().map(Some).collect();
-        Ok(docs_enum)
+        Ok(Some(docs_enum))
     }
 
     /// Equivalent to `MultiTermsEnum.impacts(int)`: implemented to not fail
     /// `CheckIndex`, but one shouldn't be using impacts on a slow reader.
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Ok(Box::new(SlowImpactsEnum::new(self.postings(None, flags)?)))
+        Ok(Box::new(SlowImpactsEnum::new(
+            self.postings(None, flags)?
+                .ok_or_else(LuceneError::null_pointer)?,
+        )))
     }
 
     /// Equivalent to `MultiTermsEnum.next()` (`MultiTermsEnum.java:265-293`).
@@ -1432,8 +1446,7 @@ impl TermsEnum for MultiTermsEnum {
     /// Propagates any error raised while moving a sub-enum. After a
     /// [`seek_exact`](TermsEnum::seek_exact) that found nothing on an enum that
     /// never had a term, Java re-seeks to its `null` `current` and throws
-    /// `NullPointerException`; that is reported as
-    /// [`LuceneError::IllegalState`] with the JDK's message.
+    /// `NullPointerException` with the JDK's message.
     fn next(&mut self) -> Result<Option<BytesRef>> {
         if self.last_seek_exact {
             // Must seekCeil at this point, so those subs that didn't have the
@@ -1447,12 +1460,16 @@ impl TermsEnum for MultiTermsEnum {
                 self.queue.clear();
                 self.top.clear();
                 self.last_seek_exact = false;
-                return Err(LuceneError::illegal_state(
+                return Err(LuceneError::null_pointer_with_message(
                     "Cannot read field \"bytes\" because \"ref\" is null".to_string(),
                 ));
             };
             // Java passes `current` itself; this is a copy of the same bytes.
-            let current = self.sub_term(current)?;
+            let current = self.sub_term(current)?.ok_or_else(|| {
+                LuceneError::null_pointer_with_message(
+                    "Cannot read field \"bytes\" because \"ref\" is null".to_string(),
+                )
+            })?;
             let status = self.seek_ceil(&current)?;
             debug_assert_eq!(status, SeekStatus::FOUND);
             self.last_seek_exact = false;
@@ -1473,7 +1490,7 @@ impl TermsEnum for MultiTermsEnum {
         }
 
         match self.current {
-            Some(sub) => Ok(Some(self.sub_term(sub)?)),
+            Some(sub) => self.sub_term(sub),
             None => Ok(None),
         }
     }
@@ -1532,9 +1549,15 @@ impl std::fmt::Debug for EnumWithSlice {
 /// The `NullPointerException` Java raises when `MultiPostingsEnum` reaches a
 /// sub whose `postingsEnum` is `null`.
 fn null_current_postings(method: &str) -> LuceneError {
-    LuceneError::illegal_state(format!(
+    LuceneError::null_pointer_with_message(null_current_postings_message(method))
+}
+
+/// The JVM's helpful message for the `NullPointerException` of
+/// `current.<method>` when `current` is `null`.
+fn null_current_postings_message(method: &str) -> String {
+    format!(
         "Cannot invoke \"org.apache.lucene.index.PostingsEnum.{method}\" because \"this.current\" is null"
-    ))
+    )
 }
 
 /// A [`PostingsEnum`] that concatenates several sub-readers' postings, offset
@@ -1807,6 +1830,7 @@ impl PostingsEnum for MultiPostingsEnum {
     /// Equivalent to `MultiPostingsEnum.freq()`, which asserts and then
     /// dereferences `current`.
     fn freq(&self) -> Result<i32> {
+        debug_assert!(self.current.is_some());
         self.current_enum("freq()")?.freq()
     }
 
@@ -1814,17 +1838,35 @@ impl PostingsEnum for MultiPostingsEnum {
         self.current_enum_mut("nextPosition()")?.next_position()
     }
 
+    /// Equivalent to `MultiPostingsEnum.startOffset()`
+    /// (`MultiPostingsEnum.java:151-153`), which dereferences `current`.
+    ///
+    /// # Panics
+    ///
+    /// With Java's `NullPointerException` when `current` is `null`.
     fn start_offset(&self) -> i32 {
         match self.current_enum("startOffset()") {
             Ok(current) => current.start_offset(),
-            Err(_) => -1,
+            Err(_) => throw_unchecked(
+                "java.lang.NullPointerException",
+                Some(&null_current_postings_message("startOffset()")),
+            ),
         }
     }
 
+    /// Equivalent to `MultiPostingsEnum.endOffset()`
+    /// (`MultiPostingsEnum.java:156-158`), which dereferences `current`.
+    ///
+    /// # Panics
+    ///
+    /// With Java's `NullPointerException` when `current` is `null`.
     fn end_offset(&self) -> i32 {
         match self.current_enum("endOffset()") {
             Ok(current) => current.end_offset(),
-            Err(_) => -1,
+            Err(_) => throw_unchecked(
+                "java.lang.NullPointerException",
+                Some(&null_current_postings_message("endOffset()")),
+            ),
         }
     }
 
@@ -2123,8 +2165,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.entries[self.pos as usize].0.clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.entries[self.pos as usize].0.clone()))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -2145,7 +2187,7 @@ mod tests {
             &mut self,
             reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
             let docs = self.entries[self.pos as usize].3.clone();
             if let Some(mut reuse) = reuse {
                 if let Some(postings) = reuse
@@ -2153,10 +2195,10 @@ mod tests {
                     .and_then(|any| any.downcast_mut::<VecPostings>())
                 {
                     *postings = VecPostings::new(docs);
-                    return Ok(reuse);
+                    return Ok(Some(reuse));
                 }
             }
-            Ok(Box::new(VecPostings::new(docs)))
+            Ok(Some(Box::new(VecPostings::new(docs))))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -2433,7 +2475,7 @@ mod tests {
         let mut te = mt.iterator().unwrap();
         assert!(te.seek_exact(&term(b"cherry")).unwrap());
         assert_eq!(te.doc_freq().unwrap(), 4);
-        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         let docs: Vec<i32> = std::iter::from_fn(|| match pe.next_doc().unwrap() {
             crate::search::NO_MORE_DOCS => None,
             d => Some(d),
@@ -2466,7 +2508,7 @@ mod tests {
         .unwrap();
         let mut te = mt.iterator().unwrap();
         assert!(te.seek_exact(&term(b"x")).unwrap());
-        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut pe = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         // advance(2) skips leaf 0's doc 1 and lands on leaf 1's doc 1 (global 3).
         assert_eq!(pe.advance(2).unwrap(), 3);
         assert_eq!(pe.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
@@ -2554,7 +2596,7 @@ mod tests {
             te.seek_ceil(&term(b"banana")).unwrap(),
             SeekStatus::NOT_FOUND
         );
-        assert_eq!(te.term().unwrap().slice(), b"mango");
+        assert_eq!(te.term().unwrap().unwrap().slice(), b"mango");
 
         // Seek past everything -> END.
         assert_eq!(te.seek_ceil(&term(b"zzz")).unwrap(), SeekStatus::END);
@@ -2592,7 +2634,7 @@ mod tests {
         // have a valid "current" per sub.
         let _ = te.next().unwrap(); // apple
         assert!(te.seek_exact(&term(b"cherry")).unwrap());
-        assert_eq!(te.term().unwrap().slice(), b"cherry");
+        assert_eq!(te.term().unwrap().unwrap().slice(), b"cherry");
         assert_eq!(te.doc_freq().unwrap(), 2);
         // After seek_exact, next() should re-seek and advance past cherry.
         assert!(te.next().unwrap().is_none(), "cherry was the last term");
@@ -2764,7 +2806,7 @@ mod tests {
             self.max_doc
         }
         fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-            Err(LuceneError::UnsupportedOperation("stub".to_string()))
+            Err(LuceneError::unsupported_operation("stub".to_string()))
         }
         fn do_close(&self) -> Result<()> {
             Ok(())
@@ -2922,7 +2964,10 @@ mod tests {
         let mut enumerator = terms.multi_iterator().unwrap().unwrap();
 
         assert_eq!(enumerator.next().unwrap(), Some(term(b"a")));
-        let mut boxed = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut boxed = enumerator
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let postings = as_multi(&mut boxed);
         assert_eq!(postings.get_num_subs(), 2, "both subs hold 'a'");
         let reader_indexes: Vec<i32> = postings
@@ -2938,7 +2983,10 @@ mod tests {
         assert_eq!(postings.get_subs().len(), 2);
 
         assert_eq!(enumerator.next().unwrap(), Some(term(b"b")));
-        let mut boxed = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut boxed = enumerator
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let postings = as_multi(&mut boxed);
         assert_eq!(postings.get_num_subs(), 1, "only the first sub holds 'b'");
         assert_eq!(postings.get_subs()[0].slice.reader_index, 0);
@@ -2961,7 +3009,10 @@ mod tests {
         let terms = mf.multi_terms("body").unwrap().unwrap();
         let mut enumerator = terms.multi_iterator().unwrap().unwrap();
         assert_eq!(enumerator.next().unwrap(), Some(term(b"a")));
-        let mut postings = enumerator.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = enumerator
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_eq!(postings.next_doc().unwrap(), 0);
         assert_eq!(postings.next_doc().unwrap(), 7);
         assert_eq!(postings.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
@@ -3036,7 +3087,7 @@ mod tests {
             2,
             "leaf 0 was dropped by the seek optimisation"
         );
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(drain_docs(postings.as_mut()), vec![1, 11]);
     }
 
@@ -3082,7 +3133,7 @@ mod tests {
         // "a" exists only in leaf 0, so leaf 1's seek_exact fails.
         assert!(te.seek_exact(&term(b"a")).unwrap());
         assert!(te.seek_exact(&term(b"c")).unwrap());
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(
             drain_docs(postings.as_mut()),
             vec![1, 11],
@@ -3100,7 +3151,7 @@ mod tests {
         assert_eq!(te.doc_freq().unwrap(), 2);
         assert!(te.seek_exact(&term(b"a")).unwrap());
         assert_eq!(te.doc_freq().unwrap(), 1);
-        assert_eq!(te.term().unwrap(), term(b"a"));
+        assert_eq!(te.term().unwrap(), Some(term(b"a")));
         // ... and forwards again, which is the optimised direction.
         assert!(te.seek_exact(&term(b"b")).unwrap());
         assert_eq!(te.doc_freq().unwrap(), 1);
@@ -3123,7 +3174,7 @@ mod tests {
         let mt = two_leaves_with_a_shared_trailing_term();
         let mut te = mt.multi_iterator().unwrap().unwrap();
         assert!(te.seek_exact(&term(b"c")).unwrap());
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(drain_docs(postings.as_mut()), vec![1, 11]);
         // Exhausted: every further call keeps reporting NO_MORE_DOCS and never
         // rewinds into an earlier sub.
@@ -3493,10 +3544,10 @@ mod tests {
         let mt = two_leaves_with_a_shared_trailing_term();
         let mut te = mt.multi_iterator().unwrap().unwrap();
         assert!(te.seek_exact(&term(b"a")).unwrap());
-        assert_eq!(te.term().unwrap(), term(b"a"));
+        assert_eq!(te.term().unwrap(), Some(term(b"a")));
 
         assert!(!te.seek_exact(&term(b"bb")).unwrap());
-        assert_eq!(te.term().unwrap(), term(b"a"), "leaf 0's term");
+        assert_eq!(te.term().unwrap(), Some(term(b"a")), "leaf 0's term");
         assert_eq!(te.doc_freq().unwrap(), 0, "no sub holds `bb`");
         // `next()` re-seeks to that term first (`MultiTermsEnum.java:267-276`),
         // so iteration resumes after `a`.
@@ -3512,9 +3563,9 @@ mod tests {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn crate::store::Directory> =
             Arc::new(crate::store::ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for segment in [["aaaa", "cccc"], ["bbbb", "cccc"]] {
@@ -3543,11 +3594,11 @@ mod tests {
         let terms = MultiTerms::get_terms(&reader, "f").unwrap().unwrap();
         let mut te = terms.iterator().unwrap();
         assert!(te.seek_exact(&term(b"aaaa")).unwrap());
-        assert_eq!(te.term().unwrap(), term(b"aaaa"));
+        assert_eq!(te.term().unwrap(), Some(term(b"aaaa")));
         assert!(!te.seek_exact(&term(b"aazz")).unwrap());
         assert_eq!(
             te.term().unwrap(),
-            term(b"cccc"),
+            Some(term(b"cccc")),
             "leaf 0 scanned to `cccc`"
         );
         assert_eq!(te.next().unwrap(), None);
@@ -3564,7 +3615,7 @@ mod tests {
         let mut te = terms.iterator().unwrap();
         assert_eq!(te.seek_ceil(&term(b"aaaa")).unwrap(), SeekStatus::FOUND);
         assert_eq!(te.seek_ceil(&term(b"zzzz")).unwrap(), SeekStatus::END);
-        assert_eq!(te.term().unwrap(), term(b""));
+        assert_eq!(te.term().unwrap(), Some(term(b"")));
     }
 
     /// The JDK's messages for the `NullPointerException`s of a sub with a
@@ -3573,7 +3624,7 @@ mod tests {
     /// which nulls `top[0].termsEnum` and clears the queue by reflection).
     #[test]
     fn null_sub_enums_and_an_empty_queue_report_javas_npe_texts() {
-        let npe = |message: &str| LuceneError::illegal_state(message.to_string()).to_string();
+        let npe = |message: &str| LuceneError::null_pointer_with_message(message).to_string();
         let mt = two_leaves_with_a_shared_trailing_term();
 
         let mut te = mt.multi_iterator().unwrap().unwrap();
@@ -3673,7 +3724,7 @@ mod tests {
         let mut te = terms.iterator().unwrap();
         assert_eq!(te.next().unwrap(), Some(term(b"apple")));
         assert_eq!(te.doc_freq().unwrap(), 3);
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(
             drain_docs(postings.as_mut()),
             vec![0, 2, 4],
@@ -3768,12 +3819,15 @@ mod tests {
         let mut te = mt.multi_iterator().unwrap().unwrap();
 
         assert_eq!(te.next().unwrap(), Some(term(b"a")));
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         let multi = identity(postings.as_ref());
         let leaf0 = sub_identity(&mut postings, 0);
 
         assert_eq!(te.next().unwrap(), Some(term(b"b")));
-        let mut postings = te.postings(Some(postings), POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             identity(postings.as_ref()),
             multi,
@@ -3783,7 +3837,10 @@ mod tests {
         assert_ne!(leaf1, leaf0);
 
         assert_eq!(te.next().unwrap(), Some(term(b"c")));
-        let mut postings = te.postings(Some(postings), POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_eq!(identity(postings.as_ref()), multi);
         assert_eq!(
             (
@@ -3804,9 +3861,12 @@ mod tests {
         assert_eq!(first.next().unwrap(), Some(term(b"a")));
         assert_eq!(second.next().unwrap(), Some(term(b"a")));
 
-        let foreign = first.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let foreign = first.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         let foreign_identity = identity(foreign.as_ref());
-        let mut postings = second.postings(Some(foreign), POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = second
+            .postings(Some(foreign), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_ne!(
             identity(postings.as_ref()),
             foreign_identity,
@@ -3824,7 +3884,10 @@ mod tests {
         assert_eq!(te.next().unwrap(), Some(term(b"a")));
         let other: Box<dyn PostingsEnum> = Box::new(VecPostings::new(vec![3]));
         let other_identity = identity(other.as_ref());
-        let mut postings = te.postings(Some(other), POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te
+            .postings(Some(other), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         assert_ne!(identity(postings.as_ref()), other_identity);
         assert_eq!(drain_docs(postings.as_mut()), vec![0]);
     }
@@ -3877,7 +3940,7 @@ mod tests {
         assert_eq!(match_order(&te), vec![1, 2, 0]);
         // `postings` sorts `top` in place by sub index
         // (`ArrayUtil.timSort(top, 0, numTop, ...)`).
-        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap().unwrap();
         assert_eq!(match_order(&te), vec![0, 1, 2]);
         assert_eq!(drain_docs(postings.as_mut()), vec![1, 11, 21]);
         assert_eq!(te.next().unwrap(), None);

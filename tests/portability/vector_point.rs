@@ -195,6 +195,32 @@ fn assert_same_bits(actual: f32, expected_bits: u32, what: &str) {
     );
 }
 
+/// [`assert_same_bits`] over a value Rucene computes, unless computing it
+/// fails one of `VectorUtil`'s `assert Float.isFinite(r)`
+/// (`VectorUtil.java:68, 89, 111`): the fixture runs without `-ea`, so it
+/// prints the non-finite value, while a debug build — Java with `-ea` —
+/// throws that `AssertionError`. Any other panic fails the test.
+fn assert_same_bits_or_finite_assertion(
+    compute: impl FnOnce() -> f32,
+    expected_bits: u32,
+    what: &str,
+) {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(compute)) {
+        Ok(actual) => assert_same_bits(actual, expected_bits, what),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            assert!(
+                cfg!(debug_assertions) && message.ends_with(".is_finite()"),
+                "{what}: unexpected panic: {message}"
+            );
+        }
+    }
+}
+
 /// Rejects a fixture run made under JVM flags that would make the reference
 /// values machine-dependent.
 fn assert_deterministic_vector_path(stdout: &str) {
@@ -252,24 +278,24 @@ fn float_vector_similarity_is_bit_identical_to_java() {
             );
 
             let label = format!("float dim={dim} id={id}");
-            assert_same_bits(
-                vector_util::dot_product_f32(a, b).expect("same dimensions"),
+            assert_same_bits_or_finite_assertion(
+                || vector_util::dot_product_f32(a, b).expect("same dimensions"),
                 parse_bits(fields["dotProduct"]),
                 &format!("{label} dotProduct"),
             );
-            assert_same_bits(
-                vector_util::cosine_f32(a, b).expect("same dimensions"),
+            assert_same_bits_or_finite_assertion(
+                || vector_util::cosine_f32(a, b).expect("same dimensions"),
                 parse_bits(fields["cosine"]),
                 &format!("{label} cosine"),
             );
-            assert_same_bits(
-                vector_util::square_distance_f32(a, b).expect("same dimensions"),
+            assert_same_bits_or_finite_assertion(
+                || vector_util::square_distance_f32(a, b).expect("same dimensions"),
                 parse_bits(fields["squareDistance"]),
                 &format!("{label} squareDistance"),
             );
             for (name, function) in similarity_functions() {
-                assert_same_bits(
-                    function.compare_f32(a, b).expect("same dimensions"),
+                assert_same_bits_or_finite_assertion(
+                    || function.compare_f32(a, b).expect("same dimensions"),
                     parse_bits(fields[name]),
                     &format!("{label} {name}"),
                 );

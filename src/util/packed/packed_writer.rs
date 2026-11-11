@@ -9,14 +9,14 @@
 use super::bulk_operation::{bulk_operation_of, SharedBulkOperation};
 use super::reader::{PackedIntsReaderIterator, PackedIntsWriter};
 use super::{Format, PackedInts};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 
 fn end_of_stream(message: &'static str) -> LuceneError {
-    LuceneError::Io(std::io::Error::new(
+    LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
         std::io::ErrorKind::UnexpectedEof,
         message,
-    ))
+    )))
 }
 
 /// Writes a fixed-width packed-integer stream, most significant byte first.
@@ -49,7 +49,7 @@ impl<'a> PackedWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `bits_per_value` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `bits_per_value` is not a
     /// width `format` supports.
     pub fn new(
         format: Format,
@@ -58,6 +58,9 @@ impl<'a> PackedWriter<'a> {
         bits_per_value: i32,
         mem: i32,
     ) -> Result<Self> {
+        // `PackedInts.Writer(DataOutput, int, int)` (`PackedInts.java:607-613`).
+        debug_assert!(bits_per_value <= 64);
+        debug_assert!(value_count >= 0 || value_count == -1);
         let encoder = bulk_operation_of(format, bits_per_value)?;
         let iterations = encoder.compute_iterations(value_count, mem).max(0) as usize;
         Ok(Self {
@@ -105,11 +108,7 @@ impl PackedIntsWriter for PackedWriter<'_> {
 
     fn add(&mut self, v: i64) -> Result<()> {
         debug_assert!(PackedInts::unsigned_bits_required(v) <= self.bits_per_value);
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "PackedWriter is already finished".to_string(),
-            ));
-        }
+        debug_assert!(!self.finished);
         if self.value_count != -1 && self.written >= self.value_count {
             return Err(end_of_stream("Writing past end of stream"));
         }
@@ -136,11 +135,7 @@ impl PackedIntsWriter for PackedWriter<'_> {
     }
 
     fn finish(&mut self) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::illegal_state(
-                "PackedWriter is already finished".to_string(),
-            ));
-        }
+        debug_assert!(!self.finished);
         if self.value_count != -1 {
             while self.written < self.value_count {
                 self.add(0)?;
@@ -184,7 +179,7 @@ impl<'a> PackedReaderIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `bits_per_value` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `bits_per_value` is not a
     /// width `format` supports.
     pub fn new(
         format: Format,
@@ -245,7 +240,7 @@ impl PackedIntsReaderIterator for PackedReaderIterator<'_> {
                     .byte_count(self.packed_ints_version, remaining, self.bits_per_value)?;
             let blocks_to_read = std::cmp::min(remaining_blocks as usize, self.next_blocks.len());
             self.input
-                .read_bytes(&mut self.next_blocks, 0, blocks_to_read)?;
+                .read_bytes(Some(&mut self.next_blocks), 0, blocks_to_read)?;
             if blocks_to_read < self.next_blocks.len() {
                 self.next_blocks[blocks_to_read..].fill(0);
             }
@@ -292,7 +287,7 @@ impl PackedInts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `bits_per_value` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `bits_per_value` is not a
     /// width `format` supports.
     pub fn get_writer_no_header<'a>(
         out: &'a mut dyn DataOutput,
@@ -311,8 +306,8 @@ impl PackedInts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IndexFormatNotSupported`] when `version` is
-    /// outside the supported range, and [`LuceneError::IllegalArgument`] when
+    /// Returns [`LuceneErrorKind::IndexFormatNotSupported`] when `version` is
+    /// outside the supported range, and [`LuceneErrorKind::IllegalArgument`] when
     /// `bits_per_value` is not a width `format` supports.
     pub fn get_reader_iterator_no_header<'a>(
         input: &'a mut dyn DataInput,

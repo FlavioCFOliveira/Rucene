@@ -61,11 +61,11 @@ fn two_pow(exponent: i32) -> f64 {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] for a negative value, matching
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a negative value, matching
 /// Java's `IllegalArgumentException`.
 pub fn scaling_factor(value: f32) -> Result<i32> {
     if value < 0.0 {
-        Err(LuceneError::IllegalArgument(
+        Err(LuceneError::illegal_argument(
             "Scores must be positive or null".to_string(),
         ))
     } else if value == 0.0 {
@@ -369,6 +369,7 @@ impl WANDCore {
                     // block. We need to move to the next block in order to not
                     // miss any potential hits between `target` and
                     // `head.top().doc`.
+                    debug_assert!(self.wrappers[head_top].doc >= target);
                     self.update_max_scores(target)?;
                     break;
                 }
@@ -376,6 +377,11 @@ impl WANDCore {
             }
         }
 
+        debug_assert!(self
+            .head
+            .top()
+            .is_none_or(|head_top| self.wrappers[head_top].doc <= self.up_to));
+        debug_assert!(self.up_to >= target);
         Ok(())
     }
 
@@ -660,6 +666,7 @@ impl TwoPhaseIterator for WANDCore {
     }
 
     fn matches(&mut self) -> Result<bool> {
+        debug_assert!(self.lead.is_empty());
         self.move_to_next_candidate()?;
 
         let mut scaled_lead_score = 0i64;
@@ -682,6 +689,9 @@ impl TwoPhaseIterator for WANDCore {
             let prev_lead_len = self.lead.len();
             self.advance_tail()?;
             if self.score_mode == ScoreMode::TOP_SCORES && self.lead.len() != prev_lead_len {
+                // Java's `prevLead == lead.next`: exactly one clause joined the
+                // lead.
+                debug_assert!(self.lead.len() == prev_lead_len + 1);
                 scaled_lead_score = scale_max_score(
                     MathUtil::sum_upper_bound(self.lead_score, FLOAT_MANTISSA_BITS) as f32,
                     self.scaling_factor,
@@ -734,7 +744,7 @@ impl WANDScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `min_should_match` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `min_should_match` is not
     /// strictly less than the number of clauses, and propagates any I/O error
     /// raised while priming the score bounds.
     pub fn new(
@@ -744,7 +754,7 @@ impl WANDScorer {
         lead_cost: i64,
     ) -> Result<Self> {
         if min_should_match >= scorers.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minShouldMatch should be < the number of scorers".to_string(),
             ));
         }
@@ -852,6 +862,12 @@ impl DocIdSetIterator for WANDScorer {
 }
 
 impl Scorable for WANDScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `WANDScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         // we need to know about all matches
         self.core.advance_all_tail()?;
@@ -903,8 +919,9 @@ impl Scorable for WANDScorer {
 }
 
 impl Scorer for WANDScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
+    /// This scorer answers with itself: Java tests `instanceof WANDScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn doc_id(&self) -> i32 {

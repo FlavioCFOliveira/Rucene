@@ -1,0 +1,27 @@
+# call	class	message
+nextLong(0)	java.lang.IllegalArgumentException	n <= 0: 0
+nextLong(-5)	java.lang.IllegalArgumentException	n <= 0: -5
+randomIntBetween(5,4)	java.lang.AssertionError	max must be >= min: 5, 4
+randomLongBetween(5,4)	java.lang.AssertionError	max must be >= min: 5, 4
+randomDoubleBetween(1,0.5)	java.lang.AssertionError	max must be >= min: 1.0, 0.5
+randomDoubleBetween(0,NaN)	java.lang.AssertionError	max must be >= min: 0.0, NaN
+randomDoubleBetween(NaN,NaN)	java.lang.AssertionError	max must be >= min: NaN, NaN
+randomDoubleBetween(1e-5,1e7)	java.lang.AssertionError	max must be >= min: 1.0E7, 1.0E-5
+randomFloatBetween(1,0.5)	java.lang.AssertionError	max must be >= min: 1.0, 0.5
+randomFloatBetween(3e10,1.25e-4)	java.lang.AssertionError	max must be >= min: 3.0E10, 1.25E-4
+randomFloatBetween(0,NaN)	java.lang.AssertionError	max must be >= min: 0.0, NaN
+fuzzUp(2,1)	java.lang.AssertionError	<null>
+fuzzDown(1,2)	java.lang.AssertionError	<null>
+fuzzUpF(2,1)	java.lang.AssertionError	<null>
+fuzzDownF(1,2)	java.lang.AssertionError	<null>
+randomFrom(Object[0])	java.lang.IllegalArgumentException	Can't pick a random object from an empty array.
+randomFrom(int[0])	java.lang.IllegalArgumentException	Can't pick a random object from an empty array.
+randomFrom(List[0])	java.lang.IllegalArgumentException	Can't pick a random object from an empty list.
+randomFrom(Collection[0])	java.lang.IllegalArgumentException	Can't pick a random object from an empty collection.
+CodepointSetGenerator(char[0])	java.lang.IllegalArgumentException	Empty set of characters?
+CodepointSetGenerator("")	java.lang.IllegalArgumentException	Empty set of characters?
+CodepointSetGenerator(surrogate)	java.lang.IllegalArgumentException	Value is part of a surrogate pair: 0xd800
+CodepointSetGenerator(low surrogate)	java.lang.IllegalArgumentException	Value is part of a surrogate pair: 0xdfff
+suppOnly.units(3,3)	java.lang.IllegalArgumentException	Cannot return an odd number of code units  when surrogate pairs are the only available codepoints.
+randomBytesOfLength(-1)	java.lang.NegativeArraySizeException	-1
+ofCodeUnitsLength(5,4)	java.lang.AssertionError	max must be >= min: 5, 4

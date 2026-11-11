@@ -1,0 +1,1986 @@
+# scenario	seed	step	call	outcome (ok\tvalue | err\tclass\tmessage[\tcause=...])
+write_io	0	0	createOutput w0	ok	
+write_io	0	1	writeInt	err	java.io.IOException	a random IOException (w0)
+write_io	0	2	writeBytes 300	ok	null
+write_io	0	3	writeString	ok	null
+write_io	0	4	writeVLong	ok	null
+write_io	0	5	getFilePointer	ok	307
+write_io	0	6	close	ok	null
+write_io	0	7	createOutput w1	ok	
+write_io	0	8	writeInt	ok	null
+write_io	0	9	writeBytes 300	ok	null
+write_io	0	10	writeString	ok	null
+write_io	0	11	writeVLong	ok	null
+write_io	0	12	getFilePointer	ok	313
+write_io	0	13	close	ok	null
+write_io	0	14	createOutput w2	ok	
+write_io	0	15	writeInt	err	java.io.IOException	a random IOException (w2)
+write_io	0	16	writeBytes 300	ok	null
+write_io	0	17	writeString	ok	null
+write_io	0	18	writeVLong	ok	null
+write_io	0	19	getFilePointer	ok	310
+write_io	0	20	close	ok	null
+write_io	0	21	createOutput w3	ok	
+write_io	0	22	writeInt	ok	null
+write_io	0	23	writeBytes 300	ok	null
+write_io	0	24	writeString	ok	null
+write_io	0	25	writeVLong	ok	null
+write_io	0	26	getFilePointer	ok	314
+write_io	0	27	close	ok	null
+write_io	0	28	createOutput w4	ok	
+write_io	0	29	writeInt	err	java.io.IOException	a random IOException (w4)
+write_io	0	30	writeBytes 300	ok	null
+write_io	0	31	writeString	ok	null
+write_io	0	32	writeVLong	ok	null
+write_io	0	33	getFilePointer	ok	311
+write_io	0	34	close	ok	null
+write_io	0	35	createOutput w5	ok	
+write_io	0	36	writeInt	ok	null
+write_io	0	37	writeBytes 300	ok	null
+write_io	0	38	writeString	ok	null
+write_io	0	39	writeVLong	ok	null
+write_io	0	40	getFilePointer	ok	314
+write_io	0	41	close	ok	null
+write_io	0	42	createOutput w6	ok	
+write_io	0	43	writeInt	ok	null
+write_io	0	44	writeBytes 300	ok	null
+write_io	0	45	writeString	ok	null
+write_io	0	46	writeVLong	ok	null
+write_io	0	47	getFilePointer	ok	314
+write_io	0	48	close	ok	null
+write_io	0	49	createOutput w7	ok	
+write_io	0	50	writeInt	ok	null
+write_io	0	51	writeBytes 300	ok	null
+write_io	0	52	writeString	ok	null
+write_io	0	53	writeVLong	ok	null
+write_io	0	54	getFilePointer	ok	314
+write_io	0	55	close	ok	null
+write_io	0	56	createOutput w8	ok	
+write_io	0	57	writeInt	ok	null
+write_io	0	58	writeBytes 300	ok	null
+write_io	0	59	writeString	ok	null
+write_io	0	60	writeVLong	ok	null
+write_io	0	61	getFilePointer	ok	314
+write_io	0	62	close	ok	null
+write_io	0	63	createOutput w9	ok	
+write_io	0	64	writeInt	ok	null
+write_io	0	65	writeBytes 300	ok	null
+write_io	0	66	writeString	ok	null
+write_io	0	67	writeVLong	ok	null
+write_io	0	68	getFilePointer	ok	314
+write_io	0	69	close	ok	null
+write_io	0	70	files	ok	w0:307:b545a9ed01c9ca9f,w1:313:f0d8ead582d6f31d,w2:310:2e2ca7ff3e77b91a,w3:314:3e99e49ed6ea2a8a,w4:311:7f3a96dbfbc3de9f,w5:314:f76192d68e5b96c8,w6:314:e9ba1d4d9e6bbecd,w7:314:6f8c90844c85cedc,w8:314:91cea0337ba70290,w9:314:e82328b18b95352c
+write_io	0	71	nextLong	ok	-4564413864590059400
+write_io	0	72	close dir	ok	null
+write_io	1	0	createOutput w0	ok	
+write_io	1	1	writeInt	ok	null
+write_io	1	2	writeBytes 300	ok	null
+write_io	1	3	writeString	ok	null
+write_io	1	4	writeVLong	ok	null
+write_io	1	5	getFilePointer	ok	310
+write_io	1	6	close	ok	null
+write_io	1	7	createOutput w1	ok	
+write_io	1	8	writeInt	ok	null
+write_io	1	9	writeBytes 300	ok	null
+write_io	1	10	writeString	ok	null
+write_io	1	11	writeVLong	ok	null
+write_io	1	12	getFilePointer	ok	313
+write_io	1	13	close	ok	null
+write_io	1	14	createOutput w2	ok	
+write_io	1	15	writeInt	ok	null
+write_io	1	16	writeBytes 300	ok	null
+write_io	1	17	writeString	ok	null
+write_io	1	18	writeVLong	ok	null
+write_io	1	19	getFilePointer	ok	313
+write_io	1	20	close	ok	null
+write_io	1	21	createOutput w3	ok	
+write_io	1	22	writeInt	err	java.io.IOException	a random IOException (w3)
+write_io	1	23	writeBytes 300	ok	null
+write_io	1	24	writeString	ok	null
+write_io	1	25	writeVLong	ok	null
+write_io	1	26	getFilePointer	ok	311
+write_io	1	27	close	ok	null
+write_io	1	28	createOutput w4	ok	
+write_io	1	29	writeInt	ok	null
+write_io	1	30	writeBytes 300	ok	null
+write_io	1	31	writeString	ok	null
+write_io	1	32	writeVLong	ok	null
+write_io	1	33	getFilePointer	ok	314
+write_io	1	34	close	ok	null
+write_io	1	35	createOutput w5	ok	
+write_io	1	36	writeInt	ok	null
+write_io	1	37	writeBytes 300	ok	null
+write_io	1	38	writeString	ok	null
+write_io	1	39	writeVLong	ok	null
+write_io	1	40	getFilePointer	ok	314
+write_io	1	41	close	ok	null
+write_io	1	42	createOutput w6	ok	
+write_io	1	43	writeInt	ok	null
+write_io	1	44	writeBytes 300	ok	null
+write_io	1	45	writeString	ok	null
+write_io	1	46	writeVLong	ok	null
+write_io	1	47	getFilePointer	ok	314
+write_io	1	48	close	ok	null
+write_io	1	49	createOutput w7	ok	
+write_io	1	50	writeInt	err	java.io.IOException	a random IOException (w7)
+write_io	1	51	writeBytes 300	ok	null
+write_io	1	52	writeString	ok	null
+write_io	1	53	writeVLong	ok	null
+write_io	1	54	getFilePointer	ok	311
+write_io	1	55	close	ok	null
+write_io	1	56	createOutput w8	ok	
+write_io	1	57	writeInt	ok	null
+write_io	1	58	writeBytes 300	ok	null
+write_io	1	59	writeString	ok	null
+write_io	1	60	writeVLong	ok	null
+write_io	1	61	getFilePointer	ok	314
+write_io	1	62	close	ok	null
+write_io	1	63	createOutput w9	ok	
+write_io	1	64	writeInt	ok	null
+write_io	1	65	writeBytes 300	ok	null
+write_io	1	66	writeString	ok	null
+write_io	1	67	writeVLong	ok	null
+write_io	1	68	getFilePointer	ok	314
+write_io	1	69	close	ok	null
+write_io	1	70	files	ok	w0:310:e4cb69e6cb5ba805,w1:313:f0d8ead582d6f31d,w2:313:4f822617979138ec,w3:311:4f64a983880ec726,w4:314:aecf486fcbcf3e59,w5:314:f76192d68e5b96c8,w6:314:e9ba1d4d9e6bbecd,w7:311:7d14798c0689ce40,w8:314:91cea0337ba70290,w9:314:e82328b18b95352c
+write_io	1	71	nextLong	ok	1922099617989951787
+write_io	1	72	close dir	ok	null
+write_io	-1	0	createOutput w0	ok	
+write_io	-1	1	writeInt	err	java.io.IOException	a random IOException (w0)
+write_io	-1	2	writeBytes 300	ok	null
+write_io	-1	3	writeString	ok	null
+write_io	-1	4	writeVLong	ok	null
+write_io	-1	5	getFilePointer	ok	307
+write_io	-1	6	close	ok	null
+write_io	-1	7	createOutput w1	ok	
+write_io	-1	8	writeInt	ok	null
+write_io	-1	9	writeBytes 300	ok	null
+write_io	-1	10	writeString	ok	null
+write_io	-1	11	writeVLong	ok	null
+write_io	-1	12	getFilePointer	ok	313
+write_io	-1	13	close	ok	null
+write_io	-1	14	createOutput w2	ok	
+write_io	-1	15	writeInt	ok	null
+write_io	-1	16	writeBytes 300	ok	null
+write_io	-1	17	writeString	ok	null
+write_io	-1	18	writeVLong	ok	null
+write_io	-1	19	getFilePointer	ok	313
+write_io	-1	20	close	ok	null
+write_io	-1	21	createOutput w3	ok	
+write_io	-1	22	writeInt	ok	null
+write_io	-1	23	writeBytes 300	ok	null
+write_io	-1	24	writeString	ok	null
+write_io	-1	25	writeVLong	ok	null
+write_io	-1	26	getFilePointer	ok	314
+write_io	-1	27	close	ok	null
+write_io	-1	28	createOutput w4	ok	
+write_io	-1	29	writeInt	err	java.io.IOException	a random IOException (w4)
+write_io	-1	30	writeBytes 300	ok	null
+write_io	-1	31	writeString	ok	null
+write_io	-1	32	writeVLong	ok	null
+write_io	-1	33	getFilePointer	ok	311
+write_io	-1	34	close	ok	null
+write_io	-1	35	createOutput w5	ok	
+write_io	-1	36	writeInt	ok	null
+write_io	-1	37	writeBytes 300	ok	null
+write_io	-1	38	writeString	ok	null
+write_io	-1	39	writeVLong	ok	null
+write_io	-1	40	getFilePointer	ok	314
+write_io	-1	41	close	ok	null
+write_io	-1	42	createOutput w6	ok	
+write_io	-1	43	writeInt	err	java.io.IOException	a random IOException (w6)
+write_io	-1	44	writeBytes 300	ok	null
+write_io	-1	45	writeString	ok	null
+write_io	-1	46	writeVLong	ok	null
+write_io	-1	47	getFilePointer	ok	311
+write_io	-1	48	close	ok	null
+write_io	-1	49	createOutput w7	ok	
+write_io	-1	50	writeInt	err	java.io.IOException	a random IOException (w7)
+write_io	-1	51	writeBytes 300	ok	null
+write_io	-1	52	writeString	ok	null
+write_io	-1	53	writeVLong	ok	null
+write_io	-1	54	getFilePointer	ok	311
+write_io	-1	55	close	ok	null
+write_io	-1	56	createOutput w8	ok	
+write_io	-1	57	writeInt	ok	null
+write_io	-1	58	writeBytes 300	ok	null
+write_io	-1	59	writeString	ok	null
+write_io	-1	60	writeVLong	ok	null
+write_io	-1	61	getFilePointer	ok	314
+write_io	-1	62	close	ok	null
+write_io	-1	63	createOutput w9	ok	
+write_io	-1	64	writeInt	ok	null
+write_io	-1	65	writeBytes 300	ok	null
+write_io	-1	66	writeString	ok	null
+write_io	-1	67	writeVLong	ok	null
+write_io	-1	68	getFilePointer	ok	314
+write_io	-1	69	close	ok	null
+write_io	-1	70	files	ok	w0:307:b545a9ed01c9ca9f,w1:313:f0d8ead582d6f31d,w2:313:4f822617979138ec,w3:314:3e99e49ed6ea2a8a,w4:311:7f3a96dbfbc3de9f,w5:314:f76192d68e5b96c8,w6:311:876634f6e5f4aebb,w7:311:7d14798c0689ce40,w8:314:91cea0337ba70290,w9:314:e82328b18b95352c
+write_io	-1	71	nextLong	ok	-4981310214019366069
+write_io	-1	72	close dir	ok	null
+write_io	-9223372036854775808	0	createOutput w0	ok	
+write_io	-9223372036854775808	1	writeInt	err	java.io.IOException	a random IOException (w0)
+write_io	-9223372036854775808	2	writeBytes 300	ok	null
+write_io	-9223372036854775808	3	writeString	ok	null
+write_io	-9223372036854775808	4	writeVLong	ok	null
+write_io	-9223372036854775808	5	getFilePointer	ok	307
+write_io	-9223372036854775808	6	close	ok	null
+write_io	-9223372036854775808	7	createOutput w1	ok	
+write_io	-9223372036854775808	8	writeInt	ok	null
+write_io	-9223372036854775808	9	writeBytes 300	ok	null
+write_io	-9223372036854775808	10	writeString	ok	null
+write_io	-9223372036854775808	11	writeVLong	ok	null
+write_io	-9223372036854775808	12	getFilePointer	ok	313
+write_io	-9223372036854775808	13	close	ok	null
+write_io	-9223372036854775808	14	createOutput w2	ok	
+write_io	-9223372036854775808	15	writeInt	err	java.io.IOException	a random IOException (w2)
+write_io	-9223372036854775808	16	writeBytes 300	ok	null
+write_io	-9223372036854775808	17	writeString	ok	null
+write_io	-9223372036854775808	18	writeVLong	ok	null
+write_io	-9223372036854775808	19	getFilePointer	ok	310
+write_io	-9223372036854775808	20	close	ok	null
+write_io	-9223372036854775808	21	createOutput w3	ok	
+write_io	-9223372036854775808	22	writeInt	ok	null
+write_io	-9223372036854775808	23	writeBytes 300	ok	null
+write_io	-9223372036854775808	24	writeString	ok	null
+write_io	-9223372036854775808	25	writeVLong	ok	null
+write_io	-9223372036854775808	26	getFilePointer	ok	314
+write_io	-9223372036854775808	27	close	ok	null
+write_io	-9223372036854775808	28	createOutput w4	ok	
+write_io	-9223372036854775808	29	writeInt	err	java.io.IOException	a random IOException (w4)
+write_io	-9223372036854775808	30	writeBytes 300	ok	null
+write_io	-9223372036854775808	31	writeString	ok	null
+write_io	-9223372036854775808	32	writeVLong	ok	null
+write_io	-9223372036854775808	33	getFilePointer	ok	311
+write_io	-9223372036854775808	34	close	ok	null
+write_io	-9223372036854775808	35	createOutput w5	ok	
+write_io	-9223372036854775808	36	writeInt	ok	null
+write_io	-9223372036854775808	37	writeBytes 300	ok	null
+write_io	-9223372036854775808	38	writeString	ok	null
+write_io	-9223372036854775808	39	writeVLong	ok	null
+write_io	-9223372036854775808	40	getFilePointer	ok	314
+write_io	-9223372036854775808	41	close	ok	null
+write_io	-9223372036854775808	42	createOutput w6	ok	
+write_io	-9223372036854775808	43	writeInt	ok	null
+write_io	-9223372036854775808	44	writeBytes 300	ok	null
+write_io	-9223372036854775808	45	writeString	ok	null
+write_io	-9223372036854775808	46	writeVLong	ok	null
+write_io	-9223372036854775808	47	getFilePointer	ok	314
+write_io	-9223372036854775808	48	close	ok	null
+write_io	-9223372036854775808	49	createOutput w7	ok	
+write_io	-9223372036854775808	50	writeInt	ok	null
+write_io	-9223372036854775808	51	writeBytes 300	ok	null
+write_io	-9223372036854775808	52	writeString	ok	null
+write_io	-9223372036854775808	53	writeVLong	ok	null
+write_io	-9223372036854775808	54	getFilePointer	ok	314
+write_io	-9223372036854775808	55	close	ok	null
+write_io	-9223372036854775808	56	createOutput w8	ok	
+write_io	-9223372036854775808	57	writeInt	ok	null
+write_io	-9223372036854775808	58	writeBytes 300	ok	null
+write_io	-9223372036854775808	59	writeString	ok	null
+write_io	-9223372036854775808	60	writeVLong	ok	null
+write_io	-9223372036854775808	61	getFilePointer	ok	314
+write_io	-9223372036854775808	62	close	ok	null
+write_io	-9223372036854775808	63	createOutput w9	ok	
+write_io	-9223372036854775808	64	writeInt	ok	null
+write_io	-9223372036854775808	65	writeBytes 300	ok	null
+write_io	-9223372036854775808	66	writeString	ok	null
+write_io	-9223372036854775808	67	writeVLong	ok	null
+write_io	-9223372036854775808	68	getFilePointer	ok	314
+write_io	-9223372036854775808	69	close	ok	null
+write_io	-9223372036854775808	70	files	ok	w0:307:b545a9ed01c9ca9f,w1:313:f0d8ead582d6f31d,w2:310:2e2ca7ff3e77b91a,w3:314:3e99e49ed6ea2a8a,w4:311:7f3a96dbfbc3de9f,w5:314:f76192d68e5b96c8,w6:314:e9ba1d4d9e6bbecd,w7:314:6f8c90844c85cedc,w8:314:91cea0337ba70290,w9:314:e82328b18b95352c
+write_io	-9223372036854775808	71	nextLong	ok	-4564413864590059400
+write_io	-9223372036854775808	72	close dir	ok	null
+write_io	9223372036854775807	0	createOutput w0	ok	
+write_io	9223372036854775807	1	writeInt	err	java.io.IOException	a random IOException (w0)
+write_io	9223372036854775807	2	writeBytes 300	ok	null
+write_io	9223372036854775807	3	writeString	ok	null
+write_io	9223372036854775807	4	writeVLong	ok	null
+write_io	9223372036854775807	5	getFilePointer	ok	307
+write_io	9223372036854775807	6	close	ok	null
+write_io	9223372036854775807	7	createOutput w1	ok	
+write_io	9223372036854775807	8	writeInt	ok	null
+write_io	9223372036854775807	9	writeBytes 300	ok	null
+write_io	9223372036854775807	10	writeString	ok	null
+write_io	9223372036854775807	11	writeVLong	ok	null
+write_io	9223372036854775807	12	getFilePointer	ok	313
+write_io	9223372036854775807	13	close	ok	null
+write_io	9223372036854775807	14	createOutput w2	ok	
+write_io	9223372036854775807	15	writeInt	ok	null
+write_io	9223372036854775807	16	writeBytes 300	ok	null
+write_io	9223372036854775807	17	writeString	ok	null
+write_io	9223372036854775807	18	writeVLong	ok	null
+write_io	9223372036854775807	19	getFilePointer	ok	313
+write_io	9223372036854775807	20	close	ok	null
+write_io	9223372036854775807	21	createOutput w3	ok	
+write_io	9223372036854775807	22	writeInt	ok	null
+write_io	9223372036854775807	23	writeBytes 300	ok	null
+write_io	9223372036854775807	24	writeString	ok	null
+write_io	9223372036854775807	25	writeVLong	ok	null
+write_io	9223372036854775807	26	getFilePointer	ok	314
+write_io	9223372036854775807	27	close	ok	null
+write_io	9223372036854775807	28	createOutput w4	ok	
+write_io	9223372036854775807	29	writeInt	err	java.io.IOException	a random IOException (w4)
+write_io	9223372036854775807	30	writeBytes 300	ok	null
+write_io	9223372036854775807	31	writeString	ok	null
+write_io	9223372036854775807	32	writeVLong	ok	null
+write_io	9223372036854775807	33	getFilePointer	ok	311
+write_io	9223372036854775807	34	close	ok	null
+write_io	9223372036854775807	35	createOutput w5	ok	
+write_io	9223372036854775807	36	writeInt	ok	null
+write_io	9223372036854775807	37	writeBytes 300	ok	null
+write_io	9223372036854775807	38	writeString	ok	null
+write_io	9223372036854775807	39	writeVLong	ok	null
+write_io	9223372036854775807	40	getFilePointer	ok	314
+write_io	9223372036854775807	41	close	ok	null
+write_io	9223372036854775807	42	createOutput w6	ok	
+write_io	9223372036854775807	43	writeInt	err	java.io.IOException	a random IOException (w6)
+write_io	9223372036854775807	44	writeBytes 300	ok	null
+write_io	9223372036854775807	45	writeString	ok	null
+write_io	9223372036854775807	46	writeVLong	ok	null
+write_io	9223372036854775807	47	getFilePointer	ok	311
+write_io	9223372036854775807	48	close	ok	null
+write_io	9223372036854775807	49	createOutput w7	ok	
+write_io	9223372036854775807	50	writeInt	err	java.io.IOException	a random IOException (w7)
+write_io	9223372036854775807	51	writeBytes 300	ok	null
+write_io	9223372036854775807	52	writeString	ok	null
+write_io	9223372036854775807	53	writeVLong	ok	null
+write_io	9223372036854775807	54	getFilePointer	ok	311
+write_io	9223372036854775807	55	close	ok	null
+write_io	9223372036854775807	56	createOutput w8	ok	
+write_io	9223372036854775807	57	writeInt	ok	null
+write_io	9223372036854775807	58	writeBytes 300	ok	null
+write_io	9223372036854775807	59	writeString	ok	null
+write_io	9223372036854775807	60	writeVLong	ok	null
+write_io	9223372036854775807	61	getFilePointer	ok	314
+write_io	9223372036854775807	62	close	ok	null
+write_io	9223372036854775807	63	createOutput w9	ok	
+write_io	9223372036854775807	64	writeInt	ok	null
+write_io	9223372036854775807	65	writeBytes 300	ok	null
+write_io	9223372036854775807	66	writeString	ok	null
+write_io	9223372036854775807	67	writeVLong	ok	null
+write_io	9223372036854775807	68	getFilePointer	ok	314
+write_io	9223372036854775807	69	close	ok	null
+write_io	9223372036854775807	70	files	ok	w0:307:b545a9ed01c9ca9f,w1:313:f0d8ead582d6f31d,w2:313:4f822617979138ec,w3:314:3e99e49ed6ea2a8a,w4:311:7f3a96dbfbc3de9f,w5:314:f76192d68e5b96c8,w6:311:876634f6e5f4aebb,w7:311:7d14798c0689ce40,w8:314:91cea0337ba70290,w9:314:e82328b18b95352c
+write_io	9223372036854775807	71	nextLong	ok	-4981310214019366069
+write_io	9223372036854775807	72	close dir	ok	null
+write_io	42	0	createOutput w0	ok	
+write_io	42	1	writeInt	err	java.io.IOException	a random IOException (w0)
+write_io	42	2	writeBytes 300	ok	null
+write_io	42	3	writeString	ok	null
+write_io	42	4	writeVLong	ok	null
+write_io	42	5	getFilePointer	ok	307
+write_io	42	6	close	ok	null
+write_io	42	7	createOutput w1	ok	
+write_io	42	8	writeInt	ok	null
+write_io	42	9	writeBytes 300	ok	null
+write_io	42	10	writeString	ok	null
+write_io	42	11	writeVLong	ok	null
+write_io	42	12	getFilePointer	ok	313
+write_io	42	13	close	ok	null
+write_io	42	14	createOutput w2	ok	
+write_io	42	15	writeInt	err	java.io.IOException	a random IOException (w2)
+write_io	42	16	writeBytes 300	ok	null
+write_io	42	17	writeString	ok	null
+write_io	42	18	writeVLong	ok	null
+write_io	42	19	getFilePointer	ok	310
+write_io	42	20	close	ok	null
+write_io	42	21	createOutput w3	ok	
+write_io	42	22	writeInt	err	java.io.IOException	a random IOException (w3)
+write_io	42	23	writeBytes 300	ok	null
+write_io	42	24	writeString	ok	null
+write_io	42	25	writeVLong	ok	null
+write_io	42	26	getFilePointer	ok	311
+write_io	42	27	close	ok	null
+write_io	42	28	createOutput w4	ok	
+write_io	42	29	writeInt	ok	null
+write_io	42	30	writeBytes 300	ok	null
+write_io	42	31	writeString	ok	null
+write_io	42	32	writeVLong	ok	null
+write_io	42	33	getFilePointer	ok	314
+write_io	42	34	close	ok	null
+write_io	42	35	createOutput w5	ok	
+write_io	42	36	writeInt	ok	null
+write_io	42	37	writeBytes 300	ok	null
+write_io	42	38	writeString	ok	null
+write_io	42	39	writeVLong	ok	null
+write_io	42	40	getFilePointer	ok	314
+write_io	42	41	close	ok	null
+write_io	42	42	createOutput w6	ok	
+write_io	42	43	writeInt	ok	null
+write_io	42	44	writeBytes 300	ok	null
+write_io	42	45	writeString	ok	null
+write_io	42	46	writeVLong	ok	null
+write_io	42	47	getFilePointer	ok	314
+write_io	42	48	close	ok	null
+write_io	42	49	createOutput w7	ok	
+write_io	42	50	writeInt	ok	null
+write_io	42	51	writeBytes 300	ok	null
+write_io	42	52	writeString	ok	null
+write_io	42	53	writeVLong	ok	null
+write_io	42	54	getFilePointer	ok	314
+write_io	42	55	close	ok	null
+write_io	42	56	createOutput w8	ok	
+write_io	42	57	writeInt	ok	null
+write_io	42	58	writeBytes 300	ok	null
+write_io	42	59	writeString	ok	null
+write_io	42	60	writeVLong	ok	null
+write_io	42	61	getFilePointer	ok	314
+write_io	42	62	close	ok	null
+write_io	42	63	createOutput w9	ok	
+write_io	42	64	writeInt	err	java.io.IOException	a random IOException (w9)
+write_io	42	65	writeBytes 300	ok	null
+write_io	42	66	writeString	ok	null
+write_io	42	67	writeVLong	ok	null
+write_io	42	68	getFilePointer	ok	311
+write_io	42	69	close	ok	null
+write_io	42	70	files	ok	w0:307:b545a9ed01c9ca9f,w1:313:f0d8ead582d6f31d,w2:310:2e2ca7ff3e77b91a,w3:311:4f64a983880ec726,w4:314:aecf486fcbcf3e59,w5:314:f76192d68e5b96c8,w6:314:e9ba1d4d9e6bbecd,w7:314:6f8c90844c85cedc,w8:314:91cea0337ba70290,w9:311:0985d4b7ec12f764
+write_io	42	71	nextLong	ok	3993834188433606033
+write_io	42	72	close dir	ok	null
+write_io	25214903917	0	createOutput w0	ok	
+write_io	25214903917	1	writeInt	ok	null
+write_io	25214903917	2	writeBytes 300	ok	null
+write_io	25214903917	3	writeString	ok	null
+write_io	25214903917	4	writeVLong	ok	null
+write_io	25214903917	5	getFilePointer	ok	310
+write_io	25214903917	6	close	ok	null
+write_io	25214903917	7	createOutput w1	ok	
+write_io	25214903917	8	writeInt	ok	null
+write_io	25214903917	9	writeBytes 300	ok	null
+write_io	25214903917	10	writeString	ok	null
+write_io	25214903917	11	writeVLong	ok	null
+write_io	25214903917	12	getFilePointer	ok	313
+write_io	25214903917	13	close	ok	null
+write_io	25214903917	14	createOutput w2	ok	
+write_io	25214903917	15	writeInt	ok	null
+write_io	25214903917	16	writeBytes 300	ok	null
+write_io	25214903917	17	writeString	ok	null
+write_io	25214903917	18	writeVLong	ok	null
+write_io	25214903917	19	getFilePointer	ok	313
+write_io	25214903917	20	close	ok	null
+write_io	25214903917	21	createOutput w3	ok	
+write_io	25214903917	22	writeInt	ok	null
+write_io	25214903917	23	writeBytes 300	ok	null
+write_io	25214903917	24	writeString	ok	null
+write_io	25214903917	25	writeVLong	ok	null
+write_io	25214903917	26	getFilePointer	ok	314
+write_io	25214903917	27	close	ok	null
+write_io	25214903917	28	createOutput w4	ok	
+write_io	25214903917	29	writeInt	ok	null
+write_io	25214903917	30	writeBytes 300	ok	null
+write_io	25214903917	31	writeString	ok	null
+write_io	25214903917	32	writeVLong	ok	null
+write_io	25214903917	33	getFilePointer	ok	314
+write_io	25214903917	34	close	ok	null
+write_io	25214903917	35	createOutput w5	ok	
+write_io	25214903917	36	writeInt	err	java.io.IOException	a random IOException (w5)
+write_io	25214903917	37	writeBytes 300	ok	null
+write_io	25214903917	38	writeString	ok	null
+write_io	25214903917	39	writeVLong	ok	null
+write_io	25214903917	40	getFilePointer	ok	311
+write_io	25214903917	41	close	ok	null
+write_io	25214903917	42	createOutput w6	ok	
+write_io	25214903917	43	writeInt	ok	null
+write_io	25214903917	44	writeBytes 300	ok	null
+write_io	25214903917	45	writeString	ok	null
+write_io	25214903917	46	writeVLong	ok	null
+write_io	25214903917	47	getFilePointer	ok	314
+write_io	25214903917	48	close	ok	null
+write_io	25214903917	49	createOutput w7	ok	
+write_io	25214903917	50	writeInt	err	java.io.IOException	a random IOException (w7)
+write_io	25214903917	51	writeBytes 300	ok	null
+write_io	25214903917	52	writeString	ok	null
+write_io	25214903917	53	writeVLong	ok	null
+write_io	25214903917	54	getFilePointer	ok	311
+write_io	25214903917	55	close	ok	null
+write_io	25214903917	56	createOutput w8	ok	
+write_io	25214903917	57	writeInt	ok	null
+write_io	25214903917	58	writeBytes 300	ok	null
+write_io	25214903917	59	writeString	ok	null
+write_io	25214903917	60	writeVLong	ok	null
+write_io	25214903917	61	getFilePointer	ok	314
+write_io	25214903917	62	close	ok	null
+write_io	25214903917	63	createOutput w9	ok	
+write_io	25214903917	64	writeInt	ok	null
+write_io	25214903917	65	writeBytes 300	ok	null
+write_io	25214903917	66	writeString	ok	null
+write_io	25214903917	67	writeVLong	ok	null
+write_io	25214903917	68	getFilePointer	ok	314
+write_io	25214903917	69	close	ok	null
+write_io	25214903917	70	files	ok	w0:310:e4cb69e6cb5ba805,w1:313:f0d8ead582d6f31d,w2:313:4f822617979138ec,w3:314:3e99e49ed6ea2a8a,w4:314:aecf486fcbcf3e59,w5:311:1455f0735f4cc908,w6:314:e9ba1d4d9e6bbecd,w7:311:7d14798c0689ce40,w8:314:91cea0337ba70290,w9:314:e82328b18b95352c
+write_io	25214903917	71	nextLong	ok	820707025409634855
+write_io	25214903917	72	close dir	ok	null
+write_io	3735928559	0	createOutput w0	ok	
+write_io	3735928559	1	writeInt	ok	null
+write_io	3735928559	2	writeBytes 300	ok	null
+write_io	3735928559	3	writeString	ok	null
+write_io	3735928559	4	writeVLong	ok	null
+write_io	3735928559	5	getFilePointer	ok	310
+write_io	3735928559	6	close	ok	null
+write_io	3735928559	7	createOutput w1	ok	
+write_io	3735928559	8	writeInt	err	java.io.IOException	a random IOException (w1)
+write_io	3735928559	9	writeBytes 300	ok	null
+write_io	3735928559	10	writeString	ok	null
+write_io	3735928559	11	writeVLong	ok	null
+write_io	3735928559	12	getFilePointer	ok	310
+write_io	3735928559	13	close	ok	null
+write_io	3735928559	14	createOutput w2	ok	
+write_io	3735928559	15	writeInt	ok	null
+write_io	3735928559	16	writeBytes 300	ok	null
+write_io	3735928559	17	writeString	ok	null
+write_io	3735928559	18	writeVLong	ok	null
+write_io	3735928559	19	getFilePointer	ok	313
+write_io	3735928559	20	close	ok	null
+write_io	3735928559	21	createOutput w3	ok	
+write_io	3735928559	22	writeInt	ok	null
+write_io	3735928559	23	writeBytes 300	ok	null
+write_io	3735928559	24	writeString	ok	null
+write_io	3735928559	25	writeVLong	ok	null
+write_io	3735928559	26	getFilePointer	ok	314
+write_io	3735928559	27	close	ok	null
+write_io	3735928559	28	createOutput w4	ok	
+write_io	3735928559	29	writeInt	ok	null
+write_io	3735928559	30	writeBytes 300	ok	null
+write_io	3735928559	31	writeString	ok	null
+write_io	3735928559	32	writeVLong	ok	null
+write_io	3735928559	33	getFilePointer	ok	314
+write_io	3735928559	34	close	ok	null
+write_io	3735928559	35	createOutput w5	ok	
+write_io	3735928559	36	writeInt	ok	null
+write_io	3735928559	37	writeBytes 300	ok	null
+write_io	3735928559	38	writeString	ok	null
+write_io	3735928559	39	writeVLong	ok	null
+write_io	3735928559	40	getFilePointer	ok	314
+write_io	3735928559	41	close	ok	null
+write_io	3735928559	42	createOutput w6	ok	
+write_io	3735928559	43	writeInt	err	java.io.IOException	a random IOException (w6)
+write_io	3735928559	44	writeBytes 300	ok	null
+write_io	3735928559	45	writeString	ok	null
+write_io	3735928559	46	writeVLong	ok	null
+write_io	3735928559	47	getFilePointer	ok	311
+write_io	3735928559	48	close	ok	null
+write_io	3735928559	49	createOutput w7	ok	
+write_io	3735928559	50	writeInt	ok	null
+write_io	3735928559	51	writeBytes 300	ok	null
+write_io	3735928559	52	writeString	ok	null
+write_io	3735928559	53	writeVLong	ok	null
+write_io	3735928559	54	getFilePointer	ok	314
+write_io	3735928559	55	close	ok	null
+write_io	3735928559	56	createOutput w8	ok	
+write_io	3735928559	57	writeInt	ok	null
+write_io	3735928559	58	writeBytes 300	ok	null
+write_io	3735928559	59	writeString	ok	null
+write_io	3735928559	60	writeVLong	ok	null
+write_io	3735928559	61	getFilePointer	ok	314
+write_io	3735928559	62	close	ok	null
+write_io	3735928559	63	createOutput w9	ok	
+write_io	3735928559	64	writeInt	err	java.io.IOException	a random IOException (w9)
+write_io	3735928559	65	writeBytes 300	ok	null
+write_io	3735928559	66	writeString	ok	null
+write_io	3735928559	67	writeVLong	ok	null
+write_io	3735928559	68	getFilePointer	ok	311
+write_io	3735928559	69	close	ok	null
+write_io	3735928559	70	files	ok	w0:310:e4cb69e6cb5ba805,w1:310:3fe293b8fb0c92c5,w2:313:4f822617979138ec,w3:314:3e99e49ed6ea2a8a,w4:314:aecf486fcbcf3e59,w5:314:f76192d68e5b96c8,w6:311:876634f6e5f4aebb,w7:314:6f8c90844c85cedc,w8:314:91cea0337ba70290,w9:311:0985d4b7ec12f764
+write_io	3735928559	71	nextLong	ok	-2565341769248935335
+write_io	3735928559	72	close dir	ok	null
+open_io	0	0	openInput missing0	err	java.io.IOException	a random IOException (missing0)
+open_io	0	1	createOutput c0	ok	
+open_io	0	2	close	ok	null
+open_io	0	3	createTempOutput	ok	
+open_io	0	4	getName	ok	p_s_0.tmp
+open_io	0	5	close	ok	null
+open_io	0	6	openInput r1	ok	
+open_io	0	7	readByte	ok	7
+open_io	0	8	length	ok	11
+open_io	0	9	close	ok	null
+open_io	0	10	createOutput c1	ok	
+open_io	0	11	close	ok	null
+open_io	0	12	createTempOutput	ok	
+open_io	0	13	getName	ok	p_s_1.tmp
+open_io	0	14	close	ok	null
+open_io	0	15	openInput r2	err	java.nio.file.NoSuchFileException	a random IOException (r2)
+open_io	0	16	createOutput c2	err	java.io.IOException	a random IOException (c2)
+open_io	0	17	createTempOutput	ok	
+open_io	0	18	getName	ok	p_s_2.tmp
+open_io	0	19	close	ok	null
+open_io	0	20	openInput missing3	err	java.io.IOException	a random IOException (missing3)
+open_io	0	21	createOutput c3	ok	
+open_io	0	22	close	ok	null
+open_io	0	23	createTempOutput	ok	
+open_io	0	24	getName	ok	p_s_3.tmp
+open_io	0	25	close	ok	null
+open_io	0	26	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	0	27	createOutput c4	ok	
+open_io	0	28	close	ok	null
+open_io	0	29	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	0	30	openInput r0	ok	
+open_io	0	31	readByte	ok	0
+open_io	0	32	length	ok	10
+open_io	0	33	close	ok	null
+open_io	0	34	createOutput c5	err	java.io.FileNotFoundException	a random IOException (c5)
+open_io	0	35	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	0	36	openInput missing6	err	java.io.IOException	a random IOException (missing6)
+open_io	0	37	createOutput c6	ok	
+open_io	0	38	close	ok	null
+open_io	0	39	createTempOutput	err	java.nio.file.NoSuchFileException	a random IOException (temp: prefix=p suffix=s)
+open_io	0	40	openInput r2	ok	
+open_io	0	41	readByte	ok	14
+open_io	0	42	length	ok	12
+open_io	0	43	close	ok	null
+open_io	0	44	createOutput c7	ok	
+open_io	0	45	close	ok	null
+open_io	0	46	createTempOutput	ok	
+open_io	0	47	getName	ok	p_s_4.tmp
+open_io	0	48	close	ok	null
+open_io	0	49	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	0	50	createOutput c8	err	java.io.FileNotFoundException	a random IOException (c8)
+open_io	0	51	createTempOutput	ok	
+open_io	0	52	getName	ok	p_s_5.tmp
+open_io	0	53	close	ok	null
+open_io	0	54	openInput missing9	err	java.nio.file.NoSuchFileException	a random IOException (missing9)
+open_io	0	55	createOutput c9	err	java.nio.file.NoSuchFileException	a random IOException (c9)
+open_io	0	56	createTempOutput	ok	
+open_io	0	57	getName	ok	p_s_6.tmp
+open_io	0	58	close	ok	null
+open_io	0	59	openInput r0	ok	
+open_io	0	60	readByte	ok	0
+open_io	0	61	length	ok	10
+open_io	0	62	close	ok	null
+open_io	0	63	createOutput c10	err	java.io.IOException	a random IOException (c10)
+open_io	0	64	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	0	65	openInput r1	ok	
+open_io	0	66	readByte	ok	7
+open_io	0	67	length	ok	11
+open_io	0	68	close	ok	null
+open_io	0	69	createOutput c11	ok	
+open_io	0	70	close	ok	null
+open_io	0	71	createTempOutput	ok	
+open_io	0	72	getName	ok	p_s_7.tmp
+open_io	0	73	close	ok	null
+open_io	0	74	openInput missing12	err	java.io.IOException	a random IOException (missing12)
+open_io	0	75	createOutput c12	err	java.io.IOException	a random IOException (c12)
+open_io	0	76	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	0	77	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	0	78	createOutput c13	ok	
+open_io	0	79	close	ok	null
+open_io	0	80	createTempOutput	ok	
+open_io	0	81	getName	ok	p_s_8.tmp
+open_io	0	82	close	ok	null
+open_io	0	83	openInput r4	ok	
+open_io	0	84	readByte	ok	28
+open_io	0	85	length	ok	14
+open_io	0	86	close	ok	null
+open_io	0	87	createOutput c14	err	java.io.IOException	a random IOException (c14)
+open_io	0	88	createTempOutput	ok	
+open_io	0	89	getName	ok	p_s_9.tmp
+open_io	0	90	close	ok	null
+open_io	0	91	openInput missing15	err	java.io.IOException	a random IOException (missing15)
+open_io	0	92	createOutput c15	ok	
+open_io	0	93	close	ok	null
+open_io	0	94	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	0	95	nextLong	ok	-3902529456417747673
+open_io	0	96	close dir	ok	null
+open_io	1	0	openInput missing0	err	java.nio.file.NoSuchFileException	missing0 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	1	1	createOutput c0	ok	
+open_io	1	2	close	ok	null
+open_io	1	3	createTempOutput	err	java.nio.file.NoSuchFileException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	4	openInput r1	err	java.io.IOException	a random IOException (r1)
+open_io	1	5	createOutput c1	ok	
+open_io	1	6	close	ok	null
+open_io	1	7	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	8	openInput r2	ok	
+open_io	1	9	readByte	ok	14
+open_io	1	10	length	ok	12
+open_io	1	11	close	ok	null
+open_io	1	12	createOutput c2	ok	
+open_io	1	13	close	ok	null
+open_io	1	14	createTempOutput	ok	
+open_io	1	15	getName	ok	p_s_0.tmp
+open_io	1	16	close	ok	null
+open_io	1	17	openInput missing3	err	java.io.IOException	a random IOException (missing3)
+open_io	1	18	createOutput c3	err	java.io.IOException	a random IOException (c3)
+open_io	1	19	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	20	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	1	21	createOutput c4	ok	
+open_io	1	22	close	ok	null
+open_io	1	23	createTempOutput	ok	
+open_io	1	24	getName	ok	p_s_1.tmp
+open_io	1	25	close	ok	null
+open_io	1	26	openInput r0	err	java.nio.file.NoSuchFileException	a random IOException (r0)
+open_io	1	27	createOutput c5	err	java.nio.file.NoSuchFileException	a random IOException (c5)
+open_io	1	28	createTempOutput	ok	
+open_io	1	29	getName	ok	p_s_2.tmp
+open_io	1	30	close	ok	null
+open_io	1	31	openInput missing6	err	java.io.IOException	a random IOException (missing6)
+open_io	1	32	createOutput c6	ok	
+open_io	1	33	close	ok	null
+open_io	1	34	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	35	openInput r2	err	java.io.IOException	a random IOException (r2)
+open_io	1	36	createOutput c7	err	java.io.IOException	a random IOException (c7)
+open_io	1	37	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	38	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	1	39	createOutput c8	ok	
+open_io	1	40	close	ok	null
+open_io	1	41	createTempOutput	err	java.nio.file.NoSuchFileException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	42	openInput missing9	err	java.io.FileNotFoundException	missing9 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	1	43	createOutput c9	err	java.io.FileNotFoundException	a random IOException (c9)
+open_io	1	44	createTempOutput	ok	
+open_io	1	45	getName	ok	p_s_3.tmp
+open_io	1	46	close	ok	null
+open_io	1	47	openInput r0	err	java.io.IOException	a random IOException (r0)
+open_io	1	48	createOutput c10	ok	
+open_io	1	49	close	ok	null
+open_io	1	50	createTempOutput	ok	
+open_io	1	51	getName	ok	p_s_4.tmp
+open_io	1	52	close	ok	null
+open_io	1	53	openInput r1	ok	
+open_io	1	54	readByte	ok	7
+open_io	1	55	length	ok	11
+open_io	1	56	close	ok	null
+open_io	1	57	createOutput c11	err	java.io.IOException	a random IOException (c11)
+open_io	1	58	createTempOutput	ok	
+open_io	1	59	getName	ok	p_s_5.tmp
+open_io	1	60	close	ok	null
+open_io	1	61	openInput missing12	err	java.nio.file.NoSuchFileException	missing12 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	1	62	createOutput c12	ok	
+open_io	1	63	close	ok	null
+open_io	1	64	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	65	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	1	66	createOutput c13	ok	
+open_io	1	67	close	ok	null
+open_io	1	68	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	69	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	1	70	createOutput c14	err	java.io.IOException	a random IOException (c14)
+open_io	1	71	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	72	openInput missing15	err	java.io.IOException	a random IOException (missing15)
+open_io	1	73	createOutput c15	ok	
+open_io	1	74	close	ok	null
+open_io	1	75	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	1	76	nextLong	ok	-5191258019540676959
+open_io	1	77	close dir	ok	null
+open_io	-1	0	openInput missing0	err	java.io.IOException	a random IOException (missing0)
+open_io	-1	1	createOutput c0	ok	
+open_io	-1	2	close	ok	null
+open_io	-1	3	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	4	openInput r1	err	java.nio.file.NoSuchFileException	a random IOException (r1)
+open_io	-1	5	createOutput c1	err	java.io.IOException	a random IOException (c1)
+open_io	-1	6	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	7	openInput r2	ok	
+open_io	-1	8	readByte	ok	14
+open_io	-1	9	length	ok	12
+open_io	-1	10	close	ok	null
+open_io	-1	11	createOutput c2	ok	
+open_io	-1	12	close	ok	null
+open_io	-1	13	createTempOutput	ok	
+open_io	-1	14	getName	ok	p_s_0.tmp
+open_io	-1	15	close	ok	null
+open_io	-1	16	openInput missing3	err	java.io.FileNotFoundException	missing3 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	-1	17	createOutput c3	ok	
+open_io	-1	18	close	ok	null
+open_io	-1	19	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	20	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	-1	21	createOutput c4	ok	
+open_io	-1	22	close	ok	null
+open_io	-1	23	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	24	openInput r0	err	java.io.IOException	a random IOException (r0)
+open_io	-1	25	createOutput c5	err	java.io.IOException	a random IOException (c5)
+open_io	-1	26	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	27	openInput missing6	err	java.nio.file.NoSuchFileException	a random IOException (missing6)
+open_io	-1	28	createOutput c6	ok	
+open_io	-1	29	close	ok	null
+open_io	-1	30	createTempOutput	ok	
+open_io	-1	31	getName	ok	p_s_1.tmp
+open_io	-1	32	close	ok	null
+open_io	-1	33	openInput r2	err	java.nio.file.NoSuchFileException	a random IOException (r2)
+open_io	-1	34	createOutput c7	err	java.io.IOException	a random IOException (c7)
+open_io	-1	35	createTempOutput	ok	
+open_io	-1	36	getName	ok	p_s_2.tmp
+open_io	-1	37	close	ok	null
+open_io	-1	38	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	-1	39	createOutput c8	err	java.io.FileNotFoundException	a random IOException (c8)
+open_io	-1	40	createTempOutput	ok	
+open_io	-1	41	getName	ok	p_s_3.tmp
+open_io	-1	42	close	ok	null
+open_io	-1	43	openInput missing9	err	java.nio.file.NoSuchFileException	missing9 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	-1	44	createOutput c9	err	java.io.FileNotFoundException	a random IOException (c9)
+open_io	-1	45	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	46	openInput r0	ok	
+open_io	-1	47	readByte	ok	0
+open_io	-1	48	length	ok	10
+open_io	-1	49	close	ok	null
+open_io	-1	50	createOutput c10	ok	
+open_io	-1	51	close	ok	null
+open_io	-1	52	createTempOutput	ok	
+open_io	-1	53	getName	ok	p_s_4.tmp
+open_io	-1	54	close	ok	null
+open_io	-1	55	openInput r1	ok	
+open_io	-1	56	readByte	ok	7
+open_io	-1	57	length	ok	11
+open_io	-1	58	close	ok	null
+open_io	-1	59	createOutput c11	ok	
+open_io	-1	60	close	ok	null
+open_io	-1	61	createTempOutput	ok	
+open_io	-1	62	getName	ok	p_s_5.tmp
+open_io	-1	63	close	ok	null
+open_io	-1	64	openInput missing12	err	java.io.FileNotFoundException	missing12 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	-1	65	createOutput c12	ok	
+open_io	-1	66	close	ok	null
+open_io	-1	67	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	68	openInput r3	ok	
+open_io	-1	69	readByte	ok	21
+open_io	-1	70	length	ok	13
+open_io	-1	71	close	ok	null
+open_io	-1	72	createOutput c13	err	java.io.IOException	a random IOException (c13)
+open_io	-1	73	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	74	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	-1	75	createOutput c14	ok	
+open_io	-1	76	close	ok	null
+open_io	-1	77	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	78	openInput missing15	err	java.io.IOException	a random IOException (missing15)
+open_io	-1	79	createOutput c15	ok	
+open_io	-1	80	close	ok	null
+open_io	-1	81	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-1	82	nextLong	ok	-7821393667065723570
+open_io	-1	83	close dir	ok	null
+open_io	-9223372036854775808	0	openInput missing0	err	java.io.IOException	a random IOException (missing0)
+open_io	-9223372036854775808	1	createOutput c0	ok	
+open_io	-9223372036854775808	2	close	ok	null
+open_io	-9223372036854775808	3	createTempOutput	ok	
+open_io	-9223372036854775808	4	getName	ok	p_s_0.tmp
+open_io	-9223372036854775808	5	close	ok	null
+open_io	-9223372036854775808	6	openInput r1	ok	
+open_io	-9223372036854775808	7	readByte	ok	7
+open_io	-9223372036854775808	8	length	ok	11
+open_io	-9223372036854775808	9	close	ok	null
+open_io	-9223372036854775808	10	createOutput c1	ok	
+open_io	-9223372036854775808	11	close	ok	null
+open_io	-9223372036854775808	12	createTempOutput	ok	
+open_io	-9223372036854775808	13	getName	ok	p_s_1.tmp
+open_io	-9223372036854775808	14	close	ok	null
+open_io	-9223372036854775808	15	openInput r2	err	java.nio.file.NoSuchFileException	a random IOException (r2)
+open_io	-9223372036854775808	16	createOutput c2	err	java.io.IOException	a random IOException (c2)
+open_io	-9223372036854775808	17	createTempOutput	ok	
+open_io	-9223372036854775808	18	getName	ok	p_s_2.tmp
+open_io	-9223372036854775808	19	close	ok	null
+open_io	-9223372036854775808	20	openInput missing3	err	java.io.IOException	a random IOException (missing3)
+open_io	-9223372036854775808	21	createOutput c3	ok	
+open_io	-9223372036854775808	22	close	ok	null
+open_io	-9223372036854775808	23	createTempOutput	ok	
+open_io	-9223372036854775808	24	getName	ok	p_s_3.tmp
+open_io	-9223372036854775808	25	close	ok	null
+open_io	-9223372036854775808	26	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	-9223372036854775808	27	createOutput c4	ok	
+open_io	-9223372036854775808	28	close	ok	null
+open_io	-9223372036854775808	29	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-9223372036854775808	30	openInput r0	ok	
+open_io	-9223372036854775808	31	readByte	ok	0
+open_io	-9223372036854775808	32	length	ok	10
+open_io	-9223372036854775808	33	close	ok	null
+open_io	-9223372036854775808	34	createOutput c5	err	java.io.FileNotFoundException	a random IOException (c5)
+open_io	-9223372036854775808	35	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-9223372036854775808	36	openInput missing6	err	java.io.IOException	a random IOException (missing6)
+open_io	-9223372036854775808	37	createOutput c6	ok	
+open_io	-9223372036854775808	38	close	ok	null
+open_io	-9223372036854775808	39	createTempOutput	err	java.nio.file.NoSuchFileException	a random IOException (temp: prefix=p suffix=s)
+open_io	-9223372036854775808	40	openInput r2	ok	
+open_io	-9223372036854775808	41	readByte	ok	14
+open_io	-9223372036854775808	42	length	ok	12
+open_io	-9223372036854775808	43	close	ok	null
+open_io	-9223372036854775808	44	createOutput c7	ok	
+open_io	-9223372036854775808	45	close	ok	null
+open_io	-9223372036854775808	46	createTempOutput	ok	
+open_io	-9223372036854775808	47	getName	ok	p_s_4.tmp
+open_io	-9223372036854775808	48	close	ok	null
+open_io	-9223372036854775808	49	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	-9223372036854775808	50	createOutput c8	err	java.io.FileNotFoundException	a random IOException (c8)
+open_io	-9223372036854775808	51	createTempOutput	ok	
+open_io	-9223372036854775808	52	getName	ok	p_s_5.tmp
+open_io	-9223372036854775808	53	close	ok	null
+open_io	-9223372036854775808	54	openInput missing9	err	java.nio.file.NoSuchFileException	a random IOException (missing9)
+open_io	-9223372036854775808	55	createOutput c9	err	java.nio.file.NoSuchFileException	a random IOException (c9)
+open_io	-9223372036854775808	56	createTempOutput	ok	
+open_io	-9223372036854775808	57	getName	ok	p_s_6.tmp
+open_io	-9223372036854775808	58	close	ok	null
+open_io	-9223372036854775808	59	openInput r0	ok	
+open_io	-9223372036854775808	60	readByte	ok	0
+open_io	-9223372036854775808	61	length	ok	10
+open_io	-9223372036854775808	62	close	ok	null
+open_io	-9223372036854775808	63	createOutput c10	err	java.io.IOException	a random IOException (c10)
+open_io	-9223372036854775808	64	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-9223372036854775808	65	openInput r1	ok	
+open_io	-9223372036854775808	66	readByte	ok	7
+open_io	-9223372036854775808	67	length	ok	11
+open_io	-9223372036854775808	68	close	ok	null
+open_io	-9223372036854775808	69	createOutput c11	ok	
+open_io	-9223372036854775808	70	close	ok	null
+open_io	-9223372036854775808	71	createTempOutput	ok	
+open_io	-9223372036854775808	72	getName	ok	p_s_7.tmp
+open_io	-9223372036854775808	73	close	ok	null
+open_io	-9223372036854775808	74	openInput missing12	err	java.io.IOException	a random IOException (missing12)
+open_io	-9223372036854775808	75	createOutput c12	err	java.io.IOException	a random IOException (c12)
+open_io	-9223372036854775808	76	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-9223372036854775808	77	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	-9223372036854775808	78	createOutput c13	ok	
+open_io	-9223372036854775808	79	close	ok	null
+open_io	-9223372036854775808	80	createTempOutput	ok	
+open_io	-9223372036854775808	81	getName	ok	p_s_8.tmp
+open_io	-9223372036854775808	82	close	ok	null
+open_io	-9223372036854775808	83	openInput r4	ok	
+open_io	-9223372036854775808	84	readByte	ok	28
+open_io	-9223372036854775808	85	length	ok	14
+open_io	-9223372036854775808	86	close	ok	null
+open_io	-9223372036854775808	87	createOutput c14	err	java.io.IOException	a random IOException (c14)
+open_io	-9223372036854775808	88	createTempOutput	ok	
+open_io	-9223372036854775808	89	getName	ok	p_s_9.tmp
+open_io	-9223372036854775808	90	close	ok	null
+open_io	-9223372036854775808	91	openInput missing15	err	java.io.IOException	a random IOException (missing15)
+open_io	-9223372036854775808	92	createOutput c15	ok	
+open_io	-9223372036854775808	93	close	ok	null
+open_io	-9223372036854775808	94	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	-9223372036854775808	95	nextLong	ok	-3902529456417747673
+open_io	-9223372036854775808	96	close dir	ok	null
+open_io	9223372036854775807	0	openInput missing0	err	java.io.IOException	a random IOException (missing0)
+open_io	9223372036854775807	1	createOutput c0	ok	
+open_io	9223372036854775807	2	close	ok	null
+open_io	9223372036854775807	3	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	4	openInput r1	err	java.nio.file.NoSuchFileException	a random IOException (r1)
+open_io	9223372036854775807	5	createOutput c1	err	java.io.IOException	a random IOException (c1)
+open_io	9223372036854775807	6	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	7	openInput r2	ok	
+open_io	9223372036854775807	8	readByte	ok	14
+open_io	9223372036854775807	9	length	ok	12
+open_io	9223372036854775807	10	close	ok	null
+open_io	9223372036854775807	11	createOutput c2	ok	
+open_io	9223372036854775807	12	close	ok	null
+open_io	9223372036854775807	13	createTempOutput	ok	
+open_io	9223372036854775807	14	getName	ok	p_s_0.tmp
+open_io	9223372036854775807	15	close	ok	null
+open_io	9223372036854775807	16	openInput missing3	err	java.io.FileNotFoundException	missing3 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	9223372036854775807	17	createOutput c3	ok	
+open_io	9223372036854775807	18	close	ok	null
+open_io	9223372036854775807	19	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	20	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	9223372036854775807	21	createOutput c4	ok	
+open_io	9223372036854775807	22	close	ok	null
+open_io	9223372036854775807	23	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	24	openInput r0	err	java.io.IOException	a random IOException (r0)
+open_io	9223372036854775807	25	createOutput c5	err	java.io.IOException	a random IOException (c5)
+open_io	9223372036854775807	26	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	27	openInput missing6	err	java.nio.file.NoSuchFileException	a random IOException (missing6)
+open_io	9223372036854775807	28	createOutput c6	ok	
+open_io	9223372036854775807	29	close	ok	null
+open_io	9223372036854775807	30	createTempOutput	ok	
+open_io	9223372036854775807	31	getName	ok	p_s_1.tmp
+open_io	9223372036854775807	32	close	ok	null
+open_io	9223372036854775807	33	openInput r2	err	java.nio.file.NoSuchFileException	a random IOException (r2)
+open_io	9223372036854775807	34	createOutput c7	err	java.io.IOException	a random IOException (c7)
+open_io	9223372036854775807	35	createTempOutput	ok	
+open_io	9223372036854775807	36	getName	ok	p_s_2.tmp
+open_io	9223372036854775807	37	close	ok	null
+open_io	9223372036854775807	38	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	9223372036854775807	39	createOutput c8	err	java.io.FileNotFoundException	a random IOException (c8)
+open_io	9223372036854775807	40	createTempOutput	ok	
+open_io	9223372036854775807	41	getName	ok	p_s_3.tmp
+open_io	9223372036854775807	42	close	ok	null
+open_io	9223372036854775807	43	openInput missing9	err	java.nio.file.NoSuchFileException	missing9 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	9223372036854775807	44	createOutput c9	err	java.io.FileNotFoundException	a random IOException (c9)
+open_io	9223372036854775807	45	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	46	openInput r0	ok	
+open_io	9223372036854775807	47	readByte	ok	0
+open_io	9223372036854775807	48	length	ok	10
+open_io	9223372036854775807	49	close	ok	null
+open_io	9223372036854775807	50	createOutput c10	ok	
+open_io	9223372036854775807	51	close	ok	null
+open_io	9223372036854775807	52	createTempOutput	ok	
+open_io	9223372036854775807	53	getName	ok	p_s_4.tmp
+open_io	9223372036854775807	54	close	ok	null
+open_io	9223372036854775807	55	openInput r1	ok	
+open_io	9223372036854775807	56	readByte	ok	7
+open_io	9223372036854775807	57	length	ok	11
+open_io	9223372036854775807	58	close	ok	null
+open_io	9223372036854775807	59	createOutput c11	ok	
+open_io	9223372036854775807	60	close	ok	null
+open_io	9223372036854775807	61	createTempOutput	ok	
+open_io	9223372036854775807	62	getName	ok	p_s_5.tmp
+open_io	9223372036854775807	63	close	ok	null
+open_io	9223372036854775807	64	openInput missing12	err	java.io.FileNotFoundException	missing12 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	9223372036854775807	65	createOutput c12	ok	
+open_io	9223372036854775807	66	close	ok	null
+open_io	9223372036854775807	67	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	68	openInput r3	ok	
+open_io	9223372036854775807	69	readByte	ok	21
+open_io	9223372036854775807	70	length	ok	13
+open_io	9223372036854775807	71	close	ok	null
+open_io	9223372036854775807	72	createOutput c13	err	java.io.IOException	a random IOException (c13)
+open_io	9223372036854775807	73	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	74	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	9223372036854775807	75	createOutput c14	ok	
+open_io	9223372036854775807	76	close	ok	null
+open_io	9223372036854775807	77	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	78	openInput missing15	err	java.io.IOException	a random IOException (missing15)
+open_io	9223372036854775807	79	createOutput c15	ok	
+open_io	9223372036854775807	80	close	ok	null
+open_io	9223372036854775807	81	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	9223372036854775807	82	nextLong	ok	-7821393667065723570
+open_io	9223372036854775807	83	close dir	ok	null
+open_io	42	0	openInput missing0	err	java.io.FileNotFoundException	missing0 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	42	1	createOutput c0	err	java.io.IOException	a random IOException (c0)
+open_io	42	2	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	42	3	openInput r1	err	java.io.IOException	a random IOException (r1)
+open_io	42	4	createOutput c1	err	java.nio.file.NoSuchFileException	a random IOException (c1)
+open_io	42	5	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	42	6	openInput r2	ok	
+open_io	42	7	readByte	ok	14
+open_io	42	8	length	ok	12
+open_io	42	9	close	ok	null
+open_io	42	10	createOutput c2	ok	
+open_io	42	11	close	ok	null
+open_io	42	12	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	42	13	openInput missing3	err	java.io.IOException	a random IOException (missing3)
+open_io	42	14	createOutput c3	ok	
+open_io	42	15	close	ok	null
+open_io	42	16	createTempOutput	ok	
+open_io	42	17	getName	ok	p_s_0.tmp
+open_io	42	18	close	ok	null
+open_io	42	19	openInput r4	ok	
+open_io	42	20	readByte	ok	28
+open_io	42	21	length	ok	14
+open_io	42	22	close	ok	null
+open_io	42	23	createOutput c4	err	java.io.IOException	a random IOException (c4)
+open_io	42	24	createTempOutput	err	java.nio.file.NoSuchFileException	a random IOException (temp: prefix=p suffix=s)
+open_io	42	25	openInput r0	ok	
+open_io	42	26	readByte	ok	0
+open_io	42	27	length	ok	10
+open_io	42	28	close	ok	null
+open_io	42	29	createOutput c5	err	java.nio.file.NoSuchFileException	a random IOException (c5)
+open_io	42	30	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	42	31	openInput missing6	err	java.io.FileNotFoundException	a random IOException (missing6)
+open_io	42	32	createOutput c6	err	java.nio.file.NoSuchFileException	a random IOException (c6)
+open_io	42	33	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	42	34	openInput r2	ok	
+open_io	42	35	readByte	ok	14
+open_io	42	36	length	ok	12
+open_io	42	37	close	ok	null
+open_io	42	38	createOutput c7	ok	
+open_io	42	39	close	ok	null
+open_io	42	40	createTempOutput	ok	
+open_io	42	41	getName	ok	p_s_1.tmp
+open_io	42	42	close	ok	null
+open_io	42	43	openInput r3	err	java.io.FileNotFoundException	a random IOException (r3)
+open_io	42	44	createOutput c8	ok	
+open_io	42	45	close	ok	null
+open_io	42	46	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	42	47	openInput missing9	err	java.io.FileNotFoundException	missing9 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	42	48	createOutput c9	ok	
+open_io	42	49	close	ok	null
+open_io	42	50	createTempOutput	ok	
+open_io	42	51	getName	ok	p_s_2.tmp
+open_io	42	52	close	ok	null
+open_io	42	53	openInput r0	err	java.io.IOException	a random IOException (r0)
+open_io	42	54	createOutput c10	err	java.io.IOException	a random IOException (c10)
+open_io	42	55	createTempOutput	ok	
+open_io	42	56	getName	ok	p_s_3.tmp
+open_io	42	57	close	ok	null
+open_io	42	58	openInput r1	ok	
+open_io	42	59	readByte	ok	7
+open_io	42	60	length	ok	11
+open_io	42	61	close	ok	null
+open_io	42	62	createOutput c11	ok	
+open_io	42	63	close	ok	null
+open_io	42	64	createTempOutput	ok	
+open_io	42	65	getName	ok	p_s_4.tmp
+open_io	42	66	close	ok	null
+open_io	42	67	openInput missing12	err	java.io.IOException	a random IOException (missing12)
+open_io	42	68	createOutput c12	err	java.io.IOException	a random IOException (c12)
+open_io	42	69	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	42	70	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	42	71	createOutput c13	ok	
+open_io	42	72	close	ok	null
+open_io	42	73	createTempOutput	ok	
+open_io	42	74	getName	ok	p_s_5.tmp
+open_io	42	75	close	ok	null
+open_io	42	76	openInput r4	ok	
+open_io	42	77	readByte	ok	28
+open_io	42	78	length	ok	14
+open_io	42	79	close	ok	null
+open_io	42	80	createOutput c14	err	java.io.IOException	a random IOException (c14)
+open_io	42	81	createTempOutput	ok	
+open_io	42	82	getName	ok	p_s_6.tmp
+open_io	42	83	close	ok	null
+open_io	42	84	openInput missing15	err	java.io.FileNotFoundException	missing15 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	42	85	createOutput c15	ok	
+open_io	42	86	close	ok	null
+open_io	42	87	createTempOutput	ok	
+open_io	42	88	getName	ok	p_s_7.tmp
+open_io	42	89	close	ok	null
+open_io	42	90	nextLong	ok	7288264754483292753
+open_io	42	91	close dir	ok	null
+open_io	25214903917	0	openInput missing0	err	java.io.IOException	a random IOException (missing0)
+open_io	25214903917	1	createOutput c0	err	java.io.FileNotFoundException	a random IOException (c0)
+open_io	25214903917	2	createTempOutput	ok	
+open_io	25214903917	3	getName	ok	p_s_0.tmp
+open_io	25214903917	4	close	ok	null
+open_io	25214903917	5	openInput r1	ok	
+open_io	25214903917	6	readByte	ok	7
+open_io	25214903917	7	length	ok	11
+open_io	25214903917	8	close	ok	null
+open_io	25214903917	9	createOutput c1	err	java.io.FileNotFoundException	a random IOException (c1)
+open_io	25214903917	10	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	11	openInput r2	err	java.io.IOException	a random IOException (r2)
+open_io	25214903917	12	createOutput c2	err	java.io.IOException	a random IOException (c2)
+open_io	25214903917	13	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	14	openInput missing3	err	java.nio.file.NoSuchFileException	missing3 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	25214903917	15	createOutput c3	ok	
+open_io	25214903917	16	close	ok	null
+open_io	25214903917	17	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	18	openInput r4	ok	
+open_io	25214903917	19	readByte	ok	28
+open_io	25214903917	20	length	ok	14
+open_io	25214903917	21	close	ok	null
+open_io	25214903917	22	createOutput c4	ok	
+open_io	25214903917	23	close	ok	null
+open_io	25214903917	24	createTempOutput	err	java.nio.file.NoSuchFileException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	25	openInput r0	err	java.io.FileNotFoundException	a random IOException (r0)
+open_io	25214903917	26	createOutput c5	err	java.io.FileNotFoundException	a random IOException (c5)
+open_io	25214903917	27	createTempOutput	ok	
+open_io	25214903917	28	getName	ok	p_s_1.tmp
+open_io	25214903917	29	close	ok	null
+open_io	25214903917	30	openInput missing6	err	java.nio.file.NoSuchFileException	missing6 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	25214903917	31	createOutput c6	err	java.io.IOException	a random IOException (c6)
+open_io	25214903917	32	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	33	openInput r2	err	java.io.IOException	a random IOException (r2)
+open_io	25214903917	34	createOutput c7	ok	
+open_io	25214903917	35	close	ok	null
+open_io	25214903917	36	createTempOutput	ok	
+open_io	25214903917	37	getName	ok	p_s_2.tmp
+open_io	25214903917	38	close	ok	null
+open_io	25214903917	39	openInput r3	ok	
+open_io	25214903917	40	readByte	ok	21
+open_io	25214903917	41	length	ok	13
+open_io	25214903917	42	close	ok	null
+open_io	25214903917	43	createOutput c8	err	java.io.FileNotFoundException	a random IOException (c8)
+open_io	25214903917	44	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	45	openInput missing9	err	java.io.FileNotFoundException	missing9 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	25214903917	46	createOutput c9	err	java.nio.file.NoSuchFileException	a random IOException (c9)
+open_io	25214903917	47	createTempOutput	ok	
+open_io	25214903917	48	getName	ok	p_s_3.tmp
+open_io	25214903917	49	close	ok	null
+open_io	25214903917	50	openInput r0	ok	
+open_io	25214903917	51	readByte	ok	0
+open_io	25214903917	52	length	ok	10
+open_io	25214903917	53	close	ok	null
+open_io	25214903917	54	createOutput c10	err	java.io.IOException	a random IOException (c10)
+open_io	25214903917	55	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	56	openInput r1	err	java.io.IOException	a random IOException (r1)
+open_io	25214903917	57	createOutput c11	err	java.io.IOException	a random IOException (c11)
+open_io	25214903917	58	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	59	openInput missing12	err	java.nio.file.NoSuchFileException	missing12 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	25214903917	60	createOutput c12	err	java.io.IOException	a random IOException (c12)
+open_io	25214903917	61	createTempOutput	ok	
+open_io	25214903917	62	getName	ok	p_s_4.tmp
+open_io	25214903917	63	close	ok	null
+open_io	25214903917	64	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	25214903917	65	createOutput c13	ok	
+open_io	25214903917	66	close	ok	null
+open_io	25214903917	67	createTempOutput	ok	
+open_io	25214903917	68	getName	ok	p_s_5.tmp
+open_io	25214903917	69	close	ok	null
+open_io	25214903917	70	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	25214903917	71	createOutput c14	ok	
+open_io	25214903917	72	close	ok	null
+open_io	25214903917	73	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	74	openInput missing15	err	java.nio.file.NoSuchFileException	missing15 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	25214903917	75	createOutput c15	err	java.io.IOException	a random IOException (c15)
+open_io	25214903917	76	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	25214903917	77	nextLong	ok	3698875473825747302
+open_io	25214903917	78	close dir	ok	null
+open_io	3735928559	0	openInput missing0	err	java.nio.file.NoSuchFileException	missing0 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	3735928559	1	createOutput c0	ok	
+open_io	3735928559	2	close	ok	null
+open_io	3735928559	3	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	3735928559	4	openInput r1	err	java.io.IOException	a random IOException (r1)
+open_io	3735928559	5	createOutput c1	err	java.nio.file.NoSuchFileException	a random IOException (c1)
+open_io	3735928559	6	createTempOutput	ok	
+open_io	3735928559	7	getName	ok	p_s_0.tmp
+open_io	3735928559	8	close	ok	null
+open_io	3735928559	9	openInput r2	err	java.io.IOException	a random IOException (r2)
+open_io	3735928559	10	createOutput c2	err	java.io.FileNotFoundException	a random IOException (c2)
+open_io	3735928559	11	createTempOutput	ok	
+open_io	3735928559	12	getName	ok	p_s_1.tmp
+open_io	3735928559	13	close	ok	null
+open_io	3735928559	14	openInput missing3	err	java.nio.file.NoSuchFileException	missing3 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	3735928559	15	createOutput c3	err	java.io.FileNotFoundException	a random IOException (c3)
+open_io	3735928559	16	createTempOutput	err	java.nio.file.NoSuchFileException	a random IOException (temp: prefix=p suffix=s)
+open_io	3735928559	17	openInput r4	err	java.io.FileNotFoundException	a random IOException (r4)
+open_io	3735928559	18	createOutput c4	ok	
+open_io	3735928559	19	close	ok	null
+open_io	3735928559	20	createTempOutput	ok	
+open_io	3735928559	21	getName	ok	p_s_2.tmp
+open_io	3735928559	22	close	ok	null
+open_io	3735928559	23	openInput r0	ok	
+open_io	3735928559	24	readByte	ok	0
+open_io	3735928559	25	length	ok	10
+open_io	3735928559	26	close	ok	null
+open_io	3735928559	27	createOutput c5	ok	
+open_io	3735928559	28	close	ok	null
+open_io	3735928559	29	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	3735928559	30	openInput missing6	err	java.io.FileNotFoundException	a random IOException (missing6)
+open_io	3735928559	31	createOutput c6	ok	
+open_io	3735928559	32	close	ok	null
+open_io	3735928559	33	createTempOutput	ok	
+open_io	3735928559	34	getName	ok	p_s_3.tmp
+open_io	3735928559	35	close	ok	null
+open_io	3735928559	36	openInput r2	ok	
+open_io	3735928559	37	readByte	ok	14
+open_io	3735928559	38	length	ok	12
+open_io	3735928559	39	close	ok	null
+open_io	3735928559	40	createOutput c7	ok	
+open_io	3735928559	41	close	ok	null
+open_io	3735928559	42	createTempOutput	ok	
+open_io	3735928559	43	getName	ok	p_s_4.tmp
+open_io	3735928559	44	close	ok	null
+open_io	3735928559	45	openInput r3	err	java.io.FileNotFoundException	a random IOException (r3)
+open_io	3735928559	46	createOutput c8	err	java.io.IOException	a random IOException (c8)
+open_io	3735928559	47	createTempOutput	ok	
+open_io	3735928559	48	getName	ok	p_s_5.tmp
+open_io	3735928559	49	close	ok	null
+open_io	3735928559	50	openInput missing9	err	java.io.FileNotFoundException	a random IOException (missing9)
+open_io	3735928559	51	createOutput c9	err	java.io.IOException	a random IOException (c9)
+open_io	3735928559	52	createTempOutput	err	java.io.FileNotFoundException	a random IOException (temp: prefix=p suffix=s)
+open_io	3735928559	53	openInput r0	ok	
+open_io	3735928559	54	readByte	ok	0
+open_io	3735928559	55	length	ok	10
+open_io	3735928559	56	close	ok	null
+open_io	3735928559	57	createOutput c10	ok	
+open_io	3735928559	58	close	ok	null
+open_io	3735928559	59	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	3735928559	60	openInput r1	ok	
+open_io	3735928559	61	readByte	ok	7
+open_io	3735928559	62	length	ok	11
+open_io	3735928559	63	close	ok	null
+open_io	3735928559	64	createOutput c11	ok	
+open_io	3735928559	65	close	ok	null
+open_io	3735928559	66	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	3735928559	67	openInput missing12	err	java.io.IOException	a random IOException (missing12)
+open_io	3735928559	68	createOutput c12	err	java.io.IOException	a random IOException (c12)
+open_io	3735928559	69	createTempOutput	ok	
+open_io	3735928559	70	getName	ok	p_s_6.tmp
+open_io	3735928559	71	close	ok	null
+open_io	3735928559	72	openInput r3	err	java.io.IOException	a random IOException (r3)
+open_io	3735928559	73	createOutput c13	ok	
+open_io	3735928559	74	close	ok	null
+open_io	3735928559	75	createTempOutput	ok	
+open_io	3735928559	76	getName	ok	p_s_7.tmp
+open_io	3735928559	77	close	ok	null
+open_io	3735928559	78	openInput r4	err	java.io.IOException	a random IOException (r4)
+open_io	3735928559	79	createOutput c14	ok	
+open_io	3735928559	80	close	ok	null
+open_io	3735928559	81	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	3735928559	82	openInput missing15	err	java.nio.file.NoSuchFileException	missing15 in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+open_io	3735928559	83	createOutput c15	ok	
+open_io	3735928559	84	close	ok	null
+open_io	3735928559	85	createTempOutput	err	java.io.IOException	a random IOException (temp: prefix=p suffix=s)
+open_io	3735928559	86	nextLong	ok	-5881871561531541306
+open_io	3735928559	87	close dir	ok	null
+tracking	1	0	getFileHandleCount	ok	1
+tracking	1	1	openInput a (open for write)	err	java.nio.file.AccessDeniedException	Can't open a file still open for writing: a
+tracking	1	2	createOutput a (again)	err	java.nio.file.FileAlreadyExistsException	File "a" was already written to.
+tracking	1	3	toString	ok	MockDirectoryWrapper(ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH)
+tracking	1	4	isOpen	ok	true
+tracking	1	5	close dir	err	java.lang.RuntimeException	MockDirectoryWrapper: cannot close: there are still 1 open files: {a=1}	cause=java.lang.RuntimeException: unclosed IndexOutput: a
+tracking	1	6	isOpen	ok	false
+tracking	1	7	nextLong	ok	-988816557208879004
+tracking	2	0	getFileHandleCount	ok	1
+tracking	2	1	close dir	err	java.lang.RuntimeException	MockDirectoryWrapper: cannot close: there are still 1 open files: {b=1}	cause=java.lang.RuntimeException: unclosed IndexInput: b
+tracking	2	2	nextLong	ok	2368836247669436452
+tracking	3	0	close dir	err	java.lang.RuntimeException	MockDirectoryWrapper: cannot close: there are still 4 open files: {zz=1, a1=1, b=2, _0.cfs=1}
+tracking	4	0	openInput x	ok	
+tracking	4	1	deleteFile x (open)	err	java.io.IOException	MockDirectoryWrapper: file "x" is still open: cannot delete
+tracking	4	2	rename x y (source open)	err	java.lang.AssertionError	MockDirectoryWrapper: source file "x" is still open: cannot rename
+tracking	4	3	rename z x (dest open)	err	java.lang.AssertionError	MockDirectoryWrapper: dest file "x" is still open: cannot rename
+tracking	4	4	createOutput x (open)	err	java.lang.AssertionError	MockDirectoryWrapper: file "x" is still open: cannot overwrite
+tracking	4	5	getOpenDeletedFiles	ok	[x]
+tracking	4	6	close x	ok	null
+tracking	4	7	openInput x	ok	
+tracking	4	8	clone	ok	
+tracking	4	9	slice	ok	
+tracking	4	10	slice readByte	ok	90
+tracking	4	11	slice toString	ok	MockIndexInputWrapper((sliced) offset=2, length=5 (clone of) ByteBuffersIndexInput (file=x, buffers=20 bytes, block size: 1, blocks: 1, position: 0) [slice=sl])
+tracking	4	12	getInputCloneCount	ok	2
+tracking	4	13	toString	ok	MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=x, buffers=20 bytes, block size: 1, blocks: 1, position: 0))
+tracking	4	14	deleteFile x (open, allowed)	ok	null
+tracking	4	15	getOpenDeletedFiles	ok	[x]
+tracking	4	16	readByte	ok	28
+tracking	4	17	close x	ok	null
+tracking	4	18	readByte (closed)	err	java.lang.RuntimeException	Abusing closed IndexInput!
+tracking	4	19	clone (closed)	err	java.lang.RuntimeException	Abusing closed IndexInput!
+tracking	4	20	clone readByte (parent closed)	err	java.lang.RuntimeException	Abusing clone of a closed IndexInput!
+tracking	4	21	clone close	ok	null
+tracking	4	22	close x again	ok	null
+tracking	4	23	openInput nope	err	java.nio.file.NoSuchFileException	nope in dir=ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH
+tracking	4	24	openInput segments_1 READONCE	ok	null
+tracking	4	25	openInput segments_1 DEFAULT	err	java.lang.RuntimeException	MockDirectoryWrapper: opening segments file [segments_1] with a non-READONCE context[org.apache.lucene.store.IOContext$2@HASH]
+tracking	4	26	openInput segments_1 DEFAULT	err	java.lang.RuntimeException	MockDirectoryWrapper: opening segments file [segments_1] with a non-READONCE context[DefaultIOContext[hints=[]]]
+tracking	4	27	openInput segments_1 DEFAULT	err	java.lang.RuntimeException	MockDirectoryWrapper: opening segments file [segments_1] with a non-READONCE context[org.apache.lucene.store.IOContext$2@HASH]
+tracking	4	28	openInput segments_1 DEFAULT	err	java.lang.RuntimeException	MockDirectoryWrapper: opening segments file [segments_1] with a non-READONCE context[org.apache.lucene.store.IOContext$2@HASH]
+tracking	4	29	createOutput q	ok	
+tracking	4	30	write q	ok	null
+tracking	4	31	close q	ok	null
+tracking	4	32	writeByte q (closed)	err	org.apache.lucene.store.AlreadyClosedException	Already closed: MockIndexOutputWrapper(ByteBuffersDirectory output (file=q))
+tracking	4	33	close q again	ok	null
+tracking	4	34	getFileHandleCount	ok	0
+tracking	4	35	createOutput r	ok	
+tracking	4	36	write r	ok	null
+tracking	4	37	openInput q	ok	
+tracking	4	38	getFileHandleCount	ok	2
+tracking	4	39	crash	ok	null
+tracking	4	40	getFileHandleCount	ok	0
+tracking	4	41	files	ok	q:2:07e77b07b4ab6e5c,r:40:aca3984addf7b675,segments_1:20:8bc083d1f27e2079
+tracking	4	42	writeByte r (crashed)	err	org.apache.lucene.store.AlreadyClosedException	Already closed: MockIndexOutputWrapper(ByteBuffersDirectory output (file=r))
+tracking	4	43	close r	ok	null
+tracking	4	44	readByte q (crashed)	err	java.lang.RuntimeException	Abusing closed IndexInput!
+tracking	4	45	close q	ok	null
+tracking	4	46	createOutput after crash	err	java.io.IOException	cannot createOutput after crash
+tracking	4	47	createTempOutput after crash	err	java.io.IOException	cannot createTempOutput after crash
+tracking	4	48	deleteFile after crash	err	java.io.IOException	cannot delete after crash
+tracking	4	49	rename after crash	err	java.io.IOException	cannot rename after crash
+tracking	4	50	sync after crash	err	java.io.IOException	cannot sync after crash
+tracking	4	51	syncMetaData after crash	err	java.io.IOException	cannot sync metadata after crash
+tracking	4	52	openInput after crash	ok	null
+tracking	4	53	clearCrash	ok	null
+tracking	4	54	createOutput after clearCrash	ok	null
+tracking	4	55	listAll	ok	[q, r, segments_1, t]
+tracking	4	56	fileLength t	ok	0
+tracking	4	57	sizeInBytes	ok	62
+tracking	4	58	nextLong	ok	-3036992693642501006
+tracking	4	59	close dir	ok	null
+failure	7	0	op0	ok	9
+failure	7	1	op1	ok	4
+failure	7	2	op2	ok	1
+failure	7	3	op3	ok	1
+failure	7	4	op4	ok	1
+failure	7	5	op5	ok	0
+failure	7	6	op6	ok	3
+failure	7	7	op7	ok	1
+failure	7	8	op8	ok	2
+failure	7	9	op9	ok	2
+failure	7	10	deleteFile g (no doFail)	ok	null
+failure	7	11	deleteFile g2 (doFail)	err	org.apache.lucene.tests.store.MockDirectoryWrapper$FakeIOException	<null>
+failure	7	12	createOutput k (doFail)	ok	null
+failure	7	13	rename k k2 (doFail)	ok	null
+failure	7	14	deleteFile g2 (cleared)	ok	null
+failure	7	15	listAll	ok	[h, k2]
+failure	7	16	nextLong	ok	-271620909461001217
+failure	7	17	close dir	ok	null
+disk_full	11	0	x writeBytes 60	ok	null
+disk_full	11	1	x writeBytes 60	ok	null
+disk_full	11	2	x close	ok	null
+disk_full	11	3	sizeInBytes	ok	120
+disk_full	11	4	y writeBytes 60	err	java.io.IOException	fake disk full at 120 bytes when writing y (file length=0)
+disk_full	11	5	y close	ok	null
+disk_full	11	6	getMaxUsedSizeInBytes	ok	120
+disk_full	11	7	z writeBytes 60	err	java.io.IOException	fake disk full at 120 bytes when writing z (file length=30; wrote 30 of 60 bytes)
+disk_full	11	8	z close	ok	null
+disk_full	11	9	sizeInBytes	ok	150
+disk_full	11	10	getMaxUsedSizeInBytes	ok	150
+disk_full	11	11	v copyBytes 50	err	java.io.IOException	fake disk full at 150 bytes when writing v (file length=10; wrote 10 of 50 bytes)
+disk_full	11	12	v close	ok	null
+disk_full	11	13	toString	ok	MockDirectoryWrapper(ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH, current=160,max=160)
+disk_full	11	14	getMaxSizeInBytes	ok	160
+disk_full	11	15	resetMaxUsedSizeInBytes	ok	160
+disk_full	11	16	u writeBytes 70	ok	null
+disk_full	11	17	u close	ok	null
+disk_full	11	18	getMaxUsedSizeInBytes	ok	230
+disk_full	11	19	files	ok	u:70:8b3fb9c095f5f2a4,v:10:b4b3221e5bf9b520,x:120:f9d865ea40a15685,y:0:cbf29ce484222325,z:30:2cdaa040fb34de00
+disk_full	11	20	nextLong	ok	-7483867345851721322
+disk_full	11	21	close dir	ok	null
+crash	0	0	write _0.dat	ok	null
+crash	0	1	write _1.dat	ok	null
+crash	0	2	write _2.dat	ok	null
+crash	0	3	write _3.dat	ok	null
+crash	0	4	write _4.dat	ok	null
+crash	0	5	write _5.dat	ok	null
+crash	0	6	write _6.dat	ok	null
+crash	0	7	write _7.dat	ok	null
+crash	0	8	sync	ok	null
+crash	0	9	crash	ok	null
+crash	0	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:b1cd17849798e8dd,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_5.dat:0:cbf29ce484222325,_6.dat:883:e125278e4c3c851c,_7.dat:0:cbf29ce484222325
+crash	0	11	nextLong	ok	-3808480587873932641
+crash	0	12	close dir	ok	null
+crash	1	0	write _0.dat	ok	null
+crash	1	1	write _1.dat	ok	null
+crash	1	2	write _2.dat	ok	null
+crash	1	3	write _3.dat	ok	null
+crash	1	4	write _4.dat	ok	null
+crash	1	5	write _5.dat	ok	null
+crash	1	6	write _6.dat	ok	null
+crash	1	7	write _7.dat	ok	null
+crash	1	8	sync	ok	null
+crash	1	9	crash	ok	null
+crash	1	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:5aaa6f1460dd0fdc,_2.dat:795:77e79b38d0362108,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_5.dat:486:d9613bdf89cbf564,_6.dat:883:dc7a72432885a9fc,_7.dat:0:cbf29ce484222325
+crash	1	11	nextLong	ok	-4082885732219928114
+crash	1	12	close dir	ok	null
+crash	-1	0	write _0.dat	ok	null
+crash	-1	1	write _1.dat	ok	null
+crash	-1	2	write _2.dat	ok	null
+crash	-1	3	write _3.dat	ok	null
+crash	-1	4	write _4.dat	ok	null
+crash	-1	5	write _5.dat	ok	null
+crash	-1	6	write _6.dat	ok	null
+crash	-1	7	write _7.dat	ok	null
+crash	-1	8	sync	ok	null
+crash	-1	9	crash	ok	null
+crash	-1	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:199:21c69a0bf1bf6697,_2.dat:397:4f05cb1d1429bc49,_3.dat:1192:5da571a6bc92af55,_4.dat:89:b50a800184a1f553,_5.dat:486:3e14b88aa8d686e4,_6.dat:883:e7943e4efc6202e4,_7.dat:0:cbf29ce484222325
+crash	-1	11	nextLong	ok	3922952605515128056
+crash	-1	12	close dir	ok	null
+crash	-9223372036854775808	0	write _0.dat	ok	null
+crash	-9223372036854775808	1	write _1.dat	ok	null
+crash	-9223372036854775808	2	write _2.dat	ok	null
+crash	-9223372036854775808	3	write _3.dat	ok	null
+crash	-9223372036854775808	4	write _4.dat	ok	null
+crash	-9223372036854775808	5	write _5.dat	ok	null
+crash	-9223372036854775808	6	write _6.dat	ok	null
+crash	-9223372036854775808	7	write _7.dat	ok	null
+crash	-9223372036854775808	8	sync	ok	null
+crash	-9223372036854775808	9	crash	ok	null
+crash	-9223372036854775808	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:b1cd17849798e8dd,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_5.dat:0:cbf29ce484222325,_6.dat:883:e125278e4c3c851c,_7.dat:0:cbf29ce484222325
+crash	-9223372036854775808	11	nextLong	ok	-3808480587873932641
+crash	-9223372036854775808	12	close dir	ok	null
+crash	9223372036854775807	0	write _0.dat	ok	null
+crash	9223372036854775807	1	write _1.dat	ok	null
+crash	9223372036854775807	2	write _2.dat	ok	null
+crash	9223372036854775807	3	write _3.dat	ok	null
+crash	9223372036854775807	4	write _4.dat	ok	null
+crash	9223372036854775807	5	write _5.dat	ok	null
+crash	9223372036854775807	6	write _6.dat	ok	null
+crash	9223372036854775807	7	write _7.dat	ok	null
+crash	9223372036854775807	8	sync	ok	null
+crash	9223372036854775807	9	crash	ok	null
+crash	9223372036854775807	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:199:21c69a0bf1bf6697,_2.dat:397:4f05cb1d1429bc49,_3.dat:1192:5da571a6bc92af55,_4.dat:89:b50a800184a1f553,_5.dat:486:3e14b88aa8d686e4,_6.dat:883:e7943e4efc6202e4,_7.dat:0:cbf29ce484222325
+crash	9223372036854775807	11	nextLong	ok	3922952605515128056
+crash	9223372036854775807	12	close dir	ok	null
+crash	42	0	write _0.dat	ok	null
+crash	42	1	write _1.dat	ok	null
+crash	42	2	write _2.dat	ok	null
+crash	42	3	write _3.dat	ok	null
+crash	42	4	write _4.dat	ok	null
+crash	42	5	write _5.dat	ok	null
+crash	42	6	write _6.dat	ok	null
+crash	42	7	write _7.dat	ok	null
+crash	42	8	sync	ok	null
+crash	42	9	crash	ok	null
+crash	42	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:0973c2df48d0a29d,_2.dat:397:4f05cb1d1429bc49,_3.dat:1192:5da571a6bc92af55,_5.dat:486:6b7a39838dccfd81,_6.dat:883:dc7a72432885a9fc,_7.dat:0:cbf29ce484222325
+crash	42	11	nextLong	ok	-7281609452254890886
+crash	42	12	close dir	ok	null
+crash	25214903917	0	write _0.dat	ok	null
+crash	25214903917	1	write _1.dat	ok	null
+crash	25214903917	2	write _2.dat	ok	null
+crash	25214903917	3	write _3.dat	ok	null
+crash	25214903917	4	write _4.dat	ok	null
+crash	25214903917	5	write _5.dat	ok	null
+crash	25214903917	6	write _6.dat	ok	null
+crash	25214903917	7	write _7.dat	ok	null
+crash	25214903917	8	sync	ok	null
+crash	25214903917	9	crash	ok	null
+crash	25214903917	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:61daf317983ef75e,_3.dat:1192:5da571a6bc92af55,_4.dat:89:7fc4c11ad64d81a3,_5.dat:243:f95f03e97e4fd4f3,_6.dat:883:7fae59f6630c8bf7,_7.dat:0:cbf29ce484222325
+crash	25214903917	11	nextLong	ok	-148625824714636787
+crash	25214903917	12	close dir	ok	null
+crash	3735928559	0	write _0.dat	ok	null
+crash	3735928559	1	write _1.dat	ok	null
+crash	3735928559	2	write _2.dat	ok	null
+crash	3735928559	3	write _3.dat	ok	null
+crash	3735928559	4	write _4.dat	ok	null
+crash	3735928559	5	write _5.dat	ok	null
+crash	3735928559	6	write _6.dat	ok	null
+crash	3735928559	7	write _7.dat	ok	null
+crash	3735928559	8	sync	ok	null
+crash	3735928559	9	crash	ok	null
+crash	3735928559	10	files	ok	_0.dat:1:af63bd4c8601b7df,_2.dat:795:9bfbfdd612dd59c8,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_5.dat:0:cbf29ce484222325,_6.dat:883:7fae59f6630c8bf7,_7.dat:0:cbf29ce484222325
+crash	3735928559	11	nextLong	ok	-2260364046585886619
+crash	3735928559	12	close dir	ok	null
+crash	81985529216486895	0	write _0.dat	ok	null
+crash	81985529216486895	1	write _1.dat	ok	null
+crash	81985529216486895	2	write _2.dat	ok	null
+crash	81985529216486895	3	write _3.dat	ok	null
+crash	81985529216486895	4	write _4.dat	ok	null
+crash	81985529216486895	5	write _5.dat	ok	null
+crash	81985529216486895	6	write _6.dat	ok	null
+crash	81985529216486895	7	write _7.dat	ok	null
+crash	81985529216486895	8	sync	ok	null
+crash	81985529216486895	9	crash	ok	null
+crash	81985529216486895	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:f9315ab2d092555c,_2.dat:0:cbf29ce484222325,_3.dat:1192:5da571a6bc92af55,_4.dat:89:27eb43354bbc2a63,_5.dat:486:3e14b88aa8d686e4,_6.dat:883:7fae59f6630c8bf7,_7.dat:0:cbf29ce484222325
+crash	81985529216486895	11	nextLong	ok	8468903411380788763
+crash	81985529216486895	12	close dir	ok	null
+crash	-81985529216486895	0	write _0.dat	ok	null
+crash	-81985529216486895	1	write _1.dat	ok	null
+crash	-81985529216486895	2	write _2.dat	ok	null
+crash	-81985529216486895	3	write _3.dat	ok	null
+crash	-81985529216486895	4	write _4.dat	ok	null
+crash	-81985529216486895	5	write _5.dat	ok	null
+crash	-81985529216486895	6	write _6.dat	ok	null
+crash	-81985529216486895	7	write _7.dat	ok	null
+crash	-81985529216486895	8	sync	ok	null
+crash	-81985529216486895	9	crash	ok	null
+crash	-81985529216486895	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:199:21c69a0bf1bf6697,_2.dat:0:cbf29ce484222325,_3.dat:1192:5da571a6bc92af55,_5.dat:0:cbf29ce484222325,_6.dat:883:dc7a72432885a9fc,_7.dat:0:cbf29ce484222325
+crash	-81985529216486895	11	nextLong	ok	1055272356663276126
+crash	-81985529216486895	12	close dir	ok	null
+crash	5843011988881251843	0	write _0.dat	ok	null
+crash	5843011988881251843	1	write _1.dat	ok	null
+crash	5843011988881251843	2	write _2.dat	ok	null
+crash	5843011988881251843	3	write _3.dat	ok	null
+crash	5843011988881251843	4	write _4.dat	ok	null
+crash	5843011988881251843	5	write _5.dat	ok	null
+crash	5843011988881251843	6	write _6.dat	ok	null
+crash	5843011988881251843	7	write _7.dat	ok	null
+crash	5843011988881251843	8	sync	ok	null
+crash	5843011988881251843	9	crash	ok	null
+crash	5843011988881251843	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:199:21c69a0bf1bf6697,_3.dat:1192:5da571a6bc92af55,_4.dat:89:6948a02c2ca4407f,_5.dat:243:f95f03e97e4fd4f3,_6.dat:441:ad6ab640504cbe6d,_7.dat:0:cbf29ce484222325
+crash	5843011988881251843	11	nextLong	ok	-2320314018132269077
+crash	5843011988881251843	12	close dir	ok	null
+crash	7620229681788273117	0	write _0.dat	ok	null
+crash	7620229681788273117	1	write _1.dat	ok	null
+crash	7620229681788273117	2	write _2.dat	ok	null
+crash	7620229681788273117	3	write _3.dat	ok	null
+crash	7620229681788273117	4	write _4.dat	ok	null
+crash	7620229681788273117	5	write _5.dat	ok	null
+crash	7620229681788273117	6	write _6.dat	ok	null
+crash	7620229681788273117	7	write _7.dat	ok	null
+crash	7620229681788273117	8	sync	ok	null
+crash	7620229681788273117	9	crash	ok	null
+crash	7620229681788273117	10	files	ok	_0.dat:1:af63bd4c8601b7df,_2.dat:795:9021dcaa9a0b5088,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_7.dat:0:cbf29ce484222325
+crash	7620229681788273117	11	nextLong	ok	-8938099507613656122
+crash	7620229681788273117	12	close dir	ok	null
+crash	3728128964537905102	0	write _0.dat	ok	null
+crash	3728128964537905102	1	write _1.dat	ok	null
+crash	3728128964537905102	2	write _2.dat	ok	null
+crash	3728128964537905102	3	write _3.dat	ok	null
+crash	3728128964537905102	4	write _4.dat	ok	null
+crash	3728128964537905102	5	write _5.dat	ok	null
+crash	3728128964537905102	6	write _6.dat	ok	null
+crash	3728128964537905102	7	write _7.dat	ok	null
+crash	3728128964537905102	8	sync	ok	null
+crash	3728128964537905102	9	crash	ok	null
+crash	3728128964537905102	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:199:21c69a0bf1bf6697,_2.dat:795:6a85701774966e57,_3.dat:1192:5da571a6bc92af55,_4.dat:89:b68c81108398f4c7,_6.dat:441:ad6ab640504cbe6d,_7.dat:0:cbf29ce484222325
+crash	3728128964537905102	11	nextLong	ok	1949485578516077013
+crash	3728128964537905102	12	close dir	ok	null
+crash	1906953110644082044	0	write _0.dat	ok	null
+crash	1906953110644082044	1	write _1.dat	ok	null
+crash	1906953110644082044	2	write _2.dat	ok	null
+crash	1906953110644082044	3	write _3.dat	ok	null
+crash	1906953110644082044	4	write _4.dat	ok	null
+crash	1906953110644082044	5	write _5.dat	ok	null
+crash	1906953110644082044	6	write _6.dat	ok	null
+crash	1906953110644082044	7	write _7.dat	ok	null
+crash	1906953110644082044	8	sync	ok	null
+crash	1906953110644082044	9	crash	ok	null
+crash	1906953110644082044	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:5de1bf56e2a6297c,_2.dat:795:6a85701774966e57,_3.dat:1192:5da571a6bc92af55,_4.dat:44:ac82ea5ae550c2c5,_5.dat:486:3e14b88aa8d686e4,_6.dat:0:cbf29ce484222325,_7.dat:0:cbf29ce484222325
+crash	1906953110644082044	11	nextLong	ok	-4843382764716796890
+crash	1906953110644082044	12	close dir	ok	null
+crash	-944158367659112830	0	write _0.dat	ok	null
+crash	-944158367659112830	1	write _1.dat	ok	null
+crash	-944158367659112830	2	write _2.dat	ok	null
+crash	-944158367659112830	3	write _3.dat	ok	null
+crash	-944158367659112830	4	write _4.dat	ok	null
+crash	-944158367659112830	5	write _5.dat	ok	null
+crash	-944158367659112830	6	write _6.dat	ok	null
+crash	-944158367659112830	7	write _7.dat	ok	null
+crash	-944158367659112830	8	sync	ok	null
+crash	-944158367659112830	9	crash	ok	null
+crash	-944158367659112830	10	files	ok	_0.dat:1:af63bd4c8601b7df,_3.dat:1192:5da571a6bc92af55,_4.dat:89:6948a02c2ca4407f,_5.dat:486:b843741b7776babd,_6.dat:883:7fae59f6630c8bf7,_7.dat:0:cbf29ce484222325
+crash	-944158367659112830	11	nextLong	ok	-3863940649945425801
+crash	-944158367659112830	12	close dir	ok	null
+crash	4965958803928893316	0	write _0.dat	ok	null
+crash	4965958803928893316	1	write _1.dat	ok	null
+crash	4965958803928893316	2	write _2.dat	ok	null
+crash	4965958803928893316	3	write _3.dat	ok	null
+crash	4965958803928893316	4	write _4.dat	ok	null
+crash	4965958803928893316	5	write _5.dat	ok	null
+crash	4965958803928893316	6	write _6.dat	ok	null
+crash	4965958803928893316	7	write _7.dat	ok	null
+crash	4965958803928893316	8	sync	ok	null
+crash	4965958803928893316	9	crash	ok	null
+crash	4965958803928893316	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:b1cd17849798e8dd,_3.dat:1192:5da571a6bc92af55,_4.dat:44:ac82ea5ae550c2c5,_5.dat:486:b843741b7776babd,_7.dat:0:cbf29ce484222325
+crash	4965958803928893316	11	nextLong	ok	-4997339510670649492
+crash	4965958803928893316	12	close dir	ok	null
+crash	-3780400040200959742	0	write _0.dat	ok	null
+crash	-3780400040200959742	1	write _1.dat	ok	null
+crash	-3780400040200959742	2	write _2.dat	ok	null
+crash	-3780400040200959742	3	write _3.dat	ok	null
+crash	-3780400040200959742	4	write _4.dat	ok	null
+crash	-3780400040200959742	5	write _5.dat	ok	null
+crash	-3780400040200959742	6	write _6.dat	ok	null
+crash	-3780400040200959742	7	write _7.dat	ok	null
+crash	-3780400040200959742	8	sync	ok	null
+crash	-3780400040200959742	9	crash	ok	null
+crash	-3780400040200959742	10	files	ok	_0.dat:1:af63bd4c8601b7df,_2.dat:397:4f05cb1d1429bc49,_3.dat:1192:5da571a6bc92af55,_4.dat:89:6948a02c2ca4407f,_5.dat:243:f95f03e97e4fd4f3,_6.dat:441:ad6ab640504cbe6d,_7.dat:0:cbf29ce484222325
+crash	-3780400040200959742	11	nextLong	ok	5729199971873743597
+crash	-3780400040200959742	12	close dir	ok	null
+crash	8128550842455080494	0	write _0.dat	ok	null
+crash	8128550842455080494	1	write _1.dat	ok	null
+crash	8128550842455080494	2	write _2.dat	ok	null
+crash	8128550842455080494	3	write _3.dat	ok	null
+crash	8128550842455080494	4	write _4.dat	ok	null
+crash	8128550842455080494	5	write _5.dat	ok	null
+crash	8128550842455080494	6	write _6.dat	ok	null
+crash	8128550842455080494	7	write _7.dat	ok	null
+crash	8128550842455080494	8	sync	ok	null
+crash	8128550842455080494	9	crash	ok	null
+crash	8128550842455080494	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:f9315ab2d092555c,_2.dat:795:174fb1b3df589428,_3.dat:1192:5da571a6bc92af55,_5.dat:486:3e14b88aa8d686e4,_6.dat:883:7fae59f6630c8bf7,_7.dat:0:cbf29ce484222325
+crash	8128550842455080494	11	nextLong	ok	7010783606840929789
+crash	8128550842455080494	12	close dir	ok	null
+crash	-878032533605863728	0	write _0.dat	ok	null
+crash	-878032533605863728	1	write _1.dat	ok	null
+crash	-878032533605863728	2	write _2.dat	ok	null
+crash	-878032533605863728	3	write _3.dat	ok	null
+crash	-878032533605863728	4	write _4.dat	ok	null
+crash	-878032533605863728	5	write _5.dat	ok	null
+crash	-878032533605863728	6	write _6.dat	ok	null
+crash	-878032533605863728	7	write _7.dat	ok	null
+crash	-878032533605863728	8	sync	ok	null
+crash	-878032533605863728	9	crash	ok	null
+crash	-878032533605863728	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:199:21c69a0bf1bf6697,_2.dat:795:6a85701774966e57,_3.dat:1192:5da571a6bc92af55,_4.dat:89:6948a02c2ca4407f,_5.dat:486:3e14b88aa8d686e4,_7.dat:0:cbf29ce484222325
+crash	-878032533605863728	11	nextLong	ok	6978980898201196532
+crash	-878032533605863728	12	close dir	ok	null
+crash	180498484486306318	0	write _0.dat	ok	null
+crash	180498484486306318	1	write _1.dat	ok	null
+crash	180498484486306318	2	write _2.dat	ok	null
+crash	180498484486306318	3	write _3.dat	ok	null
+crash	180498484486306318	4	write _4.dat	ok	null
+crash	180498484486306318	5	write _5.dat	ok	null
+crash	180498484486306318	6	write _6.dat	ok	null
+crash	180498484486306318	7	write _7.dat	ok	null
+crash	180498484486306318	8	sync	ok	null
+crash	180498484486306318	9	crash	ok	null
+crash	180498484486306318	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:b8c3538c422d7808,_2.dat:0:cbf29ce484222325,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_5.dat:486:b843741b7776babd,_6.dat:883:c9001bd818e7066c,_7.dat:0:cbf29ce484222325
+crash	180498484486306318	11	nextLong	ok	1012670698717135251
+crash	180498484486306318	12	close dir	ok	null
+crash_always	0	0	write _0.dat	ok	null
+crash_always	0	1	write _1.dat	ok	null
+crash_always	0	2	write _2.dat	ok	null
+crash_always	0	3	write _3.dat	ok	null
+crash_always	0	4	write _4.dat	ok	null
+crash_always	0	5	write _5.dat	ok	null
+crash_always	0	6	write _6.dat	ok	null
+crash_always	0	7	write _7.dat	ok	null
+crash_always	0	8	sync	ok	null
+crash_always	0	9	crash	ok	null
+crash_always	0	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:b1cd17849798e8dd,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_5.dat:0:cbf29ce484222325,_6.dat:883:e125278e4c3c851c,_7.dat:0:cbf29ce484222325
+crash_always	0	11	nextLong	ok	-3669548311841292153
+crash_always	0	12	close dir	ok	null
+crash_always	1	0	write _0.dat	ok	null
+crash_always	1	1	write _1.dat	ok	null
+crash_always	1	2	write _2.dat	ok	null
+crash_always	1	3	write _3.dat	ok	null
+crash_always	1	4	write _4.dat	ok	null
+crash_always	1	5	write _5.dat	ok	null
+crash_always	1	6	write _6.dat	ok	null
+crash_always	1	7	write _7.dat	ok	null
+crash_always	1	8	sync	ok	null
+crash_always	1	9	crash	ok	null
+crash_always	1	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:5aaa6f1460dd0fdc,_2.dat:795:77e79b38d0362108,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_5.dat:486:d9613bdf89cbf564,_6.dat:883:b7e84731a150c6ee,_7.dat:0:cbf29ce484222325
+crash_always	1	11	nextLong	ok	-118132340632270412
+crash_always	1	12	close dir	ok	null
+crash_always	-1	0	write _0.dat	ok	null
+crash_always	-1	1	write _1.dat	ok	null
+crash_always	-1	2	write _2.dat	ok	null
+crash_always	-1	3	write _3.dat	ok	null
+crash_always	-1	4	write _4.dat	ok	null
+crash_always	-1	5	write _5.dat	ok	null
+crash_always	-1	6	write _6.dat	ok	null
+crash_always	-1	7	write _7.dat	ok	null
+crash_always	-1	8	sync	ok	null
+crash_always	-1	9	crash	ok	null
+crash_always	-1	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:199:21c69a0bf1bf6697,_2.dat:397:4f05cb1d1429bc49,_3.dat:1192:5da571a6bc92af55,_4.dat:89:b50a800184a1f553,_5.dat:486:4b0f76a32688ed1a,_6.dat:883:7fae59f6630c8bf7,_7.dat:0:cbf29ce484222325
+crash_always	-1	11	nextLong	ok	8997063557852195622
+crash_always	-1	12	close dir	ok	null
+crash_always	-9223372036854775808	0	write _0.dat	ok	null
+crash_always	-9223372036854775808	1	write _1.dat	ok	null
+crash_always	-9223372036854775808	2	write _2.dat	ok	null
+crash_always	-9223372036854775808	3	write _3.dat	ok	null
+crash_always	-9223372036854775808	4	write _4.dat	ok	null
+crash_always	-9223372036854775808	5	write _5.dat	ok	null
+crash_always	-9223372036854775808	6	write _6.dat	ok	null
+crash_always	-9223372036854775808	7	write _7.dat	ok	null
+crash_always	-9223372036854775808	8	sync	ok	null
+crash_always	-9223372036854775808	9	crash	ok	null
+crash_always	-9223372036854775808	10	files	ok	_0.dat:1:af63bd4c8601b7df,_1.dat:398:b1cd17849798e8dd,_3.dat:1192:5da571a6bc92af55,_4.dat:0:cbf29ce484222325,_5.dat:0:cbf29ce484222325,_6.dat:883:e125278e4c3c851c,_7.dat:0:cbf29ce484222325
+crash_always	-9223372036854775808	11	nextLong	ok	-3669548311841292153
+crash_always	-9223372036854775808	12	close dir	ok	null
+index_crash	0	0	crash	ok	null
+index_crash	0	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:64:e831410642121db7,_0.fnm:124:61dfb12d7f5b424f,_0.nvd:59:18668b37edf835e8,_0.nvm:103:290f7f9439964fd4,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:48:1d59e261088394f5,_0_Lucene104_0.pos:49:5bf4faf647e7c699,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:0:cbf29ce484222325,segments_1:155:99a94cf45033b569
+index_crash	0	2	nextLong	ok	3790058296146005620
+index_close	0	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.psm
+index_close	0	1	nextLong	ok	6525378424592209593
+index_close_most	0	0	close dir	err	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=0 vs expected footer=-1071082520 (resource=BufferedChecksumIndexInput(MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0_Lucene104_0.psm, buffers=112 bytes, block size: 1, blocks: 1, position: 0))))
+index_close_most	0	1	nextLong	ok	-7691505585978807622
+index_close_clean	0	0	getLevelForCheckOnClose	ok	2
+index_close_clean	0	1	close dir	ok	null
+index_close_clean	0	2	nextLong	ok	-1212816472180894984
+index_unknown	0	0	corruptUnknownFiles	ok	null
+index_unknown	0	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	0	2	nextLong	ok	8065025346350546519
+index_crash	1	0	crash	ok	null
+index_crash	1	1	files	ok	_0.fdm:157:f88de8923783faef,_0.fdt:120:bbf68ce86f0d0f5c,_0.fdx:0:cbf29ce484222325,_0.fnm:249:5c6c8d95d7107780,_0.nvd:59:18668b37edf835e8,_0.nvm:103:ea707954012fe527,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:0:cbf29ce484222325,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:a4ca53d582377be5,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:184:a098b2259cac6f85,segments_1:155:99a94cf45033b569
+index_crash	1	2	nextLong	ok	1108000895862987641
+index_close	1	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.psm
+index_close	1	1	nextLong	ok	2334355037483617280
+index_close_most	1	0	close dir	err	org.apache.lucene.index.CorruptIndexException	checksum status indeterminate: remaining=0; please run checkindex for more details (resource=BufferedChecksumIndexInput(MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0_Lucene104_0.psm, buffers=56 bytes, block size: 1, blocks: 1, position: 0))))
+index_close_most	1	1	nextLong	ok	7648010656409360984
+index_close_clean	1	0	getLevelForCheckOnClose	ok	2
+index_close_clean	1	1	close dir	ok	null
+index_close_clean	1	2	nextLong	ok	-3510797727383495601
+index_unknown	1	0	corruptUnknownFiles	ok	null
+index_unknown	1	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:0:cbf29ce484222325,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	1	2	nextLong	ok	3847572860046072727
+index_crash	-1	0	crash	ok	null
+index_crash	-1	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:d27f3d6deb4a45d7,_0.nvm:103:76ccbd312972822c,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:354eabbfb6dac82d,_0_Lucene104_0.psm:112:e627d49d22902ed5,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:7052b9eff9137d10,segments_1:155:99a94cf45033b569
+index_crash	-1	2	nextLong	ok	4186094981421182356
+index_close	-1	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdm
+index_close	-1	1	nextLong	ok	4177201822702528388
+index_close_most	-1	0	close dir	err	org.apache.lucene.index.CorruptIndexException	codec header mismatch: actual header=0 vs expected header=1071082519 (resource=MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0_Lucene104_0.pos, buffers=99 bytes, block size: 1, blocks: 1, position: 0)))
+index_close_most	-1	1	nextLong	ok	-2450160702417141642
+index_close_clean	-1	0	getLevelForCheckOnClose	ok	2
+index_close_clean	-1	1	close dir	ok	null
+index_close_clean	-1	2	nextLong	ok	-7112000469798456162
+index_unknown	-1	0	corruptUnknownFiles	ok	null
+index_unknown	-1	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:8e2ed7419caa9689,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	-1	2	nextLong	ok	-3190703235679051993
+index_crash	-9223372036854775808	0	crash	ok	null
+index_crash	-9223372036854775808	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:64:e831410642121db7,_0.fnm:124:61dfb12d7f5b424f,_0.nvd:59:18668b37edf835e8,_0.nvm:103:290f7f9439964fd4,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:48:1d59e261088394f5,_0_Lucene104_0.pos:49:5bf4faf647e7c699,_0_Lucene104_0.tim:154:f6abb1f819c724cd,_0_Lucene104_0.tip:92:11d1b004f84e16d5,_0_Lucene104_0.tmd:0:cbf29ce484222325,segments_1:155:99a94cf45033b569
+index_crash	-9223372036854775808	2	nextLong	ok	3790058296146005620
+index_close	-9223372036854775808	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.psm
+index_close	-9223372036854775808	1	nextLong	ok	6525378424592209593
+index_close_most	-9223372036854775808	0	close dir	err	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=0 vs expected footer=-1071082520 (resource=BufferedChecksumIndexInput(MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0_Lucene104_0.psm, buffers=112 bytes, block size: 1, blocks: 1, position: 0))))
+index_close_most	-9223372036854775808	1	nextLong	ok	-7691505585978807622
+index_close_clean	-9223372036854775808	0	getLevelForCheckOnClose	ok	2
+index_close_clean	-9223372036854775808	1	close dir	ok	null
+index_close_clean	-9223372036854775808	2	nextLong	ok	-1212816472180894984
+index_unknown	-9223372036854775808	0	corruptUnknownFiles	ok	null
+index_unknown	-9223372036854775808	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	-9223372036854775808	2	nextLong	ok	8065025346350546519
+index_crash	9223372036854775807	0	crash	ok	null
+index_crash	9223372036854775807	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:d27f3d6deb4a45d7,_0.nvm:103:76ccbd312972822c,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:354eabbfb6dac82d,_0_Lucene104_0.psm:112:e627d49d22902ed5,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:7052b9eff9137d10,segments_1:155:99a94cf45033b569
+index_crash	9223372036854775807	2	nextLong	ok	4186094981421182356
+index_close	9223372036854775807	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdm
+index_close	9223372036854775807	1	nextLong	ok	4177201822702528388
+index_close_most	9223372036854775807	0	close dir	err	org.apache.lucene.index.CorruptIndexException	codec header mismatch: actual header=0 vs expected header=1071082519 (resource=MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0_Lucene104_0.pos, buffers=99 bytes, block size: 1, blocks: 1, position: 0)))
+index_close_most	9223372036854775807	1	nextLong	ok	-2450160702417141642
+index_close_clean	9223372036854775807	0	getLevelForCheckOnClose	ok	2
+index_close_clean	9223372036854775807	1	close dir	ok	null
+index_close_clean	9223372036854775807	2	nextLong	ok	-7112000469798456162
+index_unknown	9223372036854775807	0	corruptUnknownFiles	ok	null
+index_unknown	9223372036854775807	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:8e2ed7419caa9689,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	9223372036854775807	2	nextLong	ok	-3190703235679051993
+index_crash	42	0	crash	ok	null
+index_crash	42	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:60:2fe3e7f9ac50f301,_0.fdx:64:89d55c203da064cf,_0.fnm:249:69526c83bd679553,_0.nvd:0:cbf29ce484222325,_0.nvm:103:7bfacbfd537a577f,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:0:cbf29ce484222325,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.tip:92:74589c23d5506a90,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,segments_1:155:99a94cf45033b569
+index_crash	42	2	nextLong	ok	5535764185580682149
+index_close	42	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.pos
+index_close	42	1	nextLong	ok	7288264754483292753
+index_close_most	42	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.psm
+index_close_most	42	1	nextLong	ok	7293707662703004920
+index_close_clean	42	0	getLevelForCheckOnClose	ok	2
+index_close_clean	42	1	close dir	ok	null
+index_close_clean	42	2	nextLong	ok	-5391552614485151006
+index_unknown	42	0	corruptUnknownFiles	ok	null
+index_unknown	42	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:0:cbf29ce484222325,_a_Lucene90_0.dvd:0:cbf29ce484222325,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:cbf7a16bc31f675f,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	42	2	nextLong	ok	-4975055954812816718
+index_crash	25214903917	0	crash	ok	null
+index_crash	25214903917	1	files	ok	_0.fdm:157:b0170e9f86bf8471,_0.fdt:120:de9fa0da6fc22a85,_0.fdx:64:b9b23f3a46fd0825,_0.fnm:124:61dfb12d7f5b424f,_0.nvd:0:cbf29ce484222325,_0.nvm:0:cbf29ce484222325,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.pos:0:cbf29ce484222325,_0_Lucene104_0.psm:0:cbf29ce484222325,_0_Lucene104_0.tim:77:70586aa07cfbe574,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:a098b2259cac6f85,segments_1:155:99a94cf45033b569
+index_crash	25214903917	2	nextLong	ok	-1497613613979078270
+index_close	25214903917	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdm
+index_close	25214903917	1	nextLong	ok	-2319452971287571658
+index_close_most	25214903917	0	close dir	err	org.apache.lucene.index.CorruptIndexException	codec header mismatch: actual header=0 vs expected header=1071082519 (resource=MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0_Lucene104_0.pos, buffers=99 bytes, block size: 1, blocks: 1, position: 0)))
+index_close_most	25214903917	1	nextLong	ok	960790331024379126
+index_close_clean	25214903917	0	getLevelForCheckOnClose	ok	2
+index_close_clean	25214903917	1	close dir	ok	null
+index_close_clean	25214903917	2	nextLong	ok	214993804815738645
+index_unknown	25214903917	0	corruptUnknownFiles	ok	null
+index_unknown	25214903917	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:33:cbf7a16bc31f675f,other.txt:33:cdb63eb9ee74ae4e,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	25214903917	2	nextLong	ok	8922140309403778699
+index_crash	3735928559	0	crash	ok	null
+index_crash	3735928559	1	files	ok	_0.fdm:78:780188fd822ee941,_0.fdt:0:cbf29ce484222325,_0.fdx:64:28cf91cb10b772cb,_0.fnm:0:cbf29ce484222325,_0.nvd:0:cbf29ce484222325,_0.nvm:51:f25702a50d915327,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:48:1d59e261088394f5,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:0:cbf29ce484222325,_0_Lucene104_0.tip:92:6354ba04522746d0,_0_Lucene104_0.tmd:92:ff754bf26fb82e03,segments_1:155:99a94cf45033b569
+index_crash	3735928559	2	nextLong	ok	-5753874118973108495
+index_close	3735928559	0	close dir	err	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=0 vs expected footer=-1071082520 (resource=BufferedChecksumIndexInput(MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0.fnm, buffers=249 bytes, block size: 1, blocks: 1, position: 0))))
+index_close	3735928559	1	nextLong	ok	1576193463215707178
+index_close_most	3735928559	0	close dir	err	java.nio.file.NoSuchFileException	_0_Lucene104_0.psm
+index_close_most	3735928559	1	nextLong	ok	650072197157976316
+index_close_clean	3735928559	0	getLevelForCheckOnClose	ok	2
+index_close_clean	3735928559	1	close dir	ok	null
+index_close_clean	3735928559	2	nextLong	ok	9134149123525203959
+index_unknown	3735928559	0	corruptUnknownFiles	ok	null
+index_unknown	3735928559	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:33:a9594281f7d3369c,_a_Lucene90_0.dvd:33:cf8394dcc82eab36,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:cbf7a16bc31f675f,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	3735928559	2	nextLong	ok	-4218520335350436198
+index_crash	81985529216486895	0	crash	ok	null
+index_crash	81985529216486895	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:120:583551c005c31fbc,_0.fdx:64:0b3b78e9903698c9,_0.fnm:0:cbf29ce484222325,_0.nvd:59:18668b37edf835e8,_0.nvm:103:ff7786ce0dbd32bc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:bfb5577031e30d4b,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:0:cbf29ce484222325,_0_Lucene104_0.tip:92:2c36a224d67f8c27,_0_Lucene104_0.tmd:92:ff754bf26fb82e03,segments_1:155:99a94cf45033b569
+index_crash	81985529216486895	2	nextLong	ok	-1187596488909051506
+index_close	81985529216486895	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdm
+index_close	81985529216486895	1	nextLong	ok	4639694067824381432
+index_close_most	81985529216486895	0	close dir	err	org.apache.lucene.index.CorruptIndexException	checksum status indeterminate: remaining=0; please run checkindex for more details (resource=BufferedChecksumIndexInput(MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0_Lucene104_0.psm, buffers=56 bytes, block size: 1, blocks: 1, position: 0))))
+index_close_most	81985529216486895	1	nextLong	ok	5973898931768012034
+index_close_clean	81985529216486895	0	getLevelForCheckOnClose	ok	2
+index_close_clean	81985529216486895	1	close dir	ok	null
+index_close_clean	81985529216486895	2	nextLong	ok	3487982587713267814
+index_unknown	81985529216486895	0	corruptUnknownFiles	ok	null
+index_unknown	81985529216486895	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:16:29f058a4552600e5,_a_Lucene90_0.dvd:16:e99d3f9aa1f83da5,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:feb83b9c2296ab21,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	81985529216486895	2	nextLong	ok	3869773081761970520
+index_crash	-81985529216486895	0	crash	ok	null
+index_crash	-81985529216486895	1	files	ok	_0.fdm:0:cbf29ce484222325,_0.fdt:0:cbf29ce484222325,_0.fdx:0:cbf29ce484222325,_0.fnm:249:8b45805c29f4f300,_0.nvd:29:9cc947b4a3e43ea9,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:7fb9ab58b0174237,_0_Lucene104_0.psm:112:88dd30cce346d44d,_0_Lucene104_0.tim:154:367262c06646680a,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:92:ff754bf26fb82e03,segments_1:155:99a94cf45033b569
+index_crash	-81985529216486895	2	nextLong	ok	4169234214637358091
+index_close	-81985529216486895	0	close dir	err	java.nio.file.NoSuchFileException	_0.fdt
+index_close	-81985529216486895	1	nextLong	ok	662353544642463202
+index_close_most	-81985529216486895	0	close dir	err	org.apache.lucene.index.CorruptIndexException	checksum status indeterminate: remaining=0; please run checkindex for more details (resource=BufferedChecksumIndexInput(MockIndexInputWrapper((clone of) ByteBuffersIndexInput (file=_0_Lucene104_0.psm, buffers=56 bytes, block size: 1, blocks: 1, position: 0))))
+index_close_most	-81985529216486895	1	nextLong	ok	-5793733149688560781
+index_close_clean	-81985529216486895	0	getLevelForCheckOnClose	ok	2
+index_close_clean	-81985529216486895	1	close dir	ok	null
+index_close_clean	-81985529216486895	2	nextLong	ok	1212444908702580265
+index_unknown	-81985529216486895	0	corruptUnknownFiles	ok	null
+index_unknown	-81985529216486895	1	files	ok	_0.fdm:157:9dd6a4afcf09ebff,_0.fdt:120:9e4a45cbb9915edc,_0.fdx:64:e831410642121db7,_0.fnm:249:8b45805c29f4f300,_0.nvd:59:18668b37edf835e8,_0.nvm:103:722bade820ab02fc,_0.si:479:9242ce20ea128e9b,_0_Lucene104_0.doc:97:38c7aab46c9385ab,_0_Lucene104_0.pos:99:f9fcefdfd892d2e5,_0_Lucene104_0.psm:112:8091f29f295d3b1d,_0_Lucene104_0.tim:154:7a97e92e359a4eda,_0_Lucene104_0.tip:92:7052b9eff9137d10,_0_Lucene104_0.tmd:184:0647563bf1d02ca8,_9.fake:33:4342b2b1a5b4d8e2,_a_Lucene90_0.dvd:0:cbf29ce484222325,other.txt:33:cdb63eb9ee74ae4e,pending_segments_7:33:ef2cd7bf6c5abe71,segments_1:155:99a94cf45033b569,write.lock:33:b12df2abdf8895f9
+index_unknown	-81985529216486895	2	nextLong	ok	6483078611593827636
+index_unref	0	0	close dir	err	java.lang.RuntimeException	unreferenced files: before delete:\n    [_0.fdm, _0.fdt, _0.fdx, _0.fnm, _0.nvd, _0.nvm, _0.si, _0_Lucene104_0.doc, _0_Lucene104_0.pos, _0_Lucene104_0.psm, _0_Lucene104_0.tim, _0_Lucene104_0.tip, _0_Lucene104_0.tmd, _77.fdt, segments_1]\n  after delete:\n    [_0.fdm, _0.fdt, _0.fdx, _0.fnm, _0.nvd, _0.nvm, _0.si, _0_Lucene104_0.doc, _0_Lucene104_0.pos, _0_Lucene104_0.psm, _0_Lucene104_0.tim, _0_Lucene104_0.tip, _0_Lucene104_0.tmd, segments_1]\n\nThese files were removed: [_77.fdt]
+index_unref	1	0	close dir	ok	null
+serial_io	0	0	toString	ok	(clone of) ByteBuffersIndexInput (file=s, buffers=262,144 bytes, block size: 4,096, blocks: 64, position: 0)
+serial_io	0	1	readByte@0	ok	1
+serial_io	0	2	readByte@8192	ok	1
+serial_io	0	3	readBytes@40960x100	ok	2
+serial_io	0	4	readByte@12288 (backwards)	ok	3
+serial_io	0	5	readByte@16384 (read-ahead)	ok	3
+serial_io	0	6	readInt@36860 (page boundary)	ok	3
+serial_io	0	7	prefetch@20*4096x8192	ok	4
+serial_io	0	8	prefetch@40*4096x100	ok	4
+serial_io	0	9	readByte@20*4096	ok	4
+serial_io	0	10	readByte@40*4096	ok	4
+serial_io	0	11	prefetch@2*4096x10 (window)	ok	5
+serial_io	0	12	prefetch@50*4096x10	ok	5
+serial_io	0	13	readVLong@50*4096	ok	5
+serial_io	0	14	skipBytes 9000	ok	5
+serial_io	0	15	slice readByte@0	ok	6
+serial_io	0	16	slice readBytes@4096x10	ok	6
+serial_io	0	17	slice getFilePointer	ok	4106
+serial_io	0	18	slice length	ok	20480
+serial_io	0	19	slice of slice	err	java.lang.IllegalArgumentException	<null>
+serial_io	0	20	clone readByte	ok	7
+serial_io	0	21	random readByte@0	ok	8
+serial_io	0	22	random readByte@4096	ok	9
+serial_io	0	23	random readByte@100 (same page)	ok	10
+serial_io	0	24	random prefetch@4096*3x10	ok	11
+serial_io	0	25	random readByte@3*4096	ok	11
+serial_io	0	26	index open	ok	12
+serial_io	0	27	index reads	ok	12
+serial_io	0	28	openChecksumInput	ok	13
+serial_io	0	29	checksum reads	ok	14
+serial_io	0	30	close dir	ok	14
+corrupting	0	0	write 20	ok	null
+corrupting	0	1	getFilePointer	ok	20
+corrupting	0	2	getChecksum	ok	3735139789
+corrupting	0	3	getName	ok	c
+corrupting	0	4	toString	ok	CorruptingIndexOutput(ByteBuffersDirectory output (file=c))
+corrupting	0	5	close	ok	null
+corrupting	0	6	close again	ok	null
+corrupting	0	7	bytes c	ok	1534537291b1cfee0d2c4b6a89a8c7e605244362
+corrupting	0	8	listAll	ok	[c]
+corrupting	0	9	write 10	ok	null
+corrupting	0	10	close (byte past end)	err	java.lang.IllegalArgumentException	byteToCorrupt=10 but file "d" is only length=10
+corrupting	0	11	listAll	ok	[c, d, tmp_tmp_1.tmp]
+corrupting	5	0	write 8	ok	null
+corrupting	5	1	close	ok	null
+corrupting	5	2	bytes m	ok	234261819fbeddfc
+corrupting	5	3	getFileHandleCount	ok	0
+corrupting	5	4	listAll	ok	[m]
+corrupting	5	5	nextLong	ok	3591869449412605441
+corrupting	5	6	close dir	ok	null
+slow	0	0	slow wrappers	ok	73:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper,170:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper,396:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper
+slow	0	1	nextLong	ok	-776412242382185210
+slow	0	2	close dir	ok	null
+slow	1	0	slow wrappers	ok	283:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper,363:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper
+slow	1	1	nextLong	ok	-7732424922256952691
+slow	1	2	close dir	ok	null
+slow	-1	0	slow wrappers	ok	7:SlowClosingMockIndexInputWrapper:MockIndexInputWrapper,71:SlowClosingMockIndexInputWrapper:MockIndexInputWrapper,246:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper,382:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper
+slow	-1	1	nextLong	ok	6533275773058468438
+slow	-1	2	close dir	ok	null
+slow	-9223372036854775808	0	slow wrappers	ok	73:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper,170:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper,396:SlowOpeningMockIndexInputWrapper:MockIndexInputWrapper
+slow	-9223372036854775808	1	nextLong	ok	-776412242382185210
+slow	-9223372036854775808	2	close dir	ok	null
+raw	0	0	toString	ok	RawDirectoryWrapper(ByteBuffersDirectory@HASH lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@HASH)
+raw	0	1	copyFrom	ok	[b]
+raw	0	2	openChecksumInput	ok	1044920610
+raw	0	3	isOpen	ok	true
+raw	0	4	close	ok	false
+throttling	0	0	createOutput t	ok	
+throttling	0	1	toString	ok	ThrottledIndexOutput(MockIndexOutputWrapper(ByteBuffersDirectory output (file=t)))
+throttling	0	2	getName	ok	t
+throttling	0	3	write	ok	null
+throttling	0	4	close	ok	null
+throttling	0	5	createOutput s0	ok	null
+throttling	0	6	createOutput s1	ok	null
+throttling	0	7	createOutput s2	ok	null
+throttling	0	8	createOutput s3	ok	null
+throttling	0	9	createOutput s4	ok	null
+throttling	0	10	files	ok	s0:0:cbf29ce484222325,s1:0:cbf29ce484222325,s2:0:cbf29ce484222325,s3:0:cbf29ce484222325,s4:0:cbf29ce484222325,t:10:b4b3221e5bf9b520
+throttling	0	11	nextLong	ok	-838371696624346604
+throttling	0	12	close dir	ok	null
+throttling	1	0	createOutput t	ok	
+throttling	1	1	toString	ok	ThrottledIndexOutput(MockIndexOutputWrapper(ByteBuffersDirectory output (file=t)))
+throttling	1	2	getName	ok	t
+throttling	1	3	write	ok	null
+throttling	1	4	close	ok	null
+throttling	1	5	createOutput s0	ok	null
+throttling	1	6	createOutput s1	ok	null
+throttling	1	7	createOutput s2	ok	null
+throttling	1	8	createOutput s3	ok	null
+throttling	1	9	createOutput s4	ok	null
+throttling	1	10	files	ok	s0:0:cbf29ce484222325,s1:0:cbf29ce484222325,s2:0:cbf29ce484222325,s3:0:cbf29ce484222325,s4:0:cbf29ce484222325,t:10:b4b3221e5bf9b520
+throttling	1	11	nextLong	ok	-2539994630200068641
+throttling	1	12	close dir	ok	null
+throttling	-1	0	createOutput t	ok	
+throttling	-1	1	toString	ok	ThrottledIndexOutput(MockIndexOutputWrapper(ByteBuffersDirectory output (file=t)))
+throttling	-1	2	getName	ok	t
+throttling	-1	3	write	ok	null
+throttling	-1	4	close	ok	null
+throttling	-1	5	createOutput s0	ok	null
+throttling	-1	6	createOutput s1	ok	null
+throttling	-1	7	createOutput s2	ok	null
+throttling	-1	8	createOutput s3	ok	null
+throttling	-1	9	createOutput s4	ok	null
+throttling	-1	10	files	ok	s0:0:cbf29ce484222325,s1:0:cbf29ce484222325,s2:0:cbf29ce484222325,s3:0:cbf29ce484222325,s4:0:cbf29ce484222325,t:10:b4b3221e5bf9b520
+throttling	-1	11	nextLong	ok	-7533709660417447326
+throttling	-1	12	close dir	ok	null
+index_read_nocfs	0	0	open reader	ok	310/309/3
+index_read_nocfs	0	1	close reader	ok	null
+index_read_nocfs	0	2	checkIndex	ok	true/3
+index_read_nocfs	0	3	close dir	ok	null
+index_read_nocfs	0	4	nextLong	ok	3195275996525186237
+index_read_nocfs	1	0	open reader	ok	310/309/3
+index_read_nocfs	1	1	close reader	ok	null
+index_read_nocfs	1	2	checkIndex	ok	true/3
+index_read_nocfs	1	3	close dir	ok	null
+index_read_nocfs	1	4	nextLong	ok	8623799148090662288
+index_read_nocfs	-1	0	open reader	ok	310/309/3
+index_read_nocfs	-1	1	close reader	ok	null
+index_read_nocfs	-1	2	checkIndex	ok	true/3
+index_read_nocfs	-1	3	close dir	ok	null
+index_read_nocfs	-1	4	nextLong	ok	-6497529741238179998
+index_read_nocfs	-9223372036854775808	0	open reader	ok	310/309/3
+index_read_nocfs	-9223372036854775808	1	close reader	ok	null
+index_read_nocfs	-9223372036854775808	2	checkIndex	ok	true/3
+index_read_nocfs	-9223372036854775808	3	close dir	ok	null
+index_read_nocfs	-9223372036854775808	4	nextLong	ok	3195275996525186237
+index_read_cfs	0	0	open reader	ok	310/309/3
+index_read_cfs	0	1	close reader	ok	null
+index_read_cfs	0	2	checkIndex	ok	true/3
+index_read_cfs	0	3	close dir	ok	null
+index_read_cfs	0	4	nextLong	ok	-3813860926218116020
+index_read_cfs	1	0	open reader	ok	310/309/3
+index_read_cfs	1	1	close reader	ok	null
+index_read_cfs	1	2	checkIndex	ok	true/3
+index_read_cfs	1	3	close dir	ok	null
+index_read_cfs	1	4	nextLong	ok	4472331633702997153
+index_read_cfs	-1	0	open reader	ok	310/309/3
+index_read_cfs	-1	1	close reader	ok	null
+index_read_cfs	-1	2	checkIndex	ok	true/3
+index_read_cfs	-1	3	close dir	ok	null
+index_read_cfs	-1	4	nextLong	ok	-576781411832242354
+index_read_cfs	-9223372036854775808	0	open reader	ok	310/309/3
+index_read_cfs	-9223372036854775808	1	close reader	ok	null
+index_read_cfs	-9223372036854775808	2	checkIndex	ok	true/3
+index_read_cfs	-9223372036854775808	3	close dir	ok	null
+index_read_cfs	-9223372036854775808	4	nextLong	ok	-3813860926218116020

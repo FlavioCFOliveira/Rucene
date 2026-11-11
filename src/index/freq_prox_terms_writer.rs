@@ -94,7 +94,7 @@ use std::sync::Arc;
 
 use crate::codecs::norms::NormsProducer;
 use crate::codecs::state::SegmentWriteState;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::documents_writer::TermDelete;
 use crate::index::filter_reader::{FilterFields, FilterTerms, FilterTermsEnum};
 use crate::index::index_sorter::SorterDocMap;
@@ -150,12 +150,16 @@ impl ByteSlicePool {
     ///
     /// # Errors
     ///
-    /// Propagates the pool-overflow error of [`ByteBlockPool::next_buffer`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if `size` exceeds the pool's block size.
+    /// Propagates the pool-overflow error of [`ByteBlockPool::next_buffer`], and
+    /// returns [`LuceneErrorKind::IllegalArgument`] when `size` exceeds the pool's block
+    /// size (`ByteSlicePool.java:71-77`).
     pub fn new_slice(pool: &mut ByteBlockPool, size: usize) -> Result<usize> {
+        if size > crate::util::BYTE_BLOCK_SIZE {
+            return Err(crate::error::LuceneError::illegal_argument(format!(
+                "Slice size {size} should be less than the block size {}",
+                crate::util::BYTE_BLOCK_SIZE
+            )));
+        }
         pool.ensure_capacity(size)?;
         let upto = pool.byte_upto();
         pool.advance(size);
@@ -204,6 +208,7 @@ impl ByteSlicePool {
         let forwarding_address = new_upto as i32 + pool.byte_offset();
         pool.advance(new_size);
         let new_block = pool.buffer_upto() as usize;
+        debug_assert!(pool.buffer(new_block)[new_upto + 3] == 0);
 
         // The three bytes before the level marker already carry stream data;
         // the forwarding address is four bytes wide and will overwrite them, so
@@ -260,6 +265,7 @@ impl ByteSliceReader {
     pub fn init(&mut self, start_index: i32, end_index: i32) {
         debug_assert!(start_index >= 0);
         debug_assert!(end_index >= start_index);
+        debug_assert!(end_index >= 0);
         self.end_index = end_index;
         self.level = 0;
         self.block = (start_index as usize) >> BYTE_BLOCK_SHIFT;
@@ -275,6 +281,7 @@ impl ByteSliceReader {
 
     /// Returns `true` when every byte of the stream was consumed.
     pub fn eof(&self) -> bool {
+        debug_assert!(self.upto as i32 + self.block_offset <= self.end_index);
         self.remaining() == 0
     }
 
@@ -295,6 +302,7 @@ impl ByteSliceReader {
     /// Panics if called at end of stream.
     pub fn read_byte(&mut self, pool: &ByteBlockPool) -> u8 {
         debug_assert!(!self.eof());
+        debug_assert!(self.upto <= self.limit);
         if self.upto == self.limit {
             self.next_slice(pool);
         }
@@ -331,7 +339,7 @@ impl ByteSliceReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] if the encoding uses more than
+    /// Returns [`LuceneErrorKind::CorruptIndex`] if the encoding uses more than
     /// five bytes, which cannot happen for buffers this module wrote.
     pub fn read_v_int(&mut self, pool: &ByteBlockPool) -> Result<i32> {
         let mut byte = self.read_byte(pool);
@@ -339,9 +347,9 @@ impl ByteSliceReader {
         let mut shift = 7;
         while byte & 0x80 != 0 {
             if shift > 28 {
-                return Err(LuceneError::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                     "invalid vInt in buffered postings".to_string(),
-                ));
+                )));
             }
             byte = self.read_byte(pool);
             value |= ((byte & 0x7F) as i32) << shift;
@@ -393,6 +401,7 @@ impl ByteSliceReader {
         self.level = NEXT_LEVEL_ARRAY[self.level];
         let new_size = LEVEL_SIZE_ARRAY[self.level];
 
+        debug_assert!(self.end_index - next_index > 0);
         self.block = (next_index as usize) >> BYTE_BLOCK_SHIFT;
         self.block_offset = (self.block as i32) << BYTE_BLOCK_SHIFT;
         self.upto = (next_index as usize) & BYTE_BLOCK_MASK;
@@ -415,7 +424,7 @@ impl ByteSliceReader {
 /// [`TermVectorsWriter::add_prox`](crate::codecs::term_vectors::TermVectorsWriter::add_prox).
 ///
 /// Unlike the bare reader, this one reports an over-read as
-/// [`LuceneError::CorruptIndex`] instead of panicking, so that a codec reading
+/// [`LuceneErrorKind::CorruptIndex`] instead of panicking, so that a codec reading
 /// more than the indexer wrote fails cleanly.
 #[derive(Debug)]
 pub struct PooledSliceReader<'a> {
@@ -437,10 +446,10 @@ impl<'a> PooledSliceReader<'a> {
     fn ensure(&self, len: usize) -> Result<()> {
         let remaining = self.reader.remaining();
         if (remaining as i64) < len as i64 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "read past the end of a buffered term stream: {len} bytes requested, \
                  {remaining} available"
-            )));
+            ))));
         }
         Ok(())
     }
@@ -460,7 +469,8 @@ impl DataInput for PooledSliceReader<'_> {
         Ok(self.reader.read_byte(self.pool))
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         self.ensure(len)?;
         self.reader
             .read_bytes(self.pool, &mut b[offset..offset + len]);
@@ -469,12 +479,12 @@ impl DataInput for PooledSliceReader<'_> {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
         let len = usize::try_from(num_bytes)
-            .map_err(|_| LuceneError::IllegalArgument(format!("cannot skip {num_bytes} bytes")))?;
+            .map_err(|_| LuceneError::illegal_argument(format!("cannot skip {num_bytes} bytes")))?;
         self.ensure(len)?;
         let mut scratch = [0u8; 64];
         let mut left = len;
@@ -1059,7 +1069,7 @@ impl TermsHashPerField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the term exceeds
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the term exceeds
     /// [`crate::util::MAX_TERM_LENGTH`], and propagates pool-overflow errors.
     pub fn intern(
         &mut self,
@@ -1071,6 +1081,42 @@ impl TermsHashPerField {
         debug_assert!(self.assert_doc_id(doc_id));
 
         let raw = self.bytes_hash.add(pool, term_bytes)?;
+        if raw >= 0 {
+            self.init_stream_slices(pool, int_pool, raw)?;
+            Ok(TermSlot {
+                term_id: raw,
+                is_new: true,
+            })
+        } else {
+            Ok(TermSlot {
+                term_id: self.position_stream_slice(raw),
+                is_new: false,
+            })
+        }
+    }
+
+    /// [`Self::intern`] for a table whose term text lives in its own pool.
+    ///
+    /// Equivalent to `TermsHashPerField.add(BytesRef, int)` when the
+    /// `termBytePool` the table was constructed with is not its `bytePool`
+    /// (`TermsHashPerField.java:65-84,186-198`): the text is interned in
+    /// `term_pool`, the stream slices are reserved in `pool`. The indexing
+    /// chain shares one pool for both (`TermsHash.java:52-56`) and calls
+    /// [`Self::intern`]; `TestTermsHashPerField` builds a table over two.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::intern`].
+    pub fn intern_into(
+        &mut self,
+        term_pool: &mut ByteBlockPool,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_bytes: &[u8],
+        doc_id: i32,
+    ) -> Result<TermSlot> {
+        debug_assert!(self.assert_doc_id(doc_id));
+        let raw = self.bytes_hash.add(term_pool, term_bytes)?;
         if raw >= 0 {
             self.init_stream_slices(pool, int_pool, raw)?;
             Ok(TermSlot {
@@ -1158,7 +1204,7 @@ impl TermsHashPerField {
         if self.stream_count + int_pool.int_upto() > INT_BLOCK_SIZE {
             // Not enough space remaining in this buffer: jump to the next one
             // and lose this remaining piece.
-            int_pool.next_buffer();
+            int_pool.next_buffer()?;
         }
         // Make sure at least one byte per stream fits in the current block, so
         // that the streams of a term stay close together.
@@ -1479,11 +1525,11 @@ impl FreqProxTermsWriterPerField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an over-long term,
-    /// [`LuceneError::IllegalState`] for a duplicate term in a term-doc field
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an over-long term,
+    /// [`LuceneErrorKind::IllegalState`] for a duplicate term in a term-doc field
     /// and when a custom term frequency is combined with positions or with a
     /// field that does not index frequencies, and
-    /// [`LuceneError::Arithmetic`] when a term's frequency overflows an `int`.
+    /// [`LuceneErrorKind::Arithmetic`] when a term's frequency overflows an `int`.
     /// [`Self::add_classified`] reports the same failures with the duplicate
     /// term told apart.
     pub fn add(
@@ -1531,9 +1577,9 @@ impl FreqProxTermsWriterPerField {
             self.new_term(pool, int_pool, field_state, slot.term_id, doc_id, token)?;
         } else {
             match self.add_term(pool, int_pool, field_state, slot.term_id, doc_id, token) {
-                Err(TermsHashAddError::DuplicateTerm(LuceneError::IllegalState {
-                    message,
-                    cause,
+                Err(TermsHashAddError::DuplicateTerm(LuceneError {
+                    kind: LuceneErrorKind::IllegalState { message, cause },
+                    ..
                 })) => {
                     // `BytesRef.utf8ToString()` decodes with
                     // `UnicodeUtil.UTF8toUTF16`, which never rejects a byte.
@@ -1544,15 +1590,15 @@ impl FreqProxTermsWriterPerField {
                         term_bytes.len(),
                         &mut utf16,
                     );
-                    return Err(TermsHashAddError::DuplicateTerm(
-                        LuceneError::IllegalState {
+                    return Err(TermsHashAddError::DuplicateTerm(LuceneError::from(
+                        LuceneErrorKind::IllegalState {
                             message: format!(
                                 "{message} '{}'",
                                 String::from_utf16_lossy(&utf16[..length])
                             ),
                             cause,
                         },
-                    ));
+                    )));
                 }
                 other => other?,
             }
@@ -1657,6 +1703,8 @@ impl FreqProxTermsWriterPerField {
                 if self.has_offsets {
                     self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
                 }
+            } else {
+                debug_assert!(!self.has_offsets);
             }
             field_state
                 .set_max_term_frequency(std::cmp::max(freq, field_state.max_term_frequency()));
@@ -1678,6 +1726,7 @@ impl FreqProxTermsWriterPerField {
         token: &InvertedToken<'_>,
     ) -> std::result::Result<(), TermsHashAddError> {
         let index = term_id as usize;
+        debug_assert!(!self.has_freq || self.base.postings[index].term_freq > 0);
         if !self.has_freq {
             if token.has_term_freq_attribute && token.term_freq != 1 {
                 return Err(LuceneError::illegal_state(format!(
@@ -1730,6 +1779,8 @@ impl FreqProxTermsWriterPerField {
                     self.base.postings[index].last_offset = 0;
                     self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
                 }
+            } else {
+                debug_assert!(!self.has_offsets);
             }
             field_state.increment_unique_term_count();
         } else {
@@ -1899,28 +1950,28 @@ impl Terms for FreqProxTerms {
     /// Throws `UnsupportedOperationException`, as Java's does: the buffers
     /// keep no per-field statistics (`FreqProxFields.java:75-78`).
     fn size(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FreqProxTerms.size".to_string(),
         ))
     }
 
     /// Throws `UnsupportedOperationException` (`FreqProxFields.java:80-83`).
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FreqProxTerms.getSumTotalTermFreq".to_string(),
         ))
     }
 
     /// Throws `UnsupportedOperationException` (`FreqProxFields.java:85-88`).
     fn sum_doc_freq(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FreqProxTerms.getSumDocFreq".to_string(),
         ))
     }
 
     /// Throws `UnsupportedOperationException` (`FreqProxFields.java:90-93`).
     fn doc_count(&self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FreqProxTerms.getDocCount".to_string(),
         ))
     }
@@ -2016,6 +2067,7 @@ impl TermsEnum for FreqProxTermsEnum {
                 std::cmp::Ordering::Greater => high = mid - 1,
                 std::cmp::Ordering::Equal => {
                     self.ord = mid;
+                    debug_assert!(self.field.term_bytes(mid as usize) == target);
                     return Ok(SeekStatus::FOUND);
                 }
             }
@@ -2024,13 +2076,14 @@ impl TermsEnum for FreqProxTermsEnum {
         if self.ord >= self.num_terms as i64 {
             Ok(SeekStatus::END)
         } else {
+            debug_assert!(self.field.term_bytes(self.ord as usize) > target);
             Ok(SeekStatus::NOT_FOUND)
         }
     }
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
         if ord < 0 || ord >= self.num_terms as i64 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "ord {ord} is out of range [0, {})",
                 self.num_terms
             )));
@@ -2039,8 +2092,8 @@ impl TermsEnum for FreqProxTermsEnum {
         Ok(())
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(BytesRef::new(self.current_term()?.to_vec()))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(self.current_term()?.to_vec())))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2053,14 +2106,14 @@ impl TermsEnum for FreqProxTermsEnum {
     /// `UnsupportedOperationException` for the same reason — computing it would
     /// need an extra pass over the postings.
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "buffered postings do not record docFreq".to_string(),
         ))
     }
 
     /// Always fails; see [`TermsEnum::doc_freq`] on this type.
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "buffered postings do not record totalTermFreq".to_string(),
         ))
     }
@@ -2079,7 +2132,7 @@ impl TermsEnum for FreqProxTermsEnum {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::IllegalArgument`] when `flags` ask for what the field did
+    /// [`LuceneErrorKind::IllegalArgument`] when `flags` ask for what the field did
     /// not index, as Java refuses to lie (`FreqProxFields.java:229-239,
     /// 256-260`): `did not index positions`, `did not index offsets`, or — for
     /// a docs-only field asked for frequencies — `did not index freq`.
@@ -2087,7 +2140,7 @@ impl TermsEnum for FreqProxTermsEnum {
         &mut self,
         mut reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         if self.ord < 0 || self.ord as usize >= self.num_terms {
             return Err(LuceneError::illegal_state(
                 "terms enum is not positioned on a term".to_string(),
@@ -2097,14 +2150,14 @@ impl TermsEnum for FreqProxTermsEnum {
 
         if crate::index::feature_requested(flags, POSTINGS_ENUM_POSITIONS) {
             if !self.field.has_prox {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "did not index positions".to_string(),
                 ));
             }
             if !self.field.has_offsets
                 && crate::index::feature_requested(flags, POSTINGS_ENUM_OFFSETS)
             {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "did not index offsets".to_string(),
                 ));
             }
@@ -2130,13 +2183,13 @@ impl TermsEnum for FreqProxTermsEnum {
                     )
                 })?
                 .reset(term_id);
-            return Ok(pos_enum);
+            return Ok(Some(pos_enum));
         }
 
         // Caller wants freqs but we didn't index them; don't lie
         // (`FreqProxFields.java:256-260`).
         if !self.field.has_freq && crate::index::feature_requested(flags, POSTINGS_ENUM_FREQS) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "did not index freq".to_string(),
             ));
         }
@@ -2162,14 +2215,14 @@ impl TermsEnum for FreqProxTermsEnum {
                 )
             })?
             .reset(term_id);
-        Ok(docs_enum)
+        Ok(Some(docs_enum))
     }
 
     /// Always fails: impacts require the on-disk postings format.
     ///
     /// Equivalent to `FreqProxTermsEnum.impacts(int)`.
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "buffered postings do not expose impacts".to_string(),
         ))
     }
@@ -2257,6 +2310,8 @@ impl DocIdSetIterator for FreqProxDocsEnum {
             } else {
                 self.doc_id += code;
             }
+
+            debug_assert!(self.doc_id != self.field.postings[self.term_id as usize].last_doc_id);
         }
         Ok(self.doc_id)
     }
@@ -2265,7 +2320,7 @@ impl DocIdSetIterator for FreqProxDocsEnum {
     ///
     /// Equivalent to `FreqProxDocsEnum.advance(int)`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "buffered postings cannot be advanced".to_string(),
         ))
     }
@@ -2418,6 +2473,8 @@ impl DocIdSetIterator for FreqProxPostingsEnum {
             } else {
                 self.freq = self.reader.read_v_int(&self.field.pool)?;
             }
+
+            debug_assert!(self.doc_id != self.field.postings[self.term_id as usize].last_doc_id);
         }
 
         self.positions_left = self.freq;
@@ -2428,7 +2485,7 @@ impl DocIdSetIterator for FreqProxPostingsEnum {
 
     /// Always fails; see [`DocIdSetIterator::advance`] on [`FreqProxDocsEnum`].
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "buffered postings cannot be advanced".to_string(),
         ))
     }
@@ -2923,7 +2980,7 @@ impl TermsEnum for SortingTermsEnum {
         self.base.next()
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.base.term()
     }
 
@@ -2956,7 +3013,7 @@ impl TermsEnum for SortingTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         if self.index_options.subsumes(IndexOptions::DOCS_AND_FREQS)
             && crate::index::feature_requested(flags, POSTINGS_ENUM_FREQS)
         {
@@ -2980,7 +3037,10 @@ impl TermsEnum for SortingTermsEnum {
                     None => (Box::new(SortingPostingsEnum::new()), None),
                 };
 
-            let in_docs_and_positions = self.base.postings(in_reuse, flags)?;
+            let in_docs_and_positions = self
+                .base
+                .postings(in_reuse, flags)?
+                .ok_or_else(LuceneError::null_pointer)?;
             // we ignore the fact that positions/offsets may be stored but not
             // asked for, since this code is expected to be used during
             // addIndexes which will ask for everything. if that assumption
@@ -3007,7 +3067,7 @@ impl TermsEnum for SortingTermsEnum {
                     store_positions,
                     store_offsets,
                 )?;
-            return Ok(wrap_reuse);
+            return Ok(Some(wrap_reuse));
         }
 
         let (mut wrap_reuse, in_reuse): (Box<dyn PostingsEnum>, Option<Box<dyn PostingsEnum>>) =
@@ -3030,7 +3090,10 @@ impl TermsEnum for SortingTermsEnum {
                 None => (Box::new(SortingDocsEnum::new()), None),
             };
 
-        let in_docs = self.base.postings(in_reuse, flags)?;
+        let in_docs = self
+            .base
+            .postings(in_reuse, flags)?
+            .ok_or_else(LuceneError::null_pointer)?;
         wrap_reuse
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<SortingDocsEnum>())
@@ -3041,7 +3104,7 @@ impl TermsEnum for SortingTermsEnum {
                 )
             })?
             .reset(&self.doc_map, in_docs)?;
-        Ok(wrap_reuse)
+        Ok(Some(wrap_reuse))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -3448,7 +3511,7 @@ impl PostingsEnum for SortingPostingsEnum {
         if token & 1 != 0 {
             let length = input.read_v_int()?.max(0) as usize;
             self.payload.resize(length, 0);
-            input.read_bytes(&mut self.payload, 0, length)?;
+            input.read_bytes(Some(&mut self.payload), 0, length)?;
         } else {
             self.payload.clear();
         }
@@ -3542,7 +3605,10 @@ fn apply_deletes_to(
         if !enumerator.seek_exact(delete.term.bytes())? {
             continue;
         }
-        let mut postings = enumerator.postings(None, 0)?;
+        let mut postings = enumerator
+            .postings(None, 0)?
+            .ok_or_else(LuceneError::null_pointer)?;
+        debug_assert!(delete.doc_id_upto < NO_MORE_DOCS);
         loop {
             let doc = postings.next_doc()?;
             if doc >= delete.doc_id_upto || doc == NO_MORE_DOCS {
@@ -3758,7 +3824,7 @@ mod tests {
             } else {
                 crate::index::POSTINGS_ENUM_NONE
             };
-            let mut postings = enumerator.postings(None, flags).expect("postings");
+            let mut postings = enumerator.postings(None, flags).expect("postings").unwrap();
             let mut docs = Vec::new();
             loop {
                 let doc = postings.next_doc().expect("next doc");
@@ -4244,7 +4310,13 @@ mod tests {
             .add_doc(0, &[Token::new("alpha", 1).with_term_freq(4)])
             .expect_err("must be rejected");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -4259,7 +4331,13 @@ mod tests {
             .add_doc(1, &[Token::new("alpha", 1).with_term_freq(4)])
             .expect_err("must be rejected");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -4299,7 +4377,7 @@ mod tests {
             )
             .expect_err("the frequency overflows");
         assert!(
-            matches!(&error, LuceneError::Arithmetic(message) if message == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(message), .. } if message == "integer overflow"),
             "{error:?}"
         );
     }
@@ -4321,7 +4399,7 @@ mod tests {
         assert!(
             matches!(
                 error,
-                LuceneError::IllegalState { ref message, cause: None }
+                LuceneError { kind: LuceneErrorKind::IllegalState { ref message, cause: None }, .. }
                     if message == "field 'body' has duplicate term 'alpha'"
             ),
             "{error:?}"
@@ -4344,7 +4422,13 @@ mod tests {
             .intern(&mut pool, &mut ints, &huge, 0)
             .expect_err("too long");
         assert!(
-            matches!(error, LuceneError::IllegalArgument(_)),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::MaxBytesLengthExceeded(_),
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(field.num_terms(), 0);
@@ -4375,7 +4459,7 @@ mod tests {
                 .expect("seek"),
             SeekStatus::FOUND
         );
-        assert_eq!(enumerator.term().expect("term").slice(), b"delta");
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"delta");
         assert_eq!(enumerator.ord().expect("ord"), 1);
 
         assert_eq!(
@@ -4384,7 +4468,7 @@ mod tests {
                 .expect("seek"),
             SeekStatus::NOT_FOUND
         );
-        assert_eq!(enumerator.term().expect("term").slice(), b"delta");
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"delta");
 
         assert_eq!(
             enumerator
@@ -4406,15 +4490,24 @@ mod tests {
         enumerator.next().expect("first term");
         assert!(matches!(
             enumerator.doc_freq(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             enumerator.total_term_freq(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             enumerator.impacts(0),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 
@@ -4452,12 +4545,14 @@ mod tests {
         enumerator.next().expect("alpha");
         let alpha = enumerator
             .postings(None, POSTINGS_ENUM_POSITIONS)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         let alpha_identity = identity(alpha.as_ref());
         enumerator.next().expect("beta");
         let mut beta = enumerator
             .postings(Some(alpha), POSTINGS_ENUM_POSITIONS)
-            .expect("beta");
+            .expect("beta")
+            .unwrap();
         assert_eq!(identity(beta.as_ref()), alpha_identity, "a later term");
         assert_eq!(
             drain_positions(beta.as_mut()),
@@ -4468,13 +4563,15 @@ mod tests {
         again.next().expect("alpha");
         let mut alpha = again
             .postings(Some(beta), POSTINGS_ENUM_POSITIONS)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         assert_eq!(identity(alpha.as_ref()), alpha_identity, "another iterator");
         assert_eq!(drain_positions(alpha.as_mut()), vec![(0, vec![0])]);
 
         let mut docs = again
             .postings(Some(alpha), POSTINGS_ENUM_FREQS)
-            .expect("docs");
+            .expect("docs")
+            .unwrap();
         assert_ne!(identity(docs.as_ref()), alpha_identity, "a docs request");
         assert!(docs
             .as_any_mut()
@@ -4488,11 +4585,13 @@ mod tests {
         other_enumerator.next().expect("alpha");
         let foreign = other_enumerator
             .postings(None, POSTINGS_ENUM_POSITIONS)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         let foreign_identity = identity(foreign.as_ref());
         let mine = again
             .postings(Some(foreign), POSTINGS_ENUM_POSITIONS)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         assert_ne!(
             identity(mine.as_ref()),
             foreign_identity,
@@ -4515,12 +4614,14 @@ mod tests {
         enumerator.next().expect("alpha");
         let alpha = enumerator
             .postings(None, crate::index::POSTINGS_ENUM_NONE)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         let alpha_identity = identity(alpha.as_ref());
         enumerator.next().expect("beta");
         let mut beta = enumerator
             .postings(Some(alpha), crate::index::POSTINGS_ENUM_NONE)
-            .expect("beta");
+            .expect("beta")
+            .unwrap();
         assert_eq!(identity(beta.as_ref()), alpha_identity, "a later term");
         let mut docs = Vec::new();
         loop {
@@ -4541,7 +4642,8 @@ mod tests {
         let beta_identity = identity(beta.as_ref());
         let foreign = other_enumerator
             .postings(Some(beta), crate::index::POSTINGS_ENUM_NONE)
-            .expect("alpha");
+            .expect("alpha")
+            .unwrap();
         assert_ne!(
             identity(foreign.as_ref()),
             beta_identity,
@@ -4561,7 +4663,10 @@ mod tests {
         enumerator.next().expect("first term");
         assert!(matches!(
             enumerator.postings(None, POSTINGS_ENUM_POSITIONS),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -4577,7 +4682,10 @@ mod tests {
         enumerator.next().expect("first term");
         assert!(matches!(
             enumerator.postings(None, POSTINGS_ENUM_OFFSETS),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -4599,7 +4707,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(m) if m == "did not index freq"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "did not index freq"),
             "{error:?}"
         );
         assert!(enumerator
@@ -4911,13 +5019,13 @@ mod tests {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = TermsHash::new_int_pool(&bytes_used);
         for _ in 0..3 {
-            pool.next_buffer();
+            pool.next_buffer().unwrap();
         }
         let block = (INT_BLOCK_SIZE * std::mem::size_of::<i32>()) as i64;
         assert_eq!(bytes_used.load(Ordering::Acquire), 3 * block);
         pool.reset(false, true);
         assert_eq!(bytes_used.load(Ordering::Acquire), 0);
-        pool.next_buffer();
+        pool.next_buffer().unwrap();
         pool.reset(false, false);
         assert_eq!(bytes_used.load(Ordering::Acquire), -block);
     }
@@ -4964,7 +5072,7 @@ mod tests {
         assert_eq!(input.read_v_int().expect("v int"), 12_345);
         let mut read_back = vec![0u8; payload.len()];
         input
-            .read_bytes(&mut read_back, 0, payload.len())
+            .read_bytes(Some(&mut read_back), 0, payload.len())
             .expect("bytes");
         assert_eq!(read_back, payload);
         assert!(input.eof());
@@ -4993,23 +5101,47 @@ mod tests {
         let mut input = PooledSliceReader::new(reader, &pool);
         assert_eq!(input.read_byte().expect("byte"), 7);
         let error = input.read_byte().expect_err("the stream held one byte");
-        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
 
         let mut reader = ByteSliceReader::new();
         field.init_reader(&ints, &mut reader, slot.term_id, 0);
         let mut input = PooledSliceReader::new(reader, &pool);
         let mut buffer = [0u8; 4];
         let error = input
-            .read_bytes(&mut buffer, 0, 4)
+            .read_bytes(Some(&mut buffer), 0, 4)
             .expect_err("the stream held one byte");
-        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
 
         let mut reader = ByteSliceReader::new();
         field.init_reader(&ints, &mut reader, slot.term_id, 0);
         let mut input = PooledSliceReader::new(reader, &pool);
         let error = input.skip_bytes(-1).expect_err("negative skip");
         assert!(
-            matches!(error, LuceneError::IllegalArgument(_)),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         input.skip_bytes(1).expect("one byte to skip");
@@ -5157,19 +5289,19 @@ mod tests {
         }
 
         fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
-            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+            Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
         fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+            Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.terms[self.pos - 1].0.clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.pos - 1].0.clone()))
         }
 
         fn ord(&self) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+            Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
         fn doc_freq(&mut self) -> Result<i32> {
@@ -5184,7 +5316,7 @@ mod tests {
             &mut self,
             reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
             self.offered
                 .lock()
                 .unwrap()
@@ -5196,14 +5328,14 @@ mod tests {
                     .and_then(|any| any.downcast_mut::<ListPostings>())
                 {
                     *postings = ListPostings::new(docs);
-                    return Ok(reuse);
+                    return Ok(Some(reuse));
                 }
             }
-            Ok(Box::new(ListPostings::new(docs)))
+            Ok(Some(Box::new(ListPostings::new(docs))))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+            Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
         fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -5250,7 +5382,10 @@ mod tests {
     fn sorting_postings_enum_is_reused_and_hands_its_wrapped_enum_to_the_delegate() {
         let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
         assert!(terms_enum.next().unwrap().is_some());
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let outer = identity(postings.as_ref());
         assert!(postings
             .as_any_mut()
@@ -5260,6 +5395,7 @@ mod tests {
         assert!(terms_enum.next().unwrap().is_some());
         let mut postings = terms_enum
             .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
             .unwrap();
         assert_eq!(
             identity(postings.as_ref()),
@@ -5281,7 +5417,10 @@ mod tests {
     fn sorting_docs_enum_is_reused_and_hands_its_wrapped_enum_to_the_delegate() {
         let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS);
         assert!(terms_enum.next().unwrap().is_some());
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let outer = identity(postings.as_ref());
         assert!(postings
             .as_any_mut()
@@ -5291,6 +5430,7 @@ mod tests {
         assert!(terms_enum.next().unwrap().is_some());
         let mut postings = terms_enum
             .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
             .unwrap();
         assert_eq!(
             identity(postings.as_ref()),
@@ -5309,7 +5449,10 @@ mod tests {
         // the second call is the very one it got from the first.
         let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
         assert!(terms_enum.next().unwrap().is_some());
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let wrapped = postings
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
@@ -5327,6 +5470,7 @@ mod tests {
         assert!(terms_enum.next().unwrap().is_some());
         let _postings = terms_enum
             .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
             .unwrap();
         assert_eq!(offered.lock().unwrap()[1], Some(wrapped_identity));
     }
@@ -5337,13 +5481,17 @@ mod tests {
         // neither reused nor unwrapped: `inReuse = reuse`.
         let (mut docs_terms_enum, _) = sorting_terms_enum(IndexOptions::DOCS);
         assert!(docs_terms_enum.next().unwrap().is_some());
-        let docs_enum = docs_terms_enum.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        let docs_enum = docs_terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
         let docs_enum_identity = identity(docs_enum.as_ref());
 
         let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
         assert!(terms_enum.next().unwrap().is_some());
         let mut postings = terms_enum
             .postings(Some(docs_enum), POSTINGS_ENUM_FREQS)
+            .unwrap()
             .unwrap();
         assert_ne!(identity(postings.as_ref()), docs_enum_identity);
         assert!(postings

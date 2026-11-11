@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::{Directory, FilterDirectory, IOContext, IndexInput, IndexOutput, Lock};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::exceptions::LockObtainFailedException;
 
 /// Pass this as the lock wait timeout to try forever to obtain the lock.
@@ -49,7 +49,7 @@ impl SleepingLockWrapper {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `lock_wait_timeout` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `lock_wait_timeout` is
     /// negative and is not [`LOCK_OBTAIN_WAIT_FOREVER`].
     pub fn new(delegate: Box<dyn Directory>, lock_wait_timeout: i64) -> Result<Self> {
         Self::with_poll_interval(delegate, lock_wait_timeout, DEFAULT_POLL_INTERVAL)
@@ -61,7 +61,7 @@ impl SleepingLockWrapper {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `lock_wait_timeout` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `lock_wait_timeout` is
     /// negative and is not [`LOCK_OBTAIN_WAIT_FOREVER`], or if `poll_interval`
     /// is negative.
     pub fn with_poll_interval(
@@ -70,12 +70,12 @@ impl SleepingLockWrapper {
         poll_interval: i64,
     ) -> Result<Self> {
         if lock_wait_timeout < 0 && lock_wait_timeout != LOCK_OBTAIN_WAIT_FOREVER {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "lockWaitTimeout should be LOCK_OBTAIN_WAIT_FOREVER or a non-negative number (got {lock_wait_timeout})"
             )));
         }
         if poll_interval < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pollInterval must be a non-negative number (got {poll_interval})"
             )));
         }
@@ -152,7 +152,7 @@ impl Directory for SleepingLockWrapper {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::LockObtainFailed`] once the deadline passes,
+    /// Returns [`LuceneErrorKind::LockObtainFailed`] once the deadline passes,
     /// carrying the first failure observed as the source. Any error other than
     /// a lock-obtain failure aborts the retry loop immediately, matching Java,
     /// where only `LockObtainFailedException` is caught.
@@ -160,13 +160,15 @@ impl Directory for SleepingLockWrapper {
     /// A `poll_interval` of zero makes Java's `lockWaitTimeout / pollInterval`
     /// (`SleepingLockWrapper.java:81`) throw `ArithmeticException("/ by
     /// zero")` from this method; this port returns the same failure at the
-    /// same point as [`LuceneError::Arithmetic`].
+    /// same point as [`LuceneErrorKind::Arithmetic`].
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
         let mut failure_reason: Option<String> = None;
         let max_sleep_count = self
             .lock_wait_timeout
             .checked_div(self.poll_interval)
-            .ok_or_else(|| LuceneError::Arithmetic("/ by zero".to_string()))?;
+            .ok_or_else(|| {
+                LuceneError::from(LuceneErrorKind::Arithmetic("/ by zero".to_string()))
+            })?;
         let mut sleep_count: i64 = 0;
 
         loop {
@@ -202,7 +204,7 @@ impl Directory for SleepingLockWrapper {
         ))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -267,7 +269,10 @@ mod tests {
             SleepingLockWrapper::with_poll_interval(Box::new(ByteBuffersDirectory::new()), 10, 0)
                 .unwrap();
         match dir.obtain_lock("write.lock") {
-            Err(LuceneError::Arithmetic(message)) => assert_eq!(message, "/ by zero"),
+            Err(LuceneError {
+                kind: LuceneErrorKind::Arithmetic(message),
+                ..
+            }) => assert_eq!(message, "/ by zero"),
             Err(other) => panic!("expected ArithmeticException, got {other:?}"),
             Ok(_) => panic!("expected ArithmeticException, got a lock"),
         }

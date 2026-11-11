@@ -1,0 +1,5 @@
+# lookup	result
+getName	LuceneVarGapDocFreqInterval
+toString	PostingsFormat(name=LuceneVarGapDocFreqInterval)
+forName.getClass	org.apache.lucene.tests.codecs.blockterms.LuceneVarGapDocFreqInterval
+forName.toString	PostingsFormat(name=LuceneVarGapDocFreqInterval)

@@ -250,7 +250,7 @@ impl LMDirichletSimilarity {
     /// (`LMDirichletSimilarity.java:41-44`).
     fn check_mu(mu: f32) -> Result<()> {
         if !mu.is_finite() || mu < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal mu value: {}, must be a non-negative finite value",
                 java_fmt::float_to_string(mu)
             )));
@@ -279,7 +279,7 @@ impl LMDirichletSimilarity {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `mu` is not finite or is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `mu` is not finite or is
     /// negative.
     pub fn with_mu(mu: f32) -> Result<Self> {
         Self::check_mu(mu)?;
@@ -521,7 +521,7 @@ impl LMJelinekMercerSimilarity {
     /// (`LMJelinekMercerSimilarity.java:47-49`).
     fn check_lambda(lambda: f32) -> Result<()> {
         if lambda.is_nan() || lambda <= 0.0 || lambda > 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "lambda must be in the range (0 .. 1]".to_string(),
             ));
         }
@@ -536,7 +536,7 @@ impl LMJelinekMercerSimilarity {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `lambda` is NaN or outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `lambda` is NaN or outside
     /// `(0 .. 1]`.
     pub fn with_lambda(lambda: f32) -> Result<Self> {
         Self::check_lambda(lambda)?;

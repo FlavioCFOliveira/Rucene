@@ -73,11 +73,11 @@ impl KnnVectorValues for RecordingFloatVectorValues {
         self.vectors.len() as i32
     }
 
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.prefetched
             .lock()
             .expect("the prefetch log is not poisoned")
-            .push(ords_to_prefetch[..num_ords as usize].to_vec());
+            .push(ords_to_prefetch.unwrap_or_default()[..num_ords as usize].to_vec());
         Ok(())
     }
 
@@ -359,10 +359,6 @@ impl QuantizedByteVectorValues for MemoryQuantizedVectorValues {
         Ok(&self.vectors[ord as usize])
     }
 
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
-        Ok(self.offsets[ord as usize])
-    }
-
     fn size(&self) -> i32 {
         self.vectors.len() as i32
     }
@@ -379,6 +375,10 @@ impl QuantizedByteVectorValues for MemoryQuantizedVectorValues {
 impl LegacyQuantizedByteVectorValues for MemoryQuantizedVectorValues {
     fn scalar_quantizer(&self) -> &ScalarQuantizer {
         &self.quantizer
+    }
+
+    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
+        Ok(self.offsets[ord as usize])
     }
 
     fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {
@@ -479,7 +479,7 @@ fn quantized_supplier_to_string_matches_lucene() {
         Box::new(values),
     );
     assert_eq!(
-        supplier.to_string(),
+        RandomVectorScorerSupplier::to_string(&supplier),
         "ScalarQuantizedRandomVectorScorerSupplier(vectorSimilarityFunction=COSINE)"
     );
 }
@@ -512,10 +512,6 @@ impl QuantizedByteVectorValues for RecordingLegacyValues {
         self.inner.vector_value(ord)
     }
 
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
-        self.inner.get_score_correction_constant(ord)
-    }
-
     fn size(&self) -> i32 {
         self.inner.size()
     }
@@ -524,11 +520,11 @@ impl QuantizedByteVectorValues for RecordingLegacyValues {
         self.inner.dimension()
     }
 
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         self.prefetched
             .lock()
             .expect("the prefetch log is not poisoned")
-            .push(ords_to_prefetch[..num_ords as usize].to_vec());
+            .push(ords_to_prefetch.unwrap_or_default()[..num_ords as usize].to_vec());
         Ok(())
     }
 
@@ -540,6 +536,10 @@ impl QuantizedByteVectorValues for RecordingLegacyValues {
 impl LegacyQuantizedByteVectorValues for RecordingLegacyValues {
     fn scalar_quantizer(&self) -> &ScalarQuantizer {
         self.inner.scalar_quantizer()
+    }
+
+    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
+        self.inner.get_score_correction_constant(ord)
     }
 
     fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {
@@ -646,7 +646,7 @@ fn legacy_scorer_rejects_a_mismatched_target_through_check_dimensions() {
     assert!(
         matches!(
             &err,
-            rucene::error::LuceneError::IllegalArgument(message)
+            rucene::error::LuceneError { kind: rucene::error::LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message == "vector query dimension: 4 differs from field dimension: 3"
         ),
         "{err:?}"

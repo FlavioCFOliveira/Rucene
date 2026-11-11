@@ -82,7 +82,7 @@ impl DocIdSetIterator for DisjunctionIterator {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.base.doc + 1)
+        self.advance(self.base.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -178,7 +178,7 @@ impl DocIdSetIterator for AdaptiveSkipIterator {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.base.doc + 1)
+        self.advance(self.base.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -188,7 +188,7 @@ impl DocIdSetIterator for AdaptiveSkipIterator {
             SkipState::Warming => {
                 let result = self.inner.advance(target)?;
                 if target > self.block_end_doc {
-                    self.block_end_doc = self.inner.block_end() - 1;
+                    self.block_end_doc = self.inner.block_end().wrapping_sub(1);
                     self.boundary_crossings += 1;
                     if result > target {
                         // Skipping has happened, so switch to permanently
@@ -213,7 +213,7 @@ impl DocIdSetIterator for AdaptiveSkipIterator {
         self.inner.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         if self.state.get() == SkipState::Disabled {
             return Ok(NO_MORE_DOCS);
         }
@@ -319,6 +319,21 @@ pub struct TermOrdValLeafState {
     missing_ord: i32,
     competitive_state: Option<CompetitiveState>,
     dense: bool,
+}
+
+impl TermOrdValLeafState {
+    /// Whether the adaptive skip iterator gave up.
+    ///
+    /// Equivalent to the package-private, test-only
+    /// `TermOrdValLeafComparator.isSkippingDisabled()`
+    /// (`TermOrdValComparator.java:489-494`): index-based competitive
+    /// iterators are never disabled.
+    pub fn is_skipping_disabled(&self) -> bool {
+        matches!(
+            self.competitive_state.as_ref().map(|c| &c.kind),
+            Some(CompetitiveStateKind::Skipper { state, .. }) if state.get() == SkipState::Disabled
+        )
+    }
 }
 
 /// Sorts by the field's natural term sort order, using ordinals.
@@ -558,6 +573,7 @@ impl TermOrdValComparator {
             return Ok(());
         }
         debug_assert!(min_ord >= 0);
+        debug_assert!(max_ord < leaf.terms_index.get_value_count()?);
         self.competitive_state_update(leaf, min_ord, max_ord)
     }
 
@@ -654,6 +670,10 @@ impl TermOrdValComparator {
                     let mut shared = shared.borrow_mut();
                     if (size as usize) < shared.postings.len() {
                         // One or more ordinals were removed.
+                        debug_assert!(shared
+                            .postings
+                            .front()
+                            .is_none_or(|entry| entry.borrow().ord <= min_ord));
                         while shared
                             .postings
                             .front()
@@ -661,6 +681,10 @@ impl TermOrdValComparator {
                         {
                             shared.postings.pop_front();
                         }
+                        debug_assert!(shared
+                            .postings
+                            .back()
+                            .is_none_or(|entry| entry.borrow().ord >= max_ord));
                         while shared
                             .postings
                             .back()
@@ -706,18 +730,25 @@ fn init_postings(
             )));
         }
         postings.push_back(Rc::new(RefCell::new(PostingsEnumAndOrd {
-            postings: terms_enum.postings(None, POSTINGS_ENUM_NONE)?,
+            postings: terms_enum
+                .postings(None, POSTINGS_ENUM_NONE)?
+                .ok_or_else(LuceneError::null_pointer)?,
             ord: min_ord,
         })));
         for ord in min_ord + 1..=max_ord {
             let next = terms_enum.next()?;
-            if next.is_none() {
+            let Some(next) = next else {
                 return Err(LuceneError::illegal_state(format!(
                     "Terms have more than {ord} unique terms while doc values have exactly {ord} terms"
                 )));
-            }
+            };
+            // `docValuesTerms.seekExact(next) && docValuesTerms.ord() == ord`:
+            // the doc values hold `next` at exactly this ordinal.
+            debug_assert!(terms_index.lookup_term(&next)? == ord);
             postings.push_back(Rc::new(RefCell::new(PostingsEnumAndOrd {
-                postings: terms_enum.postings(None, POSTINGS_ENUM_NONE)?,
+                postings: terms_enum
+                    .postings(None, POSTINGS_ENUM_NONE)?
+                    .ok_or_else(LuceneError::null_pointer)?,
                 ord,
             })));
         }

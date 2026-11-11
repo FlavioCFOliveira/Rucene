@@ -1,0 +1,1019 @@
+# case	line of TestCodecsOracle.ramOnlyTrace
+ramonly	leaf 0 maxDoc=60
+ramonly	 field rq size=66 sttf=120 sdf=110 dc=60 true/true/false/false
+ramonly	  t 6130 df=2 ttf=3
+ramonly	   d=0 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=13 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=13
+ramonly	  t 6131 df=1 ttf=1
+ramonly	   d=1 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=1
+ramonly	  t 613130 df=2 ttf=3
+ramonly	   d=36 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=49 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=49
+ramonly	  t 613131 df=2 ttf=3
+ramonly	   d=24 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=37 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=37
+ramonly	  t 613132 df=2 ttf=3
+ramonly	   d=12 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=25 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=25
+ramonly	  t 6132 df=1 ttf=1
+ramonly	   d=54 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=54
+ramonly	  t 6133 df=1 ttf=1
+ramonly	   d=42 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=42
+ramonly	  t 6134 df=1 ttf=1
+ramonly	   d=30 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=30
+ramonly	  t 6135 df=1 ttf=1
+ramonly	   d=18 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=18
+ramonly	  t 6136 df=1 ttf=1
+ramonly	   d=6 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=6
+ramonly	  t 6139 df=1 ttf=2
+ramonly	   d=48 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=48
+ramonly	  t 62c3a930 df=3 ttf=3
+ramonly	   d=13 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=26 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=39 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=39
+ramonly	  t 62c3a931 df=3 ttf=3
+ramonly	   d=1 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=14 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=27 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=27
+ramonly	  t 62c3a93130 df=1 ttf=1
+ramonly	   d=49 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=49
+ramonly	  t 62c3a93131 df=2 ttf=2
+ramonly	   d=37 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=50 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=50
+ramonly	  t 62c3a93132 df=3 ttf=3
+ramonly	   d=25 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=38 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=51 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=51
+ramonly	  t 62c3a932 df=2 ttf=2
+ramonly	   d=2 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=15 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=15
+ramonly	  t 62c3a933 df=2 ttf=2
+ramonly	   d=3 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=55 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=55
+ramonly	  t 62c3a934 df=1 ttf=1
+ramonly	   d=43 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=43
+ramonly	  t 62c3a935 df=1 ttf=1
+ramonly	   d=31 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=31
+ramonly	  t 62c3a936 df=1 ttf=1
+ramonly	   d=19 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=19
+ramonly	  t 62c3a937 df=1 ttf=1
+ramonly	   d=7 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=7
+ramonly	  t 7a30 df=1 ttf=1
+ramonly	   d=52 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=52
+ramonly	  t 7a31 df=1 ttf=1
+ramonly	   d=40 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=40
+ramonly	  t 7a3130 df=1 ttf=1
+ramonly	   d=10 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=10
+ramonly	  t 7a32 df=1 ttf=1
+ramonly	   d=28 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=28
+ramonly	  t 7a33 df=1 ttf=1
+ramonly	   d=16 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=16
+ramonly	  t 7a34 df=2 ttf=2
+ramonly	   d=4 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=56 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=56
+ramonly	  t 7a35 df=2 ttf=2
+ramonly	   d=44 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=57 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=57
+ramonly	  t 7a36 df=3 ttf=3
+ramonly	   d=32 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=45 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=58 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=58
+ramonly	  t 7a37 df=3 ttf=3
+ramonly	   d=20 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=33 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=46 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=46
+ramonly	  t 7a38 df=3 ttf=3
+ramonly	   d=8 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=21 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=34 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=34
+ramonly	  t 7a39 df=2 ttf=2
+ramonly	   d=9 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=22 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=22
+ramonly	  t f09d90807830 df=2 ttf=2
+ramonly	   d=26 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=52 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=52
+ramonly	  t f09d90807831 df=3 ttf=3
+ramonly	   d=14 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=40 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=53 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=53
+ramonly	  t f09d9080783131 df=1 ttf=1
+ramonly	   d=50 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=50
+ramonly	  t f09d9080783132 df=1 ttf=1
+ramonly	   d=38 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=38
+ramonly	  t f09d90807832 df=3 ttf=3
+ramonly	   d=2 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=28 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=41 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=41
+ramonly	  t f09d90807833 df=2 ttf=2
+ramonly	   d=16 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=29 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=29
+ramonly	  t f09d90807834 df=3 ttf=3
+ramonly	   d=4 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=17 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=56 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=56
+ramonly	  t f09d90807835 df=2 ttf=2
+ramonly	   d=5 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=44 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=44
+ramonly	  t f09d90807836 df=1 ttf=1
+ramonly	   d=32 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=32
+ramonly	  t f09d90807837 df=1 ttf=1
+ramonly	   d=20 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=20
+ramonly	  t f09d90807838 df=1 ttf=1
+ramonly	   d=8 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=8
+ramonly	  t f09f988031 df=1 ttf=1
+ramonly	   d=53 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=53
+ramonly	  t f09f98803130 df=2 ttf=3
+ramonly	   d=10 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=23 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=23
+ramonly	  t f09f98803131 df=1 ttf=2
+ramonly	   d=11 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=11
+ramonly	  t f09f988032 df=1 ttf=1
+ramonly	   d=41 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=41
+ramonly	  t f09f988033 df=1 ttf=1
+ramonly	   d=29 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=29
+ramonly	  t f09f988034 df=1 ttf=1
+ramonly	   d=17 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=17
+ramonly	  t f09f988035 df=1 ttf=1
+ramonly	   d=5 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=5
+ramonly	  t f09f988036 df=1 ttf=1
+ramonly	   d=58 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=58
+ramonly	  t f09f988037 df=2 ttf=3
+ramonly	   d=46 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=59 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=59
+ramonly	  t f09f988038 df=2 ttf=3
+ramonly	   d=34 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=47 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=47
+ramonly	  t f09f988039 df=2 ttf=3
+ramonly	   d=22 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=35 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=35
+ramonly	  t ee80807930 df=1 ttf=1
+ramonly	   d=39 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=39
+ramonly	  t ee80807931 df=1 ttf=1
+ramonly	   d=27 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=27
+ramonly	  t ee8080793132 df=1 ttf=1
+ramonly	   d=51 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=51
+ramonly	  t ee80807932 df=2 ttf=2
+ramonly	   d=15 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=54 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=54
+ramonly	  t ee80807933 df=3 ttf=3
+ramonly	   d=3 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=42 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=55 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=55
+ramonly	  t ee80807934 df=2 ttf=2
+ramonly	   d=30 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=43 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=43
+ramonly	  t ee80807935 df=3 ttf=3
+ramonly	   d=18 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=31 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=57 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=57
+ramonly	  t ee80807936 df=3 ttf=3
+ramonly	   d=6 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=19 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=45 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=45
+ramonly	  t ee80807937 df=2 ttf=2
+ramonly	   d=7 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=33 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=33
+ramonly	  t ee80807938 df=1 ttf=1
+ramonly	   d=21 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=21
+ramonly	  t ee80807939 df=1 ttf=1
+ramonly	   d=9 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=9
+ramonly	  seek :NOT_FOUND:x:!NullPointerException:!NullPointerException:!NullPointerException:x6130 6130:FOUND:x6130:2:3:0:x6130 613000:NOT_FOUND:x613000:!NullPointerException:!NullPointerException:!NullPointerException:x6131 6131:FOUND:x6131:1:1:1:x6131 613100:NOT_FOUND:x613100:!NullPointerException:!NullPointerException:!NullPointerException:x613130 613130:FOUND:x613130:2:3:36:x613130 61313000:NOT_FOUND:x61313000:!NullPointerException:!NullPointerException:!NullPointerException:x613131 613131:FOUND:x613131:2:3:24:x613131 61313100:NOT_FOUND:x61313100:!NullPointerException:!NullPointerException:!NullPointerException:x613132 613132:FOUND:x613132:2:3:12:x613132 61313200:NOT_FOUND:x61313200:!NullPointerException:!NullPointerException:!NullPointerException:x6132 6132:FOUND:x6132:1:1:54:x6132 613200:NOT_FOUND:x613200:!NullPointerException:!NullPointerException:!NullPointerException:x6133 6133:FOUND:x6133:1:1:42:x6133 613300:NOT_FOUND:x613300:!NullPointerException:!NullPointerException:!NullPointerException:x6134 6134:FOUND:x6134:1:1:30:x6134 613400:NOT_FOUND:x613400:!NullPointerException:!NullPointerException:!NullPointerException:x6135 6135:FOUND:x6135:1:1:18:x6135 613500:NOT_FOUND:x613500:!NullPointerException:!NullPointerException:!NullPointerException:x6136 6136:FOUND:x6136:1:1:6:x6136 613600:NOT_FOUND:x613600:!NullPointerException:!NullPointerException:!NullPointerException:x6139 6139:FOUND:x6139:1:2:48:x6139 613900:NOT_FOUND:x613900:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a930 62c3a930:FOUND:x62c3a930:3:3:13:x62c3a930 62c3a93000:NOT_FOUND:x62c3a93000:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a931 62c3a931:FOUND:x62c3a931:3:3:1:x62c3a931 62c3a93100:NOT_FOUND:x62c3a93100:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93130 62c3a93130:FOUND:x62c3a93130:1:1:49:x62c3a93130 62c3a9313000:NOT_FOUND:x62c3a9313000:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93131 62c3a93131:FOUND:x62c3a93131:2:2:37:x62c3a93131 62c3a9313100:NOT_FOUND:x62c3a9313100:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93132 62c3a93132:FOUND:x62c3a93132:3:3:25:x62c3a93132 62c3a9313200:NOT_FOUND:x62c3a9313200:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a932 62c3a932:FOUND:x62c3a932:2:2:2:x62c3a932 62c3a93200:NOT_FOUND:x62c3a93200:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a933 62c3a933:FOUND:x62c3a933:2:2:3:x62c3a933 62c3a93300:NOT_FOUND:x62c3a93300:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a934 62c3a934:FOUND:x62c3a934:1:1:43:x62c3a934 62c3a93400:NOT_FOUND:x62c3a93400:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a935 62c3a935:FOUND:x62c3a935:1:1:31:x62c3a935 62c3a93500:NOT_FOUND:x62c3a93500:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a936 62c3a936:FOUND:x62c3a936:1:1:19:x62c3a936 62c3a93600:NOT_FOUND:x62c3a93600:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a937 62c3a937:FOUND:x62c3a937:1:1:7:x62c3a937 62c3a93700:NOT_FOUND:x62c3a93700:!NullPointerException:!NullPointerException:!NullPointerException:x7a30 7a30:FOUND:x7a30:1:1:52:x7a30 7a3000:NOT_FOUND:x7a3000:!NullPointerException:!NullPointerException:!NullPointerException:x7a31 7a31:FOUND:x7a31:1:1:40:x7a31 7a3100:NOT_FOUND:x7a3100:!NullPointerException:!NullPointerException:!NullPointerException:x7a3130 7a3130:FOUND:x7a3130:1:1:10:x7a3130 7a313000:NOT_FOUND:x7a313000:!NullPointerException:!NullPointerException:!NullPointerException:x7a32 7a32:FOUND:x7a32:1:1:28:x7a32 7a3200:NOT_FOUND:x7a3200:!NullPointerException:!NullPointerException:!NullPointerException:x7a33 7a33:FOUND:x7a33:1:1:16:x7a33 7a3300:NOT_FOUND:x7a3300:!NullPointerException:!NullPointerException:!NullPointerException:x7a34 7a34:FOUND:x7a34:2:2:4:x7a34 7a3400:NOT_FOUND:x7a3400:!NullPointerException:!NullPointerException:!NullPointerException:x7a35 7a35:FOUND:x7a35:2:2:44:x7a35 7a3500:NOT_FOUND:x7a3500:!NullPointerException:!NullPointerException:!NullPointerException:x7a36 7a36:FOUND:x7a36:3:3:32:x7a36 7a3600:NOT_FOUND:x7a3600:!NullPointerException:!NullPointerException:!NullPointerException:x7a37 7a37:FOUND:x7a37:3:3:20:x7a37 7a3700:NOT_FOUND:x7a3700:!NullPointerException:!NullPointerException:!NullPointerException:x7a38 7a38:FOUND:x7a38:3:3:8:x7a38 7a3800:NOT_FOUND:x7a3800:!NullPointerException:!NullPointerException:!NullPointerException:x7a39 7a39:FOUND:x7a39:2:2:9:x7a39 7a3900:NOT_FOUND:x7a3900:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807830 f09d90807830:FOUND:xf09d90807830:2:2:26:xf09d90807830 f09d9080783000:NOT_FOUND:xf09d9080783000:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807831 f09d90807831:FOUND:xf09d90807831:3:3:14:xf09d90807831 f09d9080783100:NOT_FOUND:xf09d9080783100:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783131 f09d9080783131:FOUND:xf09d9080783131:1:1:50:xf09d9080783131 f09d908078313100:NOT_FOUND:xf09d908078313100:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783132 f09d9080783132:FOUND:xf09d9080783132:1:1:38:xf09d9080783132 f09d908078313200:NOT_FOUND:xf09d908078313200:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807832 f09d90807832:FOUND:xf09d90807832:3:3:2:xf09d90807832 f09d9080783200:NOT_FOUND:xf09d9080783200:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807833 f09d90807833:FOUND:xf09d90807833:2:2:16:xf09d90807833 f09d9080783300:NOT_FOUND:xf09d9080783300:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807834 f09d90807834:FOUND:xf09d90807834:3:3:4:xf09d90807834 f09d9080783400:NOT_FOUND:xf09d9080783400:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807835 f09d90807835:FOUND:xf09d90807835:2:2:5:xf09d90807835 f09d9080783500:NOT_FOUND:xf09d9080783500:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807836 f09d90807836:FOUND:xf09d90807836:1:1:32:xf09d90807836 f09d9080783600:NOT_FOUND:xf09d9080783600:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807837 f09d90807837:FOUND:xf09d90807837:1:1:20:xf09d90807837 f09d9080783700:NOT_FOUND:xf09d9080783700:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807838 f09d90807838:FOUND:xf09d90807838:1:1:8:xf09d90807838 f09d9080783800:NOT_FOUND:xf09d9080783800:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988031 f09f988031:FOUND:xf09f988031:1:1:53:xf09f988031 f09f98803100:NOT_FOUND:xf09f98803100:!NullPointerException:!NullPointerException:!NullPointerException:xf09f98803130 f09f98803130:FOUND:xf09f98803130:2:3:10:xf09f98803130 f09f9880313000:NOT_FOUND:xf09f9880313000:!NullPointerException:!NullPointerException:!NullPointerException:xf09f98803131 f09f98803131:FOUND:xf09f98803131:1:2:11:xf09f98803131 f09f9880313100:NOT_FOUND:xf09f9880313100:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988032 f09f988032:FOUND:xf09f988032:1:1:41:xf09f988032 f09f98803200:NOT_FOUND:xf09f98803200:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988033 f09f988033:FOUND:xf09f988033:1:1:29:xf09f988033 f09f98803300:NOT_FOUND:xf09f98803300:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988034 f09f988034:FOUND:xf09f988034:1:1:17:xf09f988034 f09f98803400:NOT_FOUND:xf09f98803400:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988035 f09f988035:FOUND:xf09f988035:1:1:5:xf09f988035 f09f98803500:NOT_FOUND:xf09f98803500:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988036 f09f988036:FOUND:xf09f988036:1:1:58:xf09f988036 f09f98803600:NOT_FOUND:xf09f98803600:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988037 f09f988037:FOUND:xf09f988037:2:3:46:xf09f988037 f09f98803700:NOT_FOUND:xf09f98803700:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988038 f09f988038:FOUND:xf09f988038:2:3:34:xf09f988038 f09f98803800:NOT_FOUND:xf09f98803800:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988039 f09f988039:FOUND:xf09f988039:2:3:22:xf09f988039 f09f98803900:NOT_FOUND:xf09f98803900:!NullPointerException:!NullPointerException:!NullPointerException:xee80807930 ee80807930:FOUND:xee80807930:1:1:39:xee80807930 ee8080793000:NOT_FOUND:xee8080793000:!NullPointerException:!NullPointerException:!NullPointerException:xee80807931 ee80807931:FOUND:xee80807931:1:1:27:xee80807931 ee8080793100:NOT_FOUND:xee8080793100:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793132 ee8080793132:FOUND:xee8080793132:1:1:51:xee8080793132 ee808079313200:NOT_FOUND:xee808079313200:!NullPointerException:!NullPointerException:!NullPointerException:xee80807932 ee80807932:FOUND:xee80807932:2:2:15:xee80807932 ee8080793200:NOT_FOUND:xee8080793200:!NullPointerException:!NullPointerException:!NullPointerException:xee80807933 ee80807933:FOUND:xee80807933:3:3:3:xee80807933 ee8080793300:NOT_FOUND:xee8080793300:!NullPointerException:!NullPointerException:!NullPointerException:xee80807934 ee80807934:FOUND:xee80807934:2:2:30:xee80807934 ee8080793400:NOT_FOUND:xee8080793400:!NullPointerException:!NullPointerException:!NullPointerException:xee80807935 ee80807935:FOUND:xee80807935:3:3:18:xee80807935 ee8080793500:NOT_FOUND:xee8080793500:!NullPointerException:!NullPointerException:!NullPointerException:xee80807936 ee80807936:FOUND:xee80807936:3:3:6:xee80807936 ee8080793600:NOT_FOUND:xee8080793600:!NullPointerException:!NullPointerException:!NullPointerException:xee80807937 ee80807937:FOUND:xee80807937:2:2:7:xee80807937 ee8080793700:NOT_FOUND:xee8080793700:!NullPointerException:!NullPointerException:!NullPointerException:xee80807938 ee80807938:FOUND:xee80807938:1:1:21:xee80807938 ee8080793800:NOT_FOUND:xee8080793800:!NullPointerException:!NullPointerException:!NullPointerException:xee80807939 ee80807939:FOUND:xee80807939:1:1:9:xee80807939 ee8080793900:END:xee8080793900:!NullPointerException:!NullPointerException:!NullPointerException:null ffff:!AssertionError:xee8080793900:!NullPointerException:!NullPointerException:!NullPointerException:null
+ramonly	  exact :false 6130:true 613000:false 6131:true 613100:false 613130:true 61313000:false 613131:true 61313100:false 613132:true 61313200:false 6132:true 613200:false 6133:true 613300:false 6134:true 613400:false 6135:true 613500:false 6136:true 613600:false 6139:true 613900:false 62c3a930:true 62c3a93000:false 62c3a931:true 62c3a93100:false 62c3a93130:true 62c3a9313000:false 62c3a93131:true 62c3a9313100:false 62c3a93132:true 62c3a9313200:false 62c3a932:true 62c3a93200:false 62c3a933:true 62c3a93300:false 62c3a934:true 62c3a93400:false 62c3a935:true 62c3a93500:false 62c3a936:true 62c3a93600:false 62c3a937:true 62c3a93700:false 7a30:true 7a3000:false 7a31:true 7a3100:false 7a3130:true 7a313000:false 7a32:true 7a3200:false 7a33:true 7a3300:false 7a34:true 7a3400:false 7a35:true 7a3500:false 7a36:true 7a3600:false 7a37:true 7a3700:false 7a38:true 7a3800:false 7a39:true 7a3900:false f09d90807830:true f09d9080783000:false f09d90807831:true f09d9080783100:false f09d9080783131:true f09d908078313100:false f09d9080783132:true f09d908078313200:false f09d90807832:true f09d9080783200:false f09d90807833:true f09d9080783300:false f09d90807834:true f09d9080783400:false f09d90807835:true f09d9080783500:false f09d90807836:true f09d9080783600:false f09d90807837:true f09d9080783700:false f09d90807838:true f09d9080783800:false f09f988031:true f09f98803100:false f09f98803130:true f09f9880313000:false f09f98803131:true f09f9880313100:false f09f988032:true f09f98803200:false f09f988033:true f09f98803300:false f09f988034:true f09f98803400:false f09f988035:true f09f98803500:false f09f988036:true f09f98803600:false f09f988037:true f09f98803700:false f09f988038:true f09f98803800:false f09f988039:true f09f98803900:false ee80807930:true ee8080793000:false ee80807931:true ee8080793100:false ee8080793132:true ee808079313200:false ee80807932:true ee8080793200:false ee80807933:true ee8080793300:false ee80807934:true ee8080793400:false ee80807935:true ee8080793500:false ee80807936:true ee8080793600:false ee80807937:true ee8080793700:false ee80807938:true ee8080793800:false ee80807939:true ee8080793900:false ffff:!AssertionError
+ramonly	  fresh term=!NullPointerException ord=!UnsupportedOperationException seekOrd=!UnsupportedOperationException
+ramonly	 field rp size=75 sttf=120 sdf=108 dc=60 true/true/false/false
+ramonly	  t 6130 df=2 ttf=3
+ramonly	   d=0 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=51 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=51
+ramonly	  t 6131 df=2 ttf=2
+ramonly	   d=18 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=35 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=35
+ramonly	  t 613130 df=2 ttf=2
+ramonly	   d=10 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=27 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=27
+ramonly	  t 613131 df=1 ttf=2
+ramonly	   d=45 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=45
+ramonly	  t 613132 df=1 ttf=1
+ramonly	   d=12 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=12
+ramonly	  t 613133 df=1 ttf=2
+ramonly	   d=30 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=30
+ramonly	  t 613134 df=1 ttf=1
+ramonly	   d=48 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=48
+ramonly	  t 613135 df=1 ttf=2
+ramonly	   d=15 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=15
+ramonly	  t 613136 df=2 ttf=2
+ramonly	   d=33 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=50 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=50
+ramonly	  t 6132 df=1 ttf=1
+ramonly	   d=36 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=36
+ramonly	  t 6133 df=3 ttf=3
+ramonly	   d=3 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=20 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=54 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=54
+ramonly	  t 6134 df=2 ttf=2
+ramonly	   d=21 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=55 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=55
+ramonly	  t 6135 df=2 ttf=2
+ramonly	   d=5 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=39 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=39
+ramonly	  t 6136 df=3 ttf=3
+ramonly	   d=6 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=40 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=57 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=57
+ramonly	  t 6137 df=1 ttf=1
+ramonly	   d=24 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=24
+ramonly	  t 6138 df=2 ttf=2
+ramonly	   d=25 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=42 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=42
+ramonly	  t 6139 df=1 ttf=1
+ramonly	   d=9 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=9
+ramonly	  t 62c3a930 df=2 ttf=2
+ramonly	   d=34 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=51 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=51
+ramonly	  t 62c3a931 df=2 ttf=3
+ramonly	   d=1 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=52 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=52
+ramonly	  t 62c3a93130 df=1 ttf=1
+ramonly	   d=10 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=10
+ramonly	  t 62c3a93131 df=2 ttf=2
+ramonly	   d=11 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=28 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=28
+ramonly	  t 62c3a93132 df=1 ttf=2
+ramonly	   d=46 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=46
+ramonly	  t 62c3a93133 df=1 ttf=1
+ramonly	   d=13 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=13
+ramonly	  t 62c3a93134 df=1 ttf=2
+ramonly	   d=31 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=31
+ramonly	  t 62c3a93135 df=1 ttf=1
+ramonly	   d=49 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=49
+ramonly	  t 62c3a93136 df=1 ttf=2
+ramonly	   d=16 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=16
+ramonly	  t 62c3a932 df=2 ttf=2
+ramonly	   d=19 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=36 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=36
+ramonly	  t 62c3a933 df=1 ttf=1
+ramonly	   d=37 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=37
+ramonly	  t 62c3a934 df=3 ttf=3
+ramonly	   d=4 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=21 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=55 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=55
+ramonly	  t 62c3a935 df=2 ttf=2
+ramonly	   d=22 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=56 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=56
+ramonly	  t 62c3a936 df=2 ttf=2
+ramonly	   d=6 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=40 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=40
+ramonly	  t 62c3a937 df=3 ttf=3
+ramonly	   d=7 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=41 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=58 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=58
+ramonly	  t 62c3a938 df=1 ttf=1
+ramonly	   d=25 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=25
+ramonly	  t 62c3a939 df=2 ttf=2
+ramonly	   d=26 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=43 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=43
+ramonly	  t 7a30 df=1 ttf=1
+ramonly	   d=34 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=34
+ramonly	  t 7a3130 df=1 ttf=1
+ramonly	   d=44 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=44
+ramonly	  t 7a3132 df=1 ttf=1
+ramonly	   d=29 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=29
+ramonly	  t 7a3134 df=1 ttf=1
+ramonly	   d=14 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=14
+ramonly	  t 7a3135 df=1 ttf=1
+ramonly	   d=49 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=49
+ramonly	  t 7a32 df=1 ttf=1
+ramonly	   d=19 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=19
+ramonly	  t 7a33 df=1 ttf=1
+ramonly	   d=54 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=54
+ramonly	  t 7a34 df=1 ttf=1
+ramonly	   d=4 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=4
+ramonly	  t 7a35 df=1 ttf=1
+ramonly	   d=39 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=39
+ramonly	  t 7a37 df=1 ttf=1
+ramonly	   d=24 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=24
+ramonly	  t 7a38 df=1 ttf=1
+ramonly	   d=59 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=59
+ramonly	  t 7a39 df=1 ttf=1
+ramonly	   d=9 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=9
+ramonly	  t f09d90807830 df=1 ttf=2
+ramonly	   d=17 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=17
+ramonly	  t f09d90807831 df=2 ttf=2
+ramonly	   d=35 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=52 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=52
+ramonly	  t f09d9080783130 df=2 ttf=2
+ramonly	   d=27 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=44 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=44
+ramonly	  t f09d9080783131 df=1 ttf=1
+ramonly	   d=11 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=11
+ramonly	  t f09d9080783132 df=2 ttf=2
+ramonly	   d=12 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=29 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=29
+ramonly	  t f09d9080783133 df=1 ttf=2
+ramonly	   d=47 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=47
+ramonly	  t f09d9080783134 df=1 ttf=1
+ramonly	   d=14 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=14
+ramonly	  t f09d9080783135 df=1 ttf=2
+ramonly	   d=32 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=32
+ramonly	  t f09d9080783136 df=1 ttf=1
+ramonly	   d=50 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=50
+ramonly	  t f09d90807832 df=2 ttf=3
+ramonly	   d=2 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=53 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=53
+ramonly	  t f09d90807833 df=2 ttf=2
+ramonly	   d=20 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=37 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=37
+ramonly	  t f09d90807834 df=1 ttf=1
+ramonly	   d=38 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=38
+ramonly	  t f09d90807835 df=3 ttf=3
+ramonly	   d=5 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=22 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=56 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=56
+ramonly	  t f09d90807836 df=2 ttf=2
+ramonly	   d=23 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=57 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=57
+ramonly	  t f09d90807837 df=2 ttf=2
+ramonly	   d=7 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=41 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=41
+ramonly	  t f09d90807838 df=3 ttf=3
+ramonly	   d=8 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=42 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=59 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=59
+ramonly	  t f09d90807839 df=1 ttf=1
+ramonly	   d=26 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=26
+ramonly	  t ee80807931 df=1 ttf=1
+ramonly	   d=18 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=18
+ramonly	  t ee8080793131 df=1 ttf=1
+ramonly	   d=28 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=28
+ramonly	  t ee8080793133 df=1 ttf=1
+ramonly	   d=13 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=13
+ramonly	  t ee8080793134 df=1 ttf=1
+ramonly	   d=48 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=48
+ramonly	  t ee8080793136 df=1 ttf=1
+ramonly	   d=33 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=33
+ramonly	  t ee80807932 df=1 ttf=1
+ramonly	   d=53 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=53
+ramonly	  t ee80807933 df=1 ttf=1
+ramonly	   d=3 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=3
+ramonly	  t ee80807934 df=1 ttf=1
+ramonly	   d=38 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=38
+ramonly	  t ee80807936 df=1 ttf=1
+ramonly	   d=23 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=23
+ramonly	  t ee80807937 df=1 ttf=1
+ramonly	   d=58 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=58
+ramonly	  t ee80807938 df=1 ttf=1
+ramonly	   d=8 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=8
+ramonly	  t ee80807939 df=1 ttf=1
+ramonly	   d=43 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=43
+ramonly	  seek :NOT_FOUND:x:!NullPointerException:!NullPointerException:!NullPointerException:x6130 6130:FOUND:x6130:2:3:0:x6130 613000:NOT_FOUND:x613000:!NullPointerException:!NullPointerException:!NullPointerException:x6131 6131:FOUND:x6131:2:2:18:x6131 613100:NOT_FOUND:x613100:!NullPointerException:!NullPointerException:!NullPointerException:x613130 613130:FOUND:x613130:2:2:10:x613130 61313000:NOT_FOUND:x61313000:!NullPointerException:!NullPointerException:!NullPointerException:x613131 613131:FOUND:x613131:1:2:45:x613131 61313100:NOT_FOUND:x61313100:!NullPointerException:!NullPointerException:!NullPointerException:x613132 613132:FOUND:x613132:1:1:12:x613132 61313200:NOT_FOUND:x61313200:!NullPointerException:!NullPointerException:!NullPointerException:x613133 613133:FOUND:x613133:1:2:30:x613133 61313300:NOT_FOUND:x61313300:!NullPointerException:!NullPointerException:!NullPointerException:x613134 613134:FOUND:x613134:1:1:48:x613134 61313400:NOT_FOUND:x61313400:!NullPointerException:!NullPointerException:!NullPointerException:x613135 613135:FOUND:x613135:1:2:15:x613135 61313500:NOT_FOUND:x61313500:!NullPointerException:!NullPointerException:!NullPointerException:x613136 613136:FOUND:x613136:2:2:33:x613136 61313600:NOT_FOUND:x61313600:!NullPointerException:!NullPointerException:!NullPointerException:x6132 6132:FOUND:x6132:1:1:36:x6132 613200:NOT_FOUND:x613200:!NullPointerException:!NullPointerException:!NullPointerException:x6133 6133:FOUND:x6133:3:3:3:x6133 613300:NOT_FOUND:x613300:!NullPointerException:!NullPointerException:!NullPointerException:x6134 6134:FOUND:x6134:2:2:21:x6134 613400:NOT_FOUND:x613400:!NullPointerException:!NullPointerException:!NullPointerException:x6135 6135:FOUND:x6135:2:2:5:x6135 613500:NOT_FOUND:x613500:!NullPointerException:!NullPointerException:!NullPointerException:x6136 6136:FOUND:x6136:3:3:6:x6136 613600:NOT_FOUND:x613600:!NullPointerException:!NullPointerException:!NullPointerException:x6137 6137:FOUND:x6137:1:1:24:x6137 613700:NOT_FOUND:x613700:!NullPointerException:!NullPointerException:!NullPointerException:x6138 6138:FOUND:x6138:2:2:25:x6138 613800:NOT_FOUND:x613800:!NullPointerException:!NullPointerException:!NullPointerException:x6139 6139:FOUND:x6139:1:1:9:x6139 613900:NOT_FOUND:x613900:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a930 62c3a930:FOUND:x62c3a930:2:2:34:x62c3a930 62c3a93000:NOT_FOUND:x62c3a93000:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a931 62c3a931:FOUND:x62c3a931:2:3:1:x62c3a931 62c3a93100:NOT_FOUND:x62c3a93100:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93130 62c3a93130:FOUND:x62c3a93130:1:1:10:x62c3a93130 62c3a9313000:NOT_FOUND:x62c3a9313000:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93131 62c3a93131:FOUND:x62c3a93131:2:2:11:x62c3a93131 62c3a9313100:NOT_FOUND:x62c3a9313100:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93132 62c3a93132:FOUND:x62c3a93132:1:2:46:x62c3a93132 62c3a9313200:NOT_FOUND:x62c3a9313200:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93133 62c3a93133:FOUND:x62c3a93133:1:1:13:x62c3a93133 62c3a9313300:NOT_FOUND:x62c3a9313300:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93134 62c3a93134:FOUND:x62c3a93134:1:2:31:x62c3a93134 62c3a9313400:NOT_FOUND:x62c3a9313400:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93135 62c3a93135:FOUND:x62c3a93135:1:1:49:x62c3a93135 62c3a9313500:NOT_FOUND:x62c3a9313500:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93136 62c3a93136:FOUND:x62c3a93136:1:2:16:x62c3a93136 62c3a9313600:NOT_FOUND:x62c3a9313600:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a932 62c3a932:FOUND:x62c3a932:2:2:19:x62c3a932 62c3a93200:NOT_FOUND:x62c3a93200:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a933 62c3a933:FOUND:x62c3a933:1:1:37:x62c3a933 62c3a93300:NOT_FOUND:x62c3a93300:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a934 62c3a934:FOUND:x62c3a934:3:3:4:x62c3a934 62c3a93400:NOT_FOUND:x62c3a93400:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a935 62c3a935:FOUND:x62c3a935:2:2:22:x62c3a935 62c3a93500:NOT_FOUND:x62c3a93500:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a936 62c3a936:FOUND:x62c3a936:2:2:6:x62c3a936 62c3a93600:NOT_FOUND:x62c3a93600:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a937 62c3a937:FOUND:x62c3a937:3:3:7:x62c3a937 62c3a93700:NOT_FOUND:x62c3a93700:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a938 62c3a938:FOUND:x62c3a938:1:1:25:x62c3a938 62c3a93800:NOT_FOUND:x62c3a93800:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a939 62c3a939:FOUND:x62c3a939:2:2:26:x62c3a939 62c3a93900:NOT_FOUND:x62c3a93900:!NullPointerException:!NullPointerException:!NullPointerException:x7a30 7a30:FOUND:x7a30:1:1:34:x7a30 7a3000:NOT_FOUND:x7a3000:!NullPointerException:!NullPointerException:!NullPointerException:x7a3130 7a3130:FOUND:x7a3130:1:1:44:x7a3130 7a313000:NOT_FOUND:x7a313000:!NullPointerException:!NullPointerException:!NullPointerException:x7a3132 7a3132:FOUND:x7a3132:1:1:29:x7a3132 7a313200:NOT_FOUND:x7a313200:!NullPointerException:!NullPointerException:!NullPointerException:x7a3134 7a3134:FOUND:x7a3134:1:1:14:x7a3134 7a313400:NOT_FOUND:x7a313400:!NullPointerException:!NullPointerException:!NullPointerException:x7a3135 7a3135:FOUND:x7a3135:1:1:49:x7a3135 7a313500:NOT_FOUND:x7a313500:!NullPointerException:!NullPointerException:!NullPointerException:x7a32 7a32:FOUND:x7a32:1:1:19:x7a32 7a3200:NOT_FOUND:x7a3200:!NullPointerException:!NullPointerException:!NullPointerException:x7a33 7a33:FOUND:x7a33:1:1:54:x7a33 7a3300:NOT_FOUND:x7a3300:!NullPointerException:!NullPointerException:!NullPointerException:x7a34 7a34:FOUND:x7a34:1:1:4:x7a34 7a3400:NOT_FOUND:x7a3400:!NullPointerException:!NullPointerException:!NullPointerException:x7a35 7a35:FOUND:x7a35:1:1:39:x7a35 7a3500:NOT_FOUND:x7a3500:!NullPointerException:!NullPointerException:!NullPointerException:x7a37 7a37:FOUND:x7a37:1:1:24:x7a37 7a3700:NOT_FOUND:x7a3700:!NullPointerException:!NullPointerException:!NullPointerException:x7a38 7a38:FOUND:x7a38:1:1:59:x7a38 7a3800:NOT_FOUND:x7a3800:!NullPointerException:!NullPointerException:!NullPointerException:x7a39 7a39:FOUND:x7a39:1:1:9:x7a39 7a3900:NOT_FOUND:x7a3900:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807830 f09d90807830:FOUND:xf09d90807830:1:2:17:xf09d90807830 f09d9080783000:NOT_FOUND:xf09d9080783000:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807831 f09d90807831:FOUND:xf09d90807831:2:2:35:xf09d90807831 f09d9080783100:NOT_FOUND:xf09d9080783100:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783130 f09d9080783130:FOUND:xf09d9080783130:2:2:27:xf09d9080783130 f09d908078313000:NOT_FOUND:xf09d908078313000:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783131 f09d9080783131:FOUND:xf09d9080783131:1:1:11:xf09d9080783131 f09d908078313100:NOT_FOUND:xf09d908078313100:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783132 f09d9080783132:FOUND:xf09d9080783132:2:2:12:xf09d9080783132 f09d908078313200:NOT_FOUND:xf09d908078313200:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783133 f09d9080783133:FOUND:xf09d9080783133:1:2:47:xf09d9080783133 f09d908078313300:NOT_FOUND:xf09d908078313300:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783134 f09d9080783134:FOUND:xf09d9080783134:1:1:14:xf09d9080783134 f09d908078313400:NOT_FOUND:xf09d908078313400:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783135 f09d9080783135:FOUND:xf09d9080783135:1:2:32:xf09d9080783135 f09d908078313500:NOT_FOUND:xf09d908078313500:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783136 f09d9080783136:FOUND:xf09d9080783136:1:1:50:xf09d9080783136 f09d908078313600:NOT_FOUND:xf09d908078313600:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807832 f09d90807832:FOUND:xf09d90807832:2:3:2:xf09d90807832 f09d9080783200:NOT_FOUND:xf09d9080783200:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807833 f09d90807833:FOUND:xf09d90807833:2:2:20:xf09d90807833 f09d9080783300:NOT_FOUND:xf09d9080783300:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807834 f09d90807834:FOUND:xf09d90807834:1:1:38:xf09d90807834 f09d9080783400:NOT_FOUND:xf09d9080783400:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807835 f09d90807835:FOUND:xf09d90807835:3:3:5:xf09d90807835 f09d9080783500:NOT_FOUND:xf09d9080783500:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807836 f09d90807836:FOUND:xf09d90807836:2:2:23:xf09d90807836 f09d9080783600:NOT_FOUND:xf09d9080783600:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807837 f09d90807837:FOUND:xf09d90807837:2:2:7:xf09d90807837 f09d9080783700:NOT_FOUND:xf09d9080783700:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807838 f09d90807838:FOUND:xf09d90807838:3:3:8:xf09d90807838 f09d9080783800:NOT_FOUND:xf09d9080783800:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807839 f09d90807839:FOUND:xf09d90807839:1:1:26:xf09d90807839 f09d9080783900:NOT_FOUND:xf09d9080783900:!NullPointerException:!NullPointerException:!NullPointerException:xee80807931 ee80807931:FOUND:xee80807931:1:1:18:xee80807931 ee8080793100:NOT_FOUND:xee8080793100:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793131 ee8080793131:FOUND:xee8080793131:1:1:28:xee8080793131 ee808079313100:NOT_FOUND:xee808079313100:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793133 ee8080793133:FOUND:xee8080793133:1:1:13:xee8080793133 ee808079313300:NOT_FOUND:xee808079313300:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793134 ee8080793134:FOUND:xee8080793134:1:1:48:xee8080793134 ee808079313400:NOT_FOUND:xee808079313400:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793136 ee8080793136:FOUND:xee8080793136:1:1:33:xee8080793136 ee808079313600:NOT_FOUND:xee808079313600:!NullPointerException:!NullPointerException:!NullPointerException:xee80807932 ee80807932:FOUND:xee80807932:1:1:53:xee80807932 ee8080793200:NOT_FOUND:xee8080793200:!NullPointerException:!NullPointerException:!NullPointerException:xee80807933 ee80807933:FOUND:xee80807933:1:1:3:xee80807933 ee8080793300:NOT_FOUND:xee8080793300:!NullPointerException:!NullPointerException:!NullPointerException:xee80807934 ee80807934:FOUND:xee80807934:1:1:38:xee80807934 ee8080793400:NOT_FOUND:xee8080793400:!NullPointerException:!NullPointerException:!NullPointerException:xee80807936 ee80807936:FOUND:xee80807936:1:1:23:xee80807936 ee8080793600:NOT_FOUND:xee8080793600:!NullPointerException:!NullPointerException:!NullPointerException:xee80807937 ee80807937:FOUND:xee80807937:1:1:58:xee80807937 ee8080793700:NOT_FOUND:xee8080793700:!NullPointerException:!NullPointerException:!NullPointerException:xee80807938 ee80807938:FOUND:xee80807938:1:1:8:xee80807938 ee8080793800:NOT_FOUND:xee8080793800:!NullPointerException:!NullPointerException:!NullPointerException:xee80807939 ee80807939:FOUND:xee80807939:1:1:43:xee80807939 ee8080793900:END:xee8080793900:!NullPointerException:!NullPointerException:!NullPointerException:null ffff:!AssertionError:xee8080793900:!NullPointerException:!NullPointerException:!NullPointerException:null
+ramonly	  exact :false 6130:true 613000:false 6131:true 613100:false 613130:true 61313000:false 613131:true 61313100:false 613132:true 61313200:false 613133:true 61313300:false 613134:true 61313400:false 613135:true 61313500:false 613136:true 61313600:false 6132:true 613200:false 6133:true 613300:false 6134:true 613400:false 6135:true 613500:false 6136:true 613600:false 6137:true 613700:false 6138:true 613800:false 6139:true 613900:false 62c3a930:true 62c3a93000:false 62c3a931:true 62c3a93100:false 62c3a93130:true 62c3a9313000:false 62c3a93131:true 62c3a9313100:false 62c3a93132:true 62c3a9313200:false 62c3a93133:true 62c3a9313300:false 62c3a93134:true 62c3a9313400:false 62c3a93135:true 62c3a9313500:false 62c3a93136:true 62c3a9313600:false 62c3a932:true 62c3a93200:false 62c3a933:true 62c3a93300:false 62c3a934:true 62c3a93400:false 62c3a935:true 62c3a93500:false 62c3a936:true 62c3a93600:false 62c3a937:true 62c3a93700:false 62c3a938:true 62c3a93800:false 62c3a939:true 62c3a93900:false 7a30:true 7a3000:false 7a3130:true 7a313000:false 7a3132:true 7a313200:false 7a3134:true 7a313400:false 7a3135:true 7a313500:false 7a32:true 7a3200:false 7a33:true 7a3300:false 7a34:true 7a3400:false 7a35:true 7a3500:false 7a37:true 7a3700:false 7a38:true 7a3800:false 7a39:true 7a3900:false f09d90807830:true f09d9080783000:false f09d90807831:true f09d9080783100:false f09d9080783130:true f09d908078313000:false f09d9080783131:true f09d908078313100:false f09d9080783132:true f09d908078313200:false f09d9080783133:true f09d908078313300:false f09d9080783134:true f09d908078313400:false f09d9080783135:true f09d908078313500:false f09d9080783136:true f09d908078313600:false f09d90807832:true f09d9080783200:false f09d90807833:true f09d9080783300:false f09d90807834:true f09d9080783400:false f09d90807835:true f09d9080783500:false f09d90807836:true f09d9080783600:false f09d90807837:true f09d9080783700:false f09d90807838:true f09d9080783800:false f09d90807839:true f09d9080783900:false ee80807931:true ee8080793100:false ee8080793131:true ee808079313100:false ee8080793133:true ee808079313300:false ee8080793134:true ee808079313400:false ee8080793136:true ee808079313600:false ee80807932:true ee8080793200:false ee80807933:true ee8080793300:false ee80807934:true ee8080793400:false ee80807936:true ee8080793600:false ee80807937:true ee8080793700:false ee80807938:true ee8080793800:false ee80807939:true ee8080793900:false ffff:!AssertionError
+ramonly	  fresh term=!NullPointerException ord=!UnsupportedOperationException seekOrd=!UnsupportedOperationException
+ramonly	leaf 1 maxDoc=60
+ramonly	 field rq size=66 sttf=120 sdf=110 dc=60 true/true/false/false
+ramonly	  t 6130 df=1 ttf=1
+ramonly	   d=18 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=18
+ramonly	  t 6131 df=1 ttf=1
+ramonly	   d=6 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=6
+ramonly	  t 613130 df=1 ttf=1
+ramonly	   d=54 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=54
+ramonly	  t 613131 df=1 ttf=1
+ramonly	   d=42 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=42
+ramonly	  t 613132 df=1 ttf=1
+ramonly	   d=30 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=30
+ramonly	  t 6134 df=1 ttf=2
+ramonly	   d=48 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=48
+ramonly	  t 6135 df=2 ttf=3
+ramonly	   d=36 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=49 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=49
+ramonly	  t 6136 df=2 ttf=3
+ramonly	   d=24 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=37 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=37
+ramonly	  t 6137 df=2 ttf=3
+ramonly	   d=12 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=25 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=25
+ramonly	  t 6138 df=2 ttf=3
+ramonly	   d=0 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=13 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=13
+ramonly	  t 6139 df=1 ttf=1
+ramonly	   d=1 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=1
+ramonly	  t 62c3a930 df=1 ttf=1
+ramonly	   d=31 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=31
+ramonly	  t 62c3a931 df=1 ttf=1
+ramonly	   d=19 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=19
+ramonly	  t 62c3a93130 df=2 ttf=2
+ramonly	   d=2 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=15 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=15
+ramonly	  t 62c3a93131 df=2 ttf=2
+ramonly	   d=3 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=55 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=55
+ramonly	  t 62c3a93132 df=1 ttf=1
+ramonly	   d=43 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=43
+ramonly	  t 62c3a932 df=1 ttf=1
+ramonly	   d=7 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=7
+ramonly	  t 62c3a935 df=1 ttf=1
+ramonly	   d=49 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=49
+ramonly	  t 62c3a936 df=2 ttf=2
+ramonly	   d=37 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=50 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=50
+ramonly	  t 62c3a937 df=3 ttf=3
+ramonly	   d=25 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=38 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=51 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=51
+ramonly	  t 62c3a938 df=3 ttf=3
+ramonly	   d=13 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=26 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=39 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=39
+ramonly	  t 62c3a939 df=3 ttf=3
+ramonly	   d=1 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=14 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=27 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=27
+ramonly	  t 7a30 df=2 ttf=2
+ramonly	   d=44 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=57 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=57
+ramonly	  t 7a31 df=3 ttf=3
+ramonly	   d=32 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=45 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=58 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=58
+ramonly	  t 7a3130 df=1 ttf=1
+ramonly	   d=28 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=28
+ramonly	  t 7a3131 df=1 ttf=1
+ramonly	   d=16 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=16
+ramonly	  t 7a3132 df=2 ttf=2
+ramonly	   d=4 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=56 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=56
+ramonly	  t 7a32 df=3 ttf=3
+ramonly	   d=20 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=33 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=46 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=46
+ramonly	  t 7a33 df=3 ttf=3
+ramonly	   d=8 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=21 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=34 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=34
+ramonly	  t 7a34 df=2 ttf=2
+ramonly	   d=9 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=22 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=22
+ramonly	  t 7a35 df=1 ttf=1
+ramonly	   d=10 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=10
+ramonly	  t 7a38 df=1 ttf=1
+ramonly	   d=52 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=52
+ramonly	  t 7a39 df=1 ttf=1
+ramonly	   d=40 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=40
+ramonly	  t f09d90807830 df=2 ttf=2
+ramonly	   d=5 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=44 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=44
+ramonly	  t f09d90807831 df=1 ttf=1
+ramonly	   d=32 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=32
+ramonly	  t f09d9080783130 df=3 ttf=3
+ramonly	   d=2 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=28 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=41 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=41
+ramonly	  t f09d9080783131 df=2 ttf=2
+ramonly	   d=16 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=29 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=29
+ramonly	  t f09d9080783132 df=3 ttf=3
+ramonly	   d=4 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=17 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=56 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=56
+ramonly	  t f09d90807832 df=1 ttf=1
+ramonly	   d=20 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=20
+ramonly	  t f09d90807833 df=1 ttf=1
+ramonly	   d=8 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=8
+ramonly	  t f09d90807836 df=1 ttf=1
+ramonly	   d=50 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=50
+ramonly	  t f09d90807837 df=1 ttf=1
+ramonly	   d=38 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=38
+ramonly	  t f09d90807838 df=2 ttf=2
+ramonly	   d=26 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=52 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=52
+ramonly	  t f09d90807839 df=3 ttf=3
+ramonly	   d=14 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=40 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=53 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=53
+ramonly	  t f09f988030 df=1 ttf=1
+ramonly	   d=5 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=5
+ramonly	  t f09f988031 df=1 ttf=1
+ramonly	   d=58 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=58
+ramonly	  t f09f98803130 df=1 ttf=1
+ramonly	   d=41 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=41
+ramonly	  t f09f98803131 df=1 ttf=1
+ramonly	   d=29 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=29
+ramonly	  t f09f98803132 df=1 ttf=1
+ramonly	   d=17 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=17
+ramonly	  t f09f988032 df=2 ttf=3
+ramonly	   d=46 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=59 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=59
+ramonly	  t f09f988033 df=2 ttf=3
+ramonly	   d=34 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=47 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=47
+ramonly	  t f09f988034 df=2 ttf=3
+ramonly	   d=22 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=35 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=35
+ramonly	  t f09f988035 df=2 ttf=3
+ramonly	   d=10 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=23 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=23
+ramonly	  t f09f988036 df=1 ttf=2
+ramonly	   d=11 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=11
+ramonly	  t f09f988039 df=1 ttf=1
+ramonly	   d=53 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=53
+ramonly	  t ee80807930 df=3 ttf=3
+ramonly	   d=18 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=31 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=57 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=57
+ramonly	  t ee80807931 df=3 ttf=3
+ramonly	   d=6 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=19 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=45 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=45
+ramonly	  t ee8080793130 df=2 ttf=2
+ramonly	   d=15 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=54 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=54
+ramonly	  t ee8080793131 df=3 ttf=3
+ramonly	   d=3 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=42 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=55 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=55
+ramonly	  t ee8080793132 df=2 ttf=2
+ramonly	   d=30 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=43 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=43
+ramonly	  t ee80807932 df=2 ttf=2
+ramonly	   d=7 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=33 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=33
+ramonly	  t ee80807933 df=1 ttf=1
+ramonly	   d=21 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=21
+ramonly	  t ee80807934 df=1 ttf=1
+ramonly	   d=9 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=9
+ramonly	  t ee80807937 df=1 ttf=1
+ramonly	   d=51 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=51
+ramonly	  t ee80807938 df=1 ttf=1
+ramonly	   d=39 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=39
+ramonly	  t ee80807939 df=1 ttf=1
+ramonly	   d=27 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=27
+ramonly	  seek :NOT_FOUND:x:!NullPointerException:!NullPointerException:!NullPointerException:x6130 6130:FOUND:x6130:1:1:18:x6130 613000:NOT_FOUND:x613000:!NullPointerException:!NullPointerException:!NullPointerException:x6131 6131:FOUND:x6131:1:1:6:x6131 613100:NOT_FOUND:x613100:!NullPointerException:!NullPointerException:!NullPointerException:x613130 613130:FOUND:x613130:1:1:54:x613130 61313000:NOT_FOUND:x61313000:!NullPointerException:!NullPointerException:!NullPointerException:x613131 613131:FOUND:x613131:1:1:42:x613131 61313100:NOT_FOUND:x61313100:!NullPointerException:!NullPointerException:!NullPointerException:x613132 613132:FOUND:x613132:1:1:30:x613132 61313200:NOT_FOUND:x61313200:!NullPointerException:!NullPointerException:!NullPointerException:x6134 6134:FOUND:x6134:1:2:48:x6134 613400:NOT_FOUND:x613400:!NullPointerException:!NullPointerException:!NullPointerException:x6135 6135:FOUND:x6135:2:3:36:x6135 613500:NOT_FOUND:x613500:!NullPointerException:!NullPointerException:!NullPointerException:x6136 6136:FOUND:x6136:2:3:24:x6136 613600:NOT_FOUND:x613600:!NullPointerException:!NullPointerException:!NullPointerException:x6137 6137:FOUND:x6137:2:3:12:x6137 613700:NOT_FOUND:x613700:!NullPointerException:!NullPointerException:!NullPointerException:x6138 6138:FOUND:x6138:2:3:0:x6138 613800:NOT_FOUND:x613800:!NullPointerException:!NullPointerException:!NullPointerException:x6139 6139:FOUND:x6139:1:1:1:x6139 613900:NOT_FOUND:x613900:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a930 62c3a930:FOUND:x62c3a930:1:1:31:x62c3a930 62c3a93000:NOT_FOUND:x62c3a93000:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a931 62c3a931:FOUND:x62c3a931:1:1:19:x62c3a931 62c3a93100:NOT_FOUND:x62c3a93100:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93130 62c3a93130:FOUND:x62c3a93130:2:2:2:x62c3a93130 62c3a9313000:NOT_FOUND:x62c3a9313000:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93131 62c3a93131:FOUND:x62c3a93131:2:2:3:x62c3a93131 62c3a9313100:NOT_FOUND:x62c3a9313100:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93132 62c3a93132:FOUND:x62c3a93132:1:1:43:x62c3a93132 62c3a9313200:NOT_FOUND:x62c3a9313200:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a932 62c3a932:FOUND:x62c3a932:1:1:7:x62c3a932 62c3a93200:NOT_FOUND:x62c3a93200:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a935 62c3a935:FOUND:x62c3a935:1:1:49:x62c3a935 62c3a93500:NOT_FOUND:x62c3a93500:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a936 62c3a936:FOUND:x62c3a936:2:2:37:x62c3a936 62c3a93600:NOT_FOUND:x62c3a93600:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a937 62c3a937:FOUND:x62c3a937:3:3:25:x62c3a937 62c3a93700:NOT_FOUND:x62c3a93700:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a938 62c3a938:FOUND:x62c3a938:3:3:13:x62c3a938 62c3a93800:NOT_FOUND:x62c3a93800:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a939 62c3a939:FOUND:x62c3a939:3:3:1:x62c3a939 62c3a93900:NOT_FOUND:x62c3a93900:!NullPointerException:!NullPointerException:!NullPointerException:x7a30 7a30:FOUND:x7a30:2:2:44:x7a30 7a3000:NOT_FOUND:x7a3000:!NullPointerException:!NullPointerException:!NullPointerException:x7a31 7a31:FOUND:x7a31:3:3:32:x7a31 7a3100:NOT_FOUND:x7a3100:!NullPointerException:!NullPointerException:!NullPointerException:x7a3130 7a3130:FOUND:x7a3130:1:1:28:x7a3130 7a313000:NOT_FOUND:x7a313000:!NullPointerException:!NullPointerException:!NullPointerException:x7a3131 7a3131:FOUND:x7a3131:1:1:16:x7a3131 7a313100:NOT_FOUND:x7a313100:!NullPointerException:!NullPointerException:!NullPointerException:x7a3132 7a3132:FOUND:x7a3132:2:2:4:x7a3132 7a313200:NOT_FOUND:x7a313200:!NullPointerException:!NullPointerException:!NullPointerException:x7a32 7a32:FOUND:x7a32:3:3:20:x7a32 7a3200:NOT_FOUND:x7a3200:!NullPointerException:!NullPointerException:!NullPointerException:x7a33 7a33:FOUND:x7a33:3:3:8:x7a33 7a3300:NOT_FOUND:x7a3300:!NullPointerException:!NullPointerException:!NullPointerException:x7a34 7a34:FOUND:x7a34:2:2:9:x7a34 7a3400:NOT_FOUND:x7a3400:!NullPointerException:!NullPointerException:!NullPointerException:x7a35 7a35:FOUND:x7a35:1:1:10:x7a35 7a3500:NOT_FOUND:x7a3500:!NullPointerException:!NullPointerException:!NullPointerException:x7a38 7a38:FOUND:x7a38:1:1:52:x7a38 7a3800:NOT_FOUND:x7a3800:!NullPointerException:!NullPointerException:!NullPointerException:x7a39 7a39:FOUND:x7a39:1:1:40:x7a39 7a3900:NOT_FOUND:x7a3900:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807830 f09d90807830:FOUND:xf09d90807830:2:2:5:xf09d90807830 f09d9080783000:NOT_FOUND:xf09d9080783000:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807831 f09d90807831:FOUND:xf09d90807831:1:1:32:xf09d90807831 f09d9080783100:NOT_FOUND:xf09d9080783100:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783130 f09d9080783130:FOUND:xf09d9080783130:3:3:2:xf09d9080783130 f09d908078313000:NOT_FOUND:xf09d908078313000:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783131 f09d9080783131:FOUND:xf09d9080783131:2:2:16:xf09d9080783131 f09d908078313100:NOT_FOUND:xf09d908078313100:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783132 f09d9080783132:FOUND:xf09d9080783132:3:3:4:xf09d9080783132 f09d908078313200:NOT_FOUND:xf09d908078313200:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807832 f09d90807832:FOUND:xf09d90807832:1:1:20:xf09d90807832 f09d9080783200:NOT_FOUND:xf09d9080783200:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807833 f09d90807833:FOUND:xf09d90807833:1:1:8:xf09d90807833 f09d9080783300:NOT_FOUND:xf09d9080783300:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807836 f09d90807836:FOUND:xf09d90807836:1:1:50:xf09d90807836 f09d9080783600:NOT_FOUND:xf09d9080783600:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807837 f09d90807837:FOUND:xf09d90807837:1:1:38:xf09d90807837 f09d9080783700:NOT_FOUND:xf09d9080783700:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807838 f09d90807838:FOUND:xf09d90807838:2:2:26:xf09d90807838 f09d9080783800:NOT_FOUND:xf09d9080783800:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807839 f09d90807839:FOUND:xf09d90807839:3:3:14:xf09d90807839 f09d9080783900:NOT_FOUND:xf09d9080783900:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988030 f09f988030:FOUND:xf09f988030:1:1:5:xf09f988030 f09f98803000:NOT_FOUND:xf09f98803000:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988031 f09f988031:FOUND:xf09f988031:1:1:58:xf09f988031 f09f98803100:NOT_FOUND:xf09f98803100:!NullPointerException:!NullPointerException:!NullPointerException:xf09f98803130 f09f98803130:FOUND:xf09f98803130:1:1:41:xf09f98803130 f09f9880313000:NOT_FOUND:xf09f9880313000:!NullPointerException:!NullPointerException:!NullPointerException:xf09f98803131 f09f98803131:FOUND:xf09f98803131:1:1:29:xf09f98803131 f09f9880313100:NOT_FOUND:xf09f9880313100:!NullPointerException:!NullPointerException:!NullPointerException:xf09f98803132 f09f98803132:FOUND:xf09f98803132:1:1:17:xf09f98803132 f09f9880313200:NOT_FOUND:xf09f9880313200:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988032 f09f988032:FOUND:xf09f988032:2:3:46:xf09f988032 f09f98803200:NOT_FOUND:xf09f98803200:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988033 f09f988033:FOUND:xf09f988033:2:3:34:xf09f988033 f09f98803300:NOT_FOUND:xf09f98803300:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988034 f09f988034:FOUND:xf09f988034:2:3:22:xf09f988034 f09f98803400:NOT_FOUND:xf09f98803400:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988035 f09f988035:FOUND:xf09f988035:2:3:10:xf09f988035 f09f98803500:NOT_FOUND:xf09f98803500:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988036 f09f988036:FOUND:xf09f988036:1:2:11:xf09f988036 f09f98803600:NOT_FOUND:xf09f98803600:!NullPointerException:!NullPointerException:!NullPointerException:xf09f988039 f09f988039:FOUND:xf09f988039:1:1:53:xf09f988039 f09f98803900:NOT_FOUND:xf09f98803900:!NullPointerException:!NullPointerException:!NullPointerException:xee80807930 ee80807930:FOUND:xee80807930:3:3:18:xee80807930 ee8080793000:NOT_FOUND:xee8080793000:!NullPointerException:!NullPointerException:!NullPointerException:xee80807931 ee80807931:FOUND:xee80807931:3:3:6:xee80807931 ee8080793100:NOT_FOUND:xee8080793100:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793130 ee8080793130:FOUND:xee8080793130:2:2:15:xee8080793130 ee808079313000:NOT_FOUND:xee808079313000:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793131 ee8080793131:FOUND:xee8080793131:3:3:3:xee8080793131 ee808079313100:NOT_FOUND:xee808079313100:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793132 ee8080793132:FOUND:xee8080793132:2:2:30:xee8080793132 ee808079313200:NOT_FOUND:xee808079313200:!NullPointerException:!NullPointerException:!NullPointerException:xee80807932 ee80807932:FOUND:xee80807932:2:2:7:xee80807932 ee8080793200:NOT_FOUND:xee8080793200:!NullPointerException:!NullPointerException:!NullPointerException:xee80807933 ee80807933:FOUND:xee80807933:1:1:21:xee80807933 ee8080793300:NOT_FOUND:xee8080793300:!NullPointerException:!NullPointerException:!NullPointerException:xee80807934 ee80807934:FOUND:xee80807934:1:1:9:xee80807934 ee8080793400:NOT_FOUND:xee8080793400:!NullPointerException:!NullPointerException:!NullPointerException:xee80807937 ee80807937:FOUND:xee80807937:1:1:51:xee80807937 ee8080793700:NOT_FOUND:xee8080793700:!NullPointerException:!NullPointerException:!NullPointerException:xee80807938 ee80807938:FOUND:xee80807938:1:1:39:xee80807938 ee8080793800:NOT_FOUND:xee8080793800:!NullPointerException:!NullPointerException:!NullPointerException:xee80807939 ee80807939:FOUND:xee80807939:1:1:27:xee80807939 ee8080793900:END:xee8080793900:!NullPointerException:!NullPointerException:!NullPointerException:null ffff:!AssertionError:xee8080793900:!NullPointerException:!NullPointerException:!NullPointerException:null
+ramonly	  exact :false 6130:true 613000:false 6131:true 613100:false 613130:true 61313000:false 613131:true 61313100:false 613132:true 61313200:false 6134:true 613400:false 6135:true 613500:false 6136:true 613600:false 6137:true 613700:false 6138:true 613800:false 6139:true 613900:false 62c3a930:true 62c3a93000:false 62c3a931:true 62c3a93100:false 62c3a93130:true 62c3a9313000:false 62c3a93131:true 62c3a9313100:false 62c3a93132:true 62c3a9313200:false 62c3a932:true 62c3a93200:false 62c3a935:true 62c3a93500:false 62c3a936:true 62c3a93600:false 62c3a937:true 62c3a93700:false 62c3a938:true 62c3a93800:false 62c3a939:true 62c3a93900:false 7a30:true 7a3000:false 7a31:true 7a3100:false 7a3130:true 7a313000:false 7a3131:true 7a313100:false 7a3132:true 7a313200:false 7a32:true 7a3200:false 7a33:true 7a3300:false 7a34:true 7a3400:false 7a35:true 7a3500:false 7a38:true 7a3800:false 7a39:true 7a3900:false f09d90807830:true f09d9080783000:false f09d90807831:true f09d9080783100:false f09d9080783130:true f09d908078313000:false f09d9080783131:true f09d908078313100:false f09d9080783132:true f09d908078313200:false f09d90807832:true f09d9080783200:false f09d90807833:true f09d9080783300:false f09d90807836:true f09d9080783600:false f09d90807837:true f09d9080783700:false f09d90807838:true f09d9080783800:false f09d90807839:true f09d9080783900:false f09f988030:true f09f98803000:false f09f988031:true f09f98803100:false f09f98803130:true f09f9880313000:false f09f98803131:true f09f9880313100:false f09f98803132:true f09f9880313200:false f09f988032:true f09f98803200:false f09f988033:true f09f98803300:false f09f988034:true f09f98803400:false f09f988035:true f09f98803500:false f09f988036:true f09f98803600:false f09f988039:true f09f98803900:false ee80807930:true ee8080793000:false ee80807931:true ee8080793100:false ee8080793130:true ee808079313000:false ee8080793131:true ee808079313100:false ee8080793132:true ee808079313200:false ee80807932:true ee8080793200:false ee80807933:true ee8080793300:false ee80807934:true ee8080793400:false ee80807937:true ee8080793700:false ee80807938:true ee8080793800:false ee80807939:true ee8080793900:false ffff:!AssertionError
+ramonly	  fresh term=!NullPointerException ord=!UnsupportedOperationException seekOrd=!UnsupportedOperationException
+ramonly	 field rp size=75 sttf=120 sdf=108 dc=60 true/true/false/false
+ramonly	  t 6130 df=2 ttf=2
+ramonly	   d=25 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=42 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=42
+ramonly	  t 6131 df=1 ttf=1
+ramonly	   d=9 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=9
+ramonly	  t 613130 df=2 ttf=2
+ramonly	   d=18 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=35 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=35
+ramonly	  t 613131 df=1 ttf=1
+ramonly	   d=36 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=36
+ramonly	  t 613132 df=3 ttf=3
+ramonly	   d=3 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=20 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=54 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=54
+ramonly	  t 613133 df=2 ttf=2
+ramonly	   d=21 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=55 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=55
+ramonly	  t 613134 df=2 ttf=2
+ramonly	   d=5 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=39 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=39
+ramonly	  t 613135 df=3 ttf=3
+ramonly	   d=6 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=40 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=57 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=57
+ramonly	  t 613136 df=1 ttf=1
+ramonly	   d=24 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=24
+ramonly	  t 6132 df=2 ttf=2
+ramonly	   d=10 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=27 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=27
+ramonly	  t 6133 df=1 ttf=2
+ramonly	   d=45 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=45
+ramonly	  t 6134 df=1 ttf=1
+ramonly	   d=12 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=12
+ramonly	  t 6135 df=1 ttf=2
+ramonly	   d=30 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=30
+ramonly	  t 6136 df=1 ttf=1
+ramonly	   d=48 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=48
+ramonly	  t 6137 df=1 ttf=2
+ramonly	   d=15 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=15
+ramonly	  t 6138 df=2 ttf=2
+ramonly	   d=33 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=50 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=50
+ramonly	  t 6139 df=2 ttf=3
+ramonly	   d=0 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=51 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=51
+ramonly	  t 62c3a930 df=1 ttf=1
+ramonly	   d=25 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=25
+ramonly	  t 62c3a931 df=2 ttf=2
+ramonly	   d=26 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=43 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=43
+ramonly	  t 62c3a93130 df=2 ttf=3
+ramonly	   d=1 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=52 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=52
+ramonly	  t 62c3a93131 df=2 ttf=2
+ramonly	   d=19 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=36 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=36
+ramonly	  t 62c3a93132 df=1 ttf=1
+ramonly	   d=37 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=37
+ramonly	  t 62c3a93133 df=3 ttf=3
+ramonly	   d=4 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=21 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=55 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=55
+ramonly	  t 62c3a93134 df=2 ttf=2
+ramonly	   d=22 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=56 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=56
+ramonly	  t 62c3a93135 df=2 ttf=2
+ramonly	   d=6 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=40 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=40
+ramonly	  t 62c3a93136 df=3 ttf=3
+ramonly	   d=7 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=41 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=58 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=58
+ramonly	  t 62c3a932 df=1 ttf=1
+ramonly	   d=10 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=10
+ramonly	  t 62c3a933 df=2 ttf=2
+ramonly	   d=11 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=28 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=28
+ramonly	  t 62c3a934 df=1 ttf=2
+ramonly	   d=46 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=46
+ramonly	  t 62c3a935 df=1 ttf=1
+ramonly	   d=13 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=13
+ramonly	  t 62c3a936 df=1 ttf=2
+ramonly	   d=31 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=31
+ramonly	  t 62c3a937 df=1 ttf=1
+ramonly	   d=49 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=49
+ramonly	  t 62c3a938 df=1 ttf=2
+ramonly	   d=16 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=16
+ramonly	  t 62c3a939 df=2 ttf=2
+ramonly	   d=34 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=51 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=51
+ramonly	  t 7a30 df=1 ttf=1
+ramonly	   d=59 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=59
+ramonly	  t 7a31 df=1 ttf=1
+ramonly	   d=9 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=9
+ramonly	  t 7a3131 df=1 ttf=1
+ramonly	   d=19 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=19
+ramonly	  t 7a3132 df=1 ttf=1
+ramonly	   d=54 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=54
+ramonly	  t 7a3133 df=1 ttf=1
+ramonly	   d=4 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=4
+ramonly	  t 7a3134 df=1 ttf=1
+ramonly	   d=39 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=39
+ramonly	  t 7a3136 df=1 ttf=1
+ramonly	   d=24 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=24
+ramonly	  t 7a32 df=1 ttf=1
+ramonly	   d=44 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=44
+ramonly	  t 7a34 df=1 ttf=1
+ramonly	   d=29 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=29
+ramonly	  t 7a36 df=1 ttf=1
+ramonly	   d=14 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=14
+ramonly	  t 7a37 df=1 ttf=1
+ramonly	   d=49 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=49
+ramonly	  t 7a39 df=1 ttf=1
+ramonly	   d=34 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=34
+ramonly	  t f09d90807830 df=3 ttf=3
+ramonly	   d=8 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=42 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=59 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=59
+ramonly	  t f09d90807831 df=1 ttf=1
+ramonly	   d=26 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=26
+ramonly	  t f09d9080783130 df=2 ttf=2
+ramonly	   d=35 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=52 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=52
+ramonly	  t f09d9080783131 df=2 ttf=3
+ramonly	   d=2 f=2 cost=2 -1/-1/-1/null -1/-1/-1/null
+ramonly	   d=53 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=53
+ramonly	  t f09d9080783132 df=2 ttf=2
+ramonly	   d=20 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=37 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=37
+ramonly	  t f09d9080783133 df=1 ttf=1
+ramonly	   d=38 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=38
+ramonly	  t f09d9080783134 df=3 ttf=3
+ramonly	   d=5 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=22 f=1 cost=3 -1/-1/-1/null
+ramonly	   d=56 f=1 cost=3 -1/-1/-1/null
+ramonly	   end docID=56
+ramonly	  t f09d9080783135 df=2 ttf=2
+ramonly	   d=23 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=57 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=57
+ramonly	  t f09d9080783136 df=2 ttf=2
+ramonly	   d=7 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=41 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=41
+ramonly	  t f09d90807832 df=2 ttf=2
+ramonly	   d=27 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=44 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=44
+ramonly	  t f09d90807833 df=1 ttf=1
+ramonly	   d=11 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=11
+ramonly	  t f09d90807834 df=2 ttf=2
+ramonly	   d=12 f=1 cost=2 -1/-1/-1/null
+ramonly	   d=29 f=1 cost=2 -1/-1/-1/null
+ramonly	   end docID=29
+ramonly	  t f09d90807835 df=1 ttf=2
+ramonly	   d=47 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=47
+ramonly	  t f09d90807836 df=1 ttf=1
+ramonly	   d=14 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=14
+ramonly	  t f09d90807837 df=1 ttf=2
+ramonly	   d=32 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=32
+ramonly	  t f09d90807838 df=1 ttf=1
+ramonly	   d=50 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=50
+ramonly	  t f09d90807839 df=1 ttf=2
+ramonly	   d=17 f=2 cost=1 -1/-1/-1/null -1/-1/-1/null
+ramonly	   end docID=17
+ramonly	  t ee80807930 df=1 ttf=1
+ramonly	   d=8 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=8
+ramonly	  t ee80807931 df=1 ttf=1
+ramonly	   d=43 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=43
+ramonly	  t ee8080793130 df=1 ttf=1
+ramonly	   d=18 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=18
+ramonly	  t ee8080793131 df=1 ttf=1
+ramonly	   d=53 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=53
+ramonly	  t ee8080793132 df=1 ttf=1
+ramonly	   d=3 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=3
+ramonly	  t ee8080793133 df=1 ttf=1
+ramonly	   d=38 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=38
+ramonly	  t ee8080793135 df=1 ttf=1
+ramonly	   d=23 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=23
+ramonly	  t ee8080793136 df=1 ttf=1
+ramonly	   d=58 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=58
+ramonly	  t ee80807933 df=1 ttf=1
+ramonly	   d=28 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=28
+ramonly	  t ee80807935 df=1 ttf=1
+ramonly	   d=13 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=13
+ramonly	  t ee80807936 df=1 ttf=1
+ramonly	   d=48 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=48
+ramonly	  t ee80807938 df=1 ttf=1
+ramonly	   d=33 f=1 cost=1 -1/-1/-1/null
+ramonly	   end docID=33
+ramonly	  seek :NOT_FOUND:x:!NullPointerException:!NullPointerException:!NullPointerException:x6130 6130:FOUND:x6130:2:2:25:x6130 613000:NOT_FOUND:x613000:!NullPointerException:!NullPointerException:!NullPointerException:x6131 6131:FOUND:x6131:1:1:9:x6131 613100:NOT_FOUND:x613100:!NullPointerException:!NullPointerException:!NullPointerException:x613130 613130:FOUND:x613130:2:2:18:x613130 61313000:NOT_FOUND:x61313000:!NullPointerException:!NullPointerException:!NullPointerException:x613131 613131:FOUND:x613131:1:1:36:x613131 61313100:NOT_FOUND:x61313100:!NullPointerException:!NullPointerException:!NullPointerException:x613132 613132:FOUND:x613132:3:3:3:x613132 61313200:NOT_FOUND:x61313200:!NullPointerException:!NullPointerException:!NullPointerException:x613133 613133:FOUND:x613133:2:2:21:x613133 61313300:NOT_FOUND:x61313300:!NullPointerException:!NullPointerException:!NullPointerException:x613134 613134:FOUND:x613134:2:2:5:x613134 61313400:NOT_FOUND:x61313400:!NullPointerException:!NullPointerException:!NullPointerException:x613135 613135:FOUND:x613135:3:3:6:x613135 61313500:NOT_FOUND:x61313500:!NullPointerException:!NullPointerException:!NullPointerException:x613136 613136:FOUND:x613136:1:1:24:x613136 61313600:NOT_FOUND:x61313600:!NullPointerException:!NullPointerException:!NullPointerException:x6132 6132:FOUND:x6132:2:2:10:x6132 613200:NOT_FOUND:x613200:!NullPointerException:!NullPointerException:!NullPointerException:x6133 6133:FOUND:x6133:1:2:45:x6133 613300:NOT_FOUND:x613300:!NullPointerException:!NullPointerException:!NullPointerException:x6134 6134:FOUND:x6134:1:1:12:x6134 613400:NOT_FOUND:x613400:!NullPointerException:!NullPointerException:!NullPointerException:x6135 6135:FOUND:x6135:1:2:30:x6135 613500:NOT_FOUND:x613500:!NullPointerException:!NullPointerException:!NullPointerException:x6136 6136:FOUND:x6136:1:1:48:x6136 613600:NOT_FOUND:x613600:!NullPointerException:!NullPointerException:!NullPointerException:x6137 6137:FOUND:x6137:1:2:15:x6137 613700:NOT_FOUND:x613700:!NullPointerException:!NullPointerException:!NullPointerException:x6138 6138:FOUND:x6138:2:2:33:x6138 613800:NOT_FOUND:x613800:!NullPointerException:!NullPointerException:!NullPointerException:x6139 6139:FOUND:x6139:2:3:0:x6139 613900:NOT_FOUND:x613900:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a930 62c3a930:FOUND:x62c3a930:1:1:25:x62c3a930 62c3a93000:NOT_FOUND:x62c3a93000:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a931 62c3a931:FOUND:x62c3a931:2:2:26:x62c3a931 62c3a93100:NOT_FOUND:x62c3a93100:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93130 62c3a93130:FOUND:x62c3a93130:2:3:1:x62c3a93130 62c3a9313000:NOT_FOUND:x62c3a9313000:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93131 62c3a93131:FOUND:x62c3a93131:2:2:19:x62c3a93131 62c3a9313100:NOT_FOUND:x62c3a9313100:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93132 62c3a93132:FOUND:x62c3a93132:1:1:37:x62c3a93132 62c3a9313200:NOT_FOUND:x62c3a9313200:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93133 62c3a93133:FOUND:x62c3a93133:3:3:4:x62c3a93133 62c3a9313300:NOT_FOUND:x62c3a9313300:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93134 62c3a93134:FOUND:x62c3a93134:2:2:22:x62c3a93134 62c3a9313400:NOT_FOUND:x62c3a9313400:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93135 62c3a93135:FOUND:x62c3a93135:2:2:6:x62c3a93135 62c3a9313500:NOT_FOUND:x62c3a9313500:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a93136 62c3a93136:FOUND:x62c3a93136:3:3:7:x62c3a93136 62c3a9313600:NOT_FOUND:x62c3a9313600:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a932 62c3a932:FOUND:x62c3a932:1:1:10:x62c3a932 62c3a93200:NOT_FOUND:x62c3a93200:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a933 62c3a933:FOUND:x62c3a933:2:2:11:x62c3a933 62c3a93300:NOT_FOUND:x62c3a93300:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a934 62c3a934:FOUND:x62c3a934:1:2:46:x62c3a934 62c3a93400:NOT_FOUND:x62c3a93400:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a935 62c3a935:FOUND:x62c3a935:1:1:13:x62c3a935 62c3a93500:NOT_FOUND:x62c3a93500:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a936 62c3a936:FOUND:x62c3a936:1:2:31:x62c3a936 62c3a93600:NOT_FOUND:x62c3a93600:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a937 62c3a937:FOUND:x62c3a937:1:1:49:x62c3a937 62c3a93700:NOT_FOUND:x62c3a93700:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a938 62c3a938:FOUND:x62c3a938:1:2:16:x62c3a938 62c3a93800:NOT_FOUND:x62c3a93800:!NullPointerException:!NullPointerException:!NullPointerException:x62c3a939 62c3a939:FOUND:x62c3a939:2:2:34:x62c3a939 62c3a93900:NOT_FOUND:x62c3a93900:!NullPointerException:!NullPointerException:!NullPointerException:x7a30 7a30:FOUND:x7a30:1:1:59:x7a30 7a3000:NOT_FOUND:x7a3000:!NullPointerException:!NullPointerException:!NullPointerException:x7a31 7a31:FOUND:x7a31:1:1:9:x7a31 7a3100:NOT_FOUND:x7a3100:!NullPointerException:!NullPointerException:!NullPointerException:x7a3131 7a3131:FOUND:x7a3131:1:1:19:x7a3131 7a313100:NOT_FOUND:x7a313100:!NullPointerException:!NullPointerException:!NullPointerException:x7a3132 7a3132:FOUND:x7a3132:1:1:54:x7a3132 7a313200:NOT_FOUND:x7a313200:!NullPointerException:!NullPointerException:!NullPointerException:x7a3133 7a3133:FOUND:x7a3133:1:1:4:x7a3133 7a313300:NOT_FOUND:x7a313300:!NullPointerException:!NullPointerException:!NullPointerException:x7a3134 7a3134:FOUND:x7a3134:1:1:39:x7a3134 7a313400:NOT_FOUND:x7a313400:!NullPointerException:!NullPointerException:!NullPointerException:x7a3136 7a3136:FOUND:x7a3136:1:1:24:x7a3136 7a313600:NOT_FOUND:x7a313600:!NullPointerException:!NullPointerException:!NullPointerException:x7a32 7a32:FOUND:x7a32:1:1:44:x7a32 7a3200:NOT_FOUND:x7a3200:!NullPointerException:!NullPointerException:!NullPointerException:x7a34 7a34:FOUND:x7a34:1:1:29:x7a34 7a3400:NOT_FOUND:x7a3400:!NullPointerException:!NullPointerException:!NullPointerException:x7a36 7a36:FOUND:x7a36:1:1:14:x7a36 7a3600:NOT_FOUND:x7a3600:!NullPointerException:!NullPointerException:!NullPointerException:x7a37 7a37:FOUND:x7a37:1:1:49:x7a37 7a3700:NOT_FOUND:x7a3700:!NullPointerException:!NullPointerException:!NullPointerException:x7a39 7a39:FOUND:x7a39:1:1:34:x7a39 7a3900:NOT_FOUND:x7a3900:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807830 f09d90807830:FOUND:xf09d90807830:3:3:8:xf09d90807830 f09d9080783000:NOT_FOUND:xf09d9080783000:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807831 f09d90807831:FOUND:xf09d90807831:1:1:26:xf09d90807831 f09d9080783100:NOT_FOUND:xf09d9080783100:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783130 f09d9080783130:FOUND:xf09d9080783130:2:2:35:xf09d9080783130 f09d908078313000:NOT_FOUND:xf09d908078313000:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783131 f09d9080783131:FOUND:xf09d9080783131:2:3:2:xf09d9080783131 f09d908078313100:NOT_FOUND:xf09d908078313100:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783132 f09d9080783132:FOUND:xf09d9080783132:2:2:20:xf09d9080783132 f09d908078313200:NOT_FOUND:xf09d908078313200:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783133 f09d9080783133:FOUND:xf09d9080783133:1:1:38:xf09d9080783133 f09d908078313300:NOT_FOUND:xf09d908078313300:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783134 f09d9080783134:FOUND:xf09d9080783134:3:3:5:xf09d9080783134 f09d908078313400:NOT_FOUND:xf09d908078313400:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783135 f09d9080783135:FOUND:xf09d9080783135:2:2:23:xf09d9080783135 f09d908078313500:NOT_FOUND:xf09d908078313500:!NullPointerException:!NullPointerException:!NullPointerException:xf09d9080783136 f09d9080783136:FOUND:xf09d9080783136:2:2:7:xf09d9080783136 f09d908078313600:NOT_FOUND:xf09d908078313600:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807832 f09d90807832:FOUND:xf09d90807832:2:2:27:xf09d90807832 f09d9080783200:NOT_FOUND:xf09d9080783200:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807833 f09d90807833:FOUND:xf09d90807833:1:1:11:xf09d90807833 f09d9080783300:NOT_FOUND:xf09d9080783300:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807834 f09d90807834:FOUND:xf09d90807834:2:2:12:xf09d90807834 f09d9080783400:NOT_FOUND:xf09d9080783400:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807835 f09d90807835:FOUND:xf09d90807835:1:2:47:xf09d90807835 f09d9080783500:NOT_FOUND:xf09d9080783500:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807836 f09d90807836:FOUND:xf09d90807836:1:1:14:xf09d90807836 f09d9080783600:NOT_FOUND:xf09d9080783600:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807837 f09d90807837:FOUND:xf09d90807837:1:2:32:xf09d90807837 f09d9080783700:NOT_FOUND:xf09d9080783700:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807838 f09d90807838:FOUND:xf09d90807838:1:1:50:xf09d90807838 f09d9080783800:NOT_FOUND:xf09d9080783800:!NullPointerException:!NullPointerException:!NullPointerException:xf09d90807839 f09d90807839:FOUND:xf09d90807839:1:2:17:xf09d90807839 f09d9080783900:NOT_FOUND:xf09d9080783900:!NullPointerException:!NullPointerException:!NullPointerException:xee80807930 ee80807930:FOUND:xee80807930:1:1:8:xee80807930 ee8080793000:NOT_FOUND:xee8080793000:!NullPointerException:!NullPointerException:!NullPointerException:xee80807931 ee80807931:FOUND:xee80807931:1:1:43:xee80807931 ee8080793100:NOT_FOUND:xee8080793100:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793130 ee8080793130:FOUND:xee8080793130:1:1:18:xee8080793130 ee808079313000:NOT_FOUND:xee808079313000:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793131 ee8080793131:FOUND:xee8080793131:1:1:53:xee8080793131 ee808079313100:NOT_FOUND:xee808079313100:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793132 ee8080793132:FOUND:xee8080793132:1:1:3:xee8080793132 ee808079313200:NOT_FOUND:xee808079313200:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793133 ee8080793133:FOUND:xee8080793133:1:1:38:xee8080793133 ee808079313300:NOT_FOUND:xee808079313300:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793135 ee8080793135:FOUND:xee8080793135:1:1:23:xee8080793135 ee808079313500:NOT_FOUND:xee808079313500:!NullPointerException:!NullPointerException:!NullPointerException:xee8080793136 ee8080793136:FOUND:xee8080793136:1:1:58:xee8080793136 ee808079313600:NOT_FOUND:xee808079313600:!NullPointerException:!NullPointerException:!NullPointerException:xee80807933 ee80807933:FOUND:xee80807933:1:1:28:xee80807933 ee8080793300:NOT_FOUND:xee8080793300:!NullPointerException:!NullPointerException:!NullPointerException:xee80807935 ee80807935:FOUND:xee80807935:1:1:13:xee80807935 ee8080793500:NOT_FOUND:xee8080793500:!NullPointerException:!NullPointerException:!NullPointerException:xee80807936 ee80807936:FOUND:xee80807936:1:1:48:xee80807936 ee8080793600:NOT_FOUND:xee8080793600:!NullPointerException:!NullPointerException:!NullPointerException:xee80807938 ee80807938:FOUND:xee80807938:1:1:33:xee80807938 ee8080793800:END:xee8080793800:!NullPointerException:!NullPointerException:!NullPointerException:null ffff:!AssertionError:xee8080793800:!NullPointerException:!NullPointerException:!NullPointerException:null
+ramonly	  exact :false 6130:true 613000:false 6131:true 613100:false 613130:true 61313000:false 613131:true 61313100:false 613132:true 61313200:false 613133:true 61313300:false 613134:true 61313400:false 613135:true 61313500:false 613136:true 61313600:false 6132:true 613200:false 6133:true 613300:false 6134:true 613400:false 6135:true 613500:false 6136:true 613600:false 6137:true 613700:false 6138:true 613800:false 6139:true 613900:false 62c3a930:true 62c3a93000:false 62c3a931:true 62c3a93100:false 62c3a93130:true 62c3a9313000:false 62c3a93131:true 62c3a9313100:false 62c3a93132:true 62c3a9313200:false 62c3a93133:true 62c3a9313300:false 62c3a93134:true 62c3a9313400:false 62c3a93135:true 62c3a9313500:false 62c3a93136:true 62c3a9313600:false 62c3a932:true 62c3a93200:false 62c3a933:true 62c3a93300:false 62c3a934:true 62c3a93400:false 62c3a935:true 62c3a93500:false 62c3a936:true 62c3a93600:false 62c3a937:true 62c3a93700:false 62c3a938:true 62c3a93800:false 62c3a939:true 62c3a93900:false 7a30:true 7a3000:false 7a31:true 7a3100:false 7a3131:true 7a313100:false 7a3132:true 7a313200:false 7a3133:true 7a313300:false 7a3134:true 7a313400:false 7a3136:true 7a313600:false 7a32:true 7a3200:false 7a34:true 7a3400:false 7a36:true 7a3600:false 7a37:true 7a3700:false 7a39:true 7a3900:false f09d90807830:true f09d9080783000:false f09d90807831:true f09d9080783100:false f09d9080783130:true f09d908078313000:false f09d9080783131:true f09d908078313100:false f09d9080783132:true f09d908078313200:false f09d9080783133:true f09d908078313300:false f09d9080783134:true f09d908078313400:false f09d9080783135:true f09d908078313500:false f09d9080783136:true f09d908078313600:false f09d90807832:true f09d9080783200:false f09d90807833:true f09d9080783300:false f09d90807834:true f09d9080783400:false f09d90807835:true f09d9080783500:false f09d90807836:true f09d9080783600:false f09d90807837:true f09d9080783700:false f09d90807838:true f09d9080783800:false f09d90807839:true f09d9080783900:false ee80807930:true ee8080793000:false ee80807931:true ee8080793100:false ee8080793130:true ee808079313000:false ee8080793131:true ee808079313100:false ee8080793132:true ee808079313200:false ee8080793133:true ee808079313300:false ee8080793135:true ee808079313500:false ee8080793136:true ee808079313600:false ee80807933:true ee8080793300:false ee80807935:true ee8080793500:false ee80807936:true ee8080793600:false ee80807938:true ee8080793800:false ffff:!AssertionError
+ramonly	  fresh term=!NullPointerException ord=!UnsupportedOperationException seekOrd=!UnsupportedOperationException

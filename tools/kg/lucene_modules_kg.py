@@ -7,14 +7,18 @@ stated denominator rather than an implied one. Until now the graph held only
 `lucene/core`, which left "10.5.0 has 35 modules with Java sources and we port
 one of them" as knowledge outside the graph.
 
-This tool registers all of them. `core` is in scope -- `CLAUDE.md` 1 names Apache
-Lucene *Core* as the reference and 16.1 names `lucene/core` as the canonical
-source tree -- and every other module is recorded with `inScope: false` and the
+This tool registers all of them. The modules in scope are the ones
+`port_modules_kg.PORT_MODULES` names: `core` -- `CLAUDE.md` 1 names Apache Lucene
+*Core* as the reference and 16.1 names `lucene/core` as the canonical source
+tree -- and, since the user's decision of 2026-11-03 for sprint 9, `codecs` and
+`test-framework` (with randomizedtesting 2.8.1, which `port_modules_kg.py`
+registers). Every other module is recorded with `inScope: false` and the
 reason, so the exclusion is auditable instead of silent.
 
-`test-framework` is a special case: it is not port target code, but its types are
-already modelled as `TestClass`, so it is marked out of scope for the *code* port
-while its role is recorded.
+History: until 2026-11-03 `test-framework` was recorded out of scope for the
+*code* port ("modelled as TestClass, not ported as code"). That decision is
+superseded -- see the `Decision` "Sprint 9 ports lucene/test-framework,
+lucene/codecs and randomizedtesting 2.8.1" and its `SUPERSEDES` edge.
 
 Usage:
     python3 tools/kg/lucene_modules_kg.py rucene --lucene-root /tmp/lucene1050 \
@@ -26,11 +30,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from kgio import unwind
+from port_modules_kg import BY_NAME as PORT_MODULES
 
-IN_SCOPE = {"core"}
+IN_SCOPE = {name.split("/", 1)[1] for name in PORT_MODULES if name.startswith("lucene/")}
 ROLE = {
-    "core": "the port target",
-    "test-framework": "test infrastructure; modelled as TestClass, not ported as code",
+    **{name.split("/", 1)[1]: m["role"] for name, m in PORT_MODULES.items()
+       if name.startswith("lucene/")},
     "core.tests": "test scaffolding for core",
     "backward-codecs": "readers for indexes written by older Lucene majors",
     "demo": "usage examples",
@@ -77,8 +82,8 @@ def main():
             **m,
             "kind": "maven-module",
             "inScope": in_scope,
-            "scopeRule": "lucene-core-is-the-port-target" if in_scope
-                         else "outside-lucene-core",
+            "scopeRule": PORT_MODULES[f"lucene/{short}"]["scopeRule"] if in_scope
+                         else "outside-the-port-modules",
             "role": ROLE.get(short, "a Lucene module outside core"),
             "gitCommit": args.commit,
             "gitDate": args.date,

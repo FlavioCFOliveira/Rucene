@@ -45,6 +45,22 @@ pub trait DocIdSet: Accountable {
     fn bits(&self) -> Result<Option<Box<dyn Bits>>> {
         Ok(None)
     }
+
+    /// This set as [`Any`](std::any::Any) when its type is one a Java
+    /// `instanceof` test asks about, and `None` otherwise.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java narrows any `DocIdSet` with
+    /// `instanceof` (for example `TestDocIdSetBuilder`'s `result instanceof
+    /// IntArrayDocIdSet`). Rust cannot narrow a `dyn DocIdSet`, so the
+    /// question is asked of the set itself, in the shape of
+    /// [`DocIdSetIterator::disi_as_any`](crate::search::DocIdSetIterator::disi_as_any).
+    /// The default answers `None`, the `false` branch of every `instanceof`;
+    /// [`BitDocIdSet`](crate::util::doc_id_set::BitDocIdSet) and
+    /// [`IntArrayDocIdSet`](crate::util::doc_id_set::IntArrayDocIdSet)
+    /// override it.
+    fn doc_id_set_as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// The empty [`DocIdSet`].

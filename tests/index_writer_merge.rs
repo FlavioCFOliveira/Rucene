@@ -454,7 +454,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 
@@ -503,14 +503,14 @@ fn two_segments(
 ) -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if let Some(codec) = codec {
         config.set_codec(codec).unwrap();
     }
     if deletable {
         // No merge runs before the test drives one itself.
         config
-            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
     }
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -1007,7 +1007,7 @@ fn force_merge_graph(
 ) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if let Some(codec) = codec {
         config.set_codec(codec).unwrap();
     }
@@ -1158,7 +1158,7 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let merging = Arc::new(AtomicBool::new(false));
         let config = || {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config
                 .set_codec(Arc::new(SwitchingCodec::new(
                     "Lucene104ScalarQuantizedVectorsFormat",
@@ -1174,7 +1174,7 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
             // the two fails, in Lucene too (`IndexWriter.tragicEvent`,
             // `IndexWriter.java:5868-5884`).
             config
-                .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+                .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
                 .unwrap();
             config
         };
@@ -1268,7 +1268,7 @@ fn the_quantized_merge_reports_each_fields_vector_count() {
         messages: std::sync::Mutex::new(Vec::new()),
     });
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_codec(Arc::new(QuantizedCodec::new())).unwrap();
     config
         .set_info_stream(Arc::clone(&stream) as Arc<dyn rucene::util::InfoStream>)
@@ -1310,7 +1310,7 @@ fn segments_that_do_not_share_their_vector_fields_merge() {
     ] {
         ensure_codec();
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         if let Some(codec) = codec.clone() {
             config.set_codec(codec).unwrap();
         }
@@ -1465,7 +1465,7 @@ fn sort_reversing_the_documents() -> Sort {
 fn flush_vectors(format: &str, sorted: bool) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_codec(Arc::new(SwitchingCodec::new(
             format,
@@ -1475,7 +1475,7 @@ fn flush_vectors(format: &str, sorted: bool) -> Arc<dyn Directory> {
         .unwrap();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     if sorted {
         config
@@ -1676,5 +1676,36 @@ fn a_flush_writes_lucenes_vector_files_with_every_format() {
             (0, vec![1.0, 0.5, 0.25])
         };
         assert_eq!(first, expected, "{format} sorted={sorted}: the raw vectors");
+    }
+}
+
+/// rmp #222: a segment flushed with `Lucene104HnswScalarQuantizedVectorsFormat`
+/// (`Lucene104HnswBinaryQuantizedVectorsFormat` on disk) reads its own float
+/// vectors back. `Lucene99HnswVectorsReader.getFloatVectorValues` delegates
+/// to its flat reader (`Lucene99HnswVectorsReader.java:240-243`), the
+/// `Lucene104ScalarQuantizedVectorsReader`, which pairs the raw vectors its
+/// delegate holds with the quantized ones
+/// (`Lucene104ScalarQuantizedVectorsReader.java:230-275`): every document
+/// of `f` and `c` answers the vector it was indexed with.
+#[test]
+fn a_hnsw_quantized_segment_reads_every_float_vector_back() {
+    let dir = flush_vectors("Lucene104HnswBinaryQuantizedVectorsFormat", false);
+    let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
+    for field in ["f", "c"] {
+        let read = float_vectors(&reader, field);
+        assert_eq!(
+            read.len(),
+            FLUSH_DOCS as usize,
+            "{field}: one vector per document"
+        );
+        for (doc, vector) in read {
+            let expected = flush_doc(doc);
+            let indexed = expected
+                .get_field(field)
+                .and_then(|f| f.float_vector_value())
+                .map(|v| v.to_vec())
+                .expect("the document carries the field");
+            assert_eq!(vector, indexed, "{field}: doc {doc}");
+        }
     }
 }

@@ -95,7 +95,7 @@ impl ScalarEncoding {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when no encoding has that
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when no encoding has that
     /// width, as Java throws `IllegalArgumentException`.
     ///
     /// Equivalent to `ScalarEncoding.fromNumBits(int)`.
@@ -103,7 +103,7 @@ impl ScalarEncoding {
         Self::VALUES
             .into_iter()
             .find(|encoding| i32::from(encoding.get_bits()) == bits)
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("No encoding for {bits} bits")))
+            .ok_or_else(|| LuceneError::illegal_argument(format!("No encoding for {bits} bits")))
     }
 
     /// Returns the encoding a wire number names, or `None` when no encoding
@@ -196,7 +196,16 @@ impl ScalarEncoding {
         if self == Self::DibitQueryNibble {
             let query_discretized = (dimensions * 4 + 7) / 8 * 8 / 4;
             let doc_discretized = (dimensions + 7) / 8 * 8;
-            return query_discretized.max(doc_discretized);
+            let max_discretized = query_discretized.max(doc_discretized);
+            debug_assert!(
+                f64::from(max_discretized) % (8.0 / 4.0) == 0.0,
+                "bad discretized={max_discretized} for dim={dimensions}"
+            );
+            debug_assert!(
+                f64::from(max_discretized) % (8.0 / 2.0) == 0.0,
+                "bad discretized={max_discretized} for dim={dimensions}"
+            );
+            return max_discretized;
         }
         if !self.is_asymmetric() {
             let total_bits = dimensions * bits_per_dim;
@@ -204,7 +213,16 @@ impl ScalarEncoding {
         }
         let query_discretized = (dimensions * query_bits_per_dim + 7) / 8 * 8 / query_bits_per_dim;
         let doc_discretized = (dimensions * bits_per_dim + 7) / 8 * 8 / bits_per_dim;
-        query_discretized.max(doc_discretized)
+        let max_discretized = query_discretized.max(doc_discretized);
+        debug_assert!(
+            f64::from(max_discretized) % (8.0 / f64::from(query_bits_per_dim)) == 0.0,
+            "bad discretized={max_discretized} for dim={dimensions}"
+        );
+        debug_assert!(
+            f64::from(max_discretized) % (8.0 / f64::from(bits_per_dim)) == 0.0,
+            "bad discretized={max_discretized} for dim={dimensions}"
+        );
+        max_discretized
     }
 
     /// Returns how many bytes a packed document vector of `dimensions`
@@ -252,11 +270,6 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// Equivalent to `QuantizedByteVectorValues.vectorValue(int)`.
     fn vector_value(&mut self, ord: i32) -> Result<&[u8]>;
-
-    /// Returns the corrective offset stored for `ord`.
-    ///
-    /// Equivalent to `QuantizedByteVectorValues.getScoreCorrectionConstant(int)`.
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32>;
 
     /// Returns how many vectors the sequence holds.
     fn size(&self) -> i32;
@@ -320,7 +333,7 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// The default returns [`LuceneError::UnsupportedOperation`]; an
+    /// The default returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation); an
     /// implementation that overrides it propagates its own I/O errors.
     fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
         BaseQuantizedByteVectorValues::new(self.dimension(), self.size()).scorer(query)
@@ -333,11 +346,11 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// The default reports [`LuceneError::UnsupportedOperation`], which is what
+    /// The default reports [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), which is what
     /// an implementation that cannot be duplicated should keep; every
     /// file-backed implementation overrides it.
     fn copy(&self) -> Result<Box<dyn QuantizedByteVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "these quantized vector values cannot be copied".to_string(),
         ))
     }
@@ -353,7 +366,7 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     /// # Errors
     ///
     /// The default never fails; an override propagates its own I/O errors.
-    fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
         let _ = (ords_to_prefetch, num_ords);
         Ok(())
     }
@@ -381,14 +394,14 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method — Java declares it abstract, which Rust cannot do
     /// without breaking implementors that predate it — or an I/O error raised
     /// while reading the terms.
     ///
     /// Equivalent to `QuantizedByteVectorValues.getCorrectiveTerms(int)`.
     fn get_corrective_terms(&mut self, _ord: i32) -> Result<QuantizationResult> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "QuantizedByteVectorValues::get_corrective_terms".to_string(),
         ))
     }
@@ -413,14 +426,14 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method, which is what `KnnVectorValues.iterator()` does
     /// in Java, or an I/O error raised while opening the doc-id encoding.
     ///
     /// Equivalent to `KnnVectorValues.iterator()`, which
     /// `QuantizedByteVectorValues` inherits.
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "QuantizedByteVectorValues::iterator".to_string(),
         ))
     }
@@ -463,11 +476,11 @@ impl BaseQuantizedByteVectorValues {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`], which is the
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), which is the
     /// exception Java throws.
     pub fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
         let _ = query;
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BaseQuantizedByteVectorValues does not score float queries".to_string(),
         ))
     }
@@ -539,6 +552,15 @@ pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
     /// which the base class refuses; a legacy reader always has one.
     fn scalar_quantizer(&self) -> &ScalarQuantizer;
 
+    /// Returns the corrective offset stored for `ord`.
+    ///
+    /// Equivalent to `LegacyQuantizedByteVectorValues.getScoreCorrectionConstant(int)`
+    /// (`LegacyQuantizedByteVectorValues.java:33`). Lucene 10.5.0 declares it on
+    /// the legacy class only; `QuantizedByteVectorValues`
+    /// (`QuantizedByteVectorValues.java:205-234`) has corrective terms
+    /// instead (rmp #230).
+    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32>;
+
     /// Returns a second view of the same vectors, keeping the legacy accessors.
     ///
     /// Equivalent to `LegacyQuantizedByteVectorValues.copy()`, whose covariant
@@ -582,6 +604,7 @@ pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
 #[cfg(test)]
 mod scorer_tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::index::VectorSimilarityFunction;
     use crate::search::DocIdSetIterator;
 
@@ -597,10 +620,6 @@ mod scorer_tests {
             let dim = self.base.dimension as usize;
             let start = ord as usize * dim;
             Ok(&self.bytes[start..start + dim])
-        }
-
-        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-            Ok(0.0)
         }
 
         fn size(&self) -> i32 {
@@ -620,10 +639,6 @@ mod scorer_tests {
     impl QuantizedByteVectorValues for Quantized {
         fn vector_value(&mut self, _ord: i32) -> Result<&[u8]> {
             Ok(&[])
-        }
-
-        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-            Ok(0.0)
         }
 
         fn size(&self) -> i32 {
@@ -676,11 +691,13 @@ mod scorer_tests {
             // same similarity must give the same corrections. `OptimizedScalar\
             // Quantizer` has no equality, and comparing addresses would prove
             // nothing about which similarity it was built for.
-            let mut a = vec![1.0f32, -2.0];
-            let mut b = vec![1.0f32, -2.0];
+            // Unit vector and centroid: `scalarQuantize` asserts both are unit
+            // vectors for `COSINE` (`OptimizedScalarQuantizer.java:189-190`).
+            let mut a = vec![0.6f32, -0.8];
+            let mut b = vec![0.6f32, -0.8];
             let mut dst_a = vec![0u8; 2];
             let mut dst_b = vec![0u8; 2];
-            let centroid = [0.5f32, 0.5];
+            let centroid = [0.6f32, 0.8];
             let from_trait = quantizer
                 .scalar_quantize(&mut a, &mut dst_a, 8, &centroid)
                 .expect("quantize");
@@ -723,10 +740,6 @@ mod scorer_tests {
             Ok(&[])
         }
 
-        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
-            Ok(0.0)
-        }
-
         fn size(&self) -> i32 {
             1
         }
@@ -750,7 +763,13 @@ mod scorer_tests {
             Ok(_) => panic!("the base must not produce a scorer"),
         };
         assert!(
-            matches!(err, LuceneError::UnsupportedOperation(_)),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                }
+            ),
             "expected UnsupportedOperation, got {err:?}"
         );
         // The base also has no slice, the other thing Java's base answers.
@@ -771,7 +790,13 @@ mod scorer_tests {
             Ok(_) => panic!("an implementation that does not override must not score"),
         };
         assert!(
-            matches!(err, LuceneError::UnsupportedOperation(_)),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                }
+            ),
             "expected UnsupportedOperation, got {err:?}"
         );
     }

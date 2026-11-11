@@ -92,7 +92,7 @@ fn java_math_max(a: f32, b: f32) -> f32 {
 #[inline]
 fn check_same_dimensions<T, U>(a: &[T], b: &[U]) -> Result<()> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -114,10 +114,12 @@ fn check_same_dimensions<T, U>(a: &[T], b: &[U]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn dot_product_f32(a: &[f32], b: &[f32]) -> Result<f32> {
     check_same_dimensions(a, b)?;
-    Ok(dot_product_f32_unchecked(a, b))
+    let r = dot_product_f32_unchecked(a, b);
+    debug_assert!(r.is_finite(), "not finite: {r} from <{a:?},{b:?}>");
+    Ok(r)
 }
 
 /// [`dot_product_f32`] without the dimension check.
@@ -162,7 +164,7 @@ fn dot_product_f32_unchecked(a: &[f32], b: &[f32]) -> f32 {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn cosine_f32(a: &[f32], b: &[f32]) -> Result<f32> {
     check_same_dimensions(a, b)?;
 
@@ -202,7 +204,9 @@ pub fn cosine_f32(a: &[f32], b: &[f32]) -> Result<f32> {
         i += 1;
     }
 
-    Ok((f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32)
+    let r = (f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32;
+    debug_assert!(r.is_finite());
+    Ok(r)
 }
 
 /// Returns the sum of squared differences of two float vectors.
@@ -213,7 +217,7 @@ pub fn cosine_f32(a: &[f32], b: &[f32]) -> Result<f32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn square_distance_f32(a: &[f32], b: &[f32]) -> Result<f32> {
     check_same_dimensions(a, b)?;
 
@@ -249,6 +253,7 @@ pub fn square_distance_f32(a: &[f32], b: &[f32]) -> Result<f32> {
         res = fma(diff, diff, res);
         i += 1;
     }
+    debug_assert!(res.is_finite());
     Ok(res)
 }
 
@@ -276,7 +281,7 @@ fn signed(value: u8) -> i32 {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn dot_product_bytes(a: &[u8], b: &[u8]) -> Result<i32> {
     check_same_dimensions(a, b)?;
     let mut total: i32 = 0;
@@ -294,7 +299,7 @@ pub fn dot_product_bytes(a: &[u8], b: &[u8]) -> Result<i32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn square_distance_bytes(a: &[u8], b: &[u8]) -> Result<i32> {
     check_same_dimensions(a, b)?;
     let mut square_sum: i32 = 0;
@@ -316,7 +321,7 @@ pub fn square_distance_bytes(a: &[u8], b: &[u8]) -> Result<i32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn cosine_bytes(a: &[u8], b: &[u8]) -> Result<f32> {
     check_same_dimensions(a, b)?;
     let mut sum: i32 = 0;
@@ -348,7 +353,7 @@ pub fn cosine_bytes(a: &[u8], b: &[u8]) -> Result<f32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn dot_product_score(a: &[u8], b: &[u8]) -> Result<f32> {
     let dot = dot_product_bytes(a, b)?;
     let denom = (a.len() as i32).wrapping_mul(1 << 15) as f32;
@@ -396,13 +401,13 @@ pub fn normalize_distance_to_unit_interval(squared_distance: f32) -> f32 {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `v` is all zeros and
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `v` is all zeros and
 /// `throw_on_zero` is `true`.
 pub fn l2normalize(v: &mut [f32], throw_on_zero: bool) -> Result<()> {
     let l1norm = f64::from(dot_product_f32_unchecked(v, v));
     if l1norm == 0.0 {
         if throw_on_zero {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot normalize a zero-length vector".to_string(),
             ));
         }
@@ -433,12 +438,12 @@ pub fn is_unit_vector(v: &[f32]) -> bool {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] naming the first offending index,
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) naming the first offending index,
 /// with the same message text Java produces.
 pub fn check_finite(v: &[f32]) -> Result<()> {
     for (i, &value) in v.iter().enumerate() {
         if !value.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "non-finite value at vector[{}]={}",
                 i,
                 java_float_to_string(value)
@@ -484,7 +489,7 @@ pub fn is_zero_vector_bytes(v: &[u8]) -> bool {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ. Java
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ. Java
 /// iterates over `u.length` and throws `ArrayIndexOutOfBoundsException` when
 /// `v` is shorter; the explicit check is the Rust-idiomatic equivalent and
 /// rejects exactly the same inputs.
@@ -523,10 +528,10 @@ fn support() -> &'static DefaultVectorUtilSupport {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn int4_dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -544,11 +549,11 @@ pub fn int4_dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `packed` is not
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `packed` is not
 /// `(unpacked.len() + 1) / 2` bytes long.
 pub fn int4_dot_product_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<i32> {
     if packed.len() != (unpacked.len() + 1) >> 1 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {} != 2 * {}",
             unpacked.len(),
             packed.len()
@@ -564,10 +569,10 @@ pub fn int4_dot_product_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn int4_dot_product_both_packed(a: &[u8], b: &[u8]) -> Result<i32> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {} != {}",
             a.len(),
             b.len()
@@ -582,11 +587,11 @@ pub fn int4_dot_product_both_packed(a: &[u8], b: &[u8]) -> Result<i32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `q` is not four times the
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `q` is not four times the
 /// length of `d`.
 pub fn int4_bit_dot_product(q: &[u8], d: &[u8]) -> Result<i64> {
     if q.len() != d.len() * 4 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions incompatible: {}!= 4 x {}",
             q.len(),
             d.len()
@@ -604,11 +609,11 @@ pub fn int4_bit_dot_product(q: &[u8], d: &[u8]) -> Result<i64> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `q` is not twice the length
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `q` is not twice the length
 /// of `d`.
 pub fn int4_dibit_dot_product(q: &[u8], d: &[u8]) -> Result<i64> {
     if q.len() != d.len() * 2 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions incompatible: {}!= 2 x {}",
             q.len(),
             d.len()
@@ -623,10 +628,10 @@ pub fn int4_dibit_dot_product(q: &[u8], d: &[u8]) -> Result<i64> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn int4_square_distance(a: &[u8], b: &[u8]) -> Result<i32> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -642,11 +647,11 @@ pub fn int4_square_distance(a: &[u8], b: &[u8]) -> Result<i32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `packed` is not
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `packed` is not
 /// `(unpacked.len() + 1) / 2` bytes long.
 pub fn int4_square_distance_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<i32> {
     if packed.len() != (unpacked.len() + 1) >> 1 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!= 2 * {}",
             unpacked.len(),
             packed.len()
@@ -662,10 +667,10 @@ pub fn int4_square_distance_single_packed(unpacked: &[u8], packed: &[u8]) -> Res
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn int4_square_distance_both_packed(a: &[u8], b: &[u8]) -> Result<i32> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -680,10 +685,10 @@ pub fn int4_square_distance_both_packed(a: &[u8], b: &[u8]) -> Result<i32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn uint8_dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -699,10 +704,10 @@ pub fn uint8_dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn uint8_square_distance(a: &[u8], b: &[u8]) -> Result<i32> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -730,10 +735,10 @@ pub const XOR_BIT_COUNT_STRIDE_AS_INT: bool = cfg!(target_arch = "aarch64");
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the dimensions differ.
 pub fn xor_bit_count(a: &[u8], b: &[u8]) -> Result<i32> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -816,7 +821,7 @@ pub fn find_next_geq(buffer: &[i32], target: i32, from: usize, to: usize) -> usi
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `vector` and `dest` differ in
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `vector` and `dest` differ in
 /// length.
 pub fn min_max_scalar_quantize(
     vector: &[f32],
@@ -827,7 +832,7 @@ pub fn min_max_scalar_quantize(
     max_quantile: f32,
 ) -> Result<f32> {
     if vector.len() != dest.len() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "source and destination arrays should be the same size".to_string(),
         ));
     }
@@ -868,7 +873,7 @@ pub fn recalculate_offset(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the buffers differ in length
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the buffers differ in length
 /// or are shorter than `up_to`.
 pub fn filter_by_score(
     doc_buffer: &mut [i32],
@@ -877,7 +882,7 @@ pub fn filter_by_score(
     up_to: usize,
 ) -> Result<usize> {
     if doc_buffer.len() != score_buffer.len() || doc_buffer.len() < up_to {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "docBuffer and scoreBuffer should keep same length and at least as long as upTo"
                 .to_string(),
         ));
@@ -1061,7 +1066,15 @@ mod tests {
 
     #[test]
     fn cosine_of_a_zero_vector_is_nan_like_java() {
-        assert!(cosine_f32(&[0.0, 0.0], &[1.0, 1.0]).unwrap().is_nan());
+        // `VectorUtil.cosine(float[], float[])` asserts a finite result
+        // (`VectorUtil.java:89`): under `-ea`, as in a debug build, the zero
+        // vector fails that assertion; without it the result is NaN.
+        if cfg!(debug_assertions) {
+            let zero = std::panic::catch_unwind(|| cosine_f32(&[0.0, 0.0], &[1.0, 1.0]));
+            assert!(zero.is_err());
+        } else {
+            assert!(cosine_f32(&[0.0, 0.0], &[1.0, 1.0]).unwrap().is_nan());
+        }
         assert!(cosine_bytes(&[0, 0], &[1, 1]).unwrap().is_nan());
     }
 

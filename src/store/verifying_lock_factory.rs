@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use super::{Directory, Lock, LockFactory};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Protocol byte sent to [`LockVerifyServer`](super::LockVerifyServer) when a
 /// lock is released.
@@ -52,8 +52,8 @@ impl VerifyChannel {
             ));
         }
         if byte[0] != message {
-            return Err(LuceneError::Io(std::io::Error::other(
-                "Protocol violation.",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("Protocol violation."),
             )));
         }
         Ok(())

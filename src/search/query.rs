@@ -50,6 +50,17 @@ pub trait Query: Debug + Send + Sync + 'static {
     /// declared; every implementation writes `self`.
     fn as_any(&self) -> &dyn Any;
 
+    /// Returns this query as an [`Accountable`](crate::util::Accountable)
+    /// when its Java class implements `Accountable`, and `None` otherwise.
+    ///
+    /// Equivalent to the `query instanceof Accountable` test of
+    /// `RamUsageEstimator.sizeOf(Query, long)` and its `RamUsageQueryVisitor`.
+    /// The test is declared, as [`as_any`](Self::as_any) is: every query whose
+    /// Java class is `Accountable` overrides it to return `self`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        None
+    }
+
     /// Constructs an appropriate [`Weight`] implementation for this query.
     ///
     /// Equivalent to `Query.createWeight(IndexSearcher, ScoreMode, float)`,
@@ -61,7 +72,7 @@ pub trait Query: Debug + Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] by default, and propagates
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) by default, and propagates
     /// any I/O error an implementation raises.
     fn create_weight(
         &self,
@@ -69,7 +80,7 @@ pub trait Query: Debug + Send + Sync + 'static {
         _score_mode: ScoreMode,
         _boost: f32,
     ) -> Result<Arc<dyn Weight>> {
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "Query {} does not implement createWeight",
             self.to_query_string("")
         )))

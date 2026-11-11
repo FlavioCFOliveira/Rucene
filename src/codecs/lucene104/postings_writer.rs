@@ -21,7 +21,7 @@ use crate::codecs::lucene104::{
 use crate::codecs::postings::{PushPostingsWriterBase, PushPostingsWriterState};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{index_file_names::segment_file_name, FieldInfo, NumericDocValues};
 use crate::store::{DataOutput, IndexOutput};
 use crate::util::{BitUtil, FixedBitSet, IOUtils};
@@ -83,13 +83,19 @@ impl DataOutput for ResettableOutput {
 // -----------------------------------------------------------------------------
 
 /// Special two-byte vint for values that fit in 15 bits.
-fn write_v_int15(out: &mut dyn DataOutput, v: i32) -> Result<()> {
+///
+/// `Lucene104PostingsWriter.writeVInt15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn write_v_int15(out: &mut dyn DataOutput, v: i32) -> Result<()> {
     debug_assert!(v >= 0);
     write_v_long15(out, v as i64)
 }
 
 /// Special two-byte vlong for values that fit in 15 bits.
-fn write_v_long15(out: &mut dyn DataOutput, v: i64) -> Result<()> {
+///
+/// `Lucene104PostingsWriter.writeVLong15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn write_v_long15(out: &mut dyn DataOutput, v: i64) -> Result<()> {
     debug_assert!(v >= 0);
     if (v & !0x7FFFi64) == 0 {
         out.write_short(v as i16)?;
@@ -192,6 +198,10 @@ pub struct Lucene104PostingsWriter {
     max_impact_num_bytes_at_level0: i32,
     max_num_impacts_at_level1: i32,
     max_impact_num_bytes_at_level1: i32,
+    /// Set once [`close`](PostingsWriterBase::close) ran: Java nulls the four
+    /// outputs in its `finally` (`Lucene104PostingsWriter.java:737`), so a
+    /// second close finds them null and does nothing.
+    closed: bool,
 }
 
 impl std::fmt::Debug for Lucene104PostingsWriter {
@@ -214,7 +224,7 @@ impl Lucene104PostingsWriter {
     /// Creates a postings writer with an explicit format version.
     pub fn with_version(state: &SegmentWriteState<'_>, version: i32) -> Result<Self> {
         if version < 0 || version > VERSION_CURRENT {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Lucene104PostingsWriter version out of range: {version}"
             )));
         }
@@ -316,6 +326,7 @@ impl Lucene104PostingsWriter {
             max_impact_num_bytes_at_level0: 0,
             max_num_impacts_at_level1: 0,
             max_impact_num_bytes_at_level1: 0,
+            closed: false,
         })
     }
 }
@@ -392,10 +403,10 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
 
         let doc_delta = doc_id - self.last_doc_id;
         if doc_id < 0 || doc_delta <= 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "docs out of order ({doc_id} <= {last_doc_id})",
                 last_doc_id = self.last_doc_id
-            )));
+            ))));
         }
 
         let idx = self.doc_buffer_upto as usize;
@@ -444,9 +455,9 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         end_offset: i32,
     ) -> Result<()> {
         if !(0..=MAX_POSITION).contains(&position) {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "position={position} out of range [0, {MAX_POSITION}]"
-            )));
+            ))));
         }
 
         let idx = self.pos_buffer_upto as usize;
@@ -473,11 +484,8 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         }
 
         if self.push_state.write_offsets {
-            if start_offset < self.last_start_offset || end_offset < start_offset {
-                return Err(LuceneError::CorruptIndex(
-                    "offsets out of order".to_string(),
-                ));
-            }
+            debug_assert!(start_offset >= self.last_start_offset);
+            debug_assert!(end_offset >= start_offset);
             self.offset_start_delta_buffer[idx] = start_offset - self.last_start_offset;
             self.offset_length_buffer[idx] = end_offset - start_offset;
             self.last_start_offset = start_offset;
@@ -530,6 +538,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         };
 
         if self.push_state.write_positions && self.pos_buffer_upto > 0 {
+            debug_assert!(self.pos_buffer_upto < BLOCK_SIZE);
             self.flush_tail_positions()?;
         }
 
@@ -585,7 +594,15 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(())
     }
 
+    /// Equivalent to `Lucene104PostingsWriter.close()`
+    /// (`Lucene104PostingsWriter.java:700-739`): the outputs are nulled in the
+    /// outer `finally` (`:737`) whatever the outcome, so a second call does
+    /// nothing.
     fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
         let result: Result<()> = (|| {
             write_footer(self.doc_out.as_mut())?;
             if let Some(pos_out) = self.pos_out.as_mut() {
@@ -880,6 +897,10 @@ impl Lucene104PostingsWriter {
                 }
             }
 
+            // There are at most 256 impacts, that require at most 2 bytes each
+            debug_assert!(num_impact_bytes <= i16::MAX as _);
+            // Like impacts plus a few vlongs, still way under the max short value
+            debug_assert!(self.scratch_output.len() + 2 <= i16::MAX as _);
             let level1_len = 2 * 2 + self.scratch_output.len() + self.level1_output.len();
             self.doc_out.write_v_long(level1_len)?;
             level1_end = self.doc_out.file_pointer() + level1_len;
@@ -1076,16 +1097,16 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<BytesRef> {
-            Ok(self.terms[self.idx as usize].clone())
+        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.idx as usize].clone()))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(self.postings[self.idx as usize].clone()))
+        ) -> crate::error::Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(self.postings[self.idx as usize].clone())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {
@@ -1128,7 +1149,7 @@ mod tests {
             &mut self,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(crate::error::LuceneError::UnsupportedOperation(
+            Err(crate::error::LuceneError::unsupported_operation(
                 "impacts not supported".to_string(),
             ))
         }
@@ -1327,7 +1348,7 @@ mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> crate::error::Result<()> {
+        fn close(&self) -> crate::error::Result<()> {
             Ok(())
         }
     }
@@ -1470,7 +1491,7 @@ mod tests {
         let len = input.length() as usize;
         let mut bytes = vec![0u8; len];
         input
-            .read_bytes(&mut bytes, 0, len)
+            .read_bytes(Some(&mut bytes), 0, len)
             .expect("read should succeed");
         bytes
     }
@@ -1686,6 +1707,26 @@ mod close_family_tests {
         Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap_err();
         assert_eq!(log.close_count("_0.psm"), 1);
         assert_eq!(tracking.inner.file_length("_0.psm").unwrap(), 0);
+    }
+
+    /// `close()` nulls the four outputs in its outer `finally`
+    /// (`Lucene104PostingsWriter.java:737`): a second close does nothing, so
+    /// no output is closed twice and the files keep the first close's bytes.
+    #[test]
+    fn close_twice_is_a_no_op() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut writer = Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap();
+        writer.close().unwrap();
+        let lengths = ["_0.psm", "_0.doc"].map(|n| tracking.inner.file_length(n).unwrap());
+        writer.close().unwrap();
+        assert_eq!(
+            ["_0.psm", "_0.doc"].map(|n| tracking.inner.file_length(n).unwrap()),
+            lengths
+        );
+        assert_eq!(log.close_count("_0.psm"), 1);
+        assert_eq!(log.close_count("_0.doc"), 1);
     }
 
     /// `close()` ends with `IOUtils.close(metaOut, docOut, posOut, payOut)`

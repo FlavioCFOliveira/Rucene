@@ -248,12 +248,7 @@ impl IntersectTermsEnumFrame {
 
         let code = terms_in.read_v_int()?;
         self.ent_count = code >> 1;
-        if self.ent_count <= 0 {
-            return Err(LuceneError::corrupt_index(
-                format!("invalid entry count: {}", self.ent_count),
-                "terms dictionary",
-            ));
-        }
+        debug_assert!(self.ent_count > 0);
         self.is_last_in_floor = code & 1 != 0;
 
         let code_l = terms_in.read_v_long()?;
@@ -281,7 +276,7 @@ impl IntersectTermsEnumFrame {
             let b = terms_in.read_byte()?;
             self.suffix_length_bytes[..n].fill(b);
         } else {
-            terms_in.read_bytes(&mut self.suffix_length_bytes, 0, n)?;
+            terms_in.read_bytes(Some(&mut self.suffix_length_bytes), 0, n)?;
         }
         self.suffix_lengths_pos = 0;
         self.suffix_lengths_limit = n;
@@ -290,7 +285,7 @@ impl IntersectTermsEnumFrame {
         if self.stat_bytes.len() < num_stat_bytes {
             self.stat_bytes.resize(num_stat_bytes, 0);
         }
-        terms_in.read_bytes(&mut self.stat_bytes, 0, num_stat_bytes)?;
+        terms_in.read_bytes(Some(&mut self.stat_bytes), 0, num_stat_bytes)?;
         self.stats_pos = 0;
         self.stats_limit = num_stat_bytes;
         self.stats_singleton_run_length = 0;
@@ -304,7 +299,7 @@ impl IntersectTermsEnumFrame {
         if self.bytes.len() < num_meta_bytes {
             self.bytes.resize(num_meta_bytes, 0);
         }
-        terms_in.read_bytes(&mut self.bytes, 0, num_meta_bytes)?;
+        terms_in.read_bytes(Some(&mut self.bytes), 0, num_meta_bytes)?;
         self.bytes_pos = 0;
         self.bytes_limit = num_meta_bytes;
 
@@ -332,6 +327,13 @@ impl IntersectTermsEnumFrame {
     }
 
     fn next_leaf(&mut self) -> Result<()> {
+        debug_assert!(
+            self.next_ent != -1 && self.next_ent < self.ent_count,
+            "nextEnt={} entCount={} fp={}",
+            self.next_ent,
+            self.ent_count,
+            self.fp
+        );
         self.next_ent += 1;
         self.suffix = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
         self.start_byte_pos = self.suffixes_pos;
@@ -341,6 +343,13 @@ impl IntersectTermsEnumFrame {
     }
 
     fn next_non_leaf(&mut self) -> Result<bool> {
+        debug_assert!(
+            self.next_ent != -1 && self.next_ent < self.ent_count,
+            "nextEnt={} entCount={} fp={}",
+            self.next_ent,
+            self.ent_count,
+            self.fp
+        );
         self.next_ent += 1;
         let code = self.with_suffix_lengths(|r| r.read_v_int())?;
         self.suffix = ((code as u32) >> 1) as usize;
@@ -374,6 +383,10 @@ impl IntersectTermsEnumFrame {
     }
 
     /// Decodes the statistics and postings metadata of every term passed so far.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnumFrame#decodeMetaData`
+    /// (`IntersectTermsEnumFrame.java:277-323`).
     pub fn decode_meta_data(
         &mut self,
         field_info: &crate::index::FieldInfo,
@@ -381,6 +394,7 @@ impl IntersectTermsEnumFrame {
     ) -> Result<()> {
         let limit = self.get_term_block_ord();
         let mut absolute = self.meta_data_upto == 0;
+        debug_assert!(limit > 0);
         while self.meta_data_upto < limit {
             if self.stats_singleton_run_length > 0 {
                 self.state_data.doc_freq = 1;
@@ -422,6 +436,11 @@ impl IntersectTermsEnumFrame {
             self.meta_data_upto += 1;
             absolute = false;
         }
+        // `termState.termBlockOrd = metaDataUpto`
+        // (`IntersectTermsEnumFrame.java:322`): a state taken from this frame
+        // records how many terms of the block it decoded, which
+        // `SegmentTermsEnum.seekExact(BytesRef, TermState)` reads back.
+        self.state_data.term_block_ord = self.meta_data_upto;
         Ok(())
     }
 }
@@ -488,7 +507,10 @@ impl IntersectTermsEnum {
             attributes: AttributeSource::new(),
         };
         this.start()?;
-        this.set_saved_start_term(start_term.as_ref());
+        // for assert: `assert setSavedStartTerm(startTerm)` (`IntersectTermsEnum.java:116`)
+        if cfg!(debug_assertions) {
+            this.set_saved_start_term(start_term.as_ref());
+        }
         if let Some(start_term) = start_term.as_ref() {
             this.seek_to_start_term(start_term)?;
         }
@@ -547,6 +569,7 @@ impl IntersectTermsEnum {
     /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#seekToStartTerm`.
     fn seek_to_start_term(&mut self, target: &BytesRef) -> Result<()> {
         debug_assert_eq!(self.current, Some(0));
+        debug_assert!(self.stack[0].node == Some(self.nodes[0]));
         let target_bytes = target.slice();
 
         for _idx in 0..=target_bytes.len() {
@@ -613,15 +636,16 @@ impl IntersectTermsEnum {
             }
         }
 
-        Err(LuceneError::illegal_state(
-            "seek_to_start_term ran past the target term".to_string(),
-        ))
+        debug_assert!(false);
+        Ok(())
     }
 
     /// Pushes the root frame over the trie root.
     fn start(&mut self) -> Result<()> {
         let root = self.trie.root;
         *self.get_node(0) = root;
+        // Empty string prefix must have an output in the index!
+        debug_assert!(root.has_output());
         let frame = &mut self.stack[0];
         frame.ord = 0;
         frame.prefix = 0;
@@ -654,6 +678,7 @@ impl IntersectTermsEnum {
             self.stack
                 .push(IntersectTermsEnumFrame::new(self.stack.len()));
         }
+        debug_assert!(self.stack[ord].ord == ord);
 
         let (fp, prefix, parent_node, parent_prefix) = {
             let parent = &self.stack[cur];
@@ -670,17 +695,17 @@ impl IntersectTermsEnum {
             LuceneError::illegal_state("parent frame has no trie node".to_string())
         })?;
         let mut idx = parent_prefix;
+        debug_assert!(self.stack[cur].suffix > 0);
         while idx < prefix {
             let target = i32::from(self.term[idx]);
-            node = self.trie.lookup_child(target, &node)?.ok_or_else(|| {
-                LuceneError::corrupt_index(
-                    format!("term index has no arc for label {target}"),
-                    "term index",
-                )
-            })?;
+            let child = self.trie.lookup_child(target, &node)?;
+            debug_assert!(child.is_some());
+            // Java dereferences the null child (an NPE) when assertions are off.
+            node = child.expect("term index has no arc for the label");
             *self.get_node(1 + idx) = node;
             idx += 1;
         }
+        debug_assert!(node.has_output());
 
         let floor = if node.is_floor() {
             let end = self.field.index_end() - self.field.index_start();
@@ -747,7 +772,9 @@ impl IntersectTermsEnum {
                 self.current = None;
                 return Ok(None);
             }
+            let last_fp = self.stack[cur].fp_orig;
             self.current = Some(cur - 1);
+            debug_assert!(self.stack[cur - 1].last_sub_fp == last_fp);
         }
         let cur = self.current.expect("current frame vanished");
         Ok(Some(self.stack[cur].next()?))
@@ -761,6 +788,7 @@ impl IntersectTermsEnum {
         };
         let cur = self.current.expect("no current frame");
         let frame = &self.stack[cur];
+        debug_assert!(common_suffix.offset == 0);
         let common = common_suffix.slice();
         let term_len = frame.prefix + frame.suffix;
         if term_len < common.len() {
@@ -772,6 +800,7 @@ impl IntersectTermsEnum {
         let mut common_pos = 0usize;
         if len_in_prefix > 0 {
             let len_in_prefix = len_in_prefix as usize;
+            debug_assert!(frame.prefix >= len_in_prefix);
             let mut term_pos = frame.prefix - len_in_prefix;
             while term_pos < frame.prefix {
                 if self.term[term_pos] != common[common_pos] {
@@ -953,6 +982,14 @@ impl TermsEnum for IntersectTermsEnum {
                 }
             } else if self.run_automaton.is_accept(state) {
                 self.copy_term();
+                debug_assert!(
+                    self.saved_start_term
+                        .as_deref()
+                        .is_none_or(|saved| self.term.as_slice() > saved),
+                    "saveStartTerm={} term={}",
+                    String::from_utf8_lossy(self.saved_start_term.as_deref().unwrap_or_default()),
+                    String::from_utf8_lossy(&self.term)
+                );
                 return Ok(Some(BytesRef::new(self.term.clone())));
             }
 
@@ -964,24 +1001,24 @@ impl TermsEnum for IntersectTermsEnum {
     }
 
     fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "IntersectTermsEnum only walks forward over the terms the automaton accepts"
                 .to_string(),
         ))
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "IntersectTermsEnum does not support seeking by ordinal".to_string(),
         ))
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(BytesRef::new(self.term.clone()))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(self.term.clone())))
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "IntersectTermsEnum does not track term ordinals".to_string(),
         ))
     }
@@ -1020,7 +1057,7 @@ impl TermsEnum for IntersectTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.decode_current_meta_data()?;
         let cur = self
             .current
@@ -1028,10 +1065,15 @@ impl TermsEnum for IntersectTermsEnum {
         let field_info = self.field.field_info().clone();
         let state = self.stack[cur].state_data;
         let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
-        reader.postings(&field_info, &state, reuse, flags)
+        Ok(Some(reader.postings(&field_info, &state, reuse, flags)?))
     }
 
+    /// Equivalent to `IntersectTermsEnum.termState()`
+    /// (`IntersectTermsEnum.java:133-136`): the frame's metadata is decoded
+    /// first, so the state carries the term's statistics, file pointers and
+    /// `termBlockOrd`, which a seek by this state reads back.
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.decode_current_meta_data()?;
         let cur = self
             .current
             .ok_or_else(|| LuceneError::illegal_state("no current term".to_string()))?;

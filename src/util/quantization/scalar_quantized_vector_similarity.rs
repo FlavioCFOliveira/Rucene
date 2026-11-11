@@ -25,7 +25,7 @@ pub trait ScalarQuantizedVectorSimilarity: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the two vectors have different lengths, which is the
     /// `IllegalArgumentException` the `VectorUtil` comparison throws.
     fn score(

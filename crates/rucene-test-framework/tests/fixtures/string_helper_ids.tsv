@@ -1,0 +1,9 @@
+# tests.seed	StringHelper.randomId() x3, or error class<TAB>message
+DEADBEEF	a6b0288f29a4e2270dee103dd53359d1	a6b0288f29a4e2270dee103dd53359d2	a6b0288f29a4e2270dee103dd53359d3
+0123456789ABCDEF	ccceef7e69a8af711d2f26e3ed3cc56a	ccceef7e69a8af711d2f26e3ed3cc56b	ccceef7e69a8af711d2f26e3ed3cc56c
+1	0400c90845020209048201080180c213	0400c90845020209048201080180c214	0400c90845020209048201080180c215
+-5	0c1f14e9130517daed8a7ce63d12bb84	0c1f14e9130517daed8a7ce63d12bb85	0c1f14e9130517daed8a7ce63d12bb86
+FFFFFFFF	18f3fcbec79d8239e08e3ebf187dafbf	18f3fcbec79d8239e08e3ebf187dafc0	18f3fcbec79d8239e08e3ebf187dafc1
+zz	error	java.lang.NumberFormatException	For input string: "zz" under radix 16
+7FFFFFFFFFFFFFFF	18f3fcbec79d8239e08e3ebf187dafbf	18f3fcbec79d8239e08e3ebf187dafc0	18f3fcbec79d8239e08e3ebf187dafc1
+(empty)	error	java.lang.NumberFormatException	For input string: "" under radix 16

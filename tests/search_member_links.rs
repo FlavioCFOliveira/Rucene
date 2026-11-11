@@ -50,9 +50,9 @@ fn ensure_codec() {
 fn index(docs: Vec<Document>) -> Arc<dyn DirectoryReader> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("no merges");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for doc in &docs {
@@ -581,7 +581,7 @@ impl TermsEnum for RecordingTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
 
@@ -601,7 +601,7 @@ impl TermsEnum for RecordingTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
 

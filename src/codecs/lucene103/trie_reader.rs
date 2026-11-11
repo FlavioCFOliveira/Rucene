@@ -65,7 +65,7 @@ impl ChildSaveStrategy {
             0 => Ok(Self::ReverseArray),
             1 => Ok(Self::Array),
             2 => Ok(Self::Bits),
-            _ => Err(LuceneError::IllegalArgument(format!(
+            _ => Err(LuceneError::illegal_argument(format!(
                 "illegal child save strategy code: {code}"
             ))),
         }
@@ -92,7 +92,12 @@ impl ChildSaveStrategy {
                 let word_index = bit_index >> 6;
                 let word_fp = offset + i64::from(word_index << 3);
                 let word = input.read_long_at(word_fp)? as u64;
-                let mask = 1u64 << bit_index;
+                // `1L << bitIndex` (`TrieBuilder.java:530`): Java takes a
+                // `long` shift distance modulo 64, so a label past the
+                // node's first word tests its bit within the word
+                // `wordIndex` selects. `wrapping_shl` masks the distance the
+                // same way, where `<<` would overflow (a panic in debug).
+                let mask = 1u64.wrapping_shl(bit_index as u32);
                 if word & mask == 0 {
                     return Ok(None);
                 }
@@ -155,7 +160,7 @@ impl ChildSaveStrategy {
 /// One node of the term-index trie.
 ///
 /// Equivalent to `TrieReader.Node`.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Node {
     /// Distance back to the single child, for a single-child node.
     child_delta_fp: i64,
@@ -235,11 +240,7 @@ impl TrieReader {
     /// the shared input; here the bytes are copied out so the caller does not
     /// hold the input across a later seek.
     pub fn floor_data(&mut self, node: &Node, len: usize) -> Result<Vec<u8>> {
-        if !node.is_floor() {
-            return Err(LuceneError::illegal_state(
-                "node has no floor data".to_string(),
-            ));
-        }
+        debug_assert!(node.is_floor());
         let mut buf = vec![0u8; len];
         self.input
             .read_bytes_at(node.floor_data_fp, &mut buf, 0, len)?;
@@ -313,12 +314,7 @@ impl TrieReader {
             node.has_terms = false;
             return Ok(());
         }
-        if sign != SIGN_SINGLE_CHILD_WITH_OUTPUT {
-            return Err(LuceneError::corrupt_index(
-                format!("unexpected trie node sign: {sign}"),
-                "term index",
-            ));
-        }
+        debug_assert!(sign == SIGN_SINGLE_CHILD_WITH_OUTPUT);
         let encoded_output_fp_bytes_minus_1 = ((term >> 5) & 0x07) as usize;
         let offset = fp + child_delta_fp_bytes_minus_1 as i64 + 3;
         let encoded_fp = (input.read_long_at(offset)? as u64)
@@ -432,5 +428,43 @@ impl TrieReader {
         child.label = target_label;
         Self::load_node(self.input.as_mut(), &mut child, parent.fp - delta as i64)?;
         Ok(Some(child))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChildSaveStrategy;
+    use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
+
+    /// `BITS.lookup` (`TrieBuilder.java:520-540`) builds its mask with
+    /// `1L << bitIndex`, a `long` shift Java takes modulo 64: a label 64 or
+    /// more past the node's minimum tests its bit within the word
+    /// `bitIndex >>> 6` selects. A node of two words (16 strategy bytes)
+    /// holding labels 0, 1, 3, 66 and 100 finds 66 and 100 at positions 3 and
+    /// 4, and misses 64 and 101.
+    #[test]
+    fn bits_lookup_past_the_first_word_shifts_modulo_64_as_java() {
+        let dir = ByteBuffersDirectory::new();
+        let word0: u64 = 0b1011;
+        let word1: u64 = (1 << 36) | (1 << 2);
+        {
+            let mut out = dir.create_output("t", &*DEFAULT_IO_CONTEXT).unwrap();
+            out.write_long(word0 as i64).unwrap();
+            out.write_long(word1 as i64).unwrap();
+            out.close().unwrap();
+        }
+        let input = dir.open_input("t", &*DEFAULT_IO_CONTEXT).unwrap();
+        let mut access = input.random_access_slice(0, 16).unwrap();
+        let lookup = |label: i32, access: &mut dyn crate::store::RandomAccessInput| {
+            ChildSaveStrategy::Bits
+                .lookup(label, access, 0, 16, 0)
+                .unwrap()
+        };
+        assert_eq!(lookup(3, access.as_mut()), Some(2));
+        assert_eq!(lookup(66, access.as_mut()), Some(3));
+        assert_eq!(lookup(100, access.as_mut()), Some(4));
+        assert_eq!(lookup(64, access.as_mut()), None);
+        assert_eq!(lookup(101, access.as_mut()), None);
+        assert_eq!(lookup(128, access.as_mut()), None);
     }
 }

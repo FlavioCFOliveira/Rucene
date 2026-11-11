@@ -53,7 +53,7 @@ impl SeededKnnVectorQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `k` is less than 1.
     pub fn new(
         knn_query: Arc<dyn AbstractKnnVectorQueryImpl>,
@@ -221,13 +221,7 @@ impl AbstractKnnVectorQueryImpl for SeededKnnVectorQuery {
         visited_limit: i32,
         knn_collector_manager: &dyn KnnCollectorManager,
     ) -> Result<TopDocs> {
-        let manager = SeededCollectorManager {
-            knn_collector_manager: ErasedManager(knn_collector_manager),
-            seed_weight: self.seed_weight.clone(),
-            delegate: Arc::clone(&self.delegate),
-            k: self.base.get_k(),
-            field: self.base.get_field().to_string(),
-        };
+        let manager = SeededCollectorManager::new(self, knn_collector_manager);
         self.delegate
             .approximate_search(context, accept_docs, visited_limit, &manager)
     }
@@ -349,14 +343,33 @@ impl std::fmt::Debug for ErasedManager<'_> {
 /// query.
 ///
 /// Equivalent to the inner class
-/// `SeededKnnVectorQuery.SeededCollectorManager`.
+/// `SeededKnnVectorQuery.SeededCollectorManager`; public because Java tests
+/// construct it from a subclass of the enclosing query
+/// (`TestSeededKnnByteVectorQuery.java:276`).
 #[derive(Debug)]
-struct SeededCollectorManager<'a> {
+pub struct SeededCollectorManager<'a> {
     knn_collector_manager: ErasedManager<'a>,
     seed_weight: Option<Arc<dyn Weight>>,
     delegate: Arc<dyn AbstractKnnVectorQueryImpl>,
     k: i32,
     field: String,
+}
+
+impl<'a> SeededCollectorManager<'a> {
+    /// `query.new SeededCollectorManager(knnCollectorManager)`: the inner
+    /// class bound to its enclosing `query`.
+    pub fn new(
+        query: &SeededKnnVectorQuery,
+        knn_collector_manager: &'a dyn KnnCollectorManager,
+    ) -> Self {
+        SeededCollectorManager {
+            knn_collector_manager: ErasedManager(knn_collector_manager),
+            seed_weight: query.seed_weight.clone(),
+            delegate: Arc::clone(&query.delegate),
+            k: query.base.get_k(),
+            field: query.base.get_field().to_string(),
+        }
+    }
 }
 
 impl KnnCollectorManager for SeededCollectorManager<'_> {

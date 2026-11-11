@@ -14,7 +14,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
+    check_footer_after, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
 use crate::codecs::hnsw::flat_vectors::{
@@ -30,7 +30,7 @@ use crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::vector_values::{
     ByteVectorValues, DocIndexIterator, FloatVectorValues, KnnVectorValues,
 };
@@ -39,6 +39,7 @@ use crate::index::{
 };
 use crate::search::knn::KnnCollector;
 use crate::search::{AcceptDocs, DocIdSetIterator, TaskExecutor, NO_MORE_DOCS};
+use crate::store::SharedIndexInput;
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::hnsw::{
     ArrayNodesIterator, CloseableRandomVectorScorerSupplier, ConcurrentHnswMerger,
@@ -59,18 +60,45 @@ const META_CODEC_NAME: &str = "Lucene99HnswVectorsFormatMeta";
 const VECTOR_INDEX_CODEC_NAME: &str = "Lucene99HnswVectorsFormatIndex";
 const META_EXTENSION: &str = "vem";
 const VECTOR_INDEX_EXTENSION: &str = "vex";
-const VERSION_START: i32 = 0;
-const VERSION_GROUPVARINT: i32 = 1;
-pub(crate) const VERSION_CURRENT: i32 = VERSION_GROUPVARINT;
+/// The first version of the format: `Lucene99HnswVectorsFormat.VERSION_START`.
+pub const VERSION_START: i32 = 0;
+/// The version that writes neighbours with group-varint:
+/// `Lucene99HnswVectorsFormat.VERSION_GROUPVARINT`.
+pub const VERSION_GROUPVARINT: i32 = 1;
+/// The version written: `Lucene99HnswVectorsFormat.VERSION_CURRENT`.
+pub const VERSION_CURRENT: i32 = VERSION_GROUPVARINT;
 
-const MAXIMUM_MAX_CONN: i32 = 512;
-const MAXIMUM_BEAM_WIDTH: i32 = 3200;
-const DEFAULT_MAX_CONN: i32 = crate::util::hnsw::DEFAULT_M;
-const DEFAULT_BEAM_WIDTH: i32 = crate::util::hnsw::DEFAULT_BEAM_WIDTH;
-pub(crate) const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
-pub(crate) const HNSW_GRAPH_THRESHOLD: i32 = 100;
+/// A maximum configurable maximum max conn.
+///
+/// NOTE: We eagerly populate `float[MAX_CONN*2]` and `int[MAX_CONN*2]`, so
+/// exceptionally large numbers here will use an inordinate amount of heap.
+/// `Lucene99HnswVectorsFormat.MAXIMUM_MAX_CONN`.
+pub const MAXIMUM_MAX_CONN: i32 = 512;
+/// The maximum size of the queue to maintain while searching during graph
+/// construction. This maximum value preserves the ratio of the
+/// `DEFAULT_BEAM_WIDTH`/`DEFAULT_MAX_CONN` (i.e. `6.25 * 16 = 3200`).
+/// `Lucene99HnswVectorsFormat.MAXIMUM_BEAM_WIDTH`.
+pub const MAXIMUM_BEAM_WIDTH: i32 = 3200;
+/// Default number of maximum connections per node:
+/// `Lucene99HnswVectorsFormat.DEFAULT_MAX_CONN`.
+pub const DEFAULT_MAX_CONN: i32 = crate::util::hnsw::DEFAULT_M;
+/// Default number of the size of the queue maintained while searching
+/// during a graph construction: `Lucene99HnswVectorsFormat.DEFAULT_BEAM_WIDTH`.
+pub const DEFAULT_BEAM_WIDTH: i32 = crate::util::hnsw::DEFAULT_BEAM_WIDTH;
+/// Default to use single-thread merge:
+/// `Lucene99HnswVectorsFormat.DEFAULT_NUM_MERGE_WORKER`.
+pub const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
+/// Minimum estimated search effort (in terms of expected visited nodes)
+/// required before building an HNSW graph for a segment; below it, graph
+/// construction is skipped for that segment. Default: `100`.
+/// `Lucene99HnswVectorsFormat.HNSW_GRAPH_THRESHOLD`.
+pub const HNSW_GRAPH_THRESHOLD: i32 = 100;
 const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
-const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
+/// How many ordinals an exhaustive search scores in one bulk call.
+///
+/// Equivalent to `Lucene99HnswVectorsReader.EXHAUSTIVE_BULK_SCORE_ORDS`,
+/// which `BaseKnnVectorsFormatTestCase.testSearchWithVisitedLimit` reads.
+pub const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
 
 // -----------------------------------------------------------------------------
 // Global format registration
@@ -130,6 +158,31 @@ impl Lucene99HnswVectorsFormat {
             DEFAULT_NUM_MERGE_WORKER,
             None,
             HNSW_GRAPH_THRESHOLD,
+            VERSION_CURRENT,
+        )
+    }
+
+    /// Constructs a format using the given graph construction parameters.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsFormat(int maxConn, int beamWidth, int
+    /// tinySegmentsThreshold)` (`Lucene99HnswVectorsFormat.java:194-205`):
+    /// `this(maxConn, beamWidth, DEFAULT_NUM_MERGE_WORKER, null,
+    /// tinySegmentsThreshold, VERSION_CURRENT)`.
+    ///
+    /// # Panics
+    ///
+    /// As [`with_params`](Self::with_params).
+    pub fn with_max_conn_beam_width_threshold(
+        max_conn: i32,
+        beam_width: i32,
+        tiny_segments_threshold: i32,
+    ) -> Self {
+        Self::with_params(
+            max_conn,
+            beam_width,
+            DEFAULT_NUM_MERGE_WORKER,
+            None,
+            tiny_segments_threshold,
             VERSION_CURRENT,
         )
     }
@@ -195,9 +248,9 @@ impl Lucene99HnswVectorsFormat {
     ///
     /// # Panics
     ///
-    /// Panics with Java's `IllegalArgumentException` message when `max_conn`
-    /// or `beam_width` is out of range, or when `num_merge_workers` is `1` and
-    /// a `merge_exec` is given.
+    /// Panics with Java's `IllegalArgumentException` (its class and message,
+    /// as the panic text) when `max_conn` or `beam_width` is out of range, or
+    /// when `num_merge_workers` is `1` and a `merge_exec` is given.
     pub fn with_params(
         max_conn: i32,
         beam_width: i32,
@@ -207,15 +260,19 @@ impl Lucene99HnswVectorsFormat {
         write_version: i32,
     ) -> Self {
         if max_conn <= 0 || max_conn > MAXIMUM_MAX_CONN {
-            panic!("maxConn must be positive and <= {MAXIMUM_MAX_CONN}; maxConn={max_conn}");
+            panic!(
+                "java.lang.IllegalArgumentException: maxConn must be positive and less than or equal to {MAXIMUM_MAX_CONN}; maxConn={max_conn}"
+            );
         }
         if beam_width <= 0 || beam_width > MAXIMUM_BEAM_WIDTH {
             panic!(
-                "beamWidth must be positive and <= {MAXIMUM_BEAM_WIDTH}; beamWidth={beam_width}"
+                "java.lang.IllegalArgumentException: beamWidth must be positive and less than or equal to {MAXIMUM_BEAM_WIDTH}; beamWidth={beam_width}"
             );
         }
         if num_merge_workers == 1 && merge_exec.is_some() {
-            panic!("No executor service is needed as we'll use single thread to merge");
+            panic!(
+                "java.lang.IllegalArgumentException: No executor service is needed as we'll use single thread to merge"
+            );
         }
         Self {
             max_conn,
@@ -407,7 +464,7 @@ impl Lucene99HnswVectorsWriter {
         version: i32,
     ) -> Result<Self> {
         let flat_vectors_format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
-        let flat_vector_writer = flat_vectors_format.fields_writer_flat(&state.borrow())?;
+        let flat_vector_writer = flat_vectors_format.fields_writer_flat(state)?;
         Self::with_flat_format(
             state,
             m,
@@ -851,7 +908,7 @@ impl HnswWriterState {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when this writer is already
+    /// Returns [`LuceneErrorKind::IllegalState`] when this writer is already
     /// closed, and whatever merging or writing the graph raises.
     ///
     /// Equivalent to
@@ -1091,6 +1148,7 @@ impl HnswWriterState {
                 FieldWriterEntry::Float(writer, info) => {
                     let values = BufferedFloatVectorValues::new(info.vector_dimension, writer)?;
                     let graph = build_hnsw_graph_float(
+                        self.flat_vector_writer.get_flat_vector_scorer(),
                         &values,
                         info.vector_similarity_function,
                         self.m,
@@ -1102,6 +1160,7 @@ impl HnswWriterState {
                 FieldWriterEntry::Byte(writer, info) => {
                     let values = BufferedByteVectorValues::new(info.vector_dimension, writer)?;
                     let graph = build_hnsw_graph_byte(
+                        self.flat_vector_writer.get_flat_vector_scorer(),
                         &values,
                         info.vector_similarity_function,
                         self.m,
@@ -1243,7 +1302,7 @@ impl HnswWriterState {
                 VectorEncoding::BYTE => None,
             };
             if let Some(quantized_vectors_reader) = quantized_vectors_reader {
-                let mut scorer_supplier: Arc<dyn CloseableRandomVectorScorerSupplier> = Arc::from(
+                let scorer_supplier: Arc<dyn CloseableRandomVectorScorerSupplier> = Arc::from(
                     quantized_vectors_reader
                         .get_random_vector_scorer_supplier_for_merge(
                             field_info,
@@ -1264,14 +1323,7 @@ impl HnswWriterState {
                         as Arc<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
                     total_vector_count,
                 );
-                // The graph merger that shared the supplier is gone by now.
-                let close_supplier = || match Arc::get_mut(&mut scorer_supplier) {
-                    Some(supplier) => supplier.close(),
-                    None => Err(LuceneError::illegal_state(
-                        "the merge's scorer supplier is still shared after the graph was built"
-                            .to_string(),
-                    )),
-                };
+                let close_supplier = || scorer_supplier.close();
                 match built {
                     // `IOUtils.closeWhileSuppressingExceptions(t,
                     // scorerSupplier)`, then `throw t`
@@ -1532,7 +1584,12 @@ fn write_int_le_bytes(out: &mut dyn IndexOutput, v: i32, n: usize) -> Result<()>
     out.write_bytes(&bytes, 0, n)
 }
 
+/// Builds a flushed field's graph, scoring with the flat writer's scorer:
+/// Java's `FieldWriter.create` takes the scorer supplier from
+/// `flatVectorWriter.getFlatVectorScorer()` (`Lucene99HnswVectorsWriter.java:196-199, 738-747`),
+/// which for `lucene-codecs`' `HnswBitVectorsFormat` is `FlatBitVectorsScorer`.
 fn build_hnsw_graph_float(
+    scorer: &dyn FlatVectorsScorer,
     values: &BufferedFloatVectorValues,
     similarity: VectorSimilarityFunction,
     m: i32,
@@ -1541,9 +1598,15 @@ fn build_hnsw_graph_float(
 ) -> Result<Option<OnHeapHnswGraph>> {
     let count = values.size();
     if count > 0 && should_create_graph(tiny_segments_threshold, count) {
-        let supplier = DefaultFlatVectorScorer::INSTANCE
-            .get_random_vector_scorer_supplier_float(similarity, Box::new(values.clone()))?;
-        let mut builder = HnswGraphBuilder::create(&*supplier, m, beam_width, 42, count)?;
+        let supplier =
+            scorer.get_random_vector_scorer_supplier_float(similarity, Box::new(values.clone()))?;
+        let mut builder = HnswGraphBuilder::create(
+            &*supplier,
+            m,
+            beam_width,
+            HnswGraphBuilder::rand_seed(),
+            count,
+        )?;
         builder.build(count)?;
         Ok(Some(builder.into_graph()?))
     } else {
@@ -1551,7 +1614,9 @@ fn build_hnsw_graph_float(
     }
 }
 
+/// [`build_hnsw_graph_float`] for byte vectors.
 fn build_hnsw_graph_byte(
+    scorer: &dyn FlatVectorsScorer,
     values: &BufferedByteVectorValues,
     similarity: VectorSimilarityFunction,
     m: i32,
@@ -1560,9 +1625,15 @@ fn build_hnsw_graph_byte(
 ) -> Result<Option<OnHeapHnswGraph>> {
     let count = values.size();
     if count > 0 && should_create_graph(tiny_segments_threshold, count) {
-        let supplier = DefaultFlatVectorScorer::INSTANCE
-            .get_random_vector_scorer_supplier_byte(similarity, Box::new(values.clone()))?;
-        let mut builder = HnswGraphBuilder::create(&*supplier, m, beam_width, 42, count)?;
+        let supplier =
+            scorer.get_random_vector_scorer_supplier_byte(similarity, Box::new(values.clone()))?;
+        let mut builder = HnswGraphBuilder::create(
+            &*supplier,
+            m,
+            beam_width,
+            HnswGraphBuilder::rand_seed(),
+            count,
+        )?;
         builder.build(count)?;
         Ok(Some(builder.into_graph()?))
     } else {
@@ -1611,9 +1682,9 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
     match ordinal {
         0 => Ok(VectorEncoding::BYTE),
         1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid VectorEncoding ordinal: {ordinal}"
-        ))),
+        )))),
     }
 }
 
@@ -1628,12 +1699,12 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the ordinal names no
+/// Returns [`LuceneErrorKind::IllegalArgument`] when the ordinal names no
 /// similarity function, which is the `IllegalArgumentException` Java raises.
 fn read_similarity_function(input: &mut dyn DataInput) -> Result<VectorSimilarityFunction> {
     let i = input.read_int()?;
     read_vector_similarity(i)
-        .map_err(|_| LuceneError::IllegalArgument(format!("invalid distance function: {i}")))
+        .map_err(|_| LuceneError::illegal_argument(format!("invalid distance function: {i}")))
 }
 
 fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
@@ -1642,9 +1713,9 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
         1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
         2 => Ok(VectorSimilarityFunction::COSINE),
         3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid VectorSimilarityFunction ordinal: {ordinal}"
-        ))),
+        )))),
     }
 }
 
@@ -1728,7 +1799,7 @@ impl FloatVectorValues for BufferedFloatVectorValues {
         self.vectors
             .get(ord as usize)
             .cloned()
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("ord {ord} out of range")))
+            .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
     }
 }
 
@@ -1808,7 +1879,7 @@ impl ByteVectorValues for BufferedByteVectorValues {
         self.vectors
             .get(ord as usize)
             .cloned()
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("ord {ord} out of range")))
+            .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
     }
 }
 
@@ -1876,6 +1947,21 @@ impl DocIndexIterator for VecDocIndexIterator {
 // Lucene99HnswVectorsReader
 // -----------------------------------------------------------------------------
 
+impl Lucene99HnswVectorsReader {
+    /// The similarity functions in the order of their ordinals in the file
+    /// format, so that it does not depend on the declaration order of
+    /// `VectorSimilarityFunction`.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsReader.SIMILARITY_FUNCTIONS`
+    /// (`Lucene99HnswVectorsReader.java:222-229`), a `List.of(...)`.
+    pub const SIMILARITY_FUNCTIONS: [VectorSimilarityFunction; 4] = [
+        VectorSimilarityFunction::EUCLIDEAN,
+        VectorSimilarityFunction::DOT_PRODUCT,
+        VectorSimilarityFunction::COSINE,
+        VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+    ];
+}
+
 /// Reader for the Lucene 9.9 HNSW vector format.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader`.
@@ -1883,7 +1969,7 @@ pub struct Lucene99HnswVectorsReader {
     flat_vectors_reader: Box<dyn FlatVectorsReader>,
     field_infos: FieldInfos,
     fields: HashMap<i32, FieldEntry>,
-    vector_index: Box<dyn IndexInput>,
+    vector_index: SharedIndexInput,
     version: i32,
     data_context: Box<dyn crate::store::IOContext>,
 }
@@ -1928,13 +2014,13 @@ impl Lucene99HnswVectorsReader {
         state: &SegmentReadState<'_>,
         flat_vectors_reader: Box<dyn FlatVectorsReader>,
     ) -> Result<Self> {
-        let mut flat_vectors_reader = flat_vectors_reader;
+        let flat_vectors_reader = flat_vectors_reader;
         match Self::open(state) {
             Ok((fields, vector_index, version_meta, data_context)) => Ok(Self {
                 flat_vectors_reader,
                 field_infos: state.field_infos.clone(),
                 fields,
-                vector_index,
+                vector_index: SharedIndexInput::new(vector_index),
                 version: version_meta,
                 data_context,
             }),
@@ -1964,16 +2050,23 @@ impl Lucene99HnswVectorsReader {
             META_EXTENSION,
         );
         let mut meta_checksum = state.directory.open_checksum_input(&meta_file_name)?;
-        let version_meta = check_index_header(
-            meta_checksum.as_mut(),
-            META_CODEC_NAME,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
-        check_footer(meta_checksum.as_mut())?;
+        // The `try` block of the try-with-resources over `meta`, whose failure
+        // `CodecUtil.checkFooter(meta, priorE)` weighs in the `finally`
+        // (`Lucene99HnswVectorsReader.java:97-112`).
+        let read = (|| -> Result<_> {
+            let version_meta = check_index_header(
+                meta_checksum.as_mut(),
+                META_CODEC_NAME,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
+            Ok((version_meta, fields))
+        })();
+        let read = check_footer_after(meta_checksum.as_mut(), read);
+        let (version_meta, fields) = crate::store::close_after(meta_checksum.as_mut(), read)?;
 
         // Even though this input is referred to as `indexIn`, it does not
         // qualify as `FileTypeHint.INDEX` since it is a large file
@@ -2023,9 +2116,9 @@ impl Lucene99HnswVectorsReader {
                 &state.segment_suffix,
             )?;
             if version_meta != version_vector_data {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-                )));
+                ))));
             }
             retrieve_checksum(input.as_mut())?;
             Ok(())
@@ -2117,7 +2210,7 @@ impl Lucene99HnswVectorsReader {
             flat_vectors_reader: self.flat_vectors_reader.get_merge_instance_flat()?,
             field_infos: self.field_infos.clone(),
             fields: self.fields.clone(),
-            vector_index: self.vector_index.clone_input()?,
+            vector_index: SharedIndexInput::new(self.vector_index.clone_input()?),
             version: self.version,
             data_context: self.data_context.with_hints(self.data_context.hints()),
         })
@@ -2127,9 +2220,9 @@ impl Lucene99HnswVectorsReader {
         let info = self
             .field_infos
             .field_info(field)
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("field=\"{field}\" not found")))?;
+            .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))?;
         self.fields.get(&info.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field=\"{field}\" has no vector values"))
+            LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
         })
     }
 
@@ -2140,7 +2233,7 @@ impl Lucene99HnswVectorsReader {
     ) -> Result<&FieldEntry> {
         let entry = self.get_field_entry_or_throw(field)?;
         if entry.vector_encoding != expected_encoding {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as {entry_vector_encoding:?}, expected {expected_encoding:?}",
                 entry_vector_encoding = entry.vector_encoding,
             )));
@@ -2159,7 +2252,7 @@ impl Lucene99HnswVectorsReader {
         }
         Ok(Box::new(OffHeapHnswGraph::new(
             entry,
-            self.vector_index.as_ref(),
+            &**self.vector_index.read(),
             self.version,
         )?))
     }
@@ -2362,6 +2455,14 @@ impl HnswGraphProvider for Lucene99HnswVectorsReader {
 }
 
 impl KnnVectorsReader for Lucene99HnswVectorsReader {
+    /// This reader answers with itself: Java's `instanceof
+    /// Lucene99HnswVectorsReader`, `instanceof HnswGraphProvider` and
+    /// `instanceof QuantizedVectorsReader` on it are `true`
+    /// (`BaseKnnVectorsFormatTestCase.hasHNSW`, `hasQuantized`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn check_integrity(&self) -> Result<()> {
         self.flat_vectors_reader.check_integrity()?;
         let mut data = self.vector_index.clone_input()?;
@@ -2430,7 +2531,7 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
     /// Equivalent to `Lucene99HnswVectorsReader.close()`
     /// (`Lucene99HnswVectorsReader.java:424-427`): `IOUtils.close(flatVectorsReader,
     /// vectorIndex)`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         IOUtils::close([
             IOUtils::closeable(|| self.flat_vectors_reader.close()),
             IOUtils::closeable(|| self.vector_index.close()),
@@ -2495,7 +2596,9 @@ fn read_fields(
         let info = field_infos
             .field_info_by_number(field_number)
             .ok_or_else(|| {
-                LuceneError::CorruptIndex(format!("invalid field number: {field_number}"))
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "invalid field number: {field_number}"
+                )))
             })?;
         let entry = read_field(input, info)?;
         validate_field_entry(info, &entry)?;
@@ -2518,10 +2621,10 @@ fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry>
     let vector_encoding = read_vector_encoding(input.read_int()?)?;
     let similarity_function = read_similarity_function(input)?;
     if similarity_function != info.vector_similarity_function {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "inconsistent vector similarity function for field=\"{}\"",
             info.name
-        )));
+        ))));
     }
     FieldEntry::create(input, vector_encoding, similarity_function, info)
 }
@@ -2532,10 +2635,10 @@ fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry>
 /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#validateFieldEntry`.
 fn validate_field_entry(info: &FieldInfo, field_entry: &FieldEntry) -> Result<()> {
     if info.vector_dimension != field_entry.dimension {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "inconsistent vector dimension for field=\"{}\"",
             info.name
-        )));
+        ))));
     }
     Ok(())
 }
@@ -2564,10 +2667,10 @@ impl FieldEntry {
         // is catchable, whereas `vec![None; negative as usize]` asks for an
         // allocation of about 2^64 entries and aborts the process.
         if num_levels < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "field \"{}\" declares {num_levels} graph levels",
                 field_info.name
-            )));
+            ))));
         }
         // Grown as the levels are read rather than sized up front: one level
         // costs at least one byte of input, so a hostile count runs out of file
@@ -2580,10 +2683,10 @@ impl FieldEntry {
             if level > 0 {
                 let num_nodes = input.read_v_int()?;
                 if num_nodes < 0 {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "level {level} of field \"{}\" declares {num_nodes} nodes",
                         field_info.name
-                    )));
+                    ))));
                 }
                 number_of_offsets += i64::from(num_nodes);
                 // Java reads `nodesByLevel[level][0]` unconditionally and hits
@@ -2592,10 +2695,10 @@ impl FieldEntry {
                 // level is refused here, exactly as `OffHeapHnswGraph::seek`
                 // below refuses a level outside the graph for the same reason.
                 if num_nodes == 0 {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "level {level} of field \"{}\" declares no nodes",
                         field_info.name
-                    )));
+                    ))));
                 }
 
                 // Again grown, not pre-sized: each node is at least one byte,
@@ -2757,10 +2860,10 @@ impl HnswGraph for OffHeapHnswGraph {
         // `ArrayIndexOutOfBoundsException`, which is catchable. A Rust panic is
         // not the same thing, so the bound is checked.
         if level < 0 || level as usize >= self.nodes_by_level.len() {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "level {level} is outside the {} levels of the graph",
                 self.nodes_by_level.len()
-            )));
+            ))));
         }
         let target_index = if level == 0 {
             target
@@ -2768,23 +2871,33 @@ impl HnswGraph for OffHeapHnswGraph {
             let nodes = self.nodes_by_level[level as usize]
                 .as_ref()
                 .ok_or_else(|| {
-                    LuceneError::CorruptIndex(format!("missing nodes for level {level}"))
+                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                        "missing nodes for level {level}"
+                    )))
                 })?;
-            match nodes.binary_search(&target) {
+            let found = nodes.binary_search(&target);
+            debug_assert!(
+                found.is_ok(),
+                "seek level={level} target={target} not found: {}",
+                found.map_or_else(|insertion| -(insertion as i64) - 1, |idx| idx as i64)
+            );
+            // Without assertions Java goes on with the negative index and fails
+            // on the array access; the error below stands in for that.
+            match found {
                 Ok(idx) => idx as i32,
                 Err(_) => {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "node {target} not found on level {level}"
-                    )));
+                    ))));
                 }
             }
         };
         let offset_index =
             target_index as i64 + self.graph_level_node_index_offsets[level as usize];
         let offsets = self.offsets.as_ref().ok_or_else(|| {
-            LuceneError::CorruptIndex(
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
                 "the graph has no node offsets, so no node can be sought".to_string(),
-            )
+            ))
         })?;
         // `get_checked` rather than `LongValues::get`: every term of
         // `offset_index` came off disk, and the infallible accessor answers an
@@ -2807,12 +2920,17 @@ impl HnswGraph for OffHeapHnswGraph {
             .filter(|arcs| *arcs >= 0)
             .map(|arcs| arcs as usize)
             .unwrap_or(0);
+        debug_assert!(
+            self.arc_count <= max_arcs,
+            "too many neighbors: {}",
+            self.arc_count
+        );
         if self.arc_count > max_arcs.min(self.current_neighbors_buffer.len()) {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "node {target} on level {level} claims {} neighbours, more than the {} a graph \
                  with maxConn {} can have",
                 self.arc_count, max_arcs, self.max_conn
-            )));
+            ))));
         }
         if self.arc_count > 0 {
             if self.version >= VERSION_GROUPVARINT {
@@ -2842,11 +2960,11 @@ impl HnswGraph for OffHeapHnswGraph {
                 // where it is used, so no consumer of this graph can be handed
                 // an ordinal it would index an array with.
                 if sum < 0 || sum >= self.size {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "neighbour {sum} of node {target} on level {level} is outside the {} \
                          nodes of the graph",
                         self.size
-                    )));
+                    ))));
                 }
             }
         }
@@ -2888,7 +3006,9 @@ impl HnswGraph for OffHeapHnswGraph {
             Ok(Box::new(DenseNodesIterator::new(self.size)))
         } else {
             let nodes = self.nodes_by_level[level as usize].clone().ok_or_else(|| {
-                LuceneError::CorruptIndex(format!("missing nodes for level {level}"))
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "missing nodes for level {level}"
+                )))
             })?;
             Ok(Box::new(ArrayNodesIterator::new(nodes)))
         }
@@ -3060,7 +3180,10 @@ mod tests {
         float_writer.add_value(1, vec![0.0, 1.0])?;
         float_writer.add_value(2, vec![1.0, 1.0])?;
         match writer.flush(3, None) {
-            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!(
                     "initialCapacity must be > 0 and < {}; got: 0",
@@ -3244,7 +3367,7 @@ mod tests {
             writer.close()?;
         }
 
-        let mut reader = format.fields_reader(&read_state)?;
+        let reader = format.fields_reader(&read_state)?;
         let values = reader
             .get_float_vector_values("float_field")?
             .expect("the field has vectors");
@@ -3620,7 +3743,7 @@ mod tests {
             .search("float_field", &[0.0, 0.0, 0.0], &mut one, &mut all)
             .expect_err("the scorer rejects the target");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message == "vector query dimension: 3 differs from field dimension: 2"),
             "{error:?}"
         );
@@ -3637,7 +3760,7 @@ mod tests {
 
         let io_ctx = DefaultIOContext::default();
         let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
-        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
 
         // Without deletions the three nearest vectors to [0, 0] are documents
         // 0, 1 and 2, which fixes what the deletions must displace.
@@ -3670,16 +3793,16 @@ mod tests {
 
         let io_ctx = DefaultIOContext::default();
         let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
-        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
 
         // 54 of the 64 documents pass, which keeps the filtered count above the
         // `expectedVisitedNodes(3, 64) == 12` the graph search is expected to
         // touch, so the search stays on the graph path.
         let mut filtered = crate::search::from_iterator_supplier(
-            || {
+            Some(|| {
                 Ok(Box::new(crate::search::range(10, ACCEPT_DOCS_SIZE)?)
                     as Box<dyn crate::search::DocIdSetIterator>)
-            },
+            }),
             None,
             ACCEPT_DOCS_SIZE,
         )?;
@@ -3704,7 +3827,7 @@ mod tests {
 
         let io_ctx = DefaultIOContext::default();
         let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
-        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
 
         // `k == numVectors` makes `doHnsw` false, so this is the exhaustive
         // scan rather than the graph search.
@@ -3743,7 +3866,7 @@ mod tests {
 
         let io_ctx = DefaultIOContext::default();
         let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
-        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+        let reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
 
         // Ten of the 64 documents pass, below the `expectedVisitedNodes(3, 64)
         // == 12` an unfiltered graph search would visit, so Java clears
@@ -3752,10 +3875,10 @@ mod tests {
         // this port used to, keeps the search on the graph and visits a
         // different number of nodes.
         let mut filtered = crate::search::from_iterator_supplier(
-            || {
+            Some(|| {
                 Ok(Box::new(crate::search::range(10, 20)?)
                     as Box<dyn crate::search::DocIdSetIterator>)
-            },
+            }),
             None,
             ACCEPT_DOCS_SIZE,
         )?;
@@ -3935,7 +4058,8 @@ mod close_family_tests {
         Lucene99HnswVectorsFormat::new()
             .fields_reader(&read_state(&*dir, &info, &fis))
             .unwrap_err();
-        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vec"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vemf", "_0.vec"]);
     }
 
     /// A bad `.vex` header closes the `.vex` input
@@ -3953,7 +4077,11 @@ mod close_family_tests {
         Lucene99HnswVectorsFormat::new()
             .fields_reader(&read_state(&*dir, &info, &fis))
             .unwrap_err();
-        assert_eq!(closed_of(&log, &ALL)[before..], ["_0.vex", "_0.vec"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(
+            closed_of(&log, &ALL)[before..],
+            ["_0.vemf", "_0.vem", "_0.vex", "_0.vec"]
+        );
     }
 
     /// `close()` is `IOUtils.close(flatVectorsReader, vectorIndex)`
@@ -3964,7 +4092,7 @@ mod close_family_tests {
         let info = test_segment_info("_0", 10);
         let fis = FieldInfos::default();
         write_empty(&dir, &info);
-        let mut reader = Lucene99HnswVectorsFormat::new()
+        let reader = Lucene99HnswVectorsFormat::new()
             .fields_reader(&read_state(&*dir, &info, &fis))
             .unwrap();
         let before = closed_of(&log, &ALL).len();

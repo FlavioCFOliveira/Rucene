@@ -177,6 +177,7 @@ where
     for collected in terms {
         let term = Term::new(query.get_field(), collected.bytes);
         let doc_freq = collected.term_state.doc_freq()?;
+        debug_assert!(index_searcher.get_index_reader().doc_freq(&term)? == doc_freq);
         builder.add_clause(
             term,
             doc_freq,

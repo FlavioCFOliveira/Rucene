@@ -578,7 +578,7 @@ mod tests {
             }
 
             fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn num_docs(&self) -> i32 {
@@ -590,7 +590,7 @@ mod tests {
             }
 
             fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn do_close(&self) -> Result<()> {
@@ -602,23 +602,23 @@ mod tests {
             }
 
             fn doc_freq(&self, _term: &crate::index::Term) -> Result<i32> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn total_term_freq(&self, _term: &crate::index::Term) -> Result<i64> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn get_doc_count(&self, _field: &str) -> Result<i32> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn build_context(
@@ -671,5 +671,186 @@ mod tests {
         assert_eq!(leaves[0].ord(), 0);
         assert_eq!(leaves[1].ord(), 1);
         assert_eq!(leaves[2].ord(), 2);
+    }
+
+    /// A composite test double whose [`IndexReader::core`] is either its own or
+    /// another reader's.
+    #[derive(Debug)]
+    struct Composite {
+        core: IndexReaderCore,
+        subs: Vec<Arc<dyn IndexReader>>,
+        shares_core_of: Option<Arc<dyn IndexReader>>,
+    }
+
+    impl std::fmt::Display for Composite {
+        /// Test double without a Lucene counterpart.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Composite")
+        }
+    }
+
+    impl IndexReader for Composite {
+        fn core(&self) -> &IndexReaderCore {
+            match &self.shares_core_of {
+                Some(other) => other.core(),
+                None => &self.core,
+            }
+        }
+
+        fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn num_docs(&self) -> i32 {
+            self.subs.iter().map(|r| r.num_docs()).sum()
+        }
+
+        fn max_doc(&self) -> i32 {
+            self.subs.iter().map(|r| r.max_doc()).sum()
+        }
+
+        fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn do_close(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+
+        fn doc_freq(&self, _term: &crate::index::Term) -> Result<i32> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn total_term_freq(&self, _term: &crate::index::Term) -> Result<i64> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn get_doc_count(&self, _field: &str) -> Result<i32> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn build_context(
+            self: Arc<Self>,
+            parent: Option<Weak<dyn IndexReaderContext>>,
+            ord_in_parent: i32,
+            doc_base_in_parent: i32,
+            leaf_ord: i32,
+            leaf_doc_base: i32,
+        ) -> Arc<dyn IndexReaderContext> {
+            build_composite_context(
+                self as Arc<dyn CompositeReader>,
+                parent,
+                ord_in_parent,
+                doc_base_in_parent,
+                leaf_ord,
+                leaf_doc_base,
+            )
+        }
+    }
+
+    impl CompositeReader for Composite {
+        fn get_sequential_sub_readers(&self) -> Vec<Arc<dyn IndexReader>> {
+            self.subs.clone()
+        }
+    }
+
+    fn composite(shares_core_of: Option<Arc<dyn IndexReader>>) -> Arc<dyn IndexReader> {
+        Arc::new(Composite {
+            core: IndexReaderCore::new(),
+            subs: vec![leaf(2, 2), leaf(3, 3), leaf(4, 4)],
+            shares_core_of,
+        })
+    }
+
+    fn ids(leaves: &[Arc<LeafReaderContext>]) -> Vec<usize> {
+        leaves.iter().map(|leaf| leaf.id()).collect()
+    }
+
+    /// `LeafReader.getContext()` answers the one `LeafReaderContext` the reader
+    /// built for itself (`LeafReader.java:51, 59-62`).
+    #[test]
+    fn leaf_reader_answers_the_same_context() {
+        let reader = leaf(5, 5);
+        let first = Arc::clone(&reader).get_context().unwrap();
+        let second = Arc::clone(&reader).get_context().unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(
+            ids(&Arc::clone(&reader).leaves().unwrap()),
+            ids(&Arc::clone(&first).leaves())
+        );
+    }
+
+    /// `CompositeReader.getContext()` builds its `CompositeReaderContext` once
+    /// and answers it again (`CompositeReader.java:93-102`), so `leaves()` —
+    /// `getContext().leaves()` — hands out the same leaf contexts every time.
+    #[test]
+    fn composite_reader_answers_the_same_context_and_leaves() {
+        let reader = composite(None);
+        let top = Arc::clone(&reader).get_context().unwrap();
+        let again = Arc::clone(&reader).get_context().unwrap();
+        assert!(Arc::ptr_eq(&top, &again));
+        let leaves = ids(&Arc::clone(&top).leaves());
+        assert_eq!(leaves.len(), 3);
+        assert_eq!(ids(&Arc::clone(&reader).leaves().unwrap()), leaves);
+        assert_eq!(ids(&Arc::clone(&reader).leaves().unwrap()), leaves);
+        let children: Vec<usize> = top.children().unwrap().iter().map(|c| c.id()).collect();
+        let children_again: Vec<usize> = again.children().unwrap().iter().map(|c| c.id()).collect();
+        assert_eq!(children, children_again);
+    }
+
+    /// The declared divergence of [`IndexReader::get_context`]: the reader
+    /// holds its context weakly, so once nothing holds it the next call builds
+    /// a new one (Java's reader would answer the same object).
+    #[test]
+    fn context_is_rebuilt_once_nothing_holds_it() {
+        let reader = composite(None);
+        let first = Arc::clone(&reader).get_context().unwrap().id();
+        let second = Arc::clone(&reader).get_context().unwrap().id();
+        assert_ne!(first, second);
+    }
+
+    /// A reader whose core is another reader's core is answered a context of
+    /// its own, never the other reader's.
+    #[test]
+    fn a_reader_sharing_a_core_is_answered_its_own_context() {
+        let inner = composite(None);
+        let outer = composite(Some(Arc::clone(&inner)));
+        let inner_context = Arc::clone(&inner).get_context().unwrap();
+        let outer_context = Arc::clone(&outer).get_context().unwrap();
+        assert!(Arc::ptr_eq(&inner_context.reader(), &inner));
+        assert!(Arc::ptr_eq(&outer_context.reader(), &outer));
+        assert!(Arc::ptr_eq(
+            &Arc::clone(&outer).get_context().unwrap().reader(),
+            &outer
+        ));
+    }
+
+    /// `searcher.getIndexReader().leaves()` is the searcher's own leaf
+    /// contexts: `IndexSearcher(IndexReader)` takes `reader.getContext()`
+    /// (`IndexSearcher.java:207-209, 230-231`), which the reader answers again.
+    #[test]
+    fn a_searchers_reader_hands_out_the_searchers_leaves() {
+        let searcher = crate::search::IndexSearcher::new(composite(None)).unwrap();
+        let expected = ids(searcher.get_leaf_contexts());
+        assert_eq!(
+            ids(&Arc::clone(searcher.get_index_reader()).leaves().unwrap()),
+            expected
+        );
+        assert_eq!(
+            ids(&Arc::clone(searcher.get_top_reader_context()).leaves()),
+            expected
+        );
     }
 }

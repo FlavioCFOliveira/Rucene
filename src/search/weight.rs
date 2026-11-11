@@ -68,6 +68,19 @@ pub trait Weight: SegmentCacheable + Send + Sync + Debug {
         None
     }
 
+    /// Returns this weight as [`Any`](std::any::Any), so that a caller can test
+    /// its concrete type, or `None` when the type does not take part in such a
+    /// test.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests a weight's class with
+    /// `instanceof` — `AssertingIndexSearcher.search` asserts
+    /// `weight instanceof AssertingWeight`. Rust cannot downcast a
+    /// `dyn Weight`, so the escape hatch is declared; its default answers
+    /// `None`, Java's `false` branch, and a type that is tested overrides it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Returns a [`ScorerSupplier`], which allows knowing the cost of the
     /// [`Scorer`] before building it, or `None` if no documents will be scored
     /// by this query.
@@ -195,7 +208,7 @@ pub trait Weight: SegmentCacheable + Send + Sync + Debug {
 /// hands out the same reference on every `get(long)` call, relying on the
 /// documented "must be called at most once" contract to keep that safe. Rust
 /// cannot hand out an owned scorer twice, so the second call fails with
-/// [`LuceneError::IllegalState`] — turning a documented misuse into a reported
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — turning a documented misuse into a reported
 /// one. For the same reason the cost is computed once, at construction, rather
 /// than on every `cost()` call; the value is identical because a scorer's
 /// iterator cost is stable.

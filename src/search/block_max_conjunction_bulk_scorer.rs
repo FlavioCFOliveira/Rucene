@@ -94,11 +94,11 @@ impl BlockMaxConjunctionBulkScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when fewer than two clauses are
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two clauses are
     /// supplied, which is the `IllegalArgumentException` Java throws.
     pub fn new(max_doc: i32, scorers: Vec<Box<dyn Scorer>>) -> Result<Self> {
         if scorers.len() <= 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Expected 2 or more scorers, got {}",
                 scorers.len()
             )));

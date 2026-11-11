@@ -289,11 +289,11 @@ impl LongDistanceFeatureQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `pivot_distance` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `pivot_distance` is not
     /// positive.
     pub fn new(field: impl Into<String>, origin: i64, pivot_distance: i64) -> Result<Self> {
         if pivot_distance <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pivotDistance must be > 0, got {pivot_distance}"
             )));
         }
@@ -504,6 +504,7 @@ impl LongDistanceScorer {
             // `min_score` did not decrease enough to require an update.
             return previous_max_distance;
         }
+        debug_assert!(self.score_distance(previous_max_distance) < min_score);
         let mut min = 0i64;
         let mut max = previous_max_distance;
         // Invariant: score(min) >= min_score && score(max) < min_score.
@@ -515,6 +516,8 @@ impl LongDistanceScorer {
                 max = mid;
             }
         }
+        debug_assert!(self.score_distance(min) >= min_score);
+        debug_assert!(min == i64::MAX || self.score_distance(min + 1) < min_score);
         min
     }
 
@@ -615,10 +618,6 @@ impl Scorable for LongDistanceScorer {
 }
 
 impl Scorer for LongDistanceScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.iter.doc
     }
@@ -728,7 +727,7 @@ impl LatLonPointDistanceFeatureQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an invalid latitude or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an invalid latitude or
     /// longitude, and when `pivot_distance` is not positive.
     pub fn new(
         field: impl Into<String>,
@@ -739,7 +738,7 @@ impl LatLonPointDistanceFeatureQuery {
         GeoUtils::check_latitude(origin_lat)?;
         GeoUtils::check_longitude(origin_lon)?;
         if pivot_distance <= 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pivotDistance must be > 0, got {pivot_distance}"
             )));
         }
@@ -955,6 +954,7 @@ impl LatLonPointDistanceScorer {
             // `min_score` did not decrease enough to require an update.
             return previous_max_distance;
         }
+        debug_assert!(self.score_distance(previous_max_distance) < min_score);
         let mut min = 0.0f64;
         let mut max = previous_max_distance;
         // Invariant: score(min) >= min_score && score(max) < min_score.
@@ -966,6 +966,8 @@ impl LatLonPointDistanceScorer {
                 max = mid;
             }
         }
+        debug_assert!(self.score_distance(min) >= min_score);
+        debug_assert!(min == f64::MAX || self.score_distance(min + 1.0) < min_score);
         min
     }
 }
@@ -1046,10 +1048,6 @@ impl Scorable for LatLonPointDistanceScorer {
 }
 
 impl Scorer for LatLonPointDistanceScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.iter.doc
     }

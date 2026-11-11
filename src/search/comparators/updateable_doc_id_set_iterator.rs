@@ -155,7 +155,7 @@ impl DocIdSetIterator for UpdateableDocIdSetIterator {
         Ok(())
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         let mut state = self.shared.state.borrow_mut();
         // `update` may have just been called.
         let doc = state.doc;

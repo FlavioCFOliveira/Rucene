@@ -101,7 +101,7 @@ impl DoubleValuesSource for FullPrecisionFloatVectorSimilarityValuesSource {
             .map(|fi| fi.vector_dimension)
             .unwrap_or(0);
         if dimension as usize != self.query_vector.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Query vector dimension does not match field dimension: {} != {}",
                 self.query_vector.len(),
                 dimension

@@ -330,6 +330,12 @@ impl DocIdSetIterator for BlockMaxConjunctionScorer {
 }
 
 impl Scorable for BlockMaxConjunctionScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `BlockMaxConjunctionScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         self.approximation.score_all()
     }
@@ -345,15 +351,16 @@ impl Scorable for BlockMaxConjunctionScorer {
             let scorer = member
                 .scorer()
                 .expect("INVARIANT: every clause of a BlockMaxConjunctionScorer wraps a Scorer");
-            children.push(ChildScorable::new(scorer.as_scorable(), "MUST"));
+            children.push(ChildScorable::new(scorer, "MUST"));
         }
         Ok(children)
     }
 }
 
 impl Scorer for BlockMaxConjunctionScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
+    /// This scorer answers with itself: Java tests `instanceof BlockMaxConjunctionScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn doc_id(&self) -> i32 {

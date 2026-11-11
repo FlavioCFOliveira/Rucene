@@ -151,35 +151,24 @@ impl OnHeapHnswGraph {
         }
     }
 
-    /// Returns the slot of `node` at `level`, or the error Java's assertions
-    /// in `getNeighbors` stand for.
+    /// Returns the slot of `node` at `level`.
+    ///
+    /// Java's `getNeighbors` only asserts the node and the level
+    /// (`OnHeapHnswGraph.java:96-101`); without assertions an absent slot is
+    /// its `ArrayIndexOutOfBoundsException` or `NullPointerException`, here a
+    /// panic.
     fn level_slot(&self, level: i32, node: i32) -> Result<&NeighborArray> {
         let node_usize = node as usize;
-        if node < 0 || node_usize >= self.graph.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "node {} out of bounds (graph length {})",
-                node,
-                self.graph.len()
-            )));
-        }
-        let levels = self.graph[node_usize]
-            .get()
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("node {} has no levels", node)))?;
-        let level_usize = level as usize;
-        if level < 0 || level_usize >= levels.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "level {} out of bounds for node {} (has {} levels)",
-                level,
-                node,
-                levels.len()
-            )));
-        }
-        levels[level_usize].get().ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
-                "node {} has no neighbor array at level {}",
-                node, level
-            ))
-        })
+        debug_assert!(node_usize < self.graph.len());
+        let levels = self.graph[node_usize].get().expect("graph[node] is null");
+        debug_assert!(
+            (level as usize) < levels.len(),
+            "level={level}, node has only {} levels",
+            levels.len()
+        );
+        let slot = levels[level as usize].get();
+        debug_assert!(slot.is_some(), "node={node}, level={level}");
+        Ok(slot.expect("graph[node][level] is null"))
     }
 
     /// Returns the `NeighborArray` for `node` at `level`.
@@ -192,8 +181,8 @@ impl OnHeapHnswGraph {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the node or the level is
-    /// out of range or not yet added, where Java's assertions fail.
+    /// Never; the node and the level are asserted, as in Java, and an absent
+    /// slot panics.
     pub fn get_neighbors(&self, level: i32, node: i32) -> Result<&NeighborArray> {
         self.level_slot(level, node)
     }
@@ -224,19 +213,33 @@ impl OnHeapHnswGraph {
     ///
     /// # Panics
     ///
-    /// Panics when `node` is beyond the size the graph was created with.
+    /// Throws Java's `IllegalStateException` (as a panic) when `node` is
+    /// beyond the size the graph was created with.
     pub fn add_node(&mut self, level: i32, node: i32) {
         let node_usize = node as usize;
         if node_usize >= self.graph.len() {
             if self.no_growth {
-                panic!("The graph does not expect to grow when an initial size is given");
+                // `throw new IllegalStateException(...)` (`OnHeapHnswGraph.java:140-144`).
+                crate::store::java_nio_file::throw_unchecked(
+                    "java.lang.IllegalStateException",
+                    Some("The graph does not expect to grow when an initial size is given"),
+                );
             }
-            let new_len =
-                crate::util::ArrayUtil::oversize(node_usize + 1, std::mem::size_of::<usize>())
-                    .max(node_usize + 1);
+            // `ArrayUtil.grow(graph, node + 1)` (`ArrayUtil.java:231-237`) sizes
+            // the new array with `oversize(minSize, NUM_BYTES_OBJECT_REF)`.
+            let new_len = crate::util::ArrayUtil::oversize(
+                node_usize + 1,
+                RamUsageEstimator::NUM_BYTES_OBJECT_REF as usize,
+            );
             self.graph.resize_with(new_len, OnceLock::new);
         }
 
+        debug_assert!(
+            self.graph[node_usize]
+                .get()
+                .is_none_or(|levels| levels.len() >= level as usize),
+            "node must be inserted from the top level: "
+        );
         let array = self.new_neighbor_array(level);
         let target_len = (level + 1) as usize;
         let slot = &mut self.graph[node_usize];
@@ -268,7 +271,7 @@ impl OnHeapHnswGraph {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] where [`add_node`](Self::add_node)
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) where [`add_node`](Self::add_node)
     /// would have to grow storage the other workers may be reading — the outer
     /// array, or the node's level array — and where the level was already
     /// added, which Java would overwrite under the other workers' feet.
@@ -352,6 +355,28 @@ impl OnHeapHnswGraph {
             None => false,
             Some(levels) => (level as usize) < levels.len(),
         }
+    }
+
+    /// Returns `graph.length`, the capacity of the outer array.
+    ///
+    /// Equivalent to reading the private field `OnHeapHnswGraph.graph`
+    /// (`OnHeapHnswGraph.java:47`); public so that the test framework can
+    /// model the Java object.
+    pub fn graph_length(&self) -> usize {
+        self.graph.len()
+    }
+
+    /// Returns `graph[node]`: `None` for Java's `null`, else the node's level
+    /// slots, an unset slot standing for a `null` `graph[node][level]`.
+    ///
+    /// Equivalent to reading the private field `OnHeapHnswGraph.graph`
+    /// (`OnHeapHnswGraph.java:47`); public so that the test framework can
+    /// model the Java object.
+    pub fn graph_node(&self, node: usize) -> Option<&[OnceLock<NeighborArray>]> {
+        self.graph
+            .get(node)
+            .and_then(|slot| slot.get())
+            .map(|levels| &**levels)
     }
 
     /// Returns the number of levels currently in the graph.
@@ -476,7 +501,7 @@ impl HnswGraph for OnHeapHnswGraph {
         } else {
             let num_levels = self.num_levels()?;
             if level < 0 || level >= num_levels {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "level {} out of bounds (num_levels={})",
                     level, num_levels
                 )));

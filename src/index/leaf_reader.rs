@@ -47,7 +47,7 @@ impl LeafMetaData {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `created_version_major` is out
+    /// Returns `LuceneErrorKind::IllegalArgument` if `created_version_major` is out
     /// of range or if `min_version` is required but missing.
     pub fn new(
         created_version_major: i32,
@@ -56,18 +56,18 @@ impl LeafMetaData {
         has_blocks: bool,
     ) -> Result<Self> {
         if created_version_major > Version::LATEST.major as i32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "createdVersionMajor is in the future: {created_version_major}"
             )));
         }
         if created_version_major < Self::MIN_CREATED_VERSION_MAJOR {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "createdVersionMajor must be >= {}, got: {created_version_major}",
                 Self::MIN_CREATED_VERSION_MAJOR
             )));
         }
         if created_version_major >= 7 && min_version.is_none() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minVersion must be set when createdVersionMajor is >= 7".to_string(),
             ));
         }
@@ -206,6 +206,17 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         None
     }
 
+    /// Returns this reader as a
+    /// [`ParallelLeafReader`](crate::index::parallel_reader::ParallelLeafReader),
+    /// when it is one: `reader instanceof ParallelLeafReader`, answered as
+    /// [`as_segment_reader`](Self::as_segment_reader) answers for
+    /// `SegmentReader`.
+    fn as_parallel_leaf_reader(
+        &self,
+    ) -> Option<&crate::index::parallel_reader::ParallelLeafReader> {
+        None
+    }
+
     /// Returns the reader this one wraps when it is a `FilterLeafReader`, and
     /// `None` otherwise.
     ///
@@ -217,6 +228,35 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
     /// [`CodecReader::filter_codec_reader_delegate`](crate::index::codec_reader::CodecReader::filter_codec_reader_delegate)
     /// does for `FilterCodecReader`; every other reader keeps this default.
     fn filter_leaf_reader_delegate(&self) -> Option<&Arc<dyn LeafReader>> {
+        None
+    }
+
+    /// Returns this reader as [`Any`](std::any::Any), so that a caller can
+    /// test its concrete class, or `None` when the type does not take part in
+    /// such a test.
+    ///
+    /// Java tests a leaf reader's class with `instanceof`
+    /// (`TestSearcherManager.testCustomDirectoryReader` checks
+    /// `ctx.reader() instanceof MyFilterLeafReader`); a type that is tested
+    /// overrides the default, which answers `None`, Java's `false` branch.
+    fn leaf_as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    /// Returns this reader as a [`CodecReader`](crate::index::codec_reader::CodecReader)
+    /// when it is one, and `None` otherwise.
+    ///
+    /// Equivalent to Java's `reader instanceof CodecReader` followed by the
+    /// cast `(CodecReader) reader`, which `TestUtil.checkReader(LeafReader,
+    /// int)` performs (`TestUtil.java:376-382`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object cannot be narrowed to another
+    /// trait object, so each port of a `CodecReader` answers with itself. The
+    /// default, `None`, is what `instanceof` answers for every other reader.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
         None
     }
 
@@ -350,7 +390,7 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
         if let Some(terms) = self.terms(term.field())? {
             let mut iterator = terms.iterator()?;
             if iterator.seek_exact(term.bytes())? {
-                return Ok(Some(iterator.postings(None, flags)?));
+                return iterator.postings(None, flags);
             }
         }
         Ok(None)

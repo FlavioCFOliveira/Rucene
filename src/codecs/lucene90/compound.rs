@@ -7,21 +7,35 @@
 
 use crate::util::{IOUtils, PriorityQueue, PriorityQueueComparator};
 use std::collections::HashSet;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::codecs::codec_util;
 use crate::codecs::compound::CompoundFormat;
 use crate::codecs::compound::{CompoundDirectory, CompoundFileEntry};
 use crate::codecs::stub::SegmentInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{
     segment_file_name, strip_segment_name, COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION,
 };
 use crate::store::{Directory, IOContext, IndexInput, IndexOutput, Lock};
 
 const DATA_CODEC: &str = "Lucene90CompoundData";
-const ENTRY_CODEC: &str = "Lucene90CompoundEntries";
-const VERSION_START: i32 = 0;
-const VERSION_CURRENT: i32 = VERSION_START;
+/// Codec name of the entries (`.cfe`) file.
+///
+/// Equivalent to the package-private `Lucene90CompoundFormat.ENTRY_CODEC`;
+/// `pub` here, as tests outside the crate read it the way Java's
+/// same-package tests do.
+pub const ENTRY_CODEC: &str = "Lucene90CompoundEntries";
+/// First version of the compound format.
+///
+/// Equivalent to the package-private `Lucene90CompoundFormat.VERSION_START`;
+/// `pub` for the same reason.
+pub const VERSION_START: i32 = 0;
+/// Current version of the compound format.
+///
+/// Equivalent to the package-private `Lucene90CompoundFormat.VERSION_CURRENT`;
+/// `pub` for the same reason.
+pub const VERSION_CURRENT: i32 = VERSION_START;
 
 /// Alignment applied to each embedded file's start offset.
 ///
@@ -65,31 +79,45 @@ impl CompoundFormat for Lucene90CompoundFormat {
         let entries_file =
             segment_file_name(&segment_info.name, "", COMPOUND_FILE_ENTRIES_EXTENSION);
 
+        // `try (IndexOutput data = dir.createOutput(dataFile, context);
+        //      IndexOutput entries = dir.createOutput(entriesFile, context))`
+        // (`Lucene90CompoundFormat.java:97-106`): both outputs are closed on
+        // every exit, `entries` first; an exception of the body (or of
+        // creating `entries`) wins over those of the closes, which Java
+        // suppresses, and the first failing close wins over the second.
         let mut data = dir.create_output(&data_file, context)?;
-        let mut entries = dir.create_output(&entries_file, context)?;
+        let mut entries = match dir.create_output(&entries_file, context) {
+            Ok(entries) => entries,
+            Err(e) => {
+                let _ = data.close();
+                return Err(e);
+            }
+        };
 
-        codec_util::write_index_header(
-            data.as_mut(),
-            DATA_CODEC,
-            VERSION_CURRENT,
-            &segment_info.id(),
-            "",
-        )?;
-        codec_util::write_index_header(
-            entries.as_mut(),
-            ENTRY_CODEC,
-            VERSION_CURRENT,
-            &segment_info.id(),
-            "",
-        )?;
+        let body = (|| -> Result<()> {
+            codec_util::write_index_header(
+                data.as_mut(),
+                DATA_CODEC,
+                VERSION_CURRENT,
+                &segment_info.id(),
+                "",
+            )?;
+            codec_util::write_index_header(
+                entries.as_mut(),
+                ENTRY_CODEC,
+                VERSION_CURRENT,
+                &segment_info.id(),
+                "",
+            )?;
 
-        write_compound_file(entries.as_mut(), data.as_mut(), dir, segment_info)?;
+            write_compound_file(entries.as_mut(), data.as_mut(), dir, segment_info)?;
 
-        codec_util::write_footer(data.as_mut())?;
-        codec_util::write_footer(entries.as_mut())?;
-        data.close()?;
-        entries.close()?;
-        Ok(())
+            codec_util::write_footer(data.as_mut())?;
+            codec_util::write_footer(entries.as_mut())
+        })();
+        let closed_entries = entries.close();
+        let closed_data = data.close();
+        body.and(closed_entries).and(closed_data)
     }
 }
 
@@ -142,25 +170,29 @@ fn write_compound_file(
         // align file start offset
         let start_offset = data.align_file_pointer(ALIGNMENT_BYTES)?;
         // write bytes for file
+        // `try (ChecksumIndexInput in = dir.openChecksumInput(file))`
+        // (`Lucene90CompoundFormat.java:121-138`): closed on every exit.
         let mut input = dir.open_checksum_input(&file)?;
+        let copied = (|| -> Result<()> {
+            // just copies the index header, verifying that its id matches what we expect
+            codec_util::verify_and_copy_index_header(input.as_mut(), data, &segment_info.id())?;
 
-        // just copies the index header, verifying that its id matches what we expect
-        codec_util::verify_and_copy_index_header(input.as_mut(), data, &segment_info.id())?;
+            // copy all bytes except the footer
+            let num_bytes_to_copy =
+                input.length() - codec_util::footer_length() as i64 - input.file_pointer();
+            data.copy_bytes(input.as_mut(), num_bytes_to_copy)?;
 
-        // copy all bytes except the footer
-        let num_bytes_to_copy =
-            input.length() - codec_util::footer_length() as i64 - input.file_pointer();
-        data.copy_bytes(input.as_mut(), num_bytes_to_copy)?;
+            // verify footer (checksum) matches for the incoming file we are copying
+            let checksum = codec_util::check_footer(input.as_mut())?;
 
-        // verify footer (checksum) matches for the incoming file we are copying
-        let checksum = codec_util::check_footer(input.as_mut())?;
-
-        // this is poached from CodecUtil.writeFooter, but we need to use our own
-        // checksum, not data.getChecksum()
-        codec_util::write_be_int(data, codec_util::FOOTER_MAGIC)?;
-        codec_util::write_be_int(data, 0)?;
-        codec_util::write_be_long(data, checksum)?;
-        input.close()?;
+            // this is poached from CodecUtil.writeFooter, but we need to use our own
+            // checksum, not data.getChecksum()
+            codec_util::write_be_int(data, codec_util::FOOTER_MAGIC)?;
+            codec_util::write_be_int(data, 0)?;
+            codec_util::write_be_long(data, checksum)?;
+            Ok(())
+        })();
+        crate::store::close_after(input.as_mut(), copied)?;
 
         let end_offset = data.file_pointer();
         let length = end_offset - start_offset;
@@ -180,7 +212,10 @@ fn write_compound_file(
 pub struct Lucene90CompoundReader {
     segment_name: String,
     entries: CompoundEntries,
-    handle: Box<dyn IndexInput>,
+    ///
+    /// Behind a mutex because `close()` closes it through the shared
+    /// reader, as Java's `IOUtils.close(handle)` does.
+    handle: Mutex<Box<dyn IndexInput>>,
     /// How the directory this reader was opened from renders itself.
     ///
     /// Java keeps the `Directory` in a field and concatenates it in
@@ -194,12 +229,17 @@ impl std::fmt::Debug for Lucene90CompoundReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Lucene90CompoundReader")
             .field("segment_name", &self.segment_name)
-            .field("handle", &self.handle.resource_description())
+            .field("handle", &self.handle().resource_description())
             .finish_non_exhaustive()
     }
 }
 
 impl Lucene90CompoundReader {
+    /// The `.cfs` handle every sub-file is sliced from.
+    fn handle(&self) -> MutexGuard<'_, Box<dyn IndexInput>> {
+        self.handle.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Opens the compound reader for the given segment.
     ///
     /// Equivalent to `Lucene90CompoundReader(Directory, SegmentInfo)`
@@ -207,7 +247,7 @@ impl Lucene90CompoundReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the entries file or the data
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the entries file or the data
     /// file's header or footer structure is invalid, or when the data file's
     /// length is not the one the entries imply; propagates any I/O error.
     pub fn new(dir: &dyn Directory, segment_info: &SegmentInfo) -> Result<Self> {
@@ -247,11 +287,11 @@ impl Lucene90CompoundReader {
             // We also validate length, because e.g. if you strip 16 bytes off the .cfs we otherwise
             // would not detect it:
             if handle.length() != expected_length {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "length should be {expected_length} bytes, but is {} instead (resource={})",
                     handle.length(),
                     handle.resource_description()
-                )));
+                ))));
             }
             Ok(())
         })();
@@ -265,7 +305,7 @@ impl Lucene90CompoundReader {
         Ok(Self {
             segment_name,
             entries,
-            handle,
+            handle: Mutex::new(handle),
             directory_description,
         })
     }
@@ -293,16 +333,9 @@ fn read_entries(
         )?;
         Ok((version, read_mapping(entries_stream.as_mut())?))
     })();
-    match read {
-        Ok(read) => {
-            codec_util::check_footer(entries_stream.as_mut())?;
-            Ok(read)
-        }
-        Err(prior) => Err(codec_util::check_footer_with_prior(
-            entries_stream.as_mut(),
-            prior,
-        )),
-    }
+    let read = codec_util::check_footer_after(entries_stream.as_mut(), read);
+    // `try (ChecksumIndexInput entriesStream = ...)`: closed on every exit.
+    crate::store::close_after(entries_stream.as_mut(), read)
 }
 
 /// Equivalent to `Lucene90CompoundReader.readMapping`
@@ -322,10 +355,10 @@ fn read_mapping(entries_stream: &mut dyn IndexInput) -> Result<CompoundEntries> 
         let id = entries_stream.read_string()?;
         if mapping.contains_key(&id) {
             // `new CorruptIndexException("Duplicate cfs entry id=" + id + " in CFS ", entriesStream)`
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Duplicate cfs entry id={id} in CFS  (resource={})",
                 entries_stream.resource_description()
-            )));
+            ))));
         }
         let offset = entries_stream.read_long()?;
         let length = entries_stream.read_long()?;
@@ -363,7 +396,7 @@ impl CompoundDirectory for Lucene90CompoundReader {
     /// `CodecUtil.checksumEntireFile(handle)`, which reads a clone of the
     /// handle from the start.
     fn check_integrity(&self) -> Result<()> {
-        let mut handle = self.handle.clone_input()?;
+        let mut handle = self.handle().clone_input()?;
         codec_util::checksum_entire_file(handle.as_mut())?;
         Ok(())
     }
@@ -382,7 +415,7 @@ impl Directory for Lucene90CompoundReader {
     }
 
     fn delete_file(&self, _name: &str) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "deleteFile is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -395,15 +428,15 @@ impl Directory for Lucene90CompoundReader {
             .get(id)
             .map(|e| e.length)
             .ok_or_else(|| {
-                LuceneError::Io(std::io::Error::new(
+                LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     name.to_string(),
-                ))
+                )))
             })
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "createOutput is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -414,13 +447,13 @@ impl Directory for Lucene90CompoundReader {
         _suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "createTempOutput is not supported by CompoundDirectory".to_string(),
         ))
     }
 
     fn sync(&self, _names: &[String]) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "sync is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -430,7 +463,7 @@ impl Directory for Lucene90CompoundReader {
     }
 
     fn rename(&self, _source: &str, _dest: &str) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "rename is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -441,27 +474,27 @@ impl Directory for Lucene90CompoundReader {
         let id = strip_segment_name(name);
         let Some(entry) = self.entries.mapping.get(id) else {
             let dat_file_name = segment_file_name(&self.segment_name, "", COMPOUND_FILE_EXTENSION);
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!(
                     "No sub-file with id {id} found in compound file \"{dat_file_name}\" (fileName={name} files: {})",
                     self.entries.java_key_set()
                 ),
-            )));
+            ))));
         };
-        self.handle
+        self.handle()
             .slice_with_context(name, entry.offset, entry.length, context)
     }
 
     fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "obtainLock is not supported by CompoundDirectory".to_string(),
         ))
     }
 
     /// Equivalent to `Lucene90CompoundReader.close()`: `IOUtils.close(handle)`.
-    fn close(&mut self) -> Result<()> {
-        IOUtils::close([Some(|| self.handle.close())])
+    fn close(&self) -> Result<()> {
+        IOUtils::close([Some(|| self.handle().close())])
     }
 
     fn get_pending_deletions(&self) -> Result<HashSet<String>> {
@@ -515,6 +548,28 @@ mod tests {
         info
     }
 
+    /// Regression: a failing `write` closes both outputs, as Java's
+    /// try-with-resources does (`Lucene90CompoundFormat.java:97-106`); the
+    /// headers written before the failure reach the files only through
+    /// `close()`. The segment names a file that does not exist, so
+    /// `writeCompoundFile` fails on its length.
+    #[test]
+    fn a_failing_write_closes_both_outputs() {
+        let dir = ByteBuffersDirectory::new();
+        let info = test_segment_info("_0", 10);
+        info.set_files(HashSet::from(["_0.fdt".to_string()]))
+            .unwrap();
+        let result =
+            Lucene90CompoundFormat::new().write(&dir, &info, &*crate::store::DEFAULT_IO_CONTEXT);
+        assert!(result.is_err(), "the missing _0.fdt fails the write");
+        for name in ["_0.cfs", "_0.cfe"] {
+            assert!(
+                dir.file_length(name).unwrap() > 0,
+                "{name} was closed with its index header"
+            );
+        }
+    }
+
     /// Replaces `name` in `dir` with `bytes`.
     fn overwrite(dir: &ByteBuffersDirectory, name: &str, bytes: &[u8]) {
         dir.delete_file(name).unwrap();
@@ -531,7 +586,7 @@ mod tests {
             .unwrap();
         let mut bytes = vec![0u8; input.length() as usize];
         let len = bytes.len();
-        input.read_bytes(&mut bytes, 0, len).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, len).unwrap();
         bytes
     }
 
@@ -549,7 +604,10 @@ mod tests {
         cfs.extend_from_slice(&footer);
         overwrite(&dir, "_0.cfs", &cfs);
         match Lucene90CompoundReader::new(&dir, &info) {
-            Err(LuceneError::CorruptIndex(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(message),
+                ..
+            }) => {
                 assert!(message.starts_with("length should be "), "{message}")
             }
             other => panic!("expected CorruptIndex, got {other:?}"),
@@ -598,7 +656,10 @@ mod tests {
         codec_util::write_footer(out.as_mut()).unwrap();
         out.close().unwrap();
         match Lucene90CompoundReader::new(&dir, &info) {
-            Err(LuceneError::CorruptIndex(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(message),
+                ..
+            }) => {
                 // `"Duplicate cfs entry id=" + id + " in CFS "`, then
                 // `CorruptIndexException`'s `" (resource=" + ... + ")"`.
                 assert!(
@@ -637,7 +698,11 @@ mod tests {
         let Err(err) = reader.open_input("_0.tim", &*crate::store::DEFAULT_IO_CONTEXT) else {
             panic!("a missing sub-file must not open")
         };
-        let LuceneError::Io(io) = err else {
+        let LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } = err
+        else {
             panic!("expected a FileNotFoundException, got {err:?}")
         };
         assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
@@ -646,7 +711,10 @@ mod tests {
             "No sub-file with id .tim found in compound file \"_0.cfs\" (fileName=_0.tim files: [.fnm, .fdx, .fdt])"
         );
         match reader.file_length("_0.tim") {
-            Err(LuceneError::Io(io)) => assert_eq!(io.to_string(), "_0.tim"),
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(io),
+                ..
+            }) => assert_eq!(io.to_string(), "_0.tim"),
             other => panic!("expected a FileNotFoundException, got {other:?}"),
         }
     }
@@ -716,14 +784,16 @@ mod tests {
             .unwrap();
         let len = input.length() as usize;
         let mut bytes = vec![0u8; len];
-        input.read_bytes(&mut bytes, 0, len).unwrap();
+        input.read_bytes(Some(&mut bytes), 0, len).unwrap();
 
         let mut original = dir
             .open_input("_0.fdt", &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
         let orig_len = original.length() as usize;
         let mut orig_bytes = vec![0u8; orig_len];
-        original.read_bytes(&mut orig_bytes, 0, orig_len).unwrap();
+        original
+            .read_bytes(Some(&mut orig_bytes), 0, orig_len)
+            .unwrap();
 
         assert_eq!(bytes, orig_bytes);
     }

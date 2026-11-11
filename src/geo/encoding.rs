@@ -6,6 +6,7 @@ use crate::error::{LuceneError, Result};
 use crate::geo::component2d::Component2D;
 use crate::geo::geometry::Rectangle;
 use crate::index::point_values::Relation;
+use crate::util::java_fmt::{double_to_string, float_to_string};
 use crate::util::{NumericUtils, SloppyMath};
 
 /// Bounds and constants every geo coordinate is checked against.
@@ -50,10 +51,13 @@ impl GeoUtils {
     /// Equivalent to `GeoUtils.checkLatitude(double)`.
     pub fn check_latitude(latitude: f64) -> Result<()> {
         if latitude.is_nan() || !(Self::MIN_LAT_INCL..=Self::MAX_LAT_INCL).contains(&latitude) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "invalid latitude {latitude}; must be between {} and {}",
-                Self::MIN_LAT_INCL,
-                Self::MAX_LAT_INCL
+            // `"invalid latitude " + latitude + ...` (`GeoUtils.java:85-106`):
+            // Java's `Double.toString`.
+            return Err(LuceneError::illegal_argument(format!(
+                "invalid latitude {}; must be between {} and {}",
+                double_to_string(latitude),
+                double_to_string(Self::MIN_LAT_INCL),
+                double_to_string(Self::MAX_LAT_INCL)
             )));
         }
         Ok(())
@@ -64,10 +68,11 @@ impl GeoUtils {
     /// Equivalent to `GeoUtils.checkLongitude(double)`.
     pub fn check_longitude(longitude: f64) -> Result<()> {
         if longitude.is_nan() || !(Self::MIN_LON_INCL..=Self::MAX_LON_INCL).contains(&longitude) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "invalid longitude {longitude}; must be between {} and {}",
-                Self::MIN_LON_INCL,
-                Self::MAX_LON_INCL
+            return Err(LuceneError::illegal_argument(format!(
+                "invalid longitude {}; must be between {} and {}",
+                double_to_string(longitude),
+                double_to_string(Self::MIN_LON_INCL),
+                double_to_string(Self::MAX_LON_INCL)
             )));
         }
         Ok(())
@@ -161,7 +166,9 @@ impl GeoEncodingUtils {
     ///
     /// Equivalent to `GeoEncodingUtils.decodeLatitude(int)`.
     pub fn decode_latitude(encoded: i32) -> f64 {
-        f64::from(encoded) * Self::lat_decode()
+        let result = f64::from(encoded) * Self::lat_decode();
+        debug_assert!((GeoUtils::MIN_LAT_INCL..GeoUtils::MAX_LAT_INCL).contains(&result));
+        result
     }
 
     /// Decodes a latitude from its sortable-bytes form.
@@ -173,7 +180,9 @@ impl GeoEncodingUtils {
     ///
     /// Equivalent to `GeoEncodingUtils.decodeLongitude(int)`.
     pub fn decode_longitude(encoded: i32) -> f64 {
-        f64::from(encoded) * Self::lon_decode()
+        let result = f64::from(encoded) * Self::lon_decode();
+        debug_assert!((GeoUtils::MIN_LON_INCL..GeoUtils::MAX_LON_INCL).contains(&result));
+        result
     }
 
     /// Decodes a longitude from its sortable-bytes form.
@@ -297,7 +306,9 @@ impl GeoEncodingUtils {
         let max_lat2 = i64::from(max_lat) - i64::from(i32::MIN);
         let lat_shift = Self::compute_shift(min_lat2, max_lat2);
         let lat_base = (min_lat2 >> lat_shift) as i32;
-        let max_lat_delta = (max_lat2 >> lat_shift) as i32 - lat_base + 1;
+        let max_lat_delta = ((max_lat2 >> lat_shift) as i32)
+            .wrapping_sub(lat_base)
+            .wrapping_add(1);
         debug_assert!(max_lat_delta > 0);
 
         let min_lon2 = i64::from(min_lon) - i64::from(i32::MIN);
@@ -308,16 +319,30 @@ impl GeoEncodingUtils {
         }
         let lon_shift = Self::compute_shift(min_lon2, max_lon2);
         let lon_base = (min_lon2 >> lon_shift) as i32;
-        let max_lon_delta = (max_lon2 >> lon_shift) as i32 - lon_base + 1;
+        let max_lon_delta = ((max_lon2 >> lon_shift) as i32)
+            .wrapping_sub(lon_base)
+            .wrapping_add(1);
         debug_assert!(max_lon_delta > 0);
 
         let mut relations = vec![0u8; (max_lat_delta * max_lon_delta) as usize];
         for i in 0..max_lat_delta {
             for j in 0..max_lon_delta {
-                let box_min_lat = ((lat_base + i) << lat_shift).wrapping_add(i32::MIN);
-                let box_min_lon = ((lon_base + j) << lon_shift).wrapping_add(i32::MIN);
-                let box_max_lat = box_min_lat + (1 << lat_shift) - 1;
-                let box_max_lon = box_min_lon + (1 << lon_shift) - 1;
+                // Java `int` arithmetic (`GeoEncodingUtils.java:268-271`):
+                // the sums wrap and the shift distance is taken mod 32.
+                let box_min_lat = lat_base
+                    .wrapping_add(i)
+                    .wrapping_shl(lat_shift)
+                    .wrapping_add(i32::MIN);
+                let box_min_lon = lon_base
+                    .wrapping_add(j)
+                    .wrapping_shl(lon_shift)
+                    .wrapping_add(i32::MIN);
+                let box_max_lat = box_min_lat
+                    .wrapping_add(1i32.wrapping_shl(lat_shift))
+                    .wrapping_sub(1);
+                let box_max_lon = box_min_lon
+                    .wrapping_add(1i32.wrapping_shl(lon_shift))
+                    .wrapping_sub(1);
                 let relation = box_to_relation(
                     Self::decode_latitude(box_min_lat),
                     Self::decode_latitude(box_max_lat),
@@ -400,10 +425,14 @@ impl XYEncodingUtils {
     /// Equivalent to `XYEncodingUtils.checkVal(float)`.
     pub fn check_val(x: f32) -> Result<f32> {
         if !x.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "invalid value {x}; must be between {} and {}",
-                Self::MIN_VAL_INCL,
-                Self::MAX_VAL_INCL
+            // `"invalid value " + x + "; must be between " + MIN_VAL_INCL + " and "
+            // + MAX_VAL_INCL` (`XYEncodingUtils.java:34-40`): a `float` and two
+            // `double`s, rendered by Java's `toString`.
+            return Err(LuceneError::illegal_argument(format!(
+                "invalid value {}; must be between {} and {}",
+                float_to_string(x),
+                double_to_string(Self::MIN_VAL_INCL),
+                double_to_string(Self::MAX_VAL_INCL)
             )));
         }
         Ok(x)
@@ -420,7 +449,11 @@ impl XYEncodingUtils {
     ///
     /// Equivalent to `XYEncodingUtils.decode(int)`.
     pub fn decode(encoded: i32) -> f32 {
-        NumericUtils::sortable_int_to_float(encoded)
+        let result = NumericUtils::sortable_int_to_float(encoded);
+        debug_assert!(
+            f64::from(result) >= Self::MIN_VAL_INCL && f64::from(result) <= Self::MAX_VAL_INCL
+        );
+        result
     }
 
     /// Decodes a coordinate from its sortable-bytes form.
@@ -464,14 +497,14 @@ impl WindingOrder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `sign` is not `-1`, `0` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `sign` is not `-1`, `0` or
     /// `1`, as Java throws `IllegalArgumentException`.
     pub fn from_sign(sign: i32) -> Result<Self> {
         match sign {
             -1 => Ok(Self::CW),
             0 => Ok(Self::COLINEAR),
             1 => Ok(Self::CCW),
-            other => Err(LuceneError::IllegalArgument(format!(
+            other => Err(LuceneError::illegal_argument(format!(
                 "Invalid WindingOrder sign: {other}"
             ))),
         }
@@ -509,7 +542,9 @@ impl GeoUtils {
 
         // not found: this is because a user can supply an arbitrary radius, one that we will never
         // calculate exactly via our haversin method.
-        f64::from_bits(lo as u64)
+        let ceil = f64::from_bits(lo as u64);
+        debug_assert!(SloppyMath::haversin_meters_from_sort_key(ceil) > radius);
+        ceil
     }
 
     /// Computes the relation between the provided box and a distance query.
@@ -519,7 +554,7 @@ impl GeoUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `min_lon > max_lon`, as
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `min_lon > max_lon`, as
     /// Java throws `IllegalArgumentException`.
     #[allow(clippy::too_many_arguments)]
     pub fn relate(
@@ -533,7 +568,7 @@ impl GeoUtils {
         axis_lat: f64,
     ) -> Result<Relation> {
         if min_lon > max_lon {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Box crosses the dateline".to_string(),
             ));
         }
@@ -569,8 +604,9 @@ impl GeoUtils {
     /// Returns whether all points of `[min_lon, max_lon]` are within 90 degrees
     /// of `lon`.
     ///
-    /// Equivalent to the package-private `GeoUtils.within90LonDegrees`.
-    pub(crate) fn within_90_lon_degrees(lon: f64, min_lon: f64, max_lon: f64) -> bool {
+    /// Equivalent to the package-private `GeoUtils.within90LonDegrees`; `pub`
+    /// because Rust has no package-private visibility and the `geo` tests call it.
+    pub fn within_90_lon_degrees(lon: f64, min_lon: f64, max_lon: f64) -> bool {
         let mut lon = lon;
         if max_lon <= lon - 180.0 {
             lon -= 360.0;
@@ -719,23 +755,27 @@ impl Grid {
     ///
     /// This is the head both predicates' `test` share.
     fn cell_relation(&self, lat: i32, lon: i32) -> Option<u8> {
+        // Java `int` arithmetic (`GeoEncodingUtils.java:365-379`): the sums
+        // and differences wrap and the shift distance is taken mod 32.
         let lat2 = ((lat.wrapping_sub(i32::MIN)) as u32 >> self.lat_shift) as i32;
-        if lat2 < self.lat_base || lat2 - self.lat_base >= self.max_lat_delta {
+        if lat2 < self.lat_base || lat2.wrapping_sub(self.lat_base) >= self.max_lat_delta {
             return None;
         }
         let mut lon2 = ((lon.wrapping_sub(i32::MIN)) as u32 >> self.lon_shift) as i32;
         if lon2 < self.lon_base {
             // Wrap.
-            lon2 += 1 << (32 - self.lon_shift);
+            lon2 = lon2.wrapping_add(1i32.wrapping_shl(32 - self.lon_shift));
         }
-        debug_assert!(lon2 - self.lon_base >= 0);
-        if lon2 - self.lon_base >= self.max_lon_delta {
+        debug_assert!(i64::from(lon2 as u32) >= i64::from(self.lon_base));
+        debug_assert!(lon2.wrapping_sub(self.lon_base) >= 0);
+        if lon2.wrapping_sub(self.lon_base) >= self.max_lon_delta {
             return None;
         }
-        Some(
-            self.relations
-                [((lat2 - self.lat_base) * self.max_lon_delta + (lon2 - self.lon_base)) as usize],
-        )
+        let index = lat2
+            .wrapping_sub(self.lat_base)
+            .wrapping_mul(self.max_lon_delta)
+            .wrapping_add(lon2.wrapping_sub(self.lon_base));
+        Some(self.relations[index as usize])
     }
 }
 
@@ -805,5 +845,45 @@ impl Component2DPredicate {
         } else {
             relation == relation_ordinal(Relation::CellInsideQuery)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test (rmp #358, `TestLatLonPointQueries.testRandomMedium`,
+    /// seed DEADBEEF): a component predicate grid answers a
+    /// point at longitude -180 with `lon2 - lonBase` wrapping in Java's `int`
+    /// arithmetic (`GeoEncodingUtils.java:369-376`), so the point is outside
+    /// the grid; the port panicked on the overflow. The grid is the one the
+    /// suite built (captured with gdb).
+    #[test]
+    fn grid_cell_relation_wraps_like_java() {
+        let grid = Grid {
+            lat_shift: 25,
+            lon_shift: 1,
+            lat_base: 64,
+            lon_base: 1073741824,
+            max_lat_delta: 64,
+            max_lon_delta: 1,
+            relations: vec![0; 64],
+        };
+        assert_eq!(grid.cell_relation(0, i32::MIN), None);
+    }
+
+    /// Regression test (rmp #358, `BaseGeoPointTestCase.testSmallSetDistanceNotEmpty`):
+    /// near the pole the bounding box spans every longitude, so a sub box's
+    /// `boxMinLon + (1 << lonShift) - 1` wraps; Java's `int` arithmetic wraps
+    /// (`GeoEncodingUtils.java:268-271`) where the port panicked on overflow.
+    #[test]
+    fn distance_predicate_near_the_pole_wraps_like_java() {
+        let (lat, lon) = (-88.56029371730983, -177.23537676036358);
+        let predicate =
+            GeoEncodingUtils::create_distance_predicate(lat, lon, 7757.999232959935).unwrap();
+        assert!(predicate.test(
+            GeoEncodingUtils::encode_latitude(lat).unwrap(),
+            GeoEncodingUtils::encode_longitude(lon).unwrap()
+        ));
     }
 }

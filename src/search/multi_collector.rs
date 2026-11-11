@@ -64,7 +64,7 @@ impl MultiCollector<Box<dyn Collector>> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the input is empty or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the input is empty or
     /// every entry is absent, which is the `IllegalArgumentException` Java
     /// throws.
     pub fn wrap(
@@ -72,7 +72,7 @@ impl MultiCollector<Box<dyn Collector>> {
     ) -> Result<Box<dyn Collector>> {
         let mut present: Vec<Box<dyn Collector>> = collectors.into_iter().flatten().collect();
         match present.len() {
-            0 => Err(LuceneError::IllegalArgument(
+            0 => Err(LuceneError::illegal_argument(
                 "At least 1 collector must not be null".to_string(),
             )),
             // only 1 Collector - return it.
@@ -121,7 +121,11 @@ impl<C: Collector> MultiCollector<C> {
     }
 }
 
-impl<C: Collector> Collector for MultiCollector<C> {
+impl<C: Collector + 'static> Collector for MultiCollector<C> {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn score_mode(&self) -> ScoreMode {
         let mut score_mode: Option<ScoreMode> = None;
         for collector in &self.collectors {
@@ -414,7 +418,19 @@ impl std::fmt::Debug for MinCompetitiveScoreAwareScorable<'_> {
     }
 }
 
-impl MinCompetitiveScoreAwareScorable<'_> {
+impl<'a> MinCompetitiveScoreAwareScorable<'a> {
+    /// Equivalent to the package-private
+    /// `MinCompetitiveScoreAwareScorable(Scorable in, int idx, float[] minScores)`;
+    /// `pub` because the port has no package visibility (`TestMultiCollector`
+    /// builds it).
+    pub fn new(inner: &'a mut dyn Scorable, idx: usize, min_scores: &'a mut [f32]) -> Self {
+        Self {
+            inner,
+            idx,
+            min_scores,
+        }
+    }
+
     /// Equivalent to the private
     /// `MinCompetitiveScoreAwareScorable.minScore()`.
     fn min_score(&self) -> f32 {
@@ -445,5 +461,12 @@ impl Scorable for MinCompetitiveScoreAwareScorable<'_> {
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         // Inherited from `FilterScorable`.
         Ok(vec![ChildScorable::new(&mut *self.inner, "FILTER")])
+    }
+
+    /// Answers `scorable.getClass()` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<
+            MinCompetitiveScoreAwareScorable<'static>,
+        >())
     }
 }

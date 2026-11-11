@@ -25,6 +25,32 @@ use crate::store::{DataOutput, IndexInput, IndexOutput};
 pub trait SkipDataWriter {
     /// Writes one skip entry for the given level.
     fn write_skip_data(&mut self, level: i32, skip_buffer: &mut dyn DataOutput) -> Result<()>;
+
+    /// Writes the length of a level to `output`.
+    ///
+    /// Equivalent to the protected, overridable
+    /// `MultiLevelSkipListWriter.writeLevelLength`, whose default encoding is a
+    /// variable-length long (`MultiLevelSkipListWriter.java:183-185`).
+    fn write_level_length(
+        &mut self,
+        level_length: i64,
+        output: &mut dyn IndexOutput,
+    ) -> Result<()> {
+        output.write_v_long(level_length)
+    }
+
+    /// Writes a child pointer to `skip_buffer`.
+    ///
+    /// Equivalent to the protected, overridable
+    /// `MultiLevelSkipListWriter.writeChildPointer`, whose default encoding is
+    /// a variable-length long (`MultiLevelSkipListWriter.java:194-196`).
+    fn write_child_pointer(
+        &mut self,
+        child_pointer: i64,
+        skip_buffer: &mut dyn DataOutput,
+    ) -> Result<()> {
+        skip_buffer.write_v_long(child_pointer)
+    }
 }
 
 /// In-memory buffer for a single skip level.
@@ -63,9 +89,9 @@ impl DataOutput for SkipBuffer {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
@@ -109,7 +135,7 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::Arithmetic`] when `skip_interval * skip_multiplier` does
+    /// [`LuceneErrorKind::Arithmetic`](crate::error::LuceneErrorKind::Arithmetic) when `skip_interval * skip_multiplier` does
     /// not fit an `int`: Java's `Math.toIntExact(skipInterval * (long)
     /// skipMultiplier)` (`MultiLevelSkipListWriter.java:83`) throwing
     /// `ArithmeticException("integer overflow")`.
@@ -193,17 +219,14 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
 
     /// Buffers a skip entry for the given document frequency.
     ///
+    /// `df` must be a multiple of `skip_interval`: Java only asserts it
+    /// (`MultiLevelSkipListWriter.java:130`), and so does this port.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `df` is not a multiple of
-    /// `skip_interval`.
+    /// Propagates the I/O errors of writing the skip data.
     pub fn buffer_skip(&mut self, df: i32) -> Result<()> {
-        if df % self.skip_interval != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "df ({df}) must be a multiple of skipInterval ({})",
-                self.skip_interval
-            )));
-        }
+        debug_assert!(df % self.skip_interval == 0);
 
         let mut num_levels = 1;
         if df % self.window_length == 0 {
@@ -224,7 +247,8 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
             let new_child_pointer = self.skip_buffer[level as usize].len() as i64;
 
             if level != 0 {
-                Self::write_child_pointer(child_pointer, &mut self.skip_buffer[level as usize])?;
+                self.skip_data_writer
+                    .write_child_pointer(child_pointer, &mut self.skip_buffer[level as usize])?;
             }
 
             child_pointer = new_child_pointer;
@@ -244,7 +268,7 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
         for level in (1..self.number_of_skip_levels).rev() {
             let length = self.skip_buffer[level as usize].len() as i64;
             if length > 0 {
-                Self::write_level_length(length, output)?;
+                self.skip_data_writer.write_level_length(length, output)?;
                 output.write_bytes(
                     self.skip_buffer[level as usize].as_slice(),
                     0,
@@ -257,16 +281,17 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
         Ok(skip_pointer)
     }
 
-    /// Writes the length of a level to `output`.
-    ///
-    /// The default encoding is a variable-length long.
-    fn write_level_length(level_length: i64, output: &mut dyn IndexOutput) -> Result<()> {
-        output.write_v_long(level_length)
+    /// Returns the skip-data encoder, the subclass part of Java's
+    /// `MultiLevelSkipListWriter` subclasses.
+    pub fn skip_data_writer(&self) -> &W {
+        &self.skip_data_writer
     }
 
-    /// Writes a child pointer to `skip_buffer`.
-    fn write_child_pointer(child_pointer: i64, skip_buffer: &mut dyn DataOutput) -> Result<()> {
-        skip_buffer.write_v_long(child_pointer)
+    /// Returns the skip-data encoder mutably, so that the subclass part can
+    /// update its own state between entries (for example the `curDoc` a
+    /// subclass sets before calling `bufferSkip`).
+    pub fn skip_data_writer_mut(&mut self) -> &mut W {
+        &mut self.skip_data_writer
     }
 }
 
@@ -280,8 +305,18 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
 /// payload, and may override the default level-length and child-pointer
 /// encodings.
 pub trait SkipDataReader {
-    /// Reads one skip entry for the given level.
-    fn read_skip_data(&mut self, level: i32, skip_stream: &mut dyn IndexInput) -> Result<i32>;
+    /// Reads one skip entry for the given level and returns the doc-id delta.
+    ///
+    /// Equivalent to the abstract `MultiLevelSkipListReader.readSkipData`.
+    /// `skip_doc` is the reader's protected `skipDoc` array as it stands
+    /// before the delta is added, which a Java subclass reads directly
+    /// (`SimpleTextSkipReader` does).
+    fn read_skip_data(
+        &mut self,
+        level: i32,
+        skip_stream: &mut dyn IndexInput,
+        skip_doc: &[i32],
+    ) -> Result<i32>;
 
     /// Reads the length of a higher skip level.
     ///
@@ -373,6 +408,33 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
         self.last_doc
     }
 
+    /// Returns the protected `skipDoc[level]`: the last doc id skipped to on
+    /// `level`.
+    pub fn skip_doc(&self, level: i32) -> i32 {
+        self.skip_doc[level as usize]
+    }
+
+    /// Returns the protected `numberOfSkipLevels`.
+    pub fn number_of_skip_levels(&self) -> i32 {
+        self.number_of_skip_levels
+    }
+
+    /// Returns the protected `maxNumberOfSkipLevels`.
+    pub fn max_number_of_skip_levels(&self) -> i32 {
+        self.max_number_of_skip_levels
+    }
+
+    /// Returns the skip-data decoder, the subclass part of Java's
+    /// `MultiLevelSkipListReader` subclasses.
+    pub fn skip_data_reader(&self) -> &R {
+        &self.skip_data_reader
+    }
+
+    /// Returns the skip-data decoder mutably.
+    pub fn skip_data_reader_mut(&mut self) -> &mut R {
+        &mut self.skip_data_reader
+    }
+
     /// Closes the higher-level skip streams.
     pub fn close(&mut self) -> Result<()> {
         for i in 1..self.skip_stream.len() {
@@ -387,6 +449,16 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
     pub fn init(&mut self, skip_pointer: i64, df: i32) -> Result<()> {
         self.skip_pointer[0] = skip_pointer;
         self.doc_count = df;
+        debug_assert!(
+            skip_pointer >= 0
+                && skip_pointer
+                    <= self.skip_stream[0]
+                        .as_ref()
+                        .expect("INVARIANT: level 0 skip stream is set")
+                        .length(),
+            "invalid skip pointer: {skip_pointer}, length={}",
+            self.skip_stream[0].as_ref().map_or(-1, |s| s.length())
+        );
 
         self.skip_doc.fill(0);
         self.num_skipped.fill(0);
@@ -471,8 +543,10 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
             .expect("INVARIANT: level stream is set");
         let delta = self
             .skip_data_reader
-            .read_skip_data(level, stream.as_mut())?;
-        self.skip_doc[level as usize] += delta;
+            .read_skip_data(level, stream.as_mut(), &self.skip_doc)?;
+        // Java's `skipDoc[level] += readSkipData(...)` is `int` arithmetic,
+        // which wraps (`MultiLevelSkipListReader.java:196`).
+        self.skip_doc[level as usize] = self.skip_doc[level as usize].wrapping_add(delta);
 
         if level != 0 {
             self.child_pointer[level as usize] =
@@ -530,6 +604,7 @@ fn log(x: i32, base: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::store::{MockIndexInput, MockIndexOutput};
 
     /// Test skip codec that stores the per-level skip interval as the doc delta.
@@ -569,7 +644,12 @@ mod tests {
     }
 
     impl SkipDataReader for IntervalSkipCodec {
-        fn read_skip_data(&mut self, _level: i32, skip_stream: &mut dyn IndexInput) -> Result<i32> {
+        fn read_skip_data(
+            &mut self,
+            _level: i32,
+            skip_stream: &mut dyn IndexInput,
+            _skip_doc: &[i32],
+        ) -> Result<i32> {
             skip_stream.read_v_int()
         }
     }
@@ -645,13 +725,19 @@ mod tests {
         reader.close().unwrap();
     }
 
+    /// `MultiLevelSkipListWriter.java:130` only asserts `df % skipInterval == 0`.
     #[test]
-    fn writer_rejects_non_multiple_df() {
+    fn writer_asserts_df_is_a_multiple_of_skip_interval() {
+        if !cfg!(debug_assertions) {
+            return;
+        }
         let codec = IntervalSkipCodec::new_same(3);
         let mut writer = MultiLevelSkipListWriter::new_same_multiplier(codec, 3, 10, 30).unwrap();
         writer.reset_skip();
-        let err = writer.buffer_skip(4).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = writer.buffer_skip(4);
+        }));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -702,14 +788,23 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
             "{error:?}"
         );
         let error = match MultiLevelSkipListWriter::new_same_multiplier(codec, 1 << 16, 10, 1) {
             Ok(_) => panic!("the window length does not fit an int"),
             Err(error) => error,
         };
-        assert!(matches!(&error, LuceneError::Arithmetic(_)), "{error:?}");
+        assert!(
+            matches!(
+                &error,
+                LuceneError {
+                    kind: LuceneErrorKind::Arithmetic(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -735,5 +830,114 @@ mod tests {
 
         let _ = reader.skip_to(10).unwrap();
         reader.close().unwrap();
+    }
+
+    /// A codec that encodes the level lengths and child pointers as text and
+    /// returns absolute doc ids, as `SimpleTextSkipWriter` and
+    /// `SimpleTextSkipReader` do through the protected hooks
+    /// (`writeLevelLength`, `writeChildPointer`, `readLevelLength`,
+    /// `readChildPointer`) and the protected `skipDoc` array.
+    #[derive(Debug, Default)]
+    struct TextSkipCodec {
+        cur_doc: i32,
+        level_lengths: i32,
+        child_pointers: i32,
+    }
+
+    fn write_text(out: &mut dyn DataOutput, s: &str) -> Result<()> {
+        out.write_bytes(s.as_bytes(), 0, s.len())?;
+        out.write_byte(b'\n')
+    }
+
+    fn read_text(input: &mut dyn IndexInput) -> Result<i64> {
+        let mut s = String::new();
+        loop {
+            let b = input.read_byte()?;
+            if b == b'\n' {
+                break;
+            }
+            s.push(b as char);
+        }
+        Ok(s.parse().unwrap())
+    }
+
+    impl SkipDataWriter for TextSkipCodec {
+        fn write_skip_data(&mut self, _level: i32, skip_buffer: &mut dyn DataOutput) -> Result<()> {
+            write_text(skip_buffer, &self.cur_doc.to_string())
+        }
+
+        fn write_level_length(
+            &mut self,
+            level_length: i64,
+            output: &mut dyn IndexOutput,
+        ) -> Result<()> {
+            self.level_lengths += 1;
+            write_text(output, &level_length.to_string())
+        }
+
+        fn write_child_pointer(
+            &mut self,
+            child_pointer: i64,
+            skip_buffer: &mut dyn DataOutput,
+        ) -> Result<()> {
+            self.child_pointers += 1;
+            write_text(skip_buffer, &child_pointer.to_string())
+        }
+    }
+
+    impl SkipDataReader for TextSkipCodec {
+        fn read_skip_data(
+            &mut self,
+            level: i32,
+            skip_stream: &mut dyn IndexInput,
+            skip_doc: &[i32],
+        ) -> Result<i32> {
+            // The stream holds the absolute doc id; the reader wants a delta
+            // from the protected `skipDoc[level]`.
+            Ok(read_text(skip_stream)? as i32 - skip_doc[level as usize])
+        }
+
+        fn read_level_length(&self, skip_stream: &mut dyn IndexInput) -> Result<i64> {
+            read_text(skip_stream)
+        }
+
+        fn read_child_pointer(&self, skip_stream: &mut dyn IndexInput) -> Result<i64> {
+            read_text(skip_stream)
+        }
+    }
+
+    /// The overridable hooks are the ones the writer and reader call, and the
+    /// reader hands `read_skip_data` the `skipDoc` array it adds the delta to.
+    #[test]
+    fn overridden_hooks_and_skip_doc_drive_the_skip_list() {
+        let mut writer =
+            MultiLevelSkipListWriter::new(TextSkipCodec::default(), 2, 3, 4, 40).unwrap();
+        writer.reset_skip();
+        for df in (2..=36).step_by(2) {
+            writer.skip_data_writer_mut().cur_doc = df * 10;
+            writer.buffer_skip(df).unwrap();
+        }
+        use crate::store::Directory;
+        let dir = crate::store::ByteBuffersDirectory::new();
+        let mut out = dir
+            .create_output("skip", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        writer.write_skip(out.as_mut()).unwrap();
+        out.close().unwrap();
+        assert!(writer.skip_data_writer().level_lengths > 0);
+        assert!(writer.skip_data_writer().child_pointers > 0);
+
+        let input = dir
+            .open_input("skip", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let mut reader = MultiLevelSkipListReader::new(input, TextSkipCodec::default(), 4, 2, 3);
+        reader.init(0, 36).unwrap();
+        assert!(reader.number_of_skip_levels() > 1);
+        assert_eq!(reader.max_number_of_skip_levels(), 4);
+        // Skipping to doc 205 lands on the last entry below it, df 20.
+        let skipped = reader.skip_to(205).unwrap();
+        assert_eq!(reader.doc(), 200);
+        assert_eq!(skipped, 19);
+        assert_eq!(reader.skip_doc(0), 220);
     }
 }

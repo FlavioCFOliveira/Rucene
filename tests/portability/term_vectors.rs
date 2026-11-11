@@ -26,11 +26,10 @@
 //! The order of the fields inside a document fixes the field numbers, which the
 //! term-vector chunks record.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rucene::analysis::tokenattributes::{
@@ -123,7 +122,7 @@ impl Spec {
     }
 
     fn field_type(&self) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type.set_tokenized(true).expect("tokenized");
         field_type.set_stored(false).expect("stored");
         field_type.set_omit_norms(true).expect("omit norms");
@@ -473,7 +472,7 @@ impl TokenStream for ScriptedTokenStream {
                 .attributes
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .expect("packed attribute");
-            packed.append_string(&token.term);
+            packed.append_string(Some(&token.term));
             packed.set_position_increment(token.pos_incr);
             packed.set_offset(token.start, token.end);
         }
@@ -752,7 +751,7 @@ fn write_with_rucene(
         assert_eq!(analyzer.get_position_increment_gap(spec.name), 0);
         assert_eq!(analyzer.get_offset_gap(spec.name), 1);
     }
-    let live = Arc::new(LiveIndexWriterConfig::new(Arc::clone(&analyzer)));
+    let live = Arc::new(LiveIndexWriterConfig::new(Some(Arc::clone(&analyzer))));
 
     let directory: Box<dyn Directory> = Box::new(FSDirectory::open(out_dir).expect("directory"));
     let tracking = Arc::new(TrackingDirectoryWrapper::new(directory));
@@ -790,8 +789,9 @@ fn write_with_rucene(
     for (doc_id, values) in documents.iter().enumerate() {
         let mut document = Document::new();
         for value in values {
-            let stream: Rc<RefCell<dyn TokenStream>> =
-                Rc::new(RefCell::new(ScriptedTokenStream::new(value.tokens.clone())));
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(
+                ScriptedTokenStream::new(value.tokens.clone()),
+            ));
             document.add(Box::new(
                 Field::new_with_token_stream(
                     specs[value.spec].name,
@@ -804,7 +804,8 @@ fn write_with_rucene(
         // A document-level failure drops the document and indexing continues,
         // exactly as `IndexWriter.addDocument` does when it catches an
         // `IllegalArgumentException`; the doc id is still consumed.
-        if let Err(error) = chain.process_document(doc_id as i32, &document, true, &mut field_infos)
+        if let Err(error) =
+            chain.process_document(doc_id as i32, Some(&document), true, &mut field_infos)
         {
             assert!(
                 chain.take_aborting_error().is_none(),
@@ -890,7 +891,8 @@ fn dump(reader: &dyn TermVectorsReader, max_doc: i32) -> Vec<String> {
                 let freq = iterator.total_term_freq().expect("total term freq") as i32;
                 let mut postings = iterator
                     .postings(None, POSTINGS_ENUM_ALL)
-                    .expect("postings");
+                    .expect("postings")
+                    .unwrap();
                 postings.next_doc().expect("next doc");
                 let mut positions = Vec::new();
                 let mut offsets = Vec::new();
@@ -1196,7 +1198,7 @@ fn rucene_reads_the_term_vectors_of_a_compound_file_segment_written_by_lucene() 
 /// Builds a document whose `body` is analysed and stores term vectors with
 /// positions and offsets.
 fn vector_doc(id: &str, body: &str) -> Document {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).expect("tokenized");
     field_type.set_stored(true).expect("stored");
     field_type.set_omit_norms(true).expect("omit norms");
@@ -1258,9 +1260,9 @@ fn a_directory_reader_reads_the_term_vectors_of_every_segment() {
 
     let temp = tempfile::tempdir().expect("temp dir");
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(temp.path()).expect("open directory"));
-    let mut config = rucene::index::index_writer_config::IndexWriterConfig::new();
+    let config = rucene::index::index_writer_config::IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(rucene::index::merge_policy::NoMergePolicy::new()))
+        .set_merge_policy(Some(rucene::index::merge_policy::NoMergePolicy::instance()))
         .expect("set merge policy");
     let writer = rucene::index::index_writer::IndexWriter::new(Arc::clone(&dir), config)
         .expect("open writer");

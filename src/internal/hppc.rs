@@ -84,6 +84,7 @@ pub use buffer_allocation_exception::BufferAllocationException;
 pub use char_cursor::CharCursor;
 pub use double_cursor::DoubleCursor;
 pub use float_cursor::FloatCursor;
+pub use hash_containers::HashContainerOverrides;
 pub use int_cursor::IntCursor;
 pub use long_cursor::LongCursor;
 pub use object_cursor::ObjectCursor;

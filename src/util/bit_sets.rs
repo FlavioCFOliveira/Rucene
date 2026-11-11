@@ -76,17 +76,37 @@ fn oversize(s: usize) -> usize {
 }
 
 impl SparseFixedBitSet {
+    /// The package-private field `indices` (`SparseFixedBitSet.java:52`),
+    /// which `TestSparseFixedBitSet` reads to check the set's invariants.
+    pub fn indices(&self) -> &[u64] {
+        &self.indices
+    }
+
+    /// The package-private field `bits` (`SparseFixedBitSet.java:53`), a
+    /// `null` block as `None`, which `TestSparseFixedBitSet` reads to check
+    /// the set's invariants.
+    pub fn bits_blocks(&self) -> &[Option<Vec<u64>>] {
+        &self.bits
+    }
+
+    /// The package-private field `nonZeroLongCount`
+    /// (`SparseFixedBitSet.java:55`), which `TestSparseFixedBitSet` reads to
+    /// check the set's invariants.
+    pub fn non_zero_long_count(&self) -> usize {
+        self.non_zero_long_count
+    }
+
     /// Creates a sparse bit set that can hold bits in `[0, length)`.
     ///
     /// Equivalent to `SparseFixedBitSet(int)`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Java's message, `length
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with Java's message, `length
     /// needs to be >= 1`, when `length` is zero (`SparseFixedBitSet.java:63-66`).
     pub fn new(length: usize) -> Result<Self> {
         if length < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "length needs to be >= 1".to_string(),
             ));
         }
@@ -247,7 +267,7 @@ impl SparseFixedBitSet {
         debug_assert!(start < self.length);
         debug_assert!(
             upper_bound > start && upper_bound <= self.length,
-            "upper_bound={upper_bound}, start={start}, length={}",
+            "upperBound={upper_bound}, start={start}, length={}",
             self.length
         );
         let i4096 = start >> 12;
@@ -369,11 +389,13 @@ impl SparseFixedBitSet {
     pub fn set_range(&mut self, start_index: usize, end_index: usize) {
         assert!(
             start_index < self.length,
-            "startIndex={start_index} out of bounds"
+            "startIndex={start_index}, length={}",
+            self.length
         );
         assert!(
             end_index <= self.length,
-            "endIndex={end_index} out of bounds"
+            "endIndex={end_index}, length={}",
+            self.length
         );
         if end_index <= start_index {
             return;
@@ -649,6 +671,8 @@ impl SparseFixedBitSet {
         let mut new_o = 0usize;
         while remaining != 0 {
             let bit_index = remaining.trailing_zeros() as usize;
+            // `newO` is the number of bits set in `newIndex` below `bitIndex`.
+            debug_assert!(new_o == (new_index & ((1u64 << bit_index) - 1)).count_ones() as usize);
             new_bits[new_o] = Self::long_bits(current_index, current_bits, bit_index)
                 | Self::long_bits(index_word, words, bit_index);
             new_o += 1;
@@ -798,6 +822,10 @@ impl SparseFixedBitSet {
 impl Bits for SparseFixedBitSet {
     fn get(&self, index: usize) -> bool {
         self.get(index)
+    }
+
+    fn as_bit_set(&self) -> Option<&dyn crate::util::bit_set::BitSet> {
+        Some(self)
     }
 
     fn length(&self) -> usize {
@@ -1100,7 +1128,7 @@ impl DocIdSetIterator for ShortArrayDocIdSetIterator {
         self.doc_ids.len() as i64
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         let mut run_end = self.doc + 1;
         let mut j = (self.i + 1) as usize;
         while j < self.doc_ids.len() && i32::from(self.doc_ids[j]) == run_end {
@@ -1154,6 +1182,14 @@ impl DocIdSetIterator for RoaringBlockIter {
     fn cost(&self) -> i64 {
         match self {
             RoaringBlockIter::Range { min, max, .. } => (*max as i64 - *min as i64) + 1,
+        }
+    }
+
+    /// `DocIdSetIterator.range(min, max + 1)`'s `docIDRunEnd()`, which is its
+    /// exclusive `maxDoc` (`DocIdSetIterator.java:101-104`).
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        match self {
+            RoaringBlockIter::Range { max, .. } => Ok(i32::from(*max) + 1),
         }
     }
 }
@@ -1220,6 +1256,42 @@ impl DocIdSetIterator for RoaringBitSetIter {
     fn cost(&self) -> i64 {
         self.bits.cardinality() as i64
     }
+
+    /// `BitSetIterator.docIDRunEnd()` (`BitSetIterator.java:97-105`), the
+    /// iterator a `BitDocIdSet` block hands out.
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        debug_assert!(self.doc != NO_MORE_DOCS);
+        let length = self.bits.length() as i32;
+        let next = self.doc + 1;
+        if next >= length {
+            return Ok(length);
+        }
+        let end = crate::util::bit_set::BitSet::next_clear_bit(&self.bits, next);
+        Ok(if end == NO_MORE_DOCS { length } else { end })
+    }
+}
+
+/// What `docIdSets[i]` of a `RoaringDocIdSet` holds, as the reflective walk
+/// of `org.apache.lucene.tests.util.RamUsageTester` reads it.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `RamUsageTester` reads the
+/// private `docIdSets` array by reflection; Rust has none, so
+/// [`RoaringDocIdSet::block_layouts`] exposes the classes and array lengths
+/// that walk sees, and nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoaringBlockLayout {
+    /// `AllDocIdSet.INSTANCE`, the shared singleton.
+    All,
+    /// A `RangeDocIdSet` (two `short` fields).
+    Range,
+    /// A `ShortArrayDocIdSet` whose `docIDs` array has this length.
+    ShortArray(usize),
+    /// A `BitDocIdSet` over a `FixedBitSet` whose `bits` array has this
+    /// many words.
+    BitSet(usize),
+    /// A `NotDocIdSet` over a `ShortArrayDocIdSet` whose `docIDs` array has
+    /// this length.
+    NotShortArray(usize),
 }
 
 impl RoaringDocIdSet {
@@ -1227,6 +1299,26 @@ impl RoaringDocIdSet {
     /// `[0, max_doc)`.
     pub fn builder(max_doc: usize) -> RoaringDocIdSetBuilder {
         RoaringDocIdSetBuilder::new(max_doc)
+    }
+
+    /// The layout of each element of the private `docIdSets` array, `null`
+    /// as `None`: what `RamUsageTester`'s reflective walk reads (see
+    /// [`RoaringBlockLayout`]).
+    pub fn block_layouts(&self) -> Vec<Option<RoaringBlockLayout>> {
+        self.blocks
+            .iter()
+            .map(|b| {
+                b.as_ref().map(|b| match b {
+                    RoaringBlock::All => RoaringBlockLayout::All,
+                    RoaringBlock::Range { .. } => RoaringBlockLayout::Range,
+                    RoaringBlock::Array(docs) => RoaringBlockLayout::ShortArray(docs.doc_ids.len()),
+                    RoaringBlock::BitSet(bits) => RoaringBlockLayout::BitSet(bits.get_bits().len()),
+                    RoaringBlock::Not { excluded, .. } => {
+                        RoaringBlockLayout::NotShortArray(excluded.doc_ids.len())
+                    }
+                })
+            })
+            .collect()
     }
 
     /// Returns the number of documents in the set.
@@ -1256,6 +1348,17 @@ impl RoaringDocIdSet {
     /// Returns an iterator over the doc ids in this set.
     pub fn iter(&self) -> RoaringDocIdSetIterator {
         RoaringDocIdSetIterator::new(self.clone())
+    }
+}
+
+/// `RoaringDocIdSet extends DocIdSet` (`RoaringDocIdSet.java:34`).
+impl DocIdSet for RoaringDocIdSet {
+    /// Equivalent to `RoaringDocIdSet.iterator()` (`RoaringDocIdSet.java:394-397`).
+    /// Java returns `null` for an empty set; the port's `DocIdSet.iterator()`
+    /// cannot return `null`, so an empty set gives an exhausted iterator, as
+    /// every other set of the port does.
+    fn iterator(&self) -> Result<Box<dyn DocIdSetIterator>> {
+        Ok(Box::new(self.iter()))
     }
 }
 
@@ -1329,13 +1432,13 @@ impl RoaringDocIdSetBuilder {
     /// Returns an error if `doc_id` is out of order or out of bounds.
     pub fn add(&mut self, doc_id: usize) -> crate::error::Result<()> {
         if doc_id as i32 <= self.last_doc_id {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "doc ids must be added in-order, got {doc_id} which is <= lastDocId={}",
                 self.last_doc_id
             )));
         }
         if doc_id >= self.max_doc {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "doc_id={doc_id} is >= maxDoc={}",
                 self.max_doc
             )));
@@ -1357,7 +1460,7 @@ impl RoaringDocIdSetBuilder {
     /// Returns an error if the range is invalid or out of order.
     pub fn add_range(&mut self, min: usize, max: usize) -> crate::error::Result<()> {
         if min > max {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "min must be <= max, got min={min} max={max}"
             )));
         }
@@ -1365,13 +1468,13 @@ impl RoaringDocIdSetBuilder {
             return Ok(());
         }
         if min as i32 <= self.last_doc_id {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "doc ids must be added in-order, got range starting at {min} which is <= lastDocId={}",
                 self.last_doc_id
             )));
         }
         if max > self.max_doc {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "max={max} exceeds maxDoc={}",
                 self.max_doc
             )));
@@ -1402,6 +1505,7 @@ impl RoaringDocIdSetBuilder {
     }
 
     fn flush(&mut self) {
+        debug_assert!(self.current_block_cardinality <= ROARING_BLOCK_SIZE);
         if self.current_block < 0 || self.current_block_cardinality == 0 {
             self.reset_current_block();
             return;
@@ -1477,6 +1581,7 @@ impl RoaringDocIdSetBuilder {
     }
 
     fn append_doc_in_current_block(&mut self, doc_id: usize, block: usize) {
+        debug_assert!(doc_id as i64 >= i64::from(self.first_doc_id));
         let offset = doc_id - (block << 16);
         if self.current_block_cardinality < ROARING_MAX_ARRAY_LENGTH {
             self.buffer.push(offset as u16);
@@ -1502,6 +1607,8 @@ impl RoaringDocIdSetBuilder {
         to_doc_exclusive: usize,
         block: usize,
     ) {
+        debug_assert!(from_doc as i64 >= i64::from(self.first_doc_id));
+        debug_assert!(from_doc < to_doc_exclusive);
         let offset = block << 16;
         let span = to_doc_exclusive - from_doc;
         if self.current_block_cardinality + span <= ROARING_MAX_ARRAY_LENGTH {
@@ -1626,6 +1733,40 @@ impl DocIdSetIterator for RoaringDocIdSetIterator {
 
     fn cost(&self) -> i64 {
         self.set.cardinality as i64
+    }
+
+    /// Equivalent to `RoaringDocIdSet.Iterator.docIDRunEnd()`
+    /// (`RoaringDocIdSet.java:477-498`): the current block's run end, merged
+    /// with the following blocks while a run reaches a 64K boundary and the
+    /// next block starts with its local doc 0.
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        debug_assert!(self.doc != NO_MORE_DOCS && self.sub.is_some());
+        let sub = self.sub.as_mut().ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.search.DocIdSetIterator.docIDRunEnd()\" \
+                 because \"this.sub\" is null",
+            )
+        })?;
+        let mut b = i64::from(self.block);
+        let mut global_end = (b << 16) + i64::from(sub.doc_id_run_end()?);
+        while global_end == (b + 1) << 16 && global_end < i64::from(i32::MAX) {
+            let nb = b + 1;
+            let Some(Some(next_block)) = self.set.blocks.get(nb as usize) else {
+                break;
+            };
+            let mut next_it = next_block.iterator((nb as usize) << 16)?;
+            let first = next_it.next_doc()?;
+            if first != 0 {
+                break;
+            }
+            b = nb;
+            global_end = (b << 16) + i64::from(next_it.doc_id_run_end()?);
+        }
+        Ok(if global_end >= i64::from(i32::MAX) {
+            i32::MAX
+        } else {
+            global_end as i32
+        })
     }
 }
 
@@ -1865,6 +2006,8 @@ impl DenseLiveDocsBuilder {
             self.max_doc - self.live_docs.cardinality(),
             "deletedCount does not match maxDoc - liveDocs.cardinality()"
         );
+        // The private `DenseLiveDocs` constructor (`DenseLiveDocs.java:115-116`).
+        debug_assert!(self.live_docs.length() >= self.max_doc);
         DenseLiveDocs {
             live_docs: Arc::new(self.live_docs),
             max_doc: self.max_doc,
@@ -2012,6 +2155,8 @@ impl SparseLiveDocsBuilder {
             self.deleted_docs.cardinality(),
             "deletedCount does not match deletedDocs.cardinality()"
         );
+        // The private `SparseLiveDocs` constructor (`SparseLiveDocs.java:114-115`).
+        debug_assert!(self.deleted_docs.length() >= self.max_doc);
         SparseLiveDocs {
             deleted_docs: Arc::new(self.deleted_docs),
             max_doc: self.max_doc,
@@ -2027,6 +2172,7 @@ impl SparseLiveDocsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::search::NO_MORE_DOCS;
 
     /// `new SparseFixedBitSet(0)` throws (`SparseFixedBitSet.java:63-66`).
@@ -2036,7 +2182,7 @@ mod tests {
     fn an_empty_sparse_fixed_bit_set_is_lucenes_illegal_argument() {
         assert!(matches!(
             SparseFixedBitSet::new(0),
-            Err(LuceneError::IllegalArgument(ref message)) if message == "length needs to be >= 1"
+            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message == "length needs to be >= 1"
         ));
     }
 

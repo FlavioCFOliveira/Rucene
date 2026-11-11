@@ -174,7 +174,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 
@@ -274,7 +274,7 @@ fn key(i: i32) -> Option<Vec<u8>> {
 
 /// `NestedTypesFixture.fieldType(IndexOptions)`: tokenized, no norms.
 fn no_norms_type(options: IndexOptions) -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type.set_omit_norms(true).unwrap();
     field_type.set_index_options(options).unwrap();
@@ -347,10 +347,10 @@ fn binary_sort_field(variant: &str) -> SortField {
 fn rust_sorted_flush(variant: &str) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field(variant)]).unwrap())
@@ -374,7 +374,10 @@ fn id_order(dir: &Arc<dyn Directory>) -> Vec<String> {
     let mut terms_enum = terms.iterator().unwrap();
     let mut order = BTreeMap::new();
     while let Some(term) = terms_enum.next().unwrap() {
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_NONE)
+            .unwrap()
+            .unwrap();
         let doc = postings.next_doc().unwrap();
         order.insert(doc, String::from_utf8(term.slice().to_vec()).unwrap());
     }
@@ -458,10 +461,10 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
     let java = run_java("sorted-private-delete", "");
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field("asc")]).unwrap())
@@ -489,7 +492,10 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
     let mut terms_enum = terms.iterator().unwrap();
     let mut order = BTreeMap::new();
     while let Some(term) = terms_enum.next().unwrap() {
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_NONE)
+            .unwrap()
+            .unwrap();
         let doc = postings.next_doc().unwrap();
         let live = live_docs.as_ref().is_none_or(|bits| bits.get(doc as usize));
         order.insert(
@@ -518,7 +524,7 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
 #[test]
 fn binary_index_sort_is_accepted_and_feature_sort_refused() {
     ensure_codec();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     assert!(config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field("asc")]).unwrap())
         .is_ok());
@@ -528,7 +534,7 @@ fn binary_index_sort_is_accepted_and_feature_sort_refused() {
         .expect_err("a feature sort cannot sort an index");
     assert_eq!(
         error.to_string(),
-        rucene::error::LuceneError::IllegalArgument(
+        rucene::error::LuceneError::illegal_argument(
             "Cannot sort index with sort field <feature:\"features\" featureName=pagerank>"
                 .to_string()
         )
@@ -542,7 +548,7 @@ fn binary_index_sort_is_accepted_and_feature_sort_refused() {
 fn binary_index_sort_refuses_a_numeric_key() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_index_sort(Sort::new_fields(vec![binary_sort_field("asc")]).unwrap())
         .unwrap();
@@ -574,7 +580,7 @@ fn binary_sorter_has_no_comparable_providers() {
         .err()
         .expect("BinarySorter does not implement getComparableProviders");
     assert!(
-        matches!(error, rucene::error::LuceneError::UnsupportedOperation(ref message)
+        matches!(error, rucene::error::LuceneError { kind: rucene::error::LuceneErrorKind::UnsupportedOperation { ref message, .. }, .. }
             if message == "org.apache.lucene.index.IndexSorter$BinarySorter does not implement \
                            getComparableProviders"),
         "{error:?}"
@@ -670,9 +676,9 @@ fn feature_sort_orders_and_pages_as_lucene() {
     let java = run_java("feature-sort", "");
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let mut i = 0;
@@ -840,7 +846,7 @@ fn tiered_merge_score_and_explanation_match_lucene() {
             )
             .unwrap();
     }
-    let mut policy = TieredMergePolicy::new();
+    let policy = TieredMergePolicy::new();
     policy.set_floor_segment_mb(0.002).unwrap();
     policy.set_max_merged_segment_mb(0.06).unwrap();
     policy.set_segments_per_tier(3.0).unwrap();
@@ -884,7 +890,7 @@ fn radix_36(k: usize) -> String {
 
 /// The field type of a numeric doc-values field.
 fn numeric_dv_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type
         .set_doc_values_type(DocValuesType::NUMERIC)
         .unwrap();
@@ -904,10 +910,10 @@ fn numeric_reset(name: &str) -> Field {
 fn rust_dv_update(variant: &str) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..50 {
@@ -1034,10 +1040,10 @@ const MULTI_NUMERIC: [&str; 5] = ["weight", "views", "stock", "rating", "price"]
 fn rust_dv_update_multi_field() -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..50i64 {
@@ -1144,7 +1150,7 @@ const FULL_DOCS: i32 = 300;
 /// `NestedTypesFixture.TV_TYPE`: `TextField.TYPE_NOT_STORED` with term vectors,
 /// positions and offsets.
 fn term_vector_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
@@ -1254,15 +1260,15 @@ fn add_full_docs(writer: &IndexWriter, from: i32, to: i32) {
 fn rust_sorted_full(variant: &str, merge: bool) -> Arc<dyn Directory> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_use_compound_file(false).unwrap();
     if merge {
         config
-            .set_merge_policy(Arc::new(TieredMergePolicy::new()))
+            .set_merge_policy(Some(Arc::new(TieredMergePolicy::new())))
             .unwrap();
     } else {
         config
-            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
     }
     config
@@ -1358,7 +1364,10 @@ fn document_lines(leaf: &Arc<dyn rucene::index::LeafReader>) -> Vec<String> {
     let mut terms_enum = terms.iterator().unwrap();
     while let Some(term) = terms_enum.next().unwrap() {
         let text = String::from_utf8(term.slice().to_vec()).unwrap();
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_NONE)
+            .unwrap()
+            .unwrap();
         loop {
             let doc = postings.next_doc().unwrap();
             if doc == NO_MORE_DOCS {
@@ -1446,7 +1455,7 @@ fn document_lines(leaf: &Arc<dyn rucene::index::LeafReader>) -> Vec<String> {
             let mut te = tv.iterator().unwrap();
             let mut entries = Vec::new();
             while let Some(term) = te.next().unwrap() {
-                let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap();
+                let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
                 pe.next_doc().unwrap();
                 let freq = pe.freq().unwrap();
                 let mut entry = format!("{}:{freq}", std::str::from_utf8(term.slice()).unwrap());
@@ -1663,14 +1672,14 @@ fn binary_index_sort_merge_keeps_every_document_consistent() {
 fn rust_merge_observer(variant: &str) -> Vec<String> {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     if variant == "pending" {
         config
-            .set_merge_scheduler(Arc::new(NoMergeScheduler))
+            .set_merge_scheduler(Some(NoMergeScheduler::instance()))
             .unwrap();
     } else {
         config
-            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
             .unwrap();
     }
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -1757,8 +1766,9 @@ fn merge_observer_of_finished_merges_matches_lucene() {
 // #204: FilterDirectoryReader.DelegatingCacheHelper
 // ---------------------------------------------------------------------------
 
+/// The identity of the key `helper` answers.
 fn key_address(helper: &dyn CacheHelper) -> usize {
-    helper.get_key() as *const CacheKey as usize
+    helper.get_key().identity()
 }
 
 /// Counts how often it is called.
@@ -1776,10 +1786,10 @@ fn delegating_cache_helper_matches_lucene() {
     let java = run_java("cache-helper", "");
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_soft_deletes_field(Some("soft".to_string()));
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     // Document c3 carries the soft-deletes field, so the first segment has one
@@ -1835,13 +1845,13 @@ fn delegating_cache_helper_matches_lucene() {
     }
 
     let dir_calls = Arc::new(AtomicUsize::new(0));
-    wrapped_helper.add_closed_listener(Box::new(CountingListener(Arc::clone(&dir_calls))));
+    wrapped_helper.add_closed_listener(Arc::new(CountingListener(Arc::clone(&dir_calls))));
     let leaf_calls = Arc::new(AtomicUsize::new(0));
     wrapped_leaves[0]
         .leaf_reader()
         .get_reader_cache_helper()
         .unwrap()
-        .add_closed_listener(Box::new(CountingListener(Arc::clone(&leaf_calls))));
+        .add_closed_listener(Arc::new(CountingListener(Arc::clone(&leaf_calls))));
     drop(wrapped_leaves);
     drop(inner_leaves);
     wrapped.close().unwrap();
@@ -1873,10 +1883,17 @@ fn delegating_cache_helper_matches_lucene() {
 
 /// A delegate with its own key, which a `DelegatingCacheHelper` must never
 /// answer with.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct PlainHelper {
     key: CacheKey,
-    _non_empty: u8,
+}
+
+impl Default for PlainHelper {
+    fn default() -> Self {
+        Self {
+            key: CacheKey::new(),
+        }
+    }
 }
 
 impl CacheHelper for PlainHelper {
@@ -1884,7 +1901,7 @@ impl CacheHelper for PlainHelper {
         &self.key
     }
 
-    fn add_closed_listener(&self, _listener: Box<dyn ClosedListener>) {}
+    fn add_closed_listener(&self, _listener: Arc<dyn ClosedListener>) {}
 }
 
 /// Java's `cacheKey` is an object: moving the reference that holds the helper
@@ -1934,7 +1951,7 @@ fn delegating_cache_helper_key_is_not_reused_while_a_holder_is_alive() {
         );
     }
     assert_eq!(
-        handle.key() as *const CacheKey as usize,
+        handle.identity(),
         address,
         "the handle answers with the dropped helper's key"
     );
@@ -1953,7 +1970,10 @@ fn dump_fields(fields: &dyn Fields, wrap: bool) -> Vec<String> {
         let terms = fields.terms(&name).unwrap().expect("a listed field");
         let mut terms_enum = terms.iterator().unwrap();
         while let Some(term) = terms_enum.next().unwrap() {
-            let postings = terms_enum.postings(None, POSTINGS_ENUM_ALL).unwrap();
+            let postings = terms_enum
+                .postings(None, POSTINGS_ENUM_ALL)
+                .unwrap()
+                .unwrap();
             let mut postings: Box<dyn PostingsEnum> = if wrap {
                 Box::new(FilterPostingsEnum::new(postings))
             } else {
@@ -2016,10 +2036,17 @@ fn filter_fields_and_filter_postings_enum_forward_everything() {
     let terms = leaf.terms("body").unwrap().unwrap();
     let mut terms_enum = terms.iterator().unwrap();
     assert!(terms_enum.seek_exact(&bytes("rep")).unwrap());
-    let mut plain = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
+    let mut plain = terms_enum
+        .postings(None, POSTINGS_ENUM_NONE)
+        .unwrap()
+        .unwrap();
     assert!(terms_enum.seek_exact(&bytes("rep")).unwrap());
-    let mut filter =
-        FilterPostingsEnum::new(terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap());
+    let mut filter = FilterPostingsEnum::new(
+        terms_enum
+            .postings(None, POSTINGS_ENUM_NONE)
+            .unwrap()
+            .unwrap(),
+    );
     for target in [0, 7, 128, 129, 250, 299, 300] {
         assert_eq!(
             filter.advance(target).unwrap(),

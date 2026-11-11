@@ -96,7 +96,7 @@ pub trait BitSet: Bits + Accountable + std::fmt::Display {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the iterator is already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the iterator is already
     /// positioned, and propagates iteration errors.
     fn or(&mut self, iter: &mut dyn DocIdSetIterator) -> Result<()> {
         check_unpositioned(iter)?;
@@ -143,7 +143,7 @@ pub trait BitSet: Bits + Accountable + std::fmt::Display {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] when `iter.doc_id() != -1`, which is
+/// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when `iter.doc_id() != -1`, which is
 /// Java's `IllegalStateException`.
 pub fn check_unpositioned(iter: &dyn DocIdSetIterator) -> Result<()> {
     if iter.doc_id() != -1 {
@@ -290,9 +290,18 @@ fn next_set_bit_in_range_words(
     start: i32,
     upper_bound: i32,
 ) -> i32 {
-    debug_assert!(start >= 0 && (start as usize) < num_bits);
-    debug_assert!(start < upper_bound);
-    debug_assert!(upper_bound as usize <= num_bits);
+    debug_assert!(
+        start >= 0 && (start as usize) < num_bits,
+        "index={start}, numBits={num_bits}"
+    );
+    debug_assert!(
+        start < upper_bound,
+        "index={start}, upperBound={upper_bound}"
+    );
+    debug_assert!(
+        upper_bound as usize <= num_bits,
+        "upperBound={upper_bound}, numBits={num_bits}"
+    );
     let mut i = (start >> 6) as usize;
     // Java's `>>` on a long shifts by `start & 63`.
     let word = bits[i].load(Relaxed) >> (start & 63);
@@ -326,11 +335,23 @@ fn next_clear_bit_in_range_words(
     start: i32,
     upper_bound: i32,
 ) -> i32 {
-    debug_assert!(start >= 0 && (start as usize) < num_bits);
-    debug_assert!(start < upper_bound);
-    debug_assert!(upper_bound as usize <= num_bits);
+    debug_assert!(
+        start >= 0 && (start as usize) < num_bits,
+        "index={start}, numBits={num_bits}"
+    );
+    debug_assert!(
+        start < upper_bound,
+        "index={start}, upperBound={upper_bound}"
+    );
+    debug_assert!(
+        upper_bound as usize <= num_bits,
+        "upperBound={upper_bound}, numBits={num_bits}"
+    );
     let mut i = (start >> 6) as usize;
-    let word = !(bits[i].load(Relaxed) >> (start & 63));
+    // Java's `~(bits[i] >> start)` shifts the signed `long` arithmetically
+    // (`FixedBitSet.java:391`): the sign bit fills the vacated high bits, so a
+    // run of set bits reaching bit 63 does not read as clear past it.
+    let word = !((bits[i].load(Relaxed) as i64) >> (start & 63)) as u64;
 
     if word != 0 {
         return start + word.trailing_zeros() as i32;
@@ -481,6 +502,21 @@ pub struct BitSetIterator {
     length: usize,
     cost: i64,
     doc: i32,
+    overrides: Option<Arc<dyn BitSetIteratorOverrides>>,
+}
+
+/// The overridable members of [`BitSetIterator`]: an anonymous Java subclass
+/// of `BitSetIterator` (for example `ThrowingBitSetQuery` in
+/// `BaseKnnVectorQueryTestCase.java:1084-1090`) overrides the public
+/// `getBitSet()`.
+///
+/// **Divergence from Lucene 10.5.0.** Java subclasses the class; Rust has no
+/// implementation inheritance, so the override is installed on the iterator
+/// with [`BitSetIterator::set_overrides`]. Without one, the iterator behaves
+/// exactly as Java's base class.
+pub trait BitSetIteratorOverrides: Send + Sync {
+    /// `BitSetIterator.getBitSet()`.
+    fn get_bit_set<'a>(&'a self, iterator: &'a BitSetIterator) -> &'a Arc<dyn BitSet>;
 }
 
 impl std::fmt::Debug for BitSetIterator {
@@ -498,10 +534,10 @@ impl BitSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `cost` is negative.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `cost` is negative.
     pub fn new(bits: Arc<dyn BitSet>, cost: i64) -> Result<Self> {
         if cost < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cost must be >= 0, got {cost}"
             )));
         }
@@ -511,12 +547,25 @@ impl BitSetIterator {
             length,
             cost,
             doc: -1,
+            overrides: None,
         })
     }
 
     /// Returns the wrapped [`BitSet`].
+    ///
+    /// Equivalent to `BitSetIterator.getBitSet()`, dispatched to the installed
+    /// [`BitSetIteratorOverrides::get_bit_set`] when there is one.
     pub fn get_bit_set(&self) -> &Arc<dyn BitSet> {
-        &self.bits
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.get_bit_set(self),
+            None => &self.bits,
+        }
+    }
+
+    /// Installs the overrides of an anonymous Java subclass (see
+    /// [`BitSetIteratorOverrides`]).
+    pub fn set_overrides(&mut self, overrides: Arc<dyn BitSetIteratorOverrides>) {
+        self.overrides = Some(overrides);
     }
 
     /// Returns the set `iterator` wraps when it is a [`BitSetIterator`] over a
@@ -581,7 +630,7 @@ impl DocIdSetIterator for BitSetIterator {
         self.cost
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc != NO_MORE_DOCS);
         let next = self.doc + 1;
         if next >= self.length as i32 {
@@ -637,16 +686,16 @@ impl DocBaseBitSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `cost` is negative or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `cost` is negative or
     /// `doc_base` is not a multiple of 64.
     pub fn new(bits: Arc<FixedBitSet>, cost: i64, doc_base: i32) -> Result<Self> {
         if cost < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cost must be >= 0, got {cost}"
             )));
         }
         if (doc_base & 63) != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "docBase need to be a multiple of 64, got {doc_base}"
             )));
         }
@@ -730,7 +779,7 @@ impl FixedBits {
     ///
     /// # Errors
     ///
-    /// Returns the [`LuceneError::IllegalArgument`] of
+    /// Returns the [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) of
     /// [`FixedBitSet::from_bits`] when `bits` is too short for `length`.
     pub fn new(bits: Vec<u64>, length: usize) -> Result<Self> {
         Ok(Self::from_bit_set(FixedBitSet::from_bits(bits, length)?))

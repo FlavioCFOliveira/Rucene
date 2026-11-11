@@ -87,11 +87,14 @@ fn drain(mut terms_enum: Box<dyn TermsEnum>) -> Vec<String> {
     out
 }
 
-fn field_terms() -> Box<dyn Terms> {
+/// The terms of field `f`, with the reader they are read from: the reader
+/// stays open while the terms are used, as a Java caller holds it (closing
+/// it closes the files the terms read).
+fn field_terms() -> (Arc<dyn directory_reader::DirectoryReader>, Box<dyn Terms>) {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for term in terms() {
@@ -102,11 +105,11 @@ fn field_terms() -> Box<dyn Terms> {
     writer.commit().unwrap();
     writer.close().unwrap();
     let reader = directory_reader::open(dir).unwrap();
-    let leaves = reader.leaves().unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
     assert_eq!(leaves.len(), 1);
     let terms = leaves[0].leaf_reader().terms("f").unwrap().unwrap();
     assert_eq!(terms.size().unwrap(), 1364, "Java: size=1364");
-    terms
+    (reader, terms)
 }
 
 /// Java: `nfa1 … byteRunnable=NFARunAutomaton commonSuffix=abb`, then the
@@ -124,7 +127,7 @@ fn an_nfa_with_a_loop_returns_javas_terms() {
             .map(|s| s.slice().to_vec()),
         Some(b"abb".to_vec())
     );
-    let terms = field_terms();
+    let (_reader, terms) = field_terms();
     let all = ["aaabb", "aabb", "ababb", "abb", "baabb", "babb", "bbabb"];
     for (start, expected) in [
         (None, &all[..]),
@@ -156,7 +159,7 @@ fn a_finite_nfa_returns_javas_terms() {
     assert!(!automaton.is_deterministic());
     let compiled = CompiledAutomaton::new(automaton, true, false, false).unwrap();
     assert!(compiled.nfa_run_automaton.is_some() && compiled.common_suffix_ref.is_none());
-    let terms = field_terms();
+    let (_reader, terms) = field_terms();
     for (start, expected) in [
         (None, &["ab", "abc", "abd"][..]),
         (Some("ab"), &["abc", "abd"][..]),
@@ -185,7 +188,7 @@ fn a_finite_nfa_returns_javas_terms() {
 #[test]
 fn a_start_term_past_the_dead_state_fails_as_java_does() {
     let compiled = CompiledAutomaton::new(nfa_finite(), true, false, false).unwrap();
-    let terms = field_terms();
+    let (_reader, terms) = field_terms();
     for start in ["bab", "aab"] {
         let start_term = BytesRef::new(start.as_bytes().to_vec());
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -210,7 +213,7 @@ fn enums_of_one_query_share_its_nfa_cache() {
         &nfa
     ));
     let initial = nfa.size();
-    let terms = field_terms();
+    let (_reader, terms) = field_terms();
     let first = drain(terms.intersect(&compiled, None).unwrap());
     let after_intersect = nfa.size();
     assert!(

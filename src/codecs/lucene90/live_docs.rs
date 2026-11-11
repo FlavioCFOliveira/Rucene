@@ -7,7 +7,7 @@
 use crate::codecs::codec_util;
 use crate::codecs::live_docs::LiveDocsFormat;
 use crate::codecs::stub::SegmentCommitInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{file_name_from_generation, LIVE_DOCS_EXTENSION};
 use crate::store::{Directory, IOContext, IndexInput, IndexOutput};
 use crate::util::bit_sets::{DenseLiveDocs, SparseFixedBitSet, SparseLiveDocs};
@@ -73,8 +73,10 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
                 del_count as usize,
             )
         })();
-        let _ = codec_util::check_footer(input.as_mut())?;
-        result
+        // `finally { CodecUtil.checkFooter(input, priorE); }` inside the
+        // try-with-resources (`Lucene90LiveDocsFormat.java:88-105`).
+        let result = codec_util::check_footer_after(input.as_mut(), result);
+        crate::store::close_after(input.as_mut(), result)
     }
 
     fn write_live_docs(
@@ -93,27 +95,36 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
                     info.info.name
                 ))
             })?;
+        // `try (IndexOutput output = dir.createOutput(name, context))`
+        // (`Lucene90LiveDocsFormat.java:171-183`): the output is closed
+        // whether or not the body throws; a failure of the body wins, and the
+        // failure of the close it triggers is suppressed.
         let mut output = dir.create_output(&name, context)?;
-        codec_util::write_index_header(
-            output.as_mut(),
-            CODEC_NAME,
-            VERSION_CURRENT,
-            &info.info.id(),
-            &radix36(gen as u64),
-        )?;
-        let del_count = write_bits(output.as_mut(), bits)?;
-        codec_util::write_footer(output.as_mut())?;
-        output.close()?;
+        let body = (|| -> Result<usize> {
+            codec_util::write_index_header(
+                output.as_mut(),
+                CODEC_NAME,
+                VERSION_CURRENT,
+                &info.info.id(),
+                &radix36(gen as u64),
+            )?;
+            let del_count = write_bits(output.as_mut(), bits)?;
+            codec_util::write_footer(output.as_mut())?;
+            Ok(del_count)
+        })();
+        let closed = output.close();
+        let del_count = body?;
+        closed?;
 
         let expected = info.get_del_count() + new_del_count;
         if del_count != expected as usize {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "bits.deleted={del_count} info.delcount={} newdelcount={new_del_count}",
                     info.get_del_count()
                 ),
-            )));
+            ))));
         }
         Ok(())
     }
@@ -154,10 +165,10 @@ fn read_live_docs(
         };
 
     if actual_del_count != expected_del_count {
-        return Err(LuceneError::Io(std::io::Error::new(
+        return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("bits.deleted={actual_del_count} info.delcount={expected_del_count}"),
-        )));
+        ))));
     }
     Ok(live_docs)
 }
@@ -299,6 +310,28 @@ mod tests {
             assert_eq!(write_bits(&mut out, bits).unwrap(), 500);
             assert_eq!(out.into_inner(), expected);
         }
+    }
+
+    /// Regression (rmp #351): `writeLiveDocs` writes inside a
+    /// try-with-resources over the output (`Lucene90LiveDocsFormat.java:171-183`),
+    /// so a write that fails still closes the `.liv` output, and the write's
+    /// failure is the one raised.
+    #[test]
+    fn a_failed_write_closes_the_output() {
+        let (dir, _tracking, log) = crate::codecs::tests::tracking_directory();
+        log.fail_write("_0_1.liv");
+        let live = FixedBitSet::new(10);
+        let error = Lucene90LiveDocsFormat::new()
+            .write_live_docs(
+                &live,
+                dir.as_ref(),
+                &make_info("_0", 10, 0, -1),
+                10,
+                &*crate::store::DEFAULT_IO_CONTEXT,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("write failed"), "{error:?}");
+        assert_eq!(log.close_count("_0_1.liv"), 1);
     }
 
     fn reading_info(name: &str, max_doc: i32, del_count: i32) -> SegmentCommitInfo {

@@ -4,7 +4,6 @@
 //! boost, a popularity score — inside the term frequency, so a query can
 //! combine it into the score without a doc-values lookup.
 
-use std::io::Read;
 use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
@@ -38,6 +37,7 @@ use crate::search::term_scorer::TermScorer;
 use crate::search::weight::Weight;
 use crate::search::DocIdSetIterator;
 use crate::search::{SortField, SortFieldKind, SortFieldType};
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::attribute::DefaultAttributeFactory;
 use crate::util::{AttributeSource, BytesRef};
 
@@ -89,13 +89,22 @@ pub enum FeatureFunction {
         /// Weight applied to the value.
         weight: f32,
     },
-    /// `w * value / (value + pivot)` — saturating, so a large value cannot
-    /// dominate.
+    /// `w * (1 - pivot / (value + pivot))` — saturating, so a large value
+    /// cannot dominate.
     Saturation {
         /// Weight applied to the result.
         weight: f32,
         /// Value at which the function reaches half its maximum.
         pivot: f32,
+    },
+    /// `SaturationFunction` with a `null` pivot: the pivot is computed by
+    /// [`FeatureField::compute_pivot_feature_value`] when the query is
+    /// rewritten (`FeatureField.SaturationFunction.rewrite`,
+    /// `FeatureField.java:409-415`). Scoring before the rewrite fails with
+    /// `IllegalStateException("Rewrite first")`, as Java's `scorer` does.
+    SaturationUnresolved {
+        /// Weight applied to the result.
+        weight: f32,
     },
     /// `w * log(scaling_factor + value)` — compresses a long tail.
     Logarithm {
@@ -104,8 +113,8 @@ pub enum FeatureFunction {
         /// Constant added before taking the logarithm.
         scaling_factor: f32,
     },
-    /// `w * value^a / (value^a + pivot^a)` — saturating with an adjustable
-    /// steepness.
+    /// `w * (1 - pivot^a / (value^a + pivot^a))` — saturating with an
+    /// adjustable steepness.
     SigmoidFunction {
         /// Weight applied to the result.
         weight: f32,
@@ -118,20 +127,59 @@ pub enum FeatureFunction {
 
 impl FeatureFunction {
     /// Returns the score a stored frequency contributes.
+    ///
+    /// Each arm is the `doScore` of the matching Java `SimScorer`
+    /// (`FeatureField.java:266-268`, `355-357`, `446-451`, `527-532`), with
+    /// the variant's weight as Java's `weight` argument of `scorer(float)`.
     pub fn score(self, freq: f32) -> f32 {
-        let value = decode_feature_value(freq);
+        let f = decode_feature_value(freq);
         match self {
-            Self::Linear { weight } => weight * value,
-            Self::Saturation { weight, pivot } => weight * value / (value + pivot),
+            Self::Linear { weight } => weight * f,
+            Self::Saturation { weight, pivot } => weight * (1.0 - pivot / (f + pivot)),
+            // Unreachable: `FeatureQuery::create_weight` rejects an unresolved
+            // pivot before any scorer exists, as Java's `scorer` throws.
+            Self::SaturationUnresolved { .. } => f32::NAN,
             Self::Logarithm {
                 weight,
                 scaling_factor,
-            } => weight * (scaling_factor + value).ln(),
+            } => (weight as f64 * ((scaling_factor + f) as f64).ln()) as f32,
             Self::SigmoidFunction { weight, pivot, exp } => {
-                let v = value.powf(exp);
-                let p = pivot.powf(exp);
-                weight * v / (v + p)
+                let pivot_pa = (pivot as f64).powf(exp as f64);
+                (weight as f64 * (1.0 - pivot_pa / ((f as f64).powf(exp as f64) + pivot_pa))) as f32
             }
+        }
+    }
+
+    /// Returns this function with its weight multiplied by `boost`.
+    ///
+    /// Java passes the query boost as the `weight` argument of
+    /// `FeatureFunction.scorer(float)` (`FeatureQuery.java:135`) and of
+    /// `explain` (`FeatureQuery.java:117`); the factories build every
+    /// variant with weight `1.0`, so the product is exactly `boost`.
+    pub fn with_boost(self, boost: f32) -> Self {
+        match self {
+            Self::Linear { weight } => Self::Linear {
+                weight: weight * boost,
+            },
+            Self::Saturation { weight, pivot } => Self::Saturation {
+                weight: weight * boost,
+                pivot,
+            },
+            Self::SaturationUnresolved { weight } => Self::SaturationUnresolved {
+                weight: weight * boost,
+            },
+            Self::Logarithm {
+                weight,
+                scaling_factor,
+            } => Self::Logarithm {
+                weight: weight * boost,
+                scaling_factor,
+            },
+            Self::SigmoidFunction { weight, pivot, exp } => Self::SigmoidFunction {
+                weight: weight * boost,
+                pivot,
+                exp,
+            },
         }
     }
 }
@@ -146,7 +194,7 @@ pub const MAX_WEIGHT: f32 = 64.0;
 /// The check every `FeatureField.new*Query` factory runs first.
 fn check_weight(weight: f32) -> Result<()> {
     if weight <= 0.0 || weight > MAX_WEIGHT {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "weight must be in (0, {MAX_WEIGHT}], got: {weight}"
         )));
     }
@@ -172,7 +220,7 @@ impl FeatureField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `weight` is outside
     /// `(0, 64]`.
     pub fn new_linear_query(
         field_name: &str,
@@ -197,7 +245,7 @@ impl FeatureField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `weight` is outside
     /// `(0, 64]` or `scaling_factor` is below one or not finite.
     pub fn new_log_query(
         field_name: &str,
@@ -207,7 +255,7 @@ impl FeatureField {
     ) -> Result<Arc<dyn Query>> {
         check_weight(weight)?;
         if scaling_factor < 1.0 || !scaling_factor.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "scalingFactor must be >= 1, got: {scaling_factor}"
             )));
         }
@@ -224,6 +272,30 @@ impl FeatureField {
         )
     }
 
+    /// Returns a saturation query whose weight is `1` and whose pivot is
+    /// computed on rewrite.
+    ///
+    /// Equivalent to `FeatureField.newSaturationQuery(String, String)`
+    /// (`FeatureField.java`: `newSaturationQuery(fieldName, featureName, 1f,
+    /// null)`).
+    ///
+    /// # Errors
+    ///
+    /// Never in practice; the signature matches the other factories.
+    pub fn new_saturation_query_auto_pivot(
+        field_name: &str,
+        feature_name: &str,
+    ) -> Result<Arc<dyn Query>> {
+        boosted(
+            FeatureQuery::new(
+                field_name,
+                feature_name,
+                FeatureFunction::SaturationUnresolved { weight: 1.0 },
+            ),
+            1.0,
+        )
+    }
+
     /// Returns a query scoring documents as `weight * S / (S + pivot)`.
     ///
     /// Equivalent to `FeatureField.newSaturationQuery(String, String, float,
@@ -231,7 +303,7 @@ impl FeatureField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `weight` is outside
     /// `(0, 64]` or `pivot` is not positive and finite.
     pub fn new_saturation_query(
         field_name: &str,
@@ -241,7 +313,7 @@ impl FeatureField {
     ) -> Result<Arc<dyn Query>> {
         check_weight(weight)?;
         if pivot <= 0.0 || !pivot.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pivot must be > 0, got: {pivot}"
             )));
         }
@@ -263,7 +335,7 @@ impl FeatureField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `weight` is outside
     /// `(0, 64]`, or `pivot` or `exp` is not positive and finite.
     pub fn new_sigmoid_query(
         field_name: &str,
@@ -274,12 +346,12 @@ impl FeatureField {
     ) -> Result<Arc<dyn Query>> {
         check_weight(weight)?;
         if pivot <= 0.0 || !pivot.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pivot must be > 0, got: {pivot}"
             )));
         }
         if exp <= 0.0 || !exp.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "exp must be > 0, got: {exp}"
             )));
         }
@@ -354,7 +426,7 @@ impl FeatureField {
 pub struct FeatureField {
     name: String,
     feature_name: String,
-    feature_value: f32,
+    feature_value: AtomicRefCell<f32>,
     field_type: FieldType,
 }
 
@@ -396,7 +468,7 @@ impl FeatureField {
     /// The body of `FeatureField`'s static initialiser for one of its two
     /// types (`FeatureField.java:111-120`).
     fn new_field_type(store_term_vectors: bool) -> FieldType {
-        let mut field_type = FieldType::new();
+        let field_type = FieldType::new();
         field_type
             .set_tokenized(false)
             .expect("INVARIANT: a new type is mutable");
@@ -443,10 +515,10 @@ impl FeatureField {
             Self::field_type_static().clone()
         };
 
-        let mut field = Self {
+        let field = Self {
             name,
             feature_name,
-            feature_value: 0.0,
+            feature_value: AtomicRefCell::new(0.0),
             field_type,
         };
         field.set_feature_value(feature_value)?;
@@ -456,27 +528,27 @@ impl FeatureField {
     /// Replaces the feature value.
     ///
     /// Equivalent to `FeatureField.setFeatureValue(float)`.
-    pub fn set_feature_value(&mut self, feature_value: f32) -> Result<()> {
+    pub fn set_feature_value(&self, feature_value: f32) -> Result<()> {
         if !feature_value.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "featureValue must be finite, got: {feature_value} for feature {} on field {}",
                 self.feature_name, self.name
             )));
         }
         if feature_value < MIN_NORMAL {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "featureValue must be a positive normal float, got: {feature_value} for feature \
                  {} on field {} which is less than the minimum positive normal float: {MIN_NORMAL}",
                 self.feature_name, self.name
             )));
         }
-        self.feature_value = feature_value;
+        *self.feature_value.borrow_mut() = feature_value;
         Ok(())
     }
 
     /// Returns the feature value.
     pub fn get_feature_value(&self) -> f32 {
-        self.feature_value
+        *self.feature_value.borrow()
     }
 
     /// Returns the field's name.
@@ -499,7 +571,10 @@ impl FeatureField {
     /// Equivalent to what `FeatureField.tokenStream` emits: one token, whose
     /// term is the feature name and whose frequency carries the value.
     pub fn token(&self) -> (&str, i32) {
-        (&self.feature_name, encode_feature_value(self.feature_value))
+        (
+            &self.feature_name,
+            encode_feature_value(*self.feature_value.borrow()),
+        )
     }
 
     /// Returns the stored form of the feature name.
@@ -509,6 +584,13 @@ impl FeatureField {
 }
 
 impl IndexableField for FeatureField {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -519,13 +601,13 @@ impl IndexableField for FeatureField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(FeatureTokenStream::new(
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(FeatureTokenStream::new(
             self.feature_name.clone(),
-            encode_feature_value(self.feature_value),
-        ))
+            encode_feature_value(*self.feature_value.borrow()),
+        )))
     }
 
     fn binary_value(&self) -> Option<crate::util::BytesRef> {
@@ -536,7 +618,7 @@ impl IndexableField for FeatureField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -608,7 +690,7 @@ impl TokenStream for FeatureTokenStream {
         self.source
             .get_attribute_mut::<CharTermAttributeImpl>()
             .expect("registered in new")
-            .append_string(&feature_name);
+            .append_string(Some(&feature_name));
         self.source
             .get_attribute_mut::<TermFrequencyAttributeImpl>()
             .expect("registered in new")
@@ -916,7 +998,7 @@ impl SimpleFieldComparatorImpl for FeatureComparator {
         };
         let mut terms_enum = terms.iterator()?;
         if terms_enum.seek_exact(&self.feature_name)? {
-            return Ok(Some(terms_enum.postings(None, POSTINGS_ENUM_FREQS)?));
+            return terms_enum.postings(None, POSTINGS_ENUM_FREQS);
         }
         Ok(None)
     }
@@ -1017,7 +1099,9 @@ impl DoubleValuesSource for FeatureDoubleValuesSource {
         if !terms_enum.seek_exact(&feature)? {
             return Ok(Box::new(EmptyDoubleValues));
         }
-        let postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
+        let postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok(Box::new(FeatureDoubleValues { postings }))
     }
 
@@ -1077,7 +1161,7 @@ struct FeatureSimScorer {
 
 impl SimScorer for FeatureSimScorer {
     fn score(&self, freq: f32, _norm: i64) -> f32 {
-        self.boost * self.function.score(freq)
+        self.function.with_boost(self.boost).score(freq)
     }
 }
 
@@ -1142,7 +1226,9 @@ impl Weight for FeatureWeight {
                 Vec::new(),
             ));
         }
-        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)?
+            .ok_or_else(LuceneError::null_pointer)?;
         if postings.advance(doc)? != doc {
             return Ok(Explanation::no_match(
                 format!("{desc}. Feature {} isn't set.", self.query.feature),
@@ -1151,7 +1237,7 @@ impl Weight for FeatureWeight {
         }
         let freq = postings.freq()? as f32;
         Ok(Explanation::matched(
-            self.query.function.score(freq) * self.boost,
+            self.query.function.with_boost(self.boost).score(freq),
             desc,
             Vec::new(),
         ))
@@ -1263,6 +1349,22 @@ impl Query for FeatureQuery {
         hasher.finish()
     }
 
+    /// Equivalent to `FeatureQuery.rewrite(IndexSearcher)`: a function that
+    /// rewrites to another (a saturation function computing its pivot)
+    /// yields a new query over it.
+    fn rewrite(&self, searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
+        if let FeatureFunction::SaturationUnresolved { weight } = self.function {
+            let pivot =
+                FeatureField::compute_pivot_feature_value(searcher, &self.field, &self.feature)?;
+            return Ok(Some(Arc::new(FeatureQuery::new(
+                self.field.clone(),
+                self.feature.clone(),
+                FeatureFunction::Saturation { weight, pivot },
+            ))));
+        }
+        Ok(None)
+    }
+
     fn create_weight(
         &self,
         searcher: &IndexSearcher,
@@ -1277,11 +1379,206 @@ impl Query for FeatureQuery {
             let rewritten = searcher.rewrite(Arc::new(tq))?;
             return rewritten.create_weight(searcher, score_mode, boost);
         }
+        if matches!(self.function, FeatureFunction::SaturationUnresolved { .. }) {
+            // `SaturationFunction.scorer`: `if (pivot == null) throw new
+            // IllegalStateException("Rewrite first")`.
+            return Err(LuceneError::illegal_state("Rewrite first"));
+        }
         Ok(Arc::new(FeatureWeight {
             query: Arc::new(self.clone()),
             boost,
             top_level_scoring_clause: false,
         }))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// The nested `FeatureField.FeatureFunction` implementations and their scorers
+// -----------------------------------------------------------------------------
+
+/// The `SimScorer` every `FeatureFunction.scorer(float)` returns: the
+/// anonymous class that scores `doScore(decodeFeatureValue(freq))` and whose
+/// `asBulkSimScorer()` applies the same `doScore` to each entry
+/// (`FeatureField.java:262-560`).
+pub struct FeatureFunctionSimScorer {
+    do_score: Box<dyn Fn(f32) -> f32 + Send + Sync>,
+}
+
+impl SimScorer for FeatureFunctionSimScorer {
+    fn score(&self, freq: f32, _norm: i64) -> f32 {
+        let f = decode_feature_value(freq);
+        (self.do_score)(f)
+    }
+
+    fn as_bulk_sim_scorer(&self) -> Box<dyn crate::search::similarities::BulkSimScorer + '_> {
+        Box::new(FeatureFunctionBulkSimScorer { scorer: self })
+    }
+}
+
+/// The anonymous `Similarity.BulkSimScorer` of a [`FeatureFunctionSimScorer`].
+struct FeatureFunctionBulkSimScorer<'a> {
+    scorer: &'a FeatureFunctionSimScorer,
+}
+
+impl crate::search::similarities::BulkSimScorer for FeatureFunctionBulkSimScorer<'_> {
+    fn score(&mut self, size: usize, freqs: &[f32], _norms: &[i64], scores: &mut [f32]) {
+        for i in 0..size {
+            let f = decode_feature_value(freqs[i]);
+            scores[i] = (self.scorer.do_score)(f);
+        }
+    }
+}
+
+/// `FeatureField.LinearFunction`.
+///
+/// Java package-private; public for the port of `TestFeatureField`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LinearFunction;
+
+impl LinearFunction {
+    /// `new LinearFunction()`.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// `LinearFunction.scorer(float w)`: `w * S`.
+    pub fn scorer(&self, w: f32) -> FeatureFunctionSimScorer {
+        FeatureFunctionSimScorer {
+            do_score: Box::new(move |f| w * f),
+        }
+    }
+}
+
+impl std::fmt::Display for LinearFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LinearFunction")
+    }
+}
+
+/// `FeatureField.LogFunction`.
+///
+/// Java package-private; public for the port of `TestFeatureField`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogFunction {
+    scaling_factor: f32,
+}
+
+impl LogFunction {
+    /// `new LogFunction(a)`.
+    pub fn new(a: f32) -> Self {
+        Self { scaling_factor: a }
+    }
+
+    /// `LogFunction.scorer(float weight)`: `(float) (weight * Math.log(a + S))`.
+    pub fn scorer(&self, weight: f32) -> FeatureFunctionSimScorer {
+        let scaling_factor = self.scaling_factor;
+        FeatureFunctionSimScorer {
+            do_score: Box::new(move |f| {
+                (weight as f64 * ((scaling_factor + f) as f64).ln()) as f32
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for LogFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LogFunction(scalingFactor={})",
+            crate::search::similarities::java_fmt::float_to_string(self.scaling_factor)
+        )
+    }
+}
+
+/// `FeatureField.SaturationFunction`.
+///
+/// Java package-private; public for the port of `TestFeatureField`. Java's
+/// `Float pivot` may be `null` (computed on rewrite); here it is `None`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SaturationFunction {
+    field: String,
+    feature: String,
+    pivot: Option<f32>,
+}
+
+impl SaturationFunction {
+    /// `new SaturationFunction(field, feature, pivot)`.
+    pub fn new(field: impl Into<String>, feature: impl Into<String>, pivot: Option<f32>) -> Self {
+        Self {
+            field: field.into(),
+            feature: feature.into(),
+            pivot,
+        }
+    }
+
+    /// `SaturationFunction.scorer(float weight)`: `weight * (1 - pivot / (S + pivot))`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalStateException("Rewrite first")` when the pivot is `null`.
+    pub fn scorer(&self, weight: f32) -> Result<FeatureFunctionSimScorer> {
+        let pivot = self
+            .pivot
+            .ok_or_else(|| LuceneError::illegal_state("Rewrite first"))?;
+        Ok(FeatureFunctionSimScorer {
+            do_score: Box::new(move |f| weight * (1.0 - pivot / (f + pivot))),
+        })
+    }
+}
+
+impl std::fmt::Display for SaturationFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.pivot {
+            Some(p) => write!(
+                f,
+                "SaturationFunction(pivot={})",
+                crate::search::similarities::java_fmt::float_to_string(p)
+            ),
+            None => f.write_str("SaturationFunction(pivot=null)"),
+        }
+    }
+}
+
+/// `FeatureField.SigmoidFunction`.
+///
+/// Java package-private; public for the port of `TestFeatureField`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SigmoidFunction {
+    pivot: f32,
+    a: f32,
+    pivot_pa: f64,
+}
+
+impl SigmoidFunction {
+    /// `new SigmoidFunction(pivot, a)`.
+    pub fn new(pivot: f32, a: f32) -> Self {
+        Self {
+            pivot,
+            a,
+            pivot_pa: (pivot as f64).powf(a as f64),
+        }
+    }
+
+    /// `SigmoidFunction.scorer(float weight)`:
+    /// `(float) (weight * (1 - pivotPa / (Math.pow(S, a) + pivotPa)))`.
+    pub fn scorer(&self, weight: f32) -> FeatureFunctionSimScorer {
+        let (a, pivot_pa) = (self.a as f64, self.pivot_pa);
+        FeatureFunctionSimScorer {
+            do_score: Box::new(move |f| {
+                (weight as f64 * (1.0 - pivot_pa / ((f as f64).powf(a) + pivot_pa))) as f32
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for SigmoidFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SigmoidFunction(pivot={}, a={})",
+            crate::search::similarities::java_fmt::float_to_string(self.pivot),
+            crate::search::similarities::java_fmt::float_to_string(self.a)
+        )
     }
 }
 
@@ -1442,7 +1739,7 @@ mod tests {
         // `FeatureField` could not be indexed at all.
         let field = FeatureField::new("feat", "pagerank", 3.0).unwrap();
         let analyzer = StandardAnalyzer::new();
-        let mut stream = field.token_stream(&analyzer, None);
+        let mut stream = field.token_stream(Some(&analyzer), &mut None).unwrap();
         stream.reset().unwrap();
         assert!(stream.increment_token().unwrap());
 

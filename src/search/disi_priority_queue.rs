@@ -276,10 +276,15 @@ impl DisiPriorityQueue2 {
     /// Panics when a third element is added, matching the
     /// `IllegalStateException` Java throws.
     pub fn add(&mut self, wrappers: &[DisiWrapper], entry: usize) -> usize {
-        assert!(
-            self.heap.len() < 2,
-            "Trying to add a 3rd element to a DisiPriorityQueue configured with a max size of 2"
-        );
+        if self.heap.len() >= 2 {
+            // `throw new IllegalStateException(...)` (`DisiPriorityQueue2.java:76-77`),
+            // an unchecked exception thrown through a method that has no
+            // error channel: a panic carrying the Java throwable.
+            panic!(
+                "java.lang.IllegalStateException: Trying to add a 3rd element to a \
+                 DisiPriorityQueue configured with a max size of 2"
+            );
+        }
         self.heap.push(entry);
         if self.heap.len() == 1 {
             entry
@@ -479,10 +484,16 @@ impl DisiPriorityQueueN {
     /// Panics when the queue is full, which is the
     /// `ArrayIndexOutOfBoundsException` Java raises.
     pub fn add(&mut self, wrappers: &[DisiWrapper], entry: usize) -> usize {
-        assert!(
-            self.heap.len() < self.max_size,
-            "Cannot add an element to a queue with no remaining capacity"
-        );
+        if self.heap.len() >= self.max_size {
+            // `heap[size] = entry` on a full `new DisiWrapper[maxSize]`
+            // (`DisiPriorityQueueN.java:40`, `112`): the JVM's
+            // `ArrayIndexOutOfBoundsException`, as a panic carrying it.
+            panic!(
+                "java.lang.ArrayIndexOutOfBoundsException: Index {} out of bounds for length {}",
+                self.heap.len(),
+                self.max_size
+            );
+        }
         self.heap.push(entry);
         let last = self.heap.len() - 1;
         self.up_heap(wrappers, last);

@@ -72,7 +72,7 @@ impl StringsToAutomaton {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if a term is longer than
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if a term is longer than
     /// [`MAX_STRING_UNION_TERM_LENGTH`] or if the input is not sorted, and a decode
     /// error if a term is not valid UTF-8 when `as_binary` is false.
     pub fn build<I>(input: I, as_binary: bool) -> Result<Automaton>
@@ -207,7 +207,7 @@ impl StringsToAutomaton {
 
     fn add(&mut self, current: &BytesRef, as_binary: bool) -> Result<()> {
         if current.length > MAX_STRING_UNION_TERM_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "This builder doesn't allow terms that are larger than {} UTF-8 bytes, got {}",
                 MAX_STRING_UNION_TERM_LENGTH,
                 current.to_hex_string()
@@ -216,7 +216,7 @@ impl StringsToAutomaton {
         debug_assert!(self.state_registry.is_some(), "Automaton already built.");
         if let Some(previous) = &self.previous {
             if previous.cmp(current) == std::cmp::Ordering::Greater {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Input must be in sorted UTF-8 order: {} >= {}",
                     previous.to_hex_string(),
                     current.to_hex_string()

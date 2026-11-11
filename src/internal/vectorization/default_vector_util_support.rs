@@ -70,18 +70,17 @@ impl DefaultVectorUtilSupport {
     /// Equivalent to the `public static`
     /// `DefaultVectorUtilSupport.int4BitDotProductImpl(byte[], byte[])`.
     ///
+    /// Lucene only asserts that `q` is exactly four times as long as `d`
+    /// (`DefaultVectorUtilSupport.java:285`); the port keeps that as a
+    /// `debug_assert!`, and [`crate::util::vector_util::int4_bit_dot_product`]
+    /// performs the argument check, as `VectorUtil.int4BitDotProduct` does.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `q` is not exactly four
-    /// times as long as `d`; Lucene states this as a Java `assert`.
+    /// Never fails; the `Result` is the shape of
+    /// `VectorUtilSupport::int4_bit_dot_product`.
     pub fn int4_bit_dot_product_impl(q: &[u8], d: &[u8]) -> Result<i64> {
-        if q.len() != d.len() * 4 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "vector dimensions incompatible: {}!={}",
-                q.len(),
-                d.len() * 4
-            )));
-        }
+        debug_assert!(q.len() == d.len() * 4);
         Ok(Self::int4_bit_dot_product_stripe(q, d, 0, d.len()))
     }
 
@@ -94,18 +93,17 @@ impl DefaultVectorUtilSupport {
     /// scoring is two passes of the int4-bit dot product with the results
     /// shifted appropriately.
     ///
+    /// Lucene only asserts that `q` is exactly twice as long as `d`
+    /// (`DefaultVectorUtilSupport.java:304`); the port keeps that as a
+    /// `debug_assert!`, and [`crate::util::vector_util::int4_dibit_dot_product`]
+    /// performs the argument check, as `VectorUtil.int4DibitDotProduct` does.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `q` is not exactly twice
-    /// as long as `d`; Lucene states this as a Java `assert`.
+    /// Never fails; the `Result` is the shape of
+    /// `VectorUtilSupport::int4_dibit_dot_product`.
     pub fn int4_dibit_dot_product_impl(q: &[u8], d: &[u8]) -> Result<i64> {
-        if q.len() != d.len() * 2 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "vector dimensions incompatible: {}!={}",
-                q.len(),
-                d.len() * 2
-            )));
-        }
+        debug_assert!(q.len() == d.len() * 2);
         let stripe_size = d.len() / 2;
         let ret0 = Self::int4_bit_dot_product_stripe(q, d, 0, stripe_size);
         let ret1 = Self::int4_bit_dot_product_stripe(q, d, stripe_size, stripe_size);
@@ -166,7 +164,7 @@ fn unsigned(value: u8) -> i32 {
 #[inline]
 fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -180,7 +178,7 @@ fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
 #[inline]
 fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
     if unpacked.len() < packed.len() * 2 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             unpacked.len(),
             packed.len() * 2
@@ -488,7 +486,7 @@ impl VectorUtilSupport for DefaultVectorUtilSupport {
         max_quantile: f32,
     ) -> Result<f32> {
         if vector.len() != dest.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector dimensions differ: {}!={}",
                 vector.len(),
                 dest.len()

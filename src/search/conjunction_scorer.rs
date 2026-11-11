@@ -45,7 +45,7 @@ impl ConjunctionScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when fewer than two clauses are supplied or when they are not all on the
     /// same document.
     pub fn new(required: Vec<Box<dyn Scorer>>, scoring: Vec<usize>) -> Result<Self> {
@@ -122,6 +122,12 @@ impl DocIdSetIterator for ConjunctionScorer {
 }
 
 impl Scorable for ConjunctionScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `ConjunctionScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         let mut sum = 0.0f64;
         for i in 0..self.scoring.len() {
@@ -148,15 +154,16 @@ impl Scorable for ConjunctionScorer {
             let scorer = member
                 .scorer()
                 .expect("INVARIANT: every clause of a ConjunctionScorer wraps a Scorer");
-            children.push(ChildScorable::new(scorer.as_scorable(), "MUST"));
+            children.push(ChildScorable::new(scorer, "MUST"));
         }
         Ok(children)
     }
 }
 
 impl Scorer for ConjunctionScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
+    /// This scorer answers with itself: Java tests `instanceof ConjunctionScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn doc_id(&self) -> i32 {

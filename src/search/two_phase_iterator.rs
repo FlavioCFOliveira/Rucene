@@ -107,6 +107,21 @@ pub trait TwoPhaseIterator {
         }
         Ok(())
     }
+
+    /// Returns this two-phase iterator as [`Any`](std::any::Any), so that a
+    /// caller can test its concrete type, or `None` when the type does not
+    /// take part in such a test.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests a two-phase iterator's
+    /// class with `instanceof` (`TestDocValuesQueries` checks
+    /// `twoPhase instanceof DocValuesRangeIterator`). Rust cannot downcast a
+    /// `dyn TwoPhaseIterator`, so the escape hatch is declared, in the shape
+    /// of [`DocIdSetIterator::disi_as_any`]; its default answers `None`, the
+    /// `false` branch of every `instanceof`, and a type that is tested
+    /// overrides it.
+    fn two_phase_as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 impl<T: TwoPhaseIterator + ?Sized> TwoPhaseIterator for Box<T> {
@@ -132,6 +147,10 @@ impl<T: TwoPhaseIterator + ?Sized> TwoPhaseIterator for Box<T> {
 
     fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
         (**self).into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn two_phase_as_any(&self) -> Option<&dyn std::any::Any> {
+        (**self).two_phase_as_any()
     }
 }
 
@@ -189,6 +208,10 @@ impl<T: TwoPhaseIterator + ?Sized> TwoPhaseIteratorAsDocIdSetIterator<T> {
 }
 
 impl<T: TwoPhaseIterator + ?Sized> DocIdSetIterator for TwoPhaseIteratorAsDocIdSetIterator<T> {
+    fn wraps_two_phase_iterator(&self) -> bool {
+        true
+    }
+
     fn doc_id(&self) -> i32 {
         self.two_phase.approximation_ref().doc_id()
     }

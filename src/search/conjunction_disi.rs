@@ -60,6 +60,13 @@ pub struct ConjunctionMember {
     cost: i64,
     match_cost: f32,
     has_two_phase: bool,
+    /// The current doc ID of a scorer member's approximation. Java's
+    /// conjunction keeps the scorer's approximation — its two-phase view's,
+    /// or its iterator — and reads `docID()` off that iterator, never off the
+    /// scorer (`ConjunctionDISI.addScorer`); a Rust scorer lends its
+    /// approximation only mutably, so the member records the doc ID each move
+    /// of the approximation returns.
+    scorer_doc: i32,
 }
 
 enum MemberKind {
@@ -90,6 +97,7 @@ impl ConjunctionMember {
             cost,
             match_cost: 0.0,
             has_two_phase: false,
+            scorer_doc: -1,
         }
     }
 
@@ -105,6 +113,7 @@ impl ConjunctionMember {
             cost,
             match_cost,
             has_two_phase: true,
+            scorer_doc: -1,
         }
     }
 
@@ -129,11 +138,21 @@ impl ConjunctionMember {
         } else {
             scorer.iterator().cost()
         };
+        let scorer_doc = if has_two_phase {
+            scorer
+                .two_phase_iterator()
+                .expect(TWO_PHASE_INVARIANT)
+                .approximation_ref()
+                .doc_id()
+        } else {
+            scorer.iterator().doc_id()
+        };
         Self {
             kind: MemberKind::Scorer(scorer),
             cost,
             match_cost,
             has_two_phase,
+            scorer_doc,
         }
     }
 
@@ -176,7 +195,7 @@ impl ConjunctionMember {
         match &self.kind {
             MemberKind::Plain(iterator) => iterator.doc_id(),
             MemberKind::TwoPhase(two_phase) => two_phase.approximation_ref().doc_id(),
-            MemberKind::Scorer(scorer) => scorer.doc_id(),
+            MemberKind::Scorer(_) => self.scorer_doc,
         }
     }
 
@@ -188,7 +207,9 @@ impl ConjunctionMember {
     ///
     /// Propagates any I/O error raised while advancing.
     pub fn advance(&mut self, target: i32) -> Result<i32> {
-        self.approximation().advance(target)
+        let doc = self.approximation().advance(target)?;
+        self.scorer_doc = doc;
+        Ok(doc)
     }
 
     /// Advances this member's approximation to the next document.
@@ -199,7 +220,18 @@ impl ConjunctionMember {
     ///
     /// Propagates any I/O error raised while advancing.
     pub fn next_doc(&mut self) -> Result<i32> {
-        self.approximation().next_doc()
+        let doc = self.approximation().next_doc()?;
+        self.scorer_doc = doc;
+        Ok(doc)
+    }
+
+    /// Records the doc ID of a scorer member's approximation after it was
+    /// moved through [`approximation`](Self::approximation) rather than
+    /// through [`advance`](Self::advance) or [`next_doc`](Self::next_doc).
+    fn sync_scorer_doc(&mut self) {
+        if matches!(self.kind, MemberKind::Scorer(_)) {
+            self.scorer_doc = self.approximation().doc_id();
+        }
     }
 
     /// Returns this member's approximation.
@@ -288,10 +320,12 @@ impl ConjunctionMember {
             let two_phase = self
                 .two_phase()
                 .expect("INVARIANT: has_two_phase implies a two-phase view");
-            two_phase.into_bit_set(up_to, bit_set, offset)
+            two_phase.into_bit_set(up_to, bit_set, offset)?;
         } else {
-            self.approximation().into_bit_set(up_to, bit_set, offset)
+            self.approximation().into_bit_set(up_to, bit_set, offset)?;
         }
+        self.scorer_doc = self.approximation().doc_id();
+        Ok(())
     }
 }
 
@@ -339,13 +373,13 @@ impl ConjunctionDISI {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when fewer than two clauses are
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two clauses are
     /// supplied, or when they are not all positioned on the same document —
     /// which is the `IllegalArgumentException` Java throws from
     /// `throwSubIteratorsNotOnSameDocument`.
     pub fn new(mut members: Vec<ConjunctionMember>) -> Result<Self> {
         if members.len() < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot make a ConjunctionDISI of less than 2 iterators".to_string(),
             ));
         }
@@ -477,6 +511,7 @@ impl ConjunctionDISI {
                 Self::bit_set_iterator(&mut self.members[member])
                     .expect("INVARIANT: bit set members were narrowed at construction")
                     .set_doc_id(doc);
+                self.members[member].sync_scorer_doc();
             }
             return Ok(doc);
         }
@@ -714,7 +749,7 @@ pub fn create_conjunction(members: Vec<ConjunctionMember>) -> Result<ScorerItera
 /// `IllegalArgumentException` where Rust returns one for the caller to
 /// propagate.
 fn throw_sub_iterators_not_on_same_document() -> LuceneError {
-    LuceneError::IllegalArgument(
+    LuceneError::illegal_argument(
         "Sub-iterators of ConjunctionDISI are not on the same document!".to_string(),
     )
 }

@@ -1007,7 +1007,11 @@ impl Operations {
     /// operations like concatenation need to connect accept states of an automaton
     /// with the start state of the next one, so having fewer accept states makes the
     /// produced automata simpler.
-    pub(crate) fn merge_accept_states_with_no_transition(a: &Automaton) -> Automaton {
+    ///
+    /// Equivalent to `Operations.mergeAcceptStatesWithNoTransition(Automaton)`
+    /// (`Operations.java`), package-private in Java; public here so that the
+    /// port of `TestOperations` (same Java package) can call it.
+    pub fn merge_accept_states_with_no_transition(a: &Automaton) -> Automaton {
         let num_states = a.get_num_states();
 
         let mut accept_states_with_no_transition: Vec<i32> = Vec::new();
@@ -1081,11 +1085,11 @@ impl Operations {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the automaton has dead states
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the automaton has dead states
     /// reachable from the initial state.
     fn get_common_prefix_code_points(a: &Automaton) -> Result<Vec<i32>> {
         if Self::has_dead_states_from_initial(a) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "input automaton has dead states".to_string(),
             ));
         }
@@ -1149,7 +1153,7 @@ impl Operations {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the automaton has dead states
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton has dead states
     /// reachable from the initial state, or if the prefix is not a valid sequence of
     /// Unicode scalar values.
     pub fn get_common_prefix(a: &Automaton) -> Result<String> {
@@ -1165,8 +1169,8 @@ impl Operations {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the automaton has dead states
-    /// reachable from the initial state, or [`LuceneError::IllegalState`] if the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton has dead states
+    /// reachable from the initial state, or [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the
     /// automaton is not binary.
     pub fn get_common_prefix_bytes_ref(a: &Automaton) -> Result<BytesRef> {
         let prefix = Self::get_common_prefix_code_points(a)?;
@@ -1187,11 +1191,11 @@ impl Operations {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the automaton is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton is not
     /// deterministic.
     pub fn get_singleton(a: &Automaton) -> Result<Option<IntsRef>> {
         if !a.is_deterministic() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "input automaton must be deterministic".to_string(),
             ));
         }
@@ -1293,7 +1297,11 @@ impl Operations {
 
     /// Returns a new automaton accepting the same language with added transitions to
     /// a dead state so that from every state and every label there is a transition.
-    pub(crate) fn totalize(a: &Automaton) -> Automaton {
+    ///
+    /// Equivalent to `Operations.totalize(Automaton)` (`Operations.java`),
+    /// package-private in Java; public here so that the test helper
+    /// `MinimizationOperations` (same Java package) can call it.
+    pub fn totalize(a: &Automaton) -> Automaton {
         let mut result = Automaton::new();
         let num_states = a.get_num_states();
         for i in 0..num_states {
@@ -1337,7 +1345,7 @@ impl Operations {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the input automaton has a cycle.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the input automaton has a cycle.
     pub fn topo_sort_states(a: &Automaton) -> Result<Vec<i32>> {
         if a.get_num_states() == 0 {
             return Ok(Vec::new());
@@ -1382,7 +1390,7 @@ impl Operations {
                 } else if on_stack[t.dest as usize] {
                     // If the state is on the current recursion stack, we have
                     // detected a cycle
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Input automaton has a cycle.".to_string(),
                     ));
                 }

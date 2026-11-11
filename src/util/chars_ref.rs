@@ -1,5 +1,7 @@
 //! A reference to a slice of characters, ported from `org.apache.lucene.util.CharsRef`.
 //!
+//! Characters are UTF-16 code units (`u16`), as Java's `char[]`.
+//!
 //! Unlike Java's shallow clone, the Rust implementation owns its buffer;
 //! [`Clone`] copies the referenced characters so the resulting value is
 //! independent and safe.
@@ -13,16 +15,16 @@ use std::hash::{Hash, Hasher};
 use crate::error::LuceneError;
 
 /// An empty character buffer, equivalent to `CharsRef.EMPTY_CHARS`.
-pub const EMPTY_CHARS: &[char] = &[];
+pub const EMPTY_CHARS: &[u16] = &[];
 
 /// A reference to a slice of characters, equivalent to Lucene's `CharsRef`.
 ///
-/// Represents a `Vec<char>` together with an `offset` and `length` identifying
+/// Represents a `Vec<u16>` of UTF-16 code units (Java's `char[]`) together with an `offset` and `length` identifying
 /// the active slice. The public fields mirror the Java original.
 #[derive(Clone, Default)]
 pub struct CharsRef {
     /// The underlying character buffer. An empty reference stores an empty vector.
-    pub chars: Vec<char>,
+    pub chars: Vec<u16>,
     /// Offset of the first valid character.
     pub offset: usize,
     /// Number of valid characters starting at `offset`.
@@ -42,14 +44,14 @@ impl CharsRef {
     /// whose `chars = new char[capacity]` holds `capacity` NUL characters.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            chars: vec!['\0'; capacity],
+            chars: vec![0u16; capacity],
             offset: 0,
             length: 0,
         }
     }
 
     /// Creates a `CharsRef` referencing the entire provided character vector.
-    pub fn from_chars(chars: Vec<char>) -> Self {
+    pub fn from_chars(chars: Vec<u16>) -> Self {
         let length = chars.len();
         Self {
             chars,
@@ -67,7 +69,7 @@ impl CharsRef {
     ///
     /// Panics in builds with debug assertions when [`is_valid`](Self::is_valid)
     /// fails, as Java's assertion does under `-ea`.
-    pub fn from_chars_offset(chars: Vec<char>, offset: usize, length: usize) -> Self {
+    pub fn from_chars_offset(chars: Vec<u16>, offset: usize, length: usize) -> Self {
         let r = Self {
             chars,
             offset,
@@ -79,9 +81,12 @@ impl CharsRef {
         r
     }
 
-    /// Creates a `CharsRef` from the characters of `string`.
+    /// Creates a `CharsRef` from the UTF-16 code units of `string`.
+    ///
+    /// Equivalent to `new CharsRef(String)` (`CharsRef.java:61-65`), whose
+    /// `string.toCharArray()` yields UTF-16 code units.
     pub fn from_string(string: impl AsRef<str>) -> Self {
-        let chars: Vec<char> = string.as_ref().chars().collect();
+        let chars: Vec<u16> = string.as_ref().encode_utf16().collect();
         let length = chars.len();
         Self {
             chars,
@@ -91,7 +96,7 @@ impl CharsRef {
     }
 
     /// Returns the active character slice.
-    pub fn chars(&self) -> &[char] {
+    pub fn chars(&self) -> &[u16] {
         &self.chars[self.offset..self.offset + self.length]
     }
 
@@ -114,12 +119,16 @@ impl CharsRef {
     /// Panics if `index >= self.length()`, with the message of the
     /// `IndexOutOfBoundsException` Java's `Objects.checkIndex(index, length)`
     /// throws: `Index <index> out of bounds for length <length>`.
-    pub fn char_at(&self, index: usize) -> char {
-        assert!(
-            index < self.length,
-            "Index {index} out of bounds for length {}",
-            self.length
-        );
+    pub fn char_at(&self, index: usize) -> u16 {
+        if index >= self.length {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                Some(&format!(
+                    "Index {} out of bounds for length {}",
+                    index as i32, self.length as i32
+                )),
+            );
+        }
         self.chars[self.offset + index]
     }
 
@@ -130,7 +139,7 @@ impl CharsRef {
     ///
     /// **Divergence from Lucene 10.5.0.** Java returns
     /// `new CharsRef(chars, offset + start, end - start)`, sharing this array;
-    /// a `Vec<char>` has one owner, so the characters are copied and the
+    /// a `Vec<u16>` has one owner, so the characters are copied and the
     /// result's offset is zero. The characters it denotes are the same.
     ///
     /// # Panics
@@ -140,11 +149,17 @@ impl CharsRef {
     /// end, length)` throws: `Range [<start>, <end>) out of bounds for length
     /// <length>`.
     pub fn sub_sequence(&self, start: usize, end: usize) -> Self {
-        assert!(
-            start <= end && end <= self.length,
-            "Range [{start}, {end}) out of bounds for length {}",
-            self.length
-        );
+        // `Objects.checkFromToIndex(start, end, length)` (`CharsRef.java:147-151`):
+        // `IndexOutOfBoundsException`, with Java's `int`s in the message.
+        if !(start <= end && end <= self.length) {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                Some(&format!(
+                    "Range [{}, {}) out of bounds for length {}",
+                    start as i32, end as i32, self.length as i32
+                )),
+            );
+        }
         let slice = &self.chars[self.offset + start..self.offset + end];
         Self {
             chars: slice.to_vec(),
@@ -156,11 +171,14 @@ impl CharsRef {
     /// Returns a deep copy: a `CharsRef` whose buffer contains a copy of the
     /// active characters and whose offset is zero.
     pub fn deep_copy_of(other: &Self) -> Self {
-        let slice = other.chars();
+        // `ArrayUtil.copyOfSubArray(other.chars, other.offset, other.offset +
+        // other.length)` (`CharsRef.java:216-220`).
+        let chars =
+            crate::util::java_copy_of_sub_array(&other.chars, other.offset, other.length, "char");
         Self {
-            chars: slice.to_vec(),
+            chars,
             offset: 0,
-            length: slice.len(),
+            length: other.length,
         }
     }
 
@@ -179,7 +197,7 @@ impl CharsRef {
     ///
     /// The calculation follows `String.hashCode()` exactly, including signed
     /// 32-bit overflow.
-    pub fn string_hash_code(chars: &[char], offset: usize, length: usize) -> i32 {
+    pub fn string_hash_code(chars: &[u16], offset: usize, length: usize) -> i32 {
         let mut result = 0i32;
         for &c in chars.iter().skip(offset).take(length) {
             result = result.wrapping_mul(31).wrapping_add(c as i32);
@@ -187,11 +205,6 @@ impl CharsRef {
         result
     }
 
-    /// Performs internal consistency checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns `LuceneError::IllegalState` if the offset/length invariants are violated.
     /// Returns the comparator that orders UTF-16 sequences by the order their
     /// UTF-8 encodings would have.
     ///
@@ -214,11 +227,8 @@ impl CharsRef {
         let mismatch = a_chars.iter().zip(b_chars.iter()).position(|(x, y)| x != y);
 
         if let Some(i) = mismatch {
-            // Java compares UTF-16 code units; a `char` here is a scalar value,
-            // so only the two that fit in one code unit can differ inside the
-            // surrogate range, and the fix-up applies to exactly those.
-            let mut a_char = a_chars[i] as u32;
-            let mut b_char = b_chars[i] as u32;
+            let mut a_char = u32::from(a_chars[i]);
+            let mut b_char = u32::from(b_chars[i]);
             // aChar != bChar; fix up each one if they are both in or above the
             // surrogate range, then compare them.
             if a_char >= 0xd800 && b_char >= 0xd800 {
@@ -248,7 +258,7 @@ impl CharsRef {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a check fails.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a check fails.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         // `chars` cannot be null, and the `usize` fields cannot be negative, so
         // Java's four checks for those have no Rust counterpart.
@@ -290,8 +300,8 @@ impl From<String> for CharsRef {
     }
 }
 
-impl From<&[char]> for CharsRef {
-    fn from(value: &[char]) -> Self {
+impl From<&[u16]> for CharsRef {
+    fn from(value: &[u16]) -> Self {
         Self::from_chars(value.to_vec())
     }
 }
@@ -316,10 +326,14 @@ impl Ord for CharsRef {
     }
 }
 
+/// Equivalent to `CharsRef.toString()` (`new String(chars, offset, length)`).
+///
+/// **Divergence.** A Java `String` keeps an unpaired surrogate; a Rust
+/// `String` cannot hold one, so each is written as U+FFFD.
 impl Display for CharsRef {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        for c in self.chars() {
-            write!(f, "{c}")?;
+        for c in char::decode_utf16(self.chars().iter().copied()) {
+            write!(f, "{}", c.unwrap_or(char::REPLACEMENT_CHARACTER))?;
         }
         Ok(())
     }
@@ -372,7 +386,7 @@ mod tests {
         // `new CharsRef(10)`: `chars = new char[10]`, ten NULs, length 0.
         let with_cap = CharsRef::with_capacity(10);
         assert_eq!(with_cap.length(), 0);
-        assert_eq!(with_cap.chars, vec!['\0'; 10]);
+        assert_eq!(with_cap.chars, vec![0u16; 10]);
     }
 
     /// `new CharsRef(char[], int, int)` ends with `assert isValid()`
@@ -382,7 +396,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "offset+length out of bounds: offset=2,length=2,chars.length=3")]
     fn from_chars_offset_asserts_is_valid() {
-        let _ = CharsRef::from_chars_offset(vec!['a', 'b', 'c'], 2, 2);
+        let _ = CharsRef::from_chars_offset("abc".encode_utf16().collect(), 2, 2);
     }
 
     #[test]
@@ -408,12 +422,12 @@ mod tests {
         let r = CharsRef::from_string("lucene");
         assert_eq!(r.length(), 6);
         assert_eq!(r.to_string(), "lucene");
-        assert_eq!(r.chars(), &['l', 'u', 'c', 'e', 'n', 'e']);
+        assert_eq!(r.chars(), "lucene".encode_utf16().collect::<Vec<u16>>());
 
-        let chars: Vec<char> = "hello world".chars().collect();
+        let chars: Vec<u16> = "hello world".encode_utf16().collect();
         let s = CharsRef::from_chars_offset(chars, 6, 5);
         assert_eq!(s.to_string(), "world");
-        assert_eq!(s.char_at(1), 'o');
+        assert_eq!(s.char_at(1), u16::from(b'o'));
     }
 
     #[test]
@@ -453,7 +467,7 @@ mod tests {
         let from_string: CharsRef = String::from("rust").into();
         assert_eq!(from_string.to_string(), "rust");
 
-        let arr = ['r', 'u', 's', 't'];
+        let arr: Vec<u16> = "rust".encode_utf16().collect();
         let from_arr: CharsRef = (&arr[..]).into();
         assert_eq!(from_arr.to_string(), "rust");
     }

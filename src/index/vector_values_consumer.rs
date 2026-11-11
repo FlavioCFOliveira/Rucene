@@ -214,7 +214,7 @@ impl VectorValuesConsumer {
     ///
     /// # Errors
     ///
-    /// Returns the [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError)
+    /// Returns the [`LuceneErrorKind::AssertionError`](crate::error::LuceneErrorKind::AssertionError)
     /// closing the writer raised: the `Error` Java's
     /// `closeWhileHandlingException` rethrows, unchecked, through the callers'
     /// `finally` blocks up to `DocumentsWriterPerThread.abort()`, which

@@ -104,7 +104,7 @@ fn block(b: i32) -> Vec<Document> {
 fn rust_flush() -> Arc<dyn Directory> {
     let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
         .set_index_sort(
             Sort::new_fields(vec![SortField::new(
@@ -118,7 +118,7 @@ fn rust_flush() -> Arc<dyn Directory> {
     config.set_parent_field(Some("_parent".to_string()));
     config.set_use_compound_file(false).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for b in 0..BLOCKS {
@@ -205,7 +205,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 
@@ -247,11 +247,13 @@ fn si_without_id_and_diagnostics(file: &[u8]) -> Vec<u8> {
     input.read_int().unwrap();
     let before_id = input.position();
     let mut id = [0u8; 16];
-    input.read_bytes(&mut id, 0, 16).unwrap();
+    input.read_bytes(Some(&mut id), 0, 16).unwrap();
     let after_id = input.position();
     let suffix_length = input.read_byte().unwrap() as usize;
     let mut suffix = vec![0u8; suffix_length];
-    input.read_bytes(&mut suffix, 0, suffix_length).unwrap();
+    input
+        .read_bytes(Some(&mut suffix), 0, suffix_length)
+        .unwrap();
     // Version, optional minimum version, maxDoc, compound flag, blocks flag.
     for _ in 0..3 {
         input.read_int().unwrap();

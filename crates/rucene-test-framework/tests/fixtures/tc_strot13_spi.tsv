@@ -1,0 +1,5 @@
+# lookup	result
+getName	STUniformSplitRot13
+toString	PostingsFormat(name=STUniformSplitRot13)
+forName.getClass	org.apache.lucene.tests.codecs.uniformsplit.sharedterms.STUniformSplitRot13PostingsFormat
+forName.toString	PostingsFormat(name=STUniformSplitRot13)

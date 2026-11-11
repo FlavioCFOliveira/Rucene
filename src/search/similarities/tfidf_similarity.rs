@@ -109,6 +109,29 @@ pub fn tfidf_scorer<'a, S>(
 where
     S: TFIDFSimilarity + ?Sized,
 {
+    Box::new(new_tfidf_scorer(
+        similarity,
+        boost,
+        collection_stats,
+        term_stats,
+    ))
+}
+
+/// The concrete [`TFIDFScorer`] [`tfidf_scorer`] boxes.
+///
+/// Java tests in `org.apache.lucene.search.similarities` cast the result of
+/// `TFIDFSimilarity.scorer` to `TFIDFSimilarity.TFIDFScorer` to read its
+/// package-private `normTable`; a non-`'static` `dyn SimScorer` cannot be
+/// downcast, so this returns the same scorer unboxed.
+pub fn new_tfidf_scorer<'a, S>(
+    similarity: &'a S,
+    boost: f32,
+    collection_stats: &CollectionStatistics,
+    term_stats: &[TermStatistics],
+) -> TFIDFScorer<'a, S>
+where
+    S: TFIDFSimilarity + ?Sized,
+{
     let idf = match term_stats {
         [single] => similarity.idf_explain(collection_stats, single),
         many => similarity.idf_explain_phrase(collection_stats, many),
@@ -118,7 +141,7 @@ where
         *entry = similarity.length_norm(decoded_length(i as u8));
     }
     norm_table[0] = 1.0 / norm_table[255];
-    Box::new(TFIDFScorer::new(similarity, boost, idf, norm_table))
+    TFIDFScorer::new(similarity, boost, idf, norm_table)
 }
 
 /// The scorer `TFIDFSimilarity.scorer` returns.
@@ -126,7 +149,7 @@ where
 /// Equivalent to the inner class `TFIDFSimilarity.TFIDFScorer`
 /// (`TFIDFSimilarity.java:439-490`), which is non-static so that it can call
 /// `tf(float)` on its enclosing similarity; the borrow here plays that role.
-struct TFIDFScorer<'a, S: TFIDFSimilarity + ?Sized> {
+pub struct TFIDFScorer<'a, S: TFIDFSimilarity + ?Sized> {
     similarity: &'a S,
     /// The idf and its explanation.
     idf: Explanation,
@@ -136,6 +159,12 @@ struct TFIDFScorer<'a, S: TFIDFSimilarity + ?Sized> {
 }
 
 impl<'a, S: TFIDFSimilarity + ?Sized> TFIDFScorer<'a, S> {
+    /// `normTable`: the 256 decoded field norms, package-private in Java
+    /// (`TFIDFSimilarity.java:461`).
+    pub fn norm_table(&self) -> &[f32; 256] {
+        &self.norm_table
+    }
+
     fn new(similarity: &'a S, boost: f32, idf: Explanation, norm_table: [f32; 256]) -> Self {
         let query_weight = boost * idf.value().float_value();
         Self {

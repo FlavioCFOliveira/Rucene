@@ -108,7 +108,7 @@ const CASE_COMBINED: Case = Case {
 
 /// The field type of `off`: `MergedFieldsFixture.OFFSETS_TYPE`.
 fn offsets_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
@@ -408,7 +408,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 
@@ -588,6 +588,7 @@ fn assert_every_term_and_document(dir: &Arc<dyn Directory>, case: Case) -> Vec<i
     assert_eq!(terms_enum.doc_freq().unwrap(), live.len() as i32);
     let mut postings = terms_enum
         .postings(None, rucene::index::POSTINGS_ENUM_POSITIONS)
+        .unwrap()
         .unwrap();
     for (doc, &i) in ids.iter().enumerate() {
         assert_eq!(postings.next_doc().unwrap(), doc as i32);
@@ -946,7 +947,7 @@ fn postings_of_no(
     let terms = leaf.terms("del").unwrap().unwrap();
     let mut terms_enum = terms.iterator().unwrap();
     assert!(terms_enum.seek_exact(&bytes("no")).unwrap());
-    terms_enum.postings(None, flags).unwrap()
+    terms_enum.postings(None, flags).unwrap().unwrap()
 }
 
 /// A bit-set postings block whose words no longer hold the documents its
@@ -957,26 +958,58 @@ fn postings_of_no(
 /// (`Lucene104PostingsReader.java:590`).
 #[test]
 fn a_corrupt_bit_set_postings_block_is_an_error_not_a_panic() {
-    // Every word cleared: the block has no document at all.
+    // Every word cleared: the block has no document at all. Java asserts
+    // the bit set has a next document (`Lucene104PostingsReader.java:916,
+    // 946`): under `-ea` — a debug build — that `AssertionError` is thrown;
+    // without assertions the port reports the corruption.
     let cleared = index_with_patched_bit_set_block(|words| words.fill(0));
-    let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_NONE);
-    let error = loop {
-        match postings.next_doc() {
-            Ok(NO_MORE_DOCS) => panic!("a cleared block cannot be iterated to the end"),
-            Ok(_) => continue,
-            Err(error) => break error,
-        }
+    let is_corrupt = |error: &rucene::error::LuceneError| {
+        matches!(
+            error,
+            rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        )
     };
-    assert!(
-        matches!(error, rucene::error::LuceneError::CorruptIndex(_)),
-        "{error:?}"
-    );
-    let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_FREQS);
-    let error = postings.advance(100).unwrap_err();
-    assert!(
-        matches!(error, rucene::error::LuceneError::CorruptIndex(_)),
-        "{error:?}"
-    );
+    let assert_lucene_assertion_or =
+        |outcome: std::thread::Result<rucene::error::LuceneError>| match outcome {
+            Ok(error) => {
+                if cfg!(debug_assertions) {
+                    panic!("Java's assertion must fire: {error:?}");
+                }
+                assert!(is_corrupt(&error), "{error:?}");
+            }
+            Err(payload) => {
+                let message = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                assert!(
+                    cfg!(debug_assertions) && message == "assertion failed: next.is_some()",
+                    "unexpected panic: {message}"
+                );
+            }
+        };
+    assert_lucene_assertion_or(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || {
+            let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_NONE);
+            loop {
+                match postings.next_doc() {
+                    Ok(NO_MORE_DOCS) => panic!("a cleared block cannot be iterated to the end"),
+                    Ok(_) => continue,
+                    Err(error) => break error,
+                }
+            }
+        },
+    )));
+    assert_lucene_assertion_or(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || {
+            let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_FREQS);
+            postings.advance(100).unwrap_err()
+        },
+    )));
 
     // Every word set: more documents than a block holds.
     let filled = index_with_patched_bit_set_block(|words| words.fill(0xff));
@@ -993,7 +1026,13 @@ fn a_corrupt_bit_set_postings_block_is_an_error_not_a_panic() {
         }
     };
     assert!(
-        matches!(error, rucene::error::LuceneError::CorruptIndex(_)),
+        matches!(
+            error,
+            rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ),
         "{error:?}"
     );
 }
@@ -1027,6 +1066,7 @@ fn advance_into_a_bit_set_block_reads_each_documents_frequency() {
     assert!(terms_enum.seek_exact(&bytes("no")).unwrap());
     let mut postings = terms_enum
         .postings(None, rucene::index::POSTINGS_ENUM_FREQS)
+        .unwrap()
         .unwrap();
     for target in [10, 77, 150, 251, 299, 700, 1500, 2999] {
         let doc = postings.advance(target).unwrap();
@@ -1038,4 +1078,36 @@ fn advance_into_a_bit_set_block_reads_each_documents_frequency() {
             "the frequency of {doc}"
         );
     }
+}
+
+/// A field indexed with no token at all (`""` through the standard analyzer)
+/// is in the segment's field infos with no postings, so it carries no
+/// `PerFieldPostingsFormat.format` attribute: `PerFieldPostingsFormat.
+/// FieldsReader` skips it ("null formatName means the field is in
+/// fieldInfos, but has no postings!", `PerFieldPostingsFormat.java:305-307`)
+/// instead of failing to open the segment.
+#[test]
+fn indexed_field_without_postings_opens() {
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        TextField::new("empty", String::new(), Store::NO).unwrap(),
+    ));
+    doc.add(Box::new(
+        TextField::new("body", "some words".to_string(), Store::NO).unwrap(),
+    ));
+    writer.add_document(&doc).unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+
+    let reader = directory_reader::open(Arc::clone(&dir)).unwrap();
+    let leaves = Arc::clone(&reader).leaves().unwrap();
+    assert_eq!(leaves.len(), 1);
+    let leaf = leaves[0].leaf_reader();
+    let info = leaf.get_field_infos().field_info("empty").cloned().unwrap();
+    assert_ne!(info.index_options, IndexOptions::NONE);
+    assert!(leaf.terms("empty").unwrap().is_none());
+    assert!(leaf.terms("body").unwrap().is_some());
+    reader.close().unwrap();
 }

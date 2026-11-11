@@ -109,9 +109,12 @@ impl SegmentInfo {
 
     /// Creates a new complete `SegmentInfo`.
     ///
+    /// Like Java's constructor (`SegmentInfo.java:115-144`), it does not
+    /// validate `max_doc`: any value is kept, `-1` meaning "not set yet".
+    ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `max_doc` is negative.
+    /// None today; the `Result` is kept for the callers.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         directory: Arc<dyn Directory>,
@@ -127,11 +130,6 @@ impl SegmentInfo {
         attributes: HashMap<String, String>,
         index_sort: Sort,
     ) -> Result<Self> {
-        if max_doc < UNSET_MAX_DOC {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative or {UNSET_MAX_DOC} (not set yet): {max_doc}"
-            )));
-        }
         Ok(Self {
             directory,
             version,
@@ -155,9 +153,12 @@ impl SegmentInfo {
     /// resolved from the enclosing `SegmentInfos`. The codec must be set later
     /// with [`set_codec`](Self::set_codec).
     ///
+    /// Like Java's constructor (`SegmentInfo.java:115-144`), it does not
+    /// validate `max_doc`.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `max_doc` is negative.
+    /// None today; the `Result` is kept for the callers.
     #[allow(clippy::too_many_arguments)]
     pub fn new_without_codec(
         directory: Arc<dyn Directory>,
@@ -172,11 +173,6 @@ impl SegmentInfo {
         attributes: HashMap<String, String>,
         index_sort: Sort,
     ) -> Result<Self> {
-        if max_doc < UNSET_MAX_DOC {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative or {UNSET_MAX_DOC} (not set yet): {max_doc}"
-            )));
-        }
         Ok(Self {
             directory,
             version,
@@ -198,9 +194,10 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if `max_doc` has not been set.
+    /// Returns `LuceneErrorKind::IllegalState` if `max_doc` has not been set.
     pub fn max_doc(&self) -> Result<i32> {
-        if self.max_doc < 0 {
+        // `if (this.maxDoc == -1)` (`SegmentInfo.java:189-194`).
+        if self.max_doc == UNSET_MAX_DOC {
             return Err(LuceneError::illegal_state(
                 "maxDoc isn't set yet".to_string(),
             ));
@@ -210,19 +207,18 @@ impl SegmentInfo {
 
     /// Sets the number of documents in the segment.
     ///
+    /// Equivalent to `SegmentInfo.setMaxDoc` (`SegmentInfo.java:197-203`),
+    /// package-private in Java.
+    ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if `max_doc` was already set.
+    /// Returns `LuceneErrorKind::IllegalState` if `max_doc` was already set (is
+    /// not `-1`).
     pub fn set_max_doc(&mut self, max_doc: i32) -> Result<()> {
-        if self.max_doc >= 0 {
+        if self.max_doc != -1 {
             return Err(LuceneError::illegal_state(format!(
                 "maxDoc was already set: this.maxDoc={} vs maxDoc={max_doc}",
                 self.max_doc
-            )));
-        }
-        if max_doc < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative: {max_doc}"
             )));
         }
         self.max_doc = max_doc;
@@ -280,9 +276,24 @@ impl SegmentInfo {
         self.codec.clone()
     }
 
-    /// Sets the codec for this segment.
-    pub fn set_codec(&mut self, codec: Arc<dyn Codec>) {
+    /// Sets the codec for this segment. Can only be called once.
+    ///
+    /// Equivalent to `SegmentInfo.setCodec` (`SegmentInfo.java:175-181`);
+    /// `None` stands for Java's `null`.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) `"codec must be non-null"` when
+    /// `codec` is `None`.
+    pub fn set_codec(&mut self, codec: Option<Arc<dyn Codec>>) -> Result<()> {
+        debug_assert!(self.codec.is_none());
+        let Some(codec) = codec else {
+            return Err(LuceneError::illegal_argument(
+                "codec must be non-null".to_string(),
+            ));
+        };
         self.codec = Some(codec);
+        Ok(())
     }
 
     /// Returns the diagnostics map, iteration order included.
@@ -361,7 +372,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if the file set has not been computed.
+    /// Returns `LuceneErrorKind::IllegalState` if the file set has not been computed.
     pub fn files(&self) -> Result<HashSet<String>> {
         Ok(self.files_ordered()?.to_std())
     }
@@ -375,7 +386,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if the file set has not been
+    /// Returns `LuceneErrorKind::IllegalState` if the file set has not been
     /// computed.
     pub fn files_ordered(&self) -> Result<JavaHashSet> {
         let files = self.files.read().unwrap();
@@ -400,7 +411,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a name is not a codec
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a name is not a codec
     /// file name or ends with `.tmp`, with Java's message.
     pub fn set_files<I>(&self, files: I) -> Result<()>
     where
@@ -422,7 +433,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for the first offending name,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for the first offending name,
     /// where Java throws `IllegalArgumentException`.
     pub fn check_file_names<'a, I>(files: I) -> Result<()>
     where
@@ -430,12 +441,12 @@ impl SegmentInfo {
     {
         for file in files {
             if !is_codec_file(file) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "invalid codec filename '{file}', must match: {CODEC_FILE_PATTERN}"
                 )));
             }
             if file.to_lowercase().ends_with(".tmp") {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "invalid codec filename '{file}', cannot end with .tmp extension"
                 )));
             }
@@ -449,7 +460,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a name fails
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a name fails
     /// [`check_file_names`](Self::check_file_names), which is where Java throws.
     pub fn add_files(&self, files: &[String]) -> Result<()> {
         Self::check_file_names(files)?;
@@ -477,7 +488,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the name fails
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the name fails
     /// [`check_file_names`](Self::check_file_names).
     pub fn add_file(&self, file: String) -> Result<()> {
         self.add_files(&[file])
@@ -627,37 +638,46 @@ fn strip_segment_name(name: &str) -> &str {
 /// Embeds a read-only `SegmentInfo` and adds per-commit fields.
 ///
 /// Equivalent to `org.apache.lucene.index.SegmentCommitInfo`.
+///
+/// Java's object is shared by reference: `IndexWriter`'s `SegmentInfos`, the
+/// `ReaderPool`'s `ReadersAndUpdates` and any caller holding the commit info
+/// see one object, whose generations, counts and update files advance in
+/// place (`ReadersAndUpdates.java:283-298, 628-720`). Here the per-commit
+/// state lives behind one shared [`Arc`], so [`Clone`] hands out another
+/// reference to the same object — every holder sees every change, as in
+/// Java — and [`java_clone`](Self::java_clone) is Java's `clone()`
+/// (`SegmentCommitInfo.java:380-401`), a new object with copied state.
+/// Equality is identity, as Java's `SegmentCommitInfo` does not override
+/// `equals`.
 pub struct SegmentCommitInfo {
     /// The `SegmentInfo` wrapped by this commit info.
     pub info: SegmentInfo,
 
+    /// The per-commit state every holder of this object shares.
+    state: Arc<std::sync::Mutex<CommitState>>,
+}
+
+/// The mutable fields of a [`SegmentCommitInfo`].
+#[derive(Debug)]
+struct CommitState {
     /// 16-byte id identifying this segment commit.
     id: [u8; ID_LENGTH],
-
     /// Number of hard-deleted documents.
     del_count: i32,
-
     /// Number of soft-deleted documents that are not also hard-deleted.
     soft_del_count: i32,
-
     /// Generation number of the live docs file, or -1 if no deletes.
     del_gen: i64,
-
     /// Normally `1 + del_gen`, unless a write failed.
     next_write_del_gen: i64,
-
     /// Generation number of the field infos update file, or -1 if no updates.
     field_infos_gen: i64,
-
     /// Normally `1 + field_infos_gen`, unless a write failed.
     next_write_field_infos_gen: i64,
-
     /// Generation number of the doc values update file, or -1 if no updates.
     doc_values_gen: i64,
-
     /// Normally `1 + doc_values_gen`, unless a write failed.
     next_write_doc_values_gen: i64,
-
     /// Per-field doc values update files.
     /// **Residual, declared.** `SegmentInfos.write` iterates this map's
     /// `entrySet()` to write one field number and file set per entry, so the
@@ -668,40 +688,28 @@ pub struct SegmentCommitInfo {
     /// `String`-keyed. Closing it needs that type generalised over a key hash.
     /// It only bites on a segment carrying doc-values update files.
     /// `Map<Integer, Set<String>> dvUpdatesFiles = new HashMap<>()`
-    /// (`SegmentCommitInfo.java:72`), in Java's iteration order.
     dv_updates_files: JavaIntHashMap<JavaHashSet>,
-
     /// Field infos update files.
-    /// A `java.util.HashSet` that is cleared and refilled rather than replaced
-    /// (`SegmentCommitInfo.java:77`, `:143-148`), so it keeps the table it
-    /// first allocated; its order reaches `segments_N`.
     field_infos_files: JavaHashSet,
-
-    /// Cached total size in bytes of all files for this segment; -1 if not computed.
+    /// Cached total size in bytes, or -1.
     size_in_bytes: i64,
-
-    /// Buffered deletes generation, only used in-RAM by IndexWriter.
+    /// Buffered deletes generation, or -1.
     buffered_deletes_gen: i64,
 }
 
+impl CommitState {
+    /// `generationAdvanced()` (`SegmentCommitInfo.java:144-147`).
+    fn generation_advanced(&mut self) {
+        self.size_in_bytes = -1;
+        self.id = StringHelper::random_id();
+    }
+}
+
 impl SegmentCommitInfo {
-    /// Creates a new `SegmentCommitInfo`.
+    /// Creates a commit info.
     ///
-    /// Equivalent to `SegmentCommitInfo(SegmentInfo, int, int, long, long, long,
-    /// byte[])` (`SegmentCommitInfo.java:132-153`), which stores its arguments
-    /// and validates nothing but the length of `id` — a length this port checks
-    /// in the type system instead.
-    ///
-    /// In particular it does **not** validate the deletion counts against
-    /// `maxDoc`. It cannot: `IndexWriter._mergeInit` builds the info of the
-    /// segment a merge is about to write with `maxDoc = -1`, because the count
-    /// is only known once the merge has run (`IndexWriter.java:4630-4646`), and
-    /// `SegmentInfo.maxDoc()` throws until it is set. The deletion counts are
-    /// validated where Lucene validates them: on the way in and out of
-    /// `segments_N` (`SegmentInfos.readCommit`/`write`), and in
-    /// [`set_del_count`](Self::set_del_count) and
-    /// [`set_soft_del_count`](Self::set_soft_del_count), which are only reached
-    /// once `maxDoc` is known.
+    /// Equivalent to `SegmentCommitInfo(SegmentInfo, int, int, long, long,
+    /// long, byte[])`.
     ///
     /// # Errors
     ///
@@ -719,113 +727,158 @@ impl SegmentCommitInfo {
     ) -> Result<Self> {
         Ok(Self {
             info,
-            id,
-            del_count,
-            soft_del_count,
-            del_gen,
-            next_write_del_gen: if del_gen == -1 { 1 } else { del_gen + 1 },
-            field_infos_gen,
-            next_write_field_infos_gen: if field_infos_gen == -1 {
-                1
-            } else {
-                field_infos_gen + 1
-            },
-            doc_values_gen,
-            next_write_doc_values_gen: if doc_values_gen == -1 {
-                1
-            } else {
-                doc_values_gen + 1
-            },
-            dv_updates_files: JavaIntHashMap::new(),
-            field_infos_files: JavaHashSet::new(),
+            state: Arc::new(std::sync::Mutex::new(CommitState {
+                id,
+                del_count,
+                soft_del_count,
+                del_gen,
+                next_write_del_gen: if del_gen == -1 { 1 } else { del_gen + 1 },
+                field_infos_gen,
+                next_write_field_infos_gen: if field_infos_gen == -1 {
+                    1
+                } else {
+                    field_infos_gen + 1
+                },
+                doc_values_gen,
+                next_write_doc_values_gen: if doc_values_gen == -1 {
+                    1
+                } else {
+                    doc_values_gen + 1
+                },
+                dv_updates_files: JavaIntHashMap::new(),
+                field_infos_files: JavaHashSet::new(),
+                size_in_bytes: -1,
+                buffered_deletes_gen: -1,
+            })),
+        })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, CommitState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Java's `clone()` (`SegmentCommitInfo.java:380-401`): a new object over
+    /// the same `SegmentInfo`, with the counts and generations copied, the
+    /// id kept, a deep copy of the doc-values update files and a copy of the
+    /// field-infos files.
+    pub fn java_clone(&self) -> Self {
+        let state = self.state();
+        let mut dv_updates_files = JavaIntHashMap::new();
+        // a fresh map receiving `new HashSet<>(value)` per entry in
+        // `entrySet()` order (`SegmentCommitInfo.java:394-397`).
+        for (field_number, set) in state.dv_updates_files.iter() {
+            dv_updates_files.insert(field_number, JavaHashSet::from_collection(set.clone()));
+        }
+        let copy = CommitState {
+            id: state.id,
+            del_count: state.del_count,
+            soft_del_count: state.soft_del_count,
+            del_gen: state.del_gen,
+            next_write_del_gen: state.next_write_del_gen,
+            field_infos_gen: state.field_infos_gen,
+            next_write_field_infos_gen: state.next_write_field_infos_gen,
+            doc_values_gen: state.doc_values_gen,
+            next_write_doc_values_gen: state.next_write_doc_values_gen,
+            dv_updates_files,
+            field_infos_files: state.field_infos_files.clone(),
+            // The new object's field initialisers: `sizeInBytes = -1` and
+            // `bufferedDeletesGen = -1` (`SegmentCommitInfo.java:79,83`);
+            // `clone()` copies neither.
             size_in_bytes: -1,
             buffered_deletes_gen: -1,
-        })
+        };
+        Self {
+            info: self.info.clone(),
+            state: Arc::new(std::sync::Mutex::new(copy)),
+        }
     }
 
     /// Returns the id identifying this segment commit.
     pub fn id(&self) -> [u8; ID_LENGTH] {
-        self.id
+        self.state().id
     }
 
     /// Returns the number of hard-deleted documents.
     pub fn get_del_count(&self) -> i32 {
-        self.del_count
+        self.state().del_count
     }
 
     /// Sets the number of hard-deleted documents.
-    pub fn set_del_count(&mut self, del_count: i32) -> Result<()> {
+    pub fn set_del_count(&self, del_count: i32) -> Result<()> {
         let max_doc = self.info.max_doc()?;
+        let mut state = self.state();
         if del_count < 0 || del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid delCount={del_count} (maxDoc={max_doc})"
             )));
         }
-        if del_count + self.soft_del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "delCount + softDelCount > maxDoc (maxDoc={max_doc}, delCount={del_count}, softDelCount={})",
-                self.soft_del_count
-            )));
-        }
-        self.del_count = del_count;
+        debug_assert!(
+            state.soft_del_count + del_count <= max_doc,
+            "maxDoc={max_doc},delCount={del_count},softDelCount={}",
+            state.soft_del_count
+        );
+        state.del_count = del_count;
         Ok(())
     }
 
     /// Returns the number of soft-deleted documents not also hard-deleted.
     pub fn get_soft_del_count(&self) -> i32 {
-        self.soft_del_count
+        self.state().soft_del_count
     }
 
     /// Sets the number of soft-deleted documents.
-    pub fn set_soft_del_count(&mut self, soft_del_count: i32) -> Result<()> {
+    pub fn set_soft_del_count(&self, soft_del_count: i32) -> Result<()> {
         let max_doc = self.info.max_doc()?;
+        let mut state = self.state();
         if soft_del_count < 0 || soft_del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid softDelCount={soft_del_count} (maxDoc={max_doc})"
             )));
         }
-        if self.del_count + soft_del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "delCount + softDelCount > maxDoc (maxDoc={max_doc}, delCount={}, softDelCount={soft_del_count})",
-                self.del_count
-            )));
-        }
-        self.soft_del_count = soft_del_count;
+        debug_assert!(
+            soft_del_count + state.del_count <= max_doc,
+            "maxDoc={max_doc},delCount={},softDelCount={soft_del_count}",
+            state.del_count
+        );
+        state.soft_del_count = soft_del_count;
         Ok(())
     }
 
     /// Returns true if there are any deletions for this segment commit.
     pub fn has_deletions(&self) -> bool {
-        self.del_gen != -1
+        self.state().del_gen != -1
     }
 
     /// Returns true if there are any field updates for this segment commit.
     pub fn has_field_updates(&self) -> bool {
-        self.field_infos_gen != -1
+        self.state().field_infos_gen != -1
     }
 
     /// Returns the live docs file generation.
     pub fn get_del_gen(&self) -> i64 {
-        self.del_gen
+        self.state().del_gen
     }
 
     /// Returns the next available live docs file generation.
     ///
     /// Equivalent to `SegmentCommitInfo.getNextWriteDelGen()`.
     pub fn get_next_write_del_gen(&self) -> i64 {
-        self.next_write_del_gen
+        self.state().next_write_del_gen
     }
 
     /// Advances the live docs generation after a successful write.
-    pub fn advance_del_gen(&mut self) {
-        self.del_gen = self.next_write_del_gen;
-        self.next_write_del_gen = self.del_gen + 1;
-        self.generation_advanced();
+    pub fn advance_del_gen(&self) {
+        let mut state = self.state();
+        state.del_gen = state.next_write_del_gen;
+        state.next_write_del_gen = state.del_gen + 1;
+        state.generation_advanced();
     }
 
     /// Advances the next-write live docs generation after a failed write.
-    pub fn advance_next_write_del_gen(&mut self) {
-        self.next_write_del_gen += 1;
+    pub fn advance_next_write_del_gen(&self) {
+        self.state().next_write_del_gen += 1;
     }
 
     /// Returns the next available live docs file generation.
@@ -836,38 +889,39 @@ impl SegmentCommitInfo {
     /// declares both: the public one is what a codec calls, the other is the
     /// package-private spelling `IndexFileDeleter` uses.
     pub fn get_next_del_gen(&self) -> i64 {
-        self.next_write_del_gen
+        self.state().next_write_del_gen
     }
 
     /// Sets the next available live docs file generation.
     ///
     /// Equivalent to `SegmentCommitInfo.setNextWriteDelGen`.
-    pub fn set_next_write_del_gen(&mut self, v: i64) {
-        self.next_write_del_gen = v;
+    pub fn set_next_write_del_gen(&self, v: i64) {
+        self.state().next_write_del_gen = v;
     }
 
     /// Returns the field infos update file generation.
     pub fn get_field_infos_gen(&self) -> i64 {
-        self.field_infos_gen
+        self.state().field_infos_gen
     }
 
     /// Returns the next available field infos update generation.
     ///
     /// Equivalent to `SegmentCommitInfo.getNextWriteFieldInfosGen()`.
     pub fn get_next_write_field_infos_gen(&self) -> i64 {
-        self.next_write_field_infos_gen
+        self.state().next_write_field_infos_gen
     }
 
     /// Advances the field infos generation after a successful write.
-    pub fn advance_field_infos_gen(&mut self) {
-        self.field_infos_gen = self.next_write_field_infos_gen;
-        self.next_write_field_infos_gen = self.field_infos_gen + 1;
-        self.generation_advanced();
+    pub fn advance_field_infos_gen(&self) {
+        let mut state = self.state();
+        state.field_infos_gen = state.next_write_field_infos_gen;
+        state.next_write_field_infos_gen = state.field_infos_gen + 1;
+        state.generation_advanced();
     }
 
     /// Advances the next-write field infos generation after a failed write.
-    pub fn advance_next_write_field_infos_gen(&mut self) {
-        self.next_write_field_infos_gen += 1;
+    pub fn advance_next_write_field_infos_gen(&self) {
+        self.state().next_write_field_infos_gen += 1;
     }
 
     /// Returns the next available field infos update generation.
@@ -877,38 +931,39 @@ impl SegmentCommitInfo {
     /// [`get_next_write_field_infos_gen`](Self::get_next_write_field_infos_gen)
     /// over the same field.
     pub fn get_next_field_infos_gen(&self) -> i64 {
-        self.next_write_field_infos_gen
+        self.state().next_write_field_infos_gen
     }
 
     /// Sets the next available field infos update generation.
     ///
     /// Equivalent to `SegmentCommitInfo.setNextWriteFieldInfosGen`.
-    pub fn set_next_write_field_infos_gen(&mut self, v: i64) {
-        self.next_write_field_infos_gen = v;
+    pub fn set_next_write_field_infos_gen(&self, v: i64) {
+        self.state().next_write_field_infos_gen = v;
     }
 
     /// Returns the doc values update file generation.
     pub fn get_doc_values_gen(&self) -> i64 {
-        self.doc_values_gen
+        self.state().doc_values_gen
     }
 
     /// Returns the next available doc values update generation.
     ///
     /// Equivalent to `SegmentCommitInfo.getNextWriteDocValuesGen()`.
     pub fn get_next_write_doc_values_gen(&self) -> i64 {
-        self.next_write_doc_values_gen
+        self.state().next_write_doc_values_gen
     }
 
     /// Advances the doc values generation after a successful write.
-    pub fn advance_doc_values_gen(&mut self) {
-        self.doc_values_gen = self.next_write_doc_values_gen;
-        self.next_write_doc_values_gen = self.doc_values_gen + 1;
-        self.generation_advanced();
+    pub fn advance_doc_values_gen(&self) {
+        let mut state = self.state();
+        state.doc_values_gen = state.next_write_doc_values_gen;
+        state.next_write_doc_values_gen = state.doc_values_gen + 1;
+        state.generation_advanced();
     }
 
     /// Advances the next-write doc values generation after a failed write.
-    pub fn advance_next_write_doc_values_gen(&mut self) {
-        self.next_write_doc_values_gen += 1;
+    pub fn advance_next_write_doc_values_gen(&self) {
+        self.state().next_write_doc_values_gen += 1;
     }
 
     /// Returns the next available doc values update generation.
@@ -918,31 +973,32 @@ impl SegmentCommitInfo {
     /// [`get_next_write_doc_values_gen`](Self::get_next_write_doc_values_gen)
     /// over the same field.
     pub fn get_next_doc_values_gen(&self) -> i64 {
-        self.next_write_doc_values_gen
+        self.state().next_write_doc_values_gen
     }
 
     /// Sets the next available doc values update generation.
     ///
     /// Equivalent to `SegmentCommitInfo.setNextWriteDocValuesGen`.
-    pub fn set_next_write_doc_values_gen(&mut self, v: i64) {
-        self.next_write_doc_values_gen = v;
+    pub fn set_next_write_doc_values_gen(&self, v: i64) {
+        self.state().next_write_doc_values_gen = v;
     }
 
     /// Returns the per-field doc values update files, in Java's
     /// `HashMap<Integer, Set<String>>` order.
-    pub fn get_doc_values_updates_files(&self) -> &JavaIntHashMap<JavaHashSet> {
-        &self.dv_updates_files
+    ///
+    /// Java returns its unmodifiable view of the map; the port returns a
+    /// snapshot of it, as the map is shared by every holder.
+    pub fn get_doc_values_updates_files(&self) -> JavaIntHashMap<JavaHashSet> {
+        self.state().dv_updates_files.clone()
     }
 
     /// Sets the per-field doc values update files.
-    pub fn set_doc_values_updates_files<M, I>(&mut self, files: M)
+    pub fn set_doc_values_updates_files<M, I>(&self, files: M)
     where
         M: IntoIterator<Item = (i32, I)>,
         I: IntoIterator<Item = String>,
     {
-        // `this.dvUpdatesFiles.clear()` keeps the table it had, then one `put`
-        // per entry in the argument's order.
-        self.dv_updates_files.clear();
+        let mut renamed_files: Vec<(i32, JavaHashSet)> = Vec::new();
         for (field_number, set) in files {
             // `new HashSet<>()` then one renamed `add` per file, in the
             // argument's order (`SegmentCommitInfo.java:125-135`).
@@ -950,56 +1006,67 @@ impl SegmentCommitInfo {
             for f in set {
                 renamed.insert(self.info.named_for_this_segment(&f));
             }
-            self.dv_updates_files.insert(field_number, renamed);
+            renamed_files.push((field_number, renamed));
+        }
+        let mut state = self.state();
+        // `this.dvUpdatesFiles.clear()` keeps the table it had, then one `put`
+        // per entry in the argument's order.
+        state.dv_updates_files.clear();
+        for (field_number, renamed) in renamed_files {
+            state.dv_updates_files.insert(field_number, renamed);
         }
     }
 
     /// Returns the field infos update files.
-    pub fn get_field_infos_files(&self) -> &JavaHashSet {
-        &self.field_infos_files
+    ///
+    /// Java returns its unmodifiable view of the set; the port returns a
+    /// snapshot of it, as the set is shared by every holder.
+    pub fn get_field_infos_files(&self) -> JavaHashSet {
+        self.state().field_infos_files.clone()
     }
 
     /// Sets the field infos update files.
-    pub fn set_field_infos_files<I>(&mut self, files: I)
+    pub fn set_field_infos_files<I>(&self, files: I)
     where
         I: IntoIterator<Item = String>,
     {
-        self.field_infos_files.clear();
-        for f in files {
-            self.field_infos_files
-                .insert(self.info.named_for_this_segment(&f));
+        let renamed: Vec<String> = files
+            .into_iter()
+            .map(|f| self.info.named_for_this_segment(&f))
+            .collect();
+        let mut state = self.state();
+        state.field_infos_files.clear();
+        for f in renamed {
+            state.field_infos_files.insert(f);
         }
     }
 
     /// Returns the buffered deletes generation.
     pub fn get_buffered_deletes_gen(&self) -> i64 {
-        self.buffered_deletes_gen
+        self.state().buffered_deletes_gen
     }
 
     /// Sets the buffered deletes generation.
-    pub fn set_buffered_deletes_gen(&mut self, gen: i64) -> Result<()> {
-        if self.buffered_deletes_gen != -1 {
+    pub fn set_buffered_deletes_gen(&self, gen: i64) -> Result<()> {
+        let mut state = self.state();
+        if state.buffered_deletes_gen != -1 {
             return Err(LuceneError::illegal_state(
                 "buffered deletes gen should only be set once".to_string(),
             ));
         }
-        self.buffered_deletes_gen = gen;
-        self.generation_advanced();
+        state.buffered_deletes_gen = gen;
+        state.generation_advanced();
         Ok(())
     }
 
     /// Returns the total number of deleted documents, optionally including soft deletes.
     pub fn get_del_count_with_soft(&self, include_soft: bool) -> i32 {
+        let state = self.state();
         if include_soft {
-            self.del_count + self.soft_del_count
+            state.del_count + state.soft_del_count
         } else {
-            self.del_count
+            state.del_count
         }
-    }
-
-    fn generation_advanced(&mut self) {
-        self.size_in_bytes = -1;
-        self.id = StringHelper::random_id();
     }
 
     /// Returns all files in use by this segment commit.
@@ -1030,102 +1097,95 @@ impl SegmentCommitInfo {
             }
         }
 
-        for set in self.dv_updates_files.values() {
+        let (dv_updates_files, field_infos_files) = {
+            let state = self.state();
+            (
+                state.dv_updates_files.clone(),
+                state.field_infos_files.clone(),
+            )
+        };
+        for set in dv_updates_files.values() {
             files.extend(set.iter().cloned());
         }
 
-        files.extend(self.field_infos_files.iter().cloned());
+        files.extend(field_infos_files.iter().cloned());
 
         Ok(files)
     }
 
     /// Returns the total size in bytes of all files for this segment without
-    /// caching the result.
+    /// storing the result.
     ///
-    /// Java's `sizeInBytes()` memoises into a mutable field, which needs
-    /// `&mut self` here. A merge policy inspects segments through a shared
-    /// reference, so it uses this form instead; the value returned is identical.
+    /// The value is the one [`size_in_bytes`](Self::size_in_bytes) returns.
     pub fn size_in_bytes_uncached(&self) -> Result<i64> {
-        if self.size_in_bytes != -1 {
-            return Ok(self.size_in_bytes);
+        let cached = self.state().size_in_bytes;
+        if cached != -1 {
+            return Ok(cached);
         }
+        // `for (final String fileName : files())`: Java's `HashSet` order,
+        // which decides the order of the `fileLength` calls and so which
+        // missing file is reported first.
         let mut sum = 0i64;
-        for file in self.files()? {
-            sum += self.info.directory.file_length(&file)?;
+        for file in self.files_ordered()?.iter() {
+            sum += self.info.directory.file_length(file)?;
         }
         Ok(sum)
     }
 
     /// Returns the total size in bytes of all files for this segment.
     ///
-    /// Equivalent to `SegmentCommitInfo.sizeInBytes()`.
-    pub fn size_in_bytes(&mut self) -> Result<i64> {
-        if self.size_in_bytes == -1 {
+    /// Equivalent to `SegmentCommitInfo.sizeInBytes()`, which memoises the
+    /// sum into the shared object.
+    pub fn size_in_bytes(&self) -> Result<i64> {
+        let cached = self.state().size_in_bytes;
+        if cached == -1 {
+            // `for (final String fileName : files())`, in Java's `HashSet`
+            // order (`SegmentCommitInfo.java:226-236`).
             let mut sum = 0i64;
-            for file in self.files()? {
-                sum += self.info.directory.file_length(&file)?;
+            for file in self.files_ordered()?.iter() {
+                sum += self.info.directory.file_length(file)?;
             }
-            self.size_in_bytes = sum;
+            self.state().size_in_bytes = sum;
+            return Ok(sum);
         }
-        Ok(self.size_in_bytes)
+        Ok(cached)
+    }
+
+    /// Whether `self` and `other` are the same Java object.
+    pub fn same_object(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
     }
 }
 
 impl Debug for SegmentCommitInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let state = self.state();
         f.debug_struct("SegmentCommitInfo")
             .field("info", &self.info)
-            .field("del_count", &self.del_count)
-            .field("soft_del_count", &self.soft_del_count)
-            .field("del_gen", &self.del_gen)
-            .field("field_infos_gen", &self.field_infos_gen)
-            .field("doc_values_gen", &self.doc_values_gen)
+            .field("del_count", &state.del_count)
+            .field("soft_del_count", &state.soft_del_count)
+            .field("del_gen", &state.del_gen)
+            .field("field_infos_gen", &state.field_infos_gen)
+            .field("doc_values_gen", &state.doc_values_gen)
             .finish()
     }
 }
 
+/// Another reference to the same commit info, as a Java reference is copied;
+/// Java's `clone()` is [`SegmentCommitInfo::java_clone`].
 impl Clone for SegmentCommitInfo {
     fn clone(&self) -> Self {
-        let other = Self {
+        Self {
             info: self.info.clone(),
-            id: self.id,
-            del_count: self.del_count,
-            soft_del_count: self.soft_del_count,
-            del_gen: self.del_gen,
-            next_write_del_gen: self.next_write_del_gen,
-            field_infos_gen: self.field_infos_gen,
-            next_write_field_infos_gen: self.next_write_field_infos_gen,
-            doc_values_gen: self.doc_values_gen,
-            next_write_doc_values_gen: self.next_write_doc_values_gen,
-            // Deep clone: a fresh map receiving `new HashSet<>(value)` per entry
-            // in `entrySet()` order (`SegmentCommitInfo.java:394-397`).
-            dv_updates_files: {
-                let mut files = JavaIntHashMap::new();
-                for (field_number, set) in self.dv_updates_files.iter() {
-                    files.insert(field_number, JavaHashSet::from_collection(set.clone()));
-                }
-                files
-            },
-            field_infos_files: self.field_infos_files.clone(),
-            size_in_bytes: self.size_in_bytes,
-            buffered_deletes_gen: self.buffered_deletes_gen,
-        };
-        // Preserve the id from the source, matching Java's
-        // SegmentCommitInfo.clone() which passes getId() to the constructor.
-        // A new id is only generated when a generation advances (see
-        // generation_advanced), not on clone.
-        other
+            state: Arc::clone(&self.state),
+        }
     }
 }
 
+/// Identity, as Java's `Object.equals`.
 impl PartialEq for SegmentCommitInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.info == other.info
-            && self.del_count == other.del_count
-            && self.soft_del_count == other.soft_del_count
-            && self.del_gen == other.del_gen
-            && self.field_infos_gen == other.field_infos_gen
-            && self.doc_values_gen == other.doc_values_gen
+        self.same_object(other)
     }
 }
 
@@ -1268,15 +1328,10 @@ impl SegmentOrderImpl for IdentitySegmentOrder {
 
 /// Orders a reader's leaves by the extreme value of one numeric field.
 ///
-/// **Divergence from Lucene 10.5.0.** Java returns an anonymous
-/// `BaseCompositeReader<LeafReader>` whose `doClose` is a no-op and whose
-/// `getReaderCacheHelper` delegates to the wrapped reader. This port assembles
-/// a [`MultiReader`](crate::index::MultiReader) over the same leaves with
-/// `close_sub_readers = false`, which is the crate's array-backed composite
-/// reader: it takes a reference on each leaf and drops it again when the view
-/// closes, so the leaves outlive the view exactly as in Java. The one
-/// observable difference is the reader cache helper, which the `MultiReader`
-/// answers for itself instead of forwarding.
+/// Java returns an anonymous `BaseCompositeReader<LeafReader>` whose `doClose`
+/// is a no-op and whose `getReaderCacheHelper` delegates to the wrapped reader;
+/// [`MultiReader::new_reordered_view`](crate::index::MultiReader) is that
+/// reader: it takes no reference on the leaves and closes nothing.
 struct NumericSegmentOrder {
     comparator: NumericFieldReaderContextComparator,
 }
@@ -1301,7 +1356,9 @@ impl SegmentOrderImpl for NumericSegmentOrder {
 
         let sorted: Vec<Arc<dyn IndexReader>> =
             order.into_iter().map(|i| Arc::clone(&subs[i])).collect();
-        Ok(Arc::new(crate::index::MultiReader::new(sorted, false)?))
+        Ok(Arc::new(crate::index::MultiReader::new_reordered_view(
+            sorted, reader,
+        )?))
     }
 }
 
@@ -1443,7 +1500,7 @@ mod tests {
     /// as `DocumentsWriterPerThread`'s Java constructor passes `-1`. Rejecting
     /// that value made the whole indexing pipeline impossible to construct.
     #[test]
-    fn segment_info_accepts_an_unset_max_doc_and_rejects_smaller_values() {
+    fn segment_info_accepts_an_unset_max_doc_and_any_other_value() {
         let mut info = test_segment_info("_0", UNSET_MAX_DOC);
         assert!(
             info.max_doc().is_err(),
@@ -1453,8 +1510,11 @@ mod tests {
         assert_eq!(info.max_doc().unwrap(), 7);
         assert!(info.set_max_doc(8).is_err(), "maxDoc may only be set once");
 
+        // `SegmentInfo`'s constructor stores `maxDoc` as given
+        // (`SegmentInfo.java:115-144`): only `-1` is the "unset" value
+        // `maxDoc()` refuses.
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
-        let error = SegmentInfo::new(
+        let info = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
             Some(Version::LUCENE_10_5_0),
@@ -1468,8 +1528,8 @@ mod tests {
             HashMap::new(),
             Sort::default(),
         )
-        .unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalArgument(_)));
+        .unwrap();
+        assert_eq!(info.max_doc().unwrap(), -2);
     }
 
     #[test]
@@ -1507,7 +1567,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "invalid codec filename 'foo.bar', must match: _[a-z0-9]+(_.*)?\\..*".to_string()
             )
             .to_string()
@@ -1520,7 +1580,7 @@ mod tests {
         let error = info.set_files(["_0.TMP".to_string()]).unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "invalid codec filename '_0.TMP', cannot end with .tmp extension".to_string()
             )
             .to_string()
@@ -1564,8 +1624,8 @@ mod tests {
 
     #[test]
     fn segment_info_max_doc_validation() {
-        // `-1` is Lucene's "not set yet" sentinel and must be accepted; only
-        // values below it are illegal.
+        // `-1` is Lucene's "not set yet" sentinel, which `maxDoc()` refuses;
+        // the constructor validates nothing (`SegmentInfo.java:115-144`).
         let info = test_segment_info("_0", UNSET_MAX_DOC);
         assert!(info.max_doc().is_err());
 
@@ -1584,14 +1644,13 @@ mod tests {
             HashMap::new(),
             Sort::default(),
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().max_doc().unwrap(), -3);
     }
 
     #[test]
     fn segment_commit_info_basic() {
         let info = test_segment_info("_0", 100);
-        let mut sci =
-            SegmentCommitInfo::new(info, 5, 3, 0, -1, -1, StringHelper::random_id()).unwrap();
+        let sci = SegmentCommitInfo::new(info, 5, 3, 0, -1, -1, StringHelper::random_id()).unwrap();
         assert_eq!(sci.get_del_count(), 5);
         assert_eq!(sci.get_soft_del_count(), 3);
         assert!(sci.has_deletions());
@@ -1618,13 +1677,22 @@ mod tests {
     #[test]
     fn segment_commit_info_del_count_validation() {
         let info = test_segment_info("_0", 11);
-        let mut sci =
+        let sci =
             SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, StringHelper::random_id()).unwrap();
         assert!(sci.set_del_count(12).is_err());
         assert!(sci.set_soft_del_count(12).is_err());
         assert!(sci.set_del_count(6).is_ok());
         assert!(sci.set_soft_del_count(5).is_ok());
-        assert!(sci.set_soft_del_count(6).is_err());
+        // `assert softDelCount + delCount <= info.maxDoc()`
+        // (`SegmentCommitInfo.java:345-346`): an assertion, raised only
+        // under `-ea`, this port's `debug_assertions`.
+        let over =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sci.set_soft_del_count(6)));
+        if cfg!(debug_assertions) {
+            assert!(over.is_err());
+        } else {
+            assert!(over.unwrap().is_ok());
+        }
     }
 
     #[test]
@@ -1678,7 +1746,7 @@ impl SegmentCommitInfo {
     /// own deletion count.
     pub fn to_string_with_pending_del_count(&self, pending_del_count: i32) -> String {
         self.info
-            .to_string_with_del_count(self.del_count + pending_del_count)
+            .to_string_with_del_count(self.get_del_count() + pending_del_count)
     }
 
     /// Returns the long-form description the info stream logs for this commit.
@@ -1693,19 +1761,20 @@ impl SegmentCommitInfo {
     /// the guard has no counterpart and the clause is always emitted.
     pub fn to_string_verbose(&self) -> String {
         let mut s = self.info.to_string_verbose();
+        let state = self.state();
         s.push_str(" :id=");
-        s.push_str(&StringHelper::id_to_string(Some(&self.id)));
-        if self.del_gen != -1 {
-            s.push_str(&format!(":delGen={}", self.del_gen));
+        s.push_str(&StringHelper::id_to_string(Some(&state.id)));
+        if state.del_gen != -1 {
+            s.push_str(&format!(":delGen={}", state.del_gen));
         }
-        if self.field_infos_gen != -1 {
-            s.push_str(&format!(":fieldInfosGen={}", self.field_infos_gen));
+        if state.field_infos_gen != -1 {
+            s.push_str(&format!(":fieldInfosGen={}", state.field_infos_gen));
         }
-        if self.doc_values_gen != -1 {
-            s.push_str(&format!(":dvGen={}", self.doc_values_gen));
+        if state.doc_values_gen != -1 {
+            s.push_str(&format!(":dvGen={}", state.doc_values_gen));
         }
-        if self.soft_del_count > 0 {
-            s.push_str(&format!(" :softDel={}", self.soft_del_count));
+        if state.soft_del_count > 0 {
+            s.push_str(&format!(" :softDel={}", state.soft_del_count));
         }
         s
     }

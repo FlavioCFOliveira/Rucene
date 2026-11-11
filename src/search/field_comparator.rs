@@ -213,8 +213,12 @@ impl std::fmt::Display for SortValue {
             SortValue::Null => f.write_str("null"),
             SortValue::Int(value) => write!(f, "{value}"),
             SortValue::Long(value) => write!(f, "{value}"),
-            SortValue::Float(value) => write!(f, "{value}"),
-            SortValue::Double(value) => write!(f, "{value}"),
+            // `Float.toString` / `Double.toString`, not Rust's shortest form
+            // (`1.0` renders as `1.0`, not `1`).
+            SortValue::Float(value) => f.write_str(&crate::util::java_fmt::float_to_string(*value)),
+            SortValue::Double(value) => {
+                f.write_str(&crate::util::java_fmt::double_to_string(*value))
+            }
             SortValue::Bytes(value) => write!(f, "{value}"),
         }
     }
@@ -466,6 +470,16 @@ impl<C: SlotComparator> SharedFieldComparator<C> {
             shared: Arc::new(Mutex::new(comparator)),
         }
     }
+
+    /// Runs `body` on the concrete comparator.
+    ///
+    /// Java tests in a comparator's package cast the `FieldComparator` a
+    /// `SortField` returns to its concrete class and set its protected fields
+    /// (`TestNumericComparator` sets `queueFull`, `hitsThresholdReached` and
+    /// `bottom`); this is the access the shared slot state allows.
+    pub fn with_comparator<R>(&self, body: impl FnOnce(&mut C) -> R) -> R {
+        body(&mut lock_slots(&self.shared))
+    }
 }
 
 impl<C: SlotComparator> Debug for SharedFieldComparator<C> {
@@ -522,7 +536,19 @@ pub struct SharedLeafComparator<C: SlotComparator> {
     leaf: C::Leaf,
 }
 
+impl<C: SlotComparator> SharedLeafComparator<C> {
+    /// The leaf comparator's own fields, which in Java are the fields of the
+    /// concrete leaf comparator class.
+    pub fn leaf(&self) -> &C::Leaf {
+        &self.leaf
+    }
+}
+
 impl<C: SlotComparator> LeafFieldComparator for SharedLeafComparator<C> {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn set_bottom(&mut self, slot: i32) -> Result<()> {
         lock_slots(&self.shared).set_bottom(&mut self.leaf, slot)
     }
@@ -684,7 +710,18 @@ pub struct TermValComparator {
     bottom: Option<BytesRef>,
     top_value: Option<BytesRef>,
     missing_sort_cmp: i32,
+    binary_doc_values_source: Option<BinaryDocValuesSource>,
 }
+
+/// An override of the protected
+/// `TermValComparator.getBinaryDocValues(LeafReaderContext, String)`
+/// (`FieldComparator.java:270-274`), as `BinarySortField.getComparator`
+/// declares in its anonymous subclass (`BinarySortField.java:185-194`).
+///
+/// It is shared and thread-safe because the comparator that holds it is
+/// handed to an executor's worker with its collector.
+pub type BinaryDocValuesSource =
+    Arc<dyn Fn(&LeafReaderContext, &str) -> Result<Box<dyn BinaryDocValues>> + Send + Sync>;
 
 impl Debug for TermValComparator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -706,7 +743,17 @@ impl TermValComparator {
             bottom: None,
             top_value: None,
             missing_sort_cmp: if sort_missing_last { 1 } else { -1 },
+            binary_doc_values_source: None,
         }
+    }
+
+    /// Installs a replacement for the default binary-doc-values lookup.
+    ///
+    /// Equivalent to overriding
+    /// `TermValComparator.getBinaryDocValues(LeafReaderContext, String)`; see
+    /// [`BinaryDocValuesSource`].
+    pub fn set_binary_doc_values_source(&mut self, source: BinaryDocValuesSource) {
+        self.binary_doc_values_source = Some(source);
     }
 
     /// Equivalent to the private `TermValComparator.getValueForDoc(int)`,
@@ -767,6 +814,10 @@ impl SlotComparator for TermValComparator {
     }
 
     fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Box<dyn BinaryDocValues>> {
+        // `docTerms = getBinaryDocValues(context, field)` (`FieldComparator.java:278`).
+        if let Some(source) = self.binary_doc_values_source.as_ref() {
+            return source(context, &self.field);
+        }
         let reader = context.leaf_reader();
         DocValues::get_binary(reader.as_ref(), &self.field)
     }

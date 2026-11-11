@@ -17,6 +17,7 @@ use crate::search::doc_id_set_iterator::{all, DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::doc_values_iteration::numeric_as_iterator;
 use crate::search::field_comparator::java_long_compare;
 use crate::search::pruning::Pruning;
+use crate::search::scorable::Scorable;
 use crate::search::skip_block_range_iterator::SkipBlockRangeIterator;
 use crate::util::{DocIdSetBuilder, IntsRef};
 
@@ -195,8 +196,11 @@ pub struct NumericComparator {
     sortable_bytes_to_long: fn(&[u8]) -> i64,
     top_value_set: bool,
     single_sort: bool,
-    hits_threshold_reached: bool,
-    queue_full: bool,
+    /// `protected boolean hitsThresholdReached`, visible to the package's
+    /// tests in Java.
+    pub hits_threshold_reached: bool,
+    /// `protected boolean queueFull`, visible to the package's tests in Java.
+    pub queue_full: bool,
     pruning: Pruning,
     doc_values_source: Option<NumericDocValuesSource>,
 }
@@ -330,8 +334,8 @@ impl NumericComparator {
     /// # Errors
     ///
     /// Propagates any I/O error raised while opening the segment's values, and
-    /// returns [`LuceneError::IllegalState`] or
-    /// [`LuceneError::IllegalArgument`] for the field-info inconsistencies
+    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) or
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for the field-info inconsistencies
     /// Java rejects when building the points-backed iterator.
     pub fn new_leaf(
         &self,
@@ -379,13 +383,13 @@ impl NumericComparator {
                     )));
                 }
                 Some(info) if info.get_point_dimension_count() > 1 => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Field {} is indexed with multiple dimensions, sorting is not supported",
                         self.field
                     )));
                 }
                 Some(info) if info.get_point_num_bytes() != self.bytes_count => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Field {} is indexed with {} bytes per dimension, but {:?} expected {}",
                         self.field,
                         info.get_point_num_bytes(),
@@ -599,19 +603,11 @@ impl NumericComparator {
     /// Reacts to the collector installing a scorer.
     ///
     /// Equivalent to `NumericLeafComparator.setScorer(Scorable)`, which
-    /// forwards to the competitive-iterator builder.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java's points-backed builder seeds
-    /// `iteratorCost` with `((Scorer) scorer).iterator().cost()` when the
-    /// scorable happens to be a [`Scorer`](crate::search::Scorer), and with
-    /// `maxDoc` otherwise. Rust cannot test a `&mut dyn Scorable` for a second
-    /// trait at this crate's minimum supported Rust version, and
-    /// [`Scorable`](crate::search::Scorable) exposes no cost, so this port
-    /// always uses Java's own fallback, `maxDoc`. `iteratorCost` only tunes how
-    /// eagerly the competitive iterator is rebuilt and how selective a new
-    /// range must be to be worth materialising; it never takes part in deciding
-    /// whether a document is competitive, so the collected hits and their order
-    /// are unchanged.
+    /// forwards to the competitive-iterator builder. The points-backed builder
+    /// seeds `iteratorCost` with `((Scorer) scorer).iterator().cost()` when the
+    /// scorable is a [`Scorer`](crate::search::Scorer) — tested, as Java's
+    /// `instanceof Scorer`, with [`Scorable::as_scorer`] — and with `maxDoc`
+    /// otherwise (`NumericComparator.java:373-383`).
     ///
     /// # Errors
     ///
@@ -619,6 +615,7 @@ impl NumericComparator {
     pub fn set_scorer(
         &mut self,
         leaf: &mut NumericLeafState,
+        scorer: &mut dyn Scorable,
         bottom_as_comparable_long: i64,
         top_as_comparable_long: i64,
     ) -> Result<()> {
@@ -627,7 +624,11 @@ impl NumericComparator {
             Some(builder) => match &mut builder.kind {
                 CompetitiveKind::Points { iterator_cost, .. } => {
                     if *iterator_cost == -1 {
-                        *iterator_cost = i64::from(builder.common.max_doc);
+                        *iterator_cost = match scorer.as_scorer() {
+                            // starting iterator cost is the scorer's cost
+                            Some(scorer) => scorer.iterator().cost(),
+                            None => i64::from(builder.common.max_doc),
+                        };
                         true
                     } else {
                         false
@@ -1010,5 +1011,102 @@ mod missing_value_tests {
             wrong.is_empty(),
             "(comparator, cached, expected): {wrong:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod scorer_cost_tests {
+    use std::sync::Arc;
+
+    use super::{CompetitiveKind, NumericComparator, NumericLeafState};
+    use crate::document::{Document, LongPoint, NumericDocValuesField, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::{IndexReader, Term};
+    use crate::search::comparators::LongComparator;
+    use crate::search::pruning::Pruning;
+    use crate::search::{
+        IndexSearcher, Query, ScoreMode, Scorer, ScorerAsScorable, SimpleScorable, TermQuery,
+    };
+    use crate::util::BytesRef;
+
+    fn iterator_cost(leaf: &NumericLeafState) -> i64 {
+        match &leaf
+            .competitive
+            .as_ref()
+            .expect("points-backed builder")
+            .kind
+        {
+            CompetitiveKind::Points { iterator_cost, .. } => *iterator_cost,
+            CompetitiveKind::Skipper { .. } => panic!("expected the points-backed builder"),
+        }
+    }
+
+    /// `NumericLeafComparator.setScorer` seeds the points-backed builder's
+    /// `iteratorCost` with `((Scorer) scorer).iterator().cost()` when the
+    /// scorable is a `Scorer`, and with `maxDoc` otherwise
+    /// (`NumericComparator.java:373-383`): a term matching 16 of 64 documents
+    /// yields 16 through a `Scorer`, and 64 through a plain `Scorable`.
+    #[test]
+    fn set_scorer_seeds_the_iterator_cost_with_a_scorers_cost() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for d in 0..64i64 {
+            let mut doc = Document::new();
+            if d % 4 == 0 {
+                doc.add(Box::new(
+                    StringField::new("b", "x".to_string(), Store::NO).unwrap(),
+                ));
+            }
+            doc.add(Box::new(LongPoint::new("l", &[d * 3 - 50]).unwrap()));
+            doc.add(Box::new(NumericDocValuesField::new("l", d * 3 - 50)));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(Arc::clone(&dir)).unwrap();
+        let searcher = IndexSearcher::new(reader as Arc<dyn IndexReader>).unwrap();
+        let ctx = Arc::clone(&searcher.get_leaf_contexts()[0]);
+        assert_eq!(ctx.leaf_reader().max_doc(), 64);
+
+        let query: Arc<dyn Query> =
+            Arc::new(TermQuery::new(Term::new("b", BytesRef::new(b"x".to_vec()))));
+        let weight = searcher
+            .create_weight(searcher.rewrite(query).unwrap(), ScoreMode::COMPLETE, 1.0)
+            .unwrap();
+        let mut scorer: Box<dyn Scorer> = weight
+            .scorer_supplier(&ctx)
+            .unwrap()
+            .expect("the term matches")
+            .get(i64::MAX)
+            .unwrap();
+        assert_eq!(scorer.iterator().cost(), 16);
+
+        let comparator = || {
+            NumericComparator::new(
+                "l",
+                false,
+                Pruning::GREATER_THAN_OR_EQUAL_TO,
+                8,
+                LongComparator::sortable_bytes_to_long,
+            )
+        };
+
+        let mut through_scorer = comparator();
+        let mut leaf = through_scorer.new_leaf(&ctx, 0).unwrap();
+        assert_eq!(iterator_cost(&leaf), -1);
+        through_scorer
+            .set_scorer(&mut leaf, &mut ScorerAsScorable::new(&mut *scorer), 0, 0)
+            .unwrap();
+        assert_eq!(iterator_cost(&leaf), 16, "a Scorer's iterator cost");
+
+        let mut through_scorable = comparator();
+        let mut leaf = through_scorable.new_leaf(&ctx, 0).unwrap();
+        through_scorable
+            .set_scorer(&mut leaf, &mut SimpleScorable::new(), 0, 0)
+            .unwrap();
+        assert_eq!(iterator_cost(&leaf), 64, "maxDoc for a plain Scorable");
     }
 }

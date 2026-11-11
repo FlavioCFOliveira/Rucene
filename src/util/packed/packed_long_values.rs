@@ -42,7 +42,13 @@ const PACKED_LONG_VALUES_BUILDER_BASE_RAM_BYTES_USED: i64 = 56;
 /// The heap cost of a `DeltaPackedLongValues.Builder` instance itself.
 const DELTA_BUILDER_BASE_RAM_BYTES_USED: i64 = 64;
 /// The heap cost of a `MonotonicLongValues.Builder` instance itself.
-const MONOTONIC_BUILDER_BASE_RAM_BYTES_USED: i64 = 72;
+///
+/// `RamUsageEstimator.shallowSizeOfInstance(MonotonicLongValues.Builder.class)`
+/// (`RamUsageEstimator.java:535-561`): the header, then every declared field
+/// up the hierarchy summed without per-field alignment — `averages` and
+/// `mins` (two references) and `PackedLongValues.Builder`'s 44 bytes — which
+/// is 64 once aligned.
+const MONOTONIC_BUILDER_BASE_RAM_BYTES_USED: i64 = 64;
 
 /// The number of pages a builder starts with.
 ///
@@ -82,7 +88,7 @@ impl PackedLongValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_PAGE_SIZE, MAX_PAGE_SIZE]`.
     pub fn packed_builder(
         page_size: usize,
@@ -225,6 +231,21 @@ impl LongValues for PackedLongValues {
     fn get(&self, index: i64) -> i64 {
         PackedLongValuesAccess::get(self, index)
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl PackedLongValues {
+    /// Returns the packed pages.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `PackedLongValues.values`; public so that the test framework can model
+    /// the Java object.
+    pub fn values(&self) -> &[Box<dyn PackedIntsReader + Send + Sync>] {
+        &self.values
+    }
 }
 
 impl Accountable for PackedLongValues {
@@ -288,6 +309,21 @@ impl DeltaPackedLongValues {
 impl LongValues for DeltaPackedLongValues {
     fn get(&self, index: i64) -> i64 {
         PackedLongValuesAccess::get(self, index)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl DeltaPackedLongValues {
+    /// Returns the minimum of each page.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `DeltaPackedLongValues.mins`; public so that the test framework can
+    /// model the Java object.
+    pub fn mins(&self) -> &[i64] {
+        &self.mins
     }
 }
 
@@ -353,6 +389,30 @@ impl MonotonicLongValues {
 impl LongValues for MonotonicLongValues {
     fn get(&self, index: i64) -> i64 {
         PackedLongValuesAccess::get(self, index)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl MonotonicLongValues {
+    /// Returns the minimum of each page.
+    ///
+    /// Equivalent to reading the field `mins` that `MonotonicLongValues`
+    /// inherits from `DeltaPackedLongValues`; public so that the test
+    /// framework can model the Java object.
+    pub fn mins(&self) -> &[i64] {
+        &self.base.mins
+    }
+
+    /// Returns the average slope of each page.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `MonotonicLongValues.averages`; public so that the test framework can
+    /// model the Java object.
+    pub fn averages(&self) -> &[f32] {
+        &self.averages
     }
 }
 
@@ -541,6 +601,24 @@ pub struct PackedLongValuesBuilderState {
 }
 
 impl PackedLongValuesBuilderState {
+    /// Returns the pending values, `None` once `build()` consumed the builder.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `PackedLongValues.Builder.pending`; public so that the test framework
+    /// can model the Java object.
+    pub fn pending(&self) -> Option<&[i64]> {
+        self.pending.as_deref()
+    }
+
+    /// Returns the page slots, `None` for a slot not packed yet.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `PackedLongValues.Builder.values`; public so that the test framework
+    /// can model the Java object.
+    pub fn values(&self) -> &[Option<Box<dyn PackedIntsReader + Send + Sync>>] {
+        &self.values
+    }
+
     fn new(
         page_size: usize,
         acceptable_overhead_ratio: f32,
@@ -678,7 +756,7 @@ pub trait PackedLongValuesBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the builder was already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the builder was already
     /// consumed by `build`, or the error the packed array constructor raises.
     fn pack_block(&mut self, num_values: usize, block: usize) -> Result<()>;
 
@@ -768,7 +846,7 @@ pub trait PackedLongValuesBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the builder was already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the builder was already
     /// consumed by `build`, or the error [`Self::pack_block`] raises.
     fn add(&mut self, l: i64) -> Result<()> {
         if self.state().pending.is_none() {
@@ -794,7 +872,7 @@ pub trait PackedLongValuesBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the builder was already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the builder was already
     /// consumed by `build`, or the error [`Self::pack_block`] raises.
     fn add_repeated(&mut self, value: i64, count: i32) -> Result<()> {
         if self.state().pending.is_none() {
@@ -827,7 +905,7 @@ pub trait PackedLongValuesBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the builder was already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the builder was already
     /// consumed by `build`, the error [`Self::pack_block`] raises, or the error
     /// the cursor raises.
     fn add_cursor(&mut self, cursor: &mut dyn LongValuesCursor) -> Result<()> {
@@ -887,7 +965,7 @@ impl PackedLongValuesBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_PAGE_SIZE, MAX_PAGE_SIZE]`.
     pub fn new(page_size: usize, acceptable_overhead_ratio: f32) -> Result<Self> {
         Ok(Self {
@@ -956,13 +1034,22 @@ pub struct DeltaPackedLongValuesBuilder {
 }
 
 impl DeltaPackedLongValuesBuilder {
+    /// Returns the minimum of each page slot.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `DeltaPackedLongValues.Builder.mins`; public so that the test framework
+    /// can model the Java object.
+    pub fn mins(&self) -> &[i64] {
+        &self.mins
+    }
+
     /// Creates a builder with pages of `page_size` values.
     ///
     /// Equivalent to `new DeltaPackedLongValues.Builder(int, float)`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_PAGE_SIZE, MAX_PAGE_SIZE]`.
     pub fn new(page_size: usize, acceptable_overhead_ratio: f32) -> Result<Self> {
         let mut state = PackedLongValuesBuilderState::new(
@@ -988,6 +1075,8 @@ impl DeltaPackedLongValuesBuilder {
         self.state.pending = None;
         let values = take_pages(&mut self.state);
         let mins = self.mins[..self.state.values_off].to_vec();
+        // `DeltaPackedLongValues(...)` (`DeltaPackedLongValues.java:33`).
+        debug_assert!(values.len() == mins.len());
         let ram_bytes_used = DELTA_PACKED_LONG_VALUES_BASE_RAM_BYTES_USED
             + RamUsageEstimator::shallow_size_of(&values)
             + values.iter().map(|page| page.ram_bytes_used()).sum::<i64>()
@@ -1040,13 +1129,31 @@ pub struct MonotonicLongValuesBuilder {
 }
 
 impl MonotonicLongValuesBuilder {
+    /// Returns the minimum of each page slot.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `DeltaPackedLongValues.Builder.mins` this builder inherits; public so
+    /// that the test framework can model the Java object.
+    pub fn mins(&self) -> &[i64] {
+        &self.mins
+    }
+
+    /// Returns the average slope of each page slot.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `MonotonicLongValues.Builder.averages`; public so that the test
+    /// framework can model the Java object.
+    pub fn averages(&self) -> &[f32] {
+        &self.averages
+    }
+
     /// Creates a builder with pages of `page_size` values.
     ///
     /// Equivalent to `new MonotonicLongValues.Builder(int, float)`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_PAGE_SIZE, MAX_PAGE_SIZE]`.
     pub fn new(page_size: usize, acceptable_overhead_ratio: f32) -> Result<Self> {
         let mut state = PackedLongValuesBuilderState::new(
@@ -1079,6 +1186,8 @@ impl MonotonicLongValuesBuilder {
         let values = take_pages(&mut self.state);
         let mins = self.mins[..self.state.values_off].to_vec();
         let averages = self.averages[..self.state.values_off].to_vec();
+        // `MonotonicLongValues(...)` (`MonotonicLongValues.java:41`).
+        debug_assert!(values.len() == averages.len());
         let ram_bytes_used = MONOTONIC_LONG_VALUES_BASE_RAM_BYTES_USED
             + RamUsageEstimator::shallow_size_of(&values)
             + values.iter().map(|page| page.ram_bytes_used()).sum::<i64>()

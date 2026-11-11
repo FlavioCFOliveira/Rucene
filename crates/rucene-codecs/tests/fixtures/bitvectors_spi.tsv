@@ -1,0 +1,4 @@
+# lookup	result
+getName	HnswBitVectorsFormat
+toString	HnswBitVectorsFormat(name=HnswBitVectorsFormat, maxConn=16, beamWidth=100, flatVectorFormat=Lucene99FlatVectorsFormat(vectorsScorer=FlatBitVectorsScorer()))
+forName.getClass	org.apache.lucene.codecs.bitvectors.HnswBitVectorsFormat

@@ -77,12 +77,19 @@ impl Outputs for ByteSequenceOutputs {
     fn subtract(&self, output: &BytesRef, inc: &BytesRef) -> BytesRef {
         if inc.length == 0 {
             // No prefix removed.
-            output.clone()
-        } else if inc.length == output.length {
+            return output.clone();
+        }
+        debug_assert!(StringHelper::starts_with(output, inc));
+        if inc.length == output.length {
             // The entire output was removed.
             self.no_output()
         } else {
-            debug_assert!(inc.length < output.length);
+            debug_assert!(
+                inc.length < output.length,
+                "inc.length={} vs output.length={}",
+                inc.length,
+                output.length
+            );
             BytesRef::new(output.slice()[inc.length..].to_vec())
         }
     }
@@ -111,10 +118,12 @@ impl Outputs for ByteSequenceOutputs {
             Ok(self.no_output())
         } else {
             let len = usize::try_from(len).map_err(|_| {
-                crate::error::LuceneError::CorruptIndex(format!("invalid output length {len}"))
+                crate::error::LuceneError::from(crate::error::LuceneErrorKind::CorruptIndex(
+                    format!("invalid output length {len}"),
+                ))
             })?;
             let mut bytes = vec![0u8; len];
-            input.read_bytes(&mut bytes, 0, len)?;
+            input.read_bytes(Some(&mut bytes), 0, len)?;
             Ok(BytesRef::new(bytes))
         }
     }

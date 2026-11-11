@@ -1,0 +1,55 @@
+# One oracle main class per line; regenerate.sh runs each with the fixture
+# directory as its first argument and the rest of the line as further ones.
+com.carrotsearch.randomizedtesting.RandomizedTestingOracle
+com.carrotsearch.randomizedtesting.RunnerOracle
+com.carrotsearch.randomizedtesting.RunnerOracle asserts-false
+com.carrotsearch.randomizedtesting.RunnerPartsOracle
+com.carrotsearch.randomizedtesting.ZigguratOracle
+com.carrotsearch.randomizedtesting.SelfTestsOracle @RANDOMIZEDTESTING_SRC@
+org.apache.lucene.tests.mockfile.NioOracle
+org.apache.lucene.tests.mockfile.MockfileOracle
+org.apache.lucene.tests.util.LuceneTestCaseOracle
+com.carrotsearch.randomizedtesting.ToStringOracle
+org.apache.lucene.tests.util.TempFilesOracle
+org.apache.lucene.codecs.simpletext.SimpleTextOracle
+# The test codecs of org.apache.lucene.tests.codecs (asserting, cheapbastard, compressing, cranky, vector)
+org.apache.lucene.tests.codecs.TestCodecsOracle
+# The helpers of org.apache.lucene.tests.util (rmp #342)
+org.apache.lucene.tests.util.TestUtilOracle
+org.apache.lucene.tests.util.TimeZoneOracle
+# java.text.RuleBasedCollator and LuceneTestCase.collate (rmp #349)
+org.apache.lucene.tests.util.CollatorOracle
+# LuceneTestCase's class environment, rule chains and reproduce line, StringHelper.randomId (rmp #348, #226)
+org.apache.lucene.tests.util.ClassEnvOracle
+# The store wrappers of org.apache.lucene.tests.store (rmp #343)
+org.apache.lucene.tests.store.MockDirectoryWrapperOracle
+# The index readers and wrappers of org.apache.lucene.tests.index (rmp #344); reads the
+# mdw_corpus.tsv MockDirectoryWrapperOracle writes just before it
+org.apache.lucene.tests.index.IndexWrappersOracle
+# The search wrappers, similarities and collectors of org.apache.lucene.tests.search (rmp #345);
+# reads the mdw_corpus.tsv MockDirectoryWrapperOracle writes before it
+org.apache.lucene.tests.search.SearchWrappersOracle
+# The analysis mocks of org.apache.lucene.tests.analysis and BaseTokenStreamTestCase (rmp #346, #357)
+org.apache.lucene.tests.analysis.AnalysisMocksOracle
+# RandomCodec, RandomIndexWriter, RandomPostingsTester and DocHelper of org.apache.lucene.tests.index (rmp #347)
+org.apache.lucene.tests.index.RandomIndexOracle
+# The seeded draws of the Base{Postings,StoredFields,TermVectors,Norms,Compound,LiveDocs,DocValues}FormatTestCase suites (rmp #351-#353)
+org.apache.lucene.tests.index.BaseFormatSuitesOracle
+# The seeded draws of the bit set, DocIdSet, directory, lock factory, similarity, range field, geo point and XY point suites (rmp #350, #356, #358)
+org.apache.lucene.tests.util.BaseSuitesDrawsOracle
+# Lucene's own lucene/test-framework tests (rmp #359), compiled from $LUCENE_SRC
+org.apache.lucene.tests.util.FrameworkTestsOracle
+# The other lucene/codecs formats: PostingsFormatOracle <prefix> <kind> <format> <extensions>
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle fst50 postings FST50 tfp
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle fixedgap postings LuceneFixedGap tib tii
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle vargap_fixed postings LuceneVarGapFixedInterval tib tiv tmv
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle vargap_docfreq postings LuceneVarGapDocFreqInterval tib tiv tmv
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle direct postings Direct tmd tim
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle bloom postings BloomFilter(Lucene104) blm
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle blocktreeords postings BlockTreeOrds tio tipo
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle bitvectors knn HnswBitVectorsFormat vem vex vemf vec
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle uniformsplit postings UniformSplit ustb ustd
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle uniformsplit_heap postings UniformSplit(32,3,true) ustb ustd
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle uniformsplit_small postings UniformSplit(8,2,false) ustb ustd
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle stuniformsplit postings SharedTermsUniformSplit stustb stustd
+org.apache.lucene.codecs.simpletext.PostingsFormatOracle stuniformsplit_small postings SharedTermsUniformSplit(8,2,true) stustb stustd

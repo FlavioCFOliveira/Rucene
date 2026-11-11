@@ -123,7 +123,7 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the weight is below `1`,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the weight is below `1`,
     /// which is the `IllegalArgumentException` Java throws.
     pub fn add_field_with_weight(
         &mut self,
@@ -131,7 +131,7 @@ impl Builder {
         weight: f32,
     ) -> Result<&mut Self> {
         if weight < 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "weight must be greater or equal to 1".to_string(),
             ));
         }
@@ -296,7 +296,7 @@ impl CombinedFieldQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the norms are
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the norms are
     /// inconsistent, which is the `IllegalArgumentException` Java throws.
     fn validate_consistent_norms(&self, searcher: &IndexSearcher) -> Result<()> {
         let mut all_fields_have_norms = true;
@@ -313,7 +313,7 @@ impl CombinedFieldQuery {
         }
 
         if !all_fields_have_norms && !no_fields_have_norms {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "CombinedFieldQuery requires norms to be consistent across fields: some fields \
                  cannot  have norms enabled, while others have norms disabled"
                     .to_string(),
@@ -363,6 +363,11 @@ impl Query for CombinedFieldQuery {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
     }
 
     fn rewrite(&self, _index_searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
@@ -482,7 +487,9 @@ impl CombinedFieldWeightState {
             let mut terms_enum = terms.iterator()?;
             terms_enum.seek_term_state(term.bytes(), &*state)?;
             let postings = SharedPostings::new(Box::new(crate::index::SlowImpactsEnum::new(
-                terms_enum.postings(None, POSTINGS_ENUM_FREQS)?,
+                terms_enum
+                    .postings(None, POSTINGS_ENUM_FREQS)?
+                    .ok_or_else(LuceneError::null_pointer)?,
             )));
             cost += DocIdSetIterator::cost(&postings);
             iterators.push(postings);
@@ -891,10 +898,6 @@ impl Scorable for CombinedFieldScorer {
 }
 
 impl Scorer for CombinedFieldScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.iterator.doc_id()
     }

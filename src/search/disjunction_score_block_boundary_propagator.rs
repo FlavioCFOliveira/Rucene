@@ -67,29 +67,44 @@ impl DisjunctionScoreBlockBoundaryPropagator {
             scorers.sub_scorer(i).advance_shallow(0)?;
         }
 
-        // The Java comparator reads `getMaxScore(NO_MORE_DOCS)` and, on ties,
-        // `iterator().cost()`; both are read once here so that the sort has no
-        // side effects.
-        let mut keys: Vec<(f32, i64)> = Vec::with_capacity(len);
-        for i in 0..len {
-            let scorer = scorers.sub_scorer(i);
-            let max_score = scorer.get_max_score(NO_MORE_DOCS)?;
-            let cost = scorer.iterator().cost();
-            keys.push((max_score, cost));
-        }
-
+        // `Arrays.sort(this.scorers, MAX_SCORE_COMPARATOR)`
+        // (`DisjunctionScoreBlockBoundaryPropagator.java:33-42`, `54`): the
+        // comparator reads `getMaxScore(NO_MORE_DOCS)` of both scorers on
+        // every comparison and `iterator().cost()` only on a tie. Java wraps
+        // an `IOException` thrown inside the comparator; the first error is
+        // kept here and propagated once the sort returns.
         let mut order: Vec<usize> = (0..len).collect();
+        let mut error: Option<crate::error::LuceneError> = None;
         // `Arrays.sort` on objects is stable, and so is `sort_by`.
         // `Float.compareTo` orders `-0.0` below `0.0` and `NaN` above
         // everything, which is exactly `f32::total_cmp`.
-        order.sort_by(|a, b| {
-            keys[*a]
-                .0
-                .total_cmp(&keys[*b].0)
-                .then_with(|| keys[*a].1.cmp(&keys[*b].1))
+        order.sort_by(|&a, &b| {
+            if error.is_some() {
+                return std::cmp::Ordering::Equal;
+            }
+            let max_a = scorers.sub_scorer(a).get_max_score(NO_MORE_DOCS);
+            let max_b = scorers.sub_scorer(b).get_max_score(NO_MORE_DOCS);
+            let (max_a, max_b) = match (max_a, max_b) {
+                (Ok(x), Ok(y)) => (x, y),
+                (Err(e), _) | (_, Err(e)) => {
+                    error = Some(e);
+                    return std::cmp::Ordering::Equal;
+                }
+            };
+            max_a.total_cmp(&max_b).then_with(|| {
+                let cost_a = scorers.sub_scorer(a).iterator().cost();
+                let cost_b = scorers.sub_scorer(b).iterator().cost();
+                cost_a.cmp(&cost_b)
+            })
         });
+        if let Some(e) = error {
+            return Err(e);
+        }
 
-        let max_scores = order.iter().map(|i| keys[*i].0).collect();
+        let mut max_scores = Vec::with_capacity(len);
+        for &i in &order {
+            max_scores.push(scorers.sub_scorer(i).get_max_score(NO_MORE_DOCS)?);
+        }
 
         Ok(Self {
             order,

@@ -4,7 +4,8 @@ use crate::error::Result;
 use crate::util::ArrayUtil;
 
 use super::fst::{
-    Arc, BitTable, BytesReader, ARCS_FOR_BINARY_SEARCH, ARCS_FOR_DIRECT_ADDRESSING, END_LABEL, FST,
+    Arc, BitTable, BytesReader, ARCS_FOR_BINARY_SEARCH, ARCS_FOR_CONTINUOUS,
+    ARCS_FOR_DIRECT_ADDRESSING, END_LABEL, FST,
 };
 use super::outputs::Outputs;
 use super::util::binary_search;
@@ -64,7 +65,7 @@ fn arc_pair<T>(arcs: &mut [T], i: usize, j: usize) -> (&T, &mut T) {
 /// subclass -- the current term and the seek target -- lives in an
 /// [`FSTEnumTarget`] that every method receives.
 pub struct FSTEnum<'a, O: Outputs> {
-    fst: &'a FST<O>,
+    fst: FstHandle<'a, O>,
     arcs: Vec<Arc<O::Output>>,
     /// Cumulative outputs.
     output: Vec<O::Output>,
@@ -83,11 +84,33 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
     ///
     /// Propagates the error raised while opening the FST's byte reader.
     pub fn new(fst: &'a FST<O>) -> Result<Self> {
-        let no_output = fst.outputs().no_output();
         let fst_reader = fst.get_bytes_reader()?;
+        Self::with_handle(FstHandle::Borrowed(fst), fst_reader)
+    }
+
+    /// Creates an enumeration, positioned before the first term, that keeps
+    /// `fst` alive itself.
+    ///
+    /// Equivalent to the `FSTEnum(FST)` constructor for a caller that cannot
+    /// lend the FST for the enumeration's lifetime, such as a terms
+    /// enumeration that outlives the call that built it. As in Java, the
+    /// constructor opens the one reader every operation reads through; it
+    /// owns a share of the FST's store
+    /// ([`FST::get_owned_bytes_reader`]).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error raised while opening the FST's byte reader.
+    pub fn new_shared(fst: std::sync::Arc<FST<O>>) -> Result<FSTEnum<'static, O>> {
+        let fst_reader = fst.get_owned_bytes_reader()?;
+        FSTEnum::with_handle(FstHandle::Shared(fst), fst_reader)
+    }
+
+    fn with_handle(fst: FstHandle<'a, O>, fst_reader: Box<dyn BytesReader + 'a>) -> Result<Self> {
+        let no_output = fst.get().outputs().no_output();
         let mut arcs: Vec<Arc<O::Output>> = vec![Arc::default(); 10];
         let output: Vec<O::Output> = vec![no_output.clone(); 10];
-        fst.get_first_arc(&mut arcs[0]);
+        fst.get().get_first_arc(&mut arcs[0]);
         Ok(Self {
             fst,
             arcs,
@@ -124,7 +147,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
     ///
     /// Equivalent to the private `FSTEnum.rewindPrefix`.
     fn rewind_prefix(&mut self, target: &mut dyn FSTEnumTarget) -> Result<()> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         if self.upto == 0 {
             self.upto = 1;
             let (follow, arc) = arc_pair(&mut self.arcs, 0, 1);
@@ -159,7 +183,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
     ///
     /// Propagates any error raised by the reader.
     pub fn do_next(&mut self, target: &mut dyn FSTEnumTarget) -> Result<()> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         if self.upto == 0 {
             self.upto = 1;
             let (follow, arc) = arc_pair(&mut self.arcs, 0, 1);
@@ -191,8 +216,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         // current term and the target.
         self.rewind_prefix(target)?;
 
-        let fst = self.fst;
-        let mut input = fst.get_bytes_reader()?;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
 
         // Now scan forward, matching the new suffix of the target.
         loop {
@@ -202,12 +227,15 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
                 (arc.bytes_per_arc(), arc.label(), arc.node_flags())
             };
             let keep_going = if bytes_per_arc != 0 && arc_label != END_LABEL {
-                // Arcs are in an array.
+                // Arcs are in an array; as Java, this step reads through a
+                // reader of its own (`FSTEnum.java:149`).
+                let mut input = fst.get_bytes_reader()?;
                 if node_flags == ARCS_FOR_DIRECT_ADDRESSING {
                     self.do_seek_ceil_array_direct_addressing(target, target_label, &mut *input)?
                 } else if node_flags == ARCS_FOR_BINARY_SEARCH {
                     self.do_seek_ceil_array_packed(target, target_label, &mut *input)?
                 } else {
+                    debug_assert!(node_flags == ARCS_FOR_CONTINUOUS);
                     self.do_seek_ceil_array_continuous(target, target_label, &mut *input)?
                 }
             } else {
@@ -226,7 +254,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         target_label: i32,
         input: &mut dyn BytesReader,
     ) -> Result<bool> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
         let target_index = target_label - self.arcs[upto].first_label();
         if target_index >= self.arcs[upto].num_arcs() {
@@ -235,10 +264,12 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         }
         if target_index < 0 {
             fst.read_arc_by_continuous(&mut self.arcs[upto], input, 0)?;
+            debug_assert!(self.arcs[upto].label() > target_label);
             self.push_first(target)?;
             return Ok(false);
         }
         fst.read_arc_by_continuous(&mut self.arcs[upto], input, target_index)?;
+        debug_assert!(self.arcs[upto].label() == target_label);
         self.accumulate_output();
         if target_label == END_LABEL {
             return Ok(false);
@@ -261,7 +292,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
     ) -> Result<bool> {
         // The array is addressed directly by label, with presence bits to
         // compute the actual arc offset.
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
         let mut target_index = target_label - self.arcs[upto].first_label();
         if target_index >= self.arcs[upto].num_arcs() {
@@ -272,6 +304,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
             target_index = -1;
         } else if BitTable::is_bit_set(target_index, &self.arcs[upto], input)? {
             fst.read_arc_by_direct_addressing(&mut self.arcs[upto], input, target_index)?;
+            debug_assert!(self.arcs[upto].label() == target_label);
             self.accumulate_output();
             if target_label == END_LABEL {
                 return Ok(false);
@@ -286,8 +319,9 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         }
         // Not found: return the next arc, the ceiling.
         let ceil_index = BitTable::next_bit_set(target_index, &self.arcs[upto], input)?;
-        debug_assert_ne!(ceil_index, -1);
+        debug_assert!(ceil_index != -1);
         fst.read_arc_by_direct_addressing(&mut self.arcs[upto], input, ceil_index)?;
+        debug_assert!(self.arcs[upto].label() > target_label);
         self.push_first(target)?;
         Ok(false)
     }
@@ -300,12 +334,19 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         input: &mut dyn BytesReader,
     ) -> Result<bool> {
         // The array is packed: use binary search to find the target.
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
         let mut idx = binary_search(fst, &self.arcs[upto], target_label)?;
         if idx >= 0 {
             // Match.
             fst.read_arc_by_index(&mut self.arcs[upto], input, idx)?;
+            debug_assert!(self.arcs[upto].arc_idx() == idx);
+            debug_assert!(
+                self.arcs[upto].label() == target_label,
+                "arc.label={} vs targetLabel={target_label} mid={idx}",
+                self.arcs[upto].label()
+            );
             self.accumulate_output();
             if target_label == END_LABEL {
                 return Ok(false);
@@ -329,6 +370,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         } else {
             // Ceiling: the arc with the least higher label.
             fst.read_arc_by_index(&mut self.arcs[upto], input, idx)?;
+            debug_assert!(self.arcs[upto].label() > target_label);
             self.push_first(target)?;
             Ok(false)
         }
@@ -341,7 +383,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         target_label: i32,
     ) -> Result<bool> {
         // Arcs are not arrayed: a linear scan is needed.
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
         let label = self.arcs[upto].label();
         if label == target_label {
@@ -383,8 +426,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         // current term and the target.
         self.rewind_prefix(target)?;
 
-        let fst = self.fst;
-        let mut input = fst.get_bytes_reader()?;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
 
         // Now scan forward, matching the new suffix of the target.
         loop {
@@ -394,12 +437,15 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
                 (arc.bytes_per_arc(), arc.label(), arc.node_flags())
             };
             let keep_going = if bytes_per_arc != 0 && arc_label != END_LABEL {
-                // Arcs are in an array.
+                // Arcs are in an array; as Java, this step reads through a
+                // reader of its own (`FSTEnum.java:345`).
+                let mut input = fst.get_bytes_reader()?;
                 if node_flags == ARCS_FOR_DIRECT_ADDRESSING {
                     self.do_seek_floor_array_direct_addressing(target, target_label, &mut *input)?
                 } else if node_flags == ARCS_FOR_BINARY_SEARCH {
                     self.do_seek_floor_array_packed(target, target_label, &mut *input)?
                 } else {
+                    debug_assert!(node_flags == ARCS_FOR_CONTINUOUS);
                     self.do_seek_floor_continuous(target, target_label, &mut *input)?
                 }
             } else {
@@ -418,7 +464,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         target_label: i32,
         input: &mut dyn BytesReader,
     ) -> Result<bool> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
         let target_index = target_label - self.arcs[upto].first_label();
         if target_index < 0 {
@@ -427,11 +474,14 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         } else if target_index >= self.arcs[upto].num_arcs() {
             // After the last arc.
             fst.read_last_arc_by_continuous(&mut self.arcs[upto], input)?;
+            debug_assert!(self.arcs[upto].label() < target_label);
+            debug_assert!(self.arcs[upto].is_last());
             self.push_last(target)?;
             return Ok(false);
         }
         // Within the label range.
         fst.read_arc_by_continuous(&mut self.arcs[upto], input, target_index)?;
+        debug_assert!(self.arcs[upto].label() == target_label);
         self.accumulate_output();
         if target_label == END_LABEL {
             return Ok(false);
@@ -454,7 +504,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
     ) -> Result<bool> {
         // The array is addressed directly by label, with presence bits to
         // compute the actual arc offset.
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
         let target_index = target_label - self.arcs[upto].first_label();
         if target_index < 0 {
@@ -463,12 +514,15 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         } else if target_index >= self.arcs[upto].num_arcs() {
             // After the last arc.
             fst.read_last_arc_by_direct_addressing(&mut self.arcs[upto], input)?;
+            debug_assert!(self.arcs[upto].label() < target_label);
+            debug_assert!(self.arcs[upto].is_last());
             self.push_last(target)?;
             return Ok(false);
         }
         // Within the label range.
         if BitTable::is_bit_set(target_index, &self.arcs[upto], input)? {
             fst.read_arc_by_direct_addressing(&mut self.arcs[upto], input, target_index)?;
+            debug_assert!(self.arcs[upto].label() == target_label);
             self.accumulate_output();
             if target_label == END_LABEL {
                 return Ok(false);
@@ -483,8 +537,13 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         }
         // Scan backwards to find a floor arc.
         let floor_index = BitTable::previous_bit_set(target_index, &self.arcs[upto], input)?;
-        debug_assert_ne!(floor_index, -1);
+        debug_assert!(floor_index != -1);
         fst.read_arc_by_direct_addressing(&mut self.arcs[upto], input, floor_index)?;
+        debug_assert!(self.arcs[upto].label() < target_label);
+        debug_assert!(
+            self.arcs[upto].is_last()
+                || fst.read_next_arc_label(&self.arcs[upto], input)? > target_label
+        );
         self.push_last(target)?;
         Ok(false)
     }
@@ -494,7 +553,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
     ///
     /// Equivalent to the private `FSTEnum.rollbackToLastForkThenPush`.
     fn rollback_to_last_fork_then_push(&mut self, target: &mut dyn FSTEnumTarget) -> Result<()> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         self.upto -= 1;
         loop {
             if self.upto == 0 {
@@ -520,7 +580,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         target_label: i32,
         input: &mut dyn BytesReader,
     ) -> Result<bool> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let mut target_label = target_label;
         loop {
             // First, walk backwards until a node is found whose first arc is
@@ -539,6 +600,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
                         } else if node_flags == ARCS_FOR_DIRECT_ADDRESSING {
                             self.find_next_floor_arc_direct_addressing(target_label, input)?;
                         } else {
+                            debug_assert!(node_flags == ARCS_FOR_CONTINUOUS);
                             self.find_next_floor_arc_continuous(target_label, input)?;
                         }
                     } else {
@@ -549,6 +611,11 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
                         }
                     }
                 }
+                debug_assert!(self.arcs[upto].label() < target_label);
+                debug_assert!(
+                    self.arcs[upto].is_last()
+                        || fst.read_next_arc_label(&self.arcs[upto], input)? >= target_label
+                );
                 self.push_last(target)?;
                 return Ok(false);
             }
@@ -570,8 +637,12 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         target_label: i32,
         input: &mut dyn BytesReader,
     ) -> Result<()> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
+        debug_assert!(self.arcs[upto].node_flags() == ARCS_FOR_DIRECT_ADDRESSING);
+        debug_assert!(self.arcs[upto].label() != END_LABEL);
+        debug_assert!(self.arcs[upto].label() == self.arcs[upto].first_label());
         if self.arcs[upto].num_arcs() > 1 {
             let target_index = target_label - self.arcs[upto].first_label();
             debug_assert!(target_index >= 0);
@@ -599,8 +670,12 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         target_label: i32,
         input: &mut dyn BytesReader,
     ) -> Result<()> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
+        debug_assert!(self.arcs[upto].node_flags() == ARCS_FOR_CONTINUOUS);
+        debug_assert!(self.arcs[upto].label() != END_LABEL);
+        debug_assert!(self.arcs[upto].label() == self.arcs[upto].first_label());
         if self.arcs[upto].num_arcs() > 1 {
             let target_index = target_label - self.arcs[upto].first_label();
             debug_assert!(target_index >= 0);
@@ -623,11 +698,15 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         target_label: i32,
         input: &mut dyn BytesReader,
     ) -> Result<()> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
+        debug_assert!(self.arcs[upto].node_flags() == ARCS_FOR_BINARY_SEARCH);
+        debug_assert!(self.arcs[upto].label() != END_LABEL);
+        debug_assert!(self.arcs[upto].arc_idx() == 0);
         if self.arcs[upto].num_arcs() > 1 {
             let idx = binary_search(fst, &self.arcs[upto], target_label)?;
-            debug_assert_ne!(idx, -1);
+            debug_assert!(idx != -1);
             if idx > 1 {
                 fst.read_arc_by_index(&mut self.arcs[upto], input, idx - 1)?;
             } else if idx < -2 {
@@ -645,13 +724,20 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         input: &mut dyn BytesReader,
     ) -> Result<bool> {
         // Arcs are a fixed array: use binary search to find the target.
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let upto = self.upto;
         let idx = binary_search(fst, &self.arcs[upto], target_label)?;
 
         if idx >= 0 {
             // Match: recurse.
             fst.read_arc_by_index(&mut self.arcs[upto], input, idx)?;
+            debug_assert!(self.arcs[upto].arc_idx() == idx);
+            debug_assert!(
+                self.arcs[upto].label() == target_label,
+                "arc.label={} vs targetLabel={target_label} mid={idx}",
+                self.arcs[upto].label()
+            );
             self.accumulate_output();
             if target_label == END_LABEL {
                 return Ok(false);
@@ -669,6 +755,15 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         } else {
             // There is a floor arc; idx is -1 - (floor + 1).
             fst.read_arc_by_index(&mut self.arcs[upto], input, -2 - idx)?;
+            debug_assert!(
+                self.arcs[upto].is_last()
+                    || fst.read_next_arc_label(&self.arcs[upto], input)? > target_label
+            );
+            debug_assert!(
+                self.arcs[upto].label() < target_label,
+                "arc.label={} vs targetLabel={target_label}",
+                self.arcs[upto].label()
+            );
             self.push_last(target)?;
             Ok(false)
         }
@@ -680,7 +775,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         target: &mut dyn FSTEnumTarget,
         target_label: i32,
     ) -> Result<bool> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let mut target_label = target_label;
         let upto = self.upto;
         let label = self.arcs[upto].label();
@@ -750,9 +846,12 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         // current term and the target.
         self.rewind_prefix(target)?;
 
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         let mut target_label = target.target_label(self.upto);
 
+        // Java declares a local `fstReader` here that shadows the field for
+        // the rest of the method (`FSTEnum.java:659`).
         let mut input = fst.get_bytes_reader()?;
 
         loop {
@@ -764,7 +863,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
             if !found {
                 // Short circuit.
                 let (follow, arc) = arc_pair(&mut self.arcs, upto - 1, upto);
-                fst.read_first_target_arc(follow, arc, &mut *self.fst_reader)?;
+                fst.read_first_target_arc(follow, arc, &mut *input)?;
                 return Ok(false);
             }
             // Match: recurse.
@@ -786,6 +885,7 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
         let upto = self.upto;
         let added = self
             .fst
+            .get()
             .outputs()
             .add(&self.output[upto - 1], self.arcs[upto].output());
         self.output[upto] = added;
@@ -810,7 +910,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
     ///
     /// Equivalent to the private `FSTEnum.pushFirst`.
     fn push_first(&mut self, target: &mut dyn FSTEnumTarget) -> Result<()> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         loop {
             self.accumulate_output();
             let upto = self.upto;
@@ -833,7 +934,8 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
     ///
     /// Equivalent to the private `FSTEnum.pushLast`.
     fn push_last(&mut self, target: &mut dyn FSTEnumTarget) -> Result<()> {
-        let fst = self.fst;
+        let fst_handle = self.fst.clone();
+        let fst = fst_handle.get();
         loop {
             let upto = self.upto;
             let label = self.arcs[upto].label();
@@ -848,6 +950,30 @@ impl<'a, O: Outputs> FSTEnum<'a, O> {
             let upto = self.upto;
             let (follow, arc) = arc_pair(&mut self.arcs, upto - 1, upto);
             fst.read_last_target_arc(follow, arc, &mut *self.fst_reader)?;
+        }
+    }
+}
+
+/// The FST an [`FSTEnum`] walks: borrowed, or shared through an `Arc`.
+enum FstHandle<'a, O: Outputs> {
+    Borrowed(&'a FST<O>),
+    Shared(std::sync::Arc<FST<O>>),
+}
+
+impl<O: Outputs> Clone for FstHandle<'_, O> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Borrowed(fst) => Self::Borrowed(fst),
+            Self::Shared(fst) => Self::Shared(std::sync::Arc::clone(fst)),
+        }
+    }
+}
+
+impl<O: Outputs> FstHandle<'_, O> {
+    fn get(&self) -> &FST<O> {
+        match self {
+            Self::Borrowed(fst) => fst,
+            Self::Shared(fst) => fst,
         }
     }
 }

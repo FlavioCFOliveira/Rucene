@@ -27,7 +27,7 @@ const NON_EMPTY: &str =
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when a term does not belong to
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a term does not belong to
 /// `field`, and propagates any I/O error raised while reading the postings.
 pub fn from_terms(
     context: &LeafReaderContext,
@@ -38,7 +38,7 @@ pub fn from_terms(
 ) -> Result<Option<Box<dyn MatchesIterator>>> {
     for term in terms {
         if term.field() != field {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Tried to generate iterator from terms in multiple fields: expected [{}] but got [{}]",
                 field,
                 term.field()
@@ -130,7 +130,9 @@ pub fn from_terms_enum(
     let mut reuse: Option<Box<dyn PostingsEnum>> = None;
     while let Some(term) = terms.next()? {
         if te.seek_exact(&term)? {
-            let mut pe = te.postings(reuse.take(), POSTINGS_ENUM_OFFSETS)?;
+            let mut pe = te
+                .postings(reuse.take(), POSTINGS_ENUM_OFFSETS)?
+                .ok_or_else(LuceneError::null_pointer)?;
             if pe.advance(doc)? == doc {
                 let first = TermMatchesIterator::new(Arc::clone(&query), pe)?;
                 return Ok(Some(Box::new(TermsEnumDisjunctionMatchesIterator {
@@ -173,7 +175,10 @@ impl TermsEnumDisjunctionMatchesIterator {
         let mut reuse: Option<Box<dyn PostingsEnum>> = None;
         while let Some(term) = self.terms.next()? {
             if self.te.seek_exact(&term)? {
-                let mut pe = self.te.postings(reuse.take(), POSTINGS_ENUM_OFFSETS)?;
+                let mut pe = self
+                    .te
+                    .postings(reuse.take(), POSTINGS_ENUM_OFFSETS)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 if pe.advance(self.doc)? == self.doc {
                     mis.push(Box::new(TermMatchesIterator::new(
                         Arc::clone(&self.query),
@@ -202,6 +207,7 @@ impl MatchesIterator for TermsEnumDisjunctionMatchesIterator {
         if self.it.is_none() {
             self.init()?;
         }
+        debug_assert!(self.it.is_some());
         match self.it.as_mut() {
             // `fromSubIterators` cannot answer `null` here: the list always
             // holds the first matching term.

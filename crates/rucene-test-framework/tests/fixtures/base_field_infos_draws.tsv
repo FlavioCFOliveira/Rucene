@@ -1,0 +1,40 @@
+# seed	method	kind	value (BaseFormatSuitesOracle, Lucene 10.5.0, JDK 25): TestFieldInfosSuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	6394803170421063016
+DEADBEEF	#counts	run=11 fail=0 assume=0	-
+DEADBEEF	testCheckIntegrityReadsAllBytes	next	8833736559842887132
+DEADBEEF	testExceptionOnCloseInput	next	5055511280303218411
+DEADBEEF	testExceptionOnCloseOutput	next	5192312690201049372
+DEADBEEF	testExceptionOnCreateOutput	next	3846267985940309103
+DEADBEEF	testExceptionOnOpenInput	next	8586928302817592974
+DEADBEEF	testImmutableAttributes	next	-796858824761170408
+DEADBEEF	testMergeStability	next	7097115897566610790
+DEADBEEF	testMultiClose	next	939768549329737948
+DEADBEEF	testOneField	next	-4728680456733587936
+DEADBEEF	testRandom	next	1160797565141576668
+DEADBEEF	testRandomExceptions	next	-697186142386607911
+1	#class	next	3571947941000288012
+1	#counts	run=11 fail=0 assume=0	-
+1	testCheckIntegrityReadsAllBytes	next	-6621761634831341859
+1	testExceptionOnCloseInput	next	4541795688542660292
+1	testExceptionOnCloseOutput	next	8276740087468317119
+1	testExceptionOnCreateOutput	next	2829712270029982800
+1	testExceptionOnOpenInput	next	9177029277316384723
+1	testImmutableAttributes	next	2192439097438151001
+1	testMergeStability	next	-5159474936347104739
+1	testMultiClose	next	5023695660192295173
+1	testOneField	next	5839296291888030622
+1	testRandom	next	-954886265858278137
+1	testRandomExceptions	next	3667557543962541175
+C0FFEE	#class	next	-8044239526599251368
+C0FFEE	#counts	run=11 fail=0 assume=0	-
+C0FFEE	testCheckIntegrityReadsAllBytes	next	2824439262394082072
+C0FFEE	testExceptionOnCloseInput	next	-6391616294239049264
+C0FFEE	testExceptionOnCloseOutput	next	1524290053079046172
+C0FFEE	testExceptionOnCreateOutput	next	-7843676578348099794
+C0FFEE	testExceptionOnOpenInput	next	901765240175149506
+C0FFEE	testImmutableAttributes	next	-6814397396779623196
+C0FFEE	testMergeStability	next	8488212713076370617
+C0FFEE	testMultiClose	next	39453275133403513
+C0FFEE	testOneField	next	6660699779873167064
+C0FFEE	testRandom	next	-1259947639146734315
+C0FFEE	testRandomExceptions	next	-2118277062642448578

@@ -366,7 +366,8 @@ pub use impacts_disi::ImpactsDISI;
 pub use index_or_doc_values_query::IndexOrDocValuesQuery;
 pub use index_priority_queue::{IndexOrder, IndexPriorityQueue};
 pub use index_searcher::{
-    IndexSearcher, LeafReaderContextPartition, LeafSlice, TooManyClauses, TooManyNestedClauses,
+    IndexSearcher, IndexSearcherOverrides, LeafReaderContextPartition, LeafSlice, TooManyClauses,
+    TooManyNestedClauses,
 };
 pub use index_sort_sorted_numeric_doc_values_range_query::IndexSortSortedNumericDocValuesRangeQuery;
 pub use indri_and_query::IndriAndQuery;
@@ -393,8 +394,8 @@ pub use long_values_source::{
     ConstantLongValuesSource, LongValuesComparatorSource, LongValuesSource,
 };
 pub use lru_query_cache::{
-    min_segment_size_predicate, CacheAndCount, LRUQueryCache, LeavesToCache,
-    HASHTABLE_RAM_BYTES_PER_ENTRY, LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY,
+    min_segment_size_predicate, CacheAndCount, LRUQueryCache, LRUQueryCacheOverrides,
+    LeavesToCache, HASHTABLE_RAM_BYTES_PER_ENTRY, LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY,
 };
 pub use match_all_docs_query::MatchAllDocsQuery;
 pub use match_no_docs_query::MatchNoDocsQuery;
@@ -456,7 +457,7 @@ pub use refresh_commit_supplier::{LatestCommitSupplier, RefreshCommitSupplier};
 pub use regexp_query::{DefaultProvider, RegexpQuery};
 pub use req_excl_bulk_scorer::ReqExclBulkScorer;
 pub use req_excl_scorer::ReqExclScorer;
-pub use req_opt_sum_scorer::ReqOptSumScorer;
+pub use req_opt_sum_scorer::{ReqOptSumScorer, ReqOptSumScorerOverrides};
 pub use rescore_top_n_query::RescoreTopNQuery;
 pub use rescorer::Rescorer;
 pub use scorable::{ChildScorable, FilterScorable, Scorable, SimpleScorable};
@@ -466,7 +467,8 @@ pub use score_caching_wrapping_scorer::{
 pub use score_doc::ScoreDoc;
 pub use score_mode::ScoreMode;
 pub use scorer::{
-    into_scorer_iterator, FilterScorer, Scorer, ScorerAsIterator, ScorerAsTwoPhaseIterator,
+    into_scorer_iterator, FilterScorer, Scorer, ScorerAsIterator, ScorerAsScorable,
+    ScorerAsTwoPhaseIterator,
 };
 pub use scorer_supplier::ScorerSupplier;
 pub use scorer_util::{DocAndScoreAccBuffer, FilterBits, LikelyLiveDocs, ScorerUtil};
@@ -487,7 +489,10 @@ pub use synonym_query::{
     merge_impacts as merge_synonym_impacts, Builder as SynonymQueryBuilder, FreqBoostTermScorer,
     SynonymImpactsSource, SynonymQuery, SynonymWeight, TermAndBoost,
 };
-pub use task_executor::{Command, Executor, RejectedExecutionException, TaskExecutor};
+pub use task_executor::{
+    Callable, Command, Executor, Future, FutureTask, RejectedExecutionException, TaskExecutor,
+    TaskValue,
+};
 pub use term_collecting_rewrite::{
     collect_terms as collect_multi_term_terms, TermCollectingRewrite, TermCollector,
     TopLevelBuilder,

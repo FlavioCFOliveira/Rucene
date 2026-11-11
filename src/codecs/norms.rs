@@ -42,7 +42,7 @@ pub trait NormsProducer: Send + Sync + fmt::Debug {
     fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>>;
 
     /// Closes this producer, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 }
 
 // -----------------------------------------------------------------------------
@@ -150,7 +150,7 @@ impl NormsProducer for EmptyNormsProducer {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -220,7 +220,7 @@ mod tests {
     fn empty_norms_producer_returns_empty_values() {
         use crate::search::DocIdSetIterator;
 
-        let mut producer = EmptyNormsProducer;
+        let producer = EmptyNormsProducer;
         let field = FieldInfo::default();
         let mut values = producer.get_norms(&field).unwrap().unwrap();
         assert_eq!(values.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
@@ -286,7 +286,7 @@ impl NormsProducer for MergedNormsProducer<'_> {
     fn get_norms(&self, field_info: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
             if field_info.name != self.merge_field_info.name {
-                return Err(LuceneError::IllegalArgument("wrong fieldInfo".to_string()));
+                return Err(LuceneError::illegal_argument("wrong fieldInfo".to_string()));
             }
 
             let mut subs = Vec::new();
@@ -310,6 +310,7 @@ impl NormsProducer for MergedNormsProducer<'_> {
                 let Some(values) = norms_producer.get_norms(reader_field_info)? else {
                     continue;
                 };
+                debug_assert!(values.doc_id() == -1);
                 subs.push(NumericDocValuesSub {
                     doc_map: Arc::clone(&self.merge_state.doc_maps[i]),
                     values,
@@ -327,12 +328,12 @@ impl NormsProducer for MergedNormsProducer<'_> {
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the merged norms producer has no merge instance".to_string(),
         ))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

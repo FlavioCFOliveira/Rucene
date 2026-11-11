@@ -15,6 +15,39 @@ use crate::index::{BinaryDocValues, DocValues, LeafReader};
 use crate::search::sort::{MissingValue, SortField, SortFieldKind, SortFieldType};
 use crate::store::{DataInput, DataOutput};
 
+/// The body of a subclass's override of the protected
+/// `BinarySortField.getSortKeyDocValues(LeafReader)`.
+///
+/// **Divergence from Lucene 10.5.0.** Java subclasses `BinarySortField` and
+/// overrides the method; a Rucene sort field is one value type, so the
+/// override travels with it. Equality ignores it: Java's
+/// `BinarySortField.equals` compares the run-time class and the provider
+/// name, and a subclass is identified here by the provider name it passes.
+#[derive(Clone)]
+pub struct SortKeySource(
+    pub  Arc<
+        dyn Fn(&BinarySortField, &dyn LeafReader) -> Result<Box<dyn BinaryDocValues>> + Send + Sync,
+    >,
+);
+
+impl PartialEq for SortKeySource {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SortKeySource {}
+
+impl std::hash::Hash for SortKeySource {
+    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
+}
+
+impl fmt::Debug for SortKeySource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SortKeySource")
+    }
+}
+
 /// Sorts by the raw bytes of a binary doc-values field.
 ///
 /// Equivalent to `org.apache.lucene.search.BinarySortField`, a subclass of
@@ -69,7 +102,7 @@ impl BinarySortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when the missing value is neither of the two string
     /// sentinels, and propagates the [`SortField`] construction error, which
     /// cannot trigger for a named field.
@@ -79,11 +112,32 @@ impl BinarySortField {
         missing_value: Option<MissingValue>,
         provider_name: &str,
     ) -> Result<Self> {
+        Self::with_sort_key(field, reverse, missing_value, provider_name, None)
+    }
+
+    /// The protected constructor
+    /// `BinarySortField(String, boolean, Object, String)` of a subclass that
+    /// also overrides `getSortKeyDocValues(LeafReader)` with `sort_key`.
+    ///
+    /// Java subclasses `BinarySortField` and overrides the protected method;
+    /// the port carries the override with the sort field (see
+    /// [`SortKeySource`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`with_provider_name`](Self::with_provider_name).
+    pub fn with_sort_key(
+        field: &str,
+        reverse: bool,
+        missing_value: Option<MissingValue>,
+        provider_name: &str,
+        sort_key: Option<SortKeySource>,
+    ) -> Result<Self> {
         if !matches!(
             missing_value,
             None | Some(MissingValue::StringFirst) | Some(MissingValue::StringLast)
         ) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "missing value for BinarySortField must be null, STRING_FIRST or STRING_LAST"
                     .to_string(),
             ));
@@ -96,6 +150,7 @@ impl BinarySortField {
                 missing_value,
                 SortFieldKind::Binary {
                     provider_name: provider_name.to_string(),
+                    sort_key,
                 },
             )?,
         })
@@ -116,11 +171,11 @@ impl BinarySortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sort field is not one
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sort field is not one
     /// of this kind.
     pub fn from_sort_field(sort_field: SortField) -> Result<Self> {
         if !matches!(sort_field.kind(), SortFieldKind::Binary { .. }) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "expected a BinarySortField, got {sort_field}"
             )));
         }
@@ -143,7 +198,7 @@ impl BinarySortField {
     /// Equivalent to reading the `private final String providerName` field.
     pub fn provider_name(&self) -> &str {
         match self.sort_field.kind() {
-            SortFieldKind::Binary { provider_name } => provider_name,
+            SortFieldKind::Binary { provider_name, .. } => provider_name,
             _ => Self::NAME,
         }
     }
@@ -161,12 +216,19 @@ impl BinarySortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_sort_key_doc_values(
         &self,
         reader: &dyn LeafReader,
     ) -> Result<Box<dyn BinaryDocValues>> {
+        if let SortFieldKind::Binary {
+            sort_key: Some(sort_key),
+            ..
+        } = self.sort_field.kind()
+        {
+            return (sort_key.0)(self, reader);
+        }
         DocValues::get_binary(reader, self.get_field().unwrap_or(""))
     }
 
@@ -311,6 +373,7 @@ impl crate::index::index_sorter::SortFieldProvider for Provider {
         sort_field: &crate::search::SortField,
         output: &mut dyn crate::store::DataOutput,
     ) -> Result<()> {
+        debug_assert!(matches!(sort_field.kind(), SortFieldKind::Binary { .. }));
         BinarySortField::from_sort_field(sort_field.clone())?.serialize(output)
     }
 }

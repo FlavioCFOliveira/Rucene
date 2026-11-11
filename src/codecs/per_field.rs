@@ -19,16 +19,14 @@ use crate::internal::hppc::IntObjectHashMap;
 use crate::util::java_collections::JavaHashMap;
 use crate::util::IOUtils;
 
-use super::doc_values::{
-    doc_values_for_name, DocValuesConsumer, DocValuesFormat, DocValuesProducer,
-};
+use super::doc_values::{doc_values_lookup, DocValuesConsumer, DocValuesFormat, DocValuesProducer};
 use super::knn_vectors::{
-    knn_vectors_for_name, ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnCollector,
+    knn_vectors_lookup, ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnCollector,
     KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
 use super::norms::NormsProducer;
 use super::postings::{
-    postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat, Terms,
+    postings_lookup, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat, Terms,
 };
 use super::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
@@ -103,6 +101,12 @@ impl PerFieldPostingsFormat {
 }
 
 impl PostingsFormat for PerFieldPostingsFormat {
+    /// This format answers with itself: Java's `instanceof PerFieldPostingsFormat` on it is
+    /// `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         PER_FIELD_POSTINGS_NAME
     }
@@ -117,6 +121,17 @@ impl PostingsFormat for PerFieldPostingsFormat {
     fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>> {
         Ok(Box::new(FieldsReader::new(state)?))
     }
+}
+
+/// The identity of a format instance: Java keys the per-field writers' maps by
+/// the format object (`Map<PostingsFormat, FieldsGroup>`,
+/// `Map<DocValuesFormat, ConsumerAndSuffix>`), whose `equals` is identity, so
+/// two instances of one format name get two suffixes
+/// (`PerFieldPostingsFormat.java:207-245`, `PerFieldDocValuesFormat.java:186-230`).
+/// The group holds a clone of the `Arc`, so the address cannot be reused while
+/// the key is in use.
+fn format_identity<T: ?Sized>(format: &Arc<T>) -> usize {
+    Arc::as_ptr(format) as *const () as usize
 }
 
 fn get_suffix(format_name: &str, suffix: i32) -> String {
@@ -188,9 +203,9 @@ impl<'a> FieldsWriter<'a> {
     fn build_groups(
         &mut self,
         field_names: impl Iterator<Item = impl AsRef<str>>,
-    ) -> Result<HashMap<String, FieldsGroup<'a>>> {
+    ) -> Result<HashMap<usize, FieldsGroup<'a>>> {
         let mut suffixes: HashMap<String, i32> = HashMap::new();
-        let mut groups: HashMap<String, FieldsGroup<'a>> = HashMap::new();
+        let mut groups: HashMap<usize, FieldsGroup<'a>> = HashMap::new();
 
         for field_ref in field_names {
             let field = field_ref.as_ref();
@@ -199,32 +214,32 @@ impl<'a> FieldsWriter<'a> {
                 .field_infos
                 .field_info(field)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!("field {} not found", field))
+                    LuceneError::illegal_argument(format!("field {} not found", field))
                 })?;
             let format = (self.resolver)(field);
             let format_name = format.name().to_string();
+            let identity = format_identity(&format);
 
-            if !groups.contains_key(&format_name) {
-                let suffix = suffixes.get(&format_name).copied().unwrap_or(0);
-                suffixes.insert(format_name.clone(), suffix + 1);
-                let segment_suffix = get_full_segment_suffix_postings(
-                    field,
-                    &self.write_state.segment_suffix,
-                    &get_suffix(&format_name, suffix),
-                )?;
-                let state = self.write_state.with_new_suffix(segment_suffix);
-                groups.insert(
-                    format_name.clone(),
-                    FieldsGroup {
+            let group = match groups.entry(identity) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    // First time we are seeing this format; create a new instance
+                    let suffix = suffixes.get(&format_name).copied().unwrap_or(0);
+                    suffixes.insert(format_name.clone(), suffix + 1);
+                    let segment_suffix = get_full_segment_suffix_postings(
+                        field,
+                        &self.write_state.segment_suffix,
+                        &get_suffix(&format_name, suffix),
+                    )?;
+                    let state = self.write_state.with_new_suffix(segment_suffix);
+                    entry.insert(FieldsGroup {
                         suffix,
                         fields: Vec::new(),
                         format: Arc::clone(&format),
                         state,
-                    },
-                );
-            }
-
-            let group = groups.get_mut(&format_name).expect("group just inserted");
+                    })
+                }
+            };
             group.fields.push(field.to_string());
             field_info.put_attribute(PER_FIELD_POSTINGS_FORMAT_KEY, &format_name);
             field_info.put_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY, group.suffix.to_string());
@@ -250,7 +265,7 @@ impl<'a> FieldsWriter<'a> {
     /// succeeded.
     fn run_groups(
         &mut self,
-        groups: &HashMap<String, FieldsGroup<'a>>,
+        groups: &HashMap<usize, FieldsGroup<'a>>,
         mut work: impl FnMut(&mut dyn FieldsConsumer, &FieldsGroup<'a>) -> Result<()>,
     ) -> Result<()> {
         let mut outcome = Ok(());
@@ -408,14 +423,11 @@ impl FieldsReader {
         let result = (|| -> Result<()> {
             for fi in read_state.field_infos.iter() {
                 if fi.index_options != IndexOptions::NONE {
-                    let format_name =
-                        fi.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY)
-                            .ok_or_else(|| {
-                                LuceneError::illegal_state(format!(
-                            "missing attribute: {PER_FIELD_POSTINGS_FORMAT_KEY} for field: {}",
-                            fi.name
-                        ))
-                            })?;
+                    // null formatName means the field is in fieldInfos, but has no postings!
+                    // (`PerFieldPostingsFormat.java:305-307`)
+                    let Some(format_name) = fi.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY) else {
+                        continue;
+                    };
                     let suffix =
                         fi.get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY)
                             .ok_or_else(|| {
@@ -424,11 +436,9 @@ impl FieldsReader {
                             fi.name
                         ))
                             })?;
-                    let format = postings_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "unknown postings format: {format_name}"
-                        ))
-                    })?;
+                    // `PostingsFormat.forName(formatName)`: the loader's
+                    // `IllegalArgumentException` for an unknown name.
+                    let format = postings_lookup(&format_name)?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
                         LuceneError::illegal_state(format!(
                             "invalid postings suffix for field \"{}\": {suffix}",
@@ -518,6 +528,12 @@ impl FieldsProducer for FieldsReader {
         for (suffix, producer) in self.formats.iter() {
             formats.insert(suffix.clone(), producer.get_merge_instance()?);
         }
+        // `assert producer != null` (PerFieldPostingsFormat.java:289): every field's producer has
+        // its merge-instance replacement.
+        debug_assert!(self
+            .fields
+            .values()
+            .all(|suffix| formats.contains_key(suffix)));
         Ok(Box::new(FieldsReader {
             formats,
             fields: self.fields.clone(),
@@ -526,12 +542,8 @@ impl FieldsProducer for FieldsReader {
 
     /// Equivalent to `PerFieldPostingsFormat.FieldsReader.close()`
     /// (`PerFieldPostingsFormat.java:350-353`): `IOUtils.close(formats.values())`.
-    fn close(&mut self) -> Result<()> {
-        IOUtils::close(
-            self.formats
-                .iter_mut()
-                .map(|(_, p)| Some(move || p.close())),
-        )
+    fn close(&self) -> Result<()> {
+        IOUtils::close(self.formats.iter().map(|(_, p)| Some(move || p.close())))
     }
 }
 
@@ -607,6 +619,12 @@ impl PerFieldDocValuesFormat {
 }
 
 impl DocValuesFormat for PerFieldDocValuesFormat {
+    /// This format answers with itself: Java's `instanceof PerFieldDocValuesFormat` on it is
+    /// `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         PER_FIELD_DOC_VALUES_NAME
     }
@@ -635,7 +653,10 @@ struct ConsumerAndSuffix<'a> {
 struct DvFieldsWriter<'a> {
     segment_write_state: SegmentWriteState<'a>,
     resolver: Arc<dyn Fn(&str) -> Arc<dyn DocValuesFormat> + Send + Sync>,
-    formats: HashMap<String, ConsumerAndSuffix<'a>>,
+    /// Keyed by the format instance, as Java's `formats` map (see
+    /// [`format_identity`]).
+    formats: HashMap<usize, ConsumerAndSuffix<'a>>,
+    /// The last suffix used per format name, as Java's `suffixes` map.
     suffixes: HashMap<String, i32>,
 }
 
@@ -705,9 +726,12 @@ impl<'a> DvFieldsWriter<'a> {
             } else {
                 field.get_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY)
             };
-            format_name
-                .and_then(|name| doc_values_for_name(&name))
-                .or_else(|| Some((self.resolver)(&field.name)))
+            // `DocValuesFormat.forName(formatName)` throws for an unknown
+            // name (`PerFieldDocValuesFormat.java:174-177`).
+            match format_name {
+                Some(name) => Some(doc_values_lookup(&name)?),
+                None => Some((self.resolver)(&field.name)),
+            }
         } else {
             Some((self.resolver)(&field.name))
         }
@@ -720,23 +744,26 @@ impl<'a> DvFieldsWriter<'a> {
 
         let format_name = format.name().to_string();
         self.record_attribute(field, PER_FIELD_DOC_VALUES_FORMAT_KEY, &format_name);
+        let identity = format_identity(&format);
 
-        if !self.formats.contains_key(&format_name) {
+        if let std::collections::hash_map::Entry::Vacant(vacant) = self.formats.entry(identity) {
+            // First time we are seeing this format; create a new instance
             let suffix = if field.doc_values_gen != -1 {
                 let suffix_att = if ignore_current_format {
                     None
                 } else {
                     field.get_attribute(PER_FIELD_DOC_VALUES_SUFFIX_KEY)
                 };
+                // even when dvGen is != -1, it can still be a new field, that never
+                // existed in the segment, and therefore doesn't have the recorded
+                // attributes yet.
                 suffix_att.and_then(|s| s.parse::<i32>().ok())
             } else {
                 None
             }
-            .unwrap_or_else(|| {
-                let next = self.suffixes.get(&format_name).copied().unwrap_or(0);
-                self.suffixes.insert(format_name.clone(), next + 1);
-                next
-            });
+            // bump the suffix
+            .unwrap_or_else(|| self.suffixes.get(&format_name).map_or(0, |s| s + 1));
+            self.suffixes.insert(format_name.clone(), suffix);
 
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
@@ -744,19 +771,19 @@ impl<'a> DvFieldsWriter<'a> {
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let consumer = format.fields_consumer(&state)?;
-            self.formats.insert(
-                format_name.clone(),
-                ConsumerAndSuffix {
-                    suffix,
-                    consumer,
-                    _phantom: std::marker::PhantomData,
-                },
-            );
+            vacant.insert(ConsumerAndSuffix {
+                suffix,
+                consumer,
+                _phantom: std::marker::PhantomData,
+            });
         }
 
+        // `assert suffixes.containsKey(formatName)` (`PerFieldDocValuesFormat.java:229`),
+        // checked on both branches: the new-instance branch has just inserted it.
+        debug_assert!(self.suffixes.contains_key(&format_name));
         let entry = self
             .formats
-            .get_mut(&format_name)
+            .get_mut(&identity)
             .expect("consumer just inserted");
         let suffix = entry.suffix.to_string();
         // `entry` borrows `self.formats` mutably, so the shared field info is
@@ -765,9 +792,22 @@ impl<'a> DvFieldsWriter<'a> {
         self.record_shared_attribute(&field.name, PER_FIELD_DOC_VALUES_SUFFIX_KEY, &suffix);
         Ok(&mut self
             .formats
-            .get_mut(&format_name)
+            .get_mut(&identity)
             .expect("consumer just inserted")
             .consumer)
+    }
+
+    /// The key of the consumer `get_instance_with_ignore` returned for
+    /// `field` last: the identity of the format it resolved.
+    fn instance_key(&mut self, field: &FieldInfo, ignore_current_format: bool) -> Result<usize> {
+        let consumer: *const (dyn DocValuesConsumer + 'a) =
+            &**self.get_instance_with_ignore(field, ignore_current_format)?;
+        Ok(self
+            .formats
+            .iter()
+            .find(|(_, entry)| std::ptr::addr_eq(&*entry.consumer, consumer))
+            .map(|(key, _)| *key)
+            .expect("INVARIANT: the consumer was just returned from `formats`"))
     }
 }
 
@@ -815,41 +855,28 @@ impl<'a> DocValuesConsumer for DvFieldsWriter<'a> {
     }
 
     fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
-        let mut consumers_to_fields: HashMap<String, Vec<String>> = HashMap::new();
+        // `IdentityHashMap<DocValuesConsumer, Collection<String>>`: one
+        // consumer per format instance.
+        let mut consumers_to_fields: HashMap<usize, Vec<String>> = HashMap::new();
 
+        // Group each consumer by the fields it handles
         for fi in merge_state.merge_field_infos.iter() {
             if fi.doc_values_type == DocValuesType::NONE {
                 continue;
             }
-            let consumer_key = {
-                // Ensure the concrete consumer for this field exists and record
-                // the chosen format name on the field info.
-                let _ = self.get_instance_with_ignore(fi, true)?;
-                let format_name = fi
-                    .get_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY)
-                    .ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "missing attribute: {PER_FIELD_DOC_VALUES_FORMAT_KEY} for field: {}",
-                            fi.name
-                        ))
-                    })?;
-                if !self.formats.contains_key(&format_name) {
-                    return Err(LuceneError::illegal_state(format!(
-                        "consumer missing for format {format_name}"
-                    )));
-                }
-                format_name
-            };
+            // merge should ignore current format for the fields being merged
+            let consumer_key = self.instance_key(fi, true)?;
             consumers_to_fields
                 .entry(consumer_key)
                 .or_default()
                 .push(fi.name.clone());
         }
 
-        for (format_name, fields) in consumers_to_fields {
+        // Delegate the merge to the appropriate consumer
+        for (consumer_key, fields) in consumers_to_fields {
             let restricted = PerFieldMergeState::restrict_fields(merge_state, &fields)?;
             self.formats
-                .get_mut(&format_name)
+                .get_mut(&consumer_key)
                 .expect("consumer present")
                 .consumer
                 .merge(&restricted)?;
@@ -902,11 +929,9 @@ impl DvFieldsReader {
                             fi.name
                         ))
                         })?;
-                    let format = doc_values_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "unknown doc-values format: {format_name}"
-                        ))
-                    })?;
+                    // `DocValuesFormat.forName(formatName)`: the loader's
+                    // `IllegalArgumentException` for an unknown name.
+                    let format = doc_values_lookup(&format_name)?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
                         LuceneError::illegal_state(format!(
                             "invalid doc-values suffix for field \"{}\": {suffix}",
@@ -941,7 +966,7 @@ impl DvFieldsReader {
 
     fn producer_for(&self, field: &FieldInfo) -> Result<&(dyn DocValuesProducer + '_)> {
         let suffix = self.fields.get(&field.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "field \"{}\" has no doc-values producer",
                 field.name
             ))
@@ -1056,6 +1081,12 @@ impl DocValuesProducer for DvFieldsReader {
         for (suffix, producer) in self.formats.iter() {
             formats.insert(suffix.clone(), producer.get_merge_instance()?);
         }
+        // `assert producer != null` (PerFieldDocValuesFormat.java:276): every field's producer has
+        // its merge-instance replacement.
+        debug_assert!(self
+            .fields
+            .values()
+            .all(|suffix| formats.contains_key(suffix)));
         Ok(Box::new(DvFieldsReader {
             formats,
             fields: self.fields.clone(),
@@ -1064,12 +1095,8 @@ impl DocValuesProducer for DvFieldsReader {
 
     /// Equivalent to `PerFieldDocValuesFormat.FieldsReader.close()`
     /// (`PerFieldDocValuesFormat.java:354-357`): `IOUtils.close(formats.values())`.
-    fn close(&mut self) -> Result<()> {
-        IOUtils::close(
-            self.formats
-                .iter_mut()
-                .map(|(_, p)| Some(move || p.close())),
-        )
+    fn close(&self) -> Result<()> {
+        IOUtils::close(self.formats.iter().map(|(_, p)| Some(move || p.close())))
     }
 }
 
@@ -1161,11 +1188,20 @@ impl KnnVectorsFormat for PerFieldKnnVectorsFormat {
         self.get_knn_vectors_format_for_field(field_name)
             .get_max_dimensions(field_name)
     }
+
+    /// This format answers with itself: Java's `instanceof
+    /// PerFieldKnnVectorsFormat` on it is `true`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 struct WriterAndSuffix {
     suffix: i32,
     writer: Box<dyn KnnVectorsWriter>,
+    /// The format the writer came from, held so that its address — the key
+    /// of [`KnnFieldsWriter::formats`] — cannot be reused while it is a key.
+    _format: Arc<dyn KnnVectorsFormat>,
 }
 
 /// Equivalent to `PerFieldKnnVectorsFormat.FieldsWriter`.
@@ -1180,7 +1216,12 @@ struct WriterAndSuffix {
 struct KnnFieldsWriter {
     segment_write_state: OwnedSegmentWriteState,
     resolver: Arc<dyn Fn(&str) -> Arc<dyn KnnVectorsFormat> + Send + Sync>,
-    formats: HashMap<String, WriterAndSuffix>,
+    /// Keyed by the format instance, as Java's `Map<KnnVectorsFormat,
+    /// WriterAndSuffix> formats` (`PerFieldKnnVectorsFormat.java:103`), whose
+    /// keys compare by identity (see [`format_identity`]): two instances of
+    /// one format name get two writers and two suffixes (rmp #228).
+    formats: HashMap<usize, WriterAndSuffix>,
+    /// The last suffix used per format name, as Java's `suffixes` map.
     suffixes: HashMap<String, i32>,
 }
 
@@ -1212,23 +1253,33 @@ impl KnnFieldsWriter {
         let format_name = format.name().to_string();
 
         field.put_attribute(PER_FIELD_KNN_VECTORS_FORMAT_KEY, &format_name);
+        let identity = format_identity(&format);
 
-        if !self.formats.contains_key(&format_name) {
-            let suffix = self.suffixes.get(&format_name).copied().unwrap_or(0);
-            self.suffixes.insert(format_name.clone(), suffix + 1);
+        if !self.formats.contains_key(&identity) {
+            // First time we are seeing this format; create a new instance
+            let suffix = self.suffixes.get(&format_name).map_or(0, |s| s + 1);
+            self.suffixes.insert(format_name.clone(), suffix);
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
                 &get_suffix(&format_name, suffix),
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let writer = format.fields_writer(&state)?;
-            self.formats
-                .insert(format_name.clone(), WriterAndSuffix { suffix, writer });
+            self.formats.insert(
+                identity,
+                WriterAndSuffix {
+                    suffix,
+                    writer,
+                    _format: Arc::clone(&format),
+                },
+            );
         }
 
+        // we've already seen this format, so just grab its suffix
+        debug_assert!(self.suffixes.contains_key(&format_name));
         let entry = self
             .formats
-            .get_mut(&format_name)
+            .get_mut(&identity)
             .expect("writer just inserted");
         field.put_attribute(PER_FIELD_KNN_VECTORS_SUFFIX_KEY, entry.suffix.to_string());
         Ok(&mut entry.writer)
@@ -1334,8 +1385,10 @@ impl KnnFieldsReader {
     /// # Errors
     ///
     /// Propagates the error of a delegate reader, after closing the readers
-    /// already opened, and returns [`LuceneError::IllegalState`] when a vector
-    /// field lacks its format or suffix attribute or names an unknown format.
+    /// already opened, and returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a vector
+    /// field with a format attribute lacks its suffix attribute or names an
+    /// unknown format. A vector field without a format attribute is skipped,
+    /// as Java skips it.
     pub fn new(read_state: &SegmentReadState) -> Result<Self> {
         let mut formats: JavaHashMap<Box<dyn KnnVectorsReader>> = JavaHashMap::new();
         let mut fields: IntObjectHashMap<String> = IntObjectHashMap::new();
@@ -1345,14 +1398,12 @@ impl KnnFieldsReader {
         let result = (|| -> Result<()> {
             for fi in read_state.field_infos.iter() {
                 if fi.has_vector_values() {
-                    let format_name = fi
-                        .get_attribute(PER_FIELD_KNN_VECTORS_FORMAT_KEY)
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(format!(
-                            "missing attribute: {PER_FIELD_KNN_VECTORS_FORMAT_KEY} for field: {}",
-                            fi.name
-                        ))
-                        })?;
+                    // null formatName means the field is in fieldInfos, but
+                    // has no vectors! (`PerFieldKnnVectorsFormat.java:215-216`)
+                    let Some(format_name) = fi.get_attribute(PER_FIELD_KNN_VECTORS_FORMAT_KEY)
+                    else {
+                        continue;
+                    };
                     let suffix = fi
                         .get_attribute(PER_FIELD_KNN_VECTORS_SUFFIX_KEY)
                         .ok_or_else(|| {
@@ -1361,11 +1412,9 @@ impl KnnFieldsReader {
                             fi.name
                         ))
                         })?;
-                    let format = knn_vectors_for_name(&format_name).ok_or_else(|| {
-                        LuceneError::illegal_state(format!(
-                            "unknown KNN-vectors format: {format_name}"
-                        ))
-                    })?;
+                    // `KnnVectorsFormat.forName(formatName)`: the loader's
+                    // `IllegalArgumentException` for an unknown name.
+                    let format = knn_vectors_lookup(&format_name)?;
                     let suffix_num = suffix.parse::<i32>().map_err(|_| {
                         LuceneError::illegal_state(format!(
                             "invalid KNN-vectors suffix for field \"{}\": {suffix}",
@@ -1407,7 +1456,7 @@ impl KnnFieldsReader {
 
     fn reader_for(&self, field: &FieldInfo) -> Result<&(dyn KnnVectorsReader + '_)> {
         let suffix = self.fields.get(field.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "field \"{}\" has no KNN-vectors reader",
                 field.name
             ))
@@ -1587,7 +1636,7 @@ impl KnnVectorsReader for KnnFieldsReader {
     /// (`PerFieldKnnVectorsFormat.java:335-341`): `IOUtils.close(readers)`
     /// over `fields.values()`, one reader per field, so a reader several
     /// fields share is closed once for each of them.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         // `for (ObjectCursor<KnnVectorsReader> cursor : fields.values())
         // readers.add(cursor.value);`, in the map's own iteration order.
         let suffixes: Vec<&String> = self
@@ -1596,10 +1645,9 @@ impl KnnVectorsReader for KnnFieldsReader {
             .into_iter()
             .map(|cursor| cursor.value)
             .collect();
-        let formats = std::cell::RefCell::new(&mut self.formats);
+        let formats = &self.formats;
         IOUtils::close(suffixes.into_iter().map(|suffix| {
-            let formats = &formats;
-            Some(move || match formats.borrow_mut().get_mut(suffix) {
+            Some(move || match formats.get(suffix) {
                 Some(reader) => reader.close(),
                 None => Ok(()),
             })
@@ -1701,7 +1749,7 @@ impl Fields for FilterFieldsProducer {
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
         if !self.filtered.iter().any(|name| name == field) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "The field named '{field}' is not accessible in the current merge context, \
                  available ones are: [{}]",
                 self.filtered.join(", ")
@@ -1730,7 +1778,7 @@ impl FieldsProducer for FilterFieldsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -1739,6 +1787,7 @@ impl FieldsProducer for FilterFieldsProducer {
 mod tests {
     use super::*;
     use crate::codecs::stub::FieldInfos;
+    use crate::error::LuceneErrorKind;
     use crate::index::{IndexOptions, SegmentInfo};
 
     fn write_state() -> SegmentWriteState<'static> {
@@ -1829,7 +1878,7 @@ mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -1842,7 +1891,7 @@ mod tests {
         let mut consumer = format.fields_consumer(&write_state()).unwrap();
         consumer.close().unwrap();
 
-        let mut producer = format.fields_producer(&read_state()).unwrap();
+        let producer = format.fields_producer(&read_state()).unwrap();
         producer.close().unwrap();
     }
 
@@ -2150,7 +2199,10 @@ mod tests {
         assert!(producer.terms("title").unwrap().is_none());
         assert!(matches!(
             producer.terms("body"),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(restricted.fields_producers[1].is_none());
     }
@@ -2191,6 +2243,7 @@ mod tests {
 mod close_family_tests {
     use super::*;
     use crate::codecs::postings::{Fields, Terms};
+    use crate::error::LuceneErrorKind;
     use std::sync::Mutex;
 
     /// A sub-format reader or writer that records its `close()` and fails it
@@ -2206,7 +2259,9 @@ mod close_family_tests {
         fn record(&self) -> Result<()> {
             self.log.lock().unwrap().push(self.name);
             if self.fail {
-                return Err(LuceneError::Io(std::io::Error::other(self.name)));
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other(self.name),
+                )));
             }
             Ok(())
         }
@@ -2231,7 +2286,7 @@ mod close_family_tests {
         fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
             Ok(Box::new(self.clone()))
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.record()
         }
     }
@@ -2279,7 +2334,7 @@ mod close_family_tests {
         fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
             Ok(Box::new(self.clone()))
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.record()
         }
     }
@@ -2346,7 +2401,7 @@ mod close_family_tests {
         fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
             Ok(Box::new(self.clone()))
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.record()
         }
     }
@@ -2356,7 +2411,7 @@ mod close_family_tests {
             &mut self,
             _field_info: &FieldInfo,
         ) -> Result<super::super::knn_vectors::FieldVectorWriter> {
-            Err(LuceneError::UnsupportedOperation("test".to_string()))
+            Err(LuceneError::unsupported_operation("test".to_string()))
         }
         fn flush(
             &mut self,
@@ -2412,7 +2467,10 @@ mod close_family_tests {
     /// The message of the `IOException` a [`Closing`] raised.
     fn surfaced(error: LuceneError) -> String {
         match error {
-            LuceneError::Io(e) => e.to_string(),
+            LuceneError {
+                kind: LuceneErrorKind::Io(e),
+                ..
+            } => e.to_string(),
             other => format!("{other:?}"),
         }
     }
@@ -2479,7 +2537,7 @@ mod close_family_tests {
                 Box::new(closing) as Box<dyn FieldsProducer>,
             );
         }
-        let mut reader = FieldsReader {
+        let reader = FieldsReader {
             formats,
             fields: BTreeMap::new(),
         };
@@ -2515,7 +2573,7 @@ mod close_family_tests {
                 Box::new(closing) as Box<dyn DocValuesProducer>,
             );
         }
-        let mut reader = DvFieldsReader {
+        let reader = DvFieldsReader {
             formats,
             fields: HashMap::new(),
         };
@@ -2553,7 +2611,7 @@ mod close_family_tests {
                 fail: true,
                 log: Arc::clone(&log),
             };
-            let mut reader = KnnFieldsReader {
+            let reader = KnnFieldsReader {
                 formats: java_map([
                     (
                         "field0",
@@ -2585,7 +2643,7 @@ mod close_family_tests {
     #[test]
     fn postings_reader_close_closes_every_producer() {
         let (a, b, log) = failing_pair();
-        let mut reader = FieldsReader {
+        let reader = FieldsReader {
             formats: java_map([
                 ("a", Box::new(a) as Box<dyn FieldsProducer>),
                 ("b", Box::new(b) as Box<dyn FieldsProducer>),
@@ -2601,7 +2659,7 @@ mod close_family_tests {
     #[test]
     fn doc_values_reader_close_closes_every_producer() {
         let (a, b, log) = failing_pair();
-        let mut reader = DvFieldsReader {
+        let reader = DvFieldsReader {
             formats: java_map([
                 ("a", Box::new(a) as Box<dyn DocValuesProducer>),
                 ("b", Box::new(b) as Box<dyn DocValuesProducer>),
@@ -2629,11 +2687,33 @@ mod close_family_tests {
         let mut writer = DvFieldsWriter {
             segment_write_state: crate::codecs::tests::write_state(&dir, &info, &fis),
             resolver: Arc::new(|_: &str| -> Arc<dyn DocValuesFormat> { unreachable!() }),
-            formats: HashMap::from([("a".to_string(), entry(a)), ("b".to_string(), entry(b))]),
+            formats: HashMap::from([(1usize, entry(a)), (2usize, entry(b))]),
             suffixes: HashMap::new(),
         };
         writer.close().unwrap_err();
         assert_eq!(sorted(&log), ["a", "b"]);
+    }
+
+    /// A vector field without the per-field format attribute is skipped, not
+    /// rejected: "null formatName means the field is in fieldInfos, but has
+    /// no vectors!" (`PerFieldKnnVectorsFormat.java:212-233`). A segment
+    /// whose vectors a non-per-field format wrote (a `FilterCodec` keeping
+    /// the per-field codec's name) opens through the per-field reader.
+    #[test]
+    fn knn_reader_skips_a_vector_field_without_format_attribute() {
+        use crate::store::DEFAULT_IO_CONTEXT;
+
+        let dir = crate::store::ByteBuffersDirectory::default();
+        let info = crate::codecs::tests::test_segment_info("_0", 1);
+        let mut fi = crate::index::FieldInfo::new("v", 0);
+        fi.vector_dimension = 3;
+        fi.vector_encoding = crate::index::VectorEncoding::FLOAT32;
+        assert!(fi.has_vector_values());
+        let fis = crate::index::FieldInfos::new(vec![fi]).unwrap();
+        let state = SegmentReadState::new(&dir, &info, &fis, &*DEFAULT_IO_CONTEXT);
+        let reader = KnnFieldsReader::new(&state).unwrap();
+        assert!(reader.formats.is_empty());
+        assert!(!reader.fields.contains_key(0));
     }
 
     /// `PerFieldKnnVectorsFormat.FieldsWriter.close()` is
@@ -2647,11 +2727,14 @@ mod close_family_tests {
         let entry = |c: Closing| WriterAndSuffix {
             suffix: 0,
             writer: Box::new(c),
+            _format: Arc::new(crate::codecs::knn_vectors::EmptyKnnVectorsFormat::new(
+                "Empty",
+            )),
         };
         let mut writer = KnnFieldsWriter {
             segment_write_state: crate::codecs::tests::owned_write_state(&dir, &info),
             resolver: Arc::new(|_: &str| -> Arc<dyn KnnVectorsFormat> { unreachable!() }),
-            formats: HashMap::from([("a".to_string(), entry(a)), ("b".to_string(), entry(b))]),
+            formats: HashMap::from([(1, entry(a)), (2, entry(b))]),
             suffixes: HashMap::new(),
         };
         writer.close().unwrap_err();
@@ -2670,7 +2753,7 @@ mod close_family_tests {
             fail: false,
             log: Arc::clone(&log),
         };
-        let mut reader = KnnFieldsReader {
+        let reader = KnnFieldsReader {
             formats: java_map([("s", Box::new(shared) as Box<dyn KnnVectorsReader>)]),
             fields: int_map([(0, "s"), (1, "s")]),
             field_names: HashMap::new(),
@@ -2680,7 +2763,7 @@ mod close_family_tests {
         assert_eq!(sorted(&log), ["shared", "shared"]);
 
         let (a, b, log) = failing_pair();
-        let mut reader = KnnFieldsReader {
+        let reader = KnnFieldsReader {
             formats: java_map([
                 ("a", Box::new(a) as Box<dyn KnnVectorsReader>),
                 ("b", Box::new(b) as Box<dyn KnnVectorsReader>),

@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{
     sub_index_from_leaves, IndexReader, IndexReaderContext, LeafReaderContext, QueryTimeout,
     StoredFields, Term,
@@ -17,6 +17,7 @@ use crate::search::collection_terminated_exception::CollectionError;
 use crate::search::collector::{Collector, CollectorManager};
 use crate::search::constant_score_query::ConstantScoreQuery;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
+use crate::search::field_doc::FieldDoc;
 use crate::search::lru_query_cache::LRUQueryCache;
 use crate::search::query::Query;
 use crate::search::query_cache::{QueryCache, QueryCachingPolicy};
@@ -27,9 +28,13 @@ use crate::search::scorer_util::{LikelyLiveDocs, ScorerUtil};
 use crate::search::similarities::{
     BM25Similarity, CollectionStatistics, Explanation, Similarity, TermStatistics,
 };
+use crate::search::sort::Sort;
 use crate::search::task_executor::{Executor, TaskExecutor};
 use crate::search::time_limiting_bulk_scorer::TimeLimitingBulkScorer;
 use crate::search::top_docs::TopDocs;
+use crate::search::top_field_collector::TopFieldCollector;
+use crate::search::top_field_collector_manager::TopFieldCollectorManager;
+use crate::search::top_field_docs::TopFieldDocs;
 use crate::search::top_score_doc_collector_manager::TopScoreDocCollectorManager;
 use crate::search::total_hit_count_collector::TotalHitCountCollectorManager;
 use crate::search::usage_tracking_query_caching_policy::UsageTrackingQueryCachingPolicy;
@@ -113,8 +118,7 @@ const MAX_SEGMENTS_PER_SLICE: usize = 5;
 ///
 /// **Divergence from Lucene 10.5.0.** Rust has no exceptions, so this is a
 /// value. Where Java throws it, this port returns
-/// [`LuceneError::ResourceLimit`] carrying [`Self::to_string`]; the type is
-/// still available so that callers can build the same message.
+/// [`LuceneErrorKind::TooManyClauses`] carrying it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TooManyClauses {
     message: String,
@@ -168,7 +172,7 @@ impl std::error::Error for TooManyClauses {}
 
 impl From<TooManyClauses> for LuceneError {
     fn from(err: TooManyClauses) -> Self {
-        LuceneError::ResourceLimit(err.to_string())
+        LuceneError::from(LuceneErrorKind::TooManyClauses(err))
     }
 }
 
@@ -221,7 +225,7 @@ impl std::error::Error for TooManyNestedClauses {}
 
 impl From<TooManyNestedClauses> for LuceneError {
     fn from(err: TooManyNestedClauses) -> Self {
-        LuceneError::ResourceLimit(err.to_string())
+        LuceneError::from(LuceneErrorKind::TooManyNestedClauses(err))
     }
 }
 
@@ -257,18 +261,18 @@ impl LeafReaderContextPartition {
         max_docs: i32,
     ) -> Result<Self> {
         if min_doc_id >= max_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDocId is greater than or equal to maxDocId: [{min_doc_id}] > [{max_doc_id}]"
             )));
         }
         if min_doc_id < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDocId is lower than 0: [{min_doc_id}]"
             )));
         }
         let leaf_max_doc = leaf_reader_context.leaf_reader().max_doc();
         if min_doc_id >= leaf_max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDocId is greater than than maxDoc: [{min_doc_id}] > [{leaf_max_doc}]"
             )));
         }
@@ -289,7 +293,7 @@ impl LeafReaderContextPartition {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty leaf, which Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an empty leaf, which Java
     /// rejects with the same `minDocId >= maxDocId` check.
     pub fn create_for_entire_segment(ctx: Arc<LeafReaderContext>) -> Result<Self> {
         let max_docs = ctx.leaf_reader().max_doc();
@@ -454,6 +458,237 @@ impl QueryVisitor for NumClausesCheckVisitor {
     }
 }
 
+/// The overridable methods of `org.apache.lucene.search.IndexSearcher` that a
+/// subclass replaces.
+///
+/// **Adaptation of Java subclassing.** A Java subclass of `IndexSearcher`
+/// overrides `createWeight`, `rewrite`, the `protected search(
+/// LeafReaderContextPartition[], Weight, Collector)`, the `protected
+/// searchLeaf`, the `protected slices`, `search(Query, int)`,
+/// `searchAfter(ScoreDoc, Query, int)`, the sorted `search` and `searchAfter`
+/// methods, `termStatistics`, `collectionStatistics` or `toString`, and calls
+/// `super.…` for the inherited body. An
+/// implementation of this trait, installed with
+/// [`IndexSearcher::set_overrides`], receives the searcher in place of `this`;
+/// each provided method is the inherited body, which an implementation reaches
+/// through the `super_…` methods of [`IndexSearcher`].
+pub trait IndexSearcherOverrides: Send + Sync + fmt::Debug {
+    /// `IndexSearcher.createWeight(Query, ScoreMode, float)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_create_weight`].
+    fn create_weight(
+        &self,
+        searcher: &IndexSearcher,
+        query: Arc<dyn Query>,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        searcher.super_create_weight(query, score_mode, boost)
+    }
+
+    /// `IndexSearcher.rewrite(Query)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_rewrite`].
+    fn rewrite(
+        &self,
+        searcher: &IndexSearcher,
+        original: Arc<dyn Query>,
+    ) -> Result<Arc<dyn Query>> {
+        searcher.super_rewrite(original)
+    }
+
+    /// The `protected IndexSearcher.search(LeafReaderContextPartition[],
+    /// Weight, Collector)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_partitions`].
+    fn search_partitions(
+        &self,
+        searcher: &IndexSearcher,
+        partitions: &[LeafReaderContextPartition],
+        weight: &Arc<dyn Weight>,
+        collector: &mut dyn Collector,
+    ) -> Result<()> {
+        searcher.super_search_partitions(partitions, weight, collector)
+    }
+
+    /// The `protected IndexSearcher.searchLeaf(LeafReaderContext, int, int,
+    /// Weight, Collector)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_leaf`].
+    fn search_leaf(
+        &self,
+        searcher: &IndexSearcher,
+        ctx: &Arc<LeafReaderContext>,
+        min_doc_id: i32,
+        max_doc_id: i32,
+        weight: &Arc<dyn Weight>,
+        collector: &mut dyn Collector,
+    ) -> Result<()> {
+        searcher.super_search_leaf(ctx, min_doc_id, max_doc_id, weight, collector)
+    }
+
+    /// `IndexSearcher.count(Query)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_count`].
+    fn count(&self, searcher: &IndexSearcher, query: Arc<dyn Query>) -> Result<i32> {
+        searcher.super_count(query)
+    }
+
+    /// `IndexSearcher.search(Query, int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search`].
+    fn search(&self, searcher: &IndexSearcher, query: Arc<dyn Query>, n: i32) -> Result<TopDocs> {
+        searcher.super_search(query, n)
+    }
+
+    /// `IndexSearcher.searchAfter(ScoreDoc, Query, int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_after`].
+    fn search_after(
+        &self,
+        searcher: &IndexSearcher,
+        after: Option<ScoreDoc>,
+        query: Arc<dyn Query>,
+        num_hits: i32,
+    ) -> Result<TopDocs> {
+        searcher.super_search_after(after, query, num_hits)
+    }
+
+    /// `IndexSearcher.termStatistics(Term, int, long)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_term_statistics`].
+    fn term_statistics(
+        &self,
+        searcher: &IndexSearcher,
+        term: &Term,
+        doc_freq: i32,
+        total_term_freq: i64,
+    ) -> Result<TermStatistics> {
+        searcher.super_term_statistics(term, doc_freq, total_term_freq)
+    }
+
+    /// `IndexSearcher.collectionStatistics(String)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_collection_statistics`].
+    fn collection_statistics(
+        &self,
+        searcher: &IndexSearcher,
+        field: &str,
+    ) -> Result<Option<CollectionStatistics>> {
+        searcher.super_collection_statistics(field)
+    }
+
+    /// `IndexSearcher.search(Query, int, Sort)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_with_sort`].
+    fn search_with_sort(
+        &self,
+        searcher: &IndexSearcher,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+    ) -> Result<TopFieldDocs> {
+        searcher.super_search_with_sort(query, n, sort)
+    }
+
+    /// `IndexSearcher.search(Query, int, Sort, boolean)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_with_sort_and_scores`].
+    fn search_with_sort_and_scores(
+        &self,
+        searcher: &IndexSearcher,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+        do_doc_scores: bool,
+    ) -> Result<TopFieldDocs> {
+        searcher.super_search_with_sort_and_scores(query, n, sort, do_doc_scores)
+    }
+
+    /// `IndexSearcher.searchAfter(ScoreDoc, Query, int, Sort)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_after_with_sort`].
+    fn search_after_with_sort(
+        &self,
+        searcher: &IndexSearcher,
+        after: Option<FieldDoc>,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+    ) -> Result<TopFieldDocs> {
+        searcher.super_search_after_with_sort(after, query, n, sort)
+    }
+
+    /// `IndexSearcher.searchAfter(ScoreDoc, Query, int, Sort, boolean)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::super_search_after_with_sort_and_scores`].
+    fn search_after_with_sort_and_scores(
+        &self,
+        searcher: &IndexSearcher,
+        after: Option<FieldDoc>,
+        query: Arc<dyn Query>,
+        num_hits: i32,
+        sort: &Sort,
+        do_doc_scores: bool,
+    ) -> Result<TopFieldDocs> {
+        searcher.super_search_after_with_sort_and_scores(
+            after,
+            query,
+            num_hits,
+            sort,
+            do_doc_scores,
+        )
+    }
+
+    /// The `protected IndexSearcher.slices(List<LeafReaderContext>)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`IndexSearcher::default_slices`].
+    fn slices(
+        &self,
+        _searcher: &IndexSearcher,
+        leaves: &[Arc<LeafReaderContext>],
+    ) -> Result<Vec<LeafSlice>> {
+        IndexSearcher::default_slices(leaves)
+    }
+
+    /// `IndexSearcher.toString()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the formatter's error.
+    fn fmt(&self, searcher: &IndexSearcher, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        searcher.super_fmt(f)
+    }
+}
+
 /// Implements search over a single [`IndexReader`].
 ///
 /// Equivalent to `org.apache.lucene.search.IndexSearcher`.
@@ -475,16 +710,26 @@ impl QueryVisitor for NumClausesCheckVisitor {
 /// count should build a collector manager and call
 /// [`search_with_manager`](Self::search_with_manager).
 ///
-/// **Divergence from Lucene 10.5.0.** Java's class is designed for subclassing:
-/// `slices`, `searchLeaf`, `explain`, `termStatistics` and
-/// `collectionStatistics` are `protected` and meant to be overridden — for
-/// instance to return statistics across a distributed collection. Rust has no
-/// implementation inheritance, so those are inherent methods here and the
-/// customisation points they offer are not available; a caller that needs them
-/// composes an `IndexSearcher` rather than extending it. The setters, which
-/// Java documents as "call before starting to use this searcher", take
-/// `&mut self` for the same reason no lock is needed around them.
+/// **Divergence from Lucene 10.5.0.** Java's class is designed for subclassing.
+/// Rust has no implementation inheritance, so the overridable methods that
+/// `lucene/test-framework`'s subclasses override — `createWeight`, `rewrite`,
+/// `search(LeafReaderContextPartition[], Weight, Collector)`, `searchLeaf`,
+/// `slices`, `search(Query, int, Sort)` and `toString` — the other sorted
+/// `search`/`searchAfter` methods, which `search(Query, int, Sort)` calls
+/// virtually, and the methods `ShardSearchingTestBase.NodeState.ShardIndexSearcher`
+/// overrides — `search(Query, int)`, `searchAfter(ScoreDoc, Query, int)`,
+/// `termStatistics` and `collectionStatistics` — dispatch to an optional
+/// [`IndexSearcherOverrides`] installed with
+/// [`set_overrides`](Self::set_overrides); every call site that Java makes
+/// virtual goes through that dispatch, so an override observes exactly the
+/// calls a Java subclass does. `explain(Weight, int)` remains an inherent
+/// method: no subclass in Lucene 10.5.0's core or test framework overrides
+/// it. The setters, which Java
+/// documents as "call before starting to use this searcher", take `&mut self`
+/// for the same reason no lock is needed around them.
 pub struct IndexSearcher {
+    /// The subclass behaviour; `None` for a plain `IndexSearcher`.
+    overrides: Option<Arc<dyn IndexSearcherOverrides>>,
     reader: Arc<dyn IndexReader>,
     reader_context: Arc<dyn IndexReaderContext>,
     leaf_contexts: Vec<Arc<LeafReaderContext>>,
@@ -517,6 +762,7 @@ impl Clone for IndexSearcher {
     /// [`TermStates`](crate::search::TermStates) compares, is shared.
     fn clone(&self) -> Self {
         Self {
+            overrides: self.overrides.clone(),
             reader: Arc::clone(&self.reader),
             reader_context: Arc::clone(&self.reader_context),
             leaf_contexts: self.leaf_contexts.clone(),
@@ -532,8 +778,23 @@ impl Clone for IndexSearcher {
 }
 
 impl fmt::Debug for IndexSearcher {
-    /// Renders as `IndexSearcher.toString()` does.
+    /// Renders as `IndexSearcher.toString()` does, through the installed
+    /// [`IndexSearcherOverrides::fmt`] when there is one.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.overrides.as_ref() {
+            Some(overrides) => IndexSearcherOverrides::fmt(&**overrides, self, f),
+            None => self.super_fmt(f),
+        }
+    }
+}
+
+impl IndexSearcher {
+    /// The inherited `IndexSearcher.toString()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the formatter's error.
+    pub fn super_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "IndexSearcher({:?}; taskExecutor={:?})",
@@ -561,7 +822,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// As [`new`](Self::new), and [`LuceneError::AlreadyClosed`] when `reader`
+    /// As [`new`](Self::new), and [`LuceneErrorKind::AlreadyClosed`] when `reader`
     /// is closed, as `reader.getContext()` fails.
     pub fn with_executor(
         reader: Arc<dyn IndexReader>,
@@ -579,7 +840,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the context is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the context is not
     /// top-level, which Java asserts, and propagates the slice construction
     /// error for an empty leaf.
     pub fn from_context(
@@ -587,7 +848,7 @@ impl IndexSearcher {
         executor: Option<Arc<dyn Executor>>,
     ) -> Result<Self> {
         if !context.is_top_level() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "IndexSearcher's ReaderContext must be topLevel for reader {:?}",
                 context.reader()
             )));
@@ -611,6 +872,7 @@ impl IndexSearcher {
         }
 
         Ok(Self {
+            overrides: None,
             reader,
             reader_context: context,
             leaf_contexts,
@@ -637,6 +899,21 @@ impl IndexSearcher {
     /// implementations should respect [`get_similarity`](Self::get_similarity).
     pub fn get_default_similarity() -> Arc<dyn Similarity> {
         Arc::clone(&DEFAULT_SIMILARITY)
+    }
+
+    /// Installs the subclass behaviour of this searcher.
+    ///
+    /// **Adaptation of Java subclassing**: a Java subclass's constructor runs
+    /// `super(…)` and then its own body; the Rust equivalent builds the
+    /// searcher and then installs the overrides. See
+    /// [`IndexSearcherOverrides`].
+    pub fn set_overrides(&mut self, overrides: Arc<dyn IndexSearcherOverrides>) {
+        self.overrides = Some(overrides);
+    }
+
+    /// Returns the installed subclass behaviour, if any.
+    pub fn get_overrides(&self) -> Option<&Arc<dyn IndexSearcherOverrides>> {
+        self.overrides.as_ref()
     }
 
     /// Returns the leaf contexts associated with this searcher.
@@ -698,10 +975,10 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value` is below 1.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `value` is below 1.
     pub fn set_max_clause_count(value: i32) -> Result<()> {
         if value < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxClauseCount must be >= 1".to_string(),
             ));
         }
@@ -944,7 +1221,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a slice targets several
+    /// Returns [`LuceneErrorKind::IllegalState`] when a slice targets several
     /// partitions of the same leaf, and propagates the slice construction
     /// error.
     pub fn get_slices(&self) -> Result<&[LeafSlice]> {
@@ -952,6 +1229,16 @@ impl IndexSearcher {
         match cached {
             Ok(slices) => Ok(slices),
             Err(message) => Err(LuceneError::illegal_state(message.clone())),
+        }
+    }
+
+    /// The `protected IndexSearcher.slices(List<LeafReaderContext>)`,
+    /// dispatched to the installed [`IndexSearcherOverrides::slices`] when there
+    /// is one, else [`default_slices`](Self::default_slices).
+    fn slices(&self, leaves: &[Arc<LeafReaderContext>]) -> Result<Vec<LeafSlice>> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.slices(self, leaves),
+            None => Self::default_slices(leaves),
         }
     }
 
@@ -965,7 +1252,7 @@ impl IndexSearcher {
     /// `OnceLock` cannot be initialised twice.
     fn compute_and_cache_slices(&self) -> &std::result::Result<Vec<LeafSlice>, String> {
         self.leaf_slices.get_or_init(|| {
-            let slices = match Self::default_slices(&self.leaf_contexts) {
+            let slices = match self.slices(&self.leaf_contexts) {
                 Ok(slices) => slices,
                 Err(err) => return Err(err.to_string()),
             };
@@ -1012,6 +1299,21 @@ impl IndexSearcher {
     ///
     /// Propagates any I/O error raised while rewriting, weighting or counting.
     pub fn count(&self, query: Arc<dyn Query>) -> Result<i32> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.count(self, query),
+            None => self.super_count(query),
+        }
+    }
+
+    /// The body of `IndexSearcher.count(Query)`, which an
+    /// [`IndexSearcherOverrides::count`] reaches as Java's `super.count`; its
+    /// recursive counts go through [`count`](Self::count), as Java's virtual
+    /// calls do.
+    ///
+    /// # Errors
+    ///
+    /// As [`count`](Self::count).
+    pub fn super_count(&self, query: Arc<dyn Query>) -> Result<i32> {
         // CSQ.rewrite may simplify the query -- don't need scores
         let query = self.rewrite(Arc::new(ConstantScoreQuery::new(query)))?;
 
@@ -1062,9 +1364,27 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `after.doc` exceeds the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `after.doc` exceeds the
     /// number of documents in the reader, and propagates any I/O error.
     pub fn search_after(
+        &self,
+        after: Option<ScoreDoc>,
+        query: Arc<dyn Query>,
+        num_hits: i32,
+    ) -> Result<TopDocs> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search_after(self, after, query, num_hits),
+            None => self.super_search_after(after, query, num_hits),
+        }
+    }
+
+    /// The inherited body of [`search_after`](Self::search_after)
+    /// (`super.searchAfter(after, query, numHits)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after`](Self::search_after).
+    pub fn super_search_after(
         &self,
         after: Option<ScoreDoc>,
         query: Arc<dyn Query>,
@@ -1073,7 +1393,7 @@ impl IndexSearcher {
         let limit = self.reader.max_doc().max(1);
         if let Some(after) = after.as_ref() {
             if after.doc >= limit {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "after.doc exceeds the number of documents in the reader: after.doc={} limit={limit}",
                     after.doc
                 )));
@@ -1085,6 +1405,227 @@ impl IndexSearcher {
             TopScoreDocCollectorManager::new(capped_num_hits, after, TOTAL_HITS_THRESHOLD)?;
 
         self.search_with_manager(query, &manager)
+    }
+
+    /// Search implementation with arbitrary sorting, plus control over whether
+    /// hit scores should be computed: finds the top `n` hits for `query`,
+    /// sorted by `sort`, filling in each hit's score when `do_doc_scores`.
+    ///
+    /// Equivalent to `IndexSearcher.search(Query, int, Sort, boolean)`; the
+    /// name differs because Rust has no overloading.
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after_with_sort_and_scores`](Self::search_after_with_sort_and_scores).
+    pub fn search_with_sort_and_scores(
+        &self,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+        do_doc_scores: bool,
+    ) -> Result<TopFieldDocs> {
+        match self.overrides.as_ref() {
+            Some(overrides) => {
+                overrides.search_with_sort_and_scores(self, query, n, sort, do_doc_scores)
+            }
+            None => self.super_search_with_sort_and_scores(query, n, sort, do_doc_scores),
+        }
+    }
+
+    /// The inherited body of
+    /// [`search_with_sort_and_scores`](Self::search_with_sort_and_scores)
+    /// (`super.search(query, n, sort, doDocScores)`), which calls the virtual
+    /// five-argument `searchAfter`.
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after_with_sort_and_scores`](Self::search_after_with_sort_and_scores).
+    pub fn super_search_with_sort_and_scores(
+        &self,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+        do_doc_scores: bool,
+    ) -> Result<TopFieldDocs> {
+        self.search_after_with_sort_and_scores(None, query, n, sort, do_doc_scores)
+    }
+
+    /// Search implementation with arbitrary sorting: finds the top `n` hits
+    /// for `query`, sorted by `sort`.
+    ///
+    /// Equivalent to `IndexSearcher.search(Query, int, Sort)`; the name differs
+    /// because Rust has no overloading.
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after_with_sort_and_scores`](Self::search_after_with_sort_and_scores).
+    pub fn search_with_sort(
+        &self,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+    ) -> Result<TopFieldDocs> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search_with_sort(self, query, n, sort),
+            None => self.super_search_with_sort(query, n, sort),
+        }
+    }
+
+    /// The inherited body of [`search_with_sort`](Self::search_with_sort)
+    /// (`super.search(query, n, sort)`), which calls the virtual five-argument
+    /// `searchAfter`.
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after_with_sort_and_scores`](Self::search_after_with_sort_and_scores).
+    pub fn super_search_with_sort(
+        &self,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+    ) -> Result<TopFieldDocs> {
+        self.search_after_with_sort_and_scores(None, query, n, sort, false)
+    }
+
+    /// Finds the top `n` hits for `query`, sorted by `sort`, where all results
+    /// come after a previous result.
+    ///
+    /// Equivalent to `IndexSearcher.searchAfter(ScoreDoc, Query, int, Sort)`.
+    /// Java declares the result as `TopDocs`; the object it returns is the
+    /// [`TopFieldDocs`] answered here, whose
+    /// [`to_top_docs`](TopFieldDocs::to_top_docs) is the `TopDocs` view.
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after_with_sort_and_scores`](Self::search_after_with_sort_and_scores).
+    pub fn search_after_with_sort(
+        &self,
+        after: Option<FieldDoc>,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+    ) -> Result<TopFieldDocs> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search_after_with_sort(self, after, query, n, sort),
+            None => self.super_search_after_with_sort(after, query, n, sort),
+        }
+    }
+
+    /// The inherited body of
+    /// [`search_after_with_sort`](Self::search_after_with_sort)
+    /// (`super.searchAfter(after, query, n, sort)`), which calls the virtual
+    /// five-argument `searchAfter`.
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after_with_sort_and_scores`](Self::search_after_with_sort_and_scores).
+    pub fn super_search_after_with_sort(
+        &self,
+        after: Option<FieldDoc>,
+        query: Arc<dyn Query>,
+        n: i32,
+        sort: &Sort,
+    ) -> Result<TopFieldDocs> {
+        self.search_after_with_sort_and_scores(after, query, n, sort, false)
+    }
+
+    /// Finds the top `num_hits` hits for `query`, sorted by `sort`, where all
+    /// results come after a previous result, filling in each hit's score when
+    /// `do_doc_scores`.
+    ///
+    /// Equivalent to
+    /// `IndexSearcher.searchAfter(ScoreDoc, Query, int, Sort, boolean)`. Java
+    /// takes a `ScoreDoc` and throws `IllegalArgumentException("after must be
+    /// a FieldDoc; got " + after)` when it is not a `FieldDoc`
+    /// (`IndexSearcher.java:715-723`); `after` is typed as a [`FieldDoc`] here,
+    /// which makes that case unrepresentable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `after.doc` exceeds the
+    /// number of documents in the reader, or when
+    /// [`TopFieldCollectorManager::new`] rejects its arguments, and propagates
+    /// any I/O error.
+    pub fn search_after_with_sort_and_scores(
+        &self,
+        after: Option<FieldDoc>,
+        query: Arc<dyn Query>,
+        num_hits: i32,
+        sort: &Sort,
+        do_doc_scores: bool,
+    ) -> Result<TopFieldDocs> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search_after_with_sort_and_scores(
+                self,
+                after,
+                query,
+                num_hits,
+                sort,
+                do_doc_scores,
+            ),
+            None => self.super_search_after_with_sort_and_scores(
+                after,
+                query,
+                num_hits,
+                sort,
+                do_doc_scores,
+            ),
+        }
+    }
+
+    /// The inherited body of
+    /// [`search_after_with_sort_and_scores`](Self::search_after_with_sort_and_scores)
+    /// (`super.searchAfter(after, query, numHits, sort, doDocScores)`), which
+    /// is the private `searchAfter(FieldDoc, Query, int, Sort, boolean)`
+    /// (`IndexSearcher.java:725-749`).
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after_with_sort_and_scores`](Self::search_after_with_sort_and_scores).
+    pub fn super_search_after_with_sort_and_scores(
+        &self,
+        after: Option<FieldDoc>,
+        query: Arc<dyn Query>,
+        num_hits: i32,
+        sort: &Sort,
+        do_doc_scores: bool,
+    ) -> Result<TopFieldDocs> {
+        let limit = self.reader.max_doc().max(1);
+        if let Some(after) = after.as_ref() {
+            if after.score_doc.doc >= limit {
+                return Err(LuceneError::illegal_argument(format!(
+                    "after.doc exceeds the number of documents in the reader: after.doc={} limit={limit}",
+                    after.score_doc.doc
+                )));
+            }
+        }
+        let capped_num_hits = num_hits.min(limit);
+        let rewritten_sort = sort.rewrite(self)?.into_owned();
+
+        let manager = TopFieldCollectorManager::new(
+            rewritten_sort,
+            capped_num_hits,
+            after,
+            TOTAL_HITS_THRESHOLD,
+        )?;
+
+        let mut top_docs = self.search_with_manager(Arc::clone(&query), &manager)?;
+        if do_doc_scores {
+            // `TopFieldCollector.populateScores(topDocs.scoreDocs, this, query)`
+            // fills in the scores of the `FieldDoc`s in place; the hits are
+            // `FieldDoc`s here, so their `ScoreDoc` part is scored and
+            // written back.
+            let mut score_docs: Vec<ScoreDoc> = top_docs
+                .score_docs
+                .iter()
+                .map(|hit| hit.score_doc)
+                .collect();
+            TopFieldCollector::populate_scores(&mut score_docs, self, query)?;
+            for (hit, scored) in top_docs.score_docs.iter_mut().zip(score_docs) {
+                hit.score_doc = scored;
+            }
+        }
+        Ok(top_docs)
     }
 
     /// Returns the configured timeout for the searches running through this
@@ -1110,6 +1651,20 @@ impl IndexSearcher {
     ///
     /// As [`search_after`](Self::search_after).
     pub fn search(&self, query: Arc<dyn Query>, n: i32) -> Result<TopDocs> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search(self, query, n),
+            None => self.super_search(query, n),
+        }
+    }
+
+    /// The inherited body of [`search`](Self::search) (`super.search(query,
+    /// n)`), which calls the virtual [`search_after`](Self::search_after)
+    /// (`IndexSearcher.java:629-631`).
+    ///
+    /// # Errors
+    ///
+    /// As [`search_after`](Self::search_after).
+    pub fn super_search(&self, query: Arc<dyn Query>, n: i32) -> Result<TopDocs> {
         self.search_after(None, query, n)
     }
 
@@ -1158,7 +1713,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the manager produces
+    /// Returns [`LuceneErrorKind::IllegalState`] when the manager produces
     /// collectors with differing score modes, and propagates any I/O error.
     pub fn search_with_manager<M>(&self, query: Arc<dyn Query>, manager: &M) -> Result<M::Output>
     where
@@ -1211,17 +1766,12 @@ impl IndexSearcher {
         for (slice, collector) in leaf_slices.iter().zip(collectors) {
             let partitions: Vec<LeafReaderContextPartition> = slice.partitions.to_vec();
             let weight = Arc::clone(&weight);
-            let query_timeout = self.query_timeout.clone();
-            let partial_result = Arc::clone(&self.partial_result);
+            // Java's task calls the overridable `search(partitions, weight,
+            // collector)` on `this`; the clone shares every piece of state.
+            let searcher = self.clone();
             let mut collector = collector;
             tasks.push(Box::new(move || {
-                Self::search_partitions_inner(
-                    &partitions,
-                    &weight,
-                    &mut collector,
-                    query_timeout.as_ref(),
-                    &partial_result,
-                )?;
+                searcher.search_partitions(&partitions, &weight, &mut collector)?;
                 Ok(collector)
             }));
         }
@@ -1245,36 +1795,34 @@ impl IndexSearcher {
         weight: &Arc<dyn Weight>,
         collector: &mut dyn Collector,
     ) -> Result<()> {
-        Self::search_partitions_inner(
-            partitions,
-            weight,
-            collector,
-            self.query_timeout.as_ref(),
-            &self.partial_result,
-        )
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.search_partitions(self, partitions, weight, collector),
+            None => self.super_search_partitions(partitions, weight, collector),
+        }
     }
 
-    /// The body of [`search_partitions`](Self::search_partitions), free of
-    /// `&self` so that it can be moved into a task.
-    fn search_partitions_inner(
+    /// The inherited body of [`search_partitions`](Self::search_partitions)
+    /// (`super.search(partitions, weight, collector)`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while collecting.
+    pub fn super_search_partitions(
+        &self,
         partitions: &[LeafReaderContextPartition],
         weight: &Arc<dyn Weight>,
         collector: &mut dyn Collector,
-        query_timeout: Option<&Arc<dyn QueryTimeout>>,
-        partial_result: &AtomicBool,
     ) -> Result<()> {
         collector.set_weight(Arc::clone(weight));
 
         for partition in partitions {
             // Search each subreader partition.
-            Self::search_leaf_inner(
+            self.search_leaf(
                 &partition.ctx,
                 partition.min_doc_id,
                 partition.max_doc_id,
                 weight,
                 collector,
-                query_timeout,
-                partial_result,
             )?;
         }
         Ok(())
@@ -1306,28 +1854,30 @@ impl IndexSearcher {
         weight: &Arc<dyn Weight>,
         collector: &mut dyn Collector,
     ) -> Result<()> {
-        Self::search_leaf_inner(
-            ctx,
-            min_doc_id,
-            max_doc_id,
-            weight,
-            collector,
-            self.query_timeout.as_ref(),
-            &self.partial_result,
-        )
+        match self.overrides.as_ref() {
+            Some(overrides) => {
+                overrides.search_leaf(self, ctx, min_doc_id, max_doc_id, weight, collector)
+            }
+            None => self.super_search_leaf(ctx, min_doc_id, max_doc_id, weight, collector),
+        }
     }
 
-    /// The body of [`search_leaf`](Self::search_leaf), free of `&self` so that
-    /// it can be moved into a task.
-    fn search_leaf_inner(
+    /// The inherited body of [`search_leaf`](Self::search_leaf)
+    /// (`super.searchLeaf(…)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`search_leaf`](Self::search_leaf).
+    pub fn super_search_leaf(
+        &self,
         ctx: &Arc<LeafReaderContext>,
         min_doc_id: i32,
         max_doc_id: i32,
         weight: &Arc<dyn Weight>,
         collector: &mut dyn Collector,
-        query_timeout: Option<&Arc<dyn QueryTimeout>>,
-        partial_result: &AtomicBool,
     ) -> Result<()> {
+        let query_timeout = self.query_timeout.as_ref();
+        let partial_result = &self.partial_result;
         let mut leaf_collector = match collector.get_leaf_collector(ctx) {
             Ok(leaf_collector) => leaf_collector,
             Err(CollectionError::CollectionTerminated) => {
@@ -1380,11 +1930,22 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::ResourceLimit`] carrying a
-    /// [`TooManyNestedClauses`] message when the query has more than
+    /// Returns [`LuceneErrorKind::TooManyNestedClauses`] when the query has more than
     /// [`get_max_clause_count`](Self::get_max_clause_count) clauses
     /// cumulatively, and propagates any I/O error.
     pub fn rewrite(&self, original: Arc<dyn Query>) -> Result<Arc<dyn Query>> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.rewrite(self, original),
+            None => self.super_rewrite(original),
+        }
+    }
+
+    /// The inherited body of [`rewrite`](Self::rewrite) (`super.rewrite(q)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`rewrite`](Self::rewrite).
+    pub fn super_rewrite(&self, original: Arc<dyn Query>) -> Result<Arc<dyn Query>> {
         let mut query = original;
         while let Some(rewritten) = query.rewrite(self)? {
             query = rewritten;
@@ -1452,7 +2013,7 @@ impl IndexSearcher {
     /// Propagates any I/O error raised while explaining.
     pub fn explain_weight(&self, weight: &Arc<dyn Weight>, doc: i32) -> Result<Explanation> {
         let n = sub_index_from_leaves(doc, &self.leaf_contexts);
-        let ctx = &self.leaf_contexts[n];
+        let ctx = &self.leaf_contexts[n as usize];
         let de_based_doc = doc - ctx.doc_base();
         let live_docs = ctx.leaf_reader().get_live_docs();
         if let Some(live_docs) = live_docs.as_ref() {
@@ -1480,9 +2041,27 @@ impl IndexSearcher {
     /// # Errors
     ///
     /// Propagates any error raised while building the weight, including the
-    /// [`LuceneError::UnsupportedOperation`] a query that does not implement
+    /// [`LuceneErrorKind::UnsupportedOperation`] a query that does not implement
     /// `create_weight` returns.
     pub fn create_weight(
+        &self,
+        query: Arc<dyn Query>,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.create_weight(self, query, score_mode, boost),
+            None => self.super_create_weight(query, score_mode, boost),
+        }
+    }
+
+    /// The inherited body of [`create_weight`](Self::create_weight)
+    /// (`super.createWeight(q, scoreMode, boost)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`create_weight`](Self::create_weight).
+    pub fn super_create_weight(
         &self,
         query: Arc<dyn Query>,
         score_mode: ScoreMode,
@@ -1526,6 +2105,24 @@ impl IndexSearcher {
         doc_freq: i32,
         total_term_freq: i64,
     ) -> Result<TermStatistics> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.term_statistics(self, term, doc_freq, total_term_freq),
+            None => self.super_term_statistics(term, doc_freq, total_term_freq),
+        }
+    }
+
+    /// The inherited body of [`term_statistics`](Self::term_statistics)
+    /// (`super.termStatistics(term, docFreq, totalTermFreq)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`term_statistics`](Self::term_statistics).
+    pub fn super_term_statistics(
+        &self,
+        term: &Term,
+        doc_freq: i32,
+        total_term_freq: i64,
+    ) -> Result<TermStatistics> {
         // This constructor fails if docFreq <= 0.
         TermStatistics::new(term.bytes().clone(), i64::from(doc_freq), total_term_freq)
     }
@@ -1540,6 +2137,20 @@ impl IndexSearcher {
     /// Propagates any I/O error raised while reading the terms, and the
     /// [`CollectionStatistics`] validation error.
     pub fn collection_statistics(&self, field: &str) -> Result<Option<CollectionStatistics>> {
+        match self.overrides.as_ref() {
+            Some(overrides) => overrides.collection_statistics(self, field),
+            None => self.super_collection_statistics(field),
+        }
+    }
+
+    /// The inherited body of
+    /// [`collection_statistics`](Self::collection_statistics)
+    /// (`super.collectionStatistics(field)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`collection_statistics`](Self::collection_statistics).
+    pub fn super_collection_statistics(&self, field: &str) -> Result<Option<CollectionStatistics>> {
         let mut doc_count: i64 = 0;
         let mut sum_total_term_freq: i64 = 0;
         let mut sum_doc_freq: i64 = 0;
@@ -1570,5 +2181,246 @@ impl IndexSearcher {
     /// Equivalent to `IndexSearcher.getTaskExecutor()`.
     pub fn get_task_executor(&self) -> &Arc<TaskExecutor> {
         &self.task_executor
+    }
+}
+
+#[cfg(test)]
+mod sorted_search_dispatch_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{IndexSearcher, IndexSearcherOverrides};
+    use crate::error::Result;
+    use crate::index::{IndexReader, MultiReader};
+    use crate::search::{FieldDoc, MatchAllDocsQuery, Query, Sort, SortField, TopFieldDocs};
+
+    /// Records which sorted `search`/`searchAfter` override each call reached.
+    #[derive(Debug, Default)]
+    struct Recording {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Recording {
+        fn record(&self, call: String) {
+            self.calls.lock().unwrap().push(call);
+        }
+    }
+
+    impl IndexSearcherOverrides for Recording {
+        fn search_with_sort(
+            &self,
+            searcher: &IndexSearcher,
+            query: Arc<dyn Query>,
+            n: i32,
+            sort: &Sort,
+        ) -> Result<TopFieldDocs> {
+            self.record(format!("search({n})"));
+            searcher.super_search_with_sort(query, n, sort)
+        }
+
+        fn search_with_sort_and_scores(
+            &self,
+            searcher: &IndexSearcher,
+            query: Arc<dyn Query>,
+            n: i32,
+            sort: &Sort,
+            do_doc_scores: bool,
+        ) -> Result<TopFieldDocs> {
+            self.record(format!("search({n}, {do_doc_scores})"));
+            searcher.super_search_with_sort_and_scores(query, n, sort, do_doc_scores)
+        }
+
+        fn search_after_with_sort(
+            &self,
+            searcher: &IndexSearcher,
+            after: Option<FieldDoc>,
+            query: Arc<dyn Query>,
+            n: i32,
+            sort: &Sort,
+        ) -> Result<TopFieldDocs> {
+            self.record(format!("searchAfter({}, {n})", after.is_some()));
+            searcher.super_search_after_with_sort(after, query, n, sort)
+        }
+
+        fn search_after_with_sort_and_scores(
+            &self,
+            searcher: &IndexSearcher,
+            after: Option<FieldDoc>,
+            query: Arc<dyn Query>,
+            num_hits: i32,
+            sort: &Sort,
+            do_doc_scores: bool,
+        ) -> Result<TopFieldDocs> {
+            self.record(format!(
+                "searchAfter({}, {num_hits}, {do_doc_scores})",
+                after.is_some()
+            ));
+            searcher.super_search_after_with_sort_and_scores(
+                after,
+                query,
+                num_hits,
+                sort,
+                do_doc_scores,
+            )
+        }
+    }
+
+    /// Each public sorted method is virtual, and the three convenience
+    /// overloads reach the five-argument `searchAfter` virtually
+    /// (`IndexSearcher.java:668-723`), so a subclass overriding it observes
+    /// every sorted search.
+    #[test]
+    fn sorted_searches_dispatch_as_java_virtual_calls() {
+        let reader: Arc<dyn IndexReader> = Arc::new(MultiReader::new(Vec::new(), false).unwrap());
+        let mut searcher = IndexSearcher::new(reader).unwrap();
+        let recording = Arc::new(Recording::default());
+        searcher.set_overrides(Arc::clone(&recording) as Arc<dyn IndexSearcherOverrides>);
+        let sort = Sort::new_fields(vec![SortField::FIELD_DOC.clone()]).unwrap();
+        let query = || Arc::new(MatchAllDocsQuery) as Arc<dyn Query>;
+
+        searcher.search_with_sort(query(), 3, &sort).unwrap();
+        searcher
+            .search_with_sort_and_scores(query(), 4, &sort, true)
+            .unwrap();
+        searcher
+            .search_after_with_sort(Some(FieldDoc::new(0, 0.0)), query(), 5, &sort)
+            .unwrap_err();
+        searcher
+            .search_after_with_sort_and_scores(None, query(), 6, &sort, false)
+            .unwrap();
+        assert_eq!(
+            *recording.calls.lock().unwrap(),
+            [
+                "search(3)",
+                "searchAfter(false, 3, false)",
+                "search(4, true)",
+                "searchAfter(false, 4, true)",
+                "searchAfter(true, 5)",
+                "searchAfter(true, 5, false)",
+                "searchAfter(false, 6, false)",
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod shard_search_dispatch_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{IndexSearcher, IndexSearcherOverrides};
+    use crate::error::Result;
+    use crate::index::{IndexReader, MultiReader, Term};
+    use crate::search::similarities::{CollectionStatistics, TermStatistics};
+    use crate::search::{MatchAllDocsQuery, Query, ScoreDoc, TopDocs};
+
+    /// Records which of the overrides `ShardSearchingTestBase`'s
+    /// `ShardIndexSearcher` relies on each call reached.
+    #[derive(Debug, Default)]
+    struct Recording {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Recording {
+        fn record(&self, call: String) {
+            self.calls.lock().unwrap().push(call);
+        }
+    }
+
+    impl IndexSearcherOverrides for Recording {
+        fn search(
+            &self,
+            searcher: &IndexSearcher,
+            query: Arc<dyn Query>,
+            n: i32,
+        ) -> Result<TopDocs> {
+            self.record(format!("search({n})"));
+            searcher.super_search(query, n)
+        }
+
+        fn search_after(
+            &self,
+            searcher: &IndexSearcher,
+            after: Option<ScoreDoc>,
+            query: Arc<dyn Query>,
+            num_hits: i32,
+        ) -> Result<TopDocs> {
+            self.record(format!("searchAfter({}, {num_hits})", after.is_some()));
+            searcher.super_search_after(after, query, num_hits)
+        }
+
+        fn term_statistics(
+            &self,
+            searcher: &IndexSearcher,
+            term: &Term,
+            doc_freq: i32,
+            total_term_freq: i64,
+        ) -> Result<TermStatistics> {
+            self.record(format!("termStatistics({doc_freq}, {total_term_freq})"));
+            // A subclass answering distributed statistics, as
+            // `ShardIndexSearcher.termStatistics` does.
+            searcher.super_term_statistics(term, doc_freq * 3, total_term_freq * 3)
+        }
+
+        fn collection_statistics(
+            &self,
+            searcher: &IndexSearcher,
+            field: &str,
+        ) -> Result<Option<CollectionStatistics>> {
+            self.record(format!("collectionStatistics({field})"));
+            searcher.super_collection_statistics(field)
+        }
+    }
+
+    fn empty_searcher() -> IndexSearcher {
+        let reader: Arc<dyn IndexReader> = Arc::new(MultiReader::new(Vec::new(), false).unwrap());
+        IndexSearcher::new(reader).unwrap()
+    }
+
+    /// `search(Query, int)` and `searchAfter(ScoreDoc, Query, int)` are
+    /// virtual, and `search(Query, int)` reaches `searchAfter` virtually
+    /// (`IndexSearcher.java:593-631`); `termStatistics` and
+    /// `collectionStatistics` are virtual too (`IndexSearcher.java:1142-1157`),
+    /// as `ShardSearchingTestBase.NodeState.ShardIndexSearcher` requires.
+    #[test]
+    fn shard_searcher_overrides_dispatch_as_java_virtual_calls() {
+        let mut searcher = empty_searcher();
+        let recording = Arc::new(Recording::default());
+        searcher.set_overrides(Arc::clone(&recording) as Arc<dyn IndexSearcherOverrides>);
+        let query = || Arc::new(MatchAllDocsQuery) as Arc<dyn Query>;
+        searcher.search(query(), 3).unwrap();
+        searcher.search_after(None, query(), 4).unwrap();
+        let term = Term::new("body", crate::util::BytesRef::from_char_sequence("x"));
+        let stats = searcher.term_statistics(&term, 2, 5).unwrap();
+        assert_eq!((stats.doc_freq(), stats.total_term_freq()), (6, 15));
+        assert!(searcher.collection_statistics("body").unwrap().is_none());
+        assert_eq!(
+            *recording.calls.lock().unwrap(),
+            [
+                "search(3)",
+                "searchAfter(false, 3)",
+                "searchAfter(false, 4)",
+                "termStatistics(2, 5)",
+                "collectionStatistics(body)",
+            ]
+        );
+    }
+
+    /// Without overrides the four methods answer the inherited bodies, as
+    /// before the dispatch existed.
+    #[test]
+    fn plain_searcher_answers_the_inherited_bodies() {
+        let searcher = empty_searcher();
+        let term = Term::new("body", crate::util::BytesRef::from_char_sequence("x"));
+        let stats = searcher.term_statistics(&term, 2, 5).unwrap();
+        let inherited = searcher.super_term_statistics(&term, 2, 5).unwrap();
+        assert_eq!(
+            (stats.doc_freq(), stats.total_term_freq()),
+            (inherited.doc_freq(), inherited.total_term_freq())
+        );
+        assert!(searcher.term_statistics(&term, 0, 0).is_err());
+        assert!(searcher.collection_statistics("body").unwrap().is_none());
+        let hits = searcher
+            .search(Arc::new(MatchAllDocsQuery) as Arc<dyn Query>, 1)
+            .unwrap();
+        assert_eq!(hits.score_docs.len(), 0);
     }
 }

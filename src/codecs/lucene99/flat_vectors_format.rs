@@ -16,13 +16,13 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
+    check_footer_after, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
 use crate::codecs::hnsw::flat_vectors::{
     DefaultFlatFieldVectorsWriter, DefaultFlatVectorScorer, DocsWithFieldSet,
     FlatFieldVectorWriter, FlatFieldVectorsWriter, FlatVectorsFormat, FlatVectorsReader,
-    FlatVectorsScorer, FlatVectorsWriter,
+    FlatVectorsScorer, FlatVectorsWriter, SharedFlatFieldVectorsWriter,
 };
 use crate::codecs::knn_vectors::{
     FieldVectorWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter, MergedVectorValues,
@@ -33,7 +33,7 @@ use crate::codecs::lucene95::OrdToDocDISIReaderConfiguration;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::accept_ords_with;
 use crate::index::vector_values::{
     ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, FloatVectorValues, KnnVectorValues,
@@ -41,6 +41,7 @@ use crate::index::vector_values::{
 use crate::index::{segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction};
 use crate::search::vector_scorer::OffHeapVectorScorer;
 use crate::search::{AcceptDocs, DocIdSetIterator, VectorScorer, NO_MORE_DOCS};
+use crate::store::SharedIndexInput;
 use crate::store::{DataAccessHint, DataInput, FileOpenHint, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
 use crate::util::hnsw::scorer::BorrowedBits;
@@ -83,14 +84,30 @@ fn ensure_registered() {
 /// Lucene 9.9 flat vector format.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsFormat`.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Lucene99FlatVectorsFormat {
-    vectors_scorer: DefaultFlatVectorScorer,
+    vectors_scorer: Arc<dyn FlatVectorsScorer>,
+}
+
+impl Default for Lucene99FlatVectorsFormat {
+    fn default() -> Self {
+        Self::new(DefaultFlatVectorScorer::INSTANCE)
+    }
 }
 
 impl Lucene99FlatVectorsFormat {
-    /// Creates a new format instance using the default flat-vector scorer.
-    pub const fn new(vectors_scorer: DefaultFlatVectorScorer) -> Self {
+    /// Creates a new format instance whose writers and readers score with
+    /// `vectors_scorer`.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsFormat(FlatVectorsScorer)`
+    /// (`Lucene99FlatVectorsFormat.java:89-92`): any scorer, the default one
+    /// or another, such as `lucene-codecs`' `FlatBitVectorsScorer`.
+    pub fn new(vectors_scorer: impl FlatVectorsScorer + 'static) -> Self {
+        Self::with_shared_scorer(Arc::new(vectors_scorer))
+    }
+
+    /// [`new`](Self::new) over a scorer the caller already shares.
+    pub fn with_shared_scorer(vectors_scorer: Arc<dyn FlatVectorsScorer>) -> Self {
         Self { vectors_scorer }
     }
 
@@ -99,12 +116,12 @@ impl Lucene99FlatVectorsFormat {
         state: &SegmentWriteState<'a>,
     ) -> Result<Lucene99FlatVectorsWriter> {
         ensure_registered();
-        Lucene99FlatVectorsWriter::new(state, self.vectors_scorer)
+        Lucene99FlatVectorsWriter::new(state, Arc::clone(&self.vectors_scorer))
     }
 
     fn create_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Lucene99FlatVectorsReader> {
         ensure_registered();
-        Lucene99FlatVectorsReader::new(state, self.vectors_scorer)
+        Lucene99FlatVectorsReader::new(state, Arc::clone(&self.vectors_scorer))
     }
 }
 
@@ -129,9 +146,9 @@ impl KnnVectorsFormat for Lucene99FlatVectorsFormat {
 impl FlatVectorsFormat for Lucene99FlatVectorsFormat {
     fn fields_writer_flat(
         &self,
-        state: &SegmentWriteState<'_>,
+        state: &OwnedSegmentWriteState,
     ) -> Result<Box<dyn FlatVectorsWriter>> {
-        Ok(Box::new(self.create_writer(state)?))
+        Ok(Box::new(self.create_writer(&state.borrow())?))
     }
 
     fn fields_reader_flat(
@@ -152,7 +169,10 @@ impl FlatVectorsFormat for Lucene99FlatVectorsFormat {
 pub struct Lucene99FlatVectorsWriter {
     meta: Option<Box<dyn IndexOutput>>,
     vector_data: Option<Box<dyn IndexOutput>>,
-    vector_scorer: DefaultFlatVectorScorer,
+    vector_scorer: Arc<dyn FlatVectorsScorer>,
+    /// `fieldWriterFactory`: builds the per-field storage `addField` hands
+    /// out and `flush` writes.
+    field_writer_factory: FlatFieldWriterFactory,
     fields: Vec<FieldWriterEntry>,
     /// `maxDoc` of the segment being written, or `None` when it was not set
     /// yet at the moment this writer was created.
@@ -184,15 +204,38 @@ impl fmt::Debug for Lucene99FlatVectorsWriter {
     }
 }
 
+/// The per-field storage factory of a [`Lucene99FlatVectorsWriter`]: Java's
+/// `IOFunction<FieldInfo, FlatFieldVectorsWriter<?>> strategyFactory`
+/// (`Lucene99FlatVectorsWriter.java:62, 96-103`), whose answer's element type
+/// follows the field's encoding.
+pub type FlatFieldWriterFactory =
+    Arc<dyn Fn(&FieldInfo) -> Result<FlatFieldVectorWriter> + Send + Sync>;
+
+/// `DefaultFieldWriter::create` (`Lucene99FlatVectorsWriter.java:374-391`):
+/// the factory of the writer built without one, which keeps every vector on
+/// the heap.
+fn default_field_writer(field_info: &FieldInfo) -> Result<FlatFieldVectorWriter> {
+    Ok(match field_info.vector_encoding {
+        VectorEncoding::FLOAT32 => {
+            FlatFieldVectorWriter::Float(Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<
+                Vec<f32>,
+            >::new(
+                field_info.clone()
+            ))))
+        }
+        VectorEncoding::BYTE => {
+            FlatFieldVectorWriter::Byte(Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<
+                Vec<u8>,
+            >::new(field_info.clone()))))
+        }
+    })
+}
+
+/// Java's `record FieldData(FlatFieldVectorsWriter<?> fieldWriter, FieldInfo
+/// fieldInfo)`, split by element type.
 enum FieldWriterEntry {
-    Float(
-        Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<f32>>>>,
-        FieldInfo,
-    ),
-    Byte(
-        Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<u8>>>>,
-        FieldInfo,
-    ),
+    Float(SharedFlatFieldVectorsWriter<Vec<f32>>, FieldInfo),
+    Byte(SharedFlatFieldVectorsWriter<Vec<u8>>, FieldInfo),
 }
 
 impl fmt::Debug for FieldWriterEntry {
@@ -205,10 +248,38 @@ impl fmt::Debug for FieldWriterEntry {
 }
 
 impl Lucene99FlatVectorsWriter {
-    /// Creates a new writer for the given segment write state.
+    /// Constructs a writer that uses the default factory to build per-field
+    /// vector storage, which stores vector data as a list of on-heap arrays,
+    /// one per vector.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter(SegmentWriteState,
+    /// FlatVectorsScorer)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of creating the two outputs and writing their headers.
     pub fn new(
         state: &SegmentWriteState<'_>,
-        vectors_scorer: DefaultFlatVectorScorer,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
+    ) -> Result<Self> {
+        Self::with_field_writer_factory(state, vectors_scorer, Arc::new(default_field_writer))
+    }
+
+    /// Constructs a writer that uses `strategy_factory` to build per-field
+    /// vector storage. The factory is consulted on every `add_field` call;
+    /// merges write directly to the new segment and do not go through it.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter(SegmentWriteState,
+    /// FlatVectorsScorer, IOFunction<FieldInfo, FlatFieldVectorsWriter<?>>)`
+    /// (`Lucene99FlatVectorsWriter.java:96-136`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of creating the two outputs and writing their headers.
+    pub fn with_field_writer_factory(
+        state: &SegmentWriteState<'_>,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
+        strategy_factory: FlatFieldWriterFactory,
     ) -> Result<Self> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
@@ -265,6 +336,7 @@ impl Lucene99FlatVectorsWriter {
             meta: meta_opt,
             vector_data: vector_data_opt,
             vector_scorer: vectors_scorer,
+            field_writer_factory: strategy_factory,
             fields: Vec::new(),
             segment_max_doc: state.segment_info.max_doc().ok(),
             finished: false,
@@ -273,7 +345,7 @@ impl Lucene99FlatVectorsWriter {
 
     fn write_field_float(
         &mut self,
-        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_writer: &mut dyn FlatFieldVectorsWriter<Vec<f32>>,
         field_info: &FieldInfo,
         max_doc: i32,
     ) -> Result<()> {
@@ -283,7 +355,7 @@ impl Lucene99FlatVectorsWriter {
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::FLOAT32)?;
         Self::write_float32_vectors(vector_data.as_mut(), field_writer, field_info)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
-        let docs_with_field = field_writer.docs_with_field_set().clone();
+        let docs_with_field = field_writer.docs_with_field_set().into_owned();
 
         let meta = self.meta.as_mut().ok_or_else(|| {
             LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
@@ -307,12 +379,12 @@ impl Lucene99FlatVectorsWriter {
     /// multiplying, exactly as for an unsorted segment.
     fn write_sorting_field_float(
         &mut self,
-        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_writer: &mut dyn FlatFieldVectorsWriter<Vec<f32>>,
         field_info: &FieldInfo,
         max_doc: i32,
         sort_map: &SorterDocMap,
     ) -> Result<()> {
-        let old_doc_ids = docs_with_field_to_docs(field_writer.docs_with_field_set())?;
+        let old_doc_ids = docs_with_field_to_docs(&field_writer.docs_with_field_set())?;
         let (_old_to_new, ord_map) =
             crate::codecs::knn_vectors::map_old_ord_to_new_ord(&old_doc_ids, sort_map)?;
         let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
@@ -344,12 +416,12 @@ impl Lucene99FlatVectorsWriter {
     /// `BYTE` encoding.
     fn write_sorting_field_byte(
         &mut self,
-        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_writer: &mut dyn FlatFieldVectorsWriter<Vec<u8>>,
         field_info: &FieldInfo,
         max_doc: i32,
         sort_map: &SorterDocMap,
     ) -> Result<()> {
-        let old_doc_ids = docs_with_field_to_docs(field_writer.docs_with_field_set())?;
+        let old_doc_ids = docs_with_field_to_docs(&field_writer.docs_with_field_set())?;
         let (_old_to_new, ord_map) =
             crate::codecs::knn_vectors::map_old_ord_to_new_ord(&old_doc_ids, sort_map)?;
         let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
@@ -376,25 +448,20 @@ impl Lucene99FlatVectorsWriter {
     }
 
     /// Writes every buffered float vector to the vector-data file, in the
-    /// order they were added.
-    ///
-    /// `field_info` is unused: Java needs it only to size the little-endian
-    /// `ByteBuffer` it funnels each vector through
-    /// (`Lucene99FlatVectorsWriter.java:205-215`), and
-    /// [`IndexOutput::write_floats`] writes the same little-endian bytes with
-    /// no buffer of its own. The parameter is kept so the two signatures line
-    /// up.
+    /// order they were added: each vector goes through a little-endian
+    /// buffer of `field_info.getVectorDimension() * Float.BYTES` bytes and
+    /// one `writeBytes` call (`Lucene99FlatVectorsWriter.java:205-215`).
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeFloat32Vectors`.
     fn write_float32_vectors(
         vector_data: &mut dyn IndexOutput,
-        field_writer: &DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_writer: &dyn FlatFieldVectorsWriter<Vec<f32>>,
         field_info: &FieldInfo,
     ) -> Result<()> {
-        let _ = field_info;
-        for vector in field_writer.vectors() {
-            vector_data.write_floats(vector, 0, vector.len())?;
+        let mut buffer = Vec::with_capacity(field_info.vector_dimension as usize * 4);
+        for vector in field_writer.vectors().iter() {
+            write_float_vector(vector_data, &mut buffer, vector)?;
         }
         Ok(())
     }
@@ -406,9 +473,9 @@ impl Lucene99FlatVectorsWriter {
     /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeByteVectors`.
     fn write_byte_vectors(
         vector_data: &mut dyn IndexOutput,
-        field_writer: &DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_writer: &dyn FlatFieldVectorsWriter<Vec<u8>>,
     ) -> Result<()> {
-        for vector in field_writer.vectors() {
+        for vector in field_writer.vectors().iter() {
             vector_data.write_bytes(vector, 0, vector.len())?;
         }
         Ok(())
@@ -434,6 +501,11 @@ impl Lucene99FlatVectorsWriter {
                 break;
             }
             let binary_value = byte_vector_values.vector_value(iter.index())?;
+            debug_assert!(
+                binary_value.len()
+                    == byte_vector_values.dimension() as usize
+                        * VectorEncoding::BYTE.byte_size() as usize
+            );
             output.write_bytes(&binary_value, 0, binary_value.len())?;
             docs_with_field.add(doc_v)?;
         }
@@ -447,10 +519,9 @@ impl Lucene99FlatVectorsWriter {
     /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeVectorData`
     /// (`Lucene99FlatVectorsWriter.java:336-351`), which
     /// [`FlatVectorsWriter::merge_one_flat_vector_field`] calls with the merged
-    /// view [`MergedVectorValues::merge_float_vector_values`] builds. Java funnels
-    /// each vector through a little-endian `ByteBuffer` sized from
-    /// `dimension()`; [`IndexOutput::write_floats`] writes the same bytes
-    /// without one.
+    /// view [`MergedVectorValues::merge_float_vector_values`] builds. Each
+    /// vector goes through a little-endian buffer sized from `dimension()`
+    /// and one `writeBytes` call, as in Java.
     ///
     /// # Errors
     ///
@@ -462,7 +533,8 @@ impl Lucene99FlatVectorsWriter {
         output: &mut dyn IndexOutput,
         float_vector_values: &dyn FloatVectorValues,
     ) -> Result<DocsWithFieldSet> {
-        float_vector_values.try_dimension()?;
+        let dimension = float_vector_values.try_dimension()?;
+        let mut buffer = Vec::with_capacity(dimension as usize * 4);
         let mut docs_with_field = DocsWithFieldSet::new();
         let mut iter = float_vector_values.iterator()?;
         loop {
@@ -471,7 +543,7 @@ impl Lucene99FlatVectorsWriter {
                 break;
             }
             let value = float_vector_values.vector_value(iter.index())?;
-            output.write_floats(&value, 0, value.len())?;
+            write_float_vector(output, &mut buffer, &value)?;
             docs_with_field.add(doc_v)?;
         }
         Ok(docs_with_field)
@@ -482,12 +554,15 @@ impl Lucene99FlatVectorsWriter {
     /// Equivalent to `Lucene99FlatVectorsWriter.writeSortedFloat32Vectors(FlatFieldVectorsWriter, FieldInfo, int[])`.
     fn write_sorted_float32_vectors(
         vector_data: &mut dyn IndexOutput,
-        field_writer: &DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_writer: &dyn FlatFieldVectorsWriter<Vec<f32>>,
         ord_map: &[i32],
     ) -> Result<()> {
+        // `fieldWriter.getVectors().get(ordinal)`, the list read once.
+        let vectors = field_writer.vectors();
+        let mut buffer = Vec::new();
         for &ordinal in ord_map {
-            let vector = &field_writer.vectors()[ordinal as usize];
-            vector_data.write_floats(vector, 0, vector.len())?;
+            let vector = &vectors[ordinal as usize];
+            write_float_vector(vector_data, &mut buffer, vector)?;
         }
         Ok(())
     }
@@ -497,11 +572,13 @@ impl Lucene99FlatVectorsWriter {
     /// Equivalent to `Lucene99FlatVectorsWriter.writeSortedByteVectors(FlatFieldVectorsWriter, int[])`.
     fn write_sorted_byte_vectors(
         vector_data: &mut dyn IndexOutput,
-        field_writer: &DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_writer: &dyn FlatFieldVectorsWriter<Vec<u8>>,
         ord_map: &[i32],
     ) -> Result<()> {
+        // `fieldWriter.getVectors().get(ordinal)`, the list read once.
+        let vectors = field_writer.vectors();
         for &ordinal in ord_map {
-            let vector = &field_writer.vectors()[ordinal as usize];
+            let vector = &vectors[ordinal as usize];
             vector_data.write_bytes(vector, 0, vector.len())?;
         }
         Ok(())
@@ -509,7 +586,7 @@ impl Lucene99FlatVectorsWriter {
 
     fn write_field_byte(
         &mut self,
-        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_writer: &mut dyn FlatFieldVectorsWriter<Vec<u8>>,
         field_info: &FieldInfo,
         max_doc: i32,
     ) -> Result<()> {
@@ -519,7 +596,7 @@ impl Lucene99FlatVectorsWriter {
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::BYTE)?;
         Self::write_byte_vectors(vector_data.as_mut(), field_writer)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
-        let docs_with_field = field_writer.docs_with_field_set().clone();
+        let docs_with_field = field_writer.docs_with_field_set().into_owned();
 
         let meta = self.meta.as_mut().ok_or_else(|| {
             LuceneError::illegal_state("Lucene99FlatVectorsWriter is already closed".to_string())
@@ -555,9 +632,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                     })?;
                     match sort_map {
                         Some(sort_map) => {
-                            self.write_sorting_field_float(&mut guard, &info, max_doc, sort_map)?
+                            self.write_sorting_field_float(&mut *guard, &info, max_doc, sort_map)?
                         }
-                        None => self.write_field_float(&mut guard, &info, max_doc)?,
+                        None => self.write_field_float(&mut *guard, &info, max_doc)?,
                     }
                     guard.finish()?;
                 }
@@ -569,9 +646,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                     })?;
                     match sort_map {
                         Some(sort_map) => {
-                            self.write_sorting_field_byte(&mut guard, &info, max_doc, sort_map)?
+                            self.write_sorting_field_byte(&mut *guard, &info, max_doc, sort_map)?
                         }
-                        None => self.write_field_byte(&mut guard, &info, max_doc)?,
+                        None => self.write_field_byte(&mut *guard, &info, max_doc)?,
                     }
                     guard.finish()?;
                 }
@@ -647,32 +724,23 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
                 "Lucene99FlatVectorsWriter is already finished".to_string(),
             ));
         }
-        match field_info.vector_encoding {
-            VectorEncoding::FLOAT32 => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(
-                    field_info.clone(),
-                )));
-                self.fields.push(FieldWriterEntry::Float(
-                    Arc::clone(&writer),
-                    field_info.clone(),
-                ));
-                Ok(FlatFieldVectorWriter::Float(writer))
-            }
-            VectorEncoding::BYTE => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(
-                    field_info.clone(),
-                )));
-                self.fields.push(FieldWriterEntry::Byte(
-                    Arc::clone(&writer),
-                    field_info.clone(),
-                ));
-                Ok(FlatFieldVectorWriter::Byte(writer))
-            }
+        // `var newFieldWriter = fieldWriterFactory.apply(fieldInfo)`
+        let new_field_writer = (self.field_writer_factory)(field_info)?;
+        match &new_field_writer {
+            FlatFieldVectorWriter::Float(writer) => self.fields.push(FieldWriterEntry::Float(
+                Arc::clone(writer),
+                field_info.clone(),
+            )),
+            FlatFieldVectorWriter::Byte(writer) => self.fields.push(FieldWriterEntry::Byte(
+                Arc::clone(writer),
+                field_info.clone(),
+            )),
         }
+        Ok(new_field_writer)
     }
 
     fn get_flat_vector_scorer(&self) -> &dyn FlatVectorsScorer {
-        &self.vector_scorer
+        &*self.vector_scorer
     }
 
     /// Writes one field's merged vectors straight into the new segment: the
@@ -728,6 +796,23 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
 
 /// `Lucene99FlatVectorsWriter.close()` (`Lucene99FlatVectorsWriter.java:353-356`):
 /// `IOUtils.close(meta, vectorData)`.
+/// `buffer.asFloatBuffer().put(vector); out.writeBytes(buffer.array(),
+/// buffer.array().length)` (`Lucene99FlatVectorsWriter.java:208-213`,
+/// `247-253`, `339-347`): the vector's little-endian bytes in one
+/// `writeBytes` call. A wrapping output (e.g. `MockIndexOutputWrapper`)
+/// sees one write per vector, as in Java, not one per byte.
+fn write_float_vector(
+    out: &mut dyn IndexOutput,
+    buffer: &mut Vec<u8>,
+    vector: &[f32],
+) -> Result<()> {
+    buffer.clear();
+    for v in vector {
+        buffer.extend_from_slice(&v.to_le_bytes());
+    }
+    out.write_bytes(buffer, 0, buffer.len())
+}
+
 fn close_outputs(
     meta: &mut Option<Box<dyn IndexOutput>>,
     vector_data: &mut Option<Box<dyn IndexOutput>>,
@@ -799,9 +884,9 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
     match ordinal {
         0 => Ok(VectorEncoding::BYTE),
         1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid VectorEncoding ordinal: {ordinal}"
-        ))),
+        )))),
     }
 }
 
@@ -811,9 +896,9 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
         1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
         2 => Ok(VectorSimilarityFunction::COSINE),
         3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid VectorSimilarityFunction ordinal: {ordinal}"
-        ))),
+        )))),
     }
 }
 
@@ -826,8 +911,8 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
 /// Equivalent to `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsReader`.
 pub struct Lucene99FlatVectorsReader {
     fields: HashMap<i32, FieldEntry>,
-    vector_scorer: DefaultFlatVectorScorer,
-    vector_data: Box<dyn IndexInput>,
+    vector_scorer: Arc<dyn FlatVectorsScorer>,
+    vector_data: SharedIndexInput,
     field_infos: FieldInfos,
     data_context: Box<dyn crate::store::IOContext>,
 }
@@ -862,7 +947,7 @@ impl Lucene99FlatVectorsReader {
     /// passes `DataAccessHint.RANDOM`.
     pub fn new(
         state: &SegmentReadState<'_>,
-        vectors_scorer: DefaultFlatVectorScorer,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
     ) -> Result<Self> {
         Self::with_access_hint(state, vectors_scorer, Some(DataAccessHint::Random))
     }
@@ -879,7 +964,7 @@ impl Lucene99FlatVectorsReader {
     /// Returns whatever reading the metadata or opening the data file raises.
     pub fn with_access_hint(
         state: &SegmentReadState<'_>,
-        vectors_scorer: DefaultFlatVectorScorer,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
         access_hint: Option<DataAccessHint>,
     ) -> Result<Self> {
         let (version_meta, fields) = Self::read_metadata(state)?;
@@ -902,7 +987,7 @@ impl Lucene99FlatVectorsReader {
         Ok(Self {
             fields,
             vector_scorer: vectors_scorer,
-            vector_data,
+            vector_data: SharedIndexInput::new(vector_data),
             field_infos: state.field_infos.clone(),
             data_context,
         })
@@ -926,16 +1011,23 @@ impl Lucene99FlatVectorsReader {
             META_EXTENSION,
         );
         let mut meta_checksum = state.directory.open_checksum_input(&meta_file_name)?;
-        let version_meta = check_index_header(
-            meta_checksum.as_mut(),
-            META_CODEC_NAME,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        )?;
-        let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
-        check_footer(meta_checksum.as_mut())?;
+        // The `try` block of the try-with-resources over `meta`, whose failure
+        // `CodecUtil.checkFooter(meta, priorE)` weighs in the `finally`
+        // (`Lucene99FlatVectorsReader.java:115-131`).
+        let read = (|| -> Result<_> {
+            let version_meta = check_index_header(
+                meta_checksum.as_mut(),
+                META_CODEC_NAME,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
+            Ok((version_meta, fields))
+        })();
+        let read = check_footer_after(meta_checksum.as_mut(), read);
+        let (version_meta, fields) = crate::store::close_after(meta_checksum.as_mut(), read)?;
         Ok((version_meta, fields))
     }
 
@@ -967,9 +1059,9 @@ impl Lucene99FlatVectorsReader {
                 &state.segment_suffix,
             )?;
             if version_meta != version_vector_data {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-                )));
+                ))));
             }
             retrieve_checksum(input.as_mut())?;
             Ok(())
@@ -990,14 +1082,15 @@ impl Lucene99FlatVectorsReader {
     fn update_io_context_for_merge(&self) -> Result<()> {
         let sequential: Arc<dyn FileOpenHint> = Arc::new(DataAccessHint::Sequential);
         self.vector_data
+            .read()
             .update_io_context(self.data_context.with_hints(&[sequential]).as_ref())
     }
 
     fn clone_reader(&self) -> Result<Self> {
         Ok(Self {
             fields: self.fields.clone(),
-            vector_scorer: self.vector_scorer,
-            vector_data: self.vector_data.clone_input()?,
+            vector_scorer: Arc::clone(&self.vector_scorer),
+            vector_data: SharedIndexInput::new(self.vector_data.clone_input()?),
             field_infos: self.field_infos.clone(),
             data_context: self.data_context.with_hints(self.data_context.hints()),
         })
@@ -1007,9 +1100,9 @@ impl Lucene99FlatVectorsReader {
         let info = self
             .field_infos
             .field_info(field)
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("field=\"{field}\" not found")))?;
+            .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))?;
         self.fields.get(&info.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field=\"{field}\" has no vector values"))
+            LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
         })
     }
 
@@ -1020,7 +1113,7 @@ impl Lucene99FlatVectorsReader {
     ) -> Result<&FieldEntry> {
         let entry = self.get_field_entry_or_throw(field)?;
         if entry.vector_encoding != expected_encoding {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as {entry_vector_encoding:?}, expected {expected_encoding:?}",
                 entry_vector_encoding = entry.vector_encoding,
             )));
@@ -1040,12 +1133,12 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         let entry = self.get_field_entry(field, VectorEncoding::FLOAT32)?;
         OffHeapFloatVectorValues::load(
             entry.similarity_function,
-            Arc::new(self.vector_scorer),
+            Arc::clone(&self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )
         .map(Some)
     }
@@ -1054,12 +1147,12 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?;
         OffHeapByteVectorValues::load(
             entry.similarity_function,
-            Arc::new(self.vector_scorer),
+            Arc::clone(&self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )
         .map(Some)
     }
@@ -1114,12 +1207,13 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     /// needs.
     fn finish_merge(&mut self) -> Result<()> {
         self.vector_data
+            .read()
             .update_io_context(self.data_context.as_ref())
     }
 
     /// Equivalent to `Lucene99FlatVectorsReader.close()`
     /// (`Lucene99FlatVectorsReader.java:307-310`): `IOUtils.close(vectorData)`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         IOUtils::close([Some(|| self.vector_data.close())])
     }
 
@@ -1176,7 +1270,7 @@ impl crate::util::Accountable for Lucene99FlatVectorsReader {
 
 impl FlatVectorsReader for Lucene99FlatVectorsReader {
     fn get_flat_vector_scorer(&self, _field: &str) -> Result<Box<dyn FlatVectorsScorer>> {
-        Ok(Box::new(self.vector_scorer))
+        Ok(Box::new(Arc::clone(&self.vector_scorer)))
     }
 
     fn get_random_vector_scorer_float(
@@ -1187,12 +1281,12 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
         let entry = self.get_field_entry(field, VectorEncoding::FLOAT32)?;
         let values = OffHeapFloatVectorValues::load(
             entry.similarity_function,
-            Arc::new(self.vector_scorer),
+            Arc::clone(&self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )?;
         self.vector_scorer
             .get_random_vector_scorer_float(entry.similarity_function, values, target)
@@ -1206,12 +1300,12 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?;
         let values = OffHeapByteVectorValues::load(
             entry.similarity_function,
-            Arc::new(self.vector_scorer),
+            Arc::clone(&self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
             entry.vector_data_length,
-            self.vector_data.as_ref(),
+            &**self.vector_data.read(),
         )?;
         self.vector_scorer
             .get_random_vector_scorer_byte(entry.similarity_function, values, target)
@@ -1238,7 +1332,9 @@ fn read_fields(
         let info = field_infos
             .field_info_by_number(field_number)
             .ok_or_else(|| {
-                LuceneError::CorruptIndex(format!("invalid field number: {field_number}"))
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "invalid field number: {field_number}"
+                )))
             })?;
         let entry = FieldEntry::create(input, info)?;
         fields.insert(info.number, entry);
@@ -1258,16 +1354,16 @@ impl FieldEntry {
         let ord_to_doc = OrdToDocDISIReaderConfiguration::read_stored_meta(input, size)?;
 
         if similarity_function != field_info.vector_similarity_function {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "inconsistent vector similarity function for field=\"{}\"",
                 field_info.name
-            )));
+            ))));
         }
         if dimension != field_info.vector_dimension {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "inconsistent vector dimension for field=\"{}\"",
                 field_info.name
-            )));
+            ))));
         }
 
         let byte_size = vector_encoding.byte_size();
@@ -1275,16 +1371,16 @@ impl FieldEntry {
             .checked_mul(dimension as i64)
             .and_then(|v| v.checked_mul(byte_size as i64))
             .ok_or_else(|| {
-                LuceneError::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "vector data length overflow for field=\"{}\"",
                     field_info.name
-                ))
+                )))
             })?;
         if expected_length != vector_data_length {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "vector data length {vector_data_length} does not match size={size} * dim={dimension} * byteSize={byte_size} = {expected_length} for field=\"{}\"",
                 field_info.name
-            )));
+            ))));
         }
 
         Ok(Self {
@@ -1325,6 +1421,10 @@ struct OffHeapFloatVectorValues {
     /// `DirectMonotonicReader` the constructor builds
     /// (`OffHeapFloatVectorValues.java:225`, `OffHeapByteVectorValues.java:229`).
     ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
+    /// call wraps (`OffHeapFloatVectorValues.java:205, 226-233, 272-274`,
+    /// `OffHeapByteVectorValues.java:229-237, 258-260`); `None` when dense.
+    disi: Option<Arc<Mutex<IndexedDISI>>>,
     /// Equivalent to the `protected final VectorSimilarityFunction
     /// similarityFunction` field.
     similarity_function: VectorSimilarityFunction,
@@ -1364,6 +1464,7 @@ impl OffHeapFloatVectorValues {
                 config: None,
                 data_input: None,
                 ord_to_doc: None,
+                disi: None,
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1378,6 +1479,8 @@ impl OffHeapFloatVectorValues {
                 // Built only for a sparse field, as Java builds it only in the
                 // sparse constructor (`OffHeapFloatVectorValues.java:225`).
                 ord_to_doc: Some(config.get_direct_monotonic_reader(vector_data)?),
+                // `this.disi = new IndexedDISI(dataIn, ...)` of the sparse constructor.
+                disi: Some(Arc::new(Mutex::new(config.get_indexed_disi(vector_data)?))),
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1410,6 +1513,10 @@ impl OffHeapFloatVectorValues {
                 config: Some(config.clone()),
                 data_input: Some(data_input.clone_input()?),
                 ord_to_doc: self.ord_to_doc.clone(),
+                // `copy()` builds a new sparse instance, with its own disi.
+                disi: Some(Arc::new(Mutex::new(
+                    config.get_indexed_disi(data_input.as_ref())?,
+                ))),
                 similarity_function: self.similarity_function,
                 flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
@@ -1421,6 +1528,7 @@ impl OffHeapFloatVectorValues {
                 config: None,
                 data_input: None,
                 ord_to_doc: None,
+                disi: None,
                 similarity_function: self.similarity_function,
                 flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
@@ -1431,6 +1539,33 @@ impl OffHeapFloatVectorValues {
 impl KnnVectorValues for OffHeapFloatVectorValues {
     fn dimension(&self) -> i32 {
         self.dimension
+    }
+
+    /// Prefetches the vectors of the first `num_ords` ordinals of
+    /// `ords_to_prefetch`, bounded by its length; nothing for a `None`
+    /// (Java's `null`) array or a single ordinal.
+    ///
+    /// Equivalent to `OffHeapFloatVectorValues.prefetch(int[], int)`
+    /// (`OffHeapFloatVectorValues.java:89-104`).
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
+        let Some(ords_to_prefetch) = ords_to_prefetch else {
+            return Ok(());
+        };
+        let final_num_ords = num_ords.min(ords_to_prefetch.len() as i32);
+        if final_num_ords <= 1 {
+            return Ok(());
+        }
+
+        // 1. calculate offset and prefetch immediately
+        let slice = self
+            .slice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for &ord in &ords_to_prefetch[..final_num_ords as usize] {
+            let offset = i64::from(ord) * i64::from(self.byte_size);
+            slice.prefetch(offset, i64::from(self.byte_size))?;
+        }
+        Ok(())
     }
 
     fn size(&self) -> i32 {
@@ -1460,20 +1595,12 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
     }
 
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        match &self.config {
-            Some(config) => {
-                let data_input = self
-                    .data_input
-                    .as_ref()
-                    .expect("INVARIANT: sparse values have a data input");
-                // `IndexedDISI.asDocIndexIterator(disi)` over
-                // `configuration.getIndexedDISI(dataIn)`
-                // (`OffHeapFloatVectorValues.java:273`,
-                // `OffHeapByteVectorValues.java:259`).
-                Ok(IndexedDISI::as_doc_index_iterator(
-                    config.get_indexed_disi(data_input.as_ref())?,
-                ))
-            }
+        match &self.disi {
+            // `IndexedDISI.asDocIndexIterator(disi)` over the instance's one
+            // disi (`OffHeapFloatVectorValues.java:272-274`,
+            // `OffHeapByteVectorValues.java:258-260`): successive iterators
+            // share its position.
+            Some(disi) => Ok(IndexedDISI::as_doc_index_iterator(Arc::clone(disi))),
             None => Ok(Box::new(DenseDocIndexIterator::new(self.size))),
         }
     }
@@ -1491,7 +1618,7 @@ impl OffHeapFloatVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the mutex was poisoned.
+    /// Returns [`LuceneErrorKind::IllegalState`] when the mutex was poisoned.
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues#getSlice`.
@@ -1511,7 +1638,7 @@ impl FloatVectorValues for OffHeapFloatVectorValues {
         let mut value = vec![0.0f32; self.dimension as usize];
         let mut slice = self.get_slice()?;
         slice.seek((ord as i64) * self.byte_size as i64)?;
-        slice.read_floats(&mut value, 0, self.dimension as usize)?;
+        slice.read_floats(Some(&mut value), 0, self.dimension as usize)?;
         Ok(value)
     }
 
@@ -1561,7 +1688,7 @@ impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::copy".to_string(),
         ))
     }
@@ -1586,14 +1713,14 @@ impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
 impl FloatVectorValues for EmptyOffHeapFloatVectorValues {
     /// Java's `vectorValue(int)` throws `UnsupportedOperationException`.
     fn vector_value(&self, _ord: i32) -> Result<Vec<f32>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::vector_value".to_string(),
         ))
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::copy".to_string(),
         ))
     }
@@ -1625,6 +1752,10 @@ struct OffHeapByteVectorValues {
     /// `DirectMonotonicReader` the constructor builds
     /// (`OffHeapFloatVectorValues.java:225`, `OffHeapByteVectorValues.java:229`).
     ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// The `IndexedDISI disi` of a sparse field, which every `iterator()`
+    /// call wraps (`OffHeapFloatVectorValues.java:205, 226-233, 272-274`,
+    /// `OffHeapByteVectorValues.java:229-237, 258-260`); `None` when dense.
+    disi: Option<Arc<Mutex<IndexedDISI>>>,
     /// Equivalent to the `protected final VectorSimilarityFunction
     /// similarityFunction` field.
     similarity_function: VectorSimilarityFunction,
@@ -1664,6 +1795,7 @@ impl OffHeapByteVectorValues {
                 config: None,
                 data_input: None,
                 ord_to_doc: None,
+                disi: None,
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1678,6 +1810,8 @@ impl OffHeapByteVectorValues {
                 // Built only for a sparse field, as Java builds it only in the
                 // sparse constructor (`OffHeapFloatVectorValues.java:225`).
                 ord_to_doc: Some(config.get_direct_monotonic_reader(vector_data)?),
+                // `this.disi = new IndexedDISI(dataIn, ...)` of the sparse constructor.
+                disi: Some(Arc::new(Mutex::new(config.get_indexed_disi(vector_data)?))),
                 similarity_function,
                 flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
@@ -1710,6 +1844,10 @@ impl OffHeapByteVectorValues {
                 config: Some(config.clone()),
                 data_input: Some(data_input.clone_input()?),
                 ord_to_doc: self.ord_to_doc.clone(),
+                // `copy()` builds a new sparse instance, with its own disi.
+                disi: Some(Arc::new(Mutex::new(
+                    config.get_indexed_disi(data_input.as_ref())?,
+                ))),
                 similarity_function: self.similarity_function,
                 flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
@@ -1721,6 +1859,7 @@ impl OffHeapByteVectorValues {
                 config: None,
                 data_input: None,
                 ord_to_doc: None,
+                disi: None,
                 similarity_function: self.similarity_function,
                 flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
@@ -1731,6 +1870,33 @@ impl OffHeapByteVectorValues {
 impl KnnVectorValues for OffHeapByteVectorValues {
     fn dimension(&self) -> i32 {
         self.dimension
+    }
+
+    /// Prefetches the vectors of the first `num_ords` ordinals of
+    /// `ords_to_prefetch`, bounded by its length; nothing for a `None`
+    /// (Java's `null`) array or a single ordinal.
+    ///
+    /// Equivalent to `OffHeapByteVectorValues.prefetch(int[], int)`
+    /// (`OffHeapByteVectorValues.java:85-99`).
+    fn prefetch(&self, ords_to_prefetch: Option<&[i32]>, num_ords: i32) -> Result<()> {
+        let Some(ords_to_prefetch) = ords_to_prefetch else {
+            return Ok(());
+        };
+        let final_num_ords = num_ords.min(ords_to_prefetch.len() as i32);
+        if final_num_ords <= 1 {
+            return Ok(());
+        }
+
+        // 1. calculate offset and prefetch immediately
+        let slice = self
+            .slice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for &ord in &ords_to_prefetch[..final_num_ords as usize] {
+            let offset = i64::from(ord) * i64::from(self.byte_size);
+            slice.prefetch(offset, i64::from(self.byte_size))?;
+        }
+        Ok(())
     }
 
     fn size(&self) -> i32 {
@@ -1760,20 +1926,12 @@ impl KnnVectorValues for OffHeapByteVectorValues {
     }
 
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        match &self.config {
-            Some(config) => {
-                let data_input = self
-                    .data_input
-                    .as_ref()
-                    .expect("INVARIANT: sparse values have a data input");
-                // `IndexedDISI.asDocIndexIterator(disi)` over
-                // `configuration.getIndexedDISI(dataIn)`
-                // (`OffHeapFloatVectorValues.java:273`,
-                // `OffHeapByteVectorValues.java:259`).
-                Ok(IndexedDISI::as_doc_index_iterator(
-                    config.get_indexed_disi(data_input.as_ref())?,
-                ))
-            }
+        match &self.disi {
+            // `IndexedDISI.asDocIndexIterator(disi)` over the instance's one
+            // disi (`OffHeapFloatVectorValues.java:272-274`,
+            // `OffHeapByteVectorValues.java:258-260`): successive iterators
+            // share its position.
+            Some(disi) => Ok(IndexedDISI::as_doc_index_iterator(Arc::clone(disi))),
             None => Ok(Box::new(DenseDocIndexIterator::new(self.size))),
         }
     }
@@ -1791,7 +1949,7 @@ impl OffHeapByteVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the mutex was poisoned.
+    /// Returns [`LuceneErrorKind::IllegalState`] when the mutex was poisoned.
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues#getSlice`.
@@ -1813,11 +1971,11 @@ impl OffHeapByteVectorValues {
     /// # Errors
     ///
     /// Returns whatever seeking or reading the slice raises, and
-    /// [`LuceneError::IllegalState`] when the slice mutex was poisoned.
+    /// [`LuceneErrorKind::IllegalState`] when the slice mutex was poisoned.
     fn read_value(&self, target_ord: i32, value: &mut [u8]) -> Result<()> {
         let mut slice = self.get_slice()?;
         slice.seek((target_ord as i64) * self.byte_size as i64)?;
-        slice.read_bytes(value, 0, self.byte_size as usize)
+        slice.read_bytes(Some(value), 0, self.byte_size as usize)
     }
 }
 
@@ -1878,7 +2036,7 @@ impl KnnVectorValues for EmptyOffHeapByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::copy".to_string(),
         ))
     }
@@ -1903,14 +2061,14 @@ impl KnnVectorValues for EmptyOffHeapByteVectorValues {
 impl ByteVectorValues for EmptyOffHeapByteVectorValues {
     /// Java's `vectorValue(int)` throws `UnsupportedOperationException`.
     fn vector_value(&self, _ord: i32) -> Result<Vec<u8>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::vector_value".to_string(),
         ))
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::copy".to_string(),
         ))
     }
@@ -1919,6 +2077,72 @@ impl ByteVectorValues for EmptyOffHeapByteVectorValues {
     fn scorer(&self, _query: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
         Ok(None)
     }
+}
+
+/// Creates the off-heap values of a dense float field, whose `size` vectors
+/// of `dimension` components are stored back to back in `slice`,
+/// `byte_size` bytes each.
+///
+/// Equivalent to the public constructor `new
+/// OffHeapFloatVectorValues.DenseOffHeapVectorValues(dimension, size, slice,
+/// byteSize, flatVectorsScorer, similarityFunction)`
+/// (`OffHeapFloatVectorValues.java:145-155`), which `load` calls for a dense
+/// configuration and Lucene's tests call directly. The values class itself
+/// is private to this module (see [`OffHeapFloatVectorValues`]), so it is
+/// handed back as the [`FloatVectorValues`] it implements.
+pub fn new_dense_off_heap_float_vector_values(
+    dimension: i32,
+    size: i32,
+    slice: Box<dyn IndexInput>,
+    byte_size: i32,
+    flat_vectors_scorer: Arc<dyn FlatVectorsScorer>,
+    similarity_function: VectorSimilarityFunction,
+) -> Box<dyn FloatVectorValues> {
+    Box::new(OffHeapFloatVectorValues {
+        dimension,
+        size,
+        byte_size,
+        slice: Mutex::new(slice),
+        config: None,
+        data_input: None,
+        ord_to_doc: None,
+        disi: None,
+        similarity_function,
+        flat_vectors_scorer,
+    })
+}
+
+/// Creates the off-heap values of a dense byte field, whose `size` vectors
+/// of `dimension` components are stored back to back in `slice`,
+/// `byte_size` bytes each.
+///
+/// Equivalent to the public constructor `new
+/// OffHeapByteVectorValues.DenseOffHeapVectorValues(dimension, size, slice,
+/// byteSize, flatVectorsScorer, vectorSimilarityFunction)`
+/// (`OffHeapByteVectorValues.java:149-158`), which `load` calls for a dense
+/// configuration and Lucene's tests call directly. The values class itself
+/// is private to this module (see [`OffHeapByteVectorValues`]), so it is
+/// handed back as the [`ByteVectorValues`] it implements.
+pub fn new_dense_off_heap_byte_vector_values(
+    dimension: i32,
+    size: i32,
+    slice: Box<dyn IndexInput>,
+    byte_size: i32,
+    flat_vectors_scorer: Arc<dyn FlatVectorsScorer>,
+    similarity_function: VectorSimilarityFunction,
+) -> Box<dyn ByteVectorValues> {
+    Box::new(OffHeapByteVectorValues {
+        dimension,
+        size,
+        byte_size,
+        slice: Mutex::new(slice),
+        config: None,
+        data_input: None,
+        ord_to_doc: None,
+        disi: None,
+        similarity_function,
+        flat_vectors_scorer,
+    })
 }
 
 /// The `getAcceptOrds(Bits)` of an off-heap values class: `acceptDocs` itself
@@ -2057,7 +2281,7 @@ pub(crate) mod tests {
             self.inner.obtain_lock(name)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.inner.close()
         }
 
@@ -2083,7 +2307,7 @@ pub(crate) mod tests {
             self.inner.read_byte()
         }
 
-        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
             self.inner.read_bytes(b, offset, len)
         }
 
@@ -2163,7 +2387,8 @@ pub(crate) mod tests {
             make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let mut float_writer = match KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?
             {
                 FieldVectorWriter::Float(w) => w,
@@ -2206,7 +2431,8 @@ pub(crate) mod tests {
 
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let mut float_writer = match KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?
             {
                 FieldVectorWriter::Float(w) => w,
@@ -2260,7 +2486,10 @@ pub(crate) mod tests {
         let empty = MergedFloat32VectorValues::new(Vec::new(), &state).unwrap();
         assert!(matches!(
             Lucene99FlatVectorsWriter::write_vector_data(output.as_mut(), &empty),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert_eq!(output.file_pointer(), 0);
 
@@ -2330,6 +2559,141 @@ pub(crate) mod tests {
             HashMap::new(),
             crate::search::Sort::new(),
         )
+    }
+
+    /// A sparse field's values keep one `IndexedDISI`, which every
+    /// `iterator()` call wraps (`OffHeapFloatVectorValues.java:272-274`,
+    /// `OffHeapByteVectorValues.java:258-260`): a second iterator continues
+    /// where the first one stopped, as `BaseKnnVectorsFormatTestCase
+    /// .testSortedIndexBytes` relies on. Documents 0, 2 and 3 of 4 hold a
+    /// vector.
+    #[test]
+    fn sparse_iterators_share_one_disi() {
+        use crate::codecs::{register_codec, Lucene104Codec};
+        use crate::document::{Document, KnnByteVectorField, KnnFloatVectorField};
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..4u8 {
+            let mut doc = Document::new();
+            if i != 1 {
+                doc.add(Box::new(
+                    KnnFloatVectorField::with_euclidean("f", &[f32::from(i), 1.0]).unwrap(),
+                ));
+                doc.add(Box::new(
+                    KnnByteVectorField::with_euclidean("b", &[i, 1]).unwrap(),
+                ));
+            }
+            writer.add_document(&doc).unwrap();
+        }
+        writer.force_merge(1).unwrap();
+        let reader = crate::index::directory_reader::open_with_writer(&*writer).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let floats = leaf.get_float_vector_values("f").unwrap().unwrap();
+        let bytes = leaf.get_byte_vector_values("b").unwrap().unwrap();
+        let mut float_docs = Vec::new();
+        let mut byte_docs = Vec::new();
+        for _ in 0..4 {
+            float_docs.push(floats.iterator().unwrap().next_doc().unwrap());
+            byte_docs.push(bytes.iterator().unwrap().next_doc().unwrap());
+        }
+        assert_eq!(float_docs, [0, 2, 3, NO_MORE_DOCS]);
+        assert_eq!(byte_docs, [0, 2, 3, NO_MORE_DOCS]);
+        drop((floats, bytes, leaves));
+        reader.close().unwrap();
+        writer.close().unwrap();
+    }
+
+    /// An output that counts the `writeByte`/`writeBytes` calls it receives:
+    /// the calls a `MockIndexOutputWrapper` draws from its random state for.
+    struct CountingOutput {
+        data: Vec<u8>,
+        calls: usize,
+    }
+
+    impl crate::store::DataOutput for CountingOutput {
+        fn write_byte(&mut self, b: u8) -> Result<()> {
+            self.calls += 1;
+            self.data.push(b);
+            Ok(())
+        }
+
+        fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+            self.calls += 1;
+            self.data.extend_from_slice(&b[offset..offset + len]);
+            Ok(())
+        }
+    }
+
+    impl IndexOutput for CountingOutput {
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.data.len() as i64
+        }
+
+        fn checksum(&self) -> Result<i64> {
+            Ok(0)
+        }
+
+        fn resource_description(&self) -> &str {
+            "counting"
+        }
+
+        fn name(&self) -> &str {
+            "counting"
+        }
+    }
+
+    /// Every float vector goes to the vector-data file through a
+    /// little-endian buffer and one `writeBytes` call
+    /// (`Lucene99FlatVectorsWriter.java:205-215`, `244-255`, `336-351`): the
+    /// flush, sorted-flush and merge paths each make one write per vector,
+    /// with the vector's little-endian bytes. One write per byte instead makes
+    /// `MockIndexOutputWrapper` draw once per byte, which shifted the random
+    /// I/O exceptions of `BaseIndexFileFormatTestCase.testRandomExceptions`
+    /// away from Java's.
+    #[test]
+    fn float_vectors_are_written_with_one_write_per_vector() {
+        let vectors = vec![vec![1.0f32, -2.5, 3.25], vec![0.5, 0.0, -1.0]];
+        let expected: Vec<u8> = vectors
+            .iter()
+            .flatten()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let info = float_field_info("f", 0, 3).unwrap();
+        let mut field_writer = DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(info.clone());
+        for (doc, vector) in vectors.iter().enumerate() {
+            field_writer.add_value(doc as i32, vector.clone()).unwrap();
+        }
+
+        let mut out = CountingOutput {
+            data: Vec::new(),
+            calls: 0,
+        };
+        Lucene99FlatVectorsWriter::write_float32_vectors(&mut out, &field_writer, &info).unwrap();
+        assert_eq!((out.calls, &out.data), (2, &expected));
+
+        let mut out = CountingOutput {
+            data: Vec::new(),
+            calls: 0,
+        };
+        Lucene99FlatVectorsWriter::write_sorted_float32_vectors(&mut out, &field_writer, &[0, 1])
+            .unwrap();
+        assert_eq!((out.calls, &out.data), (2, &expected));
+
+        let values = crate::index::vector_values::from_floats(vectors.clone(), 3);
+        let mut out = CountingOutput {
+            data: Vec::new(),
+            calls: 0,
+        };
+        Lucene99FlatVectorsWriter::write_vector_data(&mut out, &values).unwrap();
+        assert_eq!((out.calls, &out.data), (2, &expected));
     }
 
     fn make_states<'a>(
@@ -2418,7 +2782,8 @@ pub(crate) mod tests {
 
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut float_writer = match field_writer {
                 FieldVectorWriter::Float(w) => w,
@@ -2470,7 +2835,8 @@ pub(crate) mod tests {
 
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut byte_writer = match field_writer {
                 FieldVectorWriter::Byte(w) => w,
@@ -2514,7 +2880,8 @@ pub(crate) mod tests {
 
         let format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
         {
-            let mut writer = format.fields_writer_flat(&write_state)?;
+            let mut writer =
+                format.fields_writer_flat(&crate::codecs::state::owned_state(&write_state))?;
             let field_writer = KnnVectorsWriter::add_field(writer.as_mut(), &field_info)?;
             let mut float_writer = match field_writer {
                 FieldVectorWriter::Float(w) => w,

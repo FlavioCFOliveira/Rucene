@@ -245,7 +245,7 @@ impl SearcherManager {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] — with Java's message — when the
+/// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — with Java's message — when the
 /// factory does not wrap exactly the reader it was given, and propagates any
 /// I/O error the factory raises.
 pub fn get_searcher(

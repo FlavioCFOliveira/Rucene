@@ -381,3 +381,21 @@ impl OwnedSegmentWriteState {
         }
     }
 }
+
+/// The owning twin of a test's borrowed write state: the same directory,
+/// segment, fields and suffix, a [`crate::util::NoOutputInfoStream`], empty
+/// buffered updates and the default I/O context, as the tests that build a
+/// flat-vectors writer from a borrowed state had.
+#[cfg(test)]
+pub(crate) fn owned_state(state: &SegmentWriteState<'_>) -> OwnedSegmentWriteState {
+    let mut owned = OwnedSegmentWriteState::new(
+        Arc::new(crate::util::NoOutputInfoStream),
+        Arc::clone(&state.directory),
+        state.segment_info.clone(),
+        state.field_infos.clone(),
+        BufferedUpdates::default(),
+        Arc::new(crate::store::DefaultIOContext::default()),
+    );
+    owned.segment_suffix = state.segment_suffix.clone();
+    owned
+}

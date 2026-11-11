@@ -26,8 +26,8 @@ use std::sync::{Arc, LazyLock};
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 
 use crate::codecs::MergeState;
-use crate::error::{LuceneError, Result};
-use crate::store::{ByteBuffersDataOutput, DataInput, DataOutput};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
 use crate::util::compress::{
     FastCompressionHashTable, HighCompressionHashTable, Lz4, LZ4_MAX_DISTANCE,
 };
@@ -263,7 +263,14 @@ impl CompressionMode for NoCompressionMode {
 /// Equivalent to `org.apache.lucene.codecs.compressing.Compressor`.
 pub trait Compressor: Send + Sync + std::fmt::Debug {
     /// Compresses the content of `input` into `out`.
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()>;
+    ///
+    /// Equivalent to `Compressor.compress(ByteBuffersDataInput, DataOutput)`
+    /// (`Compressor.java:35-36`).
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()>;
 
     /// Closes this compressor, releasing any native resources.
     fn close(&mut self) -> Result<()> {
@@ -321,9 +328,15 @@ impl Lz4FastCompressor {
 }
 
 impl Compressor for Lz4FastCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let len = input.size();
-        let bytes = input.to_array_copy()?;
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `CompressionMode.java:160-163`.
+        let len = input.length();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         Lz4::compress(&bytes, 0, len, out, &mut self.ht)
     }
 }
@@ -346,9 +359,15 @@ impl Lz4HighCompressor {
 }
 
 impl Compressor for Lz4HighCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let len = input.size();
-        let bytes = input.to_array_copy()?;
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `CompressionMode.java:160-163`.
+        let len = input.length();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         Lz4::compress(&bytes, 0, len, out, &mut self.ht)
     }
 }
@@ -359,8 +378,14 @@ impl Compressor for Lz4HighCompressor {
 struct NoCompressionCompressor;
 
 impl Compressor for NoCompressionCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        input.copy_to(out)
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `out.copyBytes(buffersInput, buffersInput.length())`.
+        let len = input.length() as i64;
+        out.copy_bytes(input, len)
     }
 }
 
@@ -388,7 +413,7 @@ impl Decompressor for NoCompressionDecompressor {
             bytes.bytes = vec![0; length];
         }
         input.skip_bytes(offset as i64)?;
-        input.read_bytes(&mut bytes.bytes, 0, length)?;
+        input.read_bytes(Some(&mut bytes.bytes), 0, length)?;
         bytes.offset = 0;
         bytes.length = length;
         Ok(())
@@ -414,11 +439,7 @@ impl Decompressor for Lz4Decompressor {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()> {
-        if offset + length > original_length {
-            return Err(LuceneError::IllegalArgument(format!(
-                "offset + length ({offset} + {length}) > originalLength ({original_length})"
-            )));
-        }
+        debug_assert!(offset + length <= original_length);
         // Add 7 padding bytes; not required but may help decompression speed.
         let buffer_len = original_length + 7;
         if bytes.bytes.len() < buffer_len {
@@ -426,10 +447,10 @@ impl Decompressor for Lz4Decompressor {
         }
         let decompressed_length = Lz4::decompress(input, offset + length, &mut bytes.bytes, 0)?;
         if decompressed_length > original_length {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("corrupted: lengths mismatch: {decompressed_length} > {original_length}"),
-            )));
+            ))));
         }
         bytes.offset = offset;
         bytes.length = length;
@@ -502,9 +523,17 @@ impl Lz4WithPresetDictCompressor {
 }
 
 impl Compressor for Lz4WithPresetDictCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy()?;
-        let len = bytes.len();
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `len = buffersInput.length() - buffersInput.position()`; the bytes
+        // are read up front instead of block by block, which consumes the
+        // same bytes in the same order.
+        let len = input.length() - input.position();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         let dict_length =
             std::cmp::min(LZ4_MAX_DISTANCE, len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR));
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
@@ -573,9 +602,9 @@ impl Lz4WithPresetDictDecompressor {
         }
         while total_length < original_length {
             if count >= self.compressed_lengths.len() {
-                return Err(LuceneError::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                     "more compressed sub blocks than the chunk can hold".to_string(),
-                ));
+                )));
             }
             self.compressed_lengths[count] = input.read_v_int()?;
             count += 1;
@@ -601,21 +630,23 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()> {
-        if offset + length > original_length {
-            return Err(LuceneError::IllegalArgument(format!(
-                "offset + length ({offset} + {length}) > originalLength ({original_length})"
-            )));
-        }
+        debug_assert!(offset + length <= original_length);
         if length == 0 {
             bytes.offset = 0;
             bytes.length = 0;
             return Ok(());
         }
 
-        let dict_length = usize::try_from(input.read_v_int()?)
-            .map_err(|_| LuceneError::CorruptIndex("negative dictionary length".to_string()))?;
-        let block_length = usize::try_from(input.read_v_int()?)
-            .map_err(|_| LuceneError::CorruptIndex("negative block length".to_string()))?;
+        let dict_length = usize::try_from(input.read_v_int()?).map_err(|_| {
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "negative dictionary length".to_string(),
+            ))
+        })?;
+        let block_length = usize::try_from(input.read_v_int()?).map_err(|_| {
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "negative block length".to_string(),
+            ))
+        })?;
 
         let num_blocks =
             self.read_compressed_lengths(input, original_length, dict_length, block_length)?;
@@ -627,7 +658,9 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
 
         // The dictionary is needed by every block, so it is always read.
         if Lz4::decompress(input, dict_length, &mut self.buffer, 0)? != dict_length {
-            return Err(LuceneError::CorruptIndex("Illegal dict length".to_string()));
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "Illegal dict length".to_string(),
+            )));
         }
 
         let mut offset_in_block = dict_length;
@@ -670,6 +703,7 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
 
         bytes.offset = offset_in_bytes_ref;
         bytes.length = length;
+        debug_assert!(bytes.is_valid().is_ok(), "{:?}", bytes.is_valid());
         Ok(())
     }
 }
@@ -738,14 +772,16 @@ fn deflate_to(compressor: &mut Compress, input: &[u8], scratch: &mut Vec<u8>) ->
         let produced = compressor.total_out();
         let status = compressor
             .compress_vec(&input[consumed..], scratch, FlushCompress::Finish)
-            .map_err(|error| LuceneError::Other(format!("deflate failed: {error}")))?;
+            .map_err(|error| {
+                LuceneError::from(LuceneErrorKind::Other(format!("deflate failed: {error}")))
+            })?;
         if status == Status::StreamEnd {
             return Ok(());
         }
         if compressor.total_in() as usize == consumed && compressor.total_out() == produced {
-            return Err(LuceneError::Other(
+            return Err(LuceneError::from(LuceneErrorKind::Other(
                 "deflate made no progress and did not finish".to_string(),
-            ));
+            )));
         }
     }
 }
@@ -788,9 +824,9 @@ fn read_deflate_block(
 ) -> Result<()> {
     let compressed_length = input.read_v_int()?;
     if compressed_length < 0 {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "negative compressed block length: {compressed_length}"
-        )));
+        ))));
     }
     if compressed_length == 0 {
         return Ok(());
@@ -798,7 +834,7 @@ fn read_deflate_block(
     let compressed_length = compressed_length as usize;
     compressed.clear();
     compressed.resize(compressed_length + 1, 0);
-    input.read_bytes(compressed, 0, compressed_length)?;
+    input.read_bytes(Some(compressed), 0, compressed_length)?;
     // The extra byte is already zero; raw inflate needs one byte past the end.
     out.reserve(expected.max(1));
     loop {
@@ -809,14 +845,18 @@ fn read_deflate_block(
         let produced = decompressor.total_out();
         let status = decompressor
             .decompress_vec(&compressed[consumed..], out, FlushDecompress::Finish)
-            .map_err(|error| LuceneError::CorruptIndex(format!("inflate failed: {error}")))?;
+            .map_err(|error| {
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "inflate failed: {error}"
+                )))
+            })?;
         if status == Status::StreamEnd {
             return Ok(());
         }
         if decompressor.total_in() as usize == consumed && decompressor.total_out() == produced {
-            return Err(LuceneError::CorruptIndex(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                 "invalid decoder state: inflate made no progress and did not finish".to_string(),
-            ));
+            )));
         }
     }
 }
@@ -847,8 +887,15 @@ impl DeflateCompressor {
 }
 
 impl Compressor for DeflateCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy()?;
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `CompressionMode.java:268-271`.
+        let len = input.length();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         self.compressor.reset();
         write_deflate_block(&mut self.compressor, &bytes, &mut self.scratch, out)
     }
@@ -888,11 +935,7 @@ impl Decompressor for DeflateDecompressor {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()> {
-        if offset + length > original_length {
-            return Err(LuceneError::IllegalArgument(format!(
-                "offset + length ({offset} + {length}) > originalLength ({original_length})"
-            )));
-        }
+        debug_assert!(offset + length <= original_length);
         if length == 0 {
             bytes.offset = 0;
             bytes.length = 0;
@@ -908,10 +951,10 @@ impl Decompressor for DeflateDecompressor {
             original_length,
         )?;
         if out.len() != original_length {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Lengths mismatch: {} != {original_length}",
                 out.len()
-            )));
+            ))));
         }
         bytes.bytes = out;
         bytes.offset = offset;
@@ -951,9 +994,17 @@ impl DeflateWithPresetDictCompressor {
 }
 
 impl Compressor for DeflateWithPresetDictCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy()?;
-        let len = bytes.len();
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `len = buffersInput.length() - buffersInput.position()`; the bytes
+        // are read up front instead of block by block, which consumes the
+        // same bytes in the same order.
+        let len = input.length() - input.position();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         let dict_length = len / (NUM_SUB_BLOCKS * DEFLATE_DICT_SIZE_FACTOR);
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
         out.write_v_int(i32::try_from(dict_length).map_err(|_| {
@@ -983,7 +1034,9 @@ impl Compressor for DeflateWithPresetDictCompressor {
             self.compressor
                 .set_dictionary(&self.buffer[..dict_length])
                 .map_err(|error| {
-                    LuceneError::Other(format!("deflate dictionary rejected: {error}"))
+                    LuceneError::from(LuceneErrorKind::Other(format!(
+                        "deflate dictionary rejected: {error}"
+                    )))
                 })?;
             let l = std::cmp::min(block_length, len - start);
             self.buffer[dict_length..dict_length + l].copy_from_slice(&bytes[start..start + l]);
@@ -1034,27 +1087,29 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()> {
-        if offset + length > original_length {
-            return Err(LuceneError::IllegalArgument(format!(
-                "offset + length ({offset} + {length}) > originalLength ({original_length})"
-            )));
-        }
+        debug_assert!(offset + length <= original_length);
         if length == 0 {
             bytes.offset = 0;
             bytes.length = 0;
             return Ok(());
         }
 
-        let dict_length = usize::try_from(input.read_v_int()?)
-            .map_err(|_| LuceneError::CorruptIndex("negative dictionary length".to_string()))?;
-        let block_length = usize::try_from(input.read_v_int()?)
-            .map_err(|_| LuceneError::CorruptIndex("negative block length".to_string()))?;
+        let dict_length = usize::try_from(input.read_v_int()?).map_err(|_| {
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "negative dictionary length".to_string(),
+            ))
+        })?;
+        let block_length = usize::try_from(input.read_v_int()?).map_err(|_| {
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "negative block length".to_string(),
+            ))
+        })?;
         if block_length == 0 {
             // Only a zero-length chunk can have zero-length blocks, and that
             // case returned above; a zero here would loop forever.
-            return Err(LuceneError::CorruptIndex(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                 "a non-empty chunk cannot have zero-length sub blocks".to_string(),
-            ));
+            )));
         }
 
         let mut out: Vec<u8> = Vec::with_capacity(dict_length + block_length);
@@ -1067,10 +1122,10 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
             dict_length,
         )?;
         if out.len() != dict_length {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Unexpected dict length: {} != {dict_length}",
                 out.len()
-            )));
+            ))));
         }
 
         let mut offset_in_block = dict_length;
@@ -1079,9 +1134,9 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         while offset_in_block + block_length < offset {
             let compressed_length = input.read_v_int()?;
             if compressed_length < 0 {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "negative compressed block length: {compressed_length}"
-                )));
+                ))));
             }
             input.skip_bytes(i64::from(compressed_length))?;
             offset_in_block += block_length;
@@ -1094,7 +1149,9 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
             self.decompressor
                 .set_dictionary(&out[..dict_length])
                 .map_err(|error| {
-                    LuceneError::CorruptIndex(format!("inflate dictionary rejected: {error}"))
+                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                        "inflate dictionary rejected: {error}"
+                    )))
                 })?;
             read_deflate_block(
                 input,
@@ -1109,6 +1166,7 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         bytes.bytes = out;
         bytes.offset = offset_in_bytes_ref;
         bytes.length = length;
+        debug_assert!(bytes.is_valid().is_ok(), "{:?}", bytes.is_valid());
         Ok(())
     }
 }
@@ -1189,7 +1247,9 @@ mod tests {
         let mut output = VecDataOutput::new();
         let mut bbo = ByteBuffersDataOutput::with_expected_size(data.len());
         bbo.write_bytes(data, 0, data.len()).unwrap();
-        compressor.compress(&bbo, &mut output).unwrap();
+        compressor
+            .compress(&mut bbo.to_data_input().unwrap(), &mut output)
+            .unwrap();
         compressor.close().unwrap();
 
         let compressed = output.into_inner();
@@ -1289,7 +1349,9 @@ mod tests {
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
-            compressor.compress(&buffered, &mut output).unwrap();
+            compressor
+                .compress(&mut buffered.to_data_input().unwrap(), &mut output)
+                .unwrap();
             output.into_inner()
         };
         assert_ne!(
@@ -1347,7 +1409,9 @@ mod tests {
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
-            compressor.compress(&buffered, &mut output).unwrap();
+            compressor
+                .compress(&mut buffered.to_data_input().unwrap(), &mut output)
+                .unwrap();
             let bytes = output.into_inner();
             assert!(
                 !bytes.windows(2).any(|window| window == [0x78, 0x9c]),
@@ -1365,7 +1429,9 @@ mod tests {
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
-            compressor.compress(&buffered, &mut output).unwrap();
+            compressor
+                .compress(&mut buffered.to_data_input().unwrap(), &mut output)
+                .unwrap();
             output.into_inner()
         };
         assert_ne!(
@@ -1389,10 +1455,13 @@ mod tests {
         impl Compressor for InvertingCompressor {
             fn compress(
                 &mut self,
-                input: &ByteBuffersDataOutput,
+                input: &mut ByteBuffersDataInput,
                 out: &mut dyn DataOutput,
             ) -> Result<()> {
-                let bytes: Vec<u8> = input.to_array_copy()?.iter().map(|b| !b).collect();
+                let len = input.length();
+                let mut bytes = vec![0u8; len];
+                input.read_bytes(Some(&mut bytes), 0, len)?;
+                let bytes: Vec<u8> = bytes.iter().map(|b| !b).collect();
                 out.write_bytes(&bytes, 0, bytes.len())
             }
         }
@@ -1411,7 +1480,7 @@ mod tests {
             ) -> Result<()> {
                 input.skip_bytes(offset as i64)?;
                 let mut raw = vec![0u8; length];
-                input.read_bytes(&mut raw, 0, length)?;
+                input.read_bytes(Some(&mut raw), 0, length)?;
                 *bytes = BytesRef::new(raw.iter().map(|b| !b).collect());
                 Ok(())
             }

@@ -268,6 +268,12 @@ impl TermScorer {
 }
 
 impl Scorable for TermScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `TermScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         let doc = self.iteration.doc_id();
         let freq = self.iteration.postings().freq()?;
@@ -289,8 +295,9 @@ impl Scorable for TermScorer {
 }
 
 impl Scorer for TermScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
+    /// This scorer answers with itself: Java tests `instanceof TermScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn doc_id(&self) -> i32 {

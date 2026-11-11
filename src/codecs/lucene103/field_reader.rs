@@ -10,7 +10,7 @@ use crate::codecs::lucene103::trie_reader::TrieReader;
 use crate::error::{LuceneError, Result};
 use crate::index::terms::{Terms, TermsEnum};
 use crate::index::{FieldInfo, IndexOptions};
-use crate::store::IndexInput;
+use crate::store::SharedIndexInput;
 use crate::util::BytesRef;
 
 /// The shared state a [`FieldReader`] needs to open a cursor: the two files the
@@ -21,11 +21,15 @@ use crate::util::BytesRef;
 /// its `Lucene103BlockTreeTermsReader` parent and reaches the shared inputs
 /// through it. Rust cannot hold that back-reference without a cycle, so the
 /// shared parts are extracted into this struct and shared by `Arc`.
+///
+/// `Lucene103BlockTreeTermsReader::close` closes the two inputs and the
+/// postings reader in place, whoever else (a merge instance, a terms enum)
+/// still shares this struct, as Java's `close()` does.
 pub struct BlockTreeShared {
     /// The `.tim` file, holding the term blocks.
-    pub terms_in: Arc<dyn IndexInput>,
+    pub terms_in: Arc<SharedIndexInput>,
     /// The `.tip` file, holding the term index tries.
-    pub index_in: Arc<dyn IndexInput>,
+    pub index_in: Arc<SharedIndexInput>,
     /// The segment this dictionary belongs to.
     pub segment: String,
     /// Format version of the three files.
@@ -38,6 +42,10 @@ pub struct BlockTreeShared {
     /// shared rather than cloned — a per-enum copy would duplicate the `.doc`,
     /// `.pos` and `.pay` handles Lucene opens once.
     pub postings_reader: Arc<dyn crate::codecs::postings::PostingsReaderBase>,
+    /// Set by `close()`, after which the reader answers as Java's does once
+    /// its `fieldMap` is cleared (`Lucene103BlockTreeTermsReader.java:281-283`):
+    /// no fields.
+    pub fields_cleared: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for BlockTreeShared {
@@ -107,15 +115,9 @@ impl FieldReader {
         max_term: BytesRef,
         meta_in: &mut dyn crate::store::DataInput,
     ) -> Result<Self> {
-        if num_terms <= 0 {
-            return Err(LuceneError::corrupt_index(
-                format!(
-                    "illegal numTerms for field {}: {num_terms}",
-                    field_info.name
-                ),
-                &shared.segment,
-            ));
-        }
+        // The terms reader rejects `numTerms <= 0` before it builds the field
+        // reader (`Lucene103BlockTreeTermsReader.java:163`); here Java asserts.
+        debug_assert!(num_terms > 0);
         let index_start = meta_in.read_v_long()?;
         let root_fp = meta_in.read_v_long()?;
         let index_end = meta_in.read_v_long()?;
@@ -180,6 +182,7 @@ impl FieldReader {
         let slice = self
             .shared
             .index_in
+            .read()
             .random_access_slice(self.index_start, self.index_end - self.index_start)?;
         TrieReader::new(slice, self.root_fp)
     }
@@ -219,8 +222,8 @@ impl Terms for FieldReader {
     ) -> Result<Box<dyn TermsEnum>> {
         use crate::util::automaton::AutomatonType;
         if compiled.automaton_type != AutomatonType::Normal {
-            return Err(LuceneError::IllegalArgument(
-                "please use CompiledAutomaton.get_terms_enum instead".to_string(),
+            return Err(LuceneError::illegal_argument(
+                "please use CompiledAutomaton.getTermsEnum instead".to_string(),
             ));
         }
         // `compiled.getTransitionAccessor()` and `compiled.getByteRunnable()`
@@ -228,7 +231,7 @@ impl Terms for FieldReader {
         // one `NFARunAutomaton` for both, which the clone shares.
         let view = crate::index::automaton_terms_enum::CompiledAutomatonView::new(compiled.clone())
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("compiled automaton has no runnable form".to_string())
+                LuceneError::illegal_argument("compiled automaton has no runnable form".to_string())
             })?;
         Ok(Box::new(
             crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(
@@ -300,9 +303,29 @@ impl Terms for FieldReader {
     ///
     /// Returns whatever opening the cursor or reading a block raises.
     fn stats(&self) -> Result<String> {
+        Ok(self.get_stats()?.to_string())
+    }
+
+    /// A `FieldReader`, for the casts Java tests make on a `Terms`
+    /// (`(FieldReader) reader.terms(field)`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl FieldReader {
+    /// For debugging -- used by CheckIndex too.
+    ///
+    /// Equivalent to `FieldReader.getStats()` (`FieldReader.java:110-114`):
+    /// `new SegmentTermsEnum(this, newReader()).computeBlockStats()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever opening the cursor or reading a block raises.
+    pub fn get_stats(&self) -> Result<crate::codecs::lucene103::blocktree::Stats> {
         let mut terms_enum =
             crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.clone())?;
-        Ok(terms_enum.compute_block_stats()?.to_string())
+        terms_enum.compute_block_stats()
     }
 }
 

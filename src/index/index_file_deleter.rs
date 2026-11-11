@@ -75,7 +75,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_commit::IndexCommit;
 use crate::index::index_deletion_policy::IndexDeletionPolicy;
 use crate::index::index_file_names::{
@@ -454,9 +454,9 @@ impl IndexFileDeleter {
                 .expect("checked is_some above");
             let sis =
                 SegmentInfos::read_commit(Arc::clone(&directory_orig), name).map_err(|e| {
-                    LuceneError::CorruptIndex(format!(
+                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "unable to read current segments_N file \"{name}\": {e}"
-                    ))
+                    )))
                 })?;
             if info_stream.is_enabled(IFD) {
                 info_stream.message(IFD, &format!("forced open of current segments file {name}"));
@@ -836,7 +836,7 @@ impl IndexFileDeleter {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when the writer is closed, and also when
+    /// [`LuceneErrorKind::AlreadyClosed`] when the writer is closed, and also when
     /// it hit a tragic error, with that error as its cause.
     pub fn ensure_open(&self, writer: &IndexWriter) -> Result<()> {
         writer.ensure_open_with(false)?;
@@ -924,7 +924,7 @@ impl IndexFileDeleter {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] if a per-segment file name carries a
+/// Returns [`LuceneErrorKind::CorruptIndex`] if a per-segment file name carries a
 /// segment ordinal that does not fit in an `i64`. Java lets the resulting
 /// `NumberFormatException` escape at the same point
 /// (`IndexFileDeleter.java:303-304` is deliberately *not* inside a `try`, unlike
@@ -986,9 +986,9 @@ pub fn inflate_gens(
                 chars.as_str()
             };
             let ordinal = i64::from_str_radix(ordinal_str, MAX_RADIX).map_err(|e| {
-                LuceneError::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "cannot parse segment ordinal from \"{file_name}\": {e}"
-                ))
+                )))
             })?;
             max_segment_name = max_segment_name.max(ordinal);
 
@@ -1024,15 +1024,11 @@ pub fn inflate_gens(
     }
 
     for info in infos.iter_mut() {
-        let Some(&gen) = max_per_segment_gen.get(&info.info.name) else {
-            // Java asserts this is non-null. A segment named by the commit but
-            // with no file on disk means the directory listing and the commit
-            // disagree, which is a corrupt index rather than a bug here.
-            return Err(LuceneError::CorruptIndex(format!(
-                "segment \"{}\" is referenced by the commit but has no files in the directory",
-                info.info.name
-            )));
-        };
+        let gen = max_per_segment_gen.get(&info.info.name).copied();
+        debug_assert!(gen.is_some());
+        // Without assertions Java unboxes the null `Long`
+        // (`IndexFileDeleter.java:339`): a `NullPointerException`.
+        let gen = gen.ok_or_else(LuceneError::null_pointer)?;
         let next = gen + 1;
 
         if info.get_next_write_del_gen() < next {
@@ -1087,7 +1083,7 @@ pub fn inflate_gens(
 mod tests {
     use super::*;
     use crate::codecs::lucene99::Lucene99SegmentInfoFormat;
-    use crate::codecs::tests::{test_segment_info, DummyCodec};
+    use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
     use crate::codecs::{register_codec, Codec, FilterCodec, SegmentInfoFormat};
     use crate::index::index_deletion_policy::{
         KeepOnlyLastCommitDeletionPolicy, NoDeletionPolicy, SnapshotDeletionPolicy,
@@ -1263,7 +1259,7 @@ mod tests {
         dir.delete_file("_1.fdt").unwrap();
         let error = d.checkpoint(&sis, false, &names).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(io) if io.kind() == std::io::ErrorKind::NotFound),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::NotFound),
             "{error:?}"
         );
         assert!(d.last_files.is_empty(), "{:?}", d.last_files);
@@ -1279,8 +1275,7 @@ mod tests {
     /// Creates segment `name` with two data files, writes its `.si`, and returns
     /// the commit info.
     fn make_segment(dir: &dyn Directory, name: &str) -> SegmentCommitInfo {
-        let mut info = test_segment_info(name, 10);
-        info.set_codec(codec());
+        let mut info = test_segment_info_with_codec(name, 10, codec());
         // The shared helper defaults to `Sort::default()`, a SCORE sort the
         // segment-info format cannot serialise; give it a writable one.
         info.set_index_sort(
@@ -1399,6 +1394,44 @@ mod tests {
         assert!(!files.contains("_9.si"), "orphan must be deleted on init");
         assert!(files.contains("_0.fdt"), "referenced file must survive");
         assert!(files.contains("segments_1"));
+    }
+
+    /// Regression (rmp #351): a new `SegmentInfos` has generation 0, so its
+    /// segments file is `segments` and not `null` (`SegmentInfos.java:132-133,
+    /// 169-179`); the deleter of a writer that opens a directory with no
+    /// commit yet therefore scans it, pushes the segment counter past the
+    /// files it finds and deletes those no commit references
+    /// (`IndexFileDeleter.java:139-225`), such as the files a tragically
+    /// aborted segment left behind.
+    #[test]
+    fn init_over_a_new_segment_infos_deletes_unreferenced_files() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(dir.as_ref(), "_0.fdm");
+        touch(dir.as_ref(), "_0.fdt");
+        let mut sis = SegmentInfos::new(10).unwrap();
+        assert_eq!(sis.segments_file_name().as_deref(), Some("segments"));
+
+        // `new IndexFileDeleter(files, ..., segmentInfos, ..., indexExists =
+        // false, ...)`, as `IndexWriter`'s constructor builds it over a
+        // directory without a commit.
+        let files = dir.list_all().unwrap();
+        let _d = IndexFileDeleter::new(
+            &files,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis,
+            info_stream(),
+            &names,
+            false,
+            false,
+        )
+        .unwrap();
+
+        let files = listing(dir.as_ref());
+        assert!(!files.contains("_0.fdm"), "{files:?}");
+        assert!(!files.contains("_0.fdt"), "{files:?}");
+        assert_eq!(sis.counter, 1, "the next segment is not named _0 again");
     }
 
     #[test]
@@ -1532,9 +1565,9 @@ mod tests {
     fn a_snapshot_pins_its_commit_files_against_a_later_commit() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
-        let policy = Arc::new(SnapshotDeletionPolicy::new(Arc::new(
+        let policy = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
             KeepOnlyLastCommitDeletionPolicy,
-        )));
+        ))));
         let mut d = deleter(
             &dir,
             policy.clone() as Arc<dyn IndexDeletionPolicy>,
@@ -1730,8 +1763,12 @@ mod tests {
         );
     }
 
+    /// Java asserts `gen != null` (`IndexFileDeleter.java:338`): with
+    /// assertions enabled (debug builds) the assert fails; without, unboxing
+    /// the null throws `NullPointerException`.
     #[test]
-    fn inflate_gens_rejects_a_commit_naming_a_segment_with_no_files() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "gen.is_some()"))]
+    fn inflate_gens_asserts_a_commit_naming_a_segment_with_no_files() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.add(make_segment(dir.as_ref(), "_0")).unwrap();
@@ -1741,8 +1778,9 @@ mod tests {
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
 
         assert!(
-            matches!(err, LuceneError::CorruptIndex(_)),
-            "expected a corrupt-index error, got {err:?}"
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Unchecked { class, .. }, .. }
+                if *class == "java.lang.NullPointerException"),
+            "expected a NullPointerException, got {err:?}"
         );
     }
 
@@ -1766,6 +1804,15 @@ mod tests {
         // The point of the test is that it does not panic: byte-slicing the
         // leading character used to abort the process here.
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
     }
 }

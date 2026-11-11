@@ -6,7 +6,7 @@
 use crate::error::Result;
 use crate::search::disi_priority_queue::DisiPriorityQueue;
 use crate::search::disi_wrapper::DisiWrapper;
-use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::util::FixedBitSet;
 
 /// A [`DocIdSetIterator`] which is a disjunction of the approximations of the
@@ -340,16 +340,19 @@ impl DocIdSetIterator for DisjunctionDISIApproximation {
         Ok(())
     }
 
-    /// **Divergence from Lucene 10.5.0.** Java inspects the heap-led clauses
-    /// that are already positioned on the current doc and takes the greatest of
-    /// their `docIDRunEnd()`, which needs to advance nothing but does need a
-    /// mutable handle on each sub-approximation. This trait's `doc_id_run_end`
-    /// takes `&self`, so the port answers the always-sound base value, `doc +
-    /// 1`. Runs are therefore reported shorter than Lucene would report them,
-    /// which costs bulk-scoring throughput on dense clauses and changes no
-    /// match.
-    fn doc_id_run_end(&self) -> Result<i32> {
-        debug_assert!(self.doc != NO_MORE_DOCS);
-        Ok(self.doc + 1)
+    /// Trades off longer run detection for a cheaper per-doc call: only the
+    /// heap-led clauses that are already positioned on the current doc are
+    /// inspected, and the greatest of their `docIDRunEnd()` is taken
+    /// (`DisjunctionDISIApproximation.java:189-201`).
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        // `super.docIDRunEnd()`: `docID() + 1`.
+        let mut max_doc_id_run_end = self.doc + 1;
+        if self.wrappers[self.lead_top].doc == self.doc {
+            for position in self.lead_iterators.top_list(&self.wrappers) {
+                max_doc_id_run_end = max_doc_id_run_end
+                    .max(self.wrappers[position].approximation().doc_id_run_end()?);
+            }
+        }
+        Ok(max_doc_id_run_end)
     }
 }

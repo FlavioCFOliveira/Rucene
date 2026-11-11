@@ -48,18 +48,18 @@ impl TopScoreDocCollectorManager {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when `total_hits_threshold` is negative or `num_hits` is not
     /// positive.
     pub fn new(num_hits: i32, after: Option<ScoreDoc>, total_hits_threshold: i32) -> Result<Self> {
         if total_hits_threshold < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "totalHitsThreshold must be >= 0, got {total_hits_threshold}"
             )));
         }
 
         if num_hits <= 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "numHits must be > 0; please use TotalHitCountCollectorManager if you just need the total hit count"
                     .to_string(),
             ));

@@ -226,7 +226,7 @@ impl Terms for DocValuesTerms {
     /// Throws `UnsupportedOperationException`, as Java's does
     /// (`DocValuesRewriteMethod.java:107-110`).
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "getSumTotalTermFreq".to_string(),
         ))
     }
@@ -234,7 +234,7 @@ impl Terms for DocValuesTerms {
     /// Throws `UnsupportedOperationException`, as Java's does
     /// (`DocValuesRewriteMethod.java:112-115`).
     fn sum_doc_freq(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "getSumDocFreq".to_string(),
         ))
     }
@@ -242,7 +242,9 @@ impl Terms for DocValuesTerms {
     /// Throws `UnsupportedOperationException`, as Java's does
     /// (`DocValuesRewriteMethod.java:117-120`).
     fn doc_count(&self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation("getDocCount".to_string()))
+        Err(LuceneError::unsupported_operation(
+            "getDocCount".to_string(),
+        ))
     }
 
     fn has_freqs(&self) -> bool {

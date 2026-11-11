@@ -194,7 +194,7 @@ pub use parallel_reader::{ParallelCompositeReader, ParallelLeafReader};
 pub use reader_manager::ReaderManager;
 pub use segment_reader::SegmentReader;
 pub use stored_field_visitor::{StoredFieldVisitor, StoredFieldVisitorStatus};
-pub use stored_fields_consumer::StoredFieldsConsumer;
+pub use stored_fields_consumer::{StoredFieldsConsumer, StoredFieldsConsumerOverrides};
 
 pub use terms::{
     AcceptStatus, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum, FilteredTermsEnumFilter,
@@ -217,7 +217,7 @@ pub use readers_and_updates::{PendingDeletes, PendingSoftDeletes, ReaderPool, Re
 use crate::{
     analysis::{Analyzer, TokenStream},
     document::{InvertableType, NumericValue, StoredValue},
-    error::Result,
+    error::{LuceneError, LuceneErrorKind, Result},
     store::{ByteArrayDataInput, DataInput},
     util::{vector_util, BytesRef},
 };
@@ -351,6 +351,19 @@ pub enum VectorSimilarityFunction {
 }
 
 impl VectorSimilarityFunction {
+    /// Returns the constants of this enum, in declaration order.
+    ///
+    /// Equivalent to the implicit `VectorSimilarityFunction.values()` every
+    /// Java enum declares.
+    pub const fn values() -> [VectorSimilarityFunction; 4] {
+        [
+            VectorSimilarityFunction::EUCLIDEAN,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            VectorSimilarityFunction::COSINE,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+        ]
+    }
+
     /// Returns the similarity score between two float vectors.
     ///
     /// Higher scores correspond to closer vectors. Equivalent to
@@ -361,7 +374,7 @@ impl VectorSimilarityFunction {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the two
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when the two
     /// vectors have different dimensions, matching the
     /// `IllegalArgumentException` that `VectorUtil` throws.
     pub fn compare_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
@@ -394,7 +407,7 @@ impl VectorSimilarityFunction {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the two
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when the two
     /// vectors have different dimensions.
     pub fn compare_bytes(&self, a: &[u8], b: &[u8]) -> Result<f32> {
         match self {
@@ -419,7 +432,7 @@ impl VectorSimilarityFunction {
 /// Equivalent to `org.apache.lucene.index.IndexableFieldType`.
 /// [`Display`](std::fmt::Display) is a supertrait because `Field.toString()`
 /// renders `type.toString()` on whatever `IndexableFieldType` the field holds.
-pub trait IndexableFieldType: std::fmt::Display {
+pub trait IndexableFieldType: std::fmt::Display + Send + Sync {
     /// True if the field's value should be stored.
     fn stored(&self) -> bool;
 
@@ -469,7 +482,12 @@ pub trait IndexableFieldType: std::fmt::Display {
     fn vector_similarity_function(&self) -> VectorSimilarityFunction;
 
     /// Attributes for the field type.
-    fn attributes(&self) -> &crate::util::java_collections::JavaHashMap<String>;
+    ///
+    /// Java returns the type's own map (`FieldType.getAttributes()`); a
+    /// [`FieldType`](crate::document::FieldType) keeps its map behind a lock
+    /// so that a shared type can change through `&self`, so this returns a
+    /// snapshot of it, which every caller only reads.
+    fn attributes(&self) -> crate::util::java_collections::JavaHashMap<String>;
 
     /// The identity of this type when it is a frozen
     /// [`FieldType`](crate::document::FieldType), or `None` for any other type.
@@ -478,8 +496,9 @@ pub trait IndexableFieldType: std::fmt::Display {
     /// re-validating a field whose type is the very frozen `FieldType` it
     /// validated last: it tests `candidateFieldType instanceof FieldType ft &&
     /// ft.isFrozen()` and compares types by reference
-    /// (`IndexingChain.java:1803-1825`). A Rust field owns a clone of its type,
-    /// so neither the downcast nor the reference is available; two types are
+    /// (`IndexingChain.java:1803-1825`). The predefined Rust fields own a clone
+    /// of their frozen type, so neither the downcast nor the reference is
+    /// available; two types are
     /// the same Java object exactly when this returns the same `Some` for both.
     /// Only `FieldType` overrides it.
     fn frozen_field_type_identity(&self) -> Option<u64> {
@@ -496,7 +515,7 @@ pub trait IndexableFieldType: std::fmt::Display {
 /// calling `field.toString()`, which every implementation inherits from
 /// `Object` and almost all of them get from `Field.toString()`. Without it a
 /// `Document` could not be rendered at all.
-pub trait IndexableField: std::fmt::Display {
+pub trait IndexableField: std::fmt::Display + Send + Sync {
     /// Field name.
     fn name(&self) -> &str;
 
@@ -504,11 +523,31 @@ pub trait IndexableField: std::fmt::Display {
     fn field_type(&self) -> &dyn IndexableFieldType;
 
     /// Creates the `TokenStream` used for indexing this field.
+    ///
+    /// Equivalent to `IndexableField.tokenStream(Analyzer, TokenStream)`.
+    /// `analyzer` is `None` for Java's `null`, which an `IndexWriterConfig`
+    /// built without an analyzer passes (`IndexingChain.java:1908`).
+    ///
+    /// `reuse` is Java's `reuse` argument, the stream the caller holds from
+    /// the previous call: an implementation that reuses it takes it out of
+    /// the slot and returns it; one that does not leaves it in place. A call
+    /// that fails leaves `reuse` holding the stream it held on entry, so the
+    /// caller keeps it, as `IndexingChain`'s `tokenStream = field.tokenStream(
+    /// analyzer, tokenStream)` keeps its previous value when the call throws
+    /// (`IndexingChain.java:1908`).
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions Java's implementations throw:
+    /// `NullPointerException` when the field needs the absent analyzer
+    /// (`Field.java:496-498`), `IllegalArgumentException` for a value the
+    /// field cannot tokenize (`Field.java:489, 501`), and whatever the analyzer
+    /// raises.
     fn token_stream(
         &self,
-        analyzer: &dyn Analyzer,
-        reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream>;
+        analyzer: Option<&dyn Analyzer>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>>;
 
     /// Non-null if this field has a binary value.
     fn binary_value(&self) -> Option<BytesRef>;
@@ -522,7 +561,7 @@ pub trait IndexableField: std::fmt::Display {
     }
 
     /// Non-null if this field has a Reader value.
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read>;
+    fn reader_value(&self) -> Option<crate::document::SharedReader>;
 
     /// Non-null if this field has a numeric value.
     fn numeric_value(&self) -> Option<NumericValue>;
@@ -537,7 +576,10 @@ pub trait IndexableField: std::fmt::Display {
     /// to `None` for every field that carries no vector — which is exactly the
     /// set of fields Java never casts, because it only casts when
     /// `fieldType.vectorDimension() != 0`.
-    fn float_vector_value(&self) -> Option<&[f32]> {
+    ///
+    /// The value is a borrow of the field's interior-mutable vector, as Java
+    /// returns the field's own array, which `setVectorValue` replaces.
+    fn float_vector_value(&self) -> Option<crate::util::atomic_ref_cell::AtomicRef<'_, [f32]>> {
         None
     }
 
@@ -550,7 +592,7 @@ pub trait IndexableField: std::fmt::Display {
     /// `KnnByteVectorField` (`Field.java:428-434`): its `fieldsData` is a bare
     /// `byte[]`, not a `BytesRef`. A byte vector is therefore reachable only
     /// through this accessor, in both implementations.
-    fn byte_vector_value(&self) -> Option<&[u8]> {
+    fn byte_vector_value(&self) -> Option<crate::util::atomic_ref_cell::AtomicRef<'_, [u8]>> {
         None
     }
 
@@ -568,6 +610,176 @@ pub trait IndexableField: std::fmt::Display {
 
     /// Describes how this field should be inverted.
     fn invertable_type(&self) -> Option<InvertableType>;
+
+    /// This field as [`Any`](std::any::Any), for the `instanceof` tests Java
+    /// code makes on an `IndexableField` (`TestUtil.cloneDocument` narrows to
+    /// `KeywordField` and `IntField`, `TestUtil.java:1533-1546`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+}
+
+/// A document as Lucene's indexing API takes it: an
+/// `Iterable<? extends IndexableField>`.
+///
+/// `IndexWriter.addDocument`, `updateDocument` and `softUpdateDocument` take
+/// any iterable of fields, and `IndexingChain.processDocument` walks it twice,
+/// once per pass, each time with a fresh `iterator()`
+/// (`IndexingChain.java:619, 661`). An iteration may fail mid-way: an
+/// exception thrown by the iterator's `hasNext()` or `next()` leaves the
+/// indexing chain, and the document id already reserved for the document is
+/// marked deleted (`DocumentsWriterPerThread.java:283-307`). A
+/// [`Document`](crate::document::Document) never fails.
+pub trait IndexableFieldIterable {
+    /// `iterator()`: a new iteration over the fields, in order. An `Err` item
+    /// is the unchecked exception the Java iterator throws; the iteration
+    /// ends there.
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_>;
+}
+
+impl IndexableFieldIterable for crate::document::Document {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        Box::new(self.get_fields().iter().map(|field| Ok(field.as_ref())))
+    }
+}
+
+impl IndexableFieldIterable for [Box<dyn IndexableField>] {
+    /// A `List<IndexableField>` (for example `Collections.singletonList(field)`).
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        Box::new(self.iter().map(|field| Ok(field.as_ref())))
+    }
+}
+
+impl IndexableFieldIterable for Vec<Box<dyn IndexableField>> {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        self.as_slice().iterator()
+    }
+}
+
+/// A reference to a document, as a Java `List<Document>` holds references:
+/// the same document may appear several times in one block
+/// (`Arrays.asList(doc, doc, doc)`).
+impl<D: IndexableFieldIterable + ?Sized> IndexableFieldIterable for &D {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        (**self).iterator()
+    }
+}
+
+/// A borrowed [`IndexableFieldIterable`] of any type, sized so that it can be
+/// handed on as `&dyn IndexableFieldIterable`.
+struct FieldIterableRef<'a, D: IndexableFieldIterable + ?Sized>(&'a D);
+
+impl<D: IndexableFieldIterable + ?Sized> IndexableFieldIterable for FieldIterableRef<'_, D> {
+    fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
+        self.0.iterator()
+    }
+}
+
+/// The iterator of a block of documents: an
+/// `Iterator<? extends Iterable<? extends IndexableField>>`.
+///
+/// Unlike a Rust [`Iterator`], Java's `hasNext()` and `next()` are separate
+/// calls, either of which may throw, and `DocumentsWriterPerThread.updateDocuments`
+/// calls `hasNext()` again after each `next()` to learn whether the document
+/// is the last of the block (`DocumentsWriterPerThread.java:268-271`), before
+/// indexing it. Keeping the two calls apart keeps the point at which an
+/// iterator failure interrupts the block exactly Java's.
+pub trait DocumentsIterator<'a> {
+    /// `hasNext()`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exception the Java iterator throws.
+    fn has_next(&mut self) -> Result<bool>;
+
+    /// `next()`; `None` is a `null` element, which the indexing chain
+    /// dereferences (`NullPointerException`).
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exception the Java iterator throws; past the last
+    /// element, `NoSuchElementException`.
+    fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>>;
+}
+
+/// A block of documents as Lucene's indexing API takes it: an
+/// `Iterable<? extends Iterable<? extends IndexableField>>`
+/// (`IndexWriter.addDocuments`, `updateDocuments`, `softUpdateDocuments`).
+pub trait DocumentsIterable {
+    /// `iterator()`: a new iteration over the documents of the block.
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_>;
+}
+
+/// The iterator of a slice of documents, which never fails.
+struct SliceDocumentsIterator<'a, T>(std::slice::Iter<'a, T>);
+
+impl<'a, T: IndexableFieldIterable> DocumentsIterator<'a> for SliceDocumentsIterator<'a, T> {
+    fn has_next(&mut self) -> Result<bool> {
+        Ok(self.0.len() > 0)
+    }
+
+    fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>> {
+        match self.0.next() {
+            Some(doc) => Ok(Some(doc)),
+            None => Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.util.NoSuchElementException",
+                message: None,
+                cause: None,
+            })),
+        }
+    }
+}
+
+impl<T: IndexableFieldIterable> DocumentsIterable for [T] {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        Box::new(SliceDocumentsIterator(self.iter()))
+    }
+}
+
+impl<T: IndexableFieldIterable> DocumentsIterable for Vec<T> {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        self.as_slice().iterator()
+    }
+}
+
+impl<T: IndexableFieldIterable, const N: usize> DocumentsIterable for [T; N] {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        self.as_slice().iterator()
+    }
+}
+
+/// A borrowed [`DocumentsIterable`] of any type, sized so that it can be
+/// handed on as `&dyn DocumentsIterable`.
+pub(crate) struct DocumentsIterableRef<'a, D: DocumentsIterable + ?Sized>(pub(crate) &'a D);
+
+impl<D: DocumentsIterable + ?Sized> DocumentsIterable for DocumentsIterableRef<'_, D> {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        self.0.iterator()
+    }
+}
+
+/// `List.of(doc)`: the one-document block `IndexWriter.updateDocument` and
+/// `softUpdateDocument` hand to `updateDocuments` (`IndexWriter.java:1925-1926,
+/// 1957-1958`).
+pub(crate) struct SingleDocument<'a, D: IndexableFieldIterable + ?Sized>(FieldIterableRef<'a, D>);
+
+impl<'a, D: IndexableFieldIterable + ?Sized> SingleDocument<'a, D> {
+    /// `List.of(doc)`; the `NullPointerException` `List.of` throws for a
+    /// `null` element is the caller's to raise.
+    pub(crate) fn new(doc: &'a D) -> Self {
+        Self(FieldIterableRef(doc))
+    }
+}
+
+impl<D: IndexableFieldIterable + ?Sized> DocumentsIterable for SingleDocument<'_, D> {
+    fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
+        Box::new(SliceDocumentsIterator(std::slice::from_ref(&self.0).iter()))
+    }
 }
 
 /// A fixed size `DataInput` which includes the length of the input.

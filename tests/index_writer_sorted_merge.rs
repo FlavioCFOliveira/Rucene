@@ -65,7 +65,7 @@ fn rank_sort() -> Sort {
 fn rust_merge() -> Arc<dyn Directory> {
     let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_index_sort(rank_sort()).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let mut i = 0;
@@ -167,7 +167,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 

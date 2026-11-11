@@ -55,6 +55,8 @@
 //! any size at all. Reading every document twice also covers the state a first,
 //! failed read may have left behind.
 
+mod lucene_assertion;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -311,7 +313,7 @@ fn read_file(directory: &Arc<dyn Directory>, name: &str) -> Vec<u8> {
         .expect("open");
     let length = input.length() as usize;
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).expect("read");
+    input.read_bytes(Some(&mut bytes), 0, length).expect("read");
     bytes
 }
 
@@ -321,6 +323,15 @@ fn write_file(directory: &Arc<dyn Directory>, name: &str, bytes: &[u8]) {
         .expect("create");
     output.write_bytes(bytes, 0, bytes.len()).expect("write");
     output.close().expect("close");
+}
+
+/// [`visit_all_unguarded`], where a Lucene `assert` the decoder fails on the
+/// corrupt input — Java's `AssertionError` under `-ea` — ends the walk, as
+/// Java's exception would, and counts as survived; any other panic still
+/// fails the test (see [`lucene_assertion`]).
+fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) -> usize {
+    lucene_assertion::survive_lucene_assertions(|| visit_all_unguarded(directory, info, docs))
+        .unwrap_or(0)
 }
 
 /// Walks every term vector of every document, reporting only whether it
@@ -333,7 +344,7 @@ fn write_file(directory: &Arc<dyn Directory>, name: &str, bytes: &[u8]) {
 /// Returns how many documents it managed to decode, which the sweeps use to
 /// prove that they are actually reaching the decoder rather than being turned
 /// away at the file header.
-fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) -> usize {
+fn visit_all_unguarded(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) -> usize {
     let reader = match codec().term_vectors_format().vectors_reader(
         directory.as_ref(),
         info,
@@ -365,7 +376,7 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) -> u
                 };
                 while matches!(iterator.next(), Ok(Some(_))) {
                     let _ = iterator.total_term_freq();
-                    let Ok(mut postings) = iterator.postings(None, POSTINGS_ENUM_ALL) else {
+                    let Ok(Some(mut postings)) = iterator.postings(None, POSTINGS_ENUM_ALL) else {
                         continue;
                     };
                     if postings.next_doc().is_err() {

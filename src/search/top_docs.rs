@@ -133,6 +133,7 @@ struct ScoreMergeSortQueue<'a> {
 impl<'a> PriorityQueueComparator<ShardRef> for ScoreMergeSortQueue<'a> {
     /// Returns `true` if `first` is less than `second`.
     fn less_than(&self, first: &ShardRef, second: &ShardRef) -> bool {
+        debug_assert!(!std::ptr::eq(first, second));
         let first_score_doc = &self.shard_hits[first.shard_index][first.hit_index];
         let second_score_doc = &self.shard_hits[second.shard_index][second.hit_index];
         if first_score_doc.score < second_score_doc.score {
@@ -164,6 +165,7 @@ struct MergeSortQueue<'a> {
 impl PriorityQueueComparator<ShardRef> for MergeSortQueue<'_> {
     /// Returns `true` if `first` is less than `second`.
     fn less_than(&self, first: &ShardRef, second: &ShardRef) -> bool {
+        debug_assert!(!std::ptr::eq(first, second));
         let first_fd = &self.shard_hits[first.shard_index][first.hit_index];
         let second_fd = &self.shard_hits[second.shard_index][second.hit_index];
 
@@ -239,7 +241,7 @@ impl TopDocs {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the shard indices are
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the shard indices are
     /// inconsistently set across the merged hits.
     pub fn merge_from(start: usize, top_n: usize, shard_hits: &[TopDocs]) -> Result<TopDocs> {
         Self::merge_with_tie_breaker(start, top_n, shard_hits, &default_tie_breaker)
@@ -306,6 +308,7 @@ impl TopDocs {
             let num_iter_on_hits = avail_hit_count.min(requested_result_window);
             let mut hit_upto = 0usize;
             while hit_upto < num_iter_on_hits {
+                debug_assert!(queue.size() > 0);
                 let mut shard_ref = *queue.top().ok_or_else(|| {
                     LuceneError::illegal_state("merge queue is empty".to_string())
                 })?;
@@ -316,7 +319,7 @@ impl TopDocs {
                 // breaking, check for a consistent order in shard indices to
                 // defend against potential bugs.
                 if hit_upto > 0 && unset_shard_index != (hit.shard_index == -1) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Inconsistent order of shard indices".to_string(),
                     ));
                 }
@@ -388,7 +391,7 @@ impl TopDocs {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a hit did not set its sort
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a hit did not set its sort
     /// field values — Java's "shard N did not set sort field values" check —
     /// or when the shard indices are inconsistently set across the merged hits;
     /// propagates any error a [`SortField`](crate::search::SortField) raises
@@ -404,7 +407,7 @@ impl TopDocs {
         for (shard_idx, shard) in shard_hits.iter().enumerate() {
             for hit in &shard.score_docs {
                 if hit.fields.is_none() {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "shard {shard_idx} did not set sort field values (FieldDoc.fields is null)"
                     )));
                 }
@@ -455,6 +458,7 @@ impl TopDocs {
             let num_iter_on_hits = avail_hit_count.min(requested_result_window);
             let mut hit_upto = 0usize;
             while hit_upto < num_iter_on_hits {
+                debug_assert!(queue.size() > 0);
                 let mut shard_ref = *queue.top().ok_or_else(|| {
                     LuceneError::illegal_state("merge queue is empty".to_string())
                 })?;
@@ -462,7 +466,7 @@ impl TopDocs {
                 shard_ref.hit_index += 1;
 
                 if hit_upto > 0 && unset_shard_index != (hit.score_doc.shard_index == -1) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Inconsistent order of shard indices".to_string(),
                     ));
                 }
@@ -502,16 +506,16 @@ impl TopDocs {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `top_n < 1`, when `k < 1`,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `top_n < 1`, when `k < 1`,
     /// or when some hits have their shard index set and others do not.
     pub fn rrf(top_n: usize, k: i32, hits: &[TopDocs]) -> Result<TopDocs> {
         if top_n < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "topN must be >= 1, got {top_n}"
             )));
         }
         if k < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "k must be >= 1, got {k}"
             )));
         }
@@ -523,7 +527,7 @@ impl TopDocs {
                 match shard_index_set {
                     None => shard_index_set = Some(this_shard_index_set),
                     Some(set) if set != this_shard_index_set => {
-                        return Err(LuceneError::IllegalArgument(
+                        return Err(LuceneError::illegal_argument(
                             "All hits must either have their ScoreDoc#shardIndex set, or unset (-1), not a mix of both."
                                 .to_string(),
                         ));
@@ -544,7 +548,7 @@ impl TopDocs {
             for (i, score_doc) in top_doc.score_docs.iter().enumerate() {
                 let rank = i as i64 + 1;
                 let denominator = i64::from(k).checked_add(rank).ok_or_else(|| {
-                    LuceneError::IllegalArgument("k + rank overflows".to_string())
+                    LuceneError::illegal_argument("k + rank overflows".to_string())
                 })?;
                 let rrf_score_contribution = 1f64 / denominator as f64;
                 let key = ShardIndexAndDoc {

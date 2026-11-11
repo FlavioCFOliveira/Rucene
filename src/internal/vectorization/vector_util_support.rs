@@ -38,7 +38,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn dot_product_f32(&self, a: &[f32], b: &[f32]) -> Result<f32>;
 
@@ -48,7 +48,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn cosine_f32(&self, a: &[f32], b: &[f32]) -> Result<f32>;
 
@@ -58,7 +58,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn square_distance_f32(&self, a: &[f32], b: &[f32]) -> Result<f32>;
 
@@ -69,7 +69,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn dot_product_bytes(&self, a: &[u8], b: &[u8]) -> Result<i32>;
 
@@ -79,7 +79,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn int4_dot_product(&self, a: &[u8], b: &[u8]) -> Result<i32>;
 
@@ -89,7 +89,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when `unpacked` is
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when `unpacked` is
     /// shorter than twice the length of `packed`. Lucene has no explicit check
     /// and reads out of bounds instead.
     fn int4_dot_product_single_packed(&self, unpacked: &[u8], packed: &[u8]) -> Result<i32>;
@@ -100,7 +100,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn int4_dot_product_both_packed(&self, a: &[u8], b: &[u8]) -> Result<i32>;
 
@@ -110,7 +110,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn uint8_dot_product(&self, a: &[u8], b: &[u8]) -> Result<i32>;
 
@@ -120,7 +120,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn cosine_bytes(&self, a: &[u8], b: &[u8]) -> Result<f32>;
 
@@ -130,7 +130,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn square_distance_bytes(&self, a: &[u8], b: &[u8]) -> Result<i32>;
 
@@ -141,7 +141,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn int4_square_distance(&self, a: &[u8], b: &[u8]) -> Result<i32>;
 
@@ -152,7 +152,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when `unpacked` is
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when `unpacked` is
     /// shorter than twice the length of `packed`.
     fn int4_square_distance_single_packed(&self, unpacked: &[u8], packed: &[u8]) -> Result<i32>;
 
@@ -163,7 +163,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn int4_square_distance_both_packed(&self, a: &[u8], b: &[u8]) -> Result<i32>;
 
@@ -173,7 +173,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the dimensions
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the dimensions
     /// differ.
     fn uint8_square_distance(&self, a: &[u8], b: &[u8]) -> Result<i32>;
 
@@ -201,7 +201,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when `int4_quantized` is
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when `int4_quantized` is
     /// not exactly four times as long as `binary_quantized`. Lucene states the
     /// same condition as a Java `assert`, which is disabled in production.
     fn int4_bit_dot_product(&self, int4_quantized: &[u8], binary_quantized: &[u8]) -> Result<i64>;
@@ -217,7 +217,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when `int4_quantized` is
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when `int4_quantized` is
     /// not exactly twice as long as `dibit_quantized`. Lucene states the same
     /// condition as a Java `assert`.
     fn int4_dibit_dot_product(&self, int4_quantized: &[u8], dibit_quantized: &[u8]) -> Result<i64>;
@@ -230,7 +230,7 @@ pub trait VectorUtilSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when `vector` and `dest`
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when `vector` and `dest`
     /// have different lengths. Lucene states the same condition as a Java
     /// `assert`.
     fn min_max_scalar_quantize(

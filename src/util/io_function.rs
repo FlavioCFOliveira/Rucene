@@ -132,7 +132,7 @@ where
 /// way to supply the predicate, so this is a concrete type parameterised by
 /// one. Java's `remove()` throws `UnsupportedOperationException`; Rust's
 /// [`Iterator`] has no `remove`, so it is an inherent method returning
-/// [`LuceneError::UnsupportedOperation`].
+/// [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
 pub struct FilterIterator<I, P>
 where
     I: Iterator,
@@ -171,12 +171,12 @@ where
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`], standing in for
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), standing in for
     /// Java's `UnsupportedOperationException`.
     ///
     /// Equivalent to `org.apache.lucene.util.FilterIterator#remove`.
     pub fn remove(&mut self) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FilterIterator does not support remove()".to_string(),
         ))
     }

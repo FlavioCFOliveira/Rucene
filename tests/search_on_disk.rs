@@ -42,9 +42,9 @@ fn term_query_over_on_disk_index_finds_documents() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).unwrap());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for d in 0..6 {
@@ -77,9 +77,9 @@ fn a_positioned_term_reports_its_statistics_and_postings() {
     std::fs::create_dir_all(&tmp).unwrap();
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).unwrap());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for d in 0..6 {
@@ -121,7 +121,7 @@ fn a_positioned_term_reports_its_statistics_and_postings() {
     );
     println!("impacts          = {:?}", te.impacts(0).map(|_| "ok"));
     // Does the postings enum actually yield the documents?
-    let mut pe = te.postings(None, 0).expect("postings");
+    let mut pe = te.postings(None, 0).expect("postings").expect("postings");
     let mut docs = Vec::new();
     loop {
         let d = pe.next_doc().expect("next_doc");

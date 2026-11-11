@@ -1,0 +1,5 @@
+# lookup	result
+getName	MockRandom
+toString	PostingsFormat(name=MockRandom)
+forName.getClass	org.apache.lucene.tests.codecs.mockrandom.MockRandomPostingsFormat
+forName.toString	PostingsFormat(name=MockRandom)

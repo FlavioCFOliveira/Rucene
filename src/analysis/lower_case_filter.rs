@@ -11,7 +11,7 @@ use std::fmt::Debug;
 
 use crate::analysis::character_utils::to_lower_case;
 use crate::analysis::tokenattributes::CharTermAttribute;
-use crate::analysis::{PackedTokenAttributeImpl, TokenFilter, TokenFilterLogic, TokenStream};
+use crate::analysis::{TokenFilter, TokenFilterLogic, TokenStream};
 use crate::error::Result;
 use crate::util::attribute::AttributeSource;
 
@@ -40,8 +40,8 @@ impl TokenFilterLogic for LowerCaseFilterLogic {
             return Ok(false);
         }
         let mut att = source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap();
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .expect("INVARIANT: the constructor added the CharTermAttribute");
         let length = att.length();
         to_lower_case(att.buffer_mut(), 0, length);
         Ok(true)
@@ -52,8 +52,20 @@ impl TokenFilterLogic for LowerCaseFilterLogic {
 pub type LowerCaseFilter = TokenFilter<LowerCaseFilterLogic>;
 
 /// Creates a [`LowerCaseFilter`] over `input`.
-pub fn new_lower_case_filter(input: Box<dyn TokenStream>) -> LowerCaseFilter {
-    TokenFilter::new(input, LowerCaseFilterLogic::new())
+///
+/// Equivalent to `LowerCaseFilter(TokenStream)`, which adds the
+/// `CharTermAttribute` (`LowerCaseFilter.java:24`).
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_lower_case_filter(input: Box<dyn TokenStream>) -> Result<LowerCaseFilter> {
+    let mut filter = TokenFilter::new(input, LowerCaseFilterLogic::new());
+    filter
+        .attribute_source_mut()
+        .add_attribute_interface::<dyn CharTermAttribute>()?;
+    Ok(filter)
 }
 
 #[cfg(test)]
@@ -70,14 +82,14 @@ mod tests {
             "\u{130}STANBUL \u{3A3}\u{391}\u{3A3} \u{1E9E} \u{10400} \u{1C5}".to_string(),
         )
         .unwrap();
-        let mut filter = new_lower_case_filter(Box::new(input));
+        let mut filter = new_lower_case_filter(Box::new(input)).unwrap();
         filter.reset().unwrap();
         assert!(filter.increment_token().unwrap());
-        let term = filter
+        let term_att = filter
             .attribute_source()
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .unwrap()
-            .term();
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
+        let term: String = term_att.buffer()[..term_att.length()].iter().collect();
         assert_eq!(
             term,
             "istanbul \u{3C3}\u{3B1}\u{3C3} \u{DF} \u{10428} \u{1C6}"

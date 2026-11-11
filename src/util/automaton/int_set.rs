@@ -152,6 +152,7 @@ impl StateSet {
     ///
     /// Panics if `state` is not a member of this set.
     pub fn decr(&mut self, state: i32) {
+        debug_assert!(self.inner.contains_key(&state));
         let count = self
             .inner
             .get_mut(&state)

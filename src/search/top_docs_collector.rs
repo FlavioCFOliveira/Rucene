@@ -202,7 +202,7 @@ pub trait TopDocsCollector: Collector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when `how_many` or `start` is negative.
     fn top_docs_range(&mut self, start: i32, how_many: i32) -> Result<Self::Docs> {
         // In case the queue was populated with sentinel values there may be
@@ -211,13 +211,13 @@ pub trait TopDocsCollector: Collector {
         let size = self.top_docs_size();
 
         if how_many < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Number of hits requested must be greater than 0 but value was {how_many}"
             )));
         }
 
         if start < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Expected value of starting position is between 0 and {size}, got {start}"
             )));
         }

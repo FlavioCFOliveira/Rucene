@@ -110,7 +110,7 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] from producers that
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) from producers that
     /// mirror Java's `EmptyDocValuesProducer`, whose `getSkipper` throws
     /// `UnsupportedOperationException` (`index/EmptyDocValuesProducer.java:54-57`),
     /// and any I/O error from opening the skip index.
@@ -123,7 +123,7 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>>;
 
     /// Closes this producer, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 }
 
 // -----------------------------------------------------------------------------
@@ -131,15 +131,15 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
 // -----------------------------------------------------------------------------
 
 /// Dereferences the values a producer returned, as Java's callers dereference
-/// them without a check: a `null` there raises `NullPointerException`, which
-/// is reported as [`LuceneError::IllegalState`].
+/// them without a check: a `null` there raises `NullPointerException`
+/// ([`LuceneError::null_pointer_with_message`]).
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] when `values` is `None`.
+/// Returns Java's `NullPointerException` when `values` is `None`.
 pub(crate) fn non_null<T>(values: Option<T>, field: &FieldInfo) -> Result<T> {
     values.ok_or_else(|| {
-        LuceneError::illegal_state(format!(
+        LuceneError::null_pointer_with_message(format!(
             "the producer has no values for field \"{}\"",
             field.name
         ))
@@ -290,16 +290,28 @@ pub trait DocValuesFormat: Send + Sync + fmt::Debug {
         &self,
         state: &SegmentReadState<'a>,
     ) -> Result<Box<dyn DocValuesProducer>>;
+
+    /// This format as [`Any`](std::any::Any), for the `instanceof` tests Java
+    /// code makes on a `DocValuesFormat` (`TestUtil.getDocValuesFormat(Codec, String)` narrows
+    /// to `PerFieldDocValuesFormat`, `TestUtil.java:1409-1416`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through `Any`, which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 impl fmt::Display for dyn DocValuesFormat + '_ {
     /// Port of the concrete `DocValuesFormat.toString()`, which every
     /// implementation inherits: `"DocValuesFormat(name=" + name + ")"`.
     ///
-    /// It hangs off the trait object rather than off each implementation for
-    /// the same reason `Codec`'s does: Rust cannot give [`fmt::Display`] a
-    /// default body, but Java's method is concrete on the abstract class, so
-    /// one implementation for `dyn DocValuesFormat` reproduces it for all.
+    /// It hangs off the trait object rather than off each implementation
+    /// because Rust cannot give [`fmt::Display`] a default body, but Java's
+    /// method is concrete on the abstract class, so one implementation for
+    /// `dyn DocValuesFormat` reproduces it for all.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "DocValuesFormat(name={})", self.name())
     }
@@ -347,9 +359,9 @@ impl DocValuesFormatRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `name` is empty, contains
     /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
-    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
     pub fn register<F>(&self, name: impl Into<String>, format: F) -> Result<()>
     where
         F: DocValuesFormat + 'static,
@@ -386,6 +398,27 @@ impl DocValuesFormatRegistry {
             .ok()
     }
 
+    /// Looks up a doc-values format by name, failing as Lucene does.
+    ///
+    /// Equivalent to `DocValuesFormat.forName(String)`, which is
+    /// `NamedSPILoader.lookup(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
+    /// listing the available names, when no format is registered under
+    /// `name`, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
+    pub fn lookup(&self, name: &str) -> Result<Arc<dyn DocValuesFormat>> {
+        self.formats
+            .read()
+            .map_err(|_| {
+                LuceneError::illegal_state(
+                    "doc-values format registry lock was poisoned".to_string(),
+                )
+            })?
+            .lookup(name)
+    }
+
     /// Returns the names of all registered doc-values formats, in registration order.
     ///
     /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
@@ -413,7 +446,7 @@ impl DocValuesFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
 /// poisoned.
 pub fn reload_doc_values_formats(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,
@@ -456,6 +489,19 @@ pub fn doc_values_for_name(name: &str) -> Option<Arc<dyn DocValuesFormat>> {
     GLOBAL_DOC_VALUES_REGISTRY.for_name(name)
 }
 
+/// Looks up a doc-values format by name from the global registry, failing as Lucene
+/// does.
+///
+/// Equivalent to `DocValuesFormat.forName(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message when no
+/// format is registered under `name`.
+pub fn doc_values_lookup(name: &str) -> Result<Arc<dyn DocValuesFormat>> {
+    GLOBAL_DOC_VALUES_REGISTRY.lookup(name)
+}
+
 /// Returns the names of all doc-values formats registered in the global
 /// registry.
 pub fn available_doc_values_formats() -> Vec<String> {
@@ -472,8 +518,8 @@ pub fn available_doc_values_formats() -> Vec<String> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] if the name is invalid, or
-/// [`LuceneError::IllegalState`] if the name is already registered.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the name is invalid, or
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
 pub fn register_doc_values_format(
     name: impl Into<String>,
     format: impl DocValuesFormat + 'static,
@@ -584,10 +630,15 @@ impl DocValuesFormat for EmptyDocValuesFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use std::sync::Arc;
 
+    /// Java's empty doc values `longValue()` body is `assert false`
+    /// (`DocValues.java:100-101`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_numeric_doc_values_returns_no_docs() {
         let mut values = EmptyNumericDocValues::new();
         assert_eq!(values.doc_id(), -1);
@@ -596,14 +647,22 @@ mod tests {
         assert!(values.long_value().is_err());
     }
 
+    /// Java's empty doc values `binaryValue()` body is `assert false`
+    /// (`DocValues.java:61-62`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_binary_doc_values_returns_no_docs() {
         let mut values = EmptyBinaryDocValues::new();
         assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
         assert!(values.binary_value().is_err());
     }
 
+    /// Java's empty doc values `ordValue()` body is `assert false`
+    /// (`DocValues.java:141-142`): under `-ea` (debug builds) the call fails the
+    /// assertion; this port reports an error without assertions.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_sorted_doc_values_has_no_values() {
         let values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);
@@ -634,7 +693,10 @@ mod tests {
         let producer = EmptyDocValuesProducer;
         let field = FieldInfo::default();
         match producer.get_skipper(&field) {
-            Err(LuceneError::UnsupportedOperation(_)) => {}
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            }) => {}
             Err(other) => panic!("expected UnsupportedOperation, got {other:?}"),
             Ok(_) => panic!("expected UnsupportedOperation, got a skipper"),
         }
@@ -868,7 +930,7 @@ fn sub_field_info<'a>(
 /// from `advance` and `advanceExact`, because a merge only ever walks the
 /// merged doc-id space once, in order.
 fn merge_iterator_is_forward_only() -> LuceneError {
-    LuceneError::UnsupportedOperation(
+    LuceneError::unsupported_operation(
         "a merged doc-values iterator can only be advanced with next_doc".to_string(),
     )
 }
@@ -977,6 +1039,7 @@ pub fn get_merged_numeric_doc_values(
         let Some(values) = producer.get_numeric(reader_field_info)? else {
             continue;
         };
+        debug_assert!(values.doc_id() == -1);
         subs.push(NumericDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1048,6 +1111,7 @@ pub fn get_merged_binary_doc_values(
             continue;
         };
         cost += values.cost();
+        debug_assert!(values.doc_id() == -1);
         subs.push(BinaryDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1148,6 +1212,7 @@ pub fn get_merged_sorted_numeric_doc_values(
         if all_singletons && !values.is_singleton() {
             all_singletons = false;
         }
+        debug_assert!(values.doc_id() == -1);
         subs.push(SortedNumericDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1160,11 +1225,13 @@ pub fn get_merged_sorted_numeric_doc_values(
         // encode the merged field as a plain numeric one.
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
-            let single = sub.values.into_singleton().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "sorted numeric doc values reported singleton but did not unwrap".to_string(),
-                )
-            })?;
+            let single = sub.values.into_singleton();
+            debug_assert!(single.is_some());
+            // Java dereferences the null `unwrapSingleton` result (an NPE) when
+            // assertions are off.
+            let single =
+                single.expect("sorted numeric doc values reported singleton but did not unwrap");
+            debug_assert!(single.doc_id() == -1);
             single_valued_subs.push(NumericDocValuesSub {
                 doc_map: sub.doc_map,
                 values: single,
@@ -1281,7 +1348,7 @@ pub fn create_ordinal_map_for_sorted_dv(
             }
         }
     }
-    OrdinalMap::build(live_terms, &weights, COMPACT)
+    OrdinalMap::build(None, live_terms, &weights, COMPACT)
 }
 
 /// Returns each sub-reader's sorted view of `field`, empty where it has none.
@@ -1322,6 +1389,7 @@ pub fn get_merged_sorted_doc_values(
         .into_iter()
         .enumerate()
     {
+        debug_assert!(values.doc_id() == -1);
         subs.push(SortedDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1488,7 +1556,7 @@ pub fn create_ordinal_map_for_sorted_set_dv(
             }
         }
     }
-    OrdinalMap::build(live_terms, &weights, COMPACT)
+    OrdinalMap::build(None, live_terms, &weights, COMPACT)
 }
 
 /// Builds the merged sorted-set view of `field`.
@@ -1513,6 +1581,7 @@ pub fn get_merged_sorted_set_doc_values(
         if all_singletons && !values.is_singleton() {
             all_singletons = false;
         }
+        debug_assert!(values.doc_id() == -1);
         subs.push(SortedSetDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
             values,
@@ -1525,11 +1594,13 @@ pub fn get_merged_sorted_set_doc_values(
     if all_singletons {
         let mut single_valued_subs = Vec::with_capacity(subs.len());
         for sub in subs {
-            let single = sub.values.into_singleton().ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "sorted set doc values reported singleton but did not unwrap".to_string(),
-                )
-            })?;
+            let single = sub.values.into_singleton();
+            debug_assert!(single.is_some());
+            // Java dereferences the null `unwrapSingleton` result (an NPE) when
+            // assertions are off.
+            let single =
+                single.expect("sorted set doc values reported singleton but did not unwrap");
+            debug_assert!(single.doc_id() == -1);
             single_valued_subs.push(SortedDocValuesSub {
                 doc_map: sub.doc_map,
                 values: single,
@@ -1634,7 +1705,7 @@ impl TermsEnum for BitsFilteredTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
 
@@ -1654,7 +1725,7 @@ impl TermsEnum for BitsFilteredTermsEnum {
         &mut self,
         reuse: Option<Box<dyn crate::index::postings_enum::PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn crate::index::postings_enum::PostingsEnum>> {
+    ) -> Result<Option<Box<dyn crate::index::postings_enum::PostingsEnum>>> {
         self.inner.postings(reuse, flags)
     }
 
@@ -1707,7 +1778,7 @@ impl<'a> MergedDocValuesProducer<'a> {
     /// Fails when asked for a field other than the one being merged.
     fn check_field(&self, field: &FieldInfo) -> Result<()> {
         if field.name != self.field.name {
-            return Err(LuceneError::IllegalArgument("wrong fieldInfo".to_string()));
+            return Err(LuceneError::illegal_argument("wrong fieldInfo".to_string()));
         }
         Ok(())
     }
@@ -1722,7 +1793,7 @@ impl<'a> MergedDocValuesProducer<'a> {
     }
 
     fn unsupported(&self, kind: &str) -> LuceneError {
-        LuceneError::UnsupportedOperation(format!(
+        LuceneError::unsupported_operation(format!(
             "the merged view of field '{}' does not provide {kind} doc values",
             self.field.name
         ))
@@ -1788,7 +1859,7 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
         Err(self.unsupported("merge-instance"))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }

@@ -10,8 +10,8 @@
 //!   `IOException`).
 //!
 //! Rucene has a single crate-wide error enum, [`LuceneError`], which already
-//! carries one variant per condition: [`LuceneError::AlreadyClosed`],
-//! [`LuceneError::LockObtainFailed`] and [`LuceneError::LockReleaseFailed`].
+//! carries one variant per condition: [`LuceneErrorKind::AlreadyClosed`],
+//! [`LuceneErrorKind::LockObtainFailed`] and [`LuceneErrorKind::LockReleaseFailed`].
 //! Rather than introducing a second, parallel error hierarchy, each Java class
 //! is ported here as a zero-sized *namespace* type carrying the two operations
 //! the Java class provides:
@@ -38,13 +38,13 @@
 use std::io;
 use std::sync::Arc;
 
-use crate::error::LuceneError;
+use crate::error::{LuceneError, LuceneErrorKind};
 
 /// Raised when something that has already been closed is accessed.
 ///
 /// Equivalent to `org.apache.lucene.store.AlreadyClosedException`, which
 /// extends `IllegalStateException`. Values are produced as
-/// [`LuceneError::AlreadyClosed`]; this type only groups the constructors and
+/// [`LuceneErrorKind::AlreadyClosed`]; this type only groups the constructors and
 /// the classification predicate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AlreadyClosedException;
@@ -74,7 +74,13 @@ impl AlreadyClosedException {
     ///
     /// This is the Rust counterpart of `catch (AlreadyClosedException e)`.
     pub fn is(error: &LuceneError) -> bool {
-        matches!(error, LuceneError::AlreadyClosed { .. })
+        matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            }
+        )
     }
 }
 
@@ -83,7 +89,7 @@ impl AlreadyClosedException {
 ///
 /// Equivalent to `org.apache.lucene.store.LockObtainFailedException`, which
 /// extends `IOException`. Values are produced as
-/// [`LuceneError::LockObtainFailed`].
+/// [`LuceneErrorKind::LockObtainFailed`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LockObtainFailedException;
 
@@ -111,7 +117,13 @@ impl LockObtainFailedException {
     /// which [`SleepingLockWrapper`](super::SleepingLockWrapper) and
     /// [`LockStressTest`](super::LockStressTest) both rely on.
     pub fn is(error: &LuceneError) -> bool {
-        matches!(error, LuceneError::LockObtainFailed { .. })
+        matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { .. },
+                ..
+            }
+        )
     }
 }
 
@@ -119,7 +131,7 @@ impl LockObtainFailedException {
 ///
 /// Equivalent to `org.apache.lucene.store.LockReleaseFailedException`, which
 /// extends `IOException`. Values are produced as
-/// [`LuceneError::LockReleaseFailed`].
+/// [`LuceneErrorKind::LockReleaseFailed`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LockReleaseFailedException;
 
@@ -145,6 +157,12 @@ impl LockReleaseFailedException {
     ///
     /// This is the Rust counterpart of `catch (LockReleaseFailedException e)`.
     pub fn is(error: &LuceneError) -> bool {
-        matches!(error, LuceneError::LockReleaseFailed { .. })
+        matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::LockReleaseFailed { .. },
+                ..
+            }
+        )
     }
 }

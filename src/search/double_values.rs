@@ -32,6 +32,17 @@ pub trait DoubleValues {
     ///
     /// Propagates any I/O error raised while advancing.
     fn advance_exact(&mut self, doc: i32) -> Result<bool>;
+
+    /// Whether these values are the `DoubleValues.EMPTY` constant.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests `values ==
+    /// DoubleValues.EMPTY` by identity
+    /// (`TestFullPrecisionFloatVectorSimilarityValuesSource`); a boxed Rust
+    /// value has no shared singleton identity, so the constant's type answers
+    /// `true` and every other type keeps this default, `false`.
+    fn is_empty_constant(&self) -> bool {
+        false
+    }
 }
 
 impl<T: DoubleValues + ?Sized> DoubleValues for Box<T> {
@@ -42,6 +53,10 @@ impl<T: DoubleValues + ?Sized> DoubleValues for Box<T> {
     fn advance_exact(&mut self, doc: i32) -> Result<bool> {
         (**self).advance_exact(doc)
     }
+
+    fn is_empty_constant(&self) -> bool {
+        (**self).is_empty_constant()
+    }
 }
 
 impl<T: DoubleValues + ?Sized> DoubleValues for &mut T {
@@ -51,6 +66,10 @@ impl<T: DoubleValues + ?Sized> DoubleValues for &mut T {
 
     fn advance_exact(&mut self, doc: i32) -> Result<bool> {
         (**self).advance_exact(doc)
+    }
+
+    fn is_empty_constant(&self) -> bool {
+        (**self).is_empty_constant()
     }
 }
 
@@ -103,12 +122,16 @@ impl DoubleValues for EmptyDoubleValues {
     /// Equivalent to the constant's `doubleValue()`, which throws
     /// `UnsupportedOperationException`.
     fn double_value(&mut self) -> Result<f64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DoubleValues.EMPTY has no values".to_string(),
         ))
     }
 
     fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
         Ok(false)
+    }
+
+    fn is_empty_constant(&self) -> bool {
+        true
     }
 }

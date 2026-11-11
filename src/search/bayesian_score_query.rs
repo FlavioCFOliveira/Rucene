@@ -83,22 +83,22 @@ impl BayesianScoreQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
     /// `alpha` is not positive and finite, `beta` is not finite, or `base_rate`
     /// is outside `[0, 1)`.
     pub fn new(query: Arc<dyn Query>, alpha: f32, beta: f32, base_rate: f32) -> Result<Self> {
         if !alpha.is_finite() || alpha <= 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "alpha must be a positive finite value, got {alpha}"
             )));
         }
         if !beta.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "beta must be a finite value, got {beta}"
             )));
         }
         if base_rate < 0.0 || base_rate >= 1.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "baseRate must be in [0, 1), got {base_rate}"
             )));
         }
@@ -406,10 +406,6 @@ impl Scorable for BayesianScoreScorer {
 }
 
 impl Scorer for BayesianScoreScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.inner.inner().doc_id()
     }

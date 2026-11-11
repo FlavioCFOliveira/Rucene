@@ -7,12 +7,12 @@
 use crate::codecs::codec_util;
 use crate::codecs::field_infos::FieldInfosFormat;
 use crate::codecs::stub::{FieldInfo, FieldInfos, SegmentInfo};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{segment_file_name, FIELD_INFO_EXTENSION};
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
 };
-use crate::store::{DataInput, Directory, IOContext, IndexInput};
+use crate::store::{DataInput, Directory, IOContext, IndexInput, IndexOutput};
 
 const CODEC_NAME: &str = "Lucene94FieldInfos";
 const FORMAT_START: i32 = 0;
@@ -55,23 +55,30 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
         let file_name = segment_file_name(&segment_info.name, segment_suffix, FIELD_INFO_EXTENSION);
         let mut input = directory.open_checksum_input(&file_name)?;
 
-        let format = codec_util::check_index_header(
-            input.as_mut(),
-            CODEC_NAME,
-            FORMAT_START,
-            FORMAT_CURRENT,
-            &segment_info.id(),
-            segment_suffix,
-        )?;
+        // The `try` block, whose failure `CodecUtil.checkFooter(input,
+        // priorE)` weighs in the `finally`, all inside the try-with-resources
+        // (`Lucene94FieldInfosFormat.java:134-246`).
+        let read = (|| -> Result<Vec<FieldInfo>> {
+            let format = codec_util::check_index_header(
+                input.as_mut(),
+                CODEC_NAME,
+                FORMAT_START,
+                FORMAT_CURRENT,
+                &segment_info.id(),
+                segment_suffix,
+            )?;
 
-        let size = input.read_v_int()?;
-        let mut infos = Vec::with_capacity(size as usize);
-        for _ in 0..size {
-            infos.push(read_field_info(input.as_mut(), format)?);
-        }
-
-        codec_util::check_footer(input.as_mut())?;
-        FieldInfos::new(infos)
+            let size = input.read_v_int()?;
+            let mut infos = Vec::with_capacity(size as usize);
+            for _ in 0..size {
+                infos.push(read_field_info(input.as_mut(), format)?);
+            }
+            Ok(infos)
+        })();
+        let read = codec_util::check_footer_after(input.as_mut(), read);
+        // `return new FieldInfos(infos)`, still inside the try-with-resources.
+        let result = read.and_then(FieldInfos::new);
+        crate::store::close_after(input.as_mut(), result)
     }
 
     fn write(
@@ -83,9 +90,27 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
         context: &dyn IOContext,
     ) -> Result<()> {
         let file_name = segment_file_name(&segment_info.name, segment_suffix, FIELD_INFO_EXTENSION);
+        // `try (IndexOutput output = directory.createOutput(fileName, context))`
+        // (`Lucene94FieldInfosFormat.java:420`): the output is closed on every
+        // exit; an exception of the body wins over one of the close, which
+        // Java suppresses.
         let mut output = directory.create_output(&file_name, context)?;
+        let body = Self::write_body(output.as_mut(), segment_info, segment_suffix, infos);
+        let closed = output.close();
+        body.and(closed)
+    }
+}
+
+impl Lucene94FieldInfosFormat {
+    /// The body of `write`'s try-with-resources block.
+    fn write_body(
+        output: &mut dyn IndexOutput,
+        segment_info: &SegmentInfo,
+        segment_suffix: &str,
+        infos: &FieldInfos,
+    ) -> Result<()> {
         codec_util::write_index_header(
-            output.as_mut(),
+            output,
             CODEC_NAME,
             FORMAT_CURRENT,
             &segment_info.id(),
@@ -134,9 +159,7 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
             output.write_byte(dist_func_to_ord(fi.vector_similarity_function)?)?;
         }
 
-        codec_util::write_footer(output.as_mut())?;
-        output.close()?;
-        Ok(())
+        codec_util::write_footer(output)
     }
 }
 
@@ -144,9 +167,9 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
     let name = input.read_string()?;
     let field_number = input.read_v_int()?;
     if field_number < 0 {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid field number for field: {name}, fieldNumber={field_number}"
-        )));
+        ))));
     }
 
     let bits = input.read_byte()?;
@@ -161,19 +184,19 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
     };
 
     if (bits & 0xC0) != 0 {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "unused bits are set \"{bits:08b}\""
-        )));
+        ))));
     }
     if format < FORMAT_PARENT_FIELD && (bits & 0xF0) != 0 {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "parent field bit is set but shouldn't \"{bits:08b}\""
-        )));
+        ))));
     }
     if format < FORMAT_DOCVALUE_SKIPPER && (bits & DOCVALUES_SKIPPER) != 0 {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "doc values skipper bit is set but shouldn't \"{bits:08b}\""
-        )));
+        ))));
     }
 
     let index_options = index_options_from_byte(input.read_byte()?)?;
@@ -229,8 +252,10 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
 /// `VectorSimilarityFunction` as of Lucene 9.10.
 ///
 /// Equivalent to
-/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat.SIMILARITY_FUNCTIONS`.
-const SIMILARITY_FUNCTIONS: [VectorSimilarityFunction; 4] = [
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat.SIMILARITY_FUNCTIONS`,
+/// package-private in Java; `pub` here, as tests outside the crate read it
+/// the way Java's same-package tests do.
+pub const SIMILARITY_FUNCTIONS: [VectorSimilarityFunction; 4] = [
     VectorSimilarityFunction::EUCLIDEAN,
     VectorSimilarityFunction::DOT_PRODUCT,
     VectorSimilarityFunction::COSINE,
@@ -298,7 +323,7 @@ fn doc_values_skip_index_byte(doc_values_skip_index_type: DocValuesSkipIndexType
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `i` names no function, which
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `i` names no function, which
 /// [`get_dist_func`] turns into a corruption report once it knows the ordinal
 /// came off disk.
 ///
@@ -308,14 +333,14 @@ fn dist_ord_to_func(i: u8) -> Result<VectorSimilarityFunction> {
     SIMILARITY_FUNCTIONS
         .get(i as usize)
         .copied()
-        .ok_or_else(|| LuceneError::IllegalArgument(format!("invalid distance function: {i}")))
+        .ok_or_else(|| LuceneError::illegal_argument(format!("invalid distance function: {i}")))
 }
 
 /// Returns the ordinal that encodes `func`.
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] for a similarity function this
+/// Returns [`LuceneErrorKind::IllegalArgument`] for a similarity function this
 /// format cannot encode.
 ///
 /// Equivalent to
@@ -326,7 +351,7 @@ fn dist_func_to_ord(func: VectorSimilarityFunction) -> Result<u8> {
             return Ok(i as u8);
         }
     }
-    Err(LuceneError::IllegalArgument(format!(
+    Err(LuceneError::illegal_argument(format!(
         "invalid distance function: {func:?}"
     )))
 }
@@ -338,7 +363,7 @@ fn dist_func_to_ord(func: VectorSimilarityFunction) -> Result<u8> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when `b` names no similarity function.
+/// Returns [`LuceneErrorKind::CorruptIndex`] when `b` names no similarity function.
 ///
 /// Equivalent to
 /// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#getDistFunc`.
@@ -359,9 +384,9 @@ fn index_options_from_byte(b: u8) -> Result<IndexOptions> {
         3 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
         4 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
         5 => Ok(IndexOptions::DOCS_AND_CUSTOM_FREQS),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid IndexOptions byte: {b}"
-        ))),
+        )))),
     }
 }
 
@@ -373,9 +398,9 @@ fn doc_values_type_from_byte(b: u8) -> Result<DocValuesType> {
         3 => Ok(DocValuesType::SORTED),
         4 => Ok(DocValuesType::SORTED_SET),
         5 => Ok(DocValuesType::SORTED_NUMERIC),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid docvalues byte: {b}"
-        ))),
+        )))),
     }
 }
 
@@ -383,9 +408,9 @@ fn doc_values_skip_index_type_from_byte(b: u8) -> Result<DocValuesSkipIndexType>
     match b {
         0 => Ok(DocValuesSkipIndexType::NONE),
         1 => Ok(DocValuesSkipIndexType::RANGE),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid docvaluesskipindex byte: {b}"
-        ))),
+        )))),
     }
 }
 
@@ -393,9 +418,9 @@ fn vector_encoding_from_byte(b: u8) -> Result<VectorEncoding> {
     match b {
         0 => Ok(VectorEncoding::BYTE),
         1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid vector encoding: {b}"
-        ))),
+        )))),
     }
 }
 

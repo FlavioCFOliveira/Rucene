@@ -53,7 +53,8 @@ impl DataInput for ReverseRandomAccessReader {
         self.input.read_byte_at(pos)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         for i in 0..len {
             let pos = self.pos;
             self.pos = pos - 1;

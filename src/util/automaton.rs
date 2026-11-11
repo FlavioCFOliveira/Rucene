@@ -206,6 +206,9 @@ mod tests {
     struct ListTermsEnum {
         terms: Vec<BytesRef>,
         pos: usize,
+        /// Whether `seek_ceil` positioned the enum on `terms[pos]`, so that
+        /// `next` moves past it as `TermsEnum.next()` does after a seek.
+        sought: bool,
         atts: crate::util::attribute::AttributeSource,
     }
 
@@ -214,6 +217,7 @@ mod tests {
             Self {
                 terms,
                 pos: 0,
+                sought: false,
                 atts: crate::util::attribute::AttributeSource::new(),
             }
         }
@@ -233,27 +237,35 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<BytesRef> {
-            Ok(self.terms[self.pos].clone())
+        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.pos].clone()))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum::new()))
+        ) -> crate::error::Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {
             Ok(false)
         }
 
-        fn seek_ceil(
-            &mut self,
-            _text: &BytesRef,
-        ) -> crate::error::Result<crate::index::SeekStatus> {
-            Ok(crate::index::SeekStatus::END)
+        fn seek_ceil(&mut self, text: &BytesRef) -> crate::error::Result<crate::index::SeekStatus> {
+            match self.terms.iter().position(|t| t.slice() >= text.slice()) {
+                Some(pos) => {
+                    self.pos = pos;
+                    self.sought = true;
+                    Ok(if self.terms[pos].slice() == text.slice() {
+                        crate::index::SeekStatus::FOUND
+                    } else {
+                        crate::index::SeekStatus::NOT_FOUND
+                    })
+                }
+                None => Ok(crate::index::SeekStatus::END),
+            }
         }
 
         fn seek_ord(&mut self, ord: i64) -> crate::error::Result<()> {
@@ -285,7 +297,7 @@ mod tests {
             &mut self,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(crate::error::LuceneError::UnsupportedOperation(
+            Err(crate::error::LuceneError::unsupported_operation(
                 "impacts not supported".to_string(),
             ))
         }
@@ -297,6 +309,9 @@ mod tests {
         }
 
         fn next(&mut self) -> crate::error::Result<Option<BytesRef>> {
+            if std::mem::take(&mut self.sought) {
+                self.pos += 1;
+            }
             if self.pos >= self.terms.len() {
                 Ok(None)
             } else {
@@ -334,16 +349,16 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<BytesRef> {
-            Ok(BytesRef::new(b"intersect".to_vec()))
+        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
+            Ok(Some(BytesRef::new(b"intersect".to_vec())))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum::new()))
+        ) -> crate::error::Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {
@@ -385,7 +400,7 @@ mod tests {
             &mut self,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(crate::error::LuceneError::UnsupportedOperation(
+            Err(crate::error::LuceneError::unsupported_operation(
                 "impacts not supported".to_string(),
             ))
         }
@@ -479,9 +494,10 @@ mod tests {
         // ALL returns the full iterator positioned on the first term.
         let all = CompiledAutomaton::new(Automata::make_any_string(), false, true, false).unwrap();
         let it = all.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term().unwrap(), BytesRef::new(b"alpha".to_vec()));
+        assert_eq!(it.term().unwrap(), Some(BytesRef::new(b"alpha".to_vec())));
 
-        // SINGLE returns a SingleTermsEnum reporting the fixed term.
+        // SINGLE returns a SingleTermsEnum, which seeks to the fixed term and
+        // enumerates exactly it (`CompiledAutomaton.java:354-355`).
         let single = CompiledAutomaton::new(
             Automata::make_binary(&BytesRef::new(b"beta".to_vec())),
             true,
@@ -489,8 +505,9 @@ mod tests {
             true,
         )
         .unwrap();
-        let it = single.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term().unwrap(), BytesRef::new(b"beta".to_vec()));
+        let mut it = single.get_terms_enum(&terms).unwrap();
+        assert_eq!(it.next().unwrap(), Some(BytesRef::new(b"beta".to_vec())));
+        assert_eq!(it.next().unwrap(), None);
 
         // NORMAL delegates to Terms::intersect.
         let min = BytesRef::new(b"a".to_vec());
@@ -500,7 +517,10 @@ mod tests {
         assert!(!terms.intersect_called.load(Ordering::SeqCst));
         let it = normal.get_terms_enum(&terms).unwrap();
         assert!(terms.intersect_called.load(Ordering::SeqCst));
-        assert_eq!(it.term().unwrap(), BytesRef::new(b"intersect".to_vec()));
+        assert_eq!(
+            it.term().unwrap(),
+            Some(BytesRef::new(b"intersect".to_vec()))
+        );
     }
 
     #[test]

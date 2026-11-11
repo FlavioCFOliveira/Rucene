@@ -138,6 +138,24 @@ pub struct RegExp {
 
 // -----  Syntax flags ( <= 0xff )  ------
 
+/// Frees the expression tree iteratively.
+///
+/// Java's garbage collector frees a deep tree (such as the one
+/// `testRegExpNoStackOverflow` parses) without recursion; Rust's generated drop
+/// glue would recurse once per level and overflow the thread's stack. This
+/// changes no observable behaviour.
+impl Drop for RegExp {
+    fn drop(&mut self) {
+        let mut stack: Vec<Box<RegExp>> = Vec::new();
+        stack.extend(self.exp1.take());
+        stack.extend(self.exp2.take());
+        while let Some(mut e) = stack.pop() {
+            stack.extend(e.exp1.take());
+            stack.extend(e.exp2.take());
+        }
+    }
+}
+
 impl RegExp {
     /// Syntax flag, enables intersection (`&`).
     pub const INTERSECTION: i32 = 0x0001;
@@ -198,7 +216,7 @@ impl RegExp {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if an error occurred while parsing
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if an error occurred while parsing
     /// the regular expression.
     pub fn new(s: &str) -> Result<Self> {
         Self::with_flags(s, Self::ALL)
@@ -208,7 +226,7 @@ impl RegExp {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if an error occurred while parsing
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if an error occurred while parsing
     /// the regular expression.
     pub fn with_flags(s: &str, syntax_flags: i32) -> Result<Self> {
         Self::with_match_flags(s, syntax_flags, 0)
@@ -218,17 +236,17 @@ impl RegExp {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if an error occurred while parsing
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if an error occurred while parsing
     /// the regular expression, or if an illegal flag combination was given.
     pub fn with_match_flags(s: &str, syntax_flags: i32, match_flags: i32) -> Result<Self> {
         if (syntax_flags & !Self::DEPRECATED_COMPLEMENT) > Self::ALL {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Illegal syntax flag".to_string(),
             ));
         }
 
         if match_flags > 0 && match_flags <= Self::ALL {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Illegal match flag".to_string(),
             ));
         }
@@ -239,17 +257,16 @@ impl RegExp {
         } else {
             let e = parser.parse_union_exp()?;
             if parser.pos < parser.input.len() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "end-of-string expected at position {}",
                     parser.pos
                 )));
             }
             e
         };
-        Ok(Self {
-            original_string: Some(s.to_string()),
-            ..e
-        })
+        let mut e = e;
+        e.original_string = Some(s.to_string());
+        Ok(e)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -353,7 +370,7 @@ impl RegExp {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this regular expression uses a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if this regular expression uses a
     /// named identifier that is not available, and a resource-limit error if
     /// determinizing exceeds the work limit.
     pub fn to_automaton_with(
@@ -491,7 +508,7 @@ impl RegExp {
                 match aa {
                     Some(aa) => aa,
                     None => {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "'{}' not found",
                             name
                         )))
@@ -570,7 +587,7 @@ impl RegExp {
         range_ends: &mut Vec<i32>,
     ) -> Result<()> {
         if start > end {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid range: from ({}) cannot be > to ({})",
                 start, end
             )));
@@ -971,7 +988,7 @@ impl RegExp {
 
     fn make_char_range(flags: i32, from: i32, to: i32) -> Result<RegExp> {
         if from > to {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid range: from ({}) cannot be > to ({})",
                 from, to
             )));
@@ -999,7 +1016,7 @@ impl RegExp {
         }
         for i in 0..from.len() {
             if from[i] > to[i] {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "invalid range: from ({}) cannot be > to ({})",
                     from[i], to[i]
                 )));
@@ -1166,7 +1183,7 @@ impl Parser {
 
     fn next(&mut self) -> Result<i32> {
         if !self.more() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "unexpected end-of-string".to_string(),
             ));
         }
@@ -1232,7 +1249,7 @@ impl Parser {
                     self.next()?;
                 }
                 if start == self.pos {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "integer expected at position {}",
                         self.pos
                     )));
@@ -1251,13 +1268,13 @@ impl Parser {
                     m = n;
                 }
                 if !self.match_ch('}' as i32) {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "expected '}}' at position {}",
                         self.pos
                     )));
                 }
                 if m != -1 && n > m {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "invalid repetition range(out of order): {}..{}",
                         n, m
                     )));
@@ -1296,7 +1313,7 @@ impl Parser {
                 );
             }
             if !self.match_ch(']' as i32) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "expected ']' at position {}",
                     self.pos
                 )));
@@ -1436,7 +1453,7 @@ impl Parser {
             // Lucene concatenates the raw `int` returned by next(), so the message
             // carries the code point as a decimal number rather than as a character.
             let c = self.next()?;
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid character class \\{}",
                 c
             )));
@@ -1471,7 +1488,7 @@ impl Parser {
                 self.next()?;
             }
             if !self.match_ch('"' as i32) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "expected '\"' at position {}",
                     self.pos
                 )));
@@ -1486,7 +1503,7 @@ impl Parser {
             }
             let e = self.parse_union_exp()?;
             if !self.match_ch(')' as i32) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "expected ')' at position {}",
                     self.pos
                 )));
@@ -1500,7 +1517,7 @@ impl Parser {
                 self.next()?;
             }
             if !self.match_ch('>' as i32) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "expected '>' at position {}",
                     self.pos
                 )));
@@ -1509,7 +1526,7 @@ impl Parser {
             match s.find('-') {
                 None => {
                     if !self.check(RegExp::AUTOMATON) {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "interval syntax error at position {}",
                             self.pos - 1
                         )));
@@ -1518,7 +1535,7 @@ impl Parser {
                 }
                 Some(i) => {
                     if !self.check(RegExp::INTERVAL) {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "illegal identifier at position {}",
                             self.pos - 1
                         )));
@@ -1536,7 +1553,7 @@ impl Parser {
                     if i == 0 || i == s.len() - 1 || Some(i) != s.rfind('-') {
                         // `throw new NumberFormatException()`, which has no
                         // message (`getMessage()` is `null`): an empty one here.
-                        return Err(interval_error(LuceneError::IllegalArgument(String::new())));
+                        return Err(interval_error(LuceneError::illegal_argument(String::new())));
                     }
                     let smin = &s[0..i];
                     let smax = &s[i + 1..];
@@ -1574,12 +1591,13 @@ impl Parser {
 /// (observed with the 10.5.0 oracle for `x` and `99999999999`).
 fn parse_int(s: &str) -> Result<i32> {
     s.parse::<i32>()
-        .map_err(|_| LuceneError::IllegalArgument(format!("For input string: \"{s}\"")))
+        .map_err(|_| LuceneError::illegal_argument(format!("For input string: \"{s}\"")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// `catch (IOException e) { throw new IllegalArgumentException(e); }`
     /// (`RegExp.java:742-746`): the provider's `IOException` becomes the
@@ -1592,17 +1610,24 @@ mod tests {
         struct Failing;
         impl AutomatonProvider for Failing {
             fn get_automaton(&self, name: &str) -> Result<Automaton> {
-                Err(LuceneError::Io(std::io::Error::other(format!(
-                    "boom {name}"
-                ))))
+                Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other(format!("boom {name}")),
+                )))
             }
         }
         let regexp = RegExp::with_flags("<foo>", RegExp::ALL).unwrap();
         match regexp.to_automaton_with(None, Some(&Failing)) {
-            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+            Err(LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            }) => {
                 assert_eq!(message, cause.to_string());
                 assert!(
-                    matches!(cause.as_ref(), LuceneError::Io(error) if error.to_string() == "boom foo")
+                    matches!(cause.as_ref(), LuceneError { kind: LuceneErrorKind::Io(error), .. } if error.to_string() == "boom foo")
                 );
             }
             other => panic!("expected an IllegalArgumentException with a cause, got {other:?}"),
@@ -1629,13 +1654,20 @@ mod tests {
                 Err(error) => error,
             };
             match &error {
-                LuceneError::IllegalArgumentWithCause { message, cause } => {
+                LuceneError {
+                    kind:
+                        LuceneErrorKind::IllegalArgument {
+                            message,
+                            cause: Some(cause),
+                        },
+                    ..
+                } => {
                     assert_eq!(
                         message,
                         &format!("interval syntax error at position {position}")
                     );
                     assert!(
-                        matches!(&**cause, LuceneError::IllegalArgument(m) if m == cause_message),
+                        matches!(&**cause, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == cause_message),
                         "{pattern}: {cause:?}"
                     );
                 }

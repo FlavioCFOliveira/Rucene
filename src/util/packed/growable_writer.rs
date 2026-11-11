@@ -136,6 +136,10 @@ impl PackedIntsReader for GrowableWriter {
     fn size(&self) -> i32 {
         self.current.size()
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 impl PackedIntsMutable for GrowableWriter {

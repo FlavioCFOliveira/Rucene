@@ -10,12 +10,12 @@
 use std::fmt::Debug;
 
 use crate::analysis::tokenattributes::PositionIncrementAttribute;
-use crate::analysis::{PackedTokenAttributeImpl, TokenFilter, TokenFilterLogic, TokenStream};
+use crate::analysis::{TokenFilter, TokenFilterLogic, TokenStream};
 use crate::error::Result;
 use crate::util::attribute::AttributeSource;
 
 /// User-supplied accept/reject predicate for a [`FilteringTokenFilter`].
-pub trait FilteringTokenFilterLogic: Debug {
+pub trait FilteringTokenFilterLogic: Debug + Send + Sync {
     /// Returns `true` if the current token should be kept.
     fn accept(&mut self, source: &AttributeSource) -> Result<bool>;
 }
@@ -49,36 +49,23 @@ impl<T: FilteringTokenFilterLogic> TokenFilterLogic for FilteringTokenFilterAdap
         self.skipped_positions = 0;
         while input.increment_token()? {
             if self.logic.accept(source)? {
-                let pos_incr = source
-                    .get_attribute_mut::<PackedTokenAttributeImpl>()
-                    .unwrap()
-                    .get_position_increment();
                 if self.skipped_positions != 0 {
-                    source
-                        .get_attribute_mut::<PackedTokenAttributeImpl>()
-                        .unwrap()
-                        .set_position_increment(pos_incr + self.skipped_positions);
+                    let mut pos_incr_att = pos_incr_att_mut(source);
+                    let pos_incr = pos_incr_att.get_position_increment();
+                    pos_incr_att.set_position_increment(pos_incr + self.skipped_positions);
                 }
                 return Ok(true);
             }
-            self.skipped_positions += source
-                .get_attribute::<PackedTokenAttributeImpl>()
-                .unwrap()
-                .get_position_increment();
+            self.skipped_positions += pos_incr_att_mut(source).get_position_increment();
         }
         Ok(false)
     }
 
     fn end(&mut self, source: &mut AttributeSource, input: &mut dyn TokenStream) -> Result<()> {
         input.end()?;
-        let pos_incr = source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap()
-            .get_position_increment();
-        source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap()
-            .set_position_increment(pos_incr + self.skipped_positions);
+        let mut pos_incr_att = pos_incr_att_mut(source);
+        let pos_incr = pos_incr_att.get_position_increment();
+        pos_incr_att.set_position_increment(pos_incr + self.skipped_positions);
         Ok(())
     }
 
@@ -89,6 +76,16 @@ impl<T: FilteringTokenFilterLogic> TokenFilterLogic for FilteringTokenFilterAdap
     }
 }
 
+/// The `PositionIncrementAttribute` the constructor added
+/// (`FilteringTokenFilter.java:29-30`).
+fn pos_incr_att_mut(
+    source: &AttributeSource,
+) -> crate::util::atomic_ref_cell::AtomicRefMut<'_, dyn PositionIncrementAttribute> {
+    source
+        .get_attribute_interface_mut::<dyn PositionIncrementAttribute>()
+        .expect("INVARIANT: the constructor added the PositionIncrementAttribute")
+}
+
 /// A [`TokenFilter`] that removes tokens according to an
 /// [`accept`](FilteringTokenFilterLogic::accept) predicate.
 pub type FilteringTokenFilter<T> = TokenFilter<FilteringTokenFilterAdapter<T>>;
@@ -97,12 +94,22 @@ pub type FilteringTokenFilter<T> = TokenFilter<FilteringTokenFilterAdapter<T>>;
 ///
 /// Equivalent to the constructor `FilteringTokenFilter(TokenStream)`, which a
 /// subclass such as `StopFilter` calls as `super(in)`; `logic` is the
-/// subclass's `accept`.
+/// subclass's `accept`. It adds the `PositionIncrementAttribute`
+/// (`FilteringTokenFilter.java:29-30`).
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
 pub fn new_filtering_token_filter<T: FilteringTokenFilterLogic>(
     input: Box<dyn TokenStream>,
     logic: T,
-) -> FilteringTokenFilter<T> {
-    TokenFilter::new(input, FilteringTokenFilterAdapter::new(logic))
+) -> Result<FilteringTokenFilter<T>> {
+    let mut filter = TokenFilter::new(input, FilteringTokenFilterAdapter::new(logic));
+    filter
+        .attribute_source_mut()
+        .add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+    Ok(filter)
 }
 
 #[cfg(test)]
@@ -118,7 +125,7 @@ mod tests {
     impl FilteringTokenFilterLogic for RejectShortLogic {
         fn accept(&mut self, source: &AttributeSource) -> Result<bool> {
             let len = source
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn CharTermAttribute>()
                 .unwrap()
                 .length();
             Ok(len >= self.min_len)

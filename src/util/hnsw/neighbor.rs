@@ -244,6 +244,26 @@ impl NeighborArray {
         self.alert_on_heap_memory_usage_change(new_length, previous_length);
     }
 
+    /// Returns the length Java's `nodes.buffer` (and `scores.buffer`) has
+    /// grown to.
+    ///
+    /// Equivalent to reading `nodes.buffer.length` of the private field
+    /// `NeighborArray.nodes`; public so that the test framework can model the
+    /// Java object.
+    pub fn buffer_length(&self) -> usize {
+        self.buffer_length.load(Ordering::Relaxed)
+    }
+
+    /// Returns whether the array reports its growth to a listener (Java's
+    /// `onHeapMemoryUsageListener != null`).
+    ///
+    /// Equivalent to reading the private field
+    /// `NeighborArray.onHeapMemoryUsageListener`; public so that the test
+    /// framework can model the Java object.
+    pub fn has_on_heap_memory_usage_listener(&self) -> bool {
+        self.on_heap_memory_usage_listener.is_some()
+    }
+
     /// Returns the configured maximum size.
     pub fn max_size(&self) -> i32 {
         self.max_size as i32
@@ -304,7 +324,7 @@ impl NeighborArray {
         let sorted_node_size = self.sorted_node_size.load(Ordering::Relaxed);
         debug_assert_eq!(
             size, sorted_node_size,
-            "cannot call add_in_order after add_out_of_order"
+            "cannot call addInOrder after addOutOfOrder"
         );
         if size == self.max_size {
             return Err(LuceneError::illegal_state(
@@ -313,10 +333,17 @@ impl NeighborArray {
         }
         if size > 0 {
             let previous_score = self.score_at(size - 1);
+            // `NeighborArray.java:75-80`: the message renders the scores with
+            // `Arrays.toString(float[])`, Java's `Float.toString` each.
             debug_assert!(
                 (self.scores_desc_order && previous_score >= new_score)
                     || (!self.scores_desc_order && previous_score <= new_score),
-                "nodes are added in incorrect order"
+                "Nodes are added in the incorrect order! Comparing {} to [{}]",
+                crate::util::java_fmt::float_to_string(new_score),
+                (0..size)
+                    .map(|i| crate::util::java_fmt::float_to_string(self.score_at(i)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
         self.append(size, new_node, new_score);
@@ -391,7 +418,10 @@ impl NeighborArray {
     }
 
     /// Test helper: insert a node and immediately sort it.
-    #[cfg(test)]
+    ///
+    /// Equivalent to the package-private `NeighborArray.insertSorted(int,
+    /// float)`; public for the port of `TestNeighborArray` (same Java
+    /// package).
     pub fn insert_sorted(&self, new_node: i32, new_score: f32) -> Result<()> {
         self.add_out_of_order(new_node, new_score)?;
         let _ = self.insert_sorted_internal(&mut DummyScorer)?;
@@ -507,7 +537,7 @@ impl NeighborArray {
     ) -> Result<usize> {
         let unchecked_indexes = self
             .sort(scorer)?
-            .expect("we will always have something unchecked");
+            .expect("We will always have something unchecked");
         let size = self.size.load(Ordering::Relaxed);
         let mut unchecked_cursor = unchecked_indexes.len().saturating_sub(1) as i32;
         for i in (1..size).rev() {
@@ -562,11 +592,10 @@ impl NeighborArray {
     }
 }
 
-/// A simple `RandomVectorScorer` used only by the test-only `insert_sorted`.
-#[cfg(test)]
+/// A simple `RandomVectorScorer` used only by the test helper
+/// `insert_sorted`, standing for the `null` scorer Java passes.
 struct DummyScorer;
 
-#[cfg(test)]
 impl RandomVectorScorer for DummyScorer {
     fn score(&mut self, _node: i32) -> Result<f32> {
         Ok(0.0)
@@ -606,7 +635,7 @@ impl NeighborQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Java's message when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with Java's message when
     /// `initial_size` is not in `1..ArrayUtil.MAX_ARRAY_LENGTH`, where the
     /// `TernaryLongHeap` constructor throws `IllegalArgumentException`
     /// (`TernaryLongHeap.java:55-63`).
@@ -614,7 +643,7 @@ impl NeighborQueue {
         // `TernaryLongHeap::new` takes a `usize`; a negative size is rejected
         // here with the message Java's heap gives for it.
         if initial_size < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "initialCapacity must be > 0 and < {}; got: {initial_size}",
                 crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
             )));
@@ -754,6 +783,7 @@ impl NeighborQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     #[test]
     fn neighbor_queue_min_heap_ordering() {
@@ -843,7 +873,10 @@ mod tests {
     #[test]
     fn neighbor_queue_rejects_a_zero_initial_size() {
         match NeighborQueue::new(0, false) {
-            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!(
                     "initialCapacity must be > 0 and < {}; got: 0",

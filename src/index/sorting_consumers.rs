@@ -167,7 +167,7 @@ impl Directory for TrackingTmpOutputDirectoryWrapper {
     /// The wrapped directory belongs to the segment, which closes it; the
     /// wrapper holds it through a shared handle and has nothing of its own to
     /// close.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 
@@ -606,16 +606,18 @@ impl SortingTermVectorsConsumer {
     /// positions, that the postings enum is positioned on a document whose
     /// frequency matches, that a position is non-negative, and that the term and
     /// field counts match what was announced. Those are `assert`s, so they are
-    /// `debug_assert!`s here. Java also looks the field up in `field_infos`
-    /// before every `startField`; a `Fields` view that names a field the field
-    /// infos do not know cannot be described to the writer at all, so that case
-    /// is an error here rather than a `NullPointerException`.
+    /// `debug_assert!`s here. Java hands `startField` the `null` `FieldInfo`
+    /// of a field the field infos do not know, and the writer dereferences
+    /// it; the port's `start_field` takes a `&FieldInfo`, so that call is
+    /// Java's `NullPointerException` here, without the JDK's helpful message,
+    /// which names the writer's own parameter. A field without terms is
+    /// skipped first, as in Java.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when `vectors` names a field that
-    /// `field_infos` does not know, and propagates any error raised while
-    /// reading the vectors or writing them.
+    /// Returns Java's `NullPointerException` when `vectors` names a field with
+    /// terms that `field_infos` does not know, and propagates any error raised
+    /// while reading the vectors or writing them.
     pub fn write_term_vectors(
         writer: &mut dyn TermVectorsWriter,
         vectors: Option<&dyn Fields>,
@@ -642,11 +644,7 @@ impl SortingTermVectorsConsumer {
 
         for field_name in vectors.iterator() {
             field_count += 1;
-            let field_info = field_infos.field_info(&field_name).ok_or_else(|| {
-                LuceneError::illegal_state(format!(
-                    "term vectors name field \"{field_name}\", which the field infos do not know"
-                ))
-            })?;
+            let field_info = field_infos.field_info(&field_name);
 
             debug_assert!(
                 last_field_name
@@ -677,6 +675,8 @@ impl SortingTermVectorsConsumer {
                 }
             }
 
+            // `writer.startField(fieldInfo, …)` with a `null` `fieldInfo`.
+            let field_info = field_info.ok_or_else(LuceneError::null_pointer)?;
             writer.start_field(
                 field_info,
                 num_terms,
@@ -694,8 +694,11 @@ impl SortingTermVectorsConsumer {
                 writer.start_term(&term, freq)?;
 
                 if has_positions || has_offsets {
-                    let mut docs_and_positions_enum = terms_enum
+                    let docs_and_positions_enum = terms_enum
                         .postings(None, POSTINGS_ENUM_OFFSETS | POSTINGS_ENUM_PAYLOADS)?;
+                    debug_assert!(docs_and_positions_enum.is_some());
+                    let mut docs_and_positions_enum =
+                        docs_and_positions_enum.ok_or_else(LuceneError::null_pointer)?;
 
                     let doc_id = docs_and_positions_enum.next_doc()?;
                     debug_assert_ne!(doc_id, NO_MORE_DOCS);
@@ -745,7 +748,7 @@ mod sorted_flush_close_tests {
         let tracking = Arc::new(CloseTrackingDirectory::default());
         let log = Arc::clone(&tracking.log);
         let dir: Arc<dyn Directory> = tracking;
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
             .set_index_sort(
                 Sort::new_fields(vec![SortField::new(
@@ -757,7 +760,7 @@ mod sorted_flush_close_tests {
             )
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
-        let mut vectors = FieldType::new();
+        let vectors = FieldType::new();
         vectors
             .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
             .unwrap();

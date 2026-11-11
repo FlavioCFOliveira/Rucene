@@ -35,6 +35,9 @@ import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FreqAndNormBuffer;
+import org.apache.lucene.index.Impacts;
+import org.apache.lucene.index.ImpactsEnum;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -42,6 +45,7 @@ import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.internal.vectorization.PostingDecodingUtil;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
@@ -55,7 +59,8 @@ import org.apache.lucene.util.BytesRef;
 /**
  * Apache Lucene Core 10.5.0 oracle for the postings contracts of rmp #238, #240 and #241.
  *
- * <p>Usage: {@code java -cp lucene-core-10.5.0.jar PostingsSkipFixture.java <index-dir>}.
+ * <p>Usage: {@code java -cp lucene-core-10.5.0.jar PostingsSkipFixture.java <index-dir>
+ * [<impacts-index-dir>]}.
  *
  * <ul>
  *   <li>Writes one segment whose term {@code a} occurs in all {@value #DOCS} documents of two
@@ -68,6 +73,12 @@ import org.apache.lucene.util.BytesRef;
  *       {@code advance} schedule of {@link #TARGETS}, and the hits of the phrase {@code "a b"}.
  *   <li>Prints the {@code PostingsEnum} flag constants (rmp #240) and what {@code
  *       ForUtil.decode} throws for widths outside its mask table (rmp #241).
+ *   <li>With a second directory, writes {@value #IMPACT_DOCS} documents whose term {@code a} of
+ *       field {@code imp} alternates level-0 blocks of many competitive (freq, norm) pairs with
+ *       blocks of one pair, and level-1 blocks the same way ({@link #impText(int)}), and prints
+ *       the impacts of every level Lucene's reader returns after each {@code advanceShallow} of
+ *       {@link #IMPACT_TARGETS} (rmp #351: a level's impacts are only the bytes its last skip
+ *       entry holds, {@code Lucene104PostingsReader.java:702, 751, 850, 1398}).
  * </ul>
  */
 public final class PostingsSkipFixture {
@@ -79,7 +90,92 @@ public final class PostingsSkipFixture {
     0, 1, 255, 256, 257, 300, 600, 1024, 1025, 4097, 8191, 8192, 8193, 8600, 9000, 9999
   };
 
+  /** Three full level-1 blocks and a tail. */
+  static final int IMPACT_DOCS = 3 * 8192 + 1000;
+
+  /** Monotonic {@code advanceShallow} targets crossing level-0 and level-1 boundaries. */
+  static final int[] IMPACT_TARGETS = {
+    0, 100, 255, 256, 300, 511, 512, 513, 1000, 8191, 8192, 8193, 9000, 16383, 16384, 16385,
+    16700, 17000, 24575, 24576, 25000, 25575
+  };
+
   private PostingsSkipFixture() {}
+
+  /**
+   * The text of document {@code i} of the impacts index: in a rich block, {@code a} occurs {@code
+   * 1 + i % 11} times beside {@code (i * 7) % 19} filler tokens, so the block has many competitive
+   * pairs; in a poor block, the text is {@code a} alone. Level-0 blocks alternate rich and poor,
+   * except in the second level-1 block, which is all poor.
+   */
+  static String impText(int i) {
+    boolean rich = (i / 256) % 2 == 0 && (i / 8192) != 1;
+    if (rich == false) {
+      return "a";
+    }
+    StringBuilder sb = new StringBuilder();
+    for (int k = 0; k < 1 + i % 11; k++) {
+      sb.append("a ");
+    }
+    for (int k = 0; k < (i * 7) % 19; k++) {
+      sb.append("x ");
+    }
+    return sb.toString().trim();
+  }
+
+  /** The impacts of every level, as {@code level:docIdUpTo:freq/norm,...}. */
+  static String describe(Impacts impacts) {
+    StringBuilder sb = new StringBuilder();
+    for (int level = 0; level < impacts.numLevels(); level++) {
+      FreqAndNormBuffer buffer = impacts.getImpacts(level);
+      sb.append(level == 0 ? "" : " ").append(level).append(':');
+      sb.append(impacts.getDocIdUpTo(level)).append(':');
+      for (int k = 0; k < buffer.size; k++) {
+        sb.append(k == 0 ? "" : ",").append(buffer.freqs[k]).append('/').append(buffer.norms[k]);
+      }
+    }
+    return sb.toString();
+  }
+
+  /** Writes the impacts index and prints {@code impacts <target> <levels>} per target. */
+  static void writeAndReadImpacts(Path dirPath) throws IOException {
+    Files.createDirectories(dirPath);
+    IndexWriterConfig config = new IndexWriterConfig(new PlainAnalyzer());
+    config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+    config.setMergePolicy(NoMergePolicy.INSTANCE);
+    config.setMaxBufferedDocs(IndexWriterConfig.DISABLE_AUTO_FLUSH);
+    config.setRAMBufferSizeMB(256.0);
+    try (FSDirectory dir = FSDirectory.open(dirPath);
+        IndexWriter writer = new IndexWriter(dir, config)) {
+      for (int i = 0; i < IMPACT_DOCS; i++) {
+        Document doc = new Document();
+        doc.add(new TextField("imp", impText(i), Field.Store.NO));
+        writer.addDocument(doc);
+      }
+      writer.commit();
+    }
+    try (FSDirectory dir = FSDirectory.open(dirPath);
+        DirectoryReader reader = DirectoryReader.open(dir)) {
+      System.out.println("impacts leaves=" + reader.leaves().size());
+      TermsEnum terms = reader.leaves().get(0).reader().terms("imp").iterator();
+      if (terms.seekExact(new BytesRef("a")) == false) {
+        throw new AssertionError("no term a");
+      }
+      ImpactsEnum impacts = terms.impacts(PostingsEnum.FREQS);
+      for (int target : IMPACT_TARGETS) {
+        impacts.advanceShallow(target);
+        System.out.println("impacts " + target + " " + describe(impacts.getImpacts()));
+      }
+    }
+  }
+
+  /** {@code StandardTokenizer} alone, no filter. */
+  static final class PlainAnalyzer extends Analyzer {
+    @Override
+    protected TokenStreamComponents createComponents(String fieldName) {
+      StandardTokenizer tokenizer = new StandardTokenizer();
+      return new TokenStreamComponents(tokenizer, tokenizer);
+    }
+  }
 
   /** The text of document {@code i}. */
   static String text(int i) {
@@ -125,6 +221,9 @@ public final class PostingsSkipFixture {
   }
 
   public static void main(String[] args) throws IOException {
+    if (args.length > 1) {
+      writeAndReadImpacts(Paths.get(args[1]));
+    }
     Path dirPath = Paths.get(args[0]);
     Files.createDirectories(dirPath);
 

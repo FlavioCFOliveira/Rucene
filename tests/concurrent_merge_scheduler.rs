@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use rucene::codecs::Lucene104Codec;
 use rucene::document::{Document, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_reader::IndexReader;
 use rucene::index::index_writer::IndexWriter;
@@ -117,7 +117,7 @@ fn id_doc(id: i32) -> Document {
 }
 
 fn log_doc_policy(merge_factor: i32) -> Arc<LogMergePolicy> {
-    let mut policy = LogMergePolicy::by_doc_count();
+    let policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(merge_factor).unwrap();
     Arc::new(policy)
 }
@@ -154,9 +154,9 @@ fn writer_with_a_queued_merge(
 ) -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(log_doc_policy(2)).unwrap();
-    config.set_merge_scheduler(scheduler).unwrap();
+    let config = IndexWriterConfig::new();
+    config.set_merge_policy(Some(log_doc_policy(2))).unwrap();
+    config.set_merge_scheduler(Some(scheduler)).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
     writer.commit().unwrap();
@@ -225,10 +225,10 @@ fn force_merge_without_waiting_returns_and_wait_for_merges_waits() {
     let cms = gated_cms(&gate, &started, &finished);
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(log_doc_policy(10)).unwrap();
+    let config = IndexWriterConfig::new();
+    config.set_merge_policy(Some(log_doc_policy(10))).unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..3 {
@@ -322,16 +322,16 @@ fn max_merge_count_stalls_the_producer() {
             cms.set_max_merges_and_threads(max_merge_count, max_merge_threads)
                 .unwrap();
 
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config.set_commit_on_close(false);
             config
-                .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+                .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
                 .unwrap();
             config.set_max_buffered_docs(2).unwrap();
-            let mut tmp = TieredMergePolicy::new();
+            let tmp = TieredMergePolicy::new();
             tmp.set_max_merge_at_once(2).unwrap();
             tmp.set_segments_per_tier(2.0).unwrap();
-            config.set_merge_policy(Arc::new(tmp)).unwrap();
+            config.set_merge_policy(Some(Arc::new(tmp))).unwrap();
 
             let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
             let mut doc = Document::new();
@@ -362,11 +362,17 @@ fn invalid_max_merge_count_and_threads_are_rejected() {
     let cms = ConcurrentMergeScheduler::new();
     assert!(matches!(
         cms.set_max_merges_and_threads(AUTO_DETECT_MERGES_AND_THREADS, 3),
-        Err(LuceneError::IllegalArgument(_))
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { .. },
+            ..
+        })
     ));
     assert!(matches!(
         cms.set_max_merges_and_threads(3, AUTO_DETECT_MERGES_AND_THREADS),
-        Err(LuceneError::IllegalArgument(_))
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { .. },
+            ..
+        })
     ));
 }
 
@@ -378,9 +384,9 @@ fn auto_detected_counts_resolve_at_initialize_and_reset_to_the_sentinel() {
     assert_eq!(cms.get_max_merge_count(), AUTO_DETECT_MERGES_AND_THREADS);
     assert_eq!(cms.get_max_thread_count(), AUTO_DETECT_MERGES_AND_THREADS);
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let cores = thread::available_parallelism()
@@ -414,8 +420,8 @@ fn deletes_survive_background_merges() {
         // Force degenerate merging so we can get a mix of merging of segments
         // with and without deletes at the start.
         policy.set_min_merge_docs(1000);
-        let mut config = IndexWriterConfig::new();
-        config.set_merge_policy(Arc::new(policy)).unwrap();
+        let config = IndexWriterConfig::new();
+        config.set_merge_policy(Some(Arc::new(policy))).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..10 {
             for j in 0..100 {
@@ -473,11 +479,11 @@ fn rollback_aborts_running_merges_and_keeps_the_last_commit() {
                 }
                 result
             })));
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             // Force excessive merging.
             config.set_max_buffered_docs(2).unwrap();
-            config.set_merge_policy(log_doc_policy(3)).unwrap();
-            config.set_merge_scheduler(cms).unwrap();
+            config.set_merge_policy(Some(log_doc_policy(3))).unwrap();
+            config.set_merge_scheduler(Some(cms)).unwrap();
             config.set_commit_on_close(false);
             config.set_open_mode(open_mode).unwrap();
             config
@@ -535,9 +541,9 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
         }
     }
     impl MergedSegmentWarmer for FailingWarmer {
-        fn warm(&self, _reader: &dyn LeafReader) -> Result<()> {
-            Err(LuceneError::Io(std::io::Error::other(
-                "warmer failed on purpose",
+        fn warm(&self, _reader: &Arc<dyn LeafReader>) -> Result<()> {
+            Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("warmer failed on purpose"),
             )))
         }
     }
@@ -555,14 +561,14 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     // that keeps it makes the reopen below fail.
     let tmp = tempfile::tempdir().unwrap();
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(tmp.path()).unwrap());
-    let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(log_doc_policy(2)).unwrap();
+    let config = IndexWriterConfig::new();
+    config.set_merge_policy(Some(log_doc_policy(2))).unwrap();
     config.set_reader_pooling(true);
     config
         .set_merged_segment_warmer(Some(Arc::new(FailingWarmer)))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&id_doc(0)).unwrap();
@@ -573,8 +579,13 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     // the writer the tragedy closed.
     if let Err(error) = writer.commit() {
         assert!(
-            matches!(error, LuceneError::AlreadyClosed { .. })
-                || error.to_string().contains("unrecoverable"),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                }
+            ) || error.to_string().contains("unrecoverable"),
             "{error}"
         );
     }
@@ -600,7 +611,10 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
         // `new IllegalStateException("this writer hit an unrecoverable error;
         // cannot merge", tragedy.get())`: Java's message, and the tragedy as
         // the cause.
-        Err(LuceneError::IllegalState { message, cause }) => {
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, cause },
+            ..
+        }) => {
             assert_eq!(
                 message,
                 "this writer hit an unrecoverable error; cannot merge"
@@ -641,10 +655,10 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     // writer's deleter removes what the failed merge left behind, as
     // `IndexFileDeleter`'s constructor does in Java.
     let reopened_dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(tmp.path()).unwrap());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::APPEND).unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let reopened = IndexWriter::new(Arc::clone(&reopened_dir), config)
         .expect("the write lock was released by the tragic rollback");
@@ -670,7 +684,9 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
 fn the_default_handle_merge_exception_throws_a_merge_exception() {
     let cms = ConcurrentMergeScheduler::new();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        cms.handle_merge_exception(LuceneError::Io(std::io::Error::other("disk full")))
+        cms.handle_merge_exception(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("disk full"),
+        )))
     }))
     .expect_err("the merge exception escapes");
     let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
@@ -838,15 +854,15 @@ fn multi_index_close_waits_only_for_its_own_index() {
         })));
     }
     let open = |dir: &Arc<dyn Directory>| {
-        let mut config = IndexWriterConfig::new();
-        config.set_merge_policy(log_doc_policy(2)).unwrap();
+        let config = IndexWriterConfig::new();
+        config.set_merge_policy(Some(log_doc_policy(2))).unwrap();
         config
-            .set_merge_scheduler(Arc::new(
+            .set_merge_scheduler(Some(Arc::new(
                 MultiIndexMergeScheduler::with_combined_merge_scheduler(
                     Arc::clone(dir),
                     Arc::clone(&combined),
                 ),
-            ))
+            )))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(dir), config).unwrap();
         writer.add_document(&id_doc(0)).unwrap();
@@ -889,7 +905,7 @@ impl std::fmt::Display for CountingWarmer {
 }
 
 impl MergedSegmentWarmer for CountingWarmer {
-    fn warm(&self, reader: &dyn LeafReader) -> Result<()> {
+    fn warm(&self, reader: &Arc<dyn LeafReader>) -> Result<()> {
         self.inner.warm(reader)?;
         self.warmed.lock().unwrap().push(reader.max_doc());
         Ok(())
@@ -918,9 +934,9 @@ fn the_warmer_runs_once_per_merged_segment_when_readers_are_pooled() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         // Four one-document segments, written without merging.
         {
-            let mut config = IndexWriterConfig::new();
+            let config = IndexWriterConfig::new();
             config
-                .set_merge_policy(Arc::new(NoMergePolicy::new()))
+                .set_merge_policy(Some(NoMergePolicy::instance()))
                 .unwrap();
             let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
             for i in 0..4 {
@@ -933,14 +949,14 @@ fn the_warmer_runs_once_per_merged_segment_when_readers_are_pooled() {
             inner: SimpleMergedSegmentWarmer::new(Arc::new(rucene::util::NoOutputInfoStream)),
             warmed: Mutex::new(Vec::new()),
         });
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config.set_open_mode(OpenMode::APPEND).unwrap();
-        config.set_merge_policy(log_doc_policy(10)).unwrap();
+        config.set_merge_policy(Some(log_doc_policy(10))).unwrap();
         config.set_reader_pooling(pooling);
         config
             .set_merged_segment_warmer(Some(Arc::clone(&warmer) as Arc<dyn MergedSegmentWarmer>))
             .unwrap();
-        config.set_merge_scheduler(scheduler).unwrap();
+        config.set_merge_scheduler(Some(scheduler)).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         // One forced merge of the four segments: one merged segment of four
         // documents.
@@ -969,8 +985,8 @@ fn force_merge_waits_for_background_merges() {
     ensure_codec();
     watchdog(120, || {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let mut config = IndexWriterConfig::new();
-        config.set_merge_policy(log_doc_policy(2)).unwrap();
+        let config = IndexWriterConfig::new();
+        config.set_merge_policy(Some(log_doc_policy(2))).unwrap();
         config.set_max_buffered_docs(2).unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..50 {
@@ -1007,16 +1023,16 @@ fn force_merge_marks_a_running_merge_which_then_cascades() {
     let cms = gated_cms(&gate, &started, &finished);
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     // Merge factor 2 and no minimum merge size: `_0` and `_1` merge, and the
     // merged two-document segment and `_2` sit on different levels, so no
     // natural merge follows.
     let mut policy = LogMergePolicy::by_doc_count();
     policy.set_merge_factor(2).unwrap();
     policy.set_min_merge_docs(1);
-    config.set_merge_policy(Arc::new(policy)).unwrap();
+    config.set_merge_policy(Some(Arc::new(policy))).unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for i in 0..2 {
@@ -1126,9 +1142,9 @@ fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     {
         // Four one-document segments, written without merging.
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         config
-            .set_merge_policy(Arc::new(NoMergePolicy::new()))
+            .set_merge_policy(Some(NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..4 {
@@ -1141,11 +1157,11 @@ fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
     let started = Arc::new(AtomicUsize::new(0));
     let finished = Arc::new(AtomicUsize::new(0));
     let cms = gated_cms(&gate, &started, &finished);
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_open_mode(OpenMode::APPEND).unwrap();
-    config.set_merge_policy(log_doc_policy(2)).unwrap();
+    config.set_merge_policy(Some(log_doc_policy(2))).unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
 
@@ -1178,12 +1194,30 @@ fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
     let outcome = watchdog(60, move || force_merger.join().unwrap());
     rollback.join().unwrap().unwrap();
     match outcome {
-        Err(LuceneError::Io(error)) => assert!(
-            error
-                .to_string()
-                .starts_with("background merge hit exception: "),
-            "{error}"
-        ),
+        Err(LuceneError {
+            kind: LuceneErrorKind::Io(error),
+            ..
+        }) => {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("background merge hit exception: "),
+                "{error}"
+            );
+            // `new IOException(..., merge.getException())`
+            // (`IndexWriter.java:2259-2260`): the cause is the merge's
+            // `MergeAbortedException`.
+            assert!(
+                matches!(
+                    rucene::store::java_nio_file::java_cause_of(&error),
+                    Some(LuceneError {
+                        kind: LuceneErrorKind::MergeAborted(_),
+                        ..
+                    })
+                ),
+                "{error}"
+            );
+        }
         other => panic!("expected the background merge exception, got {other:?}"),
     }
     assert_eq!(finished.load(Ordering::SeqCst), 3);
@@ -1235,7 +1269,10 @@ fn a_negative_merge_rate_is_rejected_as_lucene_does() {
     let limiter = MergeRateLimiter::new();
     limiter.set_mb_per_sec(5.0).unwrap();
     match limiter.set_mb_per_sec(-1.5) {
-        Err(LuceneError::IllegalArgument(message)) => {
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        }) => {
             assert_eq!(message, "mbPerSec must be positive; got: -1.5");
         }
         other => panic!("expected IllegalArgument, got {other:?}"),
@@ -1244,7 +1281,10 @@ fn a_negative_merge_rate_is_rejected_as_lucene_does() {
     let as_trait: &dyn rucene::store::RateLimiter = &limiter;
     assert!(matches!(
         as_trait.set_mb_per_sec(-0.5),
-        Err(LuceneError::IllegalArgument(_))
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { .. },
+            ..
+        })
     ));
     limiter.set_mb_per_sec(0.0).unwrap();
     assert_eq!(limiter.get_mb_per_sec(), 0.0);
@@ -1338,12 +1378,12 @@ fn close_removes_the_files_of_a_merge_aborted_after_the_final_commit() {
             cms.default_do_merge(source, merge)
         })));
     }
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(CommitOnlyMergePolicy))
+        .set_merge_policy(Some(Arc::new(CommitOnlyMergePolicy)))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&cms) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&cms) as Arc<dyn MergeScheduler>))
         .unwrap();
     config.set_max_full_flush_merge_wait_millis(50);
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();

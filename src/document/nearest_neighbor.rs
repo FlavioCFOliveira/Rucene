@@ -309,7 +309,7 @@ impl IntersectVisitor for NearestVisitor<'_> {
 /// # Errors
 ///
 /// Propagates whatever the point trees raise, and returns
-/// [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+/// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
 /// when `n` is too large for the hit queue.
 pub fn nearest(
     point_lat: f64,

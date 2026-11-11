@@ -79,7 +79,7 @@ impl DisjunctionMaxQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `tie_breaker_multiplier`
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `tie_breaker_multiplier`
     /// falls outside `[0, 1]`, which is the `IllegalArgumentException` Java
     /// throws.
     pub fn new(disjuncts: Vec<Arc<dyn Query>>, tie_breaker_multiplier: f32) -> Result<Self> {
@@ -88,7 +88,7 @@ impl DisjunctionMaxQuery {
         // reject it.
         #[allow(clippy::manual_range_contains)]
         if tie_breaker_multiplier < 0.0 || tie_breaker_multiplier > 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "tieBreakerMultiplier must be in [0, 1]".to_string(),
             ));
         }

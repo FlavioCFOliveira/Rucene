@@ -73,7 +73,7 @@ impl Lucene99MemorySegmentScalarQuantizedVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `input` is shorter than
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `input` is shorter than
     /// the node data it is supposed to hold, and propagates any error raised
     /// while quantizing the query or cloning the input.
     pub fn random_vector_scorer(
@@ -105,7 +105,7 @@ impl Lucene99MemorySegmentScalarQuantizedVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `input` is shorter than
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `input` is shorter than
     /// the node data it is supposed to hold, and propagates any error raised
     /// while cloning the input.
     pub fn random_vector_scorer_supplier(
@@ -297,7 +297,7 @@ impl QuantizedScorerBase {
 
         // Equivalent to `checkInvariants()`.
         if input.length() < (node_size as i64) * i64::from(max_ord) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "input length is less than expected vector data".to_string(),
             ));
         }

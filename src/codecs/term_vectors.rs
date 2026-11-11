@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::leaf_reader::TermVectors;
 use crate::store::{DataInput, Directory, IOContext};
 use crate::util::{Accountable, BytesRef};
@@ -60,12 +60,24 @@ pub trait TermVectorsReader: TermVectors {
     fn check_integrity(&self) -> Result<()>;
 
     /// Creates a clone that one caller at a time may use to read term vectors.
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader>;
+    ///
+    /// Equivalent to `TermVectorsReader.clone()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchecked exception Java's `clone()` throws, such as the
+    /// `AlreadyClosedException` of a closed reader, and the error of cloning
+    /// its inputs.
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>>;
 
     /// Returns an instance optimized for merging.
     ///
     /// The default implementation returns a clone of `self`.
-    fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
+    ///
+    /// # Errors
+    ///
+    /// As [`clone_reader`](Self::clone_reader).
+    fn get_merge_instance(&self) -> Result<Box<dyn TermVectorsReader>> {
         self.clone_reader()
     }
 
@@ -185,13 +197,13 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                     if code & 1 != 0 {
                         let length = input.read_v_int()?;
                         let length = usize::try_from(length).map_err(|_| {
-                            LuceneError::CorruptIndex(format!(
+                            LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                                 "negative term-vector payload length: {length}"
-                            ))
+                            )))
                         })?;
                         payload.bytes.clear();
                         payload.bytes.resize(length, 0);
-                        input.read_bytes(&mut payload.bytes, 0, length)?;
+                        input.read_bytes(Some(&mut payload.bytes), 0, length)?;
                         payload.offset = 0;
                         payload.length = length;
                         has_payload = true;
@@ -242,7 +254,15 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
         }
         self.start_document(num_fields)?;
 
+        let mut last_field_name: Option<&String> = None;
+        let mut field_count = 0;
         for field_name in &field_names {
+            field_count += 1;
+            debug_assert!(
+                last_field_name.is_none_or(|last| field_name.as_str() > last.as_str()),
+                "lastFieldName={last_field_name:?} fieldName={field_name}"
+            );
+            last_field_name = Some(field_name);
             let field_info = merge_field_infos.field_info(field_name).ok_or_else(|| {
                 crate::error::LuceneError::illegal_state(format!(
                     "field \"{field_name}\" carries term vectors but is absent from the merged \
@@ -277,15 +297,20 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                 has_payloads,
             )?;
             let mut terms_enum = terms.iterator()?;
+            let mut term_count = 0;
             while let Some(term) = terms_enum.next()? {
+                term_count += 1;
                 let freq = terms_enum.total_term_freq()? as i32;
                 self.start_term(&term, freq)?;
 
                 if has_positions || has_offsets {
-                    let mut postings = terms_enum
+                    let postings = terms_enum
                         .postings(None, POSTINGS_ENUM_OFFSETS | POSTINGS_ENUM_PAYLOADS)?;
+                    debug_assert!(postings.is_some());
+                    let mut postings = postings.ok_or_else(LuceneError::null_pointer)?;
                     let doc_id = postings.next_doc()?;
                     debug_assert_ne!(doc_id, NO_MORE_DOCS);
+                    debug_assert!(postings.freq()? == freq);
                     for _ in 0..freq {
                         let pos = postings.next_position()?;
                         let start_offset = postings.start_offset();
@@ -299,8 +324,10 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                 }
                 self.finish_term()?;
             }
+            debug_assert!(term_count == num_terms);
             self.finish_field()?;
         }
+        debug_assert!(field_count == num_fields);
         self.finish_document()
     }
 
@@ -315,7 +342,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                 // `TermVectorsWriter.java:203`.
                 merge_state.check_aborted()?;
                 reader.check_integrity()?;
-                readers.push(Some(reader.clone_reader()));
+                readers.push(Some(reader.clone_reader()?));
             } else {
                 readers.push(None);
             }
@@ -386,8 +413,8 @@ impl TermVectorsReader for EmptyTermVectorsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(*self)
+    fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+        Ok(Box::new(*self))
     }
 }
 
@@ -629,7 +656,16 @@ mod tests {
         let error = writer
             .add_prox(1, Some(&mut positions), None)
             .expect_err("a negative length is not a length");
-        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -650,7 +686,7 @@ mod tests {
         let reader = EmptyTermVectorsReader;
         reader.check_integrity().unwrap();
         assert!(reader.get(0).unwrap().is_none());
-        let _clone = reader.clone_reader();
+        let _clone = reader.clone_reader().unwrap();
     }
 
     #[test]

@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rucene::document::{Document, Store, StringField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{NoDeletionPolicy, SegmentInfos, WRITE_LOCK_NAME};
@@ -76,9 +76,9 @@ fn pending_commit_files(dir: &dyn Directory) -> Vec<String> {
 fn every_commit_writes_the_next_generation() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_index_deletion_policy(NoDeletionPolicy::instance())
+        .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
 
@@ -186,9 +186,9 @@ impl Directory for FailingRenameDirectory {
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         if self.fail_rename.load(Ordering::Acquire) {
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "injected rename failure: {source} -> {dest}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!("injected rename failure: {source} -> {dest}")),
+            )));
         }
         self.inner.rename(source, dest)
     }
@@ -205,7 +205,7 @@ impl Directory for FailingRenameDirectory {
         self.inner.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 
@@ -221,9 +221,9 @@ fn a_failed_rename_leaves_the_previous_commit_point_intact() {
     let dir = Arc::new(FailingRenameDirectory::new(Arc::clone(&ram)));
     let as_dir: Arc<dyn Directory> = Arc::clone(&dir) as Arc<dyn Directory>;
 
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_index_deletion_policy(NoDeletionPolicy::instance())
+        .set_index_deletion_policy(Some(NoDeletionPolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&as_dir), config).unwrap();
 

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::{LuceneError, Result};
 use crate::search::reference_manager::{ManagedReference, ReferenceManager, RefreshListener};
+use crate::util::concurrent::{wait_interruptibly, InterruptedException};
 
 /// The one thing [`ControlledRealTimeReopenThread`] needs from an
 /// `IndexWriter`: the sequence number of the last completed operation.
@@ -70,7 +71,9 @@ struct Shared {
     /// Signalled when `searchingGen` advances.
     ///
     /// Equivalent to the instance monitor's `notifyAll()`.
-    search_cond: Condvar,
+    /// `Arc` so that a waiter waits on it interruptibly
+    /// ([`wait_interruptibly`](crate::util::concurrent::wait_interruptibly)).
+    search_cond: Arc<Condvar>,
 }
 
 impl Shared {
@@ -167,7 +170,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's message — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's message — when
     /// `target_max_stale_sec` is smaller than `target_min_stale_sec`.
     pub fn new(
         writer: Arc<dyn MaxCompletedSequenceNumberSource>,
@@ -176,14 +179,14 @@ where
         target_min_stale_sec: f64,
     ) -> Result<Self> {
         if target_max_stale_sec < target_min_stale_sec {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "targetMaxScaleSec (= {target_max_stale_sec}) < targetMinStaleSec (={target_min_stale_sec})"
             )));
         }
         let shared = Arc::new(Shared {
             state: Mutex::new(SharedState::default()),
             reopen_cond: Condvar::new(),
-            search_cond: Condvar::new(),
+            search_cond: Arc::new(Condvar::new()),
         });
         let listener: Arc<dyn RefreshListener> = Arc::new(HandleRefresh {
             shared: Arc::clone(&shared),
@@ -212,9 +215,11 @@ where
         let manager = Arc::clone(&self.manager);
         let target_max_stale_ns = self.target_max_stale_ns;
         let target_min_stale_ns = self.target_min_stale_ns;
-        self.handle = Some(std::thread::spawn(move || {
-            run(shared, manager, target_max_stale_ns, target_min_stale_ns);
-        }));
+        self.handle = Some(std::thread::spawn(
+            crate::util::concurrent::with_thread_start_context(move || {
+                run(shared, manager, target_max_stale_ns, target_min_stale_ns);
+            }),
+        ));
     }
 
     /// Returns the generation the current searcher is guaranteed to include.
@@ -230,8 +235,17 @@ where
     /// Equivalent to
     /// `ControlledRealTimeReopenThread.waitForGeneration(long)`, which passes
     /// `-1`.
-    pub fn wait_for_generation(&self, target_gen: i64) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// [`InterruptedException`] when the waiting thread is interrupted, as
+    /// Java's `wait()` throws it.
+    pub fn wait_for_generation(
+        &self,
+        target_gen: i64,
+    ) -> std::result::Result<(), InterruptedException> {
         self.wait_for_generation_with_timeout(target_gen, -1)
+            .map(|_| ())
     }
 
     /// Waits for the target generation to become visible, up to `max_ms`
@@ -245,7 +259,17 @@ where
     /// manager is closed. Returns `true` when the target generation is
     /// available, and `false` when the wait time was exceeded — in which case
     /// the current searcher is the one still in place.
-    pub fn wait_for_generation_with_timeout(&self, target_gen: i64, max_ms: i64) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// [`InterruptedException`] when the waiting thread is interrupted (or
+    /// enters the wait interrupted), as Java's `wait()` and `wait(long)`
+    /// throw it.
+    pub fn wait_for_generation_with_timeout(
+        &self,
+        target_gen: i64,
+        max_ms: i64,
+    ) -> std::result::Result<bool, InterruptedException> {
         let mut state = self.shared.lock();
         if target_gen > state.searching_gen {
             // Notify the reopen thread that waiting_gen has changed, so that it
@@ -256,28 +280,25 @@ where
 
             let start = Instant::now();
             while target_gen > state.searching_gen {
-                if max_ms < 0 {
-                    state = self
-                        .shared
-                        .search_cond
-                        .wait(state)
-                        .unwrap_or_else(PoisonError::into_inner);
+                let timeout = if max_ms < 0 {
+                    // `wait()`
+                    None
                 } else {
                     let elapsed_ms = start.elapsed().as_millis() as i64;
                     let ms_left = max_ms - elapsed_ms;
                     if ms_left <= 0 {
-                        return false;
+                        return Ok(false);
                     }
-                    let (guard, _timeout) = self
-                        .shared
-                        .search_cond
-                        .wait_timeout(state, Duration::from_millis(ms_left as u64))
-                        .unwrap_or_else(PoisonError::into_inner);
-                    state = guard;
-                }
+                    // `wait(msLeft)`
+                    Some(Duration::from_millis(ms_left as u64))
+                };
+                let (guard, outcome) = wait_interruptibly(&self.shared.search_cond, state, timeout)
+                    .unwrap_or_else(PoisonError::into_inner);
+                state = guard;
+                outcome?;
             }
         }
-        true
+        Ok(true)
     }
 
     /// Stops the reopen thread and unregisters the refresh listener.
@@ -368,14 +389,18 @@ fn run<G>(
         }
 
         last_reopen_start = Instant::now();
-        if manager.maybe_refresh_blocking().is_err() {
-            // Java wraps the IOException in a RuntimeException, which kills the
-            // thread. Rust cannot unwind into the caller, so the thread stops
-            // instead; `finish` is set so that a waiting caller is released by
-            // the manager being closed.
-            shared.lock().finish = true;
-            shared.search_cond.notify_all();
-            return;
+        if let Err(ioe) = manager.maybe_refresh_blocking() {
+            // `catch (IOException ioe) { throw new RuntimeException(ioe); }`
+            // (`ControlledRealTimeReopenThread.java:231-235`): the exception
+            // ends the thread as its uncaught exception, and waiters are left
+            // as Java leaves them; an unchecked exception propagates as it is.
+            // A panic carrying the Java `toString()` is this crate's form of an
+            // uncaught throwable.
+            let thrown = crate::util::concurrent::throwable_to_string(&ioe);
+            if matches!(ioe.kind, crate::error::LuceneErrorKind::Io(_)) {
+                panic!("java.lang.RuntimeException: {thrown}");
+            }
+            panic!("{thrown}");
         }
     }
 }

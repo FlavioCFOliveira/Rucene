@@ -81,7 +81,7 @@ fn only_segments_marks_the_status_partial() {
     let all = checker.check_index().unwrap();
     let first = all.segment_infos[0].name.clone();
     let status = checker
-        .check_index_segments(Some(&[first.clone()]))
+        .check_index_segments(Some(std::slice::from_ref(&first)))
         .unwrap();
     checker.close().unwrap();
 

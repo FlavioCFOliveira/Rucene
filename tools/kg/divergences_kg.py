@@ -173,9 +173,12 @@ def scan_text(path: str, text: str):
 
 
 def scan_tree(root: Path):
-    """Every divergence paragraph under `<root>/src`, in path order."""
+    """Every divergence paragraph under `<root>/src` and under each workspace
+    member's `crates/<dir>/src`, in path order."""
     found = []
-    for p in sorted((root / "src").rglob("*.rs")):
+    bases = ["src"] + [f"{d}/src" for d in sorted(Path(root).glob("crates/*/Cargo.toml"))
+                       for d in [d.parent.relative_to(root).as_posix()]]
+    for p in sorted(x for b in bases for x in (root / b).rglob("*.rs")):
         rel = p.relative_to(root).as_posix()
         found.extend(scan_text(rel, p.read_text(encoding="utf-8", errors="replace")))
     return found
@@ -260,21 +263,34 @@ def main():
     for name, file, owner, q in read(R, f"MATCH (f:RustFn) WHERE f.file IN {flist} "
                                         "RETURN f.name, f.file, f.owner, f.qualifiedName"):
         fns[(name, file)].append((owner, q))
+    # A Java file name is resolved within the module the declaring crate ports
+    # (`port_modules_kg.PORT_MODULES`): `src/` cites `lucene/core`, and
+    # `crates/<dir>/src/` the module that crate ports. Without the split, a
+    # sprint-9 module declaring a file of the same name (`RamUsageEstimator.java`,
+    # `SuppressForbidden.java`) would make a core citation ambiguous.
+    import port_modules_kg as pm
+    crate_module = {m["cratePath"]: m["name"] for m in pm.PORT_MODULES}
+
+    def module_of_div(path):
+        for cp, mod in crate_module.items():
+            if cp != "." and path.startswith(cp + "/"):
+                return mod
+        return "lucene/core"
+
     by_file = defaultdict(set)
-    for q, f in read(R, "MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.qualifiedName, c.file"):
-        if f:
-            by_file[f.rsplit("/", 1)[-1]].add(f)
     file_to_class = {}
-    for q, f in read(R, "MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.qualifiedName, c.file"):
+    for q, f, mod in read(R, "MATCH (c:Class) WHERE c.portScope = 'in' "
+                             "RETURN c.qualifiedName, c.file, c.module"):
         if f:
+            by_file[(mod, f.rsplit("/", 1)[-1])].add(f)
             file_to_class.setdefault(f, []).append(q)
-    classes = {}
-    for base, paths in by_file.items():
+    classes = defaultdict(dict)
+    for (mod, base), paths in by_file.items():
         if len(paths) == 1:
             qs = file_to_class[next(iter(paths))]
             stem = base[:-5]
             top = [q for q in qs if q.rsplit(".", 1)[-1] == stem]
-            classes[base] = top if len(top) == 1 else []
+            classes[mod][base] = top if len(top) == 1 else []
 
     # Nodes: upsert the current set, then drop what the scan no longer finds.
     rows = [{"id": d["id"], "file": d["file"], "line": d["line"], "title": d["title"],
@@ -306,7 +322,9 @@ def main():
                f"MATCH (d:Divergence {{id: row.id}}) MATCH (t:{label} {{qualifiedName: row.q}}) "
                "CREATE (d)-[:CONCERNS {gitCommit: row.c, gitDate: row.d}]->(t)",
                f"CONCERNS -> {label}", batch=200)
-    java = resolve_java(divs, classes)
+    java = [e for mod in sorted({module_of_div(d["file"]) for d in divs})
+            for e in resolve_java([d for d in divs if module_of_div(d["file"]) == mod],
+                                  classes.get(mod, {}))]
     unwind(R, "create", [{"id": i, "q": q, "lines": l, "c": C, "d": D} for i, q, l in java],
            "MATCH (d:Divergence {id: row.id}) MATCH (c:Class {qualifiedName: row.q}) "
            "CREATE (d)-[:DIVERGES_FROM {lines: row.lines, gitCommit: row.c, gitDate: row.d}]->(c)",

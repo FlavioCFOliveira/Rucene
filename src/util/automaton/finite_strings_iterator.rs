@@ -122,7 +122,7 @@ impl<'a> FiniteStringsIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if a cycle is detected.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if a cycle is detected.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<IntsRef>> {
         // Special case the empty string, as usual:
@@ -143,7 +143,7 @@ impl<'a> FiniteStringsIterator<'a> {
                     // Now recurse: the destination of this transition has outgoing
                     // transitions:
                     if self.path_states[to as usize] {
-                        return Err(LuceneError::IllegalArgument(
+                        return Err(LuceneError::illegal_argument(
                             "automaton has cycles".to_string(),
                         ));
                     }

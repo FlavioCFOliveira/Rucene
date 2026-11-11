@@ -151,6 +151,8 @@
 //! while they walk a merge instance, and only there; any other panic, on that
 //! path or another, still fails the test (see `visit_merge_instance`).
 
+mod lucene_assertion;
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe, PanicHookInfo};
@@ -616,7 +618,7 @@ fn read_file(directory: &Arc<dyn Directory>, name: &str) -> Vec<u8> {
         .expect("open");
     let length = input.length() as usize;
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).expect("read");
+    input.read_bytes(Some(&mut bytes), 0, length).expect("read");
     bytes
 }
 
@@ -626,6 +628,15 @@ fn write_file(directory: &Arc<dyn Directory>, name: &str, bytes: &[u8]) {
         .expect("create");
     output.write_bytes(bytes, 0, bytes.len()).expect("write");
     output.close().expect("close");
+}
+
+/// [`visit_all_unguarded`], where a Lucene `assert` the decoder fails on the
+/// corrupt input — Java's `AssertionError` under `-ea` — ends the walk, as
+/// Java's exception would, and counts as survived; any other panic still
+/// fails the test (see [`lucene_assertion`]).
+fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) -> usize {
+    lucene_assertion::survive_lucene_assertions(|| visit_all_unguarded(directory, info, fixture))
+        .unwrap_or(0)
 }
 
 /// Walks every value of every field of a segment, reporting only whether it
@@ -638,7 +649,11 @@ fn write_file(directory: &Arc<dyn Directory>, name: &str, bytes: &[u8]) {
 /// Returns how many values it managed to decode, which the sweeps use to prove
 /// that they are actually reaching the decoder rather than being turned away at
 /// the file header.
-fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) -> usize {
+fn visit_all_unguarded(
+    directory: &Arc<dyn Directory>,
+    info: &SegmentInfo,
+    fixture: &Fixture,
+) -> usize {
     let infos = fixture.field_infos();
     let read_state = SegmentReadState::new(directory.as_ref(), info, &infos, &*DEFAULT_IO_CONTEXT);
     let producer = match Lucene90DocValuesFormat::new().fields_producer(&read_state) {
@@ -749,14 +764,18 @@ fn visit_fields(producer: &dyn DocValuesProducer, infos: &FieldInfos, fixture: &
         // Every field is asked for twice: state a failed read left behind must
         // not be served to the second one.
         for pass in 0..2 {
-            decoded += match field.doc_values_type {
-                DocValuesType::NUMERIC => visit_numeric(producer, field, fixture),
-                DocValuesType::BINARY => visit_binary(producer, field, fixture),
-                DocValuesType::SORTED => visit_sorted(producer, field, fixture),
-                DocValuesType::SORTED_NUMERIC => visit_sorted_numeric(producer, field, fixture),
-                DocValuesType::SORTED_SET => visit_sorted_set(producer, field, fixture),
-                DocValuesType::NONE => 0,
-            };
+            // A Lucene `assert` ends this field's walk, as Java's
+            // `AssertionError` would; the other fields are still walked.
+            decoded +=
+                lucene_assertion::survive_lucene_assertions(|| match field.doc_values_type {
+                    DocValuesType::NUMERIC => visit_numeric(producer, field, fixture),
+                    DocValuesType::BINARY => visit_binary(producer, field, fixture),
+                    DocValuesType::SORTED => visit_sorted(producer, field, fixture),
+                    DocValuesType::SORTED_NUMERIC => visit_sorted_numeric(producer, field, fixture),
+                    DocValuesType::SORTED_SET => visit_sorted_set(producer, field, fixture),
+                    DocValuesType::NONE => 0,
+                })
+                .unwrap_or(0);
             if pass == 1 {
                 visit_random_access(producer, field, fixture);
             }
@@ -906,7 +925,9 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
     let max_doc = fixture.max_doc;
     let targets = [0, 1, max_doc / 2, max_doc - 1, max_doc, max_doc + 1];
     for target in targets {
-        match field.doc_values_type {
+        // Reading a value off an exhausted iterator is a Lucene `assert`
+        // (`IndexedDISI`, the empty doc values); each probe stands alone.
+        let _ = lucene_assertion::survive_lucene_assertions(|| match field.doc_values_type {
             DocValuesType::NUMERIC => {
                 if let Ok(Some(mut values)) = producer.get_numeric(field) {
                     let _ = values.advance(target);
@@ -953,7 +974,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::NONE => {}
-        }
+        });
     }
 }
 
@@ -1714,7 +1735,7 @@ fn a_metadata_entry_naming_an_unknown_field_is_refused() {
 #[test]
 fn a_field_the_metadata_never_mentions_is_never_answered_with_another_fields_values() {
     // Only the fields a fixture writes have entries. Asking for one that has
-    // none must yield an exhausted iterator, never a value cut out of a
+    // none fails as Java's does, never with a value cut out of a
     // neighbouring field's region.
     let fixture = sorted_fixture();
     let (directory, info, _) = build(&fixture);
@@ -1741,15 +1762,17 @@ fn a_field_the_metadata_never_mentions_is_never_answered_with_another_fields_val
         .fields_producer(&read_state)
         .expect("doc values producer");
     let field = infos.field_info_by_number(orphan).expect("field info");
-    let mut values = producer.get_numeric(field).expect("numeric").unwrap();
-    assert_eq!(
-        values.next_doc().expect("next doc"),
-        NO_MORE_DOCS,
-        "a field with no metadata entry must hold no documents"
-    );
+    // `numerics.get(field.number)` is `null` and `getNumeric(entry)`
+    // dereferences it (`Lucene90DocValuesProducer.java:671-674, 783-784`):
+    // Java's `NullPointerException`, never a value.
+    let error = producer
+        .get_numeric(field)
+        .err()
+        .expect("a field with no metadata entry must not be answered");
     assert!(
-        values.long_value().is_err(),
-        "an exhausted iterator must not answer with a value"
+        matches!(&error.kind, rucene::error::LuceneErrorKind::Unchecked { class, .. }
+            if *class == "java.lang.NullPointerException"),
+        "{error:?}"
     );
 }
 

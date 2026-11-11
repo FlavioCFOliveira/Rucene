@@ -29,21 +29,12 @@
 //! * **Java's unchecked exceptions become `Result`.** `createFieldQuery` wraps
 //!   an `IOException` from the analysis chain in a `RuntimeException`; here it
 //!   propagates as [`LuceneError`]. The argument checks that Java raises as
-//!   `IllegalArgumentException` return [`LuceneError::IllegalArgument`].
-//! * **Attributes are read through the concrete implementations.** Java asks the
-//!   stream for an interface (`getAttribute(TermToBytesRefAttribute.class)`);
-//!   this crate's `AttributeSource` is keyed by implementation type, so the
-//!   helpers below try [`PackedTokenAttributeImpl`] — the implementation the
-//!   default factory installs for all four attributes — and fall back to the
-//!   stand-alone implementations. The answer is the same one Java's lookup
-//!   gives for any stream built by this crate's analysis chain.
+//!   `IllegalArgumentException` return [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument).
 
 use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
-    BytesTermAttributeImpl, PackedTokenAttributeImpl, PositionIncrementAttribute,
-    PositionIncrementAttributeImpl, PositionLengthAttribute, PositionLengthAttributeImpl,
-    TermToBytesRefAttribute,
+    PositionIncrementAttribute, PositionLengthAttribute, TermToBytesRefAttribute,
 };
 use crate::analysis::{Analyzer, CachingTokenFilter, SharedTokenStream, TokenStream};
 use crate::error::{LuceneError, Result};
@@ -99,7 +90,9 @@ impl TermAndBoost {
 /// implements; see the module documentation for why.
 #[derive(Debug)]
 pub struct QueryBuilder {
-    analyzer: Arc<dyn Analyzer>,
+    /// `None` for Java's `null`, which the constructor accepts unchecked
+    /// (`QueryBuilder.java:79-81`).
+    analyzer: Option<Arc<dyn Analyzer>>,
     enable_position_increments: bool,
     enable_graph_queries: bool,
     auto_generate_multi_term_synonyms_phrase_query: bool,
@@ -108,8 +101,9 @@ pub struct QueryBuilder {
 impl QueryBuilder {
     /// Creates a new query builder using the given analyzer.
     ///
-    /// Equivalent to `new QueryBuilder(Analyzer)`.
-    pub fn new(analyzer: Arc<dyn Analyzer>) -> Self {
+    /// Equivalent to `new QueryBuilder(Analyzer)`; `None` is Java's `null`,
+    /// on which analyzing text raises `NullPointerException`.
+    pub fn new(analyzer: Option<Arc<dyn Analyzer>>) -> Self {
         Self {
             analyzer,
             enable_position_increments: true,
@@ -121,14 +115,14 @@ impl QueryBuilder {
     /// Returns the analyzer.
     ///
     /// Equivalent to `getAnalyzer()`.
-    pub fn get_analyzer(&self) -> &Arc<dyn Analyzer> {
-        &self.analyzer
+    pub fn get_analyzer(&self) -> Option<&Arc<dyn Analyzer>> {
+        self.analyzer.as_ref()
     }
 
     /// Sets the analyzer used to tokenize text.
     ///
     /// Equivalent to `setAnalyzer(Analyzer)`.
-    pub fn set_analyzer(&mut self, analyzer: Arc<dyn Analyzer>) {
+    pub fn set_analyzer(&mut self, analyzer: Option<Arc<dyn Analyzer>>) {
         self.analyzer = analyzer;
     }
 
@@ -219,7 +213,7 @@ pub trait QueryBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] unless `operator` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) unless `operator` is
     /// [`Occur::SHOULD`] or [`Occur::MUST`], and propagates any error from the
     /// analysis chain.
     fn create_boolean_query_with_operator(
@@ -229,7 +223,7 @@ pub trait QueryBuilderOps {
         operator: Occur,
     ) -> Result<Option<Arc<dyn Query>>> {
         if operator != Occur::SHOULD && operator != Occur::MUST {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "invalid operator: only SHOULD or MUST are allowed".to_string(),
             ));
         }
@@ -272,7 +266,7 @@ pub trait QueryBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] unless `fraction` is in
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) unless `fraction` is in
     /// `[0, 1]`, and propagates any error from the analysis chain.
     fn create_min_should_match_query(
         &self,
@@ -281,7 +275,7 @@ pub trait QueryBuilderOps {
         fraction: f32,
     ) -> Result<Option<Arc<dyn Query>>> {
         if fraction.is_nan() || fraction < 0.0 || fraction > 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "fraction should be >= 0 and <= 1".to_string(),
             ));
         }
@@ -339,6 +333,8 @@ pub trait QueryBuilderOps {
         let source = self
             .query_builder()
             .get_analyzer()
+            // `analyzer.tokenStream(field, queryText)` on a `null` analyzer.
+            .ok_or_else(crate::error::LuceneError::null_pointer)?
             .token_stream_from_str(field, query_text)?;
         self.create_field_query(
             Box::new(SharedTokenStream::new(source)),
@@ -369,7 +365,15 @@ pub trait QueryBuilderOps {
         // Build an appropriate query based on the analysis chain.
         let mut stream = CachingTokenFilter::new(source);
 
-        if !has_term_attribute(stream.attribute_source()) {
+        // `QueryBuilder.java:300-306`: the stream's term attribute, if any,
+        // and the position attributes, which `addAttribute` creates.
+        let has_term = has_term_attribute(stream.attribute_source());
+        {
+            let atts = stream.attribute_source_mut();
+            atts.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+            atts.add_attribute_interface::<dyn PositionLengthAttribute>()?;
+        }
+        if !has_term {
             return Ok(None);
         }
 
@@ -763,7 +767,7 @@ pub trait QueryBuilderOps {
     /// Propagates the errors of `SynonymQuery`'s builder, which rejects a boost
     /// outside `(0, 1]`.
     fn new_synonym_query(&self, field: &str, terms: &[TermAndBoost]) -> Result<Arc<dyn Query>> {
-        let mut builder = synonym_query::Builder::new(field);
+        let mut builder = synonym_query::Builder::new(Some(field));
         for t in terms {
             builder.add_bytes(t.term().clone(), t.boost())?;
         }
@@ -838,47 +842,33 @@ fn add_min_should_match_to_boolean(query: &BooleanQuery, fraction: f32) -> Resul
 }
 
 // ---------------------------------------------------------------------------
-// Attribute access
-//
-// Java asks the stream for an interface; this crate's AttributeSource is keyed
-// by implementation type, so each helper tries the implementation the default
-// factory installs for every attribute and then the stand-alone one.
+// Attribute access: the interfaces, as Java's `getAttribute(X.class)` asks
 // ---------------------------------------------------------------------------
 
 /// Returns `true` when the stream carries a `TermToBytesRefAttribute`.
 ///
 /// Equivalent to `stream.getAttribute(TermToBytesRefAttribute.class) != null`.
 fn has_term_attribute(atts: &AttributeSource) -> bool {
-    atts.has_attribute::<PackedTokenAttributeImpl>()
-        || atts.has_attribute::<BytesTermAttributeImpl>()
+    atts.has_attribute_interface::<dyn TermToBytesRefAttribute>()
 }
 
 /// Reads the current term bytes, or `None` when the stream carries no
 /// `TermToBytesRefAttribute`.
 fn term_bytes_of(atts: &AttributeSource) -> Option<BytesRef> {
-    if let Some(att) = atts.get_attribute::<PackedTokenAttributeImpl>() {
-        return Some(att.get_bytes_ref());
-    }
-    atts.get_attribute::<BytesTermAttributeImpl>()
+    atts.get_attribute_interface::<dyn TermToBytesRefAttribute>()
         .map(|att| att.get_bytes_ref())
 }
 
 /// Reads the current position increment, defaulting to Lucene's `1` when the
 /// attribute is absent — the value `addAttribute` would have created.
 fn position_increment_of(atts: &AttributeSource) -> i32 {
-    if let Some(att) = atts.get_attribute::<PackedTokenAttributeImpl>() {
-        return att.get_position_increment();
-    }
-    atts.get_attribute::<PositionIncrementAttributeImpl>()
+    atts.get_attribute_interface::<dyn PositionIncrementAttribute>()
         .map_or(1, |att| att.get_position_increment())
 }
 
 /// Reads the current position length, defaulting to Lucene's `1` when the
 /// attribute is absent — the value `addAttribute` would have created.
 fn position_length_of(atts: &AttributeSource) -> i32 {
-    if let Some(att) = atts.get_attribute::<PackedTokenAttributeImpl>() {
-        return att.get_position_length();
-    }
-    atts.get_attribute::<PositionLengthAttributeImpl>()
+    atts.get_attribute_interface::<dyn PositionLengthAttribute>()
         .map_or(1, |att| att.get_position_length())
 }

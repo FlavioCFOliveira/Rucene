@@ -13,7 +13,8 @@
 #![allow(unsafe_code)]
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum_expected_length,
+    check_footer, check_footer_with_prior, check_index_header, checksum_entire_file,
+    retrieve_checksum_expected_length,
 };
 use crate::codecs::lucene104::{
     for_util::{ForUtil, BLOCK_SIZE as FOR_BLOCK_SIZE},
@@ -28,11 +29,11 @@ use crate::codecs::lucene104::{
 use crate::codecs::postings::{ImpactsEnum, PostingsEnum, PostingsReaderBase};
 use crate::codecs::state::SegmentReadState;
 use crate::codecs::term_state::BlockTermState;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{FieldInfo, IndexOptions};
 use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::{DataInput, IndexInput};
+use crate::store::{close_after, DataInput, IndexInput, SharedIndexInput};
 use crate::util::{BitUtil, FixedBitSet, IOUtils};
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -53,7 +54,9 @@ static NEXT_DOC_IN_IDENTITY: AtomicU64 = AtomicU64::new(0);
 // readVLong15).
 // ---------------------------------------------------------------------------
 
-fn read_v_int15(in_: &mut dyn DataInput) -> Result<i32> {
+/// `Lucene104PostingsReader.readVInt15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn read_v_int15(in_: &mut dyn DataInput) -> Result<i32> {
     let s = in_.read_short()? as i32;
     if s >= 0 {
         Ok(s)
@@ -62,7 +65,9 @@ fn read_v_int15(in_: &mut dyn DataInput) -> Result<i32> {
     }
 }
 
-fn read_v_long15(in_: &mut dyn DataInput) -> Result<i64> {
+/// `Lucene104PostingsReader.readVLong15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn read_v_long15(in_: &mut dyn DataInput) -> Result<i64> {
     let s = in_.read_short()? as i64;
     if s >= 0 {
         Ok(s)
@@ -92,25 +97,44 @@ fn find_next_geq(arr: &[i32], target: i32, start: usize, end: usize) -> usize {
         .unwrap_or(end)
 }
 
-fn read_impacts(serialized: &[u8], buffer: &mut FreqAndNormBuffer) -> Result<()> {
-    let mut input = crate::store::ByteArrayDataInput::new(serialized);
+/// Decodes the impacts `input` holds into `reuse`, from its first entry.
+///
+/// Equivalent to `Lucene104PostingsReader.readImpacts(ByteArrayDataInput,
+/// FreqAndNormBuffer)` (`Lucene104PostingsReader.java:1449-1472`),
+/// package-private in Java and `pub` for the core tests: each entry is stored
+/// at its index of `reuse`'s arrays, which the caller grew beforehand (an
+/// index past them panics, as Java's store throws
+/// `ArrayIndexOutOfBoundsException`), and `reuse.size` is set at the end.
+/// Java returns `reuse`; the caller keeps its own borrow of it here.
+///
+/// # Errors
+///
+/// What reading `input` raises; Java wraps the `IOException` of `readZLong`
+/// in a `RuntimeException` ("cannot happen on a BADI").
+pub fn read_impacts(
+    input: &mut crate::store::ByteArrayDataInput<'_>,
+    reuse: &mut FreqAndNormBuffer,
+) -> Result<()> {
     let mut freq = 0i32;
     let mut norm = 0i64;
-    buffer.size = 0;
+    let mut size = 0usize;
     // Java's own bound, `while (in.getPosition() < in.length())`
     // (`Lucene104PostingsReader.java:1453`), which stops even if a read has
     // carried the position past the limit.
     while input.position() < input.length() {
         let freq_delta = input.read_v_int()?;
         if (freq_delta & 0x01) != 0 {
-            freq += 1 + (freq_delta >> 1);
+            freq += 1 + ((freq_delta as u32) >> 1) as i32;
             norm += 1 + input.read_z_long()?;
         } else {
-            freq += 1 + (freq_delta >> 1);
+            freq += 1 + ((freq_delta as u32) >> 1) as i32;
             norm += 1;
         }
-        buffer.add(freq, norm);
+        reuse.freqs[size] = freq;
+        reuse.norms[size] = norm;
+        size += 1;
     }
+    reuse.size = size;
     Ok(())
 }
 
@@ -152,7 +176,10 @@ fn next_set_bit(bits: &FixedBitSet, from_index: i32) -> Option<i32> {
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsReader`.
 pub struct Lucene104PostingsReader {
     version: i32,
-    doc_in: Option<Box<dyn IndexInput>>,
+    /// `docIn`, `posIn` and `payIn`: shared by every enum this reader hands
+    /// out (as clones), and closed by [`close`](PostingsReaderBase::close)
+    /// whoever else still holds the reader, as Java's are.
+    doc_in: Option<SharedIndexInput>,
     /// Stands for the identity of `doc_in`, which
     /// `BlockPostingsEnum.canReuse` compares by reference
     /// (`docIn == Lucene104PostingsReader.this.docIn`,
@@ -162,8 +189,8 @@ pub struct Lucene104PostingsReader {
     /// are compared on that instead; the comparison answers exactly what the
     /// reference comparison answers.
     doc_in_identity: u64,
-    pos_in: Option<Box<dyn IndexInput>>,
-    pay_in: Option<Box<dyn IndexInput>>,
+    pos_in: Option<SharedIndexInput>,
+    pay_in: Option<SharedIndexInput>,
     max_num_impacts_at_level0: i32,
     max_impact_num_bytes_at_level0: i32,
     max_num_impacts_at_level1: i32,
@@ -191,29 +218,55 @@ impl Lucene104PostingsReader {
         let meta_name = segment_file_name(&segment_info.name, suffix, "psm");
         let mut meta_in = dir.open_checksum_input(&meta_name)?;
 
-        let mut expected_pos_file_length: i64 = -1;
-        let mut expected_pay_file_length: i64 = -1;
-
-        let version = check_index_header(
-            meta_in.as_mut(),
-            META_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            &id,
-            suffix,
-        )?;
-        let max_num_impacts_at_level0 = meta_in.read_int()?;
-        let max_impact_num_bytes_at_level0 = meta_in.read_int()?;
-        let max_num_impacts_at_level1 = meta_in.read_int()?;
-        let max_impact_num_bytes_at_level1 = meta_in.read_int()?;
-        let expected_doc_file_length = meta_in.read_long()?;
-        if state.field_infos.has_prox() {
-            expected_pos_file_length = meta_in.read_long()?;
-            if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
-                expected_pay_file_length = meta_in.read_long()?;
+        // The `try` block, which ends with `CodecUtil.checkFooter(metaIn,
+        // null)`; its `catch (Throwable t)` hands any failure — that footer
+        // check's too — to `CodecUtil.checkFooter(metaIn, t)`, all inside the
+        // try-with-resources (`Lucene104PostingsReader.java:84-118`).
+        let read = (|| -> Result<_> {
+            let mut expected_pos_file_length: i64 = -1;
+            let mut expected_pay_file_length: i64 = -1;
+            let version = check_index_header(
+                meta_in.as_mut(),
+                META_CODEC,
+                VERSION_START,
+                VERSION_CURRENT,
+                &id,
+                suffix,
+            )?;
+            let max_num_impacts_at_level0 = meta_in.read_int()?;
+            let max_impact_num_bytes_at_level0 = meta_in.read_int()?;
+            let max_num_impacts_at_level1 = meta_in.read_int()?;
+            let max_impact_num_bytes_at_level1 = meta_in.read_int()?;
+            let expected_doc_file_length = meta_in.read_long()?;
+            if state.field_infos.has_prox() {
+                expected_pos_file_length = meta_in.read_long()?;
+                if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
+                    expected_pay_file_length = meta_in.read_long()?;
+                }
             }
-        }
-        check_footer(meta_in.as_mut())?;
+            check_footer(meta_in.as_mut())?;
+            Ok((
+                version,
+                max_num_impacts_at_level0,
+                max_impact_num_bytes_at_level0,
+                max_num_impacts_at_level1,
+                max_impact_num_bytes_at_level1,
+                expected_doc_file_length,
+                expected_pos_file_length,
+                expected_pay_file_length,
+            ))
+        })()
+        .map_err(|t| check_footer_with_prior(meta_in.as_mut(), t));
+        let (
+            version,
+            max_num_impacts_at_level0,
+            max_impact_num_bytes_at_level0,
+            max_num_impacts_at_level1,
+            max_impact_num_bytes_at_level1,
+            expected_doc_file_length,
+            expected_pos_file_length,
+            expected_pay_file_length,
+        ) = close_after(meta_in.as_mut(), read)?;
 
         let doc_name = segment_file_name(&segment_info.name, suffix, "doc");
         let pos_name = segment_file_name(&segment_info.name, suffix, "pos");
@@ -226,17 +279,49 @@ impl Lucene104PostingsReader {
         // Each input is held as soon as it is opened, as Java assigns `docIn`,
         // `posIn` and `payIn` before checking their headers.
         let result: Result<()> = (|| {
-            let d = doc_in.insert(dir.open_input(&doc_name, state.context)?);
+            let d = doc_in.insert(
+                dir.open_input(
+                    &doc_name,
+                    /* withHints, `Lucene104PostingsReader.java:137` */
+                    state
+                        .context
+                        .with_hints(&[
+                            std::sync::Arc::new(crate::store::FileTypeHint::Data),
+                            std::sync::Arc::new(crate::store::FileDataHint::Postings),
+                        ])
+                        .as_ref(),
+                )?,
+            );
             check_index_header(d.as_mut(), DOC_CODEC, version, version, &id, suffix)?;
             retrieve_checksum_expected_length(d.as_mut(), expected_doc_file_length)?;
 
             if state.field_infos.has_prox() {
-                let p = pos_in.insert(dir.open_input(&pos_name, state.context)?);
+                let p = pos_in.insert(
+                    dir.open_input(
+                        &pos_name,
+                        /* withHints, `Lucene104PostingsReader.java:146` */
+                        state
+                            .context
+                            .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                            .as_ref(),
+                    )?,
+                );
                 check_index_header(p.as_mut(), POS_CODEC, version, version, &id, suffix)?;
                 retrieve_checksum_expected_length(p.as_mut(), expected_pos_file_length)?;
 
                 if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
-                    let y = pay_in.insert(dir.open_input(&pay_name, state.context)?);
+                    let y = pay_in.insert(
+                        dir.open_input(
+                            &pay_name,
+                            /* withHints, `Lucene104PostingsReader.java:157` */
+                            state
+                                .context
+                                .with_hints(&[std::sync::Arc::new(
+                                    crate::store::FileTypeHint::Data,
+                                )])
+                                .as_ref(),
+                        )?,
+                    );
                     check_index_header(y.as_mut(), PAY_CODEC, version, version, &id, suffix)?;
                     retrieve_checksum_expected_length(y.as_mut(), expected_pay_file_length)?;
                 }
@@ -255,10 +340,10 @@ impl Lucene104PostingsReader {
 
         Ok(Self {
             version,
-            doc_in,
+            doc_in: doc_in.map(SharedIndexInput::new),
             doc_in_identity: NEXT_DOC_IN_IDENTITY.fetch_add(1, AtomicOrdering::Relaxed),
-            pos_in,
-            pay_in,
+            pos_in: pos_in.map(SharedIndexInput::new),
+            pay_in: pay_in.map(SharedIndexInput::new),
             max_num_impacts_at_level0,
             max_impact_num_bytes_at_level0,
             max_num_impacts_at_level1,
@@ -274,14 +359,17 @@ impl Lucene104PostingsReader {
         flags: i32,
         needs_impacts: bool,
     ) -> Result<BlockPostingsEnum> {
+        let doc_in = self.doc_in.as_ref().map(SharedIndexInput::read);
+        let pos_in = self.pos_in.as_ref().map(SharedIndexInput::read);
+        let pay_in = self.pay_in.as_ref().map(SharedIndexInput::read);
         BlockPostingsEnum::new(
             field_info,
             flags,
             needs_impacts,
-            self.doc_in.as_deref(),
+            doc_in.as_deref().map(|i| &**i),
             self.doc_in_identity,
-            self.pos_in.as_deref(),
-            self.pay_in.as_deref(),
+            pos_in.as_deref().map(|i| &**i),
+            pay_in.as_deref().map(|i| &**i),
             self.max_num_impacts_at_level0,
             self.max_impact_num_bytes_at_level0,
             self.max_num_impacts_at_level1,
@@ -302,10 +390,10 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         )?;
         let index_block_size = terms_in.read_v_int()?;
         if index_block_size != BS_I32 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "index-time BLOCK_SIZE ({}) != read-time BLOCK_SIZE ({BS_I32})",
                 index_block_size
-            )));
+            ))));
         }
         Ok(())
     }
@@ -329,7 +417,8 @@ impl PostingsReaderBase for Lucene104PostingsReader {
 
         let l = input.read_v_long()?;
         if (l & 0x01) == 0 {
-            state.doc_start_fp += l >> 1;
+            // `l >>> 1` (`Lucene104PostingsReader.java:227`).
+            state.doc_start_fp += ((l as u64) >> 1) as i64;
             if state.doc_freq == 1 {
                 state.singleton_doc_id = input.read_v_int()?;
             } else {
@@ -338,7 +427,11 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         } else {
             debug_assert!(!absolute);
             debug_assert!(state.singleton_doc_id != -1);
-            state.singleton_doc_id += BitUtil::zig_zag_decode_long(l >> 1) as i32;
+            // `zigZagDecode(l >>> 1)` (`Lucene104PostingsReader.java:236`).
+            // `int += long` narrows the `long` sum, so it wraps.
+            state.singleton_doc_id = (i64::from(state.singleton_doc_id)
+                + BitUtil::zig_zag_decode_long(((l as u64) >> 1) as i64))
+                as i32;
         }
 
         if field_info
@@ -431,10 +524,10 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     /// Equivalent to `Lucene104PostingsReader.close()`
     /// (`Lucene104PostingsReader.java:209-212`): `IOUtils.close(docIn, posIn,
     /// payIn)`.
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         IOUtils::close(
-            [&mut self.doc_in, &mut self.pos_in, &mut self.pay_in]
-                .map(|i| i.as_mut().map(|i| move || i.close())),
+            [&self.doc_in, &self.pos_in, &self.pay_in]
+                .map(|i| i.as_ref().map(|i| move || i.close())),
         )
     }
 }
@@ -555,12 +648,18 @@ pub struct BlockPostingsEnum {
     level0_pay_end_fp: i64,
     level0_block_pay_upto: i32,
     level0_serialized_impacts: Vec<u8>,
+    /// `level0SerializedImpacts.length`: how many leading bytes of
+    /// [`level0_serialized_impacts`](Self::level0_serialized_impacts) the
+    /// last read filled (`Lucene104PostingsReader.java:751, 850`).
+    level0_serialized_impacts_length: usize,
 
     level1_pos_end_fp: i64,
     level1_block_pos_upto: i32,
     level1_pay_end_fp: i64,
     level1_block_pay_upto: i32,
     level1_serialized_impacts: Vec<u8>,
+    /// `level1SerializedImpacts.length` (`Lucene104PostingsReader.java:702`).
+    level1_serialized_impacts_length: usize,
 
     impacts: BlockImpacts,
 
@@ -664,7 +763,9 @@ impl BlockPostingsEnum {
             level0_last_doc_id: -1,
             level1_last_doc_id: -1,
             level0_serialized_impacts: level0_serialized_impacts.clone(),
+            level0_serialized_impacts_length: 0,
             level1_serialized_impacts: level1_serialized_impacts.clone(),
+            level1_serialized_impacts_length: 0,
             impact_buffer: impact_buffer.clone(),
         };
 
@@ -734,11 +835,14 @@ impl BlockPostingsEnum {
             level0_pay_end_fp: 0,
             level0_block_pay_upto: 0,
             level0_serialized_impacts,
+            // `new BytesRef(capacity)` has length 0.
+            level0_serialized_impacts_length: 0,
             level1_pos_end_fp: 0,
             level1_block_pos_upto: 0,
             level1_pay_end_fp: 0,
             level1_block_pay_upto: 0,
             level1_serialized_impacts,
+            level1_serialized_impacts_length: 0,
             impacts,
             needs_refilling: false,
         })
@@ -914,6 +1018,8 @@ impl BlockPostingsEnum {
             prefix_sum(&mut self.doc_buffer, BS, self.prev_doc_id);
             self.encoding = DeltaEncoding::Packed;
         } else {
+            // block is encoded as a bit set
+            debug_assert!(self.level0_last_doc_id != NO_MORE_DOCS);
             self.doc_bit_set_base = self.prev_doc_id + 1;
             self.doc_bit_set.clear_all();
             if bits_per_value == 0 {
@@ -933,7 +1039,7 @@ impl BlockPostingsEnum {
             } else {
                 let num_longs = (-bits_per_value) as usize;
                 let mut longs = vec![0i64; num_longs];
-                doc_in.read_longs(&mut longs, 0, num_longs)?;
+                doc_in.read_longs(Some(&mut longs), 0, num_longs)?;
                 for (i, &l) in longs.iter().enumerate() {
                     let word = l as u64;
                     for b in 0..64 {
@@ -949,6 +1055,11 @@ impl BlockPostingsEnum {
                     }
                     prefix_sum(&mut self.doc_buffer, num_longs - 1, 0);
                     self.doc_buffer[num_longs - 1] = BS_I32;
+                    debug_assert!(
+                        self.doc_buffer[num_longs - 2]
+                            + (longs[num_longs - 1] as u64).count_ones() as i32
+                            == BS_I32
+                    );
                 }
             }
             self.encoding = DeltaEncoding::Unary;
@@ -970,15 +1081,8 @@ impl BlockPostingsEnum {
         Ok(())
     }
 
-    /// The error a bit-set block with no document where one must be answers.
-    fn corrupt_bit_set_block(&self) -> LuceneError {
-        LuceneError::CorruptIndex(format!(
-            "postings bit-set block starting at doc {} has no document after doc {}",
-            self.doc_bit_set_base, self.doc
-        ))
-    }
-
     fn refill_remainder(&mut self) -> Result<()> {
+        debug_assert!(self.doc_count_left >= 0 && self.doc_count_left < BS_I32);
         if self.doc_freq == 1 {
             self.doc_buffer[0] = self.singleton_doc_id;
             self.freq_buffer.get_mut()[0] = self.total_term_freq as i32;
@@ -1012,6 +1116,7 @@ impl BlockPostingsEnum {
     }
 
     fn refill_docs(&mut self) -> Result<()> {
+        debug_assert!(self.doc_count_left >= 0);
         if self.doc_count_left >= BS_I32 {
             self.refill_full_block()
         } else {
@@ -1047,7 +1152,12 @@ impl BlockPostingsEnum {
                 let skip1_end_fp = doc_in.read_short()? as i64 + doc_in.file_pointer();
                 let num_impact_bytes = doc_in.read_short()? as usize;
                 if self.needs_impacts && self.level1_last_doc_id >= target {
-                    doc_in.read_bytes(&mut self.level1_serialized_impacts, 0, num_impact_bytes)?;
+                    doc_in.read_bytes(
+                        Some(&mut self.level1_serialized_impacts),
+                        0,
+                        num_impact_bytes,
+                    )?;
+                    self.level1_serialized_impacts_length = num_impact_bytes;
                 } else {
                     doc_in.skip_bytes(num_impact_bytes as i64)?;
                 }
@@ -1078,6 +1188,10 @@ impl BlockPostingsEnum {
                 unsafe { Self::input_ref(self.pos_in_ptr()?) }.seek(self.level0_pos_end_fp)?;
                 self.pos_pending_count = self.level0_block_pos_upto;
                 if self.pay_in.is_some() {
+                    debug_assert!(
+                        self.level0_pay_end_fp
+                            >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()
+                    );
                     unsafe { Self::input_ref(self.pay_in_ptr()?) }.seek(self.level0_pay_end_fp)?;
                     self.payload_byte_upto = self.level0_block_pay_upto;
                 }
@@ -1103,7 +1217,12 @@ impl BlockPostingsEnum {
             if self.index_has_freq {
                 let num_impact_bytes = doc_in.read_v_int()? as usize;
                 if self.needs_impacts {
-                    doc_in.read_bytes(&mut self.level0_serialized_impacts, 0, num_impact_bytes)?;
+                    doc_in.read_bytes(
+                        Some(&mut self.level0_serialized_impacts),
+                        0,
+                        num_impact_bytes,
+                    )?;
+                    self.level0_serialized_impacts_length = num_impact_bytes;
                 } else {
                     doc_in.skip_bytes(num_impact_bytes as i64)?;
                 }
@@ -1191,6 +1310,11 @@ impl BlockPostingsEnum {
             unsafe { Self::input_ref(self.pos_in_ptr()?) }.seek(pos_fp)?;
             self.pos_pending_count = pos_upto;
             if self.pay_in.is_some() {
+                // needs payloads or offsets
+                debug_assert!(
+                    self.level0_pay_end_fp
+                        >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()
+                );
                 unsafe { Self::input_ref(self.pay_in_ptr()?) }.seek(pay_fp)?;
                 self.payload_byte_upto = pay_upto;
             }
@@ -1235,10 +1359,11 @@ impl BlockPostingsEnum {
                         let num_impact_bytes = doc_in.read_v_int()? as usize;
                         if self.needs_impacts && found {
                             doc_in.read_bytes(
-                                &mut self.level0_serialized_impacts,
+                                Some(&mut self.level0_serialized_impacts),
                                 0,
                                 num_impact_bytes,
                             )?;
+                            self.level0_serialized_impacts_length = num_impact_bytes;
                         } else {
                             doc_in.skip_bytes(num_impact_bytes as i64)?;
                         }
@@ -1349,7 +1474,8 @@ impl BlockPostingsEnum {
                 }
                 if let Some(ref mut payload_length_buffer) = self.payload_length_buffer {
                     payload_length_buffer[i] = payload_length;
-                    self.pos_delta_buffer.as_mut().unwrap()[i] = code >> 1;
+                    // `code >>> 1` (`Lucene104PostingsReader.java:1191`).
+                    self.pos_delta_buffer.as_mut().unwrap()[i] = ((code as u32) >> 1) as i32;
                     if payload_length != 0 {
                         let needed = self.payload_byte_upto as usize + payload_length as usize;
                         if needed > self.payload_bytes.len() {
@@ -1357,7 +1483,7 @@ impl BlockPostingsEnum {
                                 .resize(needed.max(self.payload_bytes.len() * 2).max(128), 0);
                         }
                         pos_in.read_bytes(
-                            &mut self.payload_bytes,
+                            Some(&mut self.payload_bytes),
                             self.payload_byte_upto as usize,
                             payload_length as usize,
                         )?;
@@ -1376,7 +1502,9 @@ impl BlockPostingsEnum {
                     offset_length = pos_in.read_v_int()?;
                 }
                 if let Some(ref mut offset_start_delta_buffer) = self.offset_start_delta_buffer {
-                    offset_start_delta_buffer[i] = delta_code >> 1;
+                    // `deltaCode >>> 1` (`Lucene104PostingsReader.java:1212`): a
+                    // delta past 2^30 was written as a negative `deltaCode`.
+                    offset_start_delta_buffer[i] = ((delta_code as u32) >> 1) as i32;
                     self.offset_length_buffer.as_mut().unwrap()[i] = offset_length;
                 }
             }
@@ -1401,7 +1529,7 @@ impl BlockPostingsEnum {
                 if num_bytes > self.payload_bytes.len() {
                     self.payload_bytes.resize(num_bytes, 0);
                 }
-                pay_in.read_bytes(&mut self.payload_bytes, 0, num_bytes)?;
+                pay_in.read_bytes(Some(&mut self.payload_bytes), 0, num_bytes)?;
             } else if self.pay_in.is_some() {
                 // Needs offsets: skip the payload lengths and bytes
                 // (`Lucene104PostingsReader.java:1230-1235`).
@@ -1498,13 +1626,37 @@ impl BlockPostingsEnum {
         self.impacts
             .level0_serialized_impacts
             .clone_from(&self.level0_serialized_impacts);
+        self.impacts.level0_serialized_impacts_length = self.level0_serialized_impacts_length;
         self.impacts
             .level1_serialized_impacts
             .clone_from(&self.level1_serialized_impacts);
+        self.impacts.level1_serialized_impacts_length = self.level1_serialized_impacts_length;
+    }
+}
+
+impl BlockPostingsEnum {
+    /// Equivalent to `BlockPostingsEnum.computeBufferEndBoundary(int)`
+    /// (`Lucene104PostingsReader.java:1082-1090`): the index of the first
+    /// buffered doc at or above `up_to`.
+    fn compute_buffer_end_boundary(&self, up_to: i32) -> usize {
+        let size = self.doc_buffer_size as usize;
+        if size != 0 && self.doc_buffer[size - 1] < up_to {
+            // All docs in the buffer are under upTo
+            size
+        } else {
+            // Find the index of the first doc that is greater than or equal to upTo
+            find_next_geq(&self.doc_buffer, up_to, self.doc_buffer_upto as usize, size)
+        }
     }
 }
 
 impl DocIdSetIterator for BlockPostingsEnum {
+    /// The class identity `ScorerUtil.likelyImpactsEnum` compares with
+    /// `Lucene104PostingsFormat.getImpactsEnumImpl()` (`ScorerUtil.java:70`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -1525,11 +1677,12 @@ impl DocIdSetIterator for BlockPostingsEnum {
             }
             DeltaEncoding::Unary => {
                 // Java only asserts that the bit set has a next document
-                // (`Lucene104PostingsReader.java:916`); a corrupt block is an
-                // error here, not a panic.
-                let next = next_set_bit(&self.doc_bit_set, self.doc - self.doc_bit_set_base + 1)
-                    .ok_or_else(|| self.corrupt_bit_set_block())?;
-                self.doc = self.doc_bit_set_base + next;
+                // (`Lucene104PostingsReader.java:916`); without assertions it
+                // adds `NO_MORE_DOCS` to the base, as here.
+                let next = next_set_bit(&self.doc_bit_set, self.doc - self.doc_bit_set_base + 1);
+                debug_assert!(next.is_some());
+                let next = next.unwrap_or(NO_MORE_DOCS);
+                self.doc = self.doc_bit_set_base.wrapping_add(next);
             }
         }
 
@@ -1559,9 +1712,10 @@ impl DocIdSetIterator for BlockPostingsEnum {
             }
             DeltaEncoding::Unary => {
                 // Java only asserts this (`Lucene104PostingsReader.java:946`).
-                let next = next_set_bit(&self.doc_bit_set, target - self.doc_bit_set_base)
-                    .ok_or_else(|| self.corrupt_bit_set_block())?;
-                self.doc = self.doc_bit_set_base + next;
+                let next = next_set_bit(&self.doc_bit_set, target - self.doc_bit_set_base);
+                debug_assert!(next.is_some());
+                let next = next.unwrap_or(NO_MORE_DOCS);
+                self.doc = self.doc_bit_set_base.wrapping_add(next);
                 if self.needs_freq {
                     let word_index = next >> 6;
                     let word = self.doc_bit_set.get_bits()[word_index as usize]
@@ -1582,6 +1736,122 @@ impl DocIdSetIterator for BlockPostingsEnum {
 
     fn cost(&self) -> i64 {
         self.doc_freq as i64
+    }
+
+    /// Equivalent to `BlockPostingsEnum.intoBitSet(int, FixedBitSet, int)`
+    /// (`Lucene104PostingsReader.java:970-1033`): the current doc, then whole
+    /// blocks at a time, the docs of a packed block through the buffer, those
+    /// of a unary block by `FixedBitSet.orRange`; the enum is left on the
+    /// first doc at or above `up_to`.
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        if self.doc >= up_to {
+            return Ok(());
+        }
+
+        // Handle the current doc separately, it may be on the previous docBuffer.
+        bit_set.set((self.doc - offset) as usize);
+
+        loop {
+            if self.doc == self.level0_last_doc_id {
+                // refill
+                self.move_to_next_level0_block()?;
+            }
+
+            match self.encoding {
+                DeltaEncoding::Packed => {
+                    let start = self.doc_buffer_upto as usize;
+                    let end = self.compute_buffer_end_boundary(up_to);
+                    if end != 0 {
+                        self.buffer_into_bit_set(start, end, bit_set, offset);
+                        self.doc = self.doc_buffer[end - 1];
+                    }
+                    self.doc_buffer_upto = end as i32;
+                    if end != BS {
+                        // Either the block is a tail block, or the block did not fully match,
+                        // we're done.
+                        self.next_doc()?;
+                        debug_assert!(self.doc >= up_to);
+                        return Ok(());
+                    }
+                }
+                DeltaEncoding::Unary => {
+                    let source_from = if self.doc_buffer_upto == 0 {
+                        // start from beginning
+                        0
+                    } else {
+                        // start after the current doc
+                        self.doc - self.doc_bit_set_base + 1
+                    };
+
+                    let dest_from = self.doc_bit_set_base - offset + source_from;
+
+                    debug_assert!(self.level0_last_doc_id != NO_MORE_DOCS);
+                    let source_to = up_to.min(self.level0_last_doc_id + 1) - self.doc_bit_set_base;
+
+                    if source_to > source_from {
+                        FixedBitSet::or_range(
+                            &self.doc_bit_set,
+                            source_from as usize,
+                            bit_set,
+                            dest_from as usize,
+                            (source_to - source_from) as usize,
+                        );
+                    }
+                    if self.doc_bit_set_base + source_to <= self.level0_last_doc_id {
+                        // We stopped before the end of the current bit set, which means that
+                        // we're done. Set the current doc before returning.
+                        self.advance(self.doc_bit_set_base + source_to)?;
+                        return Ok(());
+                    }
+                    self.doc = self.level0_last_doc_id;
+                    self.doc_buffer_upto = BS as i32;
+                }
+            }
+        }
+    }
+
+    /// Equivalent to `BlockPostingsEnum.docIDRunEnd()`
+    /// (`Lucene104PostingsReader.java:1100-1128`): in a dense unary block,
+    /// the end of the level-1 block when that is dense too, else of the
+    /// level-0 block; otherwise `DocIdSetIterator.docIDRunEnd()`.
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        if self.encoding == DeltaEncoding::Unary {
+            // Note: this assumes that BLOCK_SIZE == 256, this bit of the code would need to be
+            // changed if the block size was changed.
+            debug_assert_eq!(BS as i64, 4 * 64);
+            let bits = self.doc_bit_set.get_bits();
+            let level0_is_dense =
+                (0..4).all(|i| bits[i].load(std::sync::atomic::Ordering::Relaxed) == u64::MAX);
+            if level0_is_dense {
+                let level0_doc_count_upto = self.doc_freq - self.doc_count_left;
+                let level1_is_dense = self.level1_last_doc_id - self.level0_last_doc_id
+                    == self.level1_doc_count_upto - level0_doc_count_upto;
+                if level1_is_dense {
+                    return Ok(self.level1_last_doc_id + 1);
+                }
+                return Ok(self.level0_last_doc_id + 1);
+            }
+        }
+
+        debug_assert!(self.doc != NO_MORE_DOCS);
+        Ok(self.doc + 1)
+    }
+}
+
+impl BlockPostingsEnum {
+    /// Equivalent to `BlockPostingsEnum.bufferIntoBitSet(int, int,
+    /// FixedBitSet, int)` (`Lucene104PostingsReader.java:1092-1098`).
+    fn buffer_into_bit_set(
+        &self,
+        start: usize,
+        end: usize,
+        bit_set: &mut FixedBitSet,
+        offset: i32,
+    ) {
+        // bitSet#set and `doc - offset` get auto-vectorized
+        for &doc in &self.doc_buffer[start..end] {
+            bit_set.set((doc - offset) as usize);
+        }
     }
 }
 
@@ -1632,10 +1902,10 @@ impl PostingsEnum for BlockPostingsEnum {
         }
         let upto = self.doc_buffer_upto;
         if !(1..=BS_I32).contains(&upto) {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "postings block position {} is outside the {BS}-document block",
                 upto - 1
-            )));
+            ))));
         }
         Ok(self.freq_buffer.borrow()[upto as usize - 1])
     }
@@ -1695,6 +1965,67 @@ impl PostingsEnum for BlockPostingsEnum {
         }
     }
 
+    /// Equivalent to `BlockPostingsEnum.nextPostings(int,
+    /// DocAndFloatFeatureBuffer)` (`Lucene104PostingsReader.java:1036-1080`):
+    /// without frequencies, the default batches of 16; otherwise the docs and
+    /// frequencies of the current block that are below `up_to`, after which
+    /// the enum advances to `up_to`.
+    fn next_postings(
+        &mut self,
+        up_to: i32,
+        buffer: &mut crate::index::postings_enum::DocAndFloatFeatureBuffer,
+    ) -> Result<()> {
+        debug_assert!(!self.needs_refilling);
+
+        if !self.needs_freq {
+            return crate::index::postings_enum::default_next_postings(self, up_to, buffer);
+        }
+
+        buffer.size = 0;
+        if self.doc >= up_to {
+            return Ok(());
+        }
+
+        // Only return docs from the current block
+        // +1 to make FixedBitSet#intoArray perform a bit faster, it uses a slower path if it doesn't
+        // have a free slot after the last element
+        buffer.grow_no_copy(BS + 1);
+        let up_to = i64::from(up_to).min(i64::from(self.level0_last_doc_id) + 1) as i32;
+
+        // Frequencies are decoded lazily, calling freq() makes sure that the freq block is decoded
+        self.freq()?;
+
+        let start = (self.doc_buffer_upto - 1) as usize;
+        match self.encoding {
+            DeltaEncoding::Packed => {
+                let end = self.compute_buffer_end_boundary(up_to);
+                buffer.size = end - start;
+                buffer.docs[..buffer.size].copy_from_slice(&self.doc_buffer[start..end]);
+            }
+            DeltaEncoding::Unary => {
+                buffer.size = self.doc_bit_set.into_array(
+                    (self.doc - self.doc_bit_set_base) as usize,
+                    (up_to - self.doc_bit_set_base) as usize,
+                    self.doc_bit_set_base,
+                    &mut buffer.docs,
+                );
+                // buffer's capacity is BLOCK_SIZE+1
+                debug_assert!(buffer.size < buffer.docs.len());
+            }
+        }
+
+        debug_assert!(buffer.size > 0);
+        {
+            let freqs = self.freq_buffer.borrow();
+            for i in 0..buffer.size {
+                buffer.features[i] = freqs[start + i] as f32;
+            }
+        }
+
+        self.advance(up_to)?;
+        Ok(())
+    }
+
     /// This enum answers with itself: it is the `true` arm of Java's
     /// `reuse instanceof BlockPostingsEnum` (`Lucene104PostingsReader.java:259`).
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -1713,6 +2044,7 @@ impl ImpactsSource for BlockPostingsEnum {
     }
 
     fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+        debug_assert!(self.needs_impacts);
         self.update_impacts_state();
         Ok(Box::new(self.impacts.clone()))
     }
@@ -1726,7 +2058,11 @@ struct BlockImpacts {
     level0_last_doc_id: i32,
     level1_last_doc_id: i32,
     level0_serialized_impacts: Vec<u8>,
+    /// `level0SerializedImpacts.length`.
+    level0_serialized_impacts_length: usize,
     level1_serialized_impacts: Vec<u8>,
+    /// `level1SerializedImpacts.length`.
+    level1_serialized_impacts_length: usize,
     impact_buffer: FreqAndNormBuffer,
 }
 
@@ -1762,13 +2098,26 @@ impl Impacts for BlockImpacts {
             return buffer;
         }
         if level == 0 && self.level0_last_doc_id != NO_MORE_DOCS {
-            read_impacts(&self.level0_serialized_impacts, &mut buffer)
-                .expect("impacts from memory");
+            // `scratch.reset(serialized.bytes, 0, serialized.length)`
+            // (`Lucene104PostingsReader.java:1398`): only the bytes the last
+            // read filled, never the stale tail of the buffer.
+            read_impacts(
+                &mut crate::store::ByteArrayDataInput::new(
+                    &self.level0_serialized_impacts[..self.level0_serialized_impacts_length],
+                ),
+                &mut buffer,
+            )
+            .expect("impacts from memory");
             return buffer;
         }
         if level == 1 {
-            read_impacts(&self.level1_serialized_impacts, &mut buffer)
-                .expect("impacts from memory");
+            read_impacts(
+                &mut crate::store::ByteArrayDataInput::new(
+                    &self.level1_serialized_impacts[..self.level1_serialized_impacts_length],
+                ),
+                &mut buffer,
+            )
+            .expect("impacts from memory");
             return buffer;
         }
         buffer.size = 1;
@@ -1930,9 +2279,8 @@ mod tests {
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new(vec![0], vec![1], vec![vec![]]);
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
@@ -1955,9 +2303,8 @@ mod tests {
             vec![vec![], vec![], vec![], vec![]],
         );
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
@@ -2000,9 +2347,8 @@ mod tests {
             ],
         );
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_ALL)
@@ -2052,9 +2398,8 @@ mod tests {
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new((0..256).collect(), vec![1; 256], vec![vec![]; 256]);
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
@@ -2102,7 +2447,7 @@ mod tests {
             let mut bytes = vec![0u8; length];
             dir.open_input(&name, &*crate::store::DEFAULT_IO_CONTEXT)
                 .unwrap()
-                .read_bytes(&mut bytes, 0, length)
+                .read_bytes(Some(&mut bytes), 0, length)
                 .unwrap();
             // Walk the first block's level-0 skip data the way
             // `doMoveToNextLevel0Block` reads it
@@ -2124,7 +2469,7 @@ mod tests {
             out.write_bytes(&bytes, 0, bytes.len()).unwrap();
             out.close().unwrap();
         };
-        let (mut reader, state) =
+        let (reader, state) =
             write_term_and_open_reader_with(&dir, &field_infos, field_info, &postings, corrupt)
                 .expect("reader builds");
 
@@ -2132,7 +2477,10 @@ mod tests {
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
             .expect("postings exist");
         match it.next_doc() {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "Index 40 out of bounds for length 32")
             }
             other => panic!("expected Java's index-out-of-bounds failure, got {other:?}"),
@@ -2148,9 +2496,8 @@ mod tests {
         let postings =
             TestPostingsEnum::new((0..8193).collect(), vec![1; 8193], vec![vec![]; 8193]);
 
-        let (mut reader, state) =
-            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
-                .expect("reader builds");
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
 
         let mut it = reader
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
@@ -2232,7 +2579,8 @@ mod close_family_tests {
         let before = log.closed().len();
         rewrite_file(&tracking, "_0.doc", |bytes| bytes[6] ^= 0xff);
         Lucene104PostingsReader::new(&read_state(&*dir, &info, &fis)).unwrap_err();
-        assert_eq!(log.closed()[before..], ["_0.doc"]);
+        // The metadata input is closed first, by its try-with-resources.
+        assert_eq!(log.closed()[before..], ["_0.psm", "_0.doc"]);
     }
 
     /// `close()` is `IOUtils.close(docIn, posIn, payIn)`
@@ -2244,7 +2592,7 @@ mod close_family_tests {
         let info = test_segment_info("_0", 10);
         let fis = positions();
         write_empty(&dir, &info, &fis);
-        let mut reader = Lucene104PostingsReader::new(&read_state(&*dir, &info, &fis)).unwrap();
+        let reader = Lucene104PostingsReader::new(&read_state(&*dir, &info, &fis)).unwrap();
         let before = log.closed().len();
         log.fail_close("_0.doc");
         let error = reader.close().unwrap_err();

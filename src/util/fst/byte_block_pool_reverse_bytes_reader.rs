@@ -77,7 +77,8 @@ impl DataInput for ByteBlockPoolReverseBytesReader<'_> {
         Ok(self.next())
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
         for i in 0..len {
             b[offset + i] = self.next();
         }

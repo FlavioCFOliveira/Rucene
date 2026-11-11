@@ -29,7 +29,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{FieldInfo, StoredFieldDataInput};
 
 /// Expert: a low-level means of accessing the stored field values in an index.
@@ -61,7 +61,7 @@ pub trait StoredFieldVisitor {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the declared length is
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the declared length is
     /// negative, and propagates any error raised while reading.
     fn binary_field_data_input(
         &mut self,
@@ -70,14 +70,14 @@ pub trait StoredFieldVisitor {
     ) -> Result<()> {
         let length = value.length();
         if length < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "stored binary field \"{}\" declares a negative length: {length}",
                 field_info.name
-            )));
+            ))));
         }
         let length = length as usize;
         let mut data = vec![0u8; length];
-        value.data_input().read_bytes(&mut data, 0, length)?;
+        value.data_input().read_bytes(Some(&mut data), 0, length)?;
         self.binary_field(field_info, &data)
     }
 
@@ -236,7 +236,9 @@ mod tests {
         ) -> Result<()> {
             let length = value.length() as usize;
             let mut buffer = vec![0u8; length];
-            value.data_input().read_bytes(&mut buffer, 0, length)?;
+            value
+                .data_input()
+                .read_bytes(Some(&mut buffer), 0, length)?;
             self.copied = buffer;
             Ok(())
         }
@@ -331,7 +333,16 @@ mod tests {
         let error = visitor
             .binary_field_data_input(&info, &mut value)
             .expect_err("a negative length is corrupt");
-        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]

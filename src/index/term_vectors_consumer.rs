@@ -296,7 +296,7 @@ impl TermVectorsConsumerPerField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field type asks for
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field type asks for
     /// term-vector positions, offsets or payloads without the prerequisite —
     /// payloads need positions, and all three need term vectors — or when a
     /// later instance of the field disagrees with the first.
@@ -328,24 +328,24 @@ impl TermVectorsConsumerPerField {
                 } else {
                     self.do_vector_payloads = false;
                     if field_type.store_term_vector_payloads() {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "cannot index term vector payloads without term vector positions (field=\"{name}\")"
                         )));
                     }
                 }
             } else {
                 if field_type.store_term_vector_offsets() {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "cannot index term vector offsets when term vectors are not indexed (field=\"{name}\")"
                     )));
                 }
                 if field_type.store_term_vector_positions() {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "cannot index term vector positions when term vectors are not indexed (field=\"{name}\")"
                     )));
                 }
                 if field_type.store_term_vector_payloads() {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "cannot index term vector payloads when term vectors are not indexed (field=\"{name}\")"
                     )));
                 }
@@ -385,7 +385,7 @@ impl TermVectorsConsumerPerField {
         if expected == actual {
             return Ok(());
         }
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "all instances of a given field name must have the same term vectors settings \
              ({setting} changed for field=\"{name}\")"
         )))
@@ -403,7 +403,7 @@ impl TermVectorsConsumerPerField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a custom term frequency is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a custom term frequency is
     /// combined with term-vector positions or offsets, and propagates
     /// pool-overflow errors.
     pub fn add(
@@ -429,7 +429,7 @@ impl TermVectorsConsumerPerField {
                 // Java lets this `int` overflow silently; the document would
                 // need more than `Integer.MAX_VALUE` occurrences of one term,
                 // which `FieldInvertState.length` rejects first.
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "too many tokens for field \"{}\"",
                     self.field_info.name
                 ))
@@ -448,13 +448,13 @@ impl TermVectorsConsumerPerField {
         let freq = token.term_freq;
         if freq != 1 {
             if self.do_vector_positions {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "field \"{}\": cannot index term vector positions while using custom TermFrequencyAttribute",
                     self.field_info.name
                 )));
             }
             if self.do_vector_offsets {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "field \"{}\": cannot index term vector offsets while using custom TermFrequencyAttribute",
                     self.field_info.name
                 )));
@@ -587,6 +587,7 @@ impl TermVectorsConsumerPerField {
         self.do_vectors = false;
 
         let num_postings = self.base.num_terms();
+        debug_assert!(num_postings >= 0);
         // `termsHashPerField.sortTerms(); final int[] termIDs =
         // getSortedTermIDs();` (`TermVectorsConsumerPerField.java:98-100`),
         // of which the first `numPostings` are read.
@@ -906,7 +907,7 @@ impl TermVectorsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the consumer was aborted, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the consumer was aborted, and
     /// propagates any error raised while creating the segment's term-vectors
     /// files.
     pub fn init_term_vectors_writer(&mut self) -> Result<()> {
@@ -975,7 +976,7 @@ impl TermVectorsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when `doc_id` does not follow the
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when `doc_id` does not follow the
     /// document last written — Lucene asserts `lastDocID == docID` — and
     /// propagates any error raised by the codec writer.
     pub fn finish_document(&mut self, doc_id: i32, term_pool: &ByteBlockPool) -> Result<()> {
@@ -1013,6 +1014,10 @@ impl TermVectorsConsumer {
         })?;
 
         Self::fill(writer.as_mut(), last_doc_id, doc_id)?;
+        debug_assert!(
+            *last_doc_id == doc_id,
+            "lastDocID={last_doc_id} docID={doc_id}"
+        );
         if *last_doc_id != doc_id {
             return Err(LuceneError::illegal_state(format!(
                 "term vectors must be written in increasing doc order: lastDocID={last_doc_id} docID={doc_id}"
@@ -1069,6 +1074,7 @@ impl TermVectorsConsumer {
         let Some(mut writer) = self.writer.take() else {
             return Ok(());
         };
+        debug_assert!(max_doc > 0);
         let filled = Self::fill(writer.as_mut(), &mut self.last_doc_id, max_doc);
         let finished = filled.and_then(|()| writer.finish(max_doc));
         crate::util::IOUtils::close([Some(|| writer.close())])?;
@@ -1083,7 +1089,7 @@ impl TermVectorsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns the [`LuceneError::AssertionError`](crate::error::LuceneError::AssertionError)
+    /// Returns the [`LuceneErrorKind::AssertionError`](crate::error::LuceneErrorKind::AssertionError)
     /// closing the writer raised: the `Error` Java's
     /// `closeWhileHandlingException` rethrows, unchecked, through the callers'
     /// `finally` blocks up to `DocumentsWriterPerThread.abort()`, which
@@ -1106,6 +1112,7 @@ impl TermVectorsConsumer {
 
 #[cfg(test)]
 mod tests {
+    use crate::error::LuceneErrorKind;
     use std::collections::HashMap;
     use std::sync::atomic::Ordering;
 
@@ -1220,10 +1227,14 @@ mod tests {
             Ok(())
         }
         fn finish(&mut self, _num_docs: i32) -> Result<()> {
-            Err(LuceneError::Other("finish blew up".to_string()))
+            Err(LuceneError::from(LuceneErrorKind::Other(
+                "finish blew up".to_string(),
+            )))
         }
         fn close(&mut self) -> Result<()> {
-            Err(LuceneError::Other("close blew up".to_string()))
+            Err(LuceneError::from(LuceneErrorKind::Other(
+                "close blew up".to_string(),
+            )))
         }
     }
 
@@ -1243,7 +1254,7 @@ mod tests {
             _field_infos: &crate::index::FieldInfos,
             _context: &dyn crate::store::IOContext,
         ) -> Result<Box<dyn crate::codecs::term_vectors::TermVectorsReader>> {
-            Err(LuceneError::UnsupportedOperation(
+            Err(LuceneError::unsupported_operation(
                 "the failing format does not read".to_string(),
             ))
         }
@@ -1309,7 +1320,10 @@ mod tests {
         );
     }
 
+    /// `TermVectorsConsumer.finishDocument` asserts `lastDocID == docState.docID`
+    /// (`TermVectorsConsumer.java:137`): a debug build fails it.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "lastDocID=5 docID=2"))]
     fn a_document_written_out_of_order_is_rejected() {
         let (mut consumer, _tracking) = consumer();
         let term_pool = ByteBlockPool::new(Arc::new(AtomicI64::new(0)));
@@ -1321,7 +1335,13 @@ mod tests {
             .finish_document(2, &term_pool)
             .expect_err("doc 2 was already covered by the back-fill");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -1343,7 +1363,13 @@ mod tests {
             .init_term_vectors_writer()
             .expect_err("a discarded segment must not grow a second set of files");
         assert!(
-            matches!(error, LuceneError::AlreadyClosed { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -1555,7 +1581,9 @@ mod tests {
         assert_eq!(input.read_v_int().expect("code"), 1, "(0 << 1) | 1");
         assert_eq!(input.read_v_int().expect("payload length"), 3);
         let mut bytes = [0u8; 3];
-        input.read_bytes(&mut bytes, 0, 3).expect("payload bytes");
+        input
+            .read_bytes(Some(&mut bytes), 0, 3)
+            .expect("payload bytes");
         assert_eq!(&bytes, b"pay");
         assert_eq!(input.read_v_int().expect("code"), 14, "(7 - 0) << 1");
         assert!(input.eof());
@@ -1646,7 +1674,7 @@ mod tests {
                 .add(&mut streams, &mut ints, &state, text_start, &custom)
                 .expect_err("a custom frequency has no positions to go with");
             assert!(
-                matches!(&error, LuceneError::IllegalArgument(message)
+                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                     if message.contains(&format!("cannot index term vector {expected}"))),
                 "{error:?}"
             );

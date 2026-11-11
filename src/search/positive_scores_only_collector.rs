@@ -34,6 +34,16 @@ impl<C: Collector> PositiveScoresOnlyCollector<C> {
             inner: FilterCollector::new(inner),
         }
     }
+
+    /// Unwraps this collector, returning the wrapped one.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, where the caller keeps
+    /// its own reference to the wrapped collector (for example to call
+    /// `topDocs()` after collection, as `TestPositiveScoresOnlyCollector`
+    /// does); a Rust wrapper owns the collector it wraps, so it hands it back.
+    pub fn into_inner(self) -> C {
+        self.inner.into_inner()
+    }
 }
 
 impl<C: Collector> Collector for PositiveScoresOnlyCollector<C> {

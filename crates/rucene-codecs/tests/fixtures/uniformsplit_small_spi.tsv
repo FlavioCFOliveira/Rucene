@@ -1,0 +1,5 @@
+# lookup	result
+getName	UniformSplit
+toString	PostingsFormat(name=UniformSplit)
+forName.getClass	org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat
+forName.toString	PostingsFormat(name=UniformSplit)

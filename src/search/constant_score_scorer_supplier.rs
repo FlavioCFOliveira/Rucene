@@ -80,6 +80,21 @@ impl<I: ConstantScoreIteratorSupplier> ConstantScoreScorerSupplier<I> {
     pub fn max_doc(&self) -> i32 {
         self.max_doc
     }
+
+    /// Returns an iterator that matches the documents of this supplier,
+    /// given the cost of the leading clause.
+    ///
+    /// Equivalent to the public abstract
+    /// `ConstantScoreScorerSupplier.iterator(long leadCost)`
+    /// (`ConstantScoreScorerSupplier.java:64`); Rucene's iterator is the
+    /// [`ScorerIterator`] the inner supplier returns.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the inner supplier's errors.
+    pub fn iterator(&mut self, lead_cost: i64) -> Result<ScorerIterator> {
+        self.inner.iterator(lead_cost)
+    }
 }
 
 /// A [`ConstantScoreIteratorSupplier`] that hands out one already-built
@@ -92,7 +107,7 @@ impl<I: ConstantScoreIteratorSupplier> ConstantScoreScorerSupplier<I> {
 /// **Divergence from Lucene 10.5.0.** Java's lambda captures the iterator and
 /// returns the same reference on every call. Rust cannot hand out an owned
 /// iterator twice, so a second call fails with
-/// [`LuceneError::IllegalState`] — turning `ScorerSupplier`'s documented
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — turning `ScorerSupplier`'s documented
 /// "must be called at most once" contract into a reported one. The cost is
 /// captured at construction for the same reason.
 #[derive(Debug)]
@@ -134,7 +149,7 @@ impl ConstantScoreScorerSupplier<SingleIteratorSupplier> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `max_doc` is negative,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `max_doc` is negative,
     /// which is what `DocIdSetIterator.all(int)` rejects.
     pub fn match_all(score: f32, score_mode: ScoreMode, max_doc: i32) -> Result<Self> {
         let iterator: Box<dyn DocIdSetIterator> = Box::new(doc_id_set_iterator::all(max_doc)?);
@@ -166,7 +181,7 @@ impl ConstantScoreScorerSupplier<SingleIteratorSupplier> {
     }
 }
 
-impl<I: ConstantScoreIteratorSupplier> ScorerSupplier for ConstantScoreScorerSupplier<I> {
+impl<I: ConstantScoreIteratorSupplier + 'static> ScorerSupplier for ConstantScoreScorerSupplier<I> {
     fn cost(&self) -> i64 {
         self.inner.cost()
     }
@@ -227,5 +242,12 @@ impl<I: ConstantScoreIteratorSupplier> ScorerSupplier for ConstantScoreScorerSup
                 ),
             };
         Ok(Box::new(DefaultBulkScorer::new(scorer)))
+    }
+
+    /// Opts in to the `instanceof`/cast test: Lucene's
+    /// `TestDocValuesQueries` casts a supplier to `ConstantScoreScorerSupplier`
+    /// to call its `iterator(long)`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }

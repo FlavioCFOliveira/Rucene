@@ -264,13 +264,17 @@ impl SegmentTermsEnumFrame {
 
         let code = terms_in.read_v_int()?;
         self.ent_count = code >> 1;
-        if self.ent_count <= 0 {
-            return Err(LuceneError::corrupt_index(
-                format!("invalid entry count: {}", self.ent_count),
-                "terms dictionary",
-            ));
-        }
+        debug_assert!(self.ent_count > 0);
         self.is_last_in_floor = code & 1 != 0;
+
+        debug_assert!(
+            self.node.is_none() || (self.is_last_in_floor || self.is_floor),
+            "fp={} node={:?} isFloor={} isLastInFloor={}",
+            self.fp,
+            self.node,
+            self.is_floor,
+            self.is_last_in_floor
+        );
 
         let start_suffix_fp = terms_in.file_pointer();
         let code_l = terms_in.read_v_long()?;
@@ -296,7 +300,7 @@ impl SegmentTermsEnumFrame {
             let b = terms_in.read_byte()?;
             self.suffix_length_bytes[..n].fill(b);
         } else {
-            terms_in.read_bytes(&mut self.suffix_length_bytes, 0, n)?;
+            terms_in.read_bytes(Some(&mut self.suffix_length_bytes), 0, n)?;
         }
         self.suffix_lengths_pos = 0;
         self.suffix_lengths_limit = n;
@@ -306,7 +310,7 @@ impl SegmentTermsEnumFrame {
         if self.stat_bytes.len() < num_stat_bytes {
             self.stat_bytes.resize(num_stat_bytes, 0);
         }
-        terms_in.read_bytes(&mut self.stat_bytes, 0, num_stat_bytes)?;
+        terms_in.read_bytes(Some(&mut self.stat_bytes), 0, num_stat_bytes)?;
         self.stats_pos = 0;
         self.stats_limit = num_stat_bytes;
         self.stats_singleton_run_length = 0;
@@ -320,7 +324,7 @@ impl SegmentTermsEnumFrame {
         if self.bytes.len() < num_meta_bytes {
             self.bytes.resize(num_meta_bytes, 0);
         }
-        terms_in.read_bytes(&mut self.bytes, 0, num_meta_bytes)?;
+        terms_in.read_bytes(Some(&mut self.bytes), 0, num_meta_bytes)?;
         self.bytes_pos = 0;
         self.bytes_limit = num_meta_bytes;
 
@@ -332,6 +336,12 @@ impl SegmentTermsEnumFrame {
     ///
     /// Equivalent to `SegmentTermsEnumFrame.loadNextFloorBlock`.
     pub fn load_next_floor_block(&mut self, terms_in: &mut dyn IndexInput) -> Result<()> {
+        debug_assert!(
+            self.node.is_none() || self.is_floor,
+            "node={:?} isFloor={}",
+            self.node,
+            self.is_floor
+        );
         self.fp = self.fp_end;
         self.next_ent = -1;
         self.load_block(terms_in)
@@ -347,6 +357,7 @@ impl SegmentTermsEnumFrame {
         if self.is_floor {
             let floor_data = std::mem::take(&mut self.floor_data);
             self.set_floor_data(floor_data)?;
+            debug_assert!(self.num_follow_floor_blocks > 0);
         }
         Ok(())
     }
@@ -362,6 +373,8 @@ impl SegmentTermsEnumFrame {
         if target_label < self.next_floor_label {
             return Ok(());
         }
+
+        debug_assert!(self.num_follow_floor_blocks != 0);
 
         // The reader borrows `floor_data`, so the fields it writes are taken
         // apart from it here; Java simply aliases the frame's own array.
@@ -407,32 +420,38 @@ impl SegmentTermsEnumFrame {
     ///
     /// Equivalent to `SegmentTermsEnumFrame.scanToSubBlock`.
     pub fn scan_to_sub_block(&mut self, sub_fp: i64, term: &mut Vec<u8>) -> Result<()> {
+        debug_assert!(!self.is_leaf_block);
         if self.last_sub_fp == sub_fp {
             return Ok(());
         }
-        while self.next_ent < self.ent_count {
+        debug_assert!(sub_fp < self.fp, "fp={} subFP={sub_fp}", self.fp);
+        loop {
+            debug_assert!(self.next_ent < self.ent_count);
             self.next_non_leaf_entry(term)?;
             if self.last_sub_fp == sub_fp {
                 return Ok(());
             }
         }
-        Err(LuceneError::corrupt_index(
-            format!("sub-block at fp {sub_fp} was not found in its parent block"),
-            "terms dictionary",
-        ))
     }
 
     /// Reads the next entry of a leaf block into `term`.
     ///
     /// Equivalent to `SegmentTermsEnumFrame.nextLeaf`.
     pub fn next_leaf(&mut self, term: &mut Vec<u8>) -> Result<()> {
+        debug_assert!(
+            self.next_ent != -1 && self.next_ent < self.ent_count,
+            "nextEnt={} entCount={} fp={}",
+            self.next_ent,
+            self.ent_count,
+            self.fp
+        );
         self.next_ent += 1;
         self.suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
         self.start_byte_pos = self.suffixes_pos;
         term.truncate(self.prefix_length);
         term.resize(self.prefix_length + self.suffix_length, 0);
         let (prefix_length, suffix_length) = (self.prefix_length, self.suffix_length);
-        self.with_suffixes(|r| r.read_bytes(&mut term[..], prefix_length, suffix_length))?;
+        self.with_suffixes(|r| r.read_bytes(Some(&mut term[..]), prefix_length, suffix_length))?;
         Ok(())
     }
 
@@ -442,6 +461,13 @@ impl SegmentTermsEnumFrame {
     /// Equivalent to the body of `SegmentTermsEnumFrame.nextNonLeaf`, without
     /// its floor-block loop, which the cursor drives.
     pub fn next_non_leaf_entry(&mut self, term: &mut Vec<u8>) -> Result<bool> {
+        debug_assert!(
+            self.next_ent != -1 && self.next_ent < self.ent_count,
+            "nextEnt={} entCount={} fp={}",
+            self.next_ent,
+            self.ent_count,
+            self.fp
+        );
         self.next_ent += 1;
         let code = self.with_suffix_lengths(|r| r.read_v_int())?;
         self.suffix_length = ((code as u32) >> 1) as usize;
@@ -449,7 +475,7 @@ impl SegmentTermsEnumFrame {
         term.truncate(self.prefix_length);
         term.resize(self.prefix_length + self.suffix_length, 0);
         let (prefix_length, suffix_length) = (self.prefix_length, self.suffix_length);
-        self.with_suffixes(|r| r.read_bytes(&mut term[..], prefix_length, suffix_length))?;
+        self.with_suffixes(|r| r.read_bytes(Some(&mut term[..]), prefix_length, suffix_length))?;
 
         if code & 1 == 0 {
             // A term.
@@ -766,6 +792,7 @@ impl SegmentTermsEnumFrame {
     ) -> Result<()> {
         let limit = self.get_term_block_ord();
         let mut absolute = self.meta_data_upto == 0;
+        debug_assert!(limit > 0);
         while self.meta_data_upto < limit {
             if self.stats_singleton_run_length > 0 {
                 self.state.doc_freq = 1;
@@ -845,6 +872,11 @@ pub struct SegmentTermsEnum {
     trie: TrieReader,
     /// The frame stack. Frame `n` holds a block whose prefix is `n` bytes deep.
     stack: Vec<SegmentTermsEnumFrame>,
+    /// Java's `staticFrame` (ord `-1`): the current frame while no seek state
+    /// is held ([`started`](Self::started) is `false`), which
+    /// `seekExact(BytesRef, TermState)` fills from the given state
+    /// (`SegmentTermsEnum.java:40, 63, 1016-1035`).
+    static_frame: SegmentTermsEnumFrame,
     /// Index of the frame the cursor is positioned in.
     current: usize,
     /// The trie node reached at each stack depth.
@@ -855,7 +887,8 @@ pub struct SegmentTermsEnum {
     term_exists: bool,
     /// Whether the cursor has run past the last term.
     eof: bool,
-    /// Whether the first frame has been pushed.
+    /// Whether the current frame is a frame of the stack: Java's
+    /// `currentFrame != staticFrame`.
     started: bool,
     /// How long a prefix of the current term the last seek left valid in the
     /// index; a later seek can re-use the frames covering it.
@@ -887,6 +920,7 @@ impl SegmentTermsEnum {
             terms_in: None,
             trie,
             stack: Vec::new(),
+            static_frame: SegmentTermsEnumFrame::new(0, BlockTermState::default()),
             current: 0,
             nodes: Vec::new(),
             term: Vec::new(),
@@ -945,6 +979,7 @@ impl SegmentTermsEnum {
             self.stack
                 .push(SegmentTermsEnumFrame::new(self.stack.len(), state));
         }
+        debug_assert!(self.stack[ord].ord == ord);
         Ok(())
     }
 
@@ -969,6 +1004,7 @@ impl SegmentTermsEnum {
             if frame.ord as i64 > self.target_before_current_length {
                 frame.rewind()?;
             }
+            debug_assert!(length == frame.prefix_length);
         } else {
             frame.next_ent = -1;
             frame.prefix_length = length;
@@ -1090,6 +1126,13 @@ impl SegmentTermsEnum {
                 return Ok(false);
             }
             if self.stack[self.current].next_ent == self.stack[self.current].ent_count {
+                let frame = &self.stack[self.current];
+                debug_assert!(
+                    frame.node.is_none() || (frame.is_floor && !frame.is_last_in_floor),
+                    "isFloor={} isLastInFloor={}",
+                    frame.is_floor,
+                    frame.is_last_in_floor
+                );
                 self.init_index_input()?;
                 let terms_in = Self::index_input(&mut self.terms_in);
                 self.stack[self.current].load_next_floor_block(terms_in)?;
@@ -1196,7 +1239,12 @@ impl SegmentTermsEnum {
                     break;
                 }
                 node = self.nodes[1 + target_upto];
-                debug_assert_eq!(node.label, i32::from(target[target_upto]));
+                debug_assert!(
+                    node.label == i32::from(target[target_upto]),
+                    "node.label={} targetLabel={}",
+                    java_label_char(node.label),
+                    char::from(target[target_upto])
+                );
                 if node.has_output() {
                     last_frame_ord += 1;
                 }
@@ -1367,6 +1415,7 @@ impl SegmentTermsEnum {
         *self.get_node(0) = root;
 
         // The empty prefix must have a block in the index.
+        debug_assert!(root.has_output());
         self.push_frame_from_node(root, 0)?;
         self.stack[self.current].fp_orig = self.stack[self.current].fp;
         self.load_current_block()?;
@@ -1390,7 +1439,9 @@ impl SegmentTermsEnum {
                 if self.stack[self.current].ord == 0 {
                     break 'all_terms;
                 }
+                let last_fp = self.stack[self.current].fp_orig;
                 self.current -= 1;
+                debug_assert!(last_fp == self.stack[self.current].last_sub_fp);
             }
 
             loop {
@@ -1438,7 +1489,7 @@ impl SegmentTermsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a frame no longer matches the
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a frame no longer matches the
     /// index, and whatever error writing to `out` or reading the index raised.
     #[allow(dead_code)]
     pub fn print_seek_state(&mut self, out: &mut dyn std::io::Write) -> Result<()> {
@@ -1510,20 +1561,22 @@ impl SegmentTermsEnum {
             let frame_prefix_length = f.prefix_length;
             let is_current = ord == self.current;
 
+            debug_assert!(
+                !is_seek_frame || frame_node.is_some(),
+                "isSeekFrame={is_seek_frame} f.node={frame_node:?}"
+            );
             if frame_prefix_length > 0 && is_seek_frame {
-                let node = frame_node.ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "seek state is broken: seek frame {ord} has no index node"
-                    ))
-                })?;
+                // Java dereferences the null node (an NPE) when assertions are off.
+                let node = frame_node.expect("seek state is broken: seek frame has no index node");
                 if node.label != i32::from(self.term[frame_prefix_length - 1]) {
                     writeln!(
                         out,
                         "      broken seek state: node.label={} vs term byte={}",
-                        node.label,
-                        self.term[frame_prefix_length - 1]
+                        java_label_char(node.label),
+                        char::from(self.term[frame_prefix_length - 1])
                     )?;
-                    return Err(LuceneError::illegal_state(
+                    return Err(LuceneError::unchecked(
+                        "java.lang.RuntimeException",
                         "seek state is broken".to_string(),
                     ));
                 }
@@ -1534,7 +1587,8 @@ impl SegmentTermsEnum {
                 match self.trie.lookup_child(i32::from(label), &node)? {
                     Some(child) => node = child,
                     None => {
-                        return Err(LuceneError::illegal_state(
+                        return Err(LuceneError::unchecked(
+                            "java.lang.RuntimeException",
                             "seek state is broken, prefix not exist in index".to_string(),
                         ))
                     }
@@ -1542,7 +1596,8 @@ impl SegmentTermsEnum {
             }
             if !node.has_output() {
                 writeln!(out, "      broken seek state: prefix is not final in index")?;
-                return Err(LuceneError::illegal_state(
+                return Err(LuceneError::unchecked(
+                    "java.lang.RuntimeException",
                     "seek state is broken".to_string(),
                 ));
             } else if is_seek_frame
@@ -1561,7 +1616,8 @@ impl SegmentTermsEnum {
                     frame_has_terms,
                     frame_is_floor
                 )?;
-                return Err(LuceneError::illegal_state(
+                return Err(LuceneError::unchecked(
+                    "java.lang.RuntimeException",
                     "seek state is broken".to_string(),
                 ));
             }
@@ -1610,7 +1666,27 @@ impl SegmentTermsEnum {
     fn decode_meta_data(&mut self) -> Result<()> {
         let field_info = self.field.field_info().clone();
         let reader = Arc::clone(&self.field.shared().postings_reader);
-        self.stack[self.current].decode_meta_data(&field_info, reader.as_ref())
+        self.current_frame_mut()
+            .decode_meta_data(&field_info, reader.as_ref())
+    }
+
+    /// Java's `currentFrame`: the frame of the stack the cursor stands in, or
+    /// [`static_frame`](Self::static_frame) while no seek state is held.
+    fn current_frame(&self) -> &SegmentTermsEnumFrame {
+        if self.started {
+            &self.stack[self.current]
+        } else {
+            &self.static_frame
+        }
+    }
+
+    /// The mutable form of [`current_frame`](Self::current_frame).
+    fn current_frame_mut(&mut self) -> &mut SegmentTermsEnumFrame {
+        if self.started {
+            &mut self.stack[self.current]
+        } else {
+            &mut self.static_frame
+        }
     }
 }
 
@@ -1634,12 +1710,25 @@ impl TermsEnum for SegmentTermsEnum {
     }
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
-        if !self.started {
+        if self.terms_in.is_none() {
+            // Fresh TermsEnum; seek to first term.
             self.start()?;
         }
-        self.target_before_current_length = self.current as i64;
-        if self.eof {
-            return Ok(None);
+        self.target_before_current_length = if self.started {
+            self.current as i64
+        } else {
+            -1
+        };
+        debug_assert!(!self.eof);
+        if !self.started {
+            // If seek was previously called and the term was cached, or
+            // seek(TermState) was called, usually caller is just going to pull
+            // a D/&PEnum or get docFreq, etc. But, if they then call next(),
+            // this method catches up all internal state so next() works
+            // properly (`SegmentTermsEnum.java:900-912`).
+            let term = BytesRef::new(self.term.clone());
+            let result = self.seek_exact(&term)?;
+            debug_assert!(result);
         }
 
         loop {
@@ -1653,7 +1742,7 @@ impl TermsEnum for SegmentTermsEnum {
                     break;
                 }
                 if self.stack[self.current].ord == 0 {
-                    self.set_eof();
+                    debug_assert!(self.set_eof());
                     self.term.clear();
                     self.valid_index_prefix = 0;
                     self.stack[self.current].rewind()?;
@@ -1761,7 +1850,12 @@ impl TermsEnum for SegmentTermsEnum {
                     break;
                 }
                 node = self.nodes[1 + target_upto];
-                debug_assert_eq!(node.label, i32::from(target[target_upto]));
+                debug_assert!(
+                    node.label == i32::from(target[target_upto]),
+                    "node.label={} targetLabel={}",
+                    java_label_char(node.label),
+                    char::from(target[target_upto])
+                );
                 if node.has_output() {
                     last_frame_ord += 1;
                 }
@@ -1837,17 +1931,23 @@ impl TermsEnum for SegmentTermsEnum {
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the block-tree terms dictionary does not support seeking by ordinal".to_string(),
         ))
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Ok(BytesRef::new(self.term.clone()))
+    fn term(&self) -> Result<Option<BytesRef>> {
+        debug_assert!(!self.eof);
+        Ok(Some(BytesRef::new(self.term.clone())))
+    }
+
+    /// The `term` buffer `term()` returns, read without its `assert !eof`.
+    fn term_buffer(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(BytesRef::new(self.term.clone())))
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the block-tree terms dictionary does not track term ordinals".to_string(),
         ))
     }
@@ -1858,19 +1958,20 @@ impl TermsEnum for SegmentTermsEnum {
         // built with, which is what made every term look absent.
         debug_assert!(!self.eof);
         self.decode_meta_data()?;
-        Ok(self.stack[self.current].state.doc_freq)
+        Ok(self.current_frame().state.doc_freq)
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
         debug_assert!(!self.eof);
         self.decode_meta_data()?;
-        Ok(self.stack[self.current].state.total_term_freq)
+        Ok(self.current_frame().state.total_term_freq)
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        debug_assert!(!self.eof);
         self.decode_meta_data()?;
         let field_info = self.field.field_info().clone();
-        let state = self.stack[self.current].state;
+        let state = self.current_frame().state;
         let reader = Arc::clone(&self.field.shared().postings_reader);
         reader.impacts(&field_info, &state, flags)
     }
@@ -1879,16 +1980,48 @@ impl TermsEnum for SegmentTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        debug_assert!(!self.eof);
         self.decode_meta_data()?;
         let field_info = self.field.field_info().clone();
-        let state = self.stack[self.current].state;
+        let state = self.current_frame().state;
         let reader = Arc::clone(&self.field.shared().postings_reader);
-        reader.postings(&field_info, &state, reuse, flags)
+        Ok(Some(reader.postings(&field_info, &state, reuse, flags)?))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        debug_assert!(!self.eof);
         self.decode_meta_data()?;
-        Ok(Box::new(self.stack[self.current].state.clone()))
+        Ok(Box::new(self.current_frame().state))
     }
+
+    /// Equivalent to `SegmentTermsEnum.seekExact(BytesRef, TermState)`
+    /// (`SegmentTermsEnum.java:1016-1035`): unless already on `target`, the
+    /// cursor drops its seek state, takes `state` into the static frame and
+    /// `target` as its term, with every term of the state's block decoded, so
+    /// that the statistics and postings come from `state` without reading the
+    /// terms file; a later [`next`](TermsEnum::next) re-seeks to the term.
+    fn seek_term_state(&mut self, target: &BytesRef, state: &dyn TermState) -> Result<()> {
+        debug_assert!(self.clear_eof());
+        self.clear_eof();
+        if target.slice() != self.term.as_slice() || !self.term_exists {
+            debug_assert!(state.as_any().downcast_ref::<BlockTermState>().is_some());
+            self.started = false;
+            TermState::copy_from(&mut self.static_frame.state, state);
+            self.term.clear();
+            self.term.extend_from_slice(target.slice());
+            self.static_frame.meta_data_upto = self.static_frame.get_term_block_ord();
+            debug_assert!(self.static_frame.meta_data_upto > 0);
+            self.valid_index_prefix = 0;
+        }
+        Ok(())
+    }
+}
+
+/// Java's `(char) label` of a trie node label, as `SegmentTermsEnum.java`
+/// prints it (lines 315, 574, 827). Labels are byte values (`TrieReader.java`
+/// lines 198, 223 store `targetLabel`, a byte `& 0xFF`; the root keeps `0`),
+/// so the `char` is the Latin-1 character of that byte.
+fn java_label_char(label: i32) -> char {
+    char::from(label as u8)
 }

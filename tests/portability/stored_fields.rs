@@ -648,7 +648,7 @@ impl Mode {
             // Not registered under a second name: the codec is only ever used
             // directly here, and its SPI name must stay "Lucene104".
             Self::BestCompression => {
-                Arc::new(Lucene104Codec::with_mode(CodecMode::BestCompression))
+                Arc::new(Lucene104Codec::with_mode(Some(CodecMode::BestCompression)).unwrap())
             }
         }
     }
@@ -661,7 +661,7 @@ fn ensure_codec() -> Arc<dyn Codec> {
 
 /// The field type of `StoredFieldsFixture`'s indexed-and-stored field.
 fn indexed_and_stored_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_stored(true).expect("stored");
     field_type.set_tokenized(true).expect("tokenized");
     field_type.set_omit_norms(true).expect("omit norms");
@@ -744,7 +744,7 @@ fn write_with_rucene(
     let codec = mode.codec();
     let analyzer: Arc<dyn rucene::analysis::Analyzer> =
         Arc::new(rucene::analysis::StandardAnalyzer::new());
-    let mut live = LiveIndexWriterConfig::new(analyzer);
+    let live = LiveIndexWriterConfig::new(Some(analyzer));
     live.set_codec(Arc::clone(&codec));
     let live = Arc::new(live);
 
@@ -782,7 +782,7 @@ fn write_with_rucene(
     for (doc_id, script) in scripts.iter().enumerate() {
         let document = build_document(script);
         chain
-            .process_document(doc_id as i32, &document, true, &mut field_infos)
+            .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
             .expect("process document");
     }
     let finished = field_infos.finish().expect("field infos");

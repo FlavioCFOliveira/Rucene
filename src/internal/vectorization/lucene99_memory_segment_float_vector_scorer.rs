@@ -167,7 +167,7 @@ impl Lucene99MemorySegmentFloatVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the input is
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the input is
     /// shorter than the vector data it is supposed to hold, and propagates any
     /// error raised while slicing the input.
     pub fn create(
@@ -205,7 +205,7 @@ impl Lucene99MemorySegmentFloatVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`], with the message
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`], with the message
     /// Lucene's `IllegalArgumentException` carries, when the input is too
     /// short.
     ///
@@ -227,7 +227,7 @@ impl Lucene99MemorySegmentFloatVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] with Lucene's message.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] with Lucene's message.
     ///
     /// Equivalent to
     /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentFloatVectorScorer#checkOrdinal`.

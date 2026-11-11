@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 use crate::util::{IntsRef, RamUsageEstimator};
 
@@ -64,7 +64,12 @@ impl Outputs for IntSequenceOutputs {
         } else if inc.length == output.length {
             self.no_output()
         } else {
-            debug_assert!(inc.length < output.length);
+            debug_assert!(
+                inc.length < output.length,
+                "inc.length={} vs output.length={}",
+                inc.length,
+                output.length
+            );
             // `new IntsRef(output.ints, output.offset + inc.length,
             // output.length - inc.length)` (`IntSequenceOutputs.java:87`).
             IntsRef::with_offset_length(
@@ -101,8 +106,11 @@ impl Outputs for IntSequenceOutputs {
         if len == 0 {
             Ok(self.no_output())
         } else {
-            let len = usize::try_from(len)
-                .map_err(|_| LuceneError::CorruptIndex(format!("invalid output length {len}")))?;
+            let len = usize::try_from(len).map_err(|_| {
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "invalid output length {len}"
+                )))
+            })?;
             let mut ints = Vec::with_capacity(len);
             for _ in 0..len {
                 ints.push(input.read_v_int()?);

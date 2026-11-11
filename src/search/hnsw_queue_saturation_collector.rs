@@ -251,7 +251,7 @@ mod patience_threshold_tests {
     use std::sync::{Arc, Mutex};
 
     use super::HnswQueueSaturationState;
-    use crate::error::LuceneError;
+    use crate::error::{LuceneError, LuceneErrorKind};
     use crate::search::knn::Patience;
 
     /// `KnnSearchStrategy.Patience(collector, filteredSearchThreshold)` calls
@@ -262,7 +262,10 @@ mod patience_threshold_tests {
         let state = || Arc::new(Mutex::new(HnswQueueSaturationState::new(0.995, 7)));
         for threshold in [-1, 101] {
             match Patience::new(state(), threshold) {
-                Err(LuceneError::IllegalArgument(message)) => {
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    ..
+                }) => {
                     assert_eq!(message, "filteredSearchThreshold must be >= 0 and <= 100")
                 }
                 other => panic!("threshold {threshold}: expected the Hnsw refusal, got {other:?}"),

@@ -33,7 +33,10 @@ pub struct Transition {
     pub max: i32,
     /// Remembers where we are in the iteration; init to `-1` to provoke exception
     /// if `next` is called without first `init_transition`.
-    pub(crate) transition_upto: i32,
+    ///
+    /// Java's `transitionUpto` is package-private; public here so that the
+    /// test helper `MinimizationOperations` (same Java package) can reset it.
+    pub transition_upto: i32,
 }
 
 impl Transition {
@@ -234,6 +237,20 @@ impl Automaton {
         &self.is_accept
     }
 
+    /// Returns the per-state transition index and count pairs (Java's private
+    /// field `states`); public so that the test framework can model the Java
+    /// object.
+    pub fn states_array(&self) -> &[i32] {
+        &self.states
+    }
+
+    /// Returns the `dest`, `min`, `max` triples of every transition (Java's
+    /// private field `transitions`); public so that the test framework can
+    /// model the Java object.
+    pub fn transitions_array(&self) -> &[i32] {
+        &self.transitions
+    }
+
     /// Returns true if this state is an accept state.
     pub fn is_accept(&self, state: i32) -> bool {
         if state < 0 {
@@ -296,6 +313,7 @@ impl Automaton {
     /// Panics if `source` or `dest` is out of bounds, or if all the transitions of
     /// `source` had already been added (Lucene throws `IllegalStateException`).
     pub fn add_transition_range(&mut self, source: i32, dest: i32, min: i32, max: i32) {
+        debug_assert!(self.transitions.len().is_multiple_of(3));
         let bounds = self.get_num_states();
         assert!(
             source >= 0 && source < bounds,
@@ -318,11 +336,16 @@ impl Automaton {
 
             // Move to next source:
             self.cur_state = source;
-            assert!(
-                self.states[2 * source as usize] == -1,
-                "from state ({}) already had transitions added",
-                source
-            );
+            // `throw new IllegalStateException("from state (" + source + ") already
+            // had transitions added")` (`Automaton.java:169-172`).
+            if self.states[2 * source as usize] != -1 {
+                crate::store::java_nio_file::throw_unchecked(
+                    "java.lang.IllegalStateException",
+                    Some(&format!(
+                        "from state ({source}) already had transitions added"
+                    )),
+                );
+            }
             debug_assert!(self.states[2 * source as usize + 1] == 0);
             self.states[2 * source as usize] = self.transitions.len() as i32;
         }

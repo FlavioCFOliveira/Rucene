@@ -283,3 +283,36 @@ fn a_segment_of_this_directory_validates_before_it_is_committed() {
 
     writer.close().unwrap();
 }
+
+/// `LiveIndexWriterConfig`'s live settings take effect on an open writer:
+/// `setMaxBufferedDocs` on `writer.getConfig()` makes the next document past
+/// the limit flush a segment (`LiveIndexWriterConfig.java:218-230`, read by
+/// `FlushByRamOrCountsPolicy` on every update), as
+/// `LuceneTestCase.maybeChangeLiveIndexWriterConfig` relies on.
+#[test]
+fn live_max_buffered_docs_applies_to_open_writer() {
+    let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    let add = |i: i32| {
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", i.to_string(), Store::NO).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+    };
+    for i in 0..3 {
+        add(i);
+    }
+    assert_eq!(writer.get_flush_count(), 0);
+    assert_eq!(writer.num_ram_docs().unwrap(), 3);
+
+    writer.get_config().set_max_buffered_docs(2).unwrap();
+    assert_eq!(writer.get_config().max_buffered_docs(), 2);
+    add(3);
+    assert!(
+        writer.get_flush_count() > 0,
+        "the live limit flushed no segment"
+    );
+    assert!(writer.num_ram_docs().unwrap() < 4);
+    writer.close().unwrap();
+}

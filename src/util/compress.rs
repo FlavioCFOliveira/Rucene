@@ -6,7 +6,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 
 // -----------------------------------------------------------------------------
@@ -19,8 +19,16 @@ use crate::store::{DataInput, DataOutput};
 pub const LZ4_MAX_DISTANCE: usize = 1 << 16;
 
 const LZ4_MEMORY_USAGE: usize = 14;
-const LZ4_MIN_MATCH: usize = 4;
-const LZ4_LAST_LITERALS: usize = 5;
+/// Minimum length of a match.
+///
+/// Equivalent to `org.apache.lucene.util.compress.LZ4.MIN_MATCH`
+/// (package-private in Java; public here for the port of `LZ4TestCase`).
+pub const LZ4_MIN_MATCH: usize = 4;
+/// The last 5 bytes must be encoded as literals.
+///
+/// Equivalent to `org.apache.lucene.util.compress.LZ4.LAST_LITERALS`
+/// (package-private in Java; public here for the port of `LZ4TestCase`).
+pub const LZ4_LAST_LITERALS: usize = 5;
 const LZ4_HASH_LOG_HC: u32 = 15;
 const LZ4_HASH_TABLE_SIZE_HC: usize = 1 << LZ4_HASH_LOG_HC;
 const LZ4_MAX_ATTEMPTS: usize = 256;
@@ -145,6 +153,12 @@ pub trait Lz4HashTable: Send + Sync {
     /// offsets. A return value of `None` indicates that no other index could
     /// be found.
     fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize>;
+    /// Whether this table is fully reset: an assertion helper, which panics
+    /// (Java's `assert`) on a slot still holding a previous content.
+    ///
+    /// Equivalent to `LZ4.HashTable.assertReset()` (`LZ4.java:216`),
+    /// package-private in Java; public here for the port of `LZ4TestCase`.
+    fn assert_reset(&self) -> bool;
 }
 
 enum OffsetTable {
@@ -169,7 +183,11 @@ impl OffsetTable {
 
     fn set(&mut self, index: usize, value: usize) {
         match self {
-            OffsetTable::U16(v) => v[index] = value as u16,
+            OffsetTable::U16(v) => {
+                // `Table16.set` (`LZ4.java:243-246`).
+                debug_assert!(value < 1 << 16);
+                v[index] = value as u16;
+            }
             OffsetTable::U32(v) => v[index] = value as u32,
         }
     }
@@ -226,10 +244,10 @@ impl Lz4HashTable for FastCompressionHashTable {
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
         if off
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?
             > bytes.len()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "offset or length out of bounds".to_string(),
             ));
         }
@@ -246,8 +264,10 @@ impl Lz4HashTable for FastCompressionHashTable {
         let table_size = 1usize << self.hash_log;
         if self.table.size() < table_size || self.table.bits_per_value() < bits_per_offset {
             self.table = if bits_per_offset > 16 {
+                debug_assert!(bits_per_offset == 32);
                 OffsetTable::U32(vec![0; table_size])
             } else {
+                debug_assert!(bits_per_offset == 16);
                 OffsetTable::U16(vec![0; table_size])
             };
         }
@@ -283,6 +303,12 @@ impl Lz4HashTable for FastCompressionHashTable {
 
     fn previous(&mut self, _bytes: &[u8], _off: usize) -> Option<usize> {
         None
+    }
+
+    /// Equivalent to `FastCompressionHashTable.assertReset()`
+    /// (`LZ4.java:380-382`).
+    fn assert_reset(&self) -> bool {
+        true
     }
 }
 
@@ -342,13 +368,22 @@ impl HighCompressionHashTable {
 }
 
 impl Lz4HashTable for HighCompressionHashTable {
+    /// Equivalent to `HighCompressionHashTable.assertReset()`
+    /// (`LZ4.java:500-505`): every chain slot is `(short) 0xFFFF`.
+    fn assert_reset(&self) -> bool {
+        for (i, &slot) in self.chain_table.iter().enumerate() {
+            assert!(slot == 0xFFFF, "{i}");
+        }
+        true
+    }
+
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
         if off
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?
             > bytes.len()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "offset or length out of bounds".to_string(),
             ));
         }
@@ -484,10 +519,10 @@ impl Lz4 {
         ht: &mut dyn Lz4HashTable,
     ) -> Result<()> {
         if dict_off.checked_add(dict_len).ok_or_else(|| {
-            LuceneError::IllegalArgument("dictOff + dictLen overflowed".to_string())
+            LuceneError::illegal_argument("dictOff + dictLen overflowed".to_string())
         })? > bytes.len()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "dictOff or dictLen out of bounds".to_string(),
             ));
         }
@@ -495,16 +530,16 @@ impl Lz4 {
             .checked_add(dict_len)
             .and_then(|x| x.checked_add(len))
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("dictOff + dictLen + len overflowed".to_string())
+                LuceneError::illegal_argument("dictOff + dictLen + len overflowed".to_string())
             })?
             > bytes.len()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "dictOff + dictLen + len out of bounds".to_string(),
             ));
         }
         if dict_len > LZ4_MAX_DISTANCE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "dictLen must not be greater than 64kB, but got {dict_len}"
             )));
         }
@@ -594,7 +629,7 @@ impl Lz4 {
     ) -> Result<usize> {
         let dest_end = d_off + decompressed_len;
         if dest_end > dest.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "destination buffer too small".to_string(),
             ));
         }
@@ -622,13 +657,13 @@ impl Lz4 {
                 // of a block legitimately writes a few bytes past it, which is
                 // why callers pass a padded destination.
                 if literal_len > dest.len() - d_off {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "LZ4 literal run of {literal_len} bytes overruns the buffer \
                          ({} bytes left)",
                         dest.len() - d_off
-                    )));
+                    ))));
                 }
-                input.read_bytes(dest, d_off, literal_len)?;
+                input.read_bytes(Some(dest), d_off, literal_len)?;
                 d_off += literal_len;
             }
 
@@ -639,10 +674,10 @@ impl Lz4 {
             // Match.
             let match_dec = input.read_short()? as u16 as usize;
             if match_dec == 0 {
-                return Err(LuceneError::Io(std::io::Error::new(
+                return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "offset 0 is invalid",
-                )));
+                ))));
             }
 
             let mut match_len = token & 0x0F;
@@ -660,15 +695,15 @@ impl Lz4 {
             // Both copies below index `d_off - match_dec`, and the match may
             // not reach behind the start of the block.
             if match_dec > d_off {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "LZ4 match reaches {match_dec} bytes back from offset {d_off}"
-                )));
+                ))));
             }
             if match_len > dest.len() - d_off {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "LZ4 match of {match_len} bytes overruns the buffer ({} bytes left)",
                     dest.len() - d_off
-                )));
+                ))));
             }
 
             let fast_len = (match_len + 7) & !7;
@@ -730,7 +765,7 @@ impl LowercaseAsciiCompression {
             return Ok(false);
         }
         if len > tmp.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "tmp buffer is smaller than len".to_string(),
             ));
         }
@@ -819,7 +854,7 @@ impl LowercaseAsciiCompression {
     /// Equivalent to `org.apache.lucene.util.compress.LowercaseAsciiCompression.decompress`.
     pub fn decompress(input: &mut dyn DataInput, out: &mut [u8], len: usize) -> Result<()> {
         if len > out.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "output buffer too small".to_string(),
             ));
         }
@@ -827,7 +862,7 @@ impl LowercaseAsciiCompression {
         let compressed_len = len - saved;
 
         // Copy the packed bytes.
-        input.read_bytes(out, 0, compressed_len)?;
+        input.read_bytes(Some(out), 0, compressed_len)?;
 
         // Restore the leading 2 bits of each packed byte into whole bytes.
         #[allow(clippy::needless_range_loop)]
@@ -1103,7 +1138,7 @@ mod tests {
     ///
     /// Java's `LZ4.decompress` raises `ArrayIndexOutOfBoundsException` for a
     /// truncated or hostile stream; this port returns
-    /// `LuceneError::CorruptIndex`. Before the bounds checks these inputs
+    /// `LuceneErrorKind::CorruptIndex`. Before the bounds checks these inputs
     /// aborted the process in a debug build ("attempt to subtract with
     /// overflow") and produced a wild slice index in a release build.
     #[test]

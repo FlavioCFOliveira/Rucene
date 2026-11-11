@@ -99,7 +99,7 @@ impl PointInSetQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when `bytes_per_dim` or `num_dims` is out of range, when a
     /// point has the wrong length, or when the points are out of order; and
     /// propagates any error the iterator raises.
@@ -111,12 +111,12 @@ impl PointInSetQuery {
         formatter: Arc<dyn PointFormatter>,
     ) -> Result<Self> {
         if bytes_per_dim < 1 || bytes_per_dim > MAX_NUM_BYTES {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bytesPerDim must be > 0 and <= {MAX_NUM_BYTES}; got {bytes_per_dim}"
             )));
         }
         if num_dims < 1 || num_dims > MAX_INDEX_DIMENSIONS {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numDims must be > 0 and <= {MAX_INDEX_DIMENSIONS}; got {num_dims}"
             )));
         }
@@ -134,7 +134,7 @@ impl PointInSetQuery {
         let mut hasher_input: Vec<u8> = Vec::new();
         while let Some(current) = packed_points.next()? {
             if current.length != point_len {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "packed point length should be {} but got {}; field=\"{}\" numDims={} bytesPerDim={}",
                     point_len, current.length, field, num_dims, bytes_per_dim
                 )));
@@ -147,7 +147,7 @@ impl PointInSetQuery {
                     // Deduplicate.
                     std::cmp::Ordering::Equal => continue,
                     std::cmp::Ordering::Greater => {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "values are out of order: saw {previous} before {current}"
                         )))
                     }
@@ -616,7 +616,7 @@ impl ConstantScoreWeightImpl for PointInSetWeight {
             return Ok(None);
         };
         if values.num_index_dimensions()? != self.query.num_dims {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{}\" was indexed with numIndexDims={} but this query has numIndexDims={}",
                 self.query.field,
                 values.num_index_dimensions()?,
@@ -624,7 +624,7 @@ impl ConstantScoreWeightImpl for PointInSetWeight {
             )));
         }
         if values.bytes_per_dimension()? != self.query.bytes_per_dim as i32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{}\" was indexed with bytesPerDim={} but this query has bytesPerDim={}",
                 self.query.field,
                 values.bytes_per_dimension()?,
@@ -701,6 +701,11 @@ impl Query for PointInSetQuery {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
     }
 
     fn create_weight(

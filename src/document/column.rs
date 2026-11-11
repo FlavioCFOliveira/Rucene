@@ -8,10 +8,9 @@ use crate::analysis::{SharedTokenStream, TokenStream};
 use crate::document::{StoredValue, StoredValueType};
 use crate::error::{LuceneError, Result};
 use crate::index::{DocValuesType, IndexOptions, IndexableField, IndexableFieldType};
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::byte_block_pool::BYTE_BLOCK_SIZE;
 use crate::util::{BytesRef, NumericUtils};
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 
 /// Whether every document of a batch has a value for a column.
@@ -74,7 +73,7 @@ impl Column {
     ) -> Result<Self> {
         let name = name.into();
         if name.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "field name must not be empty".to_string(),
             ));
         }
@@ -131,7 +130,7 @@ pub trait ColumnValues {
 /// Walks the `(document, long)` pairs of a sparse numeric column.
 ///
 /// Equivalent to `org.apache.lucene.document.column.LongTupleCursor`.
-pub trait LongTupleCursor {
+pub trait LongTupleCursor: Send + Sync {
     /// Advances to the next document with a value, or returns
     /// [`NO_MORE_DOCS`](crate::search::NO_MORE_DOCS).
     fn next_doc(&mut self) -> Result<i32>;
@@ -143,7 +142,7 @@ pub trait LongTupleCursor {
 /// Walks the `(document, value)` pairs of a sparse column of objects.
 ///
 /// Equivalent to `org.apache.lucene.document.column.ObjectTupleCursor`.
-pub trait ObjectTupleCursor<T> {
+pub trait ObjectTupleCursor<T>: Send + Sync {
     /// Advances to the next document with a value.
     fn next_doc(&mut self) -> Result<i32>;
 
@@ -154,7 +153,7 @@ pub trait ObjectTupleCursor<T> {
 /// Walks the `(document, ordinal)` pairs of a sparse dictionary column.
 ///
 /// Equivalent to `org.apache.lucene.document.column.OrdinalsTupleCursor`.
-pub trait OrdinalsTupleCursor {
+pub trait OrdinalsTupleCursor: Send + Sync {
     /// Advances to the next document with a value.
     fn next_doc(&mut self) -> Result<i32>;
 
@@ -231,7 +230,7 @@ pub trait BytesRefValuesCursor {
         for i in 0..length {
             let value = self.next_value()?;
             if value.length != width {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "dense point value has length={} but should be {width}",
                     value.length
                 )));
@@ -287,7 +286,7 @@ pub trait LongColumn: ColumnValues {
 
     /// Returns a flat cursor over the values, which only a dense column has.
     fn values(&self) -> Result<Box<dyn LongValuesCursor + '_>> {
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "values() requires density() == DENSE for column \"{}\"",
             self.column().name()
         )))
@@ -308,7 +307,7 @@ pub trait BinaryColumn: ColumnValues {
 
     /// Returns a flat cursor over the values, which only a dense column has.
     fn values(&self) -> Result<Box<dyn BytesRefValuesCursor + '_>> {
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "values() requires density() == DENSE for column \"{}\"",
             self.column().name()
         )))
@@ -338,7 +337,7 @@ pub trait DictionaryColumn: ColumnValues {
 
     /// Returns a flat cursor over the ordinals, which only a dense column has.
     fn values(&self) -> Result<Box<dyn OrdinalsCursor + '_>> {
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "values() requires density() == DENSE for column \"{}\"",
             self.column().name()
         )))
@@ -361,7 +360,7 @@ pub trait VectorColumn<T>: ColumnValues {
 /// reference, which `BinaryColumnAdapter.tokenStream` hands straight to the
 /// inverter. `IndexableField::token_stream` returns an owned
 /// `Box<dyn TokenStream>` in this port, so the cursor yields the shared handle
-/// `Rc<RefCell<dyn TokenStream>>` that [`Field`](crate::document::Field)
+/// `Arc<AtomicRefCell<dyn TokenStream>>` that [`Field`](crate::document::Field)
 /// already uses for a pre-analysed value; the inverter still drives the very
 /// stream the caller supplied, through
 /// [`SharedTokenStream`](crate::analysis::SharedTokenStream).
@@ -374,7 +373,7 @@ pub trait TokenStreamColumn: ColumnValues {
 ///
 /// Java's `ObjectTupleCursor<TokenStream>` yields the stream itself; see the
 /// divergence note on [`TokenStreamColumn`].
-pub type SharedTokenStreamHandle = Rc<RefCell<dyn TokenStream>>;
+pub type SharedTokenStreamHandle = Arc<AtomicRefCell<dyn TokenStream>>;
 
 // -----------------------------------------------------------------------------
 // Validation
@@ -392,14 +391,14 @@ impl ColumnValidation {
     /// non-empty, and no entry longer than a term may be.
     pub fn validate_dictionary(name: &str, dictionary: &[BytesRef]) -> Result<()> {
         if dictionary.is_empty() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DictionaryColumn \"{name}\": dictionary must not be empty"
             )));
         }
         let max = BYTE_BLOCK_SIZE - 2;
         for (i, entry) in dictionary.iter().enumerate() {
             if entry.length > max {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "DictionaryColumn \"{name}\": dictionary entry at index {i} is too long: \
                      {} > {max}",
                     entry.length
@@ -414,7 +413,7 @@ impl ColumnValidation {
     /// Equivalent to the check in `VectorColumn`'s constructor.
     pub fn validate_vector(name: &str, field_type: &dyn IndexableFieldType) -> Result<()> {
         if field_type.vector_dimension() <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "VectorColumn \"{name}\" requires fieldType.vectorDimension() > 0; got {}",
                 field_type.vector_dimension()
             )));
@@ -427,7 +426,7 @@ impl ColumnValidation {
     /// Equivalent to the check in `TokenStreamColumn`'s constructor.
     pub fn validate_token_stream(name: &str, field_type: &dyn IndexableFieldType) -> Result<()> {
         if field_type.index_options() == IndexOptions::NONE || !field_type.tokenized() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "TokenStreamColumn \"{name}\" requires fieldType.indexOptions() != NONE and \
                  fieldType.tokenized() == true; got indexOptions={:?}, tokenized={}",
                 field_type.index_options(),
@@ -498,7 +497,7 @@ impl ColumnValidation {
             && field_type.index_options() == IndexOptions::NONE
             && field_type.vector_dimension() == 0
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Column \"{field_name}\" must have a non-NONE docValuesType, point dimensions, \
                  be stored, have index options, or have vector dimensions"
             )));
@@ -518,7 +517,7 @@ impl ColumnValidation {
         let point_dims = field_type.point_dimension_count();
         if point_dims != 0 {
             if point_dims != 1 {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "LongColumn \"{name}\" only supports 1-dimensional point fields, got \
                      pointDimensionCount={point_dims}"
                 )));
@@ -530,7 +529,7 @@ impl ColumnValidation {
                     std::mem::size_of::<i64>() as i32
                 };
             if field_type.point_num_bytes() != expected_point_bytes {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "LongColumn \"{name}\" numericKind={numeric_kind:?} requires \
                      pointNumBytes={expected_point_bytes}, got {}",
                     field_type.point_num_bytes()
@@ -544,13 +543,13 @@ impl ColumnValidation {
                 | StoredValueType::FLOAT
                 | StoredValueType::DOUBLE => {}
                 StoredValueType::STRING | StoredValueType::BINARY => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "LongColumn \"{name}\" storedType={stored_type:?} is not supported; use a \
                          BinaryColumn for non-numeric stored data"
                     )));
                 }
                 StoredValueType::DATA_INPUT => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "LongColumn \"{name}\" storedType DATA_INPUT is not supported for columns"
                     )));
                 }
@@ -569,7 +568,7 @@ impl ColumnValidation {
     ) -> Result<()> {
         let dv_type = field_type.doc_values_type();
         if dv_type == DocValuesType::NUMERIC || dv_type == DocValuesType::SORTED_NUMERIC {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "BinaryColumn \"{name}\" cannot feed docValuesType={dv_type:?}; use a LongColumn"
             )));
         }
@@ -580,13 +579,13 @@ impl ColumnValidation {
                 | StoredValueType::LONG
                 | StoredValueType::FLOAT
                 | StoredValueType::DOUBLE => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "BinaryColumn \"{name}\" storedType={stored_type:?} is not supported; use \
                          a LongColumn for numeric stored data"
                     )));
                 }
                 StoredValueType::DATA_INPUT => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "BinaryColumn \"{name}\" storedType DATA_INPUT is not supported for columns"
                     )));
                 }
@@ -605,18 +604,18 @@ impl ColumnValidation {
     ) -> Result<()> {
         let dv = field_type.doc_values_type();
         if dv == DocValuesType::NUMERIC || dv == DocValuesType::SORTED_NUMERIC {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DictionaryColumn \"{name}\" cannot feed docValuesType={dv:?}; use a LongColumn"
             )));
         }
         if dv == DocValuesType::BINARY {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DictionaryColumn \"{name}\" cannot feed docValuesType=BINARY (the writer does not \
                  dedup terms, so the dictionary provides no benefit); use a BinaryColumn"
             )));
         }
         if field_type.point_dimension_count() != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DictionaryColumn \"{name}\" does not support points (pointDimensionCount must be 0)"
             )));
         }
@@ -627,13 +626,13 @@ impl ColumnValidation {
                 | StoredValueType::LONG
                 | StoredValueType::FLOAT
                 | StoredValueType::DOUBLE => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "DictionaryColumn \"{name}\" storedType={stored_type:?} is not supported; \
                          use a LongColumn for numeric stored data"
                     )));
                 }
                 StoredValueType::DATA_INPUT => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "DictionaryColumn \"{name}\" storedType DATA_INPUT is not supported for \
                          columns"
                     )));
@@ -657,7 +656,7 @@ impl ColumnValidation {
             || field_type.point_dimension_count() != 0
             || field_type.vector_dimension() != 0
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "TokenStreamColumn \"{name}\" must be inverted-only: stored=false, \
                  docValuesType=NONE, pointDimensionCount=0, vectorDimension=0"
             )));
@@ -676,7 +675,7 @@ impl ColumnValidation {
             || field_type.stored()
             || field_type.index_options() != IndexOptions::NONE
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "VectorColumn \"{name}\" must be vector-only: docValuesType=NONE, \
                  pointDimensionCount=0, stored=false, indexOptions=NONE"
             )));
@@ -689,7 +688,7 @@ impl ColumnValidation {
     /// Equivalent to `ColumnValidation.checkDocID(Column, int, int)`.
     pub fn check_doc_id(name: &str, batch_doc_id: i32, num_docs: i32) -> Result<()> {
         if batch_doc_id < 0 || batch_doc_id >= num_docs {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Column \"{name}\" returned batch doc-id {batch_doc_id} which is out of range \
                  [0, {num_docs})"
             )));
@@ -702,7 +701,7 @@ impl ColumnValidation {
     /// Equivalent to `ColumnValidation.checkDenseCount(Column, int, int)`.
     pub fn check_dense_count(name: &str, consumed: i32, num_docs: i32) -> Result<()> {
         if consumed != num_docs {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Dense column \"{name}\" provided {consumed} values but batch has {num_docs} \
                  documents"
             )));
@@ -719,7 +718,7 @@ impl ColumnValidation {
         prev_batch_doc_id: i32,
     ) -> Result<()> {
         if batch_doc_id <= prev_batch_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "VectorColumn \"{name}\" must yield strictly increasing batch doc-ids; got \
                  {batch_doc_id} after {prev_batch_doc_id}"
             )));
@@ -737,7 +736,7 @@ impl ColumnValidation {
         batch_doc_id: i32,
     ) -> Result<()> {
         if actual != expected {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "VectorColumn \"{name}\" expected dimension {expected} but got vector of length \
                  {actual} at batch doc {batch_doc_id}"
             )));
@@ -851,7 +850,7 @@ pub trait ColumnFieldAdapter: IndexableField {
 /// # Errors
 ///
 /// Propagates the error the column raises while opening its cursor, and returns
-/// [`LuceneError::IllegalArgument`] for a stored type the column's validation
+/// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a stored type the column's validation
 /// should already have rejected.
 pub fn create_column_field_adapter<'a>(
     column: TypedColumn<'a>,
@@ -895,11 +894,11 @@ pub fn create_column_field_adapter<'a>(
         // arm throws "Unknown column type". A vector column never reaches here,
         // because `validateVectorColumn` refuses a vector field that is also
         // stored or indexed, and only those take the row-oriented pass.
-        TypedColumn::VectorFloat(vc) => Err(LuceneError::IllegalArgument(format!(
+        TypedColumn::VectorFloat(vc) => Err(LuceneError::illegal_argument(format!(
             "Unknown column type: vector column \"{}\"",
             vc.column().name()
         ))),
-        TypedColumn::VectorByte(vc) => Err(LuceneError::IllegalArgument(format!(
+        TypedColumn::VectorByte(vc) => Err(LuceneError::illegal_argument(format!(
             "Unknown column type: vector column \"{}\"",
             vc.column().name()
         ))),
@@ -960,7 +959,7 @@ impl LongStoredType {
             | StoredValueType::LONG
             | StoredValueType::FLOAT
             | StoredValueType::DOUBLE => Ok(Self(stored_type)),
-            other => Err(LuceneError::IllegalArgument(format!(
+            other => Err(LuceneError::illegal_argument(format!(
                 "LongColumn \"{name}\" declares storedType={other}, which \
                  ColumnValidation.validateLongColumn rejects"
             ))),
@@ -1012,7 +1011,7 @@ impl<'a> LongColumnAdapter<'a> {
     /// # Errors
     ///
     /// Propagates the error the column raises while opening its cursor, and
-    /// returns [`LuceneError::IllegalArgument`] for a stored type
+    /// returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a stored type
     /// `ColumnValidation.validateLongColumn` should have rejected.
     pub fn new(column: &'a dyn LongColumn) -> Result<Self> {
         let name = column.column().name().to_string();
@@ -1043,7 +1042,7 @@ impl<'a> LongColumnAdapter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for the same three types Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for the same three types Java
     /// rejects with an `AssertionError`, because
     /// `ColumnValidation.validateLongColumn` has already excluded them.
     ///
@@ -1104,16 +1103,16 @@ impl IndexableField for LongColumnAdapter<'_> {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn crate::analysis::Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+        _analyzer: Option<&dyn crate::analysis::Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
         // `invertable_type()` answers `None`, so the inverter never asks a long
         // column for a stream; Java's adapter does not override `tokenStream`
         // either, and the inherited `Field.tokenStream` is likewise unreachable.
-        Box::new(
+        Ok(Box::new(
             crate::analysis::StringTokenStream::new(String::new())
                 .expect("INVARIANT: an empty StringTokenStream is always well formed"),
-        )
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1124,7 +1123,7 @@ impl IndexableField for LongColumnAdapter<'_> {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1174,8 +1173,8 @@ pub struct BinaryColumnAdapter<'a> {
     ///
     /// Java's `cachedString` is a plain field mutated from `stringValue()`;
     /// that accessor takes `&self` here, so the cache lives behind a
-    /// [`RefCell`].
-    cached_string: RefCell<Option<String>>,
+    /// [`AtomicRefCell`].
+    cached_string: AtomicRefCell<Option<String>>,
 }
 
 impl std::fmt::Debug for BinaryColumnAdapter<'_> {
@@ -1197,7 +1196,7 @@ impl<'a> BinaryColumnAdapter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a stored type
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a stored type
     /// `ColumnValidation` should have rejected, which is what Java's
     /// `newReusableStoredValue` throws.
     pub fn new(
@@ -1219,7 +1218,7 @@ impl<'a> BinaryColumnAdapter<'a> {
             stored_type,
             tokenized,
             indexed,
-            cached_string: RefCell::new(None),
+            cached_string: AtomicRefCell::new(None),
         })
     }
 
@@ -1233,7 +1232,7 @@ impl<'a> BinaryColumnAdapter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for the five types Java rejects
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for the five types Java rejects
     /// with the same exception, because `ColumnValidation` has already excluded
     /// them.
     ///
@@ -1245,7 +1244,7 @@ impl<'a> BinaryColumnAdapter<'a> {
     ) -> Result<StoredValueType> {
         match stored_type {
             StoredValueType::STRING | StoredValueType::BINARY => Ok(stored_type),
-            other => Err(LuceneError::IllegalArgument(format!(
+            other => Err(LuceneError::illegal_argument(format!(
                 "column \"{name}\" declares storedType={other}, which ColumnValidation rejects"
             ))),
         }
@@ -1270,7 +1269,7 @@ impl<'a> BinaryColumnAdapter<'a> {
             stored_type: None,
             tokenized: true,
             indexed: true,
-            cached_string: RefCell::new(None),
+            cached_string: AtomicRefCell::new(None),
         }
     }
 
@@ -1279,6 +1278,10 @@ impl<'a> BinaryColumnAdapter<'a> {
     ///
     /// Equivalent to `BinaryColumnAdapter.decodedString()`.
     fn decoded_string(&self) -> Option<String> {
+        debug_assert!(
+            matches!(self.source, BinarySource::Bytes(_)),
+            "decodedString() unreachable in token-stream mode"
+        );
         let BinarySource::Bytes(cursor) = &self.source else {
             // Java asserts this is unreachable in token-stream mode.
             return None;
@@ -1342,29 +1345,32 @@ impl IndexableField for BinaryColumnAdapter<'_> {
 
     fn token_stream(
         &self,
-        analyzer: &dyn crate::analysis::Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+        analyzer: Option<&dyn crate::analysis::Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
         match &self.source {
             // Caller-supplied token stream: hand it straight to the inverter,
             // bypassing the analyzer.
             BinarySource::TokenStream(cursor) => {
-                Box::new(SharedTokenStream::new(Rc::clone(cursor.value())))
+                Ok(Box::new(SharedTokenStream::new(Arc::clone(cursor.value()))))
             }
             BinarySource::Bytes(_) if self.tokenized => {
                 let value = self.decoded_string().unwrap_or_default();
+                // `analyzer.tokenStream(name, stringValue())` throws
+                // `NullPointerException` for a `null` analyzer
+                // (`Field.java:497-498`, inherited by `ColumnFieldAdapter`).
                 let stream = analyzer
-                    .token_stream_from_str(&self.name, &value)
-                    .expect("INVARIANT: the analyzer produced a token stream");
-                Box::new(SharedTokenStream::new(stream))
+                    .ok_or_else(crate::error::LuceneError::null_pointer)?
+                    .token_stream_from_str(&self.name, &value)?;
+                Ok(Box::new(SharedTokenStream::new(stream)))
             }
             // Java returns null here; the inverter asks for a stream only when
             // `invertableType()` is `TOKEN_STREAM`, which a non-tokenized
             // column never answers.
-            BinarySource::Bytes(_) => Box::new(
+            BinarySource::Bytes(_) => Ok(Box::new(
                 crate::analysis::StringTokenStream::new(String::new())
                     .expect("INVARIANT: an empty StringTokenStream is always well formed"),
-            ),
+            )),
         }
     }
 
@@ -1382,7 +1388,7 @@ impl IndexableField for BinaryColumnAdapter<'_> {
         }
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1394,6 +1400,10 @@ impl IndexableField for BinaryColumnAdapter<'_> {
         let Some(stored_type) = self.stored_type else {
             return Ok(None);
         };
+        debug_assert!(
+            matches!(self.source, BinarySource::Bytes(_)),
+            "storedValue() unreachable in token-stream mode"
+        );
         let BinarySource::Bytes(cursor) = &self.source else {
             // Java asserts this is unreachable in token-stream mode.
             return Ok(None);
@@ -1403,7 +1413,7 @@ impl IndexableField for BinaryColumnAdapter<'_> {
                 self.decoded_string().unwrap_or_default(),
             ))),
             StoredValueType::BINARY => Ok(Some(StoredValue::Binary(cursor.value().clone()))),
-            other => Err(LuceneError::IllegalArgument(format!(
+            other => Err(LuceneError::illegal_argument(format!(
                 "column \"{}\" declares storedType={other}, which ColumnValidation rejects",
                 self.name
             ))),

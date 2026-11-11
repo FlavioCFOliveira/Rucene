@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::memory_segment::{Arena, MemorySegment, Scope};
 use super::native_access;
 use super::{DataInput, IOContext, IndexInput, RandomAccessInput, ReadAdvice};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::BitUtil;
 
 /// Provides access to the backing memory segment of an input.
@@ -36,8 +36,17 @@ pub trait MemorySegmentAccessInput: RandomAccessInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the input has been closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the input has been closed.
     fn clone_access_input(&self) -> Result<Box<dyn MemorySegmentAccessInput>>;
+
+    /// `getClass().getSimpleName()` of this input: which implementation class
+    /// Java would have instantiated for it.
+    ///
+    /// For [`MemorySegmentIndexInput`], `"SingleSegmentImpl"` or
+    /// `"MultiSegmentImpl"` (`MemorySegmentIndexInput.java`), the two
+    /// subclasses this port folds into one type;
+    /// `TestMultiMMap.assertCorrectImpl` tells them apart by it.
+    fn class_simple_name(&self) -> &'static str;
 }
 
 /// Maps an [`IOContext`] onto the [`ReadAdvice`] a file should be read with.
@@ -82,7 +91,7 @@ enum Layout {
 ///   conditions producing them, are unchanged.
 /// * **Closing releases the mapping when the last clone is dropped**, not at
 ///   the instant `close` is called; every clone reports
-///   [`LuceneError::AlreadyClosed`] from that instant, as in Java. See the
+///   [`LuceneErrorKind::AlreadyClosed`] from that instant, as in Java. See the
 ///   [`memory_segment`](super::memory_segment) module documentation.
 /// * **[`file_pointer`](IndexInput::file_pointer) cannot report a closed
 ///   input.** Java's `getFilePointer` calls `ensureOpen()` and throws
@@ -128,7 +137,7 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `segments` is empty.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `segments` is empty.
     pub fn new_instance(
         resource_description: impl Into<String>,
         arena: Arc<dyn Arena>,
@@ -171,7 +180,7 @@ impl MemorySegmentIndexInput {
         layout: Layout,
     ) -> Result<Self> {
         let first = segments.first().ok_or_else(|| {
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "MemorySegmentIndexInput requires at least one segment".to_string(),
             )
         })?;
@@ -234,22 +243,22 @@ impl MemorySegmentIndexInput {
     /// already-adjusted position.
     fn positional_error(&self, action: &str, pos: i64) -> LuceneError {
         if pos < 0 {
-            LuceneError::IllegalArgument(format!("{action} negative position (pos={pos}): {self}"))
+            LuceneError::illegal_argument(format!("{action} negative position (pos={pos}): {self}"))
         } else {
-            LuceneError::Io(std::io::Error::new(
+            LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 format!("{action} past EOF (pos={pos}): {self}"),
-            ))
+            )))
         }
     }
 
     /// Returns the `EOFException("read past EOF: …")` Java raises from the
     /// sequential read path.
     fn read_past_eof(&self) -> LuceneError {
-        LuceneError::Io(std::io::Error::new(
+        LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             format!("read past EOF: {self}"),
-        ))
+        )))
     }
 
     /// Fails if this input, or the arena backing it, has been closed.
@@ -459,8 +468,8 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the input has been closed, or
-    /// [`LuceneError::Io`] if the advice call fails.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the input has been closed, or
+    /// [`LuceneErrorKind::Io`] if the advice call fails.
     pub fn update_io_context(&self, context: &dyn IOContext) -> Result<()> {
         self.update_read_advice((self.to_read_advice)(context))
     }
@@ -489,8 +498,8 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the range is out of bounds,
-    /// and [`LuceneError::AlreadyClosed`] if the input has been closed.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the range is out of bounds,
+    /// and [`LuceneErrorKind::AlreadyClosed`] if the input has been closed.
     pub fn slice_with_context(
         &self,
         slice_description: &str,
@@ -523,11 +532,11 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the range is out of bounds,
-    /// and [`LuceneError::AlreadyClosed`] if the input has been closed.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the range is out of bounds,
+    /// and [`LuceneErrorKind::AlreadyClosed`] if the input has been closed.
     pub fn slice_impl(&self, slice_description: &str, offset: i64, length: i64) -> Result<Self> {
         if (length | offset) < 0 || length > self.length - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice() {slice_description} out of bounds: offset={offset},length={length},fileLength={}: {self}",
                 self.length
             )));
@@ -612,7 +621,7 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the input has been closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the input has been closed.
     pub fn clone_impl(&self) -> Result<Self> {
         self.ensure_open()?;
         self.ensure_accessible()?;
@@ -646,9 +655,11 @@ impl MemorySegmentIndexInput {
 /// Equivalent to `Objects.checkFromIndexSize(long, long, long)`.
 fn check_from_index_size(offset: i64, length: i64, size: i64) -> Result<()> {
     if offset < 0 || length < 0 || offset > size - length {
-        return Err(LuceneError::IllegalArgument(format!(
-            "Range [{offset}, {offset} + {length}) out of bounds for length {size}"
-        )));
+        // `Objects.checkFromIndexSize` throws `IndexOutOfBoundsException`.
+        return Err(LuceneError::unchecked(
+            "java.lang.IndexOutOfBoundsException",
+            format!("Range [{offset}, {offset} + {length}) out of bounds for length {size}"),
+        ));
     }
     Ok(())
 }
@@ -658,9 +669,9 @@ fn check_from_index_size(offset: i64, length: i64, size: i64) -> Result<()> {
 fn check_dst(offset: usize, length: usize, len: usize) -> Result<()> {
     let end = offset
         .checked_add(length)
-        .ok_or_else(|| LuceneError::IllegalArgument("offset + length overflowed".to_string()))?;
+        .ok_or_else(|| LuceneError::illegal_argument("offset + length overflowed".to_string()))?;
     if end > len {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "offset {offset} + length {length} exceeds array length {len}"
         )));
     }
@@ -690,8 +701,11 @@ impl DataInput for MemorySegmentIndexInput {
         Ok(value)
     }
 
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let b = crate::store::require_array(b)?;
         check_dst(offset, len, b.len())?;
         let pos = self.cur_position;
         if self
@@ -706,7 +720,7 @@ impl DataInput for MemorySegmentIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
@@ -754,8 +768,11 @@ impl DataInput for MemorySegmentIndexInput {
         Ok((high << 32) | low)
     }
 
-    fn read_ints(&mut self, dst: &mut [i32], offset: usize, length: usize) -> Result<()> {
+    fn read_ints(&mut self, dst: Option<&mut [i32]>, offset: usize, length: usize) -> Result<()> {
         self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let dst = crate::store::require_array(dst)?;
         check_dst(offset, length, dst.len())?;
         let pos = self.cur_position;
         let byte_len = length as i64 * 4;
@@ -777,8 +794,11 @@ impl DataInput for MemorySegmentIndexInput {
         Ok(())
     }
 
-    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
+    fn read_longs(&mut self, dst: Option<&mut [i64]>, offset: usize, length: usize) -> Result<()> {
         self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let dst = crate::store::require_array(dst)?;
         check_dst(offset, length, dst.len())?;
         let pos = self.cur_position;
         let byte_len = length as i64 * 8;
@@ -800,8 +820,16 @@ impl DataInput for MemorySegmentIndexInput {
         Ok(())
     }
 
-    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+    fn read_floats(
+        &mut self,
+        floats: Option<&mut [f32]>,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
         self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let floats = crate::store::require_array(floats)?;
         check_dst(offset, length, floats.len())?;
         let pos = self.cur_position;
         let byte_len = length as i64 * 4;
@@ -967,9 +995,8 @@ impl IndexInput for MemorySegmentIndexInput {
 
         let counter = &self.shared_prefetch_counter;
         self.advise(self.layout_offset() + offset, length, move |segment| {
-            // `MemorySegment.isLoaded()` has no safe counterpart, so an unknown
-            // answer is treated as a cache miss, which is the conservative
-            // choice: the advice is only a hint.
+            // `segment.isLoaded() == false`; an unknown answer (a target
+            // without `mincore`) is treated as a cache miss.
             if segment.is_loaded() != Some(true) {
                 // We have a cache miss on at least one page, so reset the
                 // counter.
@@ -980,10 +1007,23 @@ impl IndexInput for MemorySegmentIndexInput {
         })
     }
 
+    /// `MemorySegmentIndexInput.isLoaded()` (`MemorySegmentIndexInput.java:447-461`):
+    /// loaded when every segment is. Java answers `Optional.empty()` on
+    /// Windows when a segment is not loaded; this port answers `None` on
+    /// every target without `mincore`.
     fn is_loaded(&self) -> Option<bool> {
-        // `MemorySegment.isLoaded()` is backed by `mincore`, which has no safe
-        // wrapper here, so this input can make no claim either way.
-        None
+        let mut is_loaded = true;
+        for segment in &self.segments {
+            match segment.is_loaded() {
+                Some(true) => {}
+                Some(false) => {
+                    is_loaded = false;
+                    break;
+                }
+                None => return None,
+            }
+        }
+        Some(is_loaded)
     }
 
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
@@ -1101,6 +1141,13 @@ impl RandomAccessInput for MemorySegmentIndexInput {
 }
 
 impl MemorySegmentAccessInput for MemorySegmentIndexInput {
+    fn class_simple_name(&self) -> &'static str {
+        match self.layout {
+            Layout::Single => "SingleSegmentImpl",
+            Layout::Multi { .. } => "MultiSegmentImpl",
+        }
+    }
+
     fn segment_slice_or_null(&self, pos: i64, len: i64) -> Result<Option<MemorySegment>> {
         self.ensure_open()?;
         match self.layout {

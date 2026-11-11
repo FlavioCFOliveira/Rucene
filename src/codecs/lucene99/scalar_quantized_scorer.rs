@@ -57,7 +57,7 @@ impl Lucene99ScalarQuantizedVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the query and the field
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the query and the field
     /// disagree on dimension.
     ///
     /// Equivalent to
@@ -337,7 +337,7 @@ impl RandomVectorScorer for CompressedInt4DotProduct {
         slice
             .seek(i64::from(vector_ordinal) * (byte_length + std::mem::size_of::<f32>() as i64))?;
         let len = compressed_vector.len();
-        slice.read_bytes(compressed_vector, 0, len)?;
+        slice.read_bytes(Some(compressed_vector), 0, len)?;
         let vector_offset = self.values.get_score_correction_constant(vector_ordinal)?;
         let dot_product = vector_util::int4_dot_product_single_packed(
             &self.target_bytes,

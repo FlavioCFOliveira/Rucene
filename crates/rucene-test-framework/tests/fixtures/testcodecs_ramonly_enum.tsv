@@ -1,0 +1,71 @@
+# case	line of PostingsFormatOracle.enumTrace
+ramonly	leaf 0
+ramonly	 field rq size=66
+ramonly	  ord first= !UnsupportedOperationException
+ramonly	  state ee80807939/1/1/9 next=ee80807939 ee80807934/2/2/30 next=ee80807934 ee80807930/1/1/39 next=ee80807930 f09f988035/1/1/5 next=f09f988035 f09f98803130/2/3/10 next=f09f98803130 f09d90807835/2/2/5 next=f09d90807835 f09d9080783131/1/1/50 next=f09d9080783131 7a37/3/3/20 next=7a37 7a32/1/1/28 next=7a32 62c3a936/1/1/19 next=62c3a936 62c3a93132/3/3/25 next=62c3a93132 6139/1/2/48 next=6139 6132/1/1/54 next=6132 6130/2/3/0 next=6130
+ramonly	  intersect w1.* from=null 7731/ !NullPointerException
+ramonly	  intersect w1.* from=6131 7731/ !NullPointerException
+ramonly	  intersect w[2-4] from=null 7732/ !NullPointerException
+ramonly	  intersect w[2-4] from=6131 7732/ !NullPointerException
+ramonly	  intersect .*7 from=null 62c3a937/1/1/7 7a37/3/3/20 f09d90807837/1/1/20 f09f988037/2/3/46 ee80807937/2/2/7
+ramonly	  intersect .*7 from=6131 62c3a937/1/1/7 7a37/3/3/20 f09d90807837/1/1/20 f09f988037/2/3/46 ee80807937/2/2/7
+ramonly	  intersect t. from=null 7400/ !NullPointerException
+ramonly	  intersect t. from=6131 7400/ !NullPointerException
+ramonly	  intersect id-00[0-3]. from=null 69642d30303000/ !NullPointerException
+ramonly	  intersect id-00[0-3]. from=6131 69642d30303000/ !NullPointerException
+ramonly	  intersect e.* from=null 65/ !NullPointerException
+ramonly	  intersect e.* from=6131 65/ !NullPointerException
+ramonly	  intersect .* from=null / !NullPointerException
+ramonly	  intersect .* from=6131 613100/ !NullPointerException
+ramonly	 field rp size=75
+ramonly	  ord first= !UnsupportedOperationException
+ramonly	  state ee80807934/1/1/38 next=ee80807934 ee8080793133/1/1/13 next=ee8080793133 f09d90807837/2/2/7 next=f09d90807837 f09d90807832/2/3/2 next=f09d90807832 f09d9080783132/2/2/12 next=f09d9080783132 7a39/1/1/9 next=7a39 7a33/1/1/54 next=7a33 7a3130/1/1/44 next=7a3130 62c3a936/2/2/6 next=62c3a936 62c3a93136/1/2/16 next=62c3a93136 62c3a93131/2/2/11 next=62c3a93131 6138/2/2/25 next=6138 6133/3/3/3 next=6133 613133/1/2/30 next=613133 6130/2/3/0 next=6130
+ramonly	  intersect w1.* from=null 7731/ !NullPointerException
+ramonly	  intersect w1.* from=6131 7731/ !NullPointerException
+ramonly	  intersect w[2-4] from=null 7732/ !NullPointerException
+ramonly	  intersect w[2-4] from=6131 7732/ !NullPointerException
+ramonly	  intersect .*7 from=null 6137/1/1/24 62c3a937/3/3/7 7a37/1/1/24 f09d90807837/2/2/7 ee80807937/1/1/58
+ramonly	  intersect .*7 from=6131 6137/1/1/24 62c3a937/3/3/7 7a37/1/1/24 f09d90807837/2/2/7 ee80807937/1/1/58
+ramonly	  intersect t. from=null 7400/ !NullPointerException
+ramonly	  intersect t. from=6131 7400/ !NullPointerException
+ramonly	  intersect id-00[0-3]. from=null 69642d30303000/ !NullPointerException
+ramonly	  intersect id-00[0-3]. from=6131 69642d30303000/ !NullPointerException
+ramonly	  intersect e.* from=null 65/ !NullPointerException
+ramonly	  intersect e.* from=6131 65/ !NullPointerException
+ramonly	  intersect .* from=null / !NullPointerException
+ramonly	  intersect .* from=6131 613100/ !NullPointerException
+ramonly	leaf 1
+ramonly	 field rq size=66
+ramonly	  ord first= !UnsupportedOperationException
+ramonly	  state ee80807939/1/1/27 next=ee80807939 ee80807932/2/2/7 next=ee80807932 ee80807930/3/3/18 next=ee80807930 f09f988033/2/3/34 next=f09f988033 f09f988031/1/1/58 next=f09f988031 f09d90807836/1/1/50 next=f09d90807836 f09d9080783130/3/3/2 next=f09d9080783130 7a35/1/1/10 next=7a35 7a3131/1/1/16 next=7a3131 62c3a938/3/3/13 next=62c3a938 62c3a93132/1/1/43 next=62c3a93132 6139/1/1/1 next=6139 6134/1/2/48 next=6134 6130/1/1/18 next=6130
+ramonly	  intersect w1.* from=null 7731/ !NullPointerException
+ramonly	  intersect w1.* from=6131 7731/ !NullPointerException
+ramonly	  intersect w[2-4] from=null 7732/ !NullPointerException
+ramonly	  intersect w[2-4] from=6131 7732/ !NullPointerException
+ramonly	  intersect .*7 from=null 6137/2/3/12 62c3a937/3/3/25 f09d90807837/1/1/38 ee80807937/1/1/51
+ramonly	  intersect .*7 from=6131 6137/2/3/12 62c3a937/3/3/25 f09d90807837/1/1/38 ee80807937/1/1/51
+ramonly	  intersect t. from=null 7400/ !NullPointerException
+ramonly	  intersect t. from=6131 7400/ !NullPointerException
+ramonly	  intersect id-00[0-3]. from=null 69642d30303000/ !NullPointerException
+ramonly	  intersect id-00[0-3]. from=6131 69642d30303000/ !NullPointerException
+ramonly	  intersect e.* from=null 65/ !NullPointerException
+ramonly	  intersect e.* from=6131 65/ !NullPointerException
+ramonly	  intersect .* from=null / !NullPointerException
+ramonly	  intersect .* from=6131 613100/ !NullPointerException
+ramonly	 field rp size=75
+ramonly	  ord first= !UnsupportedOperationException
+ramonly	  state ee8080793136/1/1/58 next=ee8080793136 ee8080793130/1/1/18 next=ee8080793130 f09d90807837/1/2/32 next=f09d90807837 f09d90807832/2/2/27 next=f09d90807832 f09d9080783132/2/2/20 next=f09d9080783132 7a39/1/1/34 next=7a39 7a3136/1/1/24 next=7a3136 7a31/1/1/9 next=7a31 62c3a936/1/2/31 next=62c3a936 62c3a93136/3/3/7 next=62c3a93136 62c3a93131/2/2/19 next=62c3a93131 6138/2/2/33 next=6138 6133/1/2/45 next=6133 613133/2/2/21 next=613133 6130/2/2/25 next=6130
+ramonly	  intersect w1.* from=null 7731/ !NullPointerException
+ramonly	  intersect w1.* from=6131 7731/ !NullPointerException
+ramonly	  intersect w[2-4] from=null 7732/ !NullPointerException
+ramonly	  intersect w[2-4] from=6131 7732/ !NullPointerException
+ramonly	  intersect .*7 from=null 6137/1/2/15 62c3a937/1/1/49 7a37/1/1/49 f09d90807837/1/2/32
+ramonly	  intersect .*7 from=6131 6137/1/2/15 62c3a937/1/1/49 7a37/1/1/49 f09d90807837/1/2/32
+ramonly	  intersect t. from=null 7400/ !NullPointerException
+ramonly	  intersect t. from=6131 7400/ !NullPointerException
+ramonly	  intersect id-00[0-3]. from=null 69642d30303000/ !NullPointerException
+ramonly	  intersect id-00[0-3]. from=6131 69642d30303000/ !NullPointerException
+ramonly	  intersect e.* from=null 65/ !NullPointerException
+ramonly	  intersect e.* from=6131 65/ !NullPointerException
+ramonly	  intersect .* from=null / !NullPointerException
+ramonly	  intersect .* from=6131 613100/ !NullPointerException

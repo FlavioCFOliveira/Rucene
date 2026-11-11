@@ -459,14 +459,14 @@ fn range_field_query_equality_separates_value_types() {
 /// that `equals` the constant, so comparing against it is comparing against
 /// Lucene's own.
 fn stored_type() -> FieldType {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_stored(true).unwrap();
     ft
 }
 
 /// Builds the configuration of `TextField.TYPE_NOT_STORED`.
 fn text_type() -> FieldType {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
         .unwrap();
     ft.set_tokenized(true).unwrap();
@@ -475,14 +475,14 @@ fn text_type() -> FieldType {
 
 /// Builds the configuration of `TextField.TYPE_STORED`.
 fn text_stored_type() -> FieldType {
-    let mut ft = text_type();
+    let ft = text_type();
     ft.set_stored(true).unwrap();
     ft
 }
 
 /// Builds the configuration of `StringField.TYPE_NOT_STORED`.
 fn string_type() -> FieldType {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_index_options(IndexOptions::DOCS).unwrap();
     ft.set_tokenized(false).unwrap();
     ft.set_omit_norms(true).unwrap();
@@ -500,7 +500,7 @@ fn field_type_to_string_matches_java() {
         "indexed,omitNorms,indexOptions=DOCS"
     );
 
-    let mut vectors = text_stored_type();
+    let vectors = text_stored_type();
     vectors.set_store_term_vectors(true).unwrap();
     vectors.set_store_term_vector_offsets(true).unwrap();
     vectors.set_store_term_vector_positions(true).unwrap();
@@ -512,7 +512,7 @@ fn field_type_to_string_matches_java() {
          termVectorPayloads,omitNorms"
     );
 
-    let mut points = FieldType::new();
+    let points = FieldType::new();
     points.set_index_options(IndexOptions::DOCS).unwrap();
     points.set_tokenized(false).unwrap();
     points
@@ -552,13 +552,13 @@ fn field_type_equality_and_hash_agree_with_java() {
     assert_eq!(hash_of(&a), hash_of(&b));
 
     // Java's `equals` ignores the frozen flag.
-    let mut frozen = text_stored_type();
+    let frozen = text_stored_type();
     frozen.freeze();
     assert_eq!(frozen, b);
     assert_eq!(hash_of(&frozen), hash_of(&b));
 
     // Java's `equals` and `hashCode` ignore the vector attributes.
-    let mut vectors = text_stored_type();
+    let vectors = text_stored_type();
     vectors
         .set_vector_attributes(
             4,
@@ -570,7 +570,7 @@ fn field_type_equality_and_hash_agree_with_java() {
     assert_eq!(hash_of(&vectors), hash_of(&b));
 
     // ... and the attribute map.
-    let mut attributes = text_stored_type();
+    let attributes = text_stored_type();
     attributes
         .put_attribute("k".to_string(), "v".to_string())
         .unwrap();
@@ -578,7 +578,7 @@ fn field_type_equality_and_hash_agree_with_java() {
     assert_eq!(hash_of(&attributes), hash_of(&b));
 
     // A property `equals` does compare.
-    let mut tokenized = text_stored_type();
+    let tokenized = text_stored_type();
     tokenized.set_tokenized(false).unwrap();
     assert_ne!(tokenized, b);
     assert_ne!(hash_of(&tokenized), hash_of(&b));
@@ -687,10 +687,8 @@ fn filter_collector_to_string_matches_java() {
 #[test]
 fn lat_lon_shape_bounding_box_query_hash_agrees_with_equality() {
     let rect = Rectangle::new(-10.0, 10.0, -20.0, 20.0).unwrap();
-    let a =
-        LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Intersects, rect.clone()).unwrap();
-    let b =
-        LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Intersects, rect.clone()).unwrap();
+    let a = LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Intersects, rect).unwrap();
+    let b = LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Intersects, rect).unwrap();
     assert_eq!(a, b);
     assert_eq!(hash_of(&a), hash_of(&b));
 
@@ -698,12 +696,12 @@ fn lat_lon_shape_bounding_box_query_hash_agrees_with_equality() {
     // field and the relation, and its `hashCode` folds the rectangle into the
     // superclass hash — so each of the three has to move the hash.
     let other_field =
-        LatLonShapeBoundingBoxQuery::new("other", QueryRelation::Intersects, rect.clone()).unwrap();
+        LatLonShapeBoundingBoxQuery::new("other", QueryRelation::Intersects, rect).unwrap();
     assert_ne!(a, other_field);
     assert_ne!(hash_of(&a), hash_of(&other_field));
 
     let other_relation =
-        LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Within, rect.clone()).unwrap();
+        LatLonShapeBoundingBoxQuery::new("shape", QueryRelation::Within, rect).unwrap();
     assert_ne!(a, other_relation);
     assert_ne!(hash_of(&a), hash_of(&other_relation));
 

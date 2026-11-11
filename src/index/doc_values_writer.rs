@@ -197,7 +197,7 @@ impl DocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a value is missing or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a value is missing or
     /// rejected by the concrete writer, and propagates whatever the writer
     /// raises.
     pub fn add_value(
@@ -209,7 +209,7 @@ impl DocValuesWriter {
         match self {
             Self::Numeric(writer) => {
                 let Some(value) = field.numeric_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{}\": null value not allowed",
                         field.name()
                     )));
@@ -218,7 +218,7 @@ impl DocValuesWriter {
             }
             Self::Binary(writer) => {
                 let Some(value) = field.binary_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{}\": null value not allowed",
                         field.name()
                     )));
@@ -227,7 +227,7 @@ impl DocValuesWriter {
             }
             Self::Sorted(writer) => {
                 let Some(value) = field.binary_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field \"{}\": null value not allowed",
                         field.name()
                     )));
@@ -236,7 +236,7 @@ impl DocValuesWriter {
             }
             Self::SortedNumeric(writer) => {
                 let Some(value) = field.numeric_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{}\": null value not allowed",
                         field.name()
                     )));
@@ -245,7 +245,7 @@ impl DocValuesWriter {
             }
             Self::SortedSet(writer) => {
                 let Some(value) = field.binary_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field \"{}\": null value not allowed",
                         field.name()
                     )));
@@ -312,7 +312,7 @@ impl DocValuesWriter {
 /// `getSkipper` throws `UnsupportedOperationException`
 /// (`index/EmptyDocValuesProducer.java:54-57`).
 fn unsupported_skipper() -> LuceneError {
-    LuceneError::UnsupportedOperation(
+    LuceneError::unsupported_operation(
         "a flush-time doc-values producer does not provide a doc-values skipper".to_string(),
     )
 }
@@ -369,7 +369,7 @@ fn already_flushed(field_info: &FieldInfo) -> LuceneError {
 /// The "appears more than once in this document" error of the single-valued
 /// writers.
 fn appears_more_than_once(field_info: &FieldInfo) -> LuceneError {
-    LuceneError::IllegalArgument(format!(
+    LuceneError::illegal_argument(format!(
         "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
         field_info.name
     ))
@@ -378,7 +378,7 @@ fn appears_more_than_once(field_info: &FieldInfo) -> LuceneError {
 /// The error the multi-valued writers report for a backwards document, where
 /// Java only asserts (see the module documentation).
 fn backwards_document(field_info: &FieldInfo, doc_id: i32, current_doc: i32) -> LuceneError {
-    LuceneError::IllegalArgument(format!(
+    LuceneError::illegal_argument(format!(
         "DocValuesField \"{}\" values must be added in increasing document order (doc {doc_id} after {current_doc})",
         field_info.name
     ))
@@ -400,7 +400,7 @@ macro_rules! producer_guard {
         impl $type {
             fn check_field(&self, field: &FieldInfo) -> Result<()> {
                 if field.number != self.field_number {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "wrong fieldInfo: expected {} ({}), got {} ({})",
                         self.field_name, self.field_number, field.name, field.number
                     )));
@@ -409,7 +409,7 @@ macro_rules! producer_guard {
             }
 
             fn unsupported(&self, kind: &str) -> LuceneError {
-                LuceneError::UnsupportedOperation(format!(
+                LuceneError::unsupported_operation(format!(
                     "this producer only serves the {} values of field {} ({})",
                     kind, self.field_name, self.field_number
                 ))
@@ -469,7 +469,7 @@ macro_rules! empty_producer_methods {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     };
@@ -544,9 +544,9 @@ impl NumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` is not strictly
     /// greater than the last document added — which in Lucene means the field
-    /// appeared twice in one document — and [`LuceneError::IllegalState`] when
+    /// appeared twice in one document — and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when
     /// the values have already been built or flushed.
     pub fn add_value(&mut self, doc_id: i32, value: i64) -> Result<()> {
         if self.flushed {
@@ -571,11 +571,12 @@ impl NumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `first_doc_id` is not
     /// strictly greater than the last document added (Java asserts it), and
-    /// [`LuceneError::IllegalState`] when the values have already been built or
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the values have already been built or
     /// flushed.
     pub fn add_repeat_values(&mut self, first_doc_id: i32, value: i64, count: i32) -> Result<()> {
+        debug_assert!(first_doc_id > self.last_doc_id);
         if count == 0 {
             return Ok(());
         }
@@ -595,15 +596,16 @@ impl NumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `first_doc_id` is not
     /// strictly greater than the last document added,
-    /// [`LuceneError::IllegalState`] when the values have already been built or
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the values have already been built or
     /// flushed, and whatever reading the cursor raises.
     pub fn add_dense_values(
         &mut self,
         first_doc_id: i32,
         cursor: &mut dyn LongValuesCursor,
     ) -> Result<()> {
+        debug_assert!(first_doc_id > self.last_doc_id);
         let num_values = cursor.size();
         if num_values == 0 {
             return Ok(());
@@ -728,7 +730,7 @@ impl NumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been
     /// flushed — writing it twice would put two metadata entries for one field
     /// into the same segment. Otherwise propagates whatever the consumer
     /// raises while writing the field.
@@ -884,7 +886,7 @@ impl DocIdSetIterator for BufferedNumeric {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedNumericDocValues does not support advance".to_string(),
         ))
     }
@@ -897,14 +899,14 @@ impl DocIdSetIterator for BufferedNumeric {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
 
 impl DocValuesIterator for BufferedNumeric {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedNumericDocValues does not support advanceExact".to_string(),
         ))
     }
@@ -1007,7 +1009,7 @@ impl DocIdSetIterator for SortingNumeric {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc() instead".to_string(),
         ))
     }
@@ -1139,9 +1141,9 @@ impl BinaryDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` repeats or goes
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` repeats or goes
     /// backwards, or when `value` is longer than [`BINARY_MAX_LENGTH`], and
-    /// [`LuceneError::IllegalState`] when the field has already been built or
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been built or
     /// flushed.
     pub fn add_value(&mut self, doc_id: i32, value: &[u8]) -> Result<()> {
         if self.flushed {
@@ -1151,7 +1153,7 @@ impl BinaryDocValuesWriter {
             return Err(appears_more_than_once(&self.field_info));
         }
         if value.len() > BINARY_MAX_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DocValuesField \"{}\" is too large, must be <= {BINARY_MAX_LENGTH}",
                 self.field_info.name
             )));
@@ -1270,7 +1272,7 @@ impl BinaryDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been
     /// flushed; otherwise propagates whatever the consumer raises.
     pub fn flush(
         &mut self,
@@ -1394,13 +1396,14 @@ impl DocIdSetIterator for BufferedBinary {
             // buffered, a `BytesRef.length`, never negative.
             let length = to_int_exact(self.lengths_iterator.next_value())? as usize;
             self.length = length;
-            self.bytes_iterator.read_bytes(&mut self.value, 0, length)?;
+            self.bytes_iterator
+                .read_bytes(Some(&mut self.value), 0, length)?;
         }
         Ok(doc_id)
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedBinaryDocValues does not support advance".to_string(),
         ))
     }
@@ -1413,14 +1416,14 @@ impl DocIdSetIterator for BufferedBinary {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
 
 impl DocValuesIterator for BufferedBinary {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedBinaryDocValues does not support advanceExact".to_string(),
         ))
     }
@@ -1510,7 +1513,7 @@ impl DocIdSetIterator for SortingBinary {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -1522,7 +1525,7 @@ impl DocIdSetIterator for SortingBinary {
 
 impl DocValuesIterator for SortingBinary {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -1572,7 +1575,7 @@ impl Dictionary {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a producer still shares the
+    /// Returns [`LuceneErrorKind::IllegalState`] when a producer still shares the
     /// hash, which [`hash_mut`] refuses.
     fn build(hash: &mut Arc<BytesRefHash>, pool: &Arc<ByteBlockPool>) -> Result<Self> {
         let value_count = hash.size() as usize;
@@ -1599,13 +1602,22 @@ impl Dictionary {
     /// range is Java's `ArithmeticException("integer overflow")`, and an
     /// out-of-range `int` one is refused (Java indexes the array and throws).
     fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        debug_assert!(
+            ord >= 0 && ord < self.sorted_values.len() as i64,
+            "ord={ord} is out of bounds 0 .. {}",
+            self.sorted_values.len() as i64 - 1
+        );
+        debug_assert!(usize::try_from(ord)
+            .ok()
+            .and_then(|o| self.sorted_values.get(o))
+            .is_none_or(|&term_id| term_id >= 0 && (term_id as usize) < self.sorted_values.len()));
         let ord = to_int_exact(ord)?;
         usize::try_from(ord)
             .ok()
             .and_then(|ord| self.sorted_values.get(ord))
             .map(|&term_id| BytesRef::new(self.hash.get(&self.pool, term_id).to_vec()))
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "ord={ord} is out of bounds 0 .. {}",
                     self.len() as i64 - 1
                 ))
@@ -1625,7 +1637,7 @@ fn hash_mut(hash: &mut Arc<BytesRefHash>) -> Result<&mut BytesRefHash> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] while a producer over the pool is
+/// Returns [`LuceneErrorKind::IllegalState`] while a producer over the pool is
 /// alive (see the module documentation).
 fn pool_mut(pool: &mut Arc<ByteBlockPool>) -> Result<&mut ByteBlockPool> {
     Arc::get_mut(pool).ok_or_else(|| {
@@ -1745,9 +1757,9 @@ impl SortedDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` is not strictly
     /// greater than the last document added, or when `value` is longer than
-    /// [`SORTED_MAX_LENGTH`], and [`LuceneError::IllegalState`] when the field
+    /// [`SORTED_MAX_LENGTH`], and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field
     /// has already been built or flushed.
     pub fn add_value(
         &mut self,
@@ -1760,7 +1772,7 @@ impl SortedDocValuesWriter {
             return Err(appears_more_than_once(&self.field_info));
         }
         if value.len() > SORTED_MAX_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DocValuesField \"{}\" is too large, must be <= {SORTED_MAX_LENGTH}",
                 self.field_info.name
             )));
@@ -1799,8 +1811,8 @@ impl SortedDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a document repeats or an
-    /// ordinal is out of range, [`LuceneError::IllegalState`] when the field
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a document repeats or an
+    /// ordinal is out of range, [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field
     /// has already been built or flushed, and whatever reading the cursor
     /// raises.
     pub fn add_ordinal_tuples(
@@ -1846,9 +1858,9 @@ impl SortedDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the range does not start
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the range does not start
     /// after the last document written or an ordinal is out of range,
-    /// [`LuceneError::IllegalState`] when the field has already been built or
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been built or
     /// flushed, and whatever reading the cursor raises.
     pub fn add_dense_ordinal_values(
         &mut self,
@@ -1858,13 +1870,14 @@ impl SortedDocValuesWriter {
         pool: &mut Arc<ByteBlockPool>,
         scratch: &mut SharedIndexingScratch,
     ) -> Result<()> {
+        debug_assert!(first_doc_id > self.last_doc_id);
         let n = cursor.size();
         if n == 0 {
             return Ok(());
         }
         self.check_open()?;
         if first_doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DocValuesField \"{}\": firstDocID={first_doc_id} must be > lastDocID={}",
                 self.field_info.name, self.last_doc_id
             )));
@@ -1915,7 +1928,7 @@ impl SortedDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `ord` is outside the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `ord` is outside the
     /// dictionary, and whatever interning the value raises.
     fn lookup_or_translate(
         &mut self,
@@ -1925,7 +1938,7 @@ impl SortedDocValuesWriter {
         pool: &mut Arc<ByteBlockPool>,
     ) -> Result<i32> {
         if ord < 0 || ord as usize >= dictionary.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DocValuesField \"{}\": ordinal {ord} is out of range [0, {})",
                 self.field_info.name,
                 dictionary.len()
@@ -1970,6 +1983,7 @@ impl SortedDocValuesWriter {
     /// `hash.sort()`, `pending.build()` and the ordinal map.
     fn finish(&mut self, pool: &Arc<ByteBlockPool>) -> Result<()> {
         if self.dictionary.is_none() {
+            debug_assert!(self.final_ords.is_none());
             self.update_bytes_used();
             let dictionary = Dictionary::build(&mut self.hash, pool)?;
             let pending = self.pending.take().ok_or_else(already_built)?;
@@ -2043,7 +2057,7 @@ impl SortedDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been
     /// flushed; otherwise propagates whatever the consumer raises.
     pub fn flush(
         &mut self,
@@ -2163,7 +2177,7 @@ impl<V: PackedLongValuesAccess + Send + Sync + 'static> BufferedSortedProducer<V
 
     fn check_field(&self, field: &FieldInfo) -> Result<()> {
         if field.number != self.field_number {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "wrong fieldInfo: expected {} ({}), got {} ({})",
                 self.field_name, self.field_number, field.name, field.number
             )));
@@ -2172,7 +2186,7 @@ impl<V: PackedLongValuesAccess + Send + Sync + 'static> BufferedSortedProducer<V
     }
 
     fn unsupported(&self, kind: &str) -> LuceneError {
-        LuceneError::UnsupportedOperation(format!(
+        LuceneError::unsupported_operation(format!(
             "this producer only serves the {} values of field {} ({})",
             kind, self.field_name, self.field_number
         ))
@@ -2250,7 +2264,7 @@ impl<V: PackedLongValuesAccess> DocIdSetIterator for BufferedSorted<V> {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedSortedDocValues does not support advance".to_string(),
         ))
     }
@@ -2263,14 +2277,14 @@ impl<V: PackedLongValuesAccess> DocIdSetIterator for BufferedSorted<V> {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
 
 impl<V: PackedLongValuesAccess> DocValuesIterator for BufferedSorted<V> {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedSortedDocValues does not support advanceExact".to_string(),
         ))
     }
@@ -2340,7 +2354,7 @@ impl DocIdSetIterator for SortingSorted {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -2515,7 +2529,7 @@ struct SingletonProducer {
 
 impl SingletonProducer {
     fn unsupported(&self, kind: &str) -> LuceneError {
-        LuceneError::UnsupportedOperation(format!(
+        LuceneError::unsupported_operation(format!(
             "this producer only serves the single-valued view of field {} ({}), not its {} values",
             self.field_name, self.field_number, kind
         ))
@@ -2632,10 +2646,11 @@ impl SortedNumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` goes backwards
-    /// (Java asserts), and [`LuceneError::IllegalState`] when the field has
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` goes backwards
+    /// (Java asserts), and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has
     /// already been built or flushed.
     pub fn add_value(&mut self, doc_id: i32, value: i64) -> Result<()> {
+        debug_assert!(doc_id >= self.current_doc);
         self.check_open()?;
         if doc_id < self.current_doc {
             return Err(backwards_document(
@@ -2661,15 +2676,16 @@ impl SortedNumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `first_doc_id` is not
     /// strictly greater than the current document (Java asserts),
-    /// [`LuceneError::IllegalState`] when the field has already been built or
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been built or
     /// flushed, and whatever reading the cursor raises.
     pub fn add_dense_values(
         &mut self,
         first_doc_id: i32,
         cursor: &mut dyn LongValuesCursor,
     ) -> Result<()> {
+        debug_assert!(first_doc_id > self.current_doc);
         let num_values = cursor.size();
         if num_values == 0 {
             return Ok(());
@@ -2784,6 +2800,7 @@ impl SortedNumericDocValuesWriter {
     /// needed: the current document is finished, then both builders built.
     fn finish(&mut self) -> Result<()> {
         if self.final_values.is_none() {
+            debug_assert!(self.final_values_count.is_none());
             self.finish_current_doc()?;
             let pending = self.pending.take().ok_or_else(already_built)?;
             self.final_values = Some(Arc::new(pending.build()?));
@@ -2832,7 +2849,7 @@ impl SortedNumericDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been
     /// flushed; otherwise propagates whatever the consumer raises.
     pub fn flush(
         &mut self,
@@ -3037,7 +3054,7 @@ impl DocIdSetIterator for BufferedSortedNumeric {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedSortedNumericDocValues does not support advance".to_string(),
         ))
     }
@@ -3050,14 +3067,14 @@ impl DocIdSetIterator for BufferedSortedNumeric {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
 
 impl DocValuesIterator for BufferedSortedNumeric {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedSortedNumericDocValues does not support advanceExact".to_string(),
         ))
     }
@@ -3129,7 +3146,7 @@ impl DocIdSetIterator for SortingSortedNumeric {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3274,9 +3291,9 @@ impl SortedSetDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` goes backwards
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` goes backwards
     /// (Java asserts) or the value is too long, and
-    /// [`LuceneError::IllegalState`] when the field has already been built or
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been built or
     /// flushed.
     pub fn add_value(
         &mut self,
@@ -3284,6 +3301,7 @@ impl SortedSetDocValuesWriter {
         value: &[u8],
         pool: &mut Arc<ByteBlockPool>,
     ) -> Result<()> {
+        debug_assert!(doc_id >= self.current_doc);
         self.check_open()?;
         if doc_id < self.current_doc {
             return Err(backwards_document(
@@ -3293,7 +3311,7 @@ impl SortedSetDocValuesWriter {
             ));
         }
         if value.len() > SORTED_MAX_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DocValuesField \"{}\" is too large, must be <= {SORTED_MAX_LENGTH}",
                 self.field_info.name
             )));
@@ -3330,8 +3348,8 @@ impl SortedSetDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a document goes backwards
-    /// or an ordinal is out of range, [`LuceneError::IllegalState`] when the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a document goes backwards
+    /// or an ordinal is out of range, [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the
     /// field has already been built or flushed, and whatever reading the
     /// cursor raises.
     pub fn add_ordinal_tuples(
@@ -3351,6 +3369,7 @@ impl SortedSetDocValuesWriter {
                 break;
             }
             let doc_id = base_doc_id + batch_doc_id;
+            debug_assert!(doc_id >= self.current_doc);
             if doc_id < self.current_doc {
                 return Err(backwards_document(
                     &self.field_info,
@@ -3364,7 +3383,7 @@ impl SortedSetDocValuesWriter {
             }
             let ord = cursor.ord_value();
             if ord < 0 || ord as usize >= dictionary.len() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "DocValuesField \"{}\": ordinal {ord} is out of range [0, {})",
                     self.field_info.name,
                     dictionary.len()
@@ -3476,6 +3495,7 @@ impl SortedSetDocValuesWriter {
     /// (`SortedSetDocValuesWriter.java:222-236`).
     fn finish(&mut self, pool: &Arc<ByteBlockPool>) -> Result<()> {
         if self.final_ords.is_none() {
+            debug_assert!(self.final_ord_counts.is_none());
             self.finish_current_doc()?;
             let pending = self.pending.take().ok_or_else(already_built)?;
             self.final_ords = Some(Arc::new(pending.build()?));
@@ -3557,7 +3577,7 @@ impl SortedSetDocValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been
     /// flushed; otherwise propagates whatever the consumer raises.
     pub fn flush(
         &mut self,
@@ -3706,7 +3726,7 @@ impl DocIdSetIterator for BufferedSortedSet {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedSortedSetDocValues does not support advance".to_string(),
         ))
     }
@@ -3719,14 +3739,14 @@ impl DocIdSetIterator for BufferedSortedSet {
         self.docs_with_field.into_bit_set(up_to, bit_set, offset)
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.docs_with_field.doc_id_run_end()
     }
 }
 
 impl DocValuesIterator for BufferedSortedSet {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedSortedSetDocValues does not support advanceExact".to_string(),
         ))
     }
@@ -3865,7 +3885,7 @@ impl DocIdSetIterator for SortingSortedSet {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3914,6 +3934,7 @@ mod tests {
     use super::*;
     use crate::analysis::{Analyzer, TokenStream};
     use crate::document::{FieldType, InvertableType, NumericValue, StoredValue};
+    use crate::error::LuceneErrorKind;
     use crate::index::IndexableFieldType;
 
     fn field(name: &str, number: i32, doc_values_type: DocValuesType) -> FieldInfo {
@@ -3959,7 +3980,7 @@ mod tests {
                 0 => Ok(BytesRef::new(b"a".to_vec())),
                 1 => Ok(BytesRef::new(b"b".to_vec())),
                 // Java's array access throws; any refusal stands for it.
-                _ => Err(LuceneError::IllegalArgument(format!("ord={ord}"))),
+                _ => Err(LuceneError::illegal_argument(format!("ord={ord}"))),
             }
         }
     }
@@ -3975,7 +3996,7 @@ mod tests {
         assert_eq!(set.lookup_ord((1i64 << 32) + 1).unwrap().slice(), b"b");
         assert!(matches!(
             set.lookup_ord(1i64 << 31),
-            Err(LuceneError::IllegalArgument(ref message)) if message == "ord=-2147483648"
+            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message == "ord=-2147483648"
         ));
     }
 
@@ -3983,14 +4004,18 @@ mod tests {
     /// (`SortedSetDocValuesWriter.java:411-416`): without assertions an
     /// ordinal past the `int` range is Java's `ArithmeticException("integer
     /// overflow")`.
+    ///
+    /// Under `-ea` (debug builds) `assert ord >= 0 && ord < ordMap.length`
+    /// (`SortedSetDocValuesWriter.java:412-413`) fails first.
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "is out of bounds 0 .. -1"))]
     fn sorted_set_dictionary_lookup_ord_past_an_int_is_an_arithmetic_error() {
         let pool = test_pool();
         let mut hash = Arc::new(crate::util::bytes_ref_hash::BytesRefHash::new(counter()));
         let dictionary = Dictionary::build(&mut hash, &pool).unwrap();
         assert!(matches!(
             dictionary.lookup_ord(i64::from(i32::MAX) + 1),
-            Err(LuceneError::Arithmetic(ref message)) if message == "integer overflow"
+            Err(LuceneError { kind: LuceneErrorKind::Arithmetic(ref message), .. }) if message == "integer overflow"
         ));
     }
 
@@ -4214,7 +4239,7 @@ mod tests {
 
     impl TestDocValuesField {
         fn numeric(name: &str, doc_values_type: DocValuesType, value: NumericValue) -> Self {
-            let mut field_type = FieldType::new();
+            let field_type = FieldType::new();
             field_type.set_doc_values_type(doc_values_type).unwrap();
             Self {
                 name: name.to_string(),
@@ -4260,10 +4285,12 @@ mod tests {
 
         fn token_stream(
             &self,
-            _analyzer: &dyn Analyzer,
-            _reuse: Option<&mut dyn TokenStream>,
-        ) -> Box<dyn TokenStream> {
-            Box::new(crate::analysis::StringTokenStream::new(String::new()).unwrap())
+            _analyzer: Option<&dyn Analyzer>,
+            _reuse: &mut Option<Box<dyn TokenStream>>,
+        ) -> Result<Box<dyn TokenStream>> {
+            Ok(Box::new(
+                crate::analysis::StringTokenStream::new(String::new()).unwrap(),
+            ))
         }
 
         fn binary_value(&self) -> Option<BytesRef> {
@@ -4274,7 +4301,7 @@ mod tests {
             None
         }
 
-        fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+        fn reader_value(&self) -> Option<crate::document::SharedReader> {
             None
         }
 
@@ -4335,7 +4362,7 @@ mod tests {
         writer.add_value(4, 1).unwrap();
         let error = writer.add_value(4, 2).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m)
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("appears more than once") && m.contains("count")),
             "unexpected error: {error:?}"
         );
@@ -4356,7 +4383,7 @@ mod tests {
         with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         let error = with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalState { message: ref m, .. } if m.contains("already been flushed")),
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. } if m.contains("already been flushed")),
             "unexpected error: {error:?}"
         );
         assert_eq!(consumer.fields.len(), 1);
@@ -4422,7 +4449,7 @@ mod tests {
                 _field: &FieldInfo,
                 _values: &dyn DocValuesProducer,
             ) -> Result<()> {
-                Err(LuceneError::UnsupportedOperation("unused".to_string()))
+                Err(LuceneError::unsupported_operation("unused".to_string()))
             }
 
             fn add_sorted_numeric_field(
@@ -4430,7 +4457,7 @@ mod tests {
                 _field: &FieldInfo,
                 _values: &dyn DocValuesProducer,
             ) -> Result<()> {
-                Err(LuceneError::UnsupportedOperation("unused".to_string()))
+                Err(LuceneError::unsupported_operation("unused".to_string()))
             }
 
             fn add_sorted_set_field(
@@ -4438,7 +4465,7 @@ mod tests {
                 _field: &FieldInfo,
                 _values: &dyn DocValuesProducer,
             ) -> Result<()> {
-                Err(LuceneError::UnsupportedOperation("unused".to_string()))
+                Err(LuceneError::unsupported_operation("unused".to_string()))
             }
 
             fn close(&mut self) -> Result<()> {
@@ -4502,7 +4529,7 @@ mod tests {
                 _field: &FieldInfo,
                 _values: &dyn DocValuesProducer,
             ) -> Result<()> {
-                Err(LuceneError::UnsupportedOperation("unused".to_string()))
+                Err(LuceneError::unsupported_operation("unused".to_string()))
             }
 
             fn add_sorted_field(
@@ -4510,7 +4537,7 @@ mod tests {
                 _field: &FieldInfo,
                 _values: &dyn DocValuesProducer,
             ) -> Result<()> {
-                Err(LuceneError::UnsupportedOperation("unused".to_string()))
+                Err(LuceneError::unsupported_operation("unused".to_string()))
             }
 
             fn add_sorted_numeric_field(
@@ -4518,7 +4545,7 @@ mod tests {
                 _field: &FieldInfo,
                 _values: &dyn DocValuesProducer,
             ) -> Result<()> {
-                Err(LuceneError::UnsupportedOperation("unused".to_string()))
+                Err(LuceneError::unsupported_operation("unused".to_string()))
             }
 
             fn add_sorted_set_field(
@@ -4526,7 +4553,7 @@ mod tests {
                 _field: &FieldInfo,
                 _values: &dyn DocValuesProducer,
             ) -> Result<()> {
-                Err(LuceneError::UnsupportedOperation("unused".to_string()))
+                Err(LuceneError::unsupported_operation("unused".to_string()))
             }
 
             fn close(&mut self) -> Result<()> {
@@ -4579,7 +4606,7 @@ mod tests {
         writer.add_value(2, b"one").unwrap();
         let error = writer.add_value(2, b"two").unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m)
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("appears more than once") && m.contains("blob")),
             "unexpected error: {error:?}"
         );
@@ -4634,7 +4661,7 @@ mod tests {
         writer.add_value(3, b"one", &mut pool).unwrap();
         let error = writer.add_value(3, b"two", &mut pool).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m)
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("appears more than once") && m.contains("only one value is allowed")),
             "unexpected error: {error:?}"
         );
@@ -4708,7 +4735,13 @@ mod tests {
         );
     }
 
+    /// `SortedNumericDocValuesWriter.addValue` asserts `docID >= currentDoc`
+    /// (`SortedNumericDocValuesWriter.java:63`): a debug build fails it.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "doc_id >= self.current_doc")
+    )]
     fn a_sorted_numeric_writer_refuses_a_backwards_document() {
         // Java only asserts `docID >= currentDoc`; with assertions off the
         // backwards id is refused later, when `finishCurrentDoc` adds it to the
@@ -4723,7 +4756,7 @@ mod tests {
         writer.add_value(3, 2).unwrap();
         let error = writer.add_value(2, 3).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m)
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("increasing document order") && m.contains("values")),
             "unexpected error: {error:?}"
         );
@@ -4798,7 +4831,13 @@ mod tests {
         assert_eq!(docs_ords, &vec![(0, vec![0]), (1, vec![1]), (3, vec![0])]);
     }
 
+    /// `SortedSetDocValuesWriter.addValue` asserts `docID >= currentDoc`
+    /// (`SortedSetDocValuesWriter.java:85`): a debug build fails it.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "doc_id >= self.current_doc")
+    )]
     fn a_sorted_set_writer_refuses_a_backwards_document() {
         let mut pool = test_pool();
         let mut writer =
@@ -4807,7 +4846,7 @@ mod tests {
         writer.add_value(3, b"two", &mut pool).unwrap();
         let error = writer.add_value(2, b"three", &mut pool).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m)
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("increasing document order")),
             "unexpected error: {error:?}"
         );
@@ -4906,7 +4945,7 @@ mod tests {
             let mut writer = DocValuesWriter::new(field("f", 0, doc_values_type), counter());
             let error = writer.add_value(0, &field_value, &mut pool).unwrap_err();
             assert!(
-                matches!(error, LuceneError::IllegalArgument(ref m)
+                matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                     if m.contains("null value not allowed")),
                 "unexpected error for {doc_values_type:?}: {error:?}"
             );
@@ -5017,7 +5056,7 @@ mod tests {
         let error =
             with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalState { message: ref m, .. } if m.contains("already been flushed")),
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. } if m.contains("already been flushed")),
             "unexpected error: {error:?}"
         );
         assert!(writer

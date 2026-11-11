@@ -266,7 +266,7 @@ impl MultiDocValues {
     /// # Errors
     ///
     /// Propagates any error raised while reading a leaf's doc values, and
-    /// returns [`LuceneError::IllegalState`] if a leaf reports the field on one
+    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if a leaf reports the field on one
     /// call and not on the next.
     pub fn get_sorted_values(
         reader: &Arc<dyn IndexReader>,
@@ -339,7 +339,11 @@ impl MultiDocValues {
             return Ok(None);
         }
 
+        let owner = reader
+            .get_reader_cache_helper()
+            .map(|cache_helper| cache_helper.get_key().clone());
         let mapping = Arc::new(OrdinalMap::build_sorted(
+            owner,
             map_inputs,
             DEFAULT_ACCEPTABLE_OVERHEAD_RATIO,
         )?);
@@ -348,7 +352,7 @@ impl MultiDocValues {
             doc_starts,
             Arc::clone(&mapping),
             total_cost,
-        )?);
+        ));
         Ok(Some((view, Some(mapping))))
     }
 
@@ -374,7 +378,7 @@ impl MultiDocValues {
     /// # Errors
     ///
     /// Propagates any error raised while reading a leaf's doc values, and
-    /// returns [`LuceneError::IllegalState`] if a leaf reports the field on one
+    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if a leaf reports the field on one
     /// call and not on the next.
     pub fn get_sorted_set_values(
         reader: &Arc<dyn IndexReader>,
@@ -445,7 +449,11 @@ impl MultiDocValues {
             return Ok(None);
         }
 
+        let owner = reader
+            .get_reader_cache_helper()
+            .map(|cache_helper| cache_helper.get_key().clone());
         let mapping = Arc::new(OrdinalMap::build_sorted_set(
+            owner,
             map_inputs,
             DEFAULT_ACCEPTABLE_OVERHEAD_RATIO,
         )?);
@@ -454,7 +462,7 @@ impl MultiDocValues {
             doc_starts,
             Arc::clone(&mapping),
             total_cost,
-        )?);
+        ));
         Ok(Some((view, Some(mapping))))
     }
 }
@@ -575,7 +583,8 @@ impl DocIdSetIterator for MultiNumericDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.leaves.len() {
                 self.current_values = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -615,7 +624,8 @@ impl DocValuesIterator for MultiNumericDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.leaves.len() {
                 return Err(out_of_range(target));
             }
@@ -717,7 +727,8 @@ impl DocIdSetIterator for MultiBinaryDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.leaves.len() {
                 self.current_values = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -753,7 +764,8 @@ impl DocValuesIterator for MultiBinaryDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.leaves.len() {
                 return Err(out_of_range(target));
             }
@@ -856,7 +868,8 @@ impl DocIdSetIterator for MultiSortedNumericDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -888,7 +901,8 @@ impl DocValuesIterator for MultiSortedNumericDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 return Err(out_of_range(target));
             }
@@ -958,21 +972,16 @@ impl MultiSortedDocValues {
     /// `MultiSortedDocValues(SortedDocValues[], int[], OrdinalMap, long)`.
     ///
     /// `mapping` must have been built over exactly these leaves, in this order.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] unless
-    /// `doc_starts.len() == values.len() + 1`. Java asserts this, which
-    /// production builds skip; a mismatch would silently mis-address leaves, so
-    /// it is checked here.
+    /// As Java (`MultiDocValues.java:704`), only asserts
+    /// `doc_starts.len() == values.len() + 1`.
     pub fn new(
         values: Vec<Box<dyn SortedDocValues>>,
         doc_starts: Vec<i32>,
         mapping: Arc<OrdinalMap>,
         total_cost: i64,
-    ) -> Result<Self> {
-        check_doc_starts(doc_starts.len(), values.len())?;
-        Ok(Self {
+    ) -> Self {
+        debug_assert!(doc_starts.len() == values.len() + 1);
+        Self {
             values,
             doc_starts,
             mapping,
@@ -980,7 +989,7 @@ impl MultiSortedDocValues {
             next_leaf: 0,
             current: None,
             doc_id: -1,
-        })
+        }
     }
 
     /// Returns the per-leaf doc values being merged.
@@ -1019,6 +1028,11 @@ impl DocIdSetIterator for MultiSortedDocValues {
         self.doc_id
     }
 
+    /// Answers `instanceof MultiDocValues.MultiSortedDocValues` (`TestOrdinalMap`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn next_doc(&mut self) -> Result<i32> {
         loop {
             if self.current.is_none() {
@@ -1046,7 +1060,8 @@ impl DocIdSetIterator for MultiSortedDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -1078,7 +1093,8 @@ impl DocValuesIterator for MultiSortedDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 return Err(out_of_range(target));
             }
@@ -1149,18 +1165,16 @@ impl MultiSortedSetDocValues {
     /// Equivalent to
     /// `MultiSortedSetDocValues(SortedSetDocValues[], int[], OrdinalMap, long)`.
     ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] unless
+    /// As Java (`MultiDocValues.java:843`), only asserts
     /// `doc_starts.len() == values.len() + 1`.
     pub fn new(
         values: Vec<Box<dyn SortedSetDocValues>>,
         doc_starts: Vec<i32>,
         mapping: Arc<OrdinalMap>,
         total_cost: i64,
-    ) -> Result<Self> {
-        check_doc_starts(doc_starts.len(), values.len())?;
-        Ok(Self {
+    ) -> Self {
+        debug_assert!(doc_starts.len() == values.len() + 1);
+        Self {
             values,
             doc_starts,
             mapping,
@@ -1168,7 +1182,7 @@ impl MultiSortedSetDocValues {
             next_leaf: 0,
             current: None,
             doc_id: -1,
-        })
+        }
     }
 
     /// Returns the per-leaf doc values being merged.
@@ -1200,6 +1214,11 @@ impl DocIdSetIterator for MultiSortedSetDocValues {
         self.doc_id
     }
 
+    /// Answers `instanceof MultiDocValues.MultiSortedSetDocValues` (`TestOrdinalMap`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn next_doc(&mut self) -> Result<i32> {
         loop {
             if self.current.is_none() {
@@ -1227,7 +1246,8 @@ impl DocIdSetIterator for MultiSortedSetDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
@@ -1259,7 +1279,8 @@ impl DocValuesIterator for MultiSortedSetDocValues {
             return Err(advance_backwards(self.doc_id, target));
         }
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
-        if reader_index >= self.next_leaf {
+        if reader_index >= self.next_leaf as i32 {
+            let reader_index = reader_index as usize;
             if reader_index >= self.values.len() {
                 return Err(out_of_range(target));
             }
@@ -1309,7 +1330,7 @@ impl SortedSetDocValues for MultiSortedSetDocValues {
 /// Equivalent to the `IllegalArgumentException("can only advance beyond current
 /// document: ...")` raised by every `MultiDocValues` iterator.
 fn advance_backwards(doc_id: i32, target: i32) -> LuceneError {
-    LuceneError::IllegalArgument(format!(
+    LuceneError::illegal_argument(format!(
         "can only advance beyond current document: on docID={doc_id} but targetDocID={target}"
     ))
 }
@@ -1318,7 +1339,7 @@ fn advance_backwards(doc_id: i32, target: i32) -> LuceneError {
 ///
 /// Equivalent to `IllegalArgumentException("Out of range: " + targetDocID)`.
 fn out_of_range(target: i32) -> LuceneError {
-    LuceneError::IllegalArgument(format!("Out of range: {target}"))
+    LuceneError::illegal_argument(format!("Out of range: {target}"))
 }
 
 /// Message used when a per-document accessor is called while unpositioned.
@@ -1330,18 +1351,6 @@ fn no_current(kind: &str) -> String {
     format!("MultiDocValues: no current {kind} doc values; call next_doc/advance first")
 }
 
-/// Validates the `doc_starts` length invariant shared by the two
-/// ordinal-mapping views.
-fn check_doc_starts(doc_starts_len: usize, values_len: usize) -> Result<()> {
-    if doc_starts_len != values_len + 1 {
-        return Err(LuceneError::IllegalArgument(format!(
-            "doc_starts must have one more entry than values: got {doc_starts_len} \
-             doc starts for {values_len} leaves"
-        )));
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1349,6 +1358,7 @@ fn check_doc_starts(doc_starts_len: usize, values_len: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
@@ -1625,7 +1635,7 @@ mod tests {
             self.terms
                 .get(ord as usize)
                 .map(|t| BytesRef::new(t.as_bytes().to_vec()))
-                .ok_or_else(|| LuceneError::IllegalArgument(format!("ord {ord} out of range")))
+                .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
         }
     }
 
@@ -1688,7 +1698,7 @@ mod tests {
             self.terms
                 .get(ord as usize)
                 .map(|t| BytesRef::new(t.as_bytes().to_vec()))
-                .ok_or_else(|| LuceneError::IllegalArgument(format!("ord {ord} out of range")))
+                .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
         }
 
         fn get_value_count(&self) -> Result<i64> {
@@ -2303,11 +2313,17 @@ mod tests {
         assert_eq!(values.advance(2).unwrap(), 2);
         assert!(matches!(
             values.advance(2),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(matches!(
             values.advance(1),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -2389,7 +2405,10 @@ mod tests {
         assert!(values.advance_exact(2).unwrap());
         assert!(matches!(
             values.advance_exact(1),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(
             values.advance_exact(2).is_ok(),
@@ -2406,7 +2425,10 @@ mod tests {
         assert_eq!(values.doc_id(), -1);
         assert!(matches!(
             values.long_value(),
-            Err(LuceneError::IllegalState { .. })
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            })
         ));
     }
 
@@ -2561,7 +2583,10 @@ mod tests {
         assert_eq!(text(&values.binary_value().unwrap()), "c");
         assert!(matches!(
             values.advance(5),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -2844,7 +2869,7 @@ mod tests {
             .unwrap();
         let err = values.advance_exact(4).unwrap_err();
         assert!(
-            matches!(&err, LuceneError::IllegalArgument(m) if m.contains("Out of range")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m.contains("Out of range")),
             "unexpected error: {err:?}"
         );
     }
@@ -2858,7 +2883,10 @@ mod tests {
         assert_eq!(values.next_doc().unwrap(), 0);
         assert!(matches!(
             values.advance(0),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -2872,22 +2900,29 @@ mod tests {
             ListSorted::boxed(&["b"], &[(0, 0)]),
             ListSorted::boxed(&["a"], &[(0, 0)]),
         ];
-        let mapping = Arc::new(OrdinalMap::build_sorted(map_inputs, 0.25).unwrap());
-        let values = MultiSortedDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2).unwrap();
+        let mapping = Arc::new(OrdinalMap::build_sorted(None, map_inputs, 0.25).unwrap());
+        let values = MultiSortedDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);
         assert_eq!(values.mapping().get_value_count(), 2);
         assert_eq!(values.cost(), 2);
     }
 
+    /// Java only asserts the table's length (`MultiDocValues.java:704`):
+    /// with assertions enabled (debug builds) the assert fails; without, the
+    /// view is built.
     #[test]
-    fn multi_sorted_doc_values_reject_a_doc_start_table_of_the_wrong_length() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "doc_starts.len() == values.len() + 1")
+    )]
+    fn multi_sorted_doc_values_assert_the_length_of_the_doc_start_table() {
         let leaf_values: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
         let map_inputs: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
-        let mapping = Arc::new(OrdinalMap::build_sorted(map_inputs, 0.25).unwrap());
+        let mapping = Arc::new(OrdinalMap::build_sorted(None, map_inputs, 0.25).unwrap());
         // One leaf needs two doc starts (its docBase plus the maxDoc sentinel).
-        let err = MultiSortedDocValues::new(leaf_values, vec![0], mapping, 1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        let values = MultiSortedDocValues::new(leaf_values, vec![0], mapping, 1);
+        assert_eq!(values.doc_starts(), &[0]);
     }
 
     // =======================================================================
@@ -3008,7 +3043,7 @@ mod tests {
             .unwrap();
         let err = values.advance_exact(4).unwrap_err();
         assert!(
-            matches!(&err, LuceneError::IllegalArgument(m) if m.contains("Out of range")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m.contains("Out of range")),
             "unexpected error: {err:?}"
         );
     }
@@ -3031,15 +3066,22 @@ mod tests {
         assert_eq!(values.cost(), 3);
     }
 
+    /// Java only asserts the table's length (`MultiDocValues.java:843`):
+    /// with assertions enabled (debug builds) the assert fails; without, the
+    /// view is built.
     #[test]
-    fn multi_sorted_set_doc_values_reject_a_doc_start_table_of_the_wrong_length() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "doc_starts.len() == values.len() + 1")
+    )]
+    fn multi_sorted_set_doc_values_assert_the_length_of_the_doc_start_table() {
         let leaf_values: Vec<Box<dyn SortedSetDocValues>> =
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
         let map_inputs: Vec<Box<dyn SortedSetDocValues>> =
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
-        let mapping = Arc::new(OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap());
-        let err = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(None, map_inputs, 0.25).unwrap());
+        let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 1);
+        assert_eq!(values.doc_starts(), &[0, 1, 2]);
     }
 
     #[test]
@@ -3052,8 +3094,8 @@ mod tests {
             ListSortedSet::boxed(&["b"], &[(0, &[0])]),
             ListSortedSet::boxed(&["a"], &[(0, &[0])]),
         ];
-        let mapping = Arc::new(OrdinalMap::build_sorted_set(map_inputs, 0.25).unwrap());
-        let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2).unwrap();
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(None, map_inputs, 0.25).unwrap());
+        let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);
         assert_eq!(values.mapping().get_value_count(), 2);
@@ -3091,7 +3133,10 @@ mod tests {
         // advance-backwards guard fires afterwards, exactly as in Java.
         assert!(matches!(
             values.advance_exact(11),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 

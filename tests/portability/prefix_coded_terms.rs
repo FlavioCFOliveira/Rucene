@@ -162,12 +162,12 @@ fn rucene_report(case: &Case) -> Report {
 /// block count is what `ramBytesUsed` is a function of, and a payload that
 /// spans blocks is what proves the reader crosses them correctly.
 fn build_cases() -> Vec<Case> {
-    let mut cases: Vec<Case> = Vec::new();
-
-    // Empty.
-    cases.push(Vec::new());
-    // One term.
-    cases.push(vec![("f".to_string(), b"a".to_vec())]);
+    let mut cases: Vec<Case> = vec![
+        // Empty.
+        Vec::new(),
+        // One term.
+        vec![("f".to_string(), b"a".to_vec())],
+    ];
     // The shape the accounting note quotes: three short terms over two fields.
     cases.push(vec![
         ("f".to_string(), b"aaa".to_vec()),

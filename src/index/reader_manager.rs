@@ -135,9 +135,9 @@ impl ReaderManager {
 mod tests {
     use super::*;
     use crate::codecs::segment_info::SegmentInfoFormat;
-    use crate::codecs::tests::{test_segment_info, DummyCodec};
+    use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
     use crate::codecs::{register_codec, FilterCodec, Lucene99SegmentInfoFormat};
-    use crate::error::LuceneError;
+    use crate::error::{LuceneError, LuceneErrorKind};
     use crate::index::index_file_names::segment_file_name;
     use crate::index::index_file_names::FIELD_INFO_EXTENSION;
     use crate::index::{SegmentCommitInfo, SegmentInfos};
@@ -180,8 +180,7 @@ mod tests {
         name: &str,
         max_doc: i32,
     ) -> crate::index::SegmentInfo {
-        let mut info = test_segment_info(name, max_doc);
-        info.set_codec(test_codec());
+        let mut info = test_segment_info_with_codec(name, max_doc, test_codec());
         info.set_index_sort(
             crate::search::Sort::new_fields(vec![crate::search::SortField::new(
                 Some("id".to_string()),
@@ -305,7 +304,13 @@ mod tests {
         assert!(manager.is_closed());
         let err = manager.acquire().unwrap_err();
         assert!(
-            matches!(err, LuceneError::AlreadyClosed { .. }),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                }
+            ),
             "got {err:?}"
         );
     }

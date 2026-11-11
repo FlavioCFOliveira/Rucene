@@ -4,7 +4,6 @@
 //! document can answer "does my interval intersect, contain, or fall within
 //! yours" — which a point field cannot express.
 
-use std::io::Read;
 use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
@@ -17,14 +16,14 @@ use crate::index::{
     BinaryDocValues, DocValues, DocValuesIterator, IndexableField, IndexableFieldType,
     IntersectVisitor, LeafReaderContext, PointValues,
 };
-use crate::search::constant_score_scorer_supplier::{
-    ConstantScoreIteratorSupplier, ConstantScoreScorerSupplier,
-};
+use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
 use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
 use crate::search::{
-    DocIdSetIterator, IndexSearcher, Query, QueryVisitor, ScoreMode, ScorerSupplier, Weight,
+    ConstantScoreScorer, DocIdSetIterator, IndexSearcher, Query, QueryVisitor, ScoreMode, Scorer,
+    ScorerSupplier, Weight,
 };
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
 use crate::util::{BytesRef, DocIdSetBuilder, IntsRef, NumericUtils};
 
 /// Largest number of dimensions a range field may have.
@@ -44,7 +43,8 @@ pub enum RangeQueryType {
     Within,
     /// The document's interval encloses the query's.
     Contains,
-    /// The two overlap but neither contains the other.
+    /// The two overlap and the document's interval is not within the
+    /// query's; a document that contains the query crosses it too.
     Crosses,
 }
 
@@ -79,10 +79,11 @@ impl RangeQueryType {
                 let (d_min, d_max) = dim_bounds(doc_ranges, d, num_dims, bytes_per_dim);
                 d_min <= q_min && d_max >= q_max
             }),
+            // `RangeFieldQuery.java:259-269`: INTERSECTS and not WITHIN, so a
+            // document range that contains the query crosses it.
             Self::Crosses => {
                 Self::Intersects.matches(query_ranges, doc_ranges, num_dims, bytes_per_dim)
                     && !Self::Within.matches(query_ranges, doc_ranges, num_dims, bytes_per_dim)
-                    && !Self::Contains.matches(query_ranges, doc_ranges, num_dims, bytes_per_dim)
             }
         }
     }
@@ -104,23 +105,23 @@ fn dim_bounds(ranges: &[u8], d: usize, num_dims: usize, bytes_per_dim: usize) ->
 /// Checks that a min/max pair is well formed.
 fn check_args<T: PartialOrd + std::fmt::Debug>(min: &[T], max: &[T], kind: &str) -> Result<()> {
     if min.is_empty() || max.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "min/max range values cannot be null or empty".to_string(),
         ));
     }
     if min.len() != max.len() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "min/max ranges must agree".to_string(),
         ));
     }
     if min.len() > MAX_RANGE_DIMENSIONS {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "{kind} does not support greater than {MAX_RANGE_DIMENSIONS} dimensions"
         )));
     }
     for d in 0..min.len() {
         if min[d] > max[d] {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "min value ({:?}) is greater than max value ({:?})",
                 min[d], max[d]
             )));
@@ -135,7 +136,7 @@ fn check_args<T: PartialOrd + std::fmt::Debug>(min: &[T], max: &[T], kind: &str)
 /// The point dimension count is twice the range dimension count, because each
 /// dimension stores a minimum and a maximum.
 fn range_field_type(dimensions: usize, bytes: i32) -> Result<FieldType> {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_dimensions((dimensions * 2) as i32, bytes)?;
     ft.freeze();
     Ok(ft)
@@ -153,7 +154,7 @@ macro_rules! range_field {
         pub struct $name {
             name: String,
             field_type: FieldType,
-            fields_data: FieldData,
+            fields_data: AtomicRefCell<FieldData>,
         }
 
         impl $name {
@@ -168,24 +169,24 @@ macro_rules! range_field {
                 Ok(Self {
                     name: name.to_string(),
                     field_type,
-                    fields_data: FieldData::Bytes(BytesRef::new(packed)),
+                    fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(packed))),
                 })
             }
 
             /// Replaces the intervals, keeping the same dimension count.
             ///
             #[doc = concat!("Equivalent to `", $doc_equiv, ".setRangeValues`.")]
-            pub fn set_range_values(&mut self, min: &[$prim], max: &[$prim]) -> Result<()> {
+            pub fn set_range_values(&self, min: &[$prim], max: &[$prim]) -> Result<()> {
                 check_args(min, max, $kind)?;
                 let dims = IndexableFieldType::point_dimension_count(&self.field_type) / 2;
                 if min.len() as i32 != dims {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field (name={}) uses {dims} dimensions; cannot change to (incoming) {}",
                         self.name,
                         min.len()
                     )));
                 }
-                self.fields_data = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
+                *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
                 Ok(())
             }
 
@@ -208,11 +209,11 @@ macro_rules! range_field {
                 let dims =
                     (IndexableFieldType::point_dimension_count(&self.field_type) / 2) as usize;
                 if dimension >= dims {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "dimension {dimension} is out of range for {dims} dimensions"
                     )));
                 }
-                let FieldData::Bytes(bytes) = &self.fields_data else {
+                let FieldData::Bytes(bytes) = &*self.fields_data.borrow() else {
                     return Err(LuceneError::illegal_state(
                         "range field has no packed value".to_string(),
                     ));
@@ -225,11 +226,11 @@ macro_rules! range_field {
                 let dims =
                     (IndexableFieldType::point_dimension_count(&self.field_type) / 2) as usize;
                 if dimension >= dims {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "dimension {dimension} is out of range for {dims} dimensions"
                     )));
                 }
-                let FieldData::Bytes(bytes) = &self.fields_data else {
+                let FieldData::Bytes(bytes) = &*self.fields_data.borrow() else {
                     return Err(LuceneError::illegal_state(
                         "range field has no packed value".to_string(),
                     ));
@@ -248,11 +249,12 @@ macro_rules! range_field {
             }
 
             /// Returns the packed intervals.
-            pub fn packed_value(&self) -> Option<&[u8]> {
-                match &self.fields_data {
+            pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+                AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
                     FieldData::Bytes(bytes) => Some(bytes.slice()),
                     _ => None,
-                }
+                })
+                .ok()
             }
 
             /// Decodes the minimum of `dimension` from an encoded range.
@@ -288,13 +290,13 @@ macro_rules! range_field {
             ///
             /// # Errors
             ///
-            /// Returns [`LuceneError::IllegalArgument`] when a minimum exceeds
+            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a minimum exceeds
             /// its maximum, or when `bytes` is not `2 * n * BYTES` long.
             pub fn verify_and_encode(min: &[$prim], max: &[$prim], bytes: &mut [u8]) -> Result<()> {
                 check_args(min, max, $kind)?;
                 let n = min.len();
                 if bytes.len() != $bytes * 2 * n {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "encoded range must be {} bytes long, got {}",
                         $bytes * 2 * n,
                         bytes.len()
@@ -308,13 +310,13 @@ macro_rules! range_field {
                     // Double.isNaN on an int is always false — so the predicate
                     // is a constant `false` for them.
                     if ($is_nan)(min[d]) {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "invalid min value (NaN) in {}",
                             $kind
                         )));
                     }
                     if ($is_nan)(max[d]) {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "invalid max value (NaN) in {}",
                             $kind
                         )));
@@ -401,17 +403,17 @@ macro_rules! range_field {
 
             fn token_stream(
                 &self,
-                _analyzer: &dyn Analyzer,
-                _reuse: Option<&mut dyn TokenStream>,
-            ) -> Box<dyn TokenStream> {
+                _analyzer: Option<&dyn Analyzer>,
+                _reuse: &mut Option<Box<dyn TokenStream>>,
+            ) -> Result<Box<dyn TokenStream>> {
                 let value = self
                     .binary_value()
                     .unwrap_or_else(|| BytesRef::new(Vec::new()));
-                Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+                Ok(Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap()))
             }
 
             fn binary_value(&self) -> Option<BytesRef> {
-                match &self.fields_data {
+                match &*self.fields_data.borrow() {
                     FieldData::Bytes(v) => Some(v.clone()),
                     _ => None,
                 }
@@ -421,7 +423,7 @@ macro_rules! range_field {
                 None
             }
 
-            fn reader_value(&mut self) -> Option<&mut dyn Read> {
+            fn reader_value(&self) -> Option<crate::document::SharedReader> {
                 None
             }
 
@@ -448,7 +450,7 @@ macro_rules! range_field {
             /// the observable string and is reproduced here.
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{} <{}:", $kind, self.name)?;
-                if let FieldData::Bytes(bytes) = &self.fields_data {
+                if let FieldData::Bytes(bytes) = &*self.fields_data.borrow() {
                     let dims =
                         IndexableFieldType::point_dimension_count(&self.field_type) / 2;
                     for d in 0..dims as usize {
@@ -642,6 +644,13 @@ impl std::fmt::Display for BinaryRangeDocValuesField {
 }
 
 impl IndexableField for BinaryRangeDocValuesField {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.field
     }
@@ -652,10 +661,12 @@ impl IndexableField for BinaryRangeDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(self.binary_value()).unwrap())
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(self.binary_value()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -666,7 +677,7 @@ impl IndexableField for BinaryRangeDocValuesField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -839,7 +850,7 @@ impl BinaryRangeFieldRangeQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] for any relation other
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for any relation other
     /// than [`Intersects`](RangeQueryType::Intersects), which is what Java
     /// throws: the doc-values scan implements no other relation, and accepting
     /// one would answer a question it has not been taught to answer.
@@ -851,7 +862,7 @@ impl BinaryRangeFieldRangeQuery {
         query_type: RangeQueryType,
     ) -> Result<Self> {
         if query_type != RangeQueryType::Intersects {
-            return Err(LuceneError::UnsupportedOperation(
+            return Err(LuceneError::unsupported_operation(
                 "INTERSECTS is the only query type supported for this field type right now"
                     .to_string(),
             ));
@@ -1074,7 +1085,7 @@ impl RangeQueryType {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] for
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for
     /// [`Crosses`](Self::Crosses), which Lucene also refuses: a crossing
     /// relation cannot be decided from a cell's bounds alone, so its query
     /// always visits every point.
@@ -1125,7 +1136,7 @@ impl RangeQueryType {
                 }
                 Ok(PointRelation::CellCrossesQuery)
             }
-            Self::Crosses => Err(LuceneError::UnsupportedOperation(
+            Self::Crosses => Err(LuceneError::unsupported_operation(
                 "CROSSES cannot be decided from a cell's bounds".to_string(),
             )),
         }
@@ -1145,7 +1156,33 @@ impl RangeQueryType {
         bytes_per_dim: usize,
     ) -> Result<PointRelation> {
         if self == Self::Crosses {
-            // A crossing query cannot prune, so every cell must be visited.
+            // `RangeFieldQuery.java:229-257`: from the INTERSECTS and WITHIN
+            // relations of the cell.
+            let intersect_relation = Self::Intersects.compare(
+                query_packed_value,
+                min_packed_value,
+                max_packed_value,
+                num_dims,
+                bytes_per_dim,
+            )?;
+            if intersect_relation == PointRelation::CellOutsideQuery {
+                return Ok(PointRelation::CellOutsideQuery);
+            }
+            let within_relation = Self::Within.compare(
+                query_packed_value,
+                min_packed_value,
+                max_packed_value,
+                num_dims,
+                bytes_per_dim,
+            )?;
+            if within_relation == PointRelation::CellInsideQuery {
+                return Ok(PointRelation::CellOutsideQuery);
+            }
+            if intersect_relation == PointRelation::CellInsideQuery
+                && within_relation == PointRelation::CellOutsideQuery
+            {
+                return Ok(PointRelation::CellInsideQuery);
+            }
             return Ok(PointRelation::CellCrossesQuery);
         }
         let mut inside = true;
@@ -1243,7 +1280,7 @@ impl RangeFieldQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field name is empty,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field name is empty,
     /// the dimension count exceeds four, or the encoded range is empty.
     pub fn new(
         field: impl Into<String>,
@@ -1278,17 +1315,17 @@ impl RangeFieldQuery {
     /// Equivalent to `RangeFieldQuery.checkArgs(String, byte[], int)`.
     fn check_args(field: &str, ranges: &[u8], num_dims: usize) -> Result<()> {
         if field.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "field must not be null".to_string(),
             ));
         }
         if num_dims > MAX_RANGE_DIMENSIONS {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "dimension size cannot be greater than {MAX_RANGE_DIMENSIONS}"
             )));
         }
         if ranges.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "encoded ranges cannot be null or empty".to_string(),
             ));
         }
@@ -1301,7 +1338,7 @@ impl RangeFieldQuery {
     pub fn check_field_info(&self, field_info: &crate::index::FieldInfo) -> Result<()> {
         let indexed_dims = (field_info.point_dimension_count / 2) as usize;
         if indexed_dims != self.num_dims {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{}\" was indexed with numDims={indexed_dims} but this query has \
                  numDims={}",
                 self.field, self.num_dims
@@ -1415,16 +1452,23 @@ impl IntersectVisitor for RangeFieldVisitor<'_> {
     }
 }
 
-/// The iteration half of the scorer supplier a [`RangeFieldQuery`] builds.
+/// The scorer supplier a [`RangeFieldQuery`] builds when not every document
+/// matches.
 ///
 /// Equivalent to the anonymous `ScorerSupplier` of
-/// `RangeFieldQuery.createWeight`, which walks the BKD tree on `get(long)` and
-/// estimates its cost from the same visitor.
+/// `RangeFieldQuery.createWeight` (`RangeFieldQuery.java:481-508`), which
+/// walks the BKD tree on `get(long)` and estimates its cost from the same
+/// visitor. It is a plain `ScorerSupplier`, so its bulk scorer is the
+/// default one (`DefaultBulkScorer`), as in Java.
 struct RangeFieldIteratorSupplier {
     query: RangeFieldQuery,
     values: Box<dyn PointValues>,
     max_doc: i32,
-    cost: i64,
+    /// `long cost = -1`, filled in by the first [`cost`](ScorerSupplier::cost)
+    /// call (`RangeFieldQuery.java:486`, `496-503`).
+    cost: std::cell::Cell<i64>,
+    score: f32,
+    score_mode: ScoreMode,
 }
 
 impl std::fmt::Debug for RangeFieldIteratorSupplier {
@@ -1438,35 +1482,27 @@ impl std::fmt::Debug for RangeFieldIteratorSupplier {
 }
 
 impl RangeFieldIteratorSupplier {
-    /// Computes the cost once, which Java defers to the first `cost()` call.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java caches the estimate in a mutable
-    /// field that `cost()` fills in on demand; `cost()` takes `&self` here, so
-    /// the estimate is computed when the supplier is built. It is the same
-    /// estimate from the same visitor, and a supplier is only built when its
-    /// cost is about to be asked for. This matches what
-    /// [`PointRangeQuery`](crate::search::PointRangeQuery) already does.
-    fn new(query: RangeFieldQuery, values: Box<dyn PointValues>, max_doc: i32) -> Result<Self> {
-        let cost = {
-            let mut builder = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
-            let mut visitor = RangeFieldVisitor {
-                query: &query,
-                result: &mut builder,
-            };
-            values.estimate_doc_count(&mut visitor)?
-        };
-        debug_assert!(cost >= 0);
+    /// Builds the supplier; the cost is computed on the first `cost()` call.
+    fn new(
+        query: RangeFieldQuery,
+        values: Box<dyn PointValues>,
+        max_doc: i32,
+        score: f32,
+        score_mode: ScoreMode,
+    ) -> Result<Self> {
         Ok(Self {
             query,
             values,
             max_doc,
-            cost,
+            cost: std::cell::Cell::new(-1),
+            score,
+            score_mode,
         })
     }
 }
 
-impl ConstantScoreIteratorSupplier for RangeFieldIteratorSupplier {
-    fn iterator(&mut self, _lead_cost: i64) -> Result<ScorerIterator> {
+impl ScorerSupplier for RangeFieldIteratorSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
         let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())?;
         {
             let mut visitor = RangeFieldVisitor {
@@ -1475,11 +1511,61 @@ impl ConstantScoreIteratorSupplier for RangeFieldIteratorSupplier {
             };
             self.values.intersect(&mut visitor)?;
         }
-        Ok(ScorerIterator::Simple(result.build()?.iterator()?))
+        let iterator = result.build()?.iterator()?;
+        Ok(Box::new(ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            iterator,
+        )))
     }
 
     fn cost(&self) -> i64 {
-        self.cost
+        if self.cost.get() == -1 {
+            // Computing the cost may be expensive, so only do it if necessary.
+            let estimate = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())
+                .and_then(|mut builder| {
+                    let mut visitor = RangeFieldVisitor {
+                        query: &self.query,
+                        result: &mut builder,
+                    };
+                    self.values.estimate_doc_count(&mut visitor)
+                });
+            // `PointValues.estimateDocCount` wraps an `IOException` in an
+            // `UncheckedIOException` (`PointValues.java:385-393`), which
+            // `cost()` lets through; it has no error channel here.
+            let cost = estimate.unwrap_or_else(|e| panic!("java.io.UncheckedIOException: {e}"));
+            debug_assert!(cost >= 0);
+            self.cost.set(cost);
+        }
+        self.cost.get()
+    }
+}
+
+/// The scorer supplier a [`RangeFieldQuery`] builds when every document of
+/// the segment matches.
+///
+/// Equivalent to the first anonymous `ScorerSupplier` of
+/// `RangeFieldQuery.createWeight` (`RangeFieldQuery.java:468-480`): a
+/// constant scorer over `DocIdSetIterator.all(maxDoc)`, with the default
+/// bulk scorer.
+#[derive(Debug)]
+struct RangeFieldAllDocsSupplier {
+    score: f32,
+    score_mode: ScoreMode,
+    max_doc: i32,
+}
+
+impl ScorerSupplier for RangeFieldAllDocsSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        Ok(Box::new(ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            Box::new(crate::search::doc_id_set_iterator::all(self.max_doc)?),
+        )))
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.max_doc)
     }
 }
 
@@ -1521,19 +1607,19 @@ impl ConstantScoreWeightImpl for RangeFieldWeight {
         }
 
         if all_docs_match {
-            Ok(Some(Box::new(ConstantScoreScorerSupplier::match_all(
+            Ok(Some(Box::new(RangeFieldAllDocsSupplier {
                 score,
-                self.score_mode,
+                score_mode: self.score_mode,
                 max_doc,
-            )?)))
+            })))
         } else {
-            let inner = RangeFieldIteratorSupplier::new(self.query.clone(), values, max_doc)?;
-            Ok(Some(Box::new(ConstantScoreScorerSupplier::new(
+            Ok(Some(Box::new(RangeFieldIteratorSupplier::new(
+                self.query.clone(),
+                values,
+                max_doc,
                 score,
                 self.score_mode,
-                max_doc,
-                inner,
-            ))))
+            )?)))
         }
     }
 
@@ -2010,9 +2096,12 @@ mod tests {
         // CONTAINS: the document's range encloses [32,36].
         let q = IntRange::new_contains_query("r", &[32], &[36]).unwrap();
         assert_eq!(collect(&q, &docs), vec![2]);
-        // CROSSES: intersects, but neither within nor containing.
+        // CROSSES: intersects, but not within.
         let q = IntRange::new_crosses_query("r", &[25], &[45]).unwrap();
         assert_eq!(collect(&q, &docs), vec![1, 3]);
+        // CROSSES keeps a document that contains the query.
+        let q = IntRange::new_crosses_query("r", &[32], &[36]).unwrap();
+        assert_eq!(collect(&q, &docs), vec![2]);
         // Nothing overlaps a range beyond every document's.
         let q = IntRange::new_intersects_query("r", &[1000], &[2000]).unwrap();
         assert_eq!(collect(&q, &docs), Vec::<i32>::new());
@@ -2049,20 +2138,56 @@ mod tests {
         );
     }
 
+    /// Regression test (rmp #356, `TestIntRangeFieldQueries` and siblings):
+    /// `RangeFieldQuery.java:259-269` matches CROSSES as INTERSECTS and not
+    /// WITHIN, so a document range that contains the query crosses it
+    /// (`BaseRangeFieldQueryTestCase.expectedBBoxQueryResult` expects it); the
+    /// port also excluded CONTAINS and missed those documents.
     #[test]
-    fn range_field_query_crosses_relation_visits_every_cell() {
-        // CROSSES cannot be decided from a cell's bounds, so Java's `compare`
-        // answers CELL_CROSSES_QUERY for every cell and the walk tests each
-        // value. The visitor must not fail while doing so.
+    fn range_field_query_crosses_keeps_a_containing_document() {
+        let docs = vec![
+            (0, packed_int_range(i32::MIN, 2)),
+            (1, packed_int_range(30, 40)),
+        ];
+        let q = IntRange::new_crosses_query("r", &[i32::MIN], &[-3]).unwrap();
+        assert_eq!(collect(&q, &docs), vec![0]);
+    }
+
+    /// `RangeFieldQuery.java:229-257`: CROSSES relates a cell through its
+    /// INTERSECTS and WITHIN relations.
+    #[test]
+    fn range_field_query_crosses_relation_follows_intersects_and_within() {
         let query = IntRange::new_crosses_query("r", &[25], &[45]).unwrap();
         let mut result = DocIdSetBuilder::new(16);
         let visitor = RangeFieldVisitor {
             query: &query,
             result: &mut result,
         };
+        // Disjoint from the query: outside.
         assert_eq!(
             visitor
                 .compare(&packed_int_range(0, 5), &packed_int_range(6, 10))
+                .unwrap(),
+            PointRelation::CellOutsideQuery
+        );
+        // Every range within the query: outside.
+        assert_eq!(
+            visitor
+                .compare(&packed_int_range(30, 31), &packed_int_range(34, 35))
+                .unwrap(),
+            PointRelation::CellOutsideQuery
+        );
+        // Every range intersects and none can be within: inside.
+        assert_eq!(
+            visitor
+                .compare(&packed_int_range(0, 46), &packed_int_range(24, 80))
+                .unwrap(),
+            PointRelation::CellInsideQuery
+        );
+        // Mixed: crosses.
+        assert_eq!(
+            visitor
+                .compare(&packed_int_range(0, 5), &packed_int_range(40, 80))
                 .unwrap(),
             PointRelation::CellCrossesQuery
         );

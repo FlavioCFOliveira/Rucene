@@ -1,0 +1,602 @@
+# kind	input units	result
+double	-	OK	c004000000000000
+float	-	OK	c0200000
+int	-	OK	-3
+long	-	OK	c0400000
+boolean	-	OK	true
+double	0020	OK	c004000000000000
+float	0020	OK	c0200000
+int	0020	OK	-3
+long	0020	OK	c0400000
+boolean	0020	OK	true
+double	0031	OK	3ff0000000000000
+float	0031	OK	3f800000
+int	0031	OK	1
+long	0031	OK	3f800000
+boolean	0031	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1
+double	0020.0034.0032.0020	OK	4045000000000000
+float	0020.0034.0032.0020	OK	42280000
+int	0020.0034.0032.0020	OK	42
+long	0020.0034.0032.0020	OK	42280000
+boolean	0020.0034.0032.0020	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 42
+double	002b.0037	OK	401c000000000000
+float	002b.0037	OK	40e00000
+int	002b.0037	OK	7
+long	002b.0037	OK	40e00000
+boolean	002b.0037	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): +7
+double	002d.0030	OK	8000000000000000
+float	002d.0030	OK	80000000
+int	002d.0030	OK	0
+long	002d.0030	OK	0
+boolean	002d.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -0
+double	0030.0078.0031.0030	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 0x10
+float	0030.0078.0031.0030	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 0x10
+int	0030.0078.0031.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x10
+long	0030.0078.0031.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x10
+boolean	0030.0078.0031.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x10
+double	0031.0065.0033	OK	408f400000000000
+float	0031.0065.0033	OK	447a0000
+int	0031.0065.0033	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e3
+long	0031.0065.0033	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e3
+boolean	0031.0065.0033	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e3
+double	0031.002e.0035	OK	3ff8000000000000
+float	0031.002e.0035	OK	3fc00000
+int	0031.002e.0035	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.5
+long	0031.002e.0035	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.5
+boolean	0031.002e.0035	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.5
+double	004e.0061.004e	OK	7ff8000000000000
+float	004e.0061.004e	OK	7fc00000
+int	004e.0061.004e	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: NaN
+long	004e.0061.004e	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: NaN
+boolean	004e.0061.004e	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): NaN
+double	002d.0049.006e.0066.0069.006e.0069.0074.0079	OK	fff0000000000000
+float	002d.0049.006e.0066.0069.006e.0069.0074.0079	OK	ff800000
+int	002d.0049.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: -Infinity
+long	002d.0049.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: -Infinity
+boolean	002d.0049.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -Infinity
+double	0049.006e.0066.0069.006e.0069.0074.0079	OK	7ff0000000000000
+float	0049.006e.0066.0069.006e.0069.0074.0079	OK	7f800000
+int	0049.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: Infinity
+long	0049.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: Infinity
+boolean	0049.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): Infinity
+double	0069.006e.0066	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: inf
+float	0069.006e.0066	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: inf
+int	0069.006e.0066	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: inf
+long	0069.006e.0066	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: inf
+boolean	0069.006e.0066	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): inf
+double	0069.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: infinity
+float	0069.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: infinity
+int	0069.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: infinity
+long	0069.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: infinity
+boolean	0069.006e.0066.0069.006e.0069.0074.0079	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): infinity
+double	0031.0064	OK	3ff0000000000000
+float	0031.0064	OK	3f800000
+int	0031.0064	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1d
+long	0031.0064	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1d
+boolean	0031.0064	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1d
+double	0031.0066	OK	3ff0000000000000
+float	0031.0066	OK	3f800000
+int	0031.0066	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1f
+long	0031.0066	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1f
+boolean	0031.0066	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1f
+double	0031.002e.0035.0046	OK	3ff8000000000000
+float	0031.002e.0035.0046	OK	3fc00000
+int	0031.002e.0035.0046	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.5F
+long	0031.002e.0035.0046	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.5F
+boolean	0031.002e.0035.0046	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.5F
+double	0031.002e.0035.0044	OK	3ff8000000000000
+float	0031.002e.0035.0044	OK	3fc00000
+int	0031.002e.0035.0044	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.5D
+long	0031.002e.0035.0044	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.5D
+boolean	0031.002e.0035.0044	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.5D
+double	0030.0078.0031.0070.0033	OK	4020000000000000
+float	0030.0078.0031.0070.0033	OK	41000000
+int	0030.0078.0031.0070.0033	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1p3
+long	0030.0078.0031.0070.0033	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1p3
+boolean	0030.0078.0031.0070.0033	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1p3
+double	0030.0078.0031.002e.0038.0070.0031	OK	4008000000000000
+float	0030.0078.0031.002e.0038.0070.0031	OK	40400000
+int	0030.0078.0031.002e.0038.0070.0031	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.8p1
+long	0030.0078.0031.002e.0038.0070.0031	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.8p1
+boolean	0030.0078.0031.002e.0038.0070.0031	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.8p1
+double	0030.0078.002e.0038.0070.0030	OK	3fe0000000000000
+float	0030.0078.002e.0038.0070.0030	OK	3f000000
+int	0030.0078.002e.0038.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x.8p0
+long	0030.0078.002e.0038.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x.8p0
+boolean	0030.0078.002e.0038.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x.8p0
+double	0030.0058.0031.0050.002d.0031.0030.0037.0034	OK	1
+float	0030.0058.0031.0050.002d.0031.0030.0037.0034	OK	0
+int	0030.0058.0031.0050.002d.0031.0030.0037.0034	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0X1P-1074
+long	0030.0058.0031.0050.002d.0031.0030.0037.0034	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0X1P-1074
+boolean	0030.0058.0031.0050.002d.0031.0030.0037.0034	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0X1P-1074
+double	0030.0078.0031.0070.002d.0031.0030.0037.0035	OK	0
+float	0030.0078.0031.0070.002d.0031.0030.0037.0035	OK	0
+int	0030.0078.0031.0070.002d.0031.0030.0037.0035	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1p-1075
+long	0030.0078.0031.0070.002d.0031.0030.0037.0035	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1p-1075
+boolean	0030.0078.0031.0070.002d.0031.0030.0037.0035	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1p-1075
+double	0030.0078.0031.0070.002d.0031.0030.0037.0036	OK	0
+float	0030.0078.0031.0070.002d.0031.0030.0037.0036	OK	0
+int	0030.0078.0031.0070.002d.0031.0030.0037.0036	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1p-1076
+long	0030.0078.0031.0070.002d.0031.0030.0037.0036	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1p-1076
+boolean	0030.0078.0031.0070.002d.0031.0030.0037.0036	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1p-1076
+double	0030.0078.0031.002e.0038.0070.002d.0031.0030.0037.0034	OK	2
+float	0030.0078.0031.002e.0038.0070.002d.0031.0030.0037.0034	OK	0
+int	0030.0078.0031.002e.0038.0070.002d.0031.0030.0037.0034	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.8p-1074
+long	0030.0078.0031.002e.0038.0070.002d.0031.0030.0037.0034	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.8p-1074
+boolean	0030.0078.0031.002e.0038.0070.002d.0031.0030.0037.0034	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.8p-1074
+double	0663.0664	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: ٣٤
+float	0663.0664	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: ٣٤
+int	0663.0664	OK	34
+long	0663.0664	OK	42080000
+boolean	0663.0664	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): ٣٤
+double	ff11.ff12	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: １２
+float	ff11.ff12	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: １２
+int	ff11.ff12	OK	12
+long	ff11.ff12	OK	41400000
+boolean	ff11.ff12	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): １２
+double	0967	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: १
+float	0967	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: १
+int	0967	OK	1
+long	0967	OK	3f800000
+boolean	0967	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): १
+double	0032.0031.0034.0037.0034.0038.0033.0036.0034.0037	OK	41dfffffffc00000
+float	0032.0031.0034.0037.0034.0038.0033.0036.0034.0037	OK	4f000000
+int	0032.0031.0034.0037.0034.0038.0033.0036.0034.0037	OK	2147483647
+long	0032.0031.0034.0037.0034.0038.0033.0036.0034.0037	OK	4f000000
+boolean	0032.0031.0034.0037.0034.0038.0033.0036.0034.0037	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 2147483647
+double	0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	41e0000000000000
+float	0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	4f000000
+int	0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 2147483648
+long	0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	4f000000
+boolean	0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 2147483648
+double	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	c1e0000000000000
+float	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	cf000000
+int	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	-2147483648
+long	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	cf000000
+boolean	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -2147483648
+double	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	OK	c1e0000000200000
+float	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	OK	cf000000
+int	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: -2147483649
+long	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	OK	cf000000
+boolean	002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -2147483649
+double	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0037	OK	43e0000000000000
+float	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0037	OK	5f000000
+int	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0037	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 9223372036854775807
+long	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0037	OK	5f000000
+boolean	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0037	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 9223372036854775807
+double	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	OK	43e0000000000000
+float	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	OK	5f000000
+int	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 9223372036854775808
+long	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 9223372036854775808
+boolean	0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 9223372036854775808
+double	002d.0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	OK	c3e0000000000000
+float	002d.0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	OK	df000000
+int	002d.0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: -9223372036854775808
+long	002d.0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	OK	df000000
+boolean	002d.0039.0032.0032.0033.0033.0037.0032.0030.0033.0036.0038.0035.0034.0037.0037.0035.0038.0030.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -9223372036854775808
+double	0031.005f.0030.0030.0030	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 1_000
+float	0031.005f.0030.0030.0030	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 1_000
+int	0031.005f.0030.0030.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1_000
+long	0031.005f.0030.0030.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1_000
+boolean	0031.005f.0030.0030.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1_000
+double	0009.0035.000a	OK	4014000000000000
+float	0009.0035.000a	OK	40a00000
+int	0009.0035.000a	OK	5
+long	0009.0035.000a	OK	40a00000
+boolean	0009.0035.000a	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 5
+double	00a0.0035	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop:  5
+float	00a0.0035	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop:  5
+int	00a0.0035	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop:  5
+long	00a0.0035	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop:  5
+boolean	00a0.0035	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no):  5
+double	0007.0035.001f	OK	4014000000000000
+float	0007.0035.001f	OK	40a00000
+int	0007.0035.001f	OK	5
+long	0007.0035.001f	OK	40a00000
+boolean	0007.0035.001f	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 5
+double	0031.0065.0034.0030.0030	OK	7ff0000000000000
+float	0031.0065.0034.0030.0030	OK	7f800000
+int	0031.0065.0034.0030.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e400
+long	0031.0065.0034.0030.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e400
+boolean	0031.0065.0034.0030.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e400
+double	002d.0031.0065.0034.0030.0030	OK	fff0000000000000
+float	002d.0031.0065.0034.0030.0030	OK	ff800000
+int	002d.0031.0065.0034.0030.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: -1e400
+long	002d.0031.0065.0034.0030.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: -1e400
+boolean	002d.0031.0065.0034.0030.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -1e400
+double	0034.002e.0039.0065.002d.0033.0032.0034	OK	1
+float	0034.002e.0039.0065.002d.0033.0032.0034	OK	0
+int	0034.002e.0039.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 4.9e-324
+long	0034.002e.0039.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 4.9e-324
+boolean	0034.002e.0039.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 4.9e-324
+double	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0038.0065.002d.0033.0032.0034	OK	1
+float	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0038.0065.002d.0033.0032.0034	OK	0
+int	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0038.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 2.4703282292062328e-324
+long	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0038.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 2.4703282292062328e-324
+boolean	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0038.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 2.4703282292062328e-324
+double	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0037.0065.002d.0033.0032.0034	OK	0
+float	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0037.0065.002d.0033.0032.0034	OK	0
+int	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0037.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 2.4703282292062327e-324
+long	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0037.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 2.4703282292062327e-324
+boolean	0032.002e.0034.0037.0030.0033.0032.0038.0032.0032.0039.0032.0030.0036.0032.0033.0032.0037.0065.002d.0033.0032.0034	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 2.4703282292062327e-324
+double	0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0031.0031.0030.0032.0032.0033.0030.0032.0034.0036.0032.0035.0031.0035.0036.0035.0034.0030.0034.0032.0033.0036.0033.0031.0036.0036.0038.0030.0039.0030.0038.0032.0030.0033.0031.0032.0035.0030.0030.0030.0030.0031	OK	3ff0000000000001
+float	0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0031.0031.0030.0032.0032.0033.0030.0032.0034.0036.0032.0035.0031.0035.0036.0035.0034.0030.0034.0032.0033.0036.0033.0031.0036.0036.0038.0030.0039.0030.0038.0032.0030.0033.0031.0032.0035.0030.0030.0030.0030.0031	OK	3f800000
+int	0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0031.0031.0030.0032.0032.0033.0030.0032.0034.0036.0032.0035.0031.0035.0036.0035.0034.0030.0034.0032.0033.0036.0033.0031.0036.0036.0038.0030.0039.0030.0038.0032.0030.0033.0031.0032.0035.0030.0030.0030.0030.0031	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.0000000000000001110223024625156540423631668090820312500001
+long	0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0031.0031.0030.0032.0032.0033.0030.0032.0034.0036.0032.0035.0031.0035.0036.0035.0034.0030.0034.0032.0033.0036.0033.0031.0036.0036.0038.0030.0039.0030.0038.0032.0030.0033.0031.0032.0035.0030.0030.0030.0030.0031	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.0000000000000001110223024625156540423631668090820312500001
+boolean	0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0031.0031.0030.0032.0032.0033.0030.0032.0034.0036.0032.0035.0031.0035.0036.0035.0034.0030.0034.0032.0033.0036.0033.0031.0036.0036.0038.0030.0039.0030.0038.0032.0030.0033.0031.0032.0035.0030.0030.0030.0030.0031	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.0000000000000001110223024625156540423631668090820312500001
+double	0030.002e.0031	OK	3fb999999999999a
+float	0030.002e.0031	OK	3dcccccd
+int	0030.002e.0031	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0.1
+long	0030.002e.0031	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0.1
+boolean	0030.002e.0031	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0.1
+double	0074.0072.0075.0065	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: true
+float	0074.0072.0075.0065	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: true
+int	0074.0072.0075.0065	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: true
+long	0074.0072.0075.0065	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: true
+boolean	0074.0072.0075.0065	OK	true
+double	0066.0061.006c.0073.0065	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: false
+float	0066.0061.006c.0073.0065	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: false
+int	0066.0061.006c.0073.0065	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: false
+long	0066.0061.006c.0073.0065	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: false
+boolean	0066.0061.006c.0073.0065	OK	false
+double	006f.006e	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: on
+float	006f.006e	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: on
+int	006f.006e	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: on
+long	006f.006e	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: on
+boolean	006f.006e	OK	true
+double	004f.0046.0046	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: OFF
+float	004f.0046.0046	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: OFF
+int	004f.0046.0046	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: OFF
+long	004f.0046.0046	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: OFF
+boolean	004f.0046.0046	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): OFF
+double	0059.0065.0073	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: Yes
+float	0059.0065.0073	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: Yes
+int	0059.0065.0073	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: Yes
+long	0059.0065.0073	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: Yes
+boolean	0059.0065.0073	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): Yes
+double	0065.006e.0061.0062.006c.0065.0064	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: enabled
+float	0065.006e.0061.0062.006c.0065.0064	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: enabled
+int	0065.006e.0061.0062.006c.0065.0064	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: enabled
+long	0065.006e.0061.0062.006c.0065.0064	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: enabled
+boolean	0065.006e.0061.0062.006c.0065.0064	OK	true
+double	0064.0069.0073.0061.0062.006c.0065.0064	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: disabled
+float	0064.0069.0073.0061.0062.006c.0065.0064	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: disabled
+int	0064.0069.0073.0061.0062.006c.0065.0064	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: disabled
+long	0064.0069.0073.0061.0062.006c.0065.0064	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: disabled
+boolean	0064.0069.0073.0061.0062.006c.0065.0064	OK	false
+double	0054.0052.0055.0045	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: TRUE
+float	0054.0052.0055.0045	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: TRUE
+int	0054.0052.0055.0045	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: TRUE
+long	0054.0052.0055.0045	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: TRUE
+boolean	0054.0052.0055.0045	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): TRUE
+double	0020.006e.006f.0020	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop:  no 
+float	0020.006e.006f.0020	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop:  no 
+int	0020.006e.006f.0020	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop:  no 
+long	0020.006e.006f.0020	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop:  no 
+boolean	0020.006e.006f.0020	OK	false
+double	006f.0066.0066	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: off
+float	006f.0066.0066	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: off
+int	006f.0066.0066	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: off
+long	006f.0066.0066	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: off
+boolean	006f.0066.0066	OK	false
+double	0079.0065.0073	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: yes
+float	0079.0065.0073	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: yes
+int	0079.0065.0073	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: yes
+long	0079.0065.0073	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: yes
+boolean	0079.0065.0073	OK	true
+double	0031.002e	OK	3ff0000000000000
+float	0031.002e	OK	3f800000
+int	0031.002e	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.
+long	0031.002e	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.
+boolean	0031.002e	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.
+double	002e.0035	OK	3fe0000000000000
+float	002e.0035	OK	3f000000
+int	002e.0035	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: .5
+long	002e.0035	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: .5
+boolean	002e.0035	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): .5
+double	002e	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: .
+float	002e	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: .
+int	002e	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: .
+long	002e	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: .
+boolean	002e	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): .
+double	0065.0035	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: e5
+float	0065.0035	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: e5
+int	0065.0035	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: e5
+long	0065.0035	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: e5
+boolean	0065.0035	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): e5
+double	0031.0065	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 1e
+float	0031.0065	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 1e
+int	0031.0065	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e
+long	0031.0065	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e
+boolean	0031.0065	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e
+double	0031.0065.002b	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 1e+
+float	0031.0065.002b	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 1e+
+int	0031.0065.002b	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e+
+long	0031.0065.002b	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e+
+boolean	0031.0065.002b	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e+
+double	0031.0065.002b.0035	OK	40f86a0000000000
+float	0031.0065.002b.0035	OK	47c35000
+int	0031.0065.002b.0035	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e+5
+long	0031.0065.002b.0035	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e+5
+boolean	0031.0065.002b.0035	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e+5
+double	0031.0045.002d.0035	OK	3ee4f8b588e368f1
+float	0031.0045.002d.0035	OK	3727c5ac
+int	0031.0045.002d.0035	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1E-5
+long	0031.0045.002d.0035	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1E-5
+boolean	0031.0045.002d.0035	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1E-5
+double	002d.002d.0031	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: --1
+float	002d.002d.0031	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: --1
+int	002d.002d.0031	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: --1
+long	002d.002d.0031	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: --1
+boolean	002d.002d.0031	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): --1
+double	002b.002d.0031	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: +-1
+float	002b.002d.0031	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: +-1
+int	002b.002d.0031	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: +-1
+long	002b.002d.0031	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: +-1
+boolean	002b.002d.0031	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): +-1
+double	0030.0078	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 0x
+float	0030.0078	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 0x
+int	0030.0078	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x
+long	0030.0078	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x
+boolean	0030.0078	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x
+double	0030.0078.0031	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 0x1
+float	0030.0078.0031	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 0x1
+int	0030.0078.0031	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1
+long	0030.0078.0031	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1
+boolean	0030.0078.0031	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1
+double	0030.0078.0031.002e.0070.0031	OK	4000000000000000
+float	0030.0078.0031.002e.0070.0031	OK	40000000
+int	0030.0078.0031.002e.0070.0031	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.p1
+long	0030.0078.0031.002e.0070.0031	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.p1
+boolean	0030.0078.0031.002e.0070.0031	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.p1
+double	0030.0078.0031.0050	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 0x1P
+float	0030.0078.0031.0050	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 0x1P
+int	0030.0078.0031.0050	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1P
+long	0030.0078.0031.0050	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1P
+boolean	0030.0078.0031.0050	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1P
+double	0031.0065.0035.0064	OK	40f86a0000000000
+float	0031.0065.0035.0064	OK	47c35000
+int	0031.0065.0035.0064	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e5d
+long	0031.0065.0035.0064	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e5d
+boolean	0031.0065.0035.0064	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e5d
+double	0049.006e.0066.0069.006e.0069.0074.0079.0064	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: Infinityd
+float	0049.006e.0066.0069.006e.0069.0074.0079.0064	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: Infinityd
+int	0049.006e.0066.0069.006e.0069.0074.0079.0064	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: Infinityd
+long	0049.006e.0066.0069.006e.0069.0074.0079.0064	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: Infinityd
+boolean	0049.006e.0066.0069.006e.0069.0074.0079.0064	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): Infinityd
+double	002b.004e.0061.004e	OK	7ff8000000000000
+float	002b.004e.0061.004e	OK	7fc00000
+int	002b.004e.0061.004e	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: +NaN
+long	002b.004e.0061.004e	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: +NaN
+boolean	002b.004e.0061.004e	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): +NaN
+double	002d.004e.0061.004e	OK	7ff8000000000000
+float	002d.004e.0061.004e	OK	7fc00000
+int	002d.004e.0061.004e	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: -NaN
+long	002d.004e.0061.004e	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: -NaN
+boolean	002d.004e.0061.004e	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -NaN
+double	004e.0061.004e.0066	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: NaNf
+float	004e.0061.004e.0066	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: NaNf
+int	004e.0061.004e.0066	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: NaNf
+long	004e.0061.004e.0066	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: NaNf
+boolean	004e.0061.004e.0066	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): NaNf
+double	0033.002e.0034.0030.0032.0038.0032.0033.0035.0065.0033.0038	OK	47efffffe54daff8
+float	0033.002e.0034.0030.0032.0038.0032.0033.0035.0065.0033.0038	OK	7f7fffff
+int	0033.002e.0034.0030.0032.0038.0032.0033.0035.0065.0033.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 3.4028235e38
+long	0033.002e.0034.0030.0032.0038.0032.0033.0035.0065.0033.0038	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 3.4028235e38
+boolean	0033.002e.0034.0030.0032.0038.0032.0033.0035.0065.0033.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 3.4028235e38
+double	0033.002e.0034.0030.0032.0038.0032.0033.0036.0065.0033.0038	OK	47effffff514a7bc
+float	0033.002e.0034.0030.0032.0038.0032.0033.0036.0065.0033.0038	OK	7f800000
+int	0033.002e.0034.0030.0032.0038.0032.0033.0036.0065.0033.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 3.4028236e38
+long	0033.002e.0034.0030.0032.0038.0032.0033.0036.0065.0033.0038	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 3.4028236e38
+boolean	0033.002e.0034.0030.0032.0038.0032.0033.0036.0065.0033.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 3.4028236e38
+double	0033.002e.0034.0030.0032.0038.0032.0033.0035.0036.0037.0037.0039.0037.0033.0033.0036.0036.0065.0033.0038	OK	47effffff0000000
+float	0033.002e.0034.0030.0032.0038.0032.0033.0035.0036.0037.0037.0039.0037.0033.0033.0036.0036.0065.0033.0038	OK	7f7fffff
+int	0033.002e.0034.0030.0032.0038.0032.0033.0035.0036.0037.0037.0039.0037.0033.0033.0036.0036.0065.0033.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 3.4028235677973366e38
+long	0033.002e.0034.0030.0032.0038.0032.0033.0035.0036.0037.0037.0039.0037.0033.0033.0036.0036.0065.0033.0038	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 3.4028235677973366e38
+boolean	0033.002e.0034.0030.0032.0038.0032.0033.0035.0036.0037.0037.0039.0037.0033.0033.0036.0036.0065.0033.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 3.4028235677973366e38
+double	0031.0065.002d.0034.0036	OK	366244ce242c5561
+float	0031.0065.002d.0034.0036	OK	0
+int	0031.0065.002d.0034.0036	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e-46
+long	0031.0065.002d.0034.0036	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e-46
+boolean	0031.0065.002d.0034.0036	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e-46
+double	0031.002e.0034.0065.002d.0034.0035	OK	369ff868bf4d956a
+float	0031.002e.0034.0065.002d.0034.0035	OK	1
+int	0031.002e.0034.0065.002d.0034.0035	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.4e-45
+long	0031.002e.0034.0065.002d.0034.0035	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.4e-45
+boolean	0031.002e.0034.0065.002d.0034.0035	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.4e-45
+double	0037.002e.0030.0065.002d.0034.0036	OK	368ff868bf4d956a
+float	0037.002e.0030.0065.002d.0034.0036	OK	0
+int	0037.002e.0030.0065.002d.0034.0036	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 7.0e-46
+long	0037.002e.0030.0065.002d.0034.0036	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 7.0e-46
+boolean	0037.002e.0030.0065.002d.0034.0036	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 7.0e-46
+double	0037.002e.0030.0030.0036.0034.0039.0032.0033.0032.0031.0036.0032.0034.0030.0038.0035.0065.002d.0034.0036	OK	3690000000000000
+float	0037.002e.0030.0030.0036.0034.0039.0032.0033.0032.0031.0036.0032.0034.0030.0038.0035.0065.002d.0034.0036	OK	0
+int	0037.002e.0030.0030.0036.0034.0039.0032.0033.0032.0031.0036.0032.0034.0030.0038.0035.0065.002d.0034.0036	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 7.006492321624085e-46
+long	0037.002e.0030.0030.0036.0034.0039.0032.0033.0032.0031.0036.0032.0034.0030.0038.0035.0065.002d.0034.0036	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 7.006492321624085e-46
+boolean	0037.002e.0030.0030.0036.0034.0039.0032.0033.0032.0031.0036.0032.0034.0030.0038.0035.0065.002d.0034.0036	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 7.006492321624085e-46
+double	0030.0078.0031.002e.0066.0066.0066.0066.0066.0065.0050.0031.0032.0037	OK	47efffffe0000000
+float	0030.0078.0031.002e.0066.0066.0066.0066.0066.0065.0050.0031.0032.0037	OK	7f7fffff
+int	0030.0078.0031.002e.0066.0066.0066.0066.0066.0065.0050.0031.0032.0037	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.fffffeP127
+long	0030.0078.0031.002e.0066.0066.0066.0066.0066.0065.0050.0031.0032.0037	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.fffffeP127
+boolean	0030.0078.0031.002e.0066.0066.0066.0066.0066.0065.0050.0031.0032.0037	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.fffffeP127
+double	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0050.0031.0032.0037	OK	47effffff0000000
+float	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0050.0031.0032.0037	OK	7f800000
+int	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0050.0031.0032.0037	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.ffffffP127
+long	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0050.0031.0032.0037	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.ffffffP127
+boolean	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0050.0031.0032.0037	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.ffffffP127
+double	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0070.0030	OK	3ff0000010000000
+float	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0070.0030	OK	3f800000
+int	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.000001p0
+long	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.000001p0
+boolean	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.000001p0
+double	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0038.0070.0030	OK	3ff0000018000000
+float	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0038.0070.0030	OK	3f800001
+int	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0038.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.0000018p0
+long	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0038.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.0000018p0
+boolean	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0038.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.0000018p0
+double	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0070.0030	OK	3ff0000010000000
+float	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0070.0030	OK	3f800001
+int	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.0000010000000001p0
+long	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.0000010000000001p0
+boolean	0030.0078.0031.002e.0030.0030.0030.0030.0030.0031.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.0000010000000001p0
+double	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0070.0030	OK	3ff0000000000000
+float	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0070.0030	OK	3f800000
+int	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.00000000000008p0
+long	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.00000000000008p0
+boolean	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.00000000000008p0
+double	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0038.0070.0030	OK	3ff0000000000002
+float	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0038.0070.0030	OK	3f800000
+int	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0038.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.00000000000018p0
+long	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0038.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.00000000000018p0
+boolean	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0031.0038.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.00000000000018p0
+double	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0031.0070.0030	OK	3ff0000000000001
+float	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0031.0070.0030	OK	3f800000
+int	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0031.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.000000000000081p0
+long	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0031.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.000000000000081p0
+boolean	0030.0078.0031.002e.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0030.0038.0031.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.000000000000081p0
+double	0030.0078.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0070.0030	OK	44f0000000000000
+float	0030.0078.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0070.0030	OK	67800000
+int	0030.0078.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0xFFFFFFFFFFFFFFFFFFFFp0
+long	0030.0078.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0xFFFFFFFFFFFFFFFFFFFFp0
+boolean	0030.0078.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0xFFFFFFFFFFFFFFFFFFFFp0
+double	0030.0078.0030.0070.0030	OK	0
+float	0030.0078.0030.0070.0030	OK	0
+int	0030.0078.0030.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x0p0
+long	0030.0078.0030.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x0p0
+boolean	0030.0078.0030.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x0p0
+double	002d.0030.0078.0030.002e.0030.0070.0030	OK	8000000000000000
+float	002d.0030.0078.0030.002e.0030.0070.0030	OK	80000000
+int	002d.0030.0078.0030.002e.0030.0070.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: -0x0.0p0
+long	002d.0030.0078.0030.002e.0030.0070.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: -0x0.0p0
+boolean	002d.0030.0078.0030.002e.0030.0070.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -0x0.0p0
+double	0030.0030.0030.0031.0032	OK	4028000000000000
+float	0030.0030.0030.0031.0032	OK	41400000
+int	0030.0030.0030.0031.0032	OK	12
+long	0030.0030.0030.0031.0032	OK	41400000
+boolean	0030.0030.0030.0031.0032	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 00012
+double	002d.0030.0030	OK	8000000000000000
+float	002d.0030.0030	OK	80000000
+int	002d.0030.0030	OK	0
+long	002d.0030.0030	OK	0
+boolean	002d.0030.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -00
+double	002b.0030	OK	0
+float	002b.0030	OK	0
+int	002b.0030	OK	0
+long	002b.0030	OK	0
+boolean	002b.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): +0
+double	002b	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: +
+float	002b	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: +
+int	002b	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: +
+long	002b	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: +
+boolean	002b	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): +
+double	002d	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: -
+float	002d	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: -
+int	002d	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: -
+long	002d	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: -
+boolean	002d	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): -
+double	0031.0032.0061	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 12a
+float	0031.0032.0061	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 12a
+int	0031.0032.0061	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 12a
+long	0031.0032.0061	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 12a
+boolean	0031.0032.0061	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 12a
+double	0020.0031.0020.0032.0020	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop:  1 2 
+float	0020.0031.0020.0032.0020	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop:  1 2 
+int	0020.0031.0020.0032.0020	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop:  1 2 
+long	0020.0031.0020.0032.0020	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop:  1 2 
+boolean	0020.0031.0020.0032.0020	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1 2
+double	0030.002e.0030.0030.0030.0030.0030.0030.0031.0065.0037	OK	3ff0000000000000
+float	0030.002e.0030.0030.0030.0030.0030.0030.0031.0065.0037	OK	3f800000
+int	0030.002e.0030.0030.0030.0030.0030.0030.0031.0065.0037	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0.0000001e7
+long	0030.002e.0030.0030.0030.0030.0030.0030.0031.0065.0037	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0.0000001e7
+boolean	0030.002e.0030.0030.0030.0030.0030.0030.0031.0065.0037	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0.0000001e7
+double	0031.0065.002d.0034.0030.0030	OK	0
+float	0031.0065.002d.0034.0030.0030	OK	0
+int	0031.0065.002d.0034.0030.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e-400
+long	0031.0065.002d.0034.0030.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e-400
+boolean	0031.0065.002d.0034.0030.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e-400
+double	0031.0065.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	7ff0000000000000
+float	0031.0065.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	OK	7f800000
+int	0031.0065.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e2147483648
+long	0031.0065.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e2147483648
+boolean	0031.0065.0032.0031.0034.0037.0034.0038.0033.0036.0034.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e2147483648
+double	0031.0065.002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	OK	0
+float	0031.0065.002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	OK	0
+int	0031.0065.002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1e-2147483649
+long	0031.0065.002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1e-2147483649
+boolean	0031.0065.002d.0032.0031.0034.0037.0034.0038.0033.0036.0034.0039	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1e-2147483649
+double	0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030	OK	45f8ee90ff6c373e
+float	0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030	OK	6fc77488
+int	0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 123456789012345678901234567890
+long	0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 123456789012345678901234567890
+boolean	0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030.0031.0032.0033.0034.0035.0036.0037.0038.0039.0030	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 123456789012345678901234567890
+double	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0037.0065.0033.0030.0038	OK	7fefffffffffffff
+float	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0037.0065.0033.0030.0038	OK	7f800000
+int	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0037.0065.0033.0030.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.7976931348623157e308
+long	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0037.0065.0033.0030.0038	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.7976931348623157e308
+boolean	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0037.0065.0033.0030.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.7976931348623157e308
+double	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0065.0033.0030.0038	OK	7fefffffffffffff
+float	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0065.0033.0030.0038	OK	7f800000
+int	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0065.0033.0030.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.7976931348623158e308
+long	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0065.0033.0030.0038	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.7976931348623158e308
+boolean	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0065.0033.0030.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.7976931348623158e308
+double	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0030.0037.0065.0033.0030.0038	OK	7fefffffffffffff
+float	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0030.0037.0065.0033.0030.0038	OK	7f800000
+int	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0030.0037.0065.0033.0030.0038	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 1.797693134862315807e308
+long	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0030.0037.0065.0033.0030.0038	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 1.797693134862315807e308
+boolean	0031.002e.0037.0039.0037.0036.0039.0033.0031.0033.0034.0038.0036.0032.0033.0031.0035.0038.0030.0037.0065.0033.0030.0038	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 1.797693134862315807e308
+double	0030.0058.0031.002e.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0050.0031.0030.0032.0033	OK	7fefffffffffffff
+float	0030.0058.0031.002e.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0050.0031.0030.0032.0033	OK	7f800000
+int	0030.0058.0031.002e.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0050.0031.0030.0032.0033	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0X1.FFFFFFFFFFFFFP1023
+long	0030.0058.0031.002e.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0050.0031.0030.0032.0033	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0X1.FFFFFFFFFFFFFP1023
+boolean	0030.0058.0031.002e.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0046.0050.0031.0030.0032.0033	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0X1.FFFFFFFFFFFFFP1023
+double	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0038.0070.0031.0030.0032.0033	OK	7ff0000000000000
+float	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0038.0070.0031.0030.0032.0033	OK	7f800000
+int	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0038.0070.0031.0030.0032.0033	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.fffffffffffff8p1023
+long	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0038.0070.0031.0030.0032.0033	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.fffffffffffff8p1023
+boolean	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0038.0070.0031.0030.0032.0033	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.fffffffffffff8p1023
+double	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0037.0066.0066.0070.0031.0030.0032.0033	OK	7fefffffffffffff
+float	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0037.0066.0066.0070.0031.0030.0032.0033	OK	7f800000
+int	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0037.0066.0066.0070.0031.0030.0032.0033	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 0x1.fffffffffffff7ffp1023
+long	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0037.0066.0066.0070.0031.0030.0032.0033	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 0x1.fffffffffffff7ffp1023
+boolean	0030.0078.0031.002e.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0066.0037.0066.0066.0070.0031.0030.0032.0033	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 0x1.fffffffffffff7ffp1023
+double	0660	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: ٠
+float	0660	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: ٠
+int	0660	OK	0
+long	0660	OK	0
+boolean	0660	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): ٠
+double	06f0.06f1	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: ۰۱
+float	06f0.06f1	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: ۰۱
+int	06f0.06f1	OK	1
+long	06f0.06f1	OK	3f800000
+boolean	06f0.06f1	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): ۰۱
+double	d835.dfce	java.lang.IllegalArgumentException	Double value expected for property rucene.oracle.prop: 𝟎
+float	d835.dfce	java.lang.IllegalArgumentException	Float value expected for property rucene.oracle.prop: 𝟎
+int	d835.dfce	java.lang.IllegalArgumentException	Integer value expected for property rucene.oracle.prop: 𝟎
+long	d835.dfce	java.lang.IllegalArgumentException	Long value expected for property rucene.oracle.prop: 𝟎
+boolean	d835.dfce	java.lang.IllegalArgumentException	Boolean value expected for property rucene.oracle.prop (true/false, on/off, enabled/disabled, yes/no): 𝟎
+double	unset	OK	c004000000000000
+float	unset	OK	c0200000
+int	unset	OK	-3
+long	unset	OK	c0400000
+boolean	unset	OK	true
+hashCode	-	0	0
+hashCode	0061	97	7520975441266452855
+hashCode	0074.0065.0073.0074.0041.006c.0070.0068.0061	-1208055828	7307330399207798484
+hashCode	0074.0065.0073.0074	3556498	-8623197178036457992
+hashCode	0063.006f.006d.002e.0063.0061.0072.0072.006f.0074.0073.0065.0061.0072.0063.0068.002e.0072.0061.006e.0064.006f.006d.0069.007a.0065.0064.0074.0065.0073.0074.0069.006e.0067.002e.0052.0061.006e.0064.006f.006d.0069.007a.0065.0064.0054.0065.0073.0074.0069.006e.0067.004f.0072.0061.0063.006c.0065.0024.004d.0069.0078.0065.0064.0053.0075.0069.0074.0065	-39289779	-2016203565545234848
+hashCode	00e9.4e2d.d83d.de00	27946695	5731322407273960855
+hashCode	006f.0072.0067.002e.0061.0070.0061.0063.0068.0065.002e.006c.0075.0063.0065.006e.0065.002e.0069.006e.0064.0065.0078.002e.0054.0065.0073.0074.0049.006e.0064.0065.0078.0057.0072.0069.0074.0065.0072	-848379135	1916768327691779768
+murmur64	0	0
+murmur64	1	-5451962507482445012
+murmur64	-1	7256831767414464289
+murmur64	-9223372036854775808	-8108722261328812909
+murmur64	9223372036854775807	-6072754518692401686
+murmur64	3735928559	-3293303821363962452
+murmur64	42	-9148929187392628276
+murmur32	0	0
+murmur32	1	1364076727
+murmur32	-1	-2114883783
+murmur32	-2147483648	1832674720
+murmur32	2147483647	-104067416
+murmur32	-559038737	233162409
+murmur32	42	142593372

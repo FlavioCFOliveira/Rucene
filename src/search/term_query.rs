@@ -182,7 +182,7 @@ impl TermWeight {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when scores are needed but no
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when scores are needed but no
     /// [`TermStates`] were supplied, which is the `IllegalStateException` Java
     /// throws, and propagates any I/O error raised while reading the
     /// statistics.
@@ -282,8 +282,24 @@ impl TermWeight {
     /// Equivalent to the private
     /// `TermWeight.getTermsEnum(LeafReaderContext)`.
     fn get_terms_enum(&self, context: &LeafReaderContext) -> Result<Option<Box<dyn TermsEnum>>> {
+        debug_assert!(self.term_states.is_some());
+        debug_assert!(
+            self.term_states
+                .as_ref()
+                .is_some_and(|states| states.was_built_for_top_level_of(context)),
+            "The top-reader used to create Weight is not the same as the current reader's \
+             top-reader ({context}"
+        );
         let Some(state) = self.term_state(context)? else {
             // The term is not present in that reader.
+            debug_assert!(
+                crate::search::phrase_query::PhraseQuery::term_not_in_reader(
+                    &context.leaf_reader(),
+                    self.term()
+                )?,
+                "no termstate found but term exists in reader term={}",
+                self.term()
+            );
             return Ok(None);
         };
         Self::seek(&context.leaf_reader(), self.term(), &*state)
@@ -318,6 +334,15 @@ impl TermWeight {
         &self,
         context: &LeafReaderContext,
     ) -> Result<Option<TermScorerSupplier>> {
+        // `TermQuery.java:121`, at the head of `scorerSupplier`, which
+        // `explain` also goes through.
+        debug_assert!(
+            self.term_states
+                .as_ref()
+                .is_none_or(|states| states.was_built_for_top_level_of(context)),
+            "The top-reader used to create Weight is not the same as the current reader's \
+             top-reader ({context}"
+        );
         let Some(state) = self.term_state(context)? else {
             return Ok(None);
         };
@@ -370,7 +395,9 @@ impl Weight for TermWeight {
                 else {
                     return Ok(None);
                 };
-                let mut pe = terms_enum.postings(None, POSTINGS_ENUM_OFFSETS)?;
+                let mut pe = terms_enum
+                    .postings(None, POSTINGS_ENUM_OFFSETS)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 if pe.advance(doc)? != doc {
                     return Ok(None);
                 }
@@ -509,7 +536,7 @@ impl TermScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when called more than once, which
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when called more than once, which
     /// `ScorerSupplier.get(long)` forbids, and propagates any I/O error.
     pub fn term_scorer(&mut self) -> Result<TermScorer> {
         let mut terms_enum = self.terms_enum.take().ok_or_else(|| {
@@ -545,7 +572,9 @@ impl TermScorerSupplier {
             } else {
                 POSTINGS_ENUM_NONE
             };
-            let postings: Box<dyn PostingsEnum> = terms_enum.postings(None, flags)?;
+            let postings: Box<dyn PostingsEnum> = terms_enum
+                .postings(None, flags)?
+                .ok_or_else(LuceneError::null_pointer)?;
             Ok(TermScorer::new(postings, sim_scorer, norms))
         }
     }

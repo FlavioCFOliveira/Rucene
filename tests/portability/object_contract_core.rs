@@ -223,18 +223,28 @@ fn field_updates_buffer(m: &Measured) {
     use rucene::index::Term;
 
     let term = |value: &str| Term::new("id", BytesRef::new(value.as_bytes().to_vec()));
+    let counter = || Arc::new(rucene::util::concurrent::Counter::new_counter());
 
-    let mut same = FieldUpdatesBuffer::new(DocValuesUpdate::numeric(term("a"), "price", 7), 3)
-        .expect("a numeric buffer");
+    let mut same = FieldUpdatesBuffer::new(
+        counter(),
+        DocValuesUpdate::numeric(term("a"), "price", 7),
+        3,
+    )
+    .expect("a numeric buffer");
     same.add_numeric_update(&term("b"), 7, 5).expect("second");
     same.add_numeric_update(&term("c"), 7, 9).expect("third");
 
-    let mut mixed = FieldUpdatesBuffer::new(DocValuesUpdate::numeric(term("a"), "price", -4), 3)
-        .expect("a numeric buffer");
+    let mut mixed = FieldUpdatesBuffer::new(
+        counter(),
+        DocValuesUpdate::numeric(term("a"), "price", -4),
+        3,
+    )
+    .expect("a numeric buffer");
     mixed.add_numeric_update(&term("b"), 11, 5).expect("second");
     mixed.add_numeric_update(&term("c"), 0, 9).expect("third");
 
     let mut none = FieldUpdatesBuffer::new(
+        counter(),
         DocValuesUpdate::new(
             rucene::index::DocValuesType::NUMERIC,
             term("a"),
@@ -257,16 +267,13 @@ fn field_updates_buffer(m: &Measured) {
             m.get(&format!("FieldUpdatesBuffer.hasSingleValue/{name}")),
             "hasSingleValue disagrees for the `{name}` buffer"
         );
-        // Java answers `0` where this port answers `None`, the divergence
-        // declared on `min_numeric_value`; `unwrap_or(0)` is that mapping and
-        // nothing else, so a wrong value still fails.
         assert_eq!(
-            buffer.min_numeric_value().unwrap_or(0).to_string(),
+            buffer.get_min_numeric().to_string(),
             m.get(&format!("FieldUpdatesBuffer.getMinNumeric/{name}")),
             "getMinNumeric disagrees for the `{name}` buffer"
         );
         assert_eq!(
-            buffer.max_numeric_value().unwrap_or(0).to_string(),
+            buffer.get_max_numeric().to_string(),
             m.get(&format!("FieldUpdatesBuffer.getMaxNumeric/{name}")),
             "getMaxNumeric disagrees for the `{name}` buffer"
         );
@@ -400,7 +407,7 @@ fn writer_configs(m: &Measured) {
         "LiveIndexWriterConfig.toString() is the same text without `writer=`"
     );
 
-    let mut tuned = IndexWriterConfig::new();
+    let tuned = IndexWriterConfig::new();
     tuned
         .set_ram_buffer_size_mb(64.0)
         .expect("a valid RAM buffer size");
@@ -421,7 +428,7 @@ fn writer_configs(m: &Measured) {
         )
         .expect("a sortable field type");
     tuned
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("a merge policy");
     tuned.set_open_mode(OpenMode::CREATE).expect("an open mode");
     assert_eq!(
@@ -640,7 +647,8 @@ fn util_bkd(m: &Measured) {
     assert_eq!(heap.to_string(), m.get("HeapPointWriter.toString/empty10"));
 
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let offline = OfflinePointWriter::new(config, dir, "prefix", "desc").expect("offline writer");
+    let offline =
+        OfflinePointWriter::new(config, dir, "prefix", "desc", 0).expect("offline writer");
     assert_eq!(
         offline.to_string(),
         m.get("OfflinePointWriter.toString/fresh"),
@@ -928,7 +936,7 @@ fn index(m: &Measured) {
     assert_eq!(ord.to_string(), m.get("OrdTermState.toString/987654321"));
 
     assert_eq!(
-        NoMergePolicy::default().to_string(),
+        NoMergePolicy::instance().to_string(),
         m.get("NoMergePolicy.toString")
     );
     assert_eq!(
@@ -970,7 +978,7 @@ fn index(m: &Measured) {
         m.get("LogDocMergePolicy.toString/default")
     );
 
-    let no_merge: Arc<dyn MergePolicy> = Arc::new(NoMergePolicy::default());
+    let no_merge: Arc<dyn MergePolicy> = NoMergePolicy::instance();
     assert_eq!(
         UpgradeIndexMergePolicy::new(Arc::clone(&no_merge)).to_string(),
         m.get("FilterMergePolicy.toString/UpgradeIndexMergePolicy-over-NoMergePolicy"),
@@ -1048,13 +1056,13 @@ fn analysis(m: &Measured) {
         term.to_string(),
         m.get("CharTermAttributeImpl.toString/empty")
     );
-    term.append_string("hello");
+    term.append_string(Some("hello"));
     assert_eq!(
         term.to_string(),
         m.get("CharTermAttributeImpl.toString/hello")
     );
     term.set_empty();
-    term.append_string("café 日本");
+    term.append_string(Some("café 日本"));
     assert_eq!(
         term.to_string(),
         m.get("CharTermAttributeImpl.toString/unicode"),
@@ -1299,7 +1307,9 @@ fn readers(m: &Measured, index_dir: &std::path::Path) {
     );
 
     assert_eq!(
-        FilterLeafReader::new(Arc::clone(&leaf0)).to_string(),
+        FilterLeafReader::new(Arc::clone(&leaf0))
+            .unwrap()
+            .to_string(),
         m.get("FilterLeafReader.toString/over-segment-0"),
         "Lucene hardcodes the name `FilterLeafReader`, it does not ask for its own"
     );
@@ -1519,24 +1529,21 @@ fn pending_deletes(m: &Measured, index_dir: &std::path::Path) {
 
     let mut hard = PendingDeletes::new(&info);
     assert_eq!(
-        hard.to_string_with_info(&info),
+        hard.to_string(),
         m.get("PendingDeletes.toString/fresh"),
         "Lucene never closes the parenthesis it opens here"
     );
-    hard.get_mutable_bits(&info);
+    hard.get_mutable_bits();
+    assert_eq!(hard.to_string(), m.get("PendingDeletes.toString/writeable"));
+    hard.delete(1).expect("delete document 1");
     assert_eq!(
-        hard.to_string_with_info(&info),
-        m.get("PendingDeletes.toString/writeable")
-    );
-    hard.delete(1, &info).expect("delete document 1");
-    assert_eq!(
-        hard.to_string_with_info(&info),
+        hard.to_string(),
         m.get("PendingDeletes.toString/one-deleted")
     );
 
     let soft = PendingSoftDeletes::new("__soft_deletes", &info);
     assert_eq!(
-        soft.to_string_with_info(&info),
+        soft.to_string(),
         m.get("PendingSoftDeletes.toString/fresh"),
         "the embedded hardDeletes tracker is rendered whole, its parenthesis open too"
     );
@@ -1604,9 +1611,9 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     let directory: Arc<dyn Directory> =
         Arc::new(rucene::store::FSDirectory::open(index_dir).expect("open the Java index"));
     let config = Arc::new(
-        rucene::index::index_writer_config::LiveIndexWriterConfig::new(Arc::new(
+        rucene::index::index_writer_config::LiveIndexWriterConfig::new(Some(Arc::new(
             rucene::analysis::standard::StandardAnalyzer::new(),
-        )),
+        ))),
     );
     let field_numbers =
         Arc::new(rucene::index::field_infos::FieldNumbers::new(None, None).expect("field numbers"));

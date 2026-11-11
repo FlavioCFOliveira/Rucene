@@ -38,4 +38,13 @@ pub trait FieldComparatorSource: Debug + Send + Sync {
         pruning: Pruning,
         reversed: bool,
     ) -> Result<Box<dyn FieldComparator>>;
+
+    /// Answers `instanceof` on the concrete source: the default `None`,
+    /// overridden by the sources whose class tells the `SortField` subclass
+    /// that installed them (`DoubleValuesSortField`, `LongValuesSortField`),
+    /// whose `rewrite` [`SortField::rewrite`](crate::search::SortField::rewrite)
+    /// dispatches to.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }

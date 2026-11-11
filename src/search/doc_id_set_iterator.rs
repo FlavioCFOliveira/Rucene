@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::{bit_set_of, BitSet, BitSetIterator, Bits, FixedBitSet};
 
 /// Sentinel returned by [`DocIdSetIterator`] methods when no more documents
@@ -29,6 +29,17 @@ pub const NO_MORE_DOCS: i32 = i32::MAX;
 ///   and return the new current doc ID or [`NO_MORE_DOCS`].
 /// - Once exhausted, the iterator must not be used again.
 pub trait DocIdSetIterator {
+    /// Whether this iterator is the view of a two-phase iterator that
+    /// `TwoPhaseIterator.asDocIdSetIterator` returns, which is when
+    /// `TwoPhaseIterator.unwrap(DocIdSetIterator)` (`TwoPhaseIterator.java`)
+    /// returns non-null.
+    ///
+    /// Java tests the iterator's class with `instanceof`; the wrapper declares
+    /// itself here. The default answers `false`.
+    fn wraps_two_phase_iterator(&self) -> bool {
+        false
+    }
+
     /// Returns the current doc ID.
     ///
     /// Returns `-1` if the iterator has not yet been positioned, and
@@ -79,7 +90,7 @@ pub trait DocIdSetIterator {
         if doc == -1 {
             doc = self.next_doc()?;
         }
-        debug_assert!(offset <= doc);
+        debug_assert!(offset <= doc, "offset={offset} docID()={doc} upTo={up_to}");
         while doc < up_to {
             bit_set.set((doc - offset) as usize);
             doc = self.next_doc()?;
@@ -92,7 +103,7 @@ pub trait DocIdSetIterator {
     ///
     /// The returned value is greater than [`Self::doc_id`], and every doc ID in
     /// `[doc_id(), doc_id_run_end())` matches the iterator.
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc_id() != NO_MORE_DOCS);
         Ok(self.doc_id() + 1)
     }
@@ -169,7 +180,7 @@ impl DocIdSetIterator for EmptyDocIdSetIterator {
         self.range.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.range.doc_id_run_end()
     }
 }
@@ -187,10 +198,10 @@ impl AllDocIdSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `max_doc` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `max_doc` is negative.
     pub fn new(max_doc: i32) -> Result<Self> {
         if max_doc < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxDoc must be >= 0, but got maxDoc={max_doc}"
             )));
         }
@@ -201,6 +212,11 @@ impl AllDocIdSetIterator {
 }
 
 impl DocIdSetIterator for AllDocIdSetIterator {
+    /// Java tests the class of this iterator (`TestPointQueries.java:2219`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.range.doc_id()
     }
@@ -217,7 +233,7 @@ impl DocIdSetIterator for AllDocIdSetIterator {
         self.range.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.range.doc_id_run_end()
     }
 }
@@ -246,16 +262,16 @@ impl RangeDocIdSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `min_doc` is negative or
+    /// Returns `LuceneErrorKind::IllegalArgument` if `min_doc` is negative or
     /// `min_doc >= max_doc`.
     pub fn range(min_doc: i32, max_doc: i32) -> Result<Self> {
         if min_doc >= max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDoc must be < maxDoc but got minDoc={min_doc} maxDoc={max_doc}"
             )));
         }
         if min_doc < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDoc must be >= 0 but got minDoc={min_doc}"
             )));
         }
@@ -264,6 +280,11 @@ impl RangeDocIdSetIterator {
 }
 
 impl DocIdSetIterator for RangeDocIdSetIterator {
+    /// Java tests the class of this iterator (`TestPointQueries.java:2219`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -287,7 +308,7 @@ impl DocIdSetIterator for RangeDocIdSetIterator {
         (self.max_doc - self.min_doc) as i64
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc != NO_MORE_DOCS);
         Ok(self.max_doc)
     }
@@ -318,17 +339,29 @@ pub fn range(min_doc: i32, max_doc: i32) -> Result<RangeDocIdSetIterator> {
 ///
 /// Equivalent to Lucene's `IOSupplier<DocIdSetIterator>`.
 pub trait DocIdSetIteratorSupplier {
-    /// Returns a new iterator.
-    fn get(&mut self) -> Result<Box<dyn DocIdSetIterator>>;
+    /// Returns a new iterator, or `None` for Java's `null`, which
+    /// `AcceptDocs` rejects with a `NullPointerException`
+    /// (`AcceptDocs.java:201`).
+    fn get(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>>;
 }
 
 impl<F> DocIdSetIteratorSupplier for F
 where
     F: FnMut() -> Result<Box<dyn DocIdSetIterator>>,
 {
-    fn get(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
-        (self)()
+    fn get(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        (self)().map(Some)
     }
+}
+
+/// `Objects.requireNonNull(value)`: a `NullPointerException` with a `null`
+/// message for `None`.
+fn require_non_null<T>(value: Option<T>) -> Result<T> {
+    value.ok_or(LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.NullPointerException",
+        message: None,
+        cause: None,
+    }))
 }
 
 /// Higher-level abstraction for document acceptance filtering.
@@ -374,12 +407,12 @@ impl BitsAcceptDocs {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the provided bits have a
+    /// Returns `LuceneErrorKind::IllegalArgument` if the provided bits have a
     /// length different from `max_doc`.
     pub fn from_live_docs(bits: Option<Box<dyn Bits>>, max_doc: i32) -> Result<Self> {
         if let Some(bits) = bits.as_ref() {
             if bits.length() != max_doc as usize {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Bits length = {} != maxDoc = {max_doc}",
                     bits.length()
                 )));
@@ -454,21 +487,17 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the provided live docs have a
-    /// length different from `max_doc`.
+    /// Returns the `NullPointerException` of `Objects.requireNonNull` when
+    /// `supplier` is `None` (`AcceptDocs.java:172`).
     pub fn from_iterator_supplier(
-        supplier: S,
+        supplier: Option<S>,
         live_docs: Option<Box<dyn Bits>>,
         max_doc: i32,
     ) -> Result<Self> {
-        if let Some(bits) = live_docs.as_ref() {
-            if bits.length() != max_doc as usize {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "Bits length = {} != maxDoc = {max_doc}",
-                    bits.length()
-                )));
-            }
-        }
+        // `Objects.requireNonNull(iteratorSupplier)` (`AcceptDocs.java:172`).
+        let supplier = require_non_null(supplier)?;
+        // Java checks no live-docs length here (`AcceptDocs.java:170-175`);
+        // only `BitsAcceptDocs` compares it with `maxDoc`.
         Ok(Self {
             supplier,
             live_docs: live_docs.map(Arc::from),
@@ -479,7 +508,9 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
     }
 
     fn filtered_iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
-        let base = self.supplier.get()?;
+        // `Objects.requireNonNull(iteratorSupplier.get())`
+        // (`AcceptDocs.java:201`).
+        let base = require_non_null(self.supplier.get()?)?;
         Ok(get_filtered_doc_id_set_iterator(
             base,
             self.live_docs.as_ref().map(Arc::clone),
@@ -542,7 +573,7 @@ pub fn from_live_docs(bits: Option<Box<dyn Bits>>, max_doc: i32) -> Result<BitsA
 ///
 /// Equivalent to `AcceptDocs.fromIteratorSupplier(IOSupplier<DocIdSetIterator>, Bits, int)`.
 pub fn from_iterator_supplier<S: DocIdSetIteratorSupplier>(
-    supplier: S,
+    supplier: Option<S>,
     live_docs: Option<Box<dyn Bits>>,
     max_doc: i32,
 ) -> Result<IteratorAcceptDocs<S>> {
@@ -888,7 +919,7 @@ mod tests {
         let supplier = || -> Result<Box<dyn DocIdSetIterator>> {
             Ok(Box::new(VecDocIdSetIterator::new(vec![1, 3, 5, 7])))
         };
-        let mut accept = from_iterator_supplier(supplier, None, 10).unwrap();
+        let mut accept = from_iterator_supplier(Some(supplier), None, 10).unwrap();
         assert_eq!(accept.cost().unwrap(), 4);
 
         let bits = accept.bits().unwrap().unwrap();
@@ -912,7 +943,7 @@ mod tests {
             Ok(Box::new(VecDocIdSetIterator::new(vec![0, 2, 4, 6, 8])))
         };
         let live: Box<dyn Bits> = Box::new(EvenBits { max_doc: 10 });
-        let mut accept = from_iterator_supplier(supplier, Some(live), 10).unwrap();
+        let mut accept = from_iterator_supplier(Some(supplier), Some(live), 10).unwrap();
         let mut it = accept.iterator().unwrap();
         for expected in [0, 2, 4, 6, 8] {
             assert_eq!(it.next_doc().unwrap(), expected);
@@ -935,13 +966,15 @@ mod tests {
         assert!(from_live_docs(Some(bits), 8).is_err());
     }
 
+    /// Java's `DocIdSetIteratorAcceptDocs` does not compare the live-docs
+    /// length with `maxDoc` (`AcceptDocs.java:170-175`).
     #[test]
-    fn iterator_accept_docs_rejects_length_mismatch() {
+    fn iterator_accept_docs_accepts_length_mismatch() {
         let supplier = || -> Result<Box<dyn DocIdSetIterator>> {
             Ok(Box::new(VecDocIdSetIterator::new(vec![])))
         };
         let live: Box<dyn Bits> = Box::new(EvenBits { max_doc: 5 });
-        assert!(from_iterator_supplier(supplier, Some(live), 8).is_err());
+        assert!(from_iterator_supplier(Some(supplier), Some(live), 8).is_ok());
     }
 }
 
@@ -981,7 +1014,7 @@ mod accept_docs_reuse_tests {
         let supplier = move || -> Result<Box<dyn DocIdSetIterator>> {
             Ok(Box::new(BitSetIterator::new(Arc::clone(&shared), 2)?))
         };
-        let mut accept = from_iterator_supplier(supplier, None, 100).unwrap();
+        let mut accept = from_iterator_supplier(Some(supplier), None, 100).unwrap();
         let bits = accept.bits().unwrap().unwrap();
         assert_eq!(
             Arc::as_ptr(&bits) as *const (),

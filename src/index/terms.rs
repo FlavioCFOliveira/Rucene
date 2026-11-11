@@ -75,9 +75,28 @@ impl Term {
         &self.bytes
     }
 
-    /// Returns the term text, best-effort UTF-8 decoding.
+    /// Returns the human-readable form of `term_text`: its UTF-8 decoding,
+    /// or, when the bytes are not well-formed UTF-8, the raw bytes as
+    /// [`BytesRef`]'s `Display` prints them.
+    ///
+    /// Equivalent to the static `Term.toString(BytesRef)`
+    /// (`Term.java:108-124`), whose decoder reports malformed input
+    /// (`CodingErrorAction.REPORT`) and then falls back to
+    /// `termText.toString()`.
+    pub fn to_string_bytes_ref(term_text: &BytesRef) -> String {
+        match std::str::from_utf8(term_text.slice()) {
+            Ok(text) => text.to_string(),
+            Err(_) => term_text.to_string(),
+        }
+    }
+
+    /// Returns the term text.
+    ///
+    /// Equivalent to `Term.text()`, which is `toString(bytes)`
+    /// (`Term.java:100-102, 108-124`): the UTF-8 text, or the raw bytes in
+    /// `BytesRef.toString()` form when they are not valid UTF-8.
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(self.bytes.slice()).into_owned()
+        Self::to_string_bytes_ref(&self.bytes)
     }
 
     /// Replaces the field and bytes in place (bytes are not copied).
@@ -169,6 +188,9 @@ impl Ord for Term {
 }
 
 impl fmt::Display for Term {
+    /// Equivalent to `Term.toString()`, `field + ":" + text()`, where `text()`
+    /// is `Term.toString(BytesRef)`: the strictly decoded UTF-8 text, or the
+    /// raw bytes when they are not valid UTF-8 (`Term.java:108-124`).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.field, self.text())
     }
@@ -210,6 +232,11 @@ impl OrdTermState {
 
 impl TermState for OrdTermState {
     fn copy_from(&mut self, other: &dyn TermState) {
+        debug_assert!(
+            other.as_any().is::<OrdTermState>(),
+            "can not copy from {}",
+            std::any::type_name_of_val(other)
+        );
         let other = other
             .as_any()
             .downcast_ref::<OrdTermState>()
@@ -253,6 +280,18 @@ pub enum SeekStatus {
 pub trait TermsEnum: std::fmt::Display {
     /// Returns the attribute source attached to this enum.
     fn attributes(&mut self) -> &mut AttributeSource;
+
+    /// This enum as [`Any`], for the `instanceof` and `assertSame` tests Java
+    /// code makes on a `TermsEnum` (`TestAutomatonQuery` checks
+    /// `instanceof SingleTermsEnum` and `TermsEnum.EMPTY`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through [`Any`], which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
 
     /// Attempts to seek to the exact term, returning `true` if found.
     ///
@@ -300,15 +339,33 @@ pub trait TermsEnum: std::fmt::Display {
     /// Default implementation seeks the exact term and then applies the state.
     fn seek_term_state(&mut self, text: &BytesRef, _state: &dyn TermState) -> Result<()> {
         if !self.seek_exact(text)? {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "term={text:?} does not exist"
             )));
         }
         Ok(())
     }
 
-    /// Returns the current term.
-    fn term(&self) -> Result<BytesRef>;
+    /// Returns the current term, or `None` where Java's `term()` returns
+    /// `null` (for example `MultiTermsEnum` before it is positioned or after
+    /// it is exhausted).
+    fn term(&self) -> Result<Option<BytesRef>>;
+
+    /// Returns the bytes of this enum's current-term buffer as they are now,
+    /// without the preconditions [`term`](Self::term) asserts.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java's `term()` hands
+    /// out the enum's own `BytesRef`, and a caller that keeps it — as
+    /// `MultiTermsEnum.current` does (`MultiTermsEnum.java:208, 249`) — later
+    /// reads whatever the enum has since written there, without calling
+    /// `term()` again. This port returns owned copies, so such a caller reads
+    /// the buffer through this method instead; an enum whose `term()` asserts
+    /// a state (`SegmentTermsEnum.term()` asserts `!eof`,
+    /// `SegmentTermsEnum.java:968-971`) overrides it to skip the assertion,
+    /// exactly as the Java alias does. The default answers `term()`.
+    fn term_buffer(&self) -> Result<Option<BytesRef>> {
+        self.term()
+    }
 
     /// Returns the ordinal position of the current term, if supported.
     fn ord(&self) -> Result<i64>;
@@ -319,12 +376,13 @@ pub trait TermsEnum: std::fmt::Display {
     /// Returns the total number of occurrences of the current term.
     fn total_term_freq(&mut self) -> Result<i64>;
 
-    /// Returns a postings enum for the current term with the given flags.
+    /// Returns a postings enum for the current term with the given flags, or
+    /// `None` where Java's `postings(PostingsEnum, int)` returns `null`.
     fn postings(
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>>;
+    ) -> Result<Option<Box<dyn PostingsEnum>>>;
 
     /// Returns an impacts enum for the current term with the given flags.
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>>;
@@ -368,6 +426,13 @@ pub enum AcceptStatus {
 pub trait FilteredTermsEnumFilter: Send {
     /// Decides whether a term is accepted, rejected, or ends the iteration.
     fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus>;
+
+    /// This filter as [`Any`]: in Java the filter and the enum are one
+    /// object (a `FilteredTermsEnum` subclass), so `instanceof
+    /// SingleTermsEnum` tests the filter. See [`TermsEnum::as_any`].
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
 
     /// Returns the next candidate term to seek to, or `None` if iteration
     /// should end. The default implementation returns the initial seek term
@@ -455,12 +520,23 @@ impl std::fmt::Display for FilteredTermsEnum {
     }
 }
 
+impl FilteredTermsEnum {
+    /// The filter, which in Java is this object itself.
+    pub fn filter(&self) -> &dyn FilteredTermsEnumFilter {
+        &*self.filter
+    }
+}
+
 impl TermsEnum for FilteredTermsEnum {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn attributes(&mut self) -> &mut AttributeSource {
         self.tenum.attributes()
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.tenum.term()
     }
 
@@ -476,7 +552,7 @@ impl TermsEnum for FilteredTermsEnum {
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         self.tenum.postings(reuse, flags)
     }
 
@@ -507,7 +583,7 @@ impl TermsEnum for FilteredTermsEnum {
         &'a mut self,
         _text: &BytesRef,
     ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FilteredTermsEnum does not support seeking".to_string(),
         ))
     }
@@ -552,7 +628,7 @@ impl TermsEnum for FilteredTermsEnum {
                 {
                     return Ok(None);
                 }
-                self.actual_term = Some(self.tenum.term()?);
+                self.actual_term = self.tenum.term()?;
             } else {
                 self.actual_term = self.tenum.next()?;
                 if self.actual_term.is_none() {
@@ -560,7 +636,13 @@ impl TermsEnum for FilteredTermsEnum {
                 }
             }
 
-            match self.filter.accept(self.actual_term.as_ref().unwrap())? {
+            // `accept(actualTerm)`: a `null` from `tenum.term()` reaches the
+            // filter, whose dereference raises `NullPointerException`.
+            let actual_term = self
+                .actual_term
+                .as_ref()
+                .ok_or_else(LuceneError::null_pointer)?;
+            match self.filter.accept(actual_term)? {
                 AcceptStatus::YesAndSeek => {
                     self.do_seek = true;
                     return Ok(self.actual_term.clone());
@@ -598,6 +680,10 @@ impl SingleTermsEnum {
 }
 
 impl FilteredTermsEnumFilter for SingleTermsEnum {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus> {
         if term == &self.single_ref {
             Ok(AcceptStatus::Yes)
@@ -640,7 +726,7 @@ pub trait Terms: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `compiled` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `compiled` is not a
     /// normal automaton, and propagates whatever [`Terms::iterator`] raises.
     fn intersect(
         &self,
@@ -698,7 +784,7 @@ pub trait Terms: Send + Sync {
         if size > 0 {
             let mut it = self.iterator()?;
             if it.seek_ord(size - 1).is_ok() {
-                return Ok(Some(it.term()?));
+                return it.term();
             }
         }
         // Fallback: binary-search for the last term one byte at a time.
@@ -747,6 +833,18 @@ pub trait Terms: Send + Sync {
             self.sum_doc_freq()?
         ))
     }
+
+    /// This terms instance as [`Any`], for the `instanceof` tests Java code
+    /// makes on a `Terms` (`STUniformSplitTermsWriter.merge` falls back to the
+    /// default merge unless `terms instanceof STUniformSplitTerms`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through [`Any`], which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
 }
 
 /// The body of the default `Terms.intersect(CompiledAutomaton, BytesRef)`
@@ -758,7 +856,7 @@ pub trait Terms: Send + Sync {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `compiled` is not a normal
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `compiled` is not a normal
 /// automaton, and propagates whatever `terms.iterator()` raises.
 pub(crate) fn default_intersect<T: Terms + ?Sized>(
     terms: &T,
@@ -767,7 +865,7 @@ pub(crate) fn default_intersect<T: Terms + ?Sized>(
 ) -> Result<Box<dyn TermsEnum>> {
     let terms_enum = terms.iterator()?;
     if compiled.automaton_type != crate::util::automaton::AutomatonType::Normal {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "please use CompiledAutomaton.getTermsEnum instead".to_string(),
         ));
     }
@@ -921,12 +1019,9 @@ impl PrefixCodedTermsBuilder {
 
     /// Adds a term from its field and bytes.
     pub fn add_bytes(&mut self, field: &str, bytes: &BytesRef) -> Result<()> {
-        assert!(
-            self.size == 0 || {
-                let candidate = Term::new(field, bytes.clone());
-                candidate > self.last_term
-            },
-            "terms must be added in ascending order"
+        // `PrefixCodedTerms.java:74`.
+        debug_assert!(
+            self.last_term == Term::empty("") || Term::new(field, bytes.clone()) > self.last_term
         );
 
         let bytes_slice = bytes.slice();
@@ -1041,7 +1136,8 @@ impl PrefixCodedTermsIterator {
 
         let suffix = self.input.read_v_int()? as usize;
         self.bytes.resize(prefix + suffix, 0);
-        self.input.read_bytes(&mut self.bytes[..], prefix, suffix)?;
+        self.input
+            .read_bytes(Some(&mut self.bytes[..]), prefix, suffix)?;
         self.bytes.truncate(prefix + suffix);
 
         Ok(Some(BytesRef::new(self.bytes.clone())))
@@ -1058,6 +1154,10 @@ impl PrefixCodedTermsIterator {
 /// type lives here, in its Lucene package, and reaches into
 /// [`crate::search`](crate::search) for the searcher, which is the same
 /// dependency Java's `index` package has on `search`.
+/// The per-leaf states of a [`TermStates`]: `None` when nothing is known yet,
+/// `Some(None)` for Java's `EMPTY_TERMSTATE`, `Some(Some(state))` for a state.
+type LeafTermStates = Vec<Option<Option<Box<dyn TermState>>>>;
+
 /// Maintains a [`TermState`] view over the leaves of an index reader, for a
 /// single term.
 ///
@@ -1071,7 +1171,12 @@ pub struct TermStates {
     /// port stores [`IndexReaderContext::id`], which is the same identity value
     /// and likewise does not reference the reader.
     top_reader_context_identity: usize,
-    states: Vec<Option<Box<dyn TermState>>>,
+    /// Per leaf: `None` when nothing is known yet (Java's `null`), `Some(None)`
+    /// for Java's `EMPTY_TERMSTATE` — the term was looked up lazily and is
+    /// absent — and `Some(Some(state))` for a registered state. Behind a
+    /// [`Mutex`](std::sync::Mutex) because [`get`](Self::get) fills it lazily
+    /// through `&self`, as Java's `get` assigns `states[ctx.ord]`.
+    states: std::sync::Mutex<LeafTermStates>,
     /// `None` if the statistics are to be used.
     term: Option<Term>,
     doc_freq: i32,
@@ -1079,16 +1184,32 @@ pub struct TermStates {
 }
 
 impl TermStates {
+    /// The per-leaf states, locked; a poisoned lock is recovered, as a Java
+    /// array has no lock to poison.
+    fn states_guard(&self) -> std::sync::MutexGuard<'_, LeafTermStates> {
+        self.states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The per-leaf states, through `&mut self`.
+    fn states_mut(&mut self) -> &mut LeafTermStates {
+        self.states
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn with_term(term: Option<Term>, context: &Arc<dyn IndexReaderContext>) -> Result<Self> {
+        debug_assert!(context.is_top_level());
         if !context.is_top_level() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "TermStates must be built from a top-level IndexReaderContext".to_string(),
             ));
         }
         let num_leaves = Arc::clone(context).leaves().len();
         Ok(Self {
             top_reader_context_identity: context.id(),
-            states: (0..num_leaves).map(|_| None).collect(),
+            states: std::sync::Mutex::new((0..num_leaves).map(|_| None).collect()),
             term,
             doc_freq: 0,
             total_term_freq: 0,
@@ -1101,7 +1222,7 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `context` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a
     /// top-level context, which is the condition Java asserts.
     pub fn new(context: &Arc<dyn IndexReaderContext>) -> Result<Self> {
         Self::with_term(None, context)
@@ -1114,7 +1235,7 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `context` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a
     /// top-level context.
     pub fn with_state(
         context: &Arc<dyn IndexReaderContext>,
@@ -1135,6 +1256,22 @@ impl TermStates {
     /// compares the stored identity by reference.
     pub fn was_built_for(&self, context: &Arc<dyn IndexReaderContext>) -> bool {
         self.top_reader_context_identity == context.id()
+    }
+
+    /// Returns whether this `TermStates` was built for the top-level context
+    /// of `context`.
+    ///
+    /// Equivalent to `termStates.wasBuiltFor(ReaderUtil.getTopLevelContext(context))`,
+    /// the form every `TermQuery` assert uses (`TermQuery.java:121, 207`). It
+    /// takes the context by reference because a weight receives its leaf as
+    /// `&LeafReaderContext`; a context without a live parent is its own top
+    /// level, as in `ReaderUtil.getTopLevelContext`.
+    pub fn was_built_for_top_level_of(&self, context: &dyn IndexReaderContext) -> bool {
+        let top_level_identity = match context.parent().and_then(|parent| parent.upgrade()) {
+            Some(parent) => crate::index::multi_reader::get_top_level_context(parent).id(),
+            None => context.id(),
+        };
+        self.top_reader_context_identity == top_level_identity
     }
 
     /// Builds a `TermStates` for `term` over every leaf of the searcher's
@@ -1172,6 +1309,11 @@ impl TermStates {
             },
             context,
         )?;
+        // `if (needsStats)` (`TermStates.java:101-121`): without statistics
+        // nothing is looked up now; `get` looks each leaf up when asked.
+        if !needs_stats {
+            return Ok(per_reader_term_state);
+        }
         for ctx in searcher.get_leaf_contexts() {
             // `Terms.getTerms(ctx.reader(), term.field())` answers `Terms.EMPTY`
             // when the field is absent.
@@ -1204,7 +1346,7 @@ impl TermStates {
     pub fn clear(&mut self) {
         self.doc_freq = 0;
         self.total_term_freq = 0;
-        for state in &mut self.states {
+        for state in self.states_mut().iter_mut() {
             *state = None;
         }
     }
@@ -1239,12 +1381,13 @@ impl TermStates {
     /// In debug builds, panics when `ord` is out of range or already carries a
     /// state; Java asserts the same two conditions.
     pub fn register_state(&mut self, state: Box<dyn TermState>, ord: usize) {
-        debug_assert!(ord < self.states.len(), "ord {ord} is out of range");
+        let states = self.states_mut();
+        debug_assert!(ord < states.len(), "ord {ord} is out of range");
         debug_assert!(
-            self.states[ord].is_none(),
+            states[ord].is_none(),
             "state for ord: {ord} already registered"
         );
-        self.states[ord] = Some(state);
+        states[ord] = Some(Some(state));
     }
 
     /// Accumulates term statistics.
@@ -1280,19 +1423,39 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the leaf ordinal is out of
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the leaf ordinal is out of
     /// range, which is the condition Java asserts.
     pub fn get(&self, ctx: &LeafReaderContext) -> Result<Option<Box<dyn TermState>>> {
         let ord = ctx.ord();
-        if ord < 0 || ord as usize >= self.states.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "leaf ordinal {ord} is out of range for a TermStates over {} leaves",
-                self.states.len()
+        let len = self.states_guard().len();
+        debug_assert!(ord >= 0 && (ord as usize) < len);
+        if ord < 0 || ord as usize >= len {
+            return Err(LuceneError::illegal_argument(format!(
+                "leaf ordinal {ord} is out of range for a TermStates over {len} leaves"
             )));
         }
-        Ok(self.states[ord as usize]
+        let ord = ord as usize;
+        // `TermStates.java:184-211`: with `needsStats = false` the state is
+        // looked up the first time a leaf asks for it.
+        if let Some(term) = self.term.as_ref() {
+            if self.states_guard()[ord].is_none() {
+                let looked_up = match ctx.leaf_reader().terms(term.field())? {
+                    None => None,
+                    Some(terms) => {
+                        let mut terms_enum = terms.iterator()?;
+                        if terms_enum.seek_exact(term.bytes())? {
+                            Some(terms_enum.term_state()?)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                self.states_guard()[ord] = Some(looked_up);
+            }
+        }
+        Ok(self.states_guard()[ord]
             .as_ref()
-            .map(|state| state.clone_box()))
+            .and_then(|state| state.as_ref().map(|state| state.clone_box())))
     }
 
     /// Returns the accumulated document frequency of every registered
@@ -1302,7 +1465,7 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when this instance was built with
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when this instance was built with
     /// `needs_stats = false`, which is the `IllegalStateException` Java throws.
     pub fn doc_freq(&self) -> Result<i32> {
         if self.term.is_some() {
@@ -1320,7 +1483,7 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when this instance was built with
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when this instance was built with
     /// `needs_stats = false`, which is the `IllegalStateException` Java throws.
     pub fn total_term_freq(&self) -> Result<i64> {
         if self.term.is_some() {
@@ -1336,8 +1499,15 @@ impl std::fmt::Display for TermStates {
     /// Equivalent to `TermStates.toString()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "TermStates")?;
-        for state in &self.states {
-            writeln!(f, "  state={state:?}")?;
+        for state in self.states_guard().iter() {
+            // `sb.append(termState)`: the state's `toString()`, or `null`
+            // (`TermStates.java:252-256`); `EMPTY_TERMSTATE` renders as the
+            // empty state it is.
+            match state {
+                Some(Some(state)) => writeln!(f, "  state={state}")?,
+                Some(None) => writeln!(f, "  state={}", EmptyTermState)?,
+                None => writeln!(f, "  state=null")?,
+            }
         }
         Ok(())
     }
@@ -1379,6 +1549,10 @@ impl std::fmt::Display for EmptyTermsEnum {
 }
 
 impl TermsEnum for EmptyTermsEnum {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
     }
@@ -1401,7 +1575,7 @@ impl TermsEnum for EmptyTermsEnum {
         ))
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         Err(LuceneError::illegal_state(
             "term should never be called on EmptyTermsEnum".to_string(),
         ))
@@ -1429,7 +1603,7 @@ impl TermsEnum for EmptyTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         Err(LuceneError::illegal_state(
             "postings should never be called on EmptyTermsEnum".to_string(),
         ))
@@ -1783,8 +1957,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.terms[self.pos].clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.terms[self.pos].clone()))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -1803,8 +1977,8 @@ mod tests {
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum::new()))
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {

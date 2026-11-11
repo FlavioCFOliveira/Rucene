@@ -1,0 +1,1169 @@
+# case	scenario	step	outcome (ok\tvalue | err\tclass\tmessage)
+nocfs	asserting1	term/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+nocfs	asserting1	term/count	ok	22
+nocfs	asserting1	term/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting1	should/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting1	should/count	ok	41
+nocfs	asserting1	should/explain	ok	true 40104e14 sum of:
+nocfs	asserting1	must_should/top	ok	25 hits 243:40104e14 21:4002e77f 57:3fef8fdb 64:3fef8fdb 82:3fdcccc7 88:3fdcccc7 292:3fdcccc7 299:3fdcccc7 306:3fdcccc7 137:3fb6dcd9
+nocfs	asserting1	must_should/count	ok	25
+nocfs	asserting1	must_should/explain	ok	true 40104e14 sum of:
+nocfs	asserting1	must_filter/top	ok	0 hits
+nocfs	asserting1	must_filter/count	ok	0
+nocfs	asserting1	should_not/top	ok	16 hits 198:3fd8bbca 241:3fbcd59a 248:3fbcd59a 13:3fa74c7a 19:3fa74c7a 26:3fa74c7a 55:3f962c1c 62:3f962c1c 69:3f962c1c 80:3f883a0c
+nocfs	asserting1	should_not/count	ok	16
+nocfs	asserting1	should_not/explain	ok	true 3fd8bbca sum of:
+nocfs	asserting1	phrase/top	ok	19 hits 122:4032b23d 131:401e511a 166:400e1c1f 173:400e1c1f 180:400e1c1f 209:4000e9bb 216:4000e9bb 223:4000e9bb 230:4000e9bb 3:3febeaf4
+nocfs	asserting1	phrase/count	ok	19
+nocfs	asserting1	phrase/explain	ok	true 4032b23d weight(body:"w0 w17" in 122) [BM25Similarity], result of:
+nocfs	asserting1	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+nocfs	asserting1	prefix/count	ok	166
+nocfs	asserting1	prefix/explain	ok	true 3f800000 body:w1*
+nocfs	asserting1	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+nocfs	asserting1	wildcard/count	ok	98
+nocfs	asserting1	wildcard/explain	ok	true 3f800000 body:w?3
+nocfs	asserting1	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+nocfs	asserting1	point_range/count	ok	65
+nocfs	asserting1	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+nocfs	asserting1	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+nocfs	asserting1	exists/count	ok	280
+nocfs	asserting1	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+nocfs	asserting1	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+nocfs	asserting1	constant/count	ok	22
+nocfs	asserting1	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+nocfs	asserting1	boost/top	ok	22 hits 177:4089bd36 220:40700462 227:40700462 0:4054a4f2 7:4054a4f2 263:4054a4f2 34:403ee038 41:403ee038 48:403ee038 55:403ee038
+nocfs	asserting1	boost/count	ok	22
+nocfs	asserting1	boost/explain	ok	true 4089bd36 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting1	dismax/top	ok	41 hits 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212 151:3fa20212 201:3f9fbdef 158:3f9f8437 165:3f9f8437 172:3f9f8437 180:3f916c5b
+nocfs	asserting1	dismax/count	ok	41
+nocfs	asserting1	dismax/explain	ok	true 3fd1e12b max plus 0.1 times others of:
+nocfs	asserting1	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+nocfs	asserting1	all/count	ok	309
+nocfs	asserting1	all/explain	ok	true 3f800000 *:*
+nocfs	asserting1	none/top	ok	0 hits
+nocfs	asserting1	none/count	ok	0
+nocfs	asserting1	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+nocfs	asserting1	knn/count	ok	5
+nocfs	asserting1	knn/explain	ok	true 3f23d70a within top 5 docs
+nocfs	asserting1	asserting/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+nocfs	asserting1	asserting/count	ok	22
+nocfs	asserting1	asserting/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting1	random_approx/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting1	random_approx/count	ok	41
+nocfs	asserting1	random_approx/explain	ok	true 40104e14 sum of:
+nocfs	asserting1	block_score/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting1	block_score/count	ok	41
+nocfs	asserting1	block_score/explain	ok	true 40104e14 sum of:
+nocfs	asserting1	disabling_bulk/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting1	disabling_bulk/count	ok	41
+nocfs	asserting1	disabling_bulk/explain	ok	true 40104e14 sum of:
+nocfs	asserting1	next	ok	-8744063478727631501
+nocfs	asserting1	toString	ok	true
+nocfs	asserting2	term/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+nocfs	asserting2	term/count	ok	22
+nocfs	asserting2	term/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting2	should/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting2	should/count	ok	41
+nocfs	asserting2	should/explain	ok	true 40104e14 sum of:
+nocfs	asserting2	must_should/top	ok	25 hits 243:40104e14 21:4002e77f 57:3fef8fdb 64:3fef8fdb 82:3fdcccc7 88:3fdcccc7 292:3fdcccc7 299:3fdcccc7 306:3fdcccc7 137:3fb6dcd9
+nocfs	asserting2	must_should/count	ok	25
+nocfs	asserting2	must_should/explain	ok	true 40104e14 sum of:
+nocfs	asserting2	must_filter/top	ok	0 hits
+nocfs	asserting2	must_filter/count	ok	0
+nocfs	asserting2	should_not/top	ok	16 hits 198:3fd8bbca 241:3fbcd59a 248:3fbcd59a 13:3fa74c7a 19:3fa74c7a 26:3fa74c7a 55:3f962c1c 62:3f962c1c 69:3f962c1c 80:3f883a0c
+nocfs	asserting2	should_not/count	ok	16
+nocfs	asserting2	should_not/explain	ok	true 3fd8bbca sum of:
+nocfs	asserting2	phrase/top	ok	19 hits 122:4032b23d 131:401e511a 166:400e1c1f 173:400e1c1f 180:400e1c1f 209:4000e9bb 216:4000e9bb 223:4000e9bb 230:4000e9bb 3:3febeaf4
+nocfs	asserting2	phrase/count	ok	19
+nocfs	asserting2	phrase/explain	ok	true 4032b23d weight(body:"w0 w17" in 122) [BM25Similarity], result of:
+nocfs	asserting2	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+nocfs	asserting2	prefix/count	ok	166
+nocfs	asserting2	prefix/explain	ok	true 3f800000 body:w1*
+nocfs	asserting2	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+nocfs	asserting2	wildcard/count	ok	98
+nocfs	asserting2	wildcard/explain	ok	true 3f800000 body:w?3
+nocfs	asserting2	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+nocfs	asserting2	point_range/count	ok	65
+nocfs	asserting2	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+nocfs	asserting2	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+nocfs	asserting2	exists/count	ok	280
+nocfs	asserting2	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+nocfs	asserting2	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+nocfs	asserting2	constant/count	ok	22
+nocfs	asserting2	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+nocfs	asserting2	boost/top	ok	22 hits 177:4089bd36 220:40700462 227:40700462 0:4054a4f2 7:4054a4f2 263:4054a4f2 34:403ee038 41:403ee038 48:403ee038 55:403ee038
+nocfs	asserting2	boost/count	ok	22
+nocfs	asserting2	boost/explain	ok	true 4089bd36 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting2	dismax/top	ok	41 hits 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212 151:3fa20212 201:3f9fbdef 158:3f9f8437 165:3f9f8437 172:3f9f8437 180:3f916c5b
+nocfs	asserting2	dismax/count	ok	41
+nocfs	asserting2	dismax/explain	ok	true 3fd1e12b max plus 0.1 times others of:
+nocfs	asserting2	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+nocfs	asserting2	all/count	ok	309
+nocfs	asserting2	all/explain	ok	true 3f800000 *:*
+nocfs	asserting2	none/top	ok	0 hits
+nocfs	asserting2	none/count	ok	0
+nocfs	asserting2	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+nocfs	asserting2	knn/count	ok	5
+nocfs	asserting2	knn/explain	ok	true 3f23d70a within top 5 docs
+nocfs	asserting2	asserting/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+nocfs	asserting2	asserting/count	ok	22
+nocfs	asserting2	asserting/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting2	random_approx/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting2	random_approx/count	ok	41
+nocfs	asserting2	random_approx/explain	ok	true 40104e14 sum of:
+nocfs	asserting2	block_score/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting2	block_score/count	ok	41
+nocfs	asserting2	block_score/explain	ok	true 40104e14 sum of:
+nocfs	asserting2	disabling_bulk/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting2	disabling_bulk/count	ok	41
+nocfs	asserting2	disabling_bulk/explain	ok	true 40104e14 sum of:
+nocfs	asserting2	next	ok	-2330499855992653693
+nocfs	asserting2	toString	ok	true
+nocfs	asserting3	term/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+nocfs	asserting3	term/count	ok	22
+nocfs	asserting3	term/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting3	should/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting3	should/count	ok	41
+nocfs	asserting3	should/explain	ok	true 40104e14 sum of:
+nocfs	asserting3	must_should/top	ok	25 hits 243:40104e14 21:4002e77f 57:3fef8fdb 64:3fef8fdb 82:3fdcccc7 88:3fdcccc7 292:3fdcccc7 299:3fdcccc7 306:3fdcccc7 137:3fb6dcd9
+nocfs	asserting3	must_should/count	ok	25
+nocfs	asserting3	must_should/explain	ok	true 40104e14 sum of:
+nocfs	asserting3	must_filter/top	ok	0 hits
+nocfs	asserting3	must_filter/count	ok	0
+nocfs	asserting3	should_not/top	ok	16 hits 198:3fd8bbca 241:3fbcd59a 248:3fbcd59a 13:3fa74c7a 19:3fa74c7a 26:3fa74c7a 55:3f962c1c 62:3f962c1c 69:3f962c1c 80:3f883a0c
+nocfs	asserting3	should_not/count	ok	16
+nocfs	asserting3	should_not/explain	ok	true 3fd8bbca sum of:
+nocfs	asserting3	phrase/top	ok	19 hits 122:4032b23d 131:401e511a 166:400e1c1f 173:400e1c1f 180:400e1c1f 209:4000e9bb 216:4000e9bb 223:4000e9bb 230:4000e9bb 3:3febeaf4
+nocfs	asserting3	phrase/count	ok	19
+nocfs	asserting3	phrase/explain	ok	true 4032b23d weight(body:"w0 w17" in 122) [BM25Similarity], result of:
+nocfs	asserting3	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+nocfs	asserting3	prefix/count	ok	166
+nocfs	asserting3	prefix/explain	ok	true 3f800000 body:w1*
+nocfs	asserting3	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+nocfs	asserting3	wildcard/count	ok	98
+nocfs	asserting3	wildcard/explain	ok	true 3f800000 body:w?3
+nocfs	asserting3	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+nocfs	asserting3	point_range/count	ok	65
+nocfs	asserting3	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+nocfs	asserting3	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+nocfs	asserting3	exists/count	ok	280
+nocfs	asserting3	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+nocfs	asserting3	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+nocfs	asserting3	constant/count	ok	22
+nocfs	asserting3	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+nocfs	asserting3	boost/top	ok	22 hits 177:4089bd36 220:40700462 227:40700462 0:4054a4f2 7:4054a4f2 263:4054a4f2 34:403ee038 41:403ee038 48:403ee038 55:403ee038
+nocfs	asserting3	boost/count	ok	22
+nocfs	asserting3	boost/explain	ok	true 4089bd36 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting3	dismax/top	ok	41 hits 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212 151:3fa20212 201:3f9fbdef 158:3f9f8437 165:3f9f8437 172:3f9f8437 180:3f916c5b
+nocfs	asserting3	dismax/count	ok	41
+nocfs	asserting3	dismax/explain	ok	true 3fd1e12b max plus 0.1 times others of:
+nocfs	asserting3	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+nocfs	asserting3	all/count	ok	309
+nocfs	asserting3	all/explain	ok	true 3f800000 *:*
+nocfs	asserting3	none/top	ok	0 hits
+nocfs	asserting3	none/count	ok	0
+nocfs	asserting3	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+nocfs	asserting3	knn/count	ok	5
+nocfs	asserting3	knn/explain	ok	true 3f23d70a within top 5 docs
+nocfs	asserting3	asserting/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+nocfs	asserting3	asserting/count	ok	22
+nocfs	asserting3	asserting/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	asserting3	random_approx/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting3	random_approx/count	ok	41
+nocfs	asserting3	random_approx/explain	ok	true 40104e14 sum of:
+nocfs	asserting3	block_score/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting3	block_score/count	ok	41
+nocfs	asserting3	block_score/explain	ok	true 40104e14 sum of:
+nocfs	asserting3	disabling_bulk/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	asserting3	disabling_bulk/count	ok	41
+nocfs	asserting3	disabling_bulk/explain	ok	true 40104e14 sum of:
+nocfs	asserting3	next	ok	-1425034479453439072
+nocfs	asserting3	toString	ok	true
+nocfs	scorer	term/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+nocfs	scorer	term/count	ok	22
+nocfs	scorer	term/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	scorer	should/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	scorer	should/count	ok	41
+nocfs	scorer	should/explain	ok	true 40104e14 sum of:
+nocfs	scorer	must_should/top	ok	25 hits 243:40104e14 21:4002e77f 57:3fef8fdb 64:3fef8fdb 82:3fdcccc7 88:3fdcccc7 292:3fdcccc7 299:3fdcccc7 306:3fdcccc7 137:3fb6dcd9
+nocfs	scorer	must_should/count	ok	25
+nocfs	scorer	must_should/explain	ok	true 40104e14 sum of:
+nocfs	scorer	must_filter/top	ok	0 hits
+nocfs	scorer	must_filter/count	ok	0
+nocfs	scorer	should_not/top	ok	16 hits 198:3fd8bbca 241:3fbcd59a 248:3fbcd59a 13:3fa74c7a 19:3fa74c7a 26:3fa74c7a 55:3f962c1c 62:3f962c1c 69:3f962c1c 80:3f883a0c
+nocfs	scorer	should_not/count	ok	16
+nocfs	scorer	should_not/explain	ok	true 3fd8bbca sum of:
+nocfs	scorer	phrase/top	ok	19 hits 122:4032b23d 131:401e511a 166:400e1c1f 173:400e1c1f 180:400e1c1f 209:4000e9bb 216:4000e9bb 223:4000e9bb 230:4000e9bb 3:3febeaf4
+nocfs	scorer	phrase/count	ok	19
+nocfs	scorer	phrase/explain	ok	true 4032b23d weight(body:"w0 w17" in 122) [BM25Similarity], result of:
+nocfs	scorer	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+nocfs	scorer	prefix/count	ok	166
+nocfs	scorer	prefix/explain	ok	true 3f800000 body:w1*
+nocfs	scorer	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+nocfs	scorer	wildcard/count	ok	98
+nocfs	scorer	wildcard/explain	ok	true 3f800000 body:w?3
+nocfs	scorer	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+nocfs	scorer	point_range/count	ok	65
+nocfs	scorer	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+nocfs	scorer	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+nocfs	scorer	exists/count	ok	280
+nocfs	scorer	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+nocfs	scorer	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+nocfs	scorer	constant/count	ok	22
+nocfs	scorer	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+nocfs	scorer	boost/top	ok	22 hits 177:4089bd36 220:40700462 227:40700462 0:4054a4f2 7:4054a4f2 263:4054a4f2 34:403ee038 41:403ee038 48:403ee038 55:403ee038
+nocfs	scorer	boost/count	ok	22
+nocfs	scorer	boost/explain	ok	true 4089bd36 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	scorer	dismax/top	ok	41 hits 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212 151:3fa20212 201:3f9fbdef 158:3f9f8437 165:3f9f8437 172:3f9f8437 180:3f916c5b
+nocfs	scorer	dismax/count	ok	41
+nocfs	scorer	dismax/explain	ok	true 3fd1e12b max plus 0.1 times others of:
+nocfs	scorer	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+nocfs	scorer	all/count	ok	309
+nocfs	scorer	all/explain	ok	true 3f800000 *:*
+nocfs	scorer	none/top	ok	0 hits
+nocfs	scorer	none/count	ok	0
+nocfs	scorer	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+nocfs	scorer	knn/count	ok	5
+nocfs	scorer	knn/explain	ok	true 3f23d70a within top 5 docs
+nocfs	scorer	asserting/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+nocfs	scorer	asserting/count	ok	22
+nocfs	scorer	asserting/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+nocfs	scorer	random_approx/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	scorer	random_approx/count	ok	41
+nocfs	scorer	random_approx/explain	ok	true 40104e14 sum of:
+nocfs	scorer	block_score/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	scorer	block_score/count	ok	41
+nocfs	scorer	block_score/explain	ok	true 40104e14 sum of:
+nocfs	scorer	disabling_bulk/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+nocfs	scorer	disabling_bulk/count	ok	41
+nocfs	scorer	disabling_bulk/explain	ok	true 40104e14 sum of:
+nocfs	random_sim	term/top	ok	22 hits 177:403309fc 220:401d08bf 227:401d08bf 0:400cdac9 7:400cdac9 263:400cdac9 34:400007a2 41:400007a2 48:400007a2 55:400007a2
+nocfs	random_sim	term/count	ok	22
+nocfs	random_sim	term/explain	ok	true 403309fc weight(body:w7 in 27) [AssertingSimilarity], result of:
+nocfs	random_sim	should/top	ok	41 hits 201:40715c6a 244:405d7db3 251:405d7db3 15:404cc7f6 22:404cc7f6 29:404cc7f6 58:403e7dfb 65:403e7dfb 71:403e7dfb 271:403e7dfb
+nocfs	random_sim	should/count	ok	41
+nocfs	random_sim	should/explain	ok	true 40715c6a sum of:
+nocfs	random_sim	must_should/top	ok	25 hits 243:40715c6a 21:405d7db3 57:404cc7f6 64:404cc7f6 82:403e7dfb 88:403e7dfb 292:403e7dfb 299:403e7dfb 306:403e7dfb 137:4015344e
+nocfs	random_sim	must_should/count	ok	25
+nocfs	random_sim	must_should/explain	ok	true 40715c6a sum of:
+nocfs	random_sim	must_filter/top	ok	0 hits
+nocfs	random_sim	must_filter/count	ok	0
+nocfs	random_sim	should_not/top	ok	16 hits 198:402fe9a0 241:401a4ac1 248:401a4ac1 13:400a651f 19:400a651f 26:400a651f 55:3ffb9699 62:3ffb9699 69:3ffb9699 80:3fe6e057
+nocfs	random_sim	should_not/count	ok	16
+nocfs	random_sim	should_not/explain	ok	true 402fe9a0 sum of:
+nocfs	random_sim	phrase/top	ok	19 hits 122:4091b3f2 131:4082b0dc 166:406d953a 173:406d953a 180:406d953a 209:405a0622 216:405a0622 223:405a0622 230:405a0622 3:4049935c
+nocfs	random_sim	phrase/count	ok	19
+nocfs	random_sim	phrase/explain	ok	true 4091b3f2 weight(body:"w0 w17" in 122) [AssertingSimilarity], result of:
+nocfs	random_sim	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+nocfs	random_sim	prefix/count	ok	166
+nocfs	random_sim	prefix/explain	ok	true 3f800000 body:w1*
+nocfs	random_sim	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+nocfs	random_sim	wildcard/count	ok	98
+nocfs	random_sim	wildcard/explain	ok	true 3f800000 body:w?3
+nocfs	random_sim	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+nocfs	random_sim	point_range/count	ok	65
+nocfs	random_sim	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+nocfs	random_sim	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+nocfs	random_sim	exists/count	ok	280
+nocfs	random_sim	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+nocfs	random_sim	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+nocfs	random_sim	constant/count	ok	22
+nocfs	random_sim	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+nocfs	random_sim	boost/top	ok	22 hits 177:40dfcc7b 220:40c44aef 227:40c44aef 0:40b0117b 7:40b0117b 263:40b0117b 34:40a0098a 41:40a0098a 48:40a0098a 55:40a0098a
+nocfs	random_sim	boost/count	ok	22
+nocfs	random_sim	boost/explain	ok	true 40dfcc7b weight(body:w7 in 27) [AssertingSimilarity], result of:
+nocfs	random_sim	dismax/top	ok	41 hits 95:402a1caa 114:40276947 138:4005d4dd 144:4005d4dd 151:4005d4dd 201:40059e1c 158:4003b4ee 165:4003b4ee 172:4003b4ee 244:3ff53c35
+nocfs	random_sim	dismax/count	ok	41
+nocfs	random_sim	dismax/explain	ok	true 402a1caa max plus 0.1 times others of:
+nocfs	random_sim	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+nocfs	random_sim	all/count	ok	309
+nocfs	random_sim	all/explain	ok	true 3f800000 *:*
+nocfs	random_sim	none/top	ok	0 hits
+nocfs	random_sim	none/count	ok	0
+nocfs	random_sim	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+nocfs	random_sim	knn/count	ok	5
+nocfs	random_sim	knn/explain	ok	true 3f23d70a within top 5 docs
+nocfs	random_sim	asserting/top	ok	22 hits 177:403309fc 220:401d08bf 227:401d08bf 0:400cdac9 7:400cdac9 263:400cdac9 34:400007a2 41:400007a2 48:400007a2 55:400007a2
+nocfs	random_sim	asserting/count	ok	22
+nocfs	random_sim	asserting/explain	ok	true 403309fc weight(body:w7 in 27) [AssertingSimilarity], result of:
+nocfs	random_sim	random_approx/top	ok	41 hits 201:40715c6a 244:405d7db3 251:405d7db3 15:404cc7f6 22:404cc7f6 29:404cc7f6 58:403e7dfb 65:403e7dfb 71:403e7dfb 271:403e7dfb
+nocfs	random_sim	random_approx/count	ok	41
+nocfs	random_sim	random_approx/explain	ok	true 40715c6a sum of:
+nocfs	random_sim	block_score/top	ok	41 hits 201:40715c6a 244:405d7db3 251:405d7db3 15:404cc7f6 22:404cc7f6 29:404cc7f6 58:403e7dfb 65:403e7dfb 71:403e7dfb 271:403e7dfb
+nocfs	random_sim	block_score/count	ok	41
+nocfs	random_sim	block_score/explain	ok	true 40715c6a sum of:
+nocfs	random_sim	disabling_bulk/top	ok	41 hits 201:40715c6a 244:405d7db3 251:405d7db3 15:404cc7f6 22:404cc7f6 29:404cc7f6 58:403e7dfb 65:403e7dfb 71:403e7dfb 271:403e7dfb
+nocfs	random_sim	disabling_bulk/count	ok	41
+nocfs	random_sim	disabling_bulk/explain	ok	true 40715c6a sum of:
+nocfs	random_sim	toString	ok	RandomSimilarity(queryNorm=false): {body=DFR I(ne)B2}
+nocfs	random_sim	next	ok	2350717141523148580
+nocfs	scorer	score_unpositioned	err	java.lang.AssertionError	ITERATING
+nocfs	scorer	max_score_unpositioned	err	java.lang.AssertionError	Cannot get max scores until the iterator is positioned or advanceShallow has been called
+nocfs	scorer	shallow_decreasing	err	java.lang.AssertionError	called on decreasing targets: target = -5 < last target = -1
+nocfs	scorer	next	ok	0
+nocfs	scorer	score	ok	3faa1d8f
+nocfs	scorer	min_competitive	err	java.lang.AssertionError	<null>
+nocfs	scorer	advance_same	err	java.lang.AssertionError	target must be > docID(), got 0 <= 0
+nocfs	scorer	children	ok	1 SHOULD
+nocfs	scorer	exhaust	ok	2147483647
+nocfs	scorer	next_after_end	err	java.lang.AssertionError	nextDoc() called after NO_MORE_DOCS
+nocfs	scorer	advance_after_end	err	java.lang.AssertionError	advance() called after NO_MORE_DOCS
+nocfs	scorer	cannot_score	err	java.lang.AssertionError	<null>
+nocfs	scorer	cannot_shallow	err	java.lang.AssertionError	<null>
+nocfs	scorer	shallow	ok	2147483647
+nocfs	scorer	shallow_below_doc	err	java.lang.AssertionError	target = 40 < docID = 41
+nocfs	scorer	min_competitive_nan	err	java.lang.AssertionError	<null>
+nocfs	scorer	min_competitive_decreasing	err	java.lang.AssertionError	<null>
+nocfs	scorer	two_phase	ok	true
+nocfs	scorer	matches_unpositioned	err	java.lang.AssertionError	ITERATING
+nocfs	scorer	approx_next	ok	3
+nocfs	scorer	approx_matches	ok	true
+nocfs	scorer	approx_backwards	err	java.lang.AssertionError	target must be > docID(), got 0 <= 3
+nocfs	scorer	approx_end	ok	2147483647
+nocfs	scorer	approx_after_end	err	java.lang.AssertionError	advance() called after NO_MORE_DOCS
+nocfs	collector	leaf_before_weight	err	java.lang.AssertionError	Set the weight first
+nocfs	collector	weight	ok	null
+nocfs	collector	weight_twice	err	java.lang.AssertionError	Weight set twice
+nocfs	collector	collect5	ok	null
+nocfs	collector	collect3	err	java.lang.AssertionError	collection is not in order: current doc=273 while 275 has already been collected
+nocfs	collector	finish	ok	true
+nocfs	collector	finish_twice	err	java.lang.AssertionError	<null>
+nocfs	collector	leaf_out_of_order	err	java.lang.AssertionError	<null>
+nocfs	leaf	out_of_range_max	err	java.lang.AssertionError	Out of range: 10 >= 10
+nocfs	leaf	out_of_range_min	err	java.lang.AssertionError	Out of range: 1 < 2
+nocfs	leaf	out_of_order	err	java.lang.AssertionError	Out of order : 4 4
+nocfs	leaf	range_empty	err	java.lang.AssertionError	<null>
+nocfs	leaf	range_beyond	err	java.lang.AssertionError	Out of range: 11 >= 10
+nocfs	leaf	range_then_collect	err	java.lang.AssertionError	Out of order : 5 5
+nocfs	leaf	finish_twice	err	java.lang.AssertionError	<null>
+nocfs	bulk	rewrap	ok	true
+nocfs	bulk	score_first	ok	100 9
+nocfs	bulk	score_rest	ok	2147483647 14
+nocfs	bulk	window	ok	20
+nocfs	bulk	backward	err	java.lang.AssertionError	Scoring backward: min=5 while previous max was max=20
+nocfs	bulk	inverted	err	java.lang.AssertionError	max must be greater than min, got min=40, and max=35
+nocfs	matches	class	ok	AssertingMatches true
+nocfs	matches	start_unpositioned	err	java.lang.AssertionError	UNPOSITIONED
+nocfs	matches	offset_unpositioned	err	java.lang.AssertionError	UNPOSITIONED
+nocfs	matches	next	ok	true
+nocfs	matches	position	ok	1-1
+nocfs	matches	drain	ok	0
+nocfs	matches	next_exhausted	err	java.lang.AssertionError	EXHAUSTED
+nocfs	matches	query_exhausted	err	java.lang.AssertionError	EXHAUSTED
+nocfs	matches	other_field	ok	null
+nocfs	weight	count_too_large	err	java.lang.AssertionError	count=151, numDocs=150
+nocfs	weight	count	ok	14
+nocfs	weight	supplier_get_twice	err	java.lang.AssertionError	<null>
+nocfs	weight	supplier_negative_lead	err	java.lang.AssertionError	-1
+nocfs	weight	supplier_top_level_after_get	err	java.lang.AssertionError	<null>
+nocfs	query	negative_boost	err	java.lang.AssertionError	<null>
+nocfs	query	wrap_twice	ok	true
+nocfs	searcher	search_plain_weight	err	java.lang.AssertionError	<null>
+nocfs	two_phase_view	match_cost	ok	43117580
+nocfs	two_phase_view	matches_unpositioned	err	java.lang.AssertionError	matches() should not be called on doc ID -1
+nocfs	two_phase_view	next	ok	0
+nocfs	two_phase_view	matches	ok	true
+nocfs	two_phase_view	matches_twice	err	java.lang.AssertionError	matches() has been called twice on doc ID 0
+nocfs	two_phase_view	advance	ok	7 true
+nocfs	two_phase_view	run_end	ok	20
+nocfs	small	fixed_bit_set	ok	22 0 7 34 41 48 55 76 87 93 100 107 112 119 127 177 220 227 263 276 283 290 297
+nocfs	small	dummy_total	ok	22
+nocfs	small	disabling_no_match	err	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.search.ScorerSupplier.get(long)" because "this.val$scorerSupplier" is null
+nocfs	small	bulk_wrapper_iterate	ok	24 2:3f81e3cd 3:3f716b1c 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 36:3f6db49a 37:3f5e82d0 43:3f6db49a 44:3f5e82d0 50:3f6db49a 51:3f5e82d0 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212
+nocfs	small	bulk_wrapper_advance	ok	50 51 2147483647 2147483647
+cfs	asserting1	term/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+cfs	asserting1	term/count	ok	22
+cfs	asserting1	term/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting1	should/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting1	should/count	ok	41
+cfs	asserting1	should/explain	ok	true 40104e14 sum of:
+cfs	asserting1	must_should/top	ok	25 hits 243:40104e14 21:4002e77f 57:3fef8fdb 64:3fef8fdb 82:3fdcccc7 88:3fdcccc7 292:3fdcccc7 299:3fdcccc7 306:3fdcccc7 137:3fb6dcd9
+cfs	asserting1	must_should/count	ok	25
+cfs	asserting1	must_should/explain	ok	true 40104e14 sum of:
+cfs	asserting1	must_filter/top	ok	0 hits
+cfs	asserting1	must_filter/count	ok	0
+cfs	asserting1	should_not/top	ok	16 hits 198:3fd8bbca 241:3fbcd59a 248:3fbcd59a 13:3fa74c7a 19:3fa74c7a 26:3fa74c7a 55:3f962c1c 62:3f962c1c 69:3f962c1c 80:3f883a0c
+cfs	asserting1	should_not/count	ok	16
+cfs	asserting1	should_not/explain	ok	true 3fd8bbca sum of:
+cfs	asserting1	phrase/top	ok	19 hits 122:4032b23d 131:401e511a 166:400e1c1f 173:400e1c1f 180:400e1c1f 209:4000e9bb 216:4000e9bb 223:4000e9bb 230:4000e9bb 3:3febeaf4
+cfs	asserting1	phrase/count	ok	19
+cfs	asserting1	phrase/explain	ok	true 4032b23d weight(body:"w0 w17" in 122) [BM25Similarity], result of:
+cfs	asserting1	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+cfs	asserting1	prefix/count	ok	166
+cfs	asserting1	prefix/explain	ok	true 3f800000 body:w1*
+cfs	asserting1	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+cfs	asserting1	wildcard/count	ok	98
+cfs	asserting1	wildcard/explain	ok	true 3f800000 body:w?3
+cfs	asserting1	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+cfs	asserting1	point_range/count	ok	65
+cfs	asserting1	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+cfs	asserting1	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+cfs	asserting1	exists/count	ok	280
+cfs	asserting1	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+cfs	asserting1	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+cfs	asserting1	constant/count	ok	22
+cfs	asserting1	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+cfs	asserting1	boost/top	ok	22 hits 177:4089bd36 220:40700462 227:40700462 0:4054a4f2 7:4054a4f2 263:4054a4f2 34:403ee038 41:403ee038 48:403ee038 55:403ee038
+cfs	asserting1	boost/count	ok	22
+cfs	asserting1	boost/explain	ok	true 4089bd36 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting1	dismax/top	ok	41 hits 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212 151:3fa20212 201:3f9fbdef 158:3f9f8437 165:3f9f8437 172:3f9f8437 180:3f916c5b
+cfs	asserting1	dismax/count	ok	41
+cfs	asserting1	dismax/explain	ok	true 3fd1e12b max plus 0.1 times others of:
+cfs	asserting1	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+cfs	asserting1	all/count	ok	309
+cfs	asserting1	all/explain	ok	true 3f800000 *:*
+cfs	asserting1	none/top	ok	0 hits
+cfs	asserting1	none/count	ok	0
+cfs	asserting1	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+cfs	asserting1	knn/count	ok	5
+cfs	asserting1	knn/explain	ok	true 3f23d70a within top 5 docs
+cfs	asserting1	asserting/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+cfs	asserting1	asserting/count	ok	22
+cfs	asserting1	asserting/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting1	random_approx/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting1	random_approx/count	ok	41
+cfs	asserting1	random_approx/explain	ok	true 40104e14 sum of:
+cfs	asserting1	block_score/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting1	block_score/count	ok	41
+cfs	asserting1	block_score/explain	ok	true 40104e14 sum of:
+cfs	asserting1	disabling_bulk/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting1	disabling_bulk/count	ok	41
+cfs	asserting1	disabling_bulk/explain	ok	true 40104e14 sum of:
+cfs	asserting1	next	ok	-8744063478727631501
+cfs	asserting1	toString	ok	true
+cfs	asserting2	term/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+cfs	asserting2	term/count	ok	22
+cfs	asserting2	term/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting2	should/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting2	should/count	ok	41
+cfs	asserting2	should/explain	ok	true 40104e14 sum of:
+cfs	asserting2	must_should/top	ok	25 hits 243:40104e14 21:4002e77f 57:3fef8fdb 64:3fef8fdb 82:3fdcccc7 88:3fdcccc7 292:3fdcccc7 299:3fdcccc7 306:3fdcccc7 137:3fb6dcd9
+cfs	asserting2	must_should/count	ok	25
+cfs	asserting2	must_should/explain	ok	true 40104e14 sum of:
+cfs	asserting2	must_filter/top	ok	0 hits
+cfs	asserting2	must_filter/count	ok	0
+cfs	asserting2	should_not/top	ok	16 hits 198:3fd8bbca 241:3fbcd59a 248:3fbcd59a 13:3fa74c7a 19:3fa74c7a 26:3fa74c7a 55:3f962c1c 62:3f962c1c 69:3f962c1c 80:3f883a0c
+cfs	asserting2	should_not/count	ok	16
+cfs	asserting2	should_not/explain	ok	true 3fd8bbca sum of:
+cfs	asserting2	phrase/top	ok	19 hits 122:4032b23d 131:401e511a 166:400e1c1f 173:400e1c1f 180:400e1c1f 209:4000e9bb 216:4000e9bb 223:4000e9bb 230:4000e9bb 3:3febeaf4
+cfs	asserting2	phrase/count	ok	19
+cfs	asserting2	phrase/explain	ok	true 4032b23d weight(body:"w0 w17" in 122) [BM25Similarity], result of:
+cfs	asserting2	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+cfs	asserting2	prefix/count	ok	166
+cfs	asserting2	prefix/explain	ok	true 3f800000 body:w1*
+cfs	asserting2	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+cfs	asserting2	wildcard/count	ok	98
+cfs	asserting2	wildcard/explain	ok	true 3f800000 body:w?3
+cfs	asserting2	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+cfs	asserting2	point_range/count	ok	65
+cfs	asserting2	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+cfs	asserting2	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+cfs	asserting2	exists/count	ok	280
+cfs	asserting2	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+cfs	asserting2	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+cfs	asserting2	constant/count	ok	22
+cfs	asserting2	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+cfs	asserting2	boost/top	ok	22 hits 177:4089bd36 220:40700462 227:40700462 0:4054a4f2 7:4054a4f2 263:4054a4f2 34:403ee038 41:403ee038 48:403ee038 55:403ee038
+cfs	asserting2	boost/count	ok	22
+cfs	asserting2	boost/explain	ok	true 4089bd36 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting2	dismax/top	ok	41 hits 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212 151:3fa20212 201:3f9fbdef 158:3f9f8437 165:3f9f8437 172:3f9f8437 180:3f916c5b
+cfs	asserting2	dismax/count	ok	41
+cfs	asserting2	dismax/explain	ok	true 3fd1e12b max plus 0.1 times others of:
+cfs	asserting2	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+cfs	asserting2	all/count	ok	309
+cfs	asserting2	all/explain	ok	true 3f800000 *:*
+cfs	asserting2	none/top	ok	0 hits
+cfs	asserting2	none/count	ok	0
+cfs	asserting2	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+cfs	asserting2	knn/count	ok	5
+cfs	asserting2	knn/explain	ok	true 3f23d70a within top 5 docs
+cfs	asserting2	asserting/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+cfs	asserting2	asserting/count	ok	22
+cfs	asserting2	asserting/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting2	random_approx/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting2	random_approx/count	ok	41
+cfs	asserting2	random_approx/explain	ok	true 40104e14 sum of:
+cfs	asserting2	block_score/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting2	block_score/count	ok	41
+cfs	asserting2	block_score/explain	ok	true 40104e14 sum of:
+cfs	asserting2	disabling_bulk/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting2	disabling_bulk/count	ok	41
+cfs	asserting2	disabling_bulk/explain	ok	true 40104e14 sum of:
+cfs	asserting2	next	ok	-2330499855992653693
+cfs	asserting2	toString	ok	true
+cfs	asserting3	term/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+cfs	asserting3	term/count	ok	22
+cfs	asserting3	term/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting3	should/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting3	should/count	ok	41
+cfs	asserting3	should/explain	ok	true 40104e14 sum of:
+cfs	asserting3	must_should/top	ok	25 hits 243:40104e14 21:4002e77f 57:3fef8fdb 64:3fef8fdb 82:3fdcccc7 88:3fdcccc7 292:3fdcccc7 299:3fdcccc7 306:3fdcccc7 137:3fb6dcd9
+cfs	asserting3	must_should/count	ok	25
+cfs	asserting3	must_should/explain	ok	true 40104e14 sum of:
+cfs	asserting3	must_filter/top	ok	0 hits
+cfs	asserting3	must_filter/count	ok	0
+cfs	asserting3	should_not/top	ok	16 hits 198:3fd8bbca 241:3fbcd59a 248:3fbcd59a 13:3fa74c7a 19:3fa74c7a 26:3fa74c7a 55:3f962c1c 62:3f962c1c 69:3f962c1c 80:3f883a0c
+cfs	asserting3	should_not/count	ok	16
+cfs	asserting3	should_not/explain	ok	true 3fd8bbca sum of:
+cfs	asserting3	phrase/top	ok	19 hits 122:4032b23d 131:401e511a 166:400e1c1f 173:400e1c1f 180:400e1c1f 209:4000e9bb 216:4000e9bb 223:4000e9bb 230:4000e9bb 3:3febeaf4
+cfs	asserting3	phrase/count	ok	19
+cfs	asserting3	phrase/explain	ok	true 4032b23d weight(body:"w0 w17" in 122) [BM25Similarity], result of:
+cfs	asserting3	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+cfs	asserting3	prefix/count	ok	166
+cfs	asserting3	prefix/explain	ok	true 3f800000 body:w1*
+cfs	asserting3	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+cfs	asserting3	wildcard/count	ok	98
+cfs	asserting3	wildcard/explain	ok	true 3f800000 body:w?3
+cfs	asserting3	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+cfs	asserting3	point_range/count	ok	65
+cfs	asserting3	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+cfs	asserting3	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+cfs	asserting3	exists/count	ok	280
+cfs	asserting3	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+cfs	asserting3	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+cfs	asserting3	constant/count	ok	22
+cfs	asserting3	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+cfs	asserting3	boost/top	ok	22 hits 177:4089bd36 220:40700462 227:40700462 0:4054a4f2 7:4054a4f2 263:4054a4f2 34:403ee038 41:403ee038 48:403ee038 55:403ee038
+cfs	asserting3	boost/count	ok	22
+cfs	asserting3	boost/explain	ok	true 4089bd36 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting3	dismax/top	ok	41 hits 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212 151:3fa20212 201:3f9fbdef 158:3f9f8437 165:3f9f8437 172:3f9f8437 180:3f916c5b
+cfs	asserting3	dismax/count	ok	41
+cfs	asserting3	dismax/explain	ok	true 3fd1e12b max plus 0.1 times others of:
+cfs	asserting3	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+cfs	asserting3	all/count	ok	309
+cfs	asserting3	all/explain	ok	true 3f800000 *:*
+cfs	asserting3	none/top	ok	0 hits
+cfs	asserting3	none/count	ok	0
+cfs	asserting3	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+cfs	asserting3	knn/count	ok	5
+cfs	asserting3	knn/explain	ok	true 3f23d70a within top 5 docs
+cfs	asserting3	asserting/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+cfs	asserting3	asserting/count	ok	22
+cfs	asserting3	asserting/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	asserting3	random_approx/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting3	random_approx/count	ok	41
+cfs	asserting3	random_approx/explain	ok	true 40104e14 sum of:
+cfs	asserting3	block_score/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting3	block_score/count	ok	41
+cfs	asserting3	block_score/explain	ok	true 40104e14 sum of:
+cfs	asserting3	disabling_bulk/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	asserting3	disabling_bulk/count	ok	41
+cfs	asserting3	disabling_bulk/explain	ok	true 40104e14 sum of:
+cfs	asserting3	next	ok	-1425034479453439072
+cfs	asserting3	toString	ok	true
+cfs	scorer	term/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+cfs	scorer	term/count	ok	22
+cfs	scorer	term/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	scorer	should/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	scorer	should/count	ok	41
+cfs	scorer	should/explain	ok	true 40104e14 sum of:
+cfs	scorer	must_should/top	ok	25 hits 243:40104e14 21:4002e77f 57:3fef8fdb 64:3fef8fdb 82:3fdcccc7 88:3fdcccc7 292:3fdcccc7 299:3fdcccc7 306:3fdcccc7 137:3fb6dcd9
+cfs	scorer	must_should/count	ok	25
+cfs	scorer	must_should/explain	ok	true 40104e14 sum of:
+cfs	scorer	must_filter/top	ok	0 hits
+cfs	scorer	must_filter/count	ok	0
+cfs	scorer	should_not/top	ok	16 hits 198:3fd8bbca 241:3fbcd59a 248:3fbcd59a 13:3fa74c7a 19:3fa74c7a 26:3fa74c7a 55:3f962c1c 62:3f962c1c 69:3f962c1c 80:3f883a0c
+cfs	scorer	should_not/count	ok	16
+cfs	scorer	should_not/explain	ok	true 3fd8bbca sum of:
+cfs	scorer	phrase/top	ok	19 hits 122:4032b23d 131:401e511a 166:400e1c1f 173:400e1c1f 180:400e1c1f 209:4000e9bb 216:4000e9bb 223:4000e9bb 230:4000e9bb 3:3febeaf4
+cfs	scorer	phrase/count	ok	19
+cfs	scorer	phrase/explain	ok	true 4032b23d weight(body:"w0 w17" in 122) [BM25Similarity], result of:
+cfs	scorer	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+cfs	scorer	prefix/count	ok	166
+cfs	scorer	prefix/explain	ok	true 3f800000 body:w1*
+cfs	scorer	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+cfs	scorer	wildcard/count	ok	98
+cfs	scorer	wildcard/explain	ok	true 3f800000 body:w?3
+cfs	scorer	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+cfs	scorer	point_range/count	ok	65
+cfs	scorer	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+cfs	scorer	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+cfs	scorer	exists/count	ok	280
+cfs	scorer	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+cfs	scorer	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+cfs	scorer	constant/count	ok	22
+cfs	scorer	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+cfs	scorer	boost/top	ok	22 hits 177:4089bd36 220:40700462 227:40700462 0:4054a4f2 7:4054a4f2 263:4054a4f2 34:403ee038 41:403ee038 48:403ee038 55:403ee038
+cfs	scorer	boost/count	ok	22
+cfs	scorer	boost/explain	ok	true 4089bd36 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	scorer	dismax/top	ok	41 hits 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212 151:3fa20212 201:3f9fbdef 158:3f9f8437 165:3f9f8437 172:3f9f8437 180:3f916c5b
+cfs	scorer	dismax/count	ok	41
+cfs	scorer	dismax/explain	ok	true 3fd1e12b max plus 0.1 times others of:
+cfs	scorer	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+cfs	scorer	all/count	ok	309
+cfs	scorer	all/explain	ok	true 3f800000 *:*
+cfs	scorer	none/top	ok	0 hits
+cfs	scorer	none/count	ok	0
+cfs	scorer	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+cfs	scorer	knn/count	ok	5
+cfs	scorer	knn/explain	ok	true 3f23d70a within top 5 docs
+cfs	scorer	asserting/top	ok	22 hits 177:3fdc61f0 220:3fc00381 227:3fc00381 0:3faa1d8f 7:3faa1d8f 263:3faa1d8f 34:3f98b360 41:3f98b360 48:3f98b360 55:3f98b360
+cfs	scorer	asserting/count	ok	22
+cfs	scorer	asserting/explain	ok	true 3fdc61f0 weight(body:w7 in 27) [BM25Similarity], result of:
+cfs	scorer	random_approx/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	scorer	random_approx/count	ok	41
+cfs	scorer	random_approx/explain	ok	true 40104e14 sum of:
+cfs	scorer	block_score/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	scorer	block_score/count	ok	41
+cfs	scorer	block_score/explain	ok	true 40104e14 sum of:
+cfs	scorer	disabling_bulk/top	ok	41 hits 201:40104e14 244:4002e77f 251:4002e77f 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 271:3fdcccc7
+cfs	scorer	disabling_bulk/count	ok	41
+cfs	scorer	disabling_bulk/explain	ok	true 40104e14 sum of:
+cfs	random_sim	term/top	ok	22 hits 177:403309fc 220:401d08bf 227:401d08bf 0:400cdac9 7:400cdac9 263:400cdac9 34:400007a2 41:400007a2 48:400007a2 55:400007a2
+cfs	random_sim	term/count	ok	22
+cfs	random_sim	term/explain	ok	true 403309fc weight(body:w7 in 27) [AssertingSimilarity], result of:
+cfs	random_sim	should/top	ok	41 hits 201:40715c6a 244:405d7db3 251:405d7db3 15:404cc7f6 22:404cc7f6 29:404cc7f6 58:403e7dfb 65:403e7dfb 71:403e7dfb 271:403e7dfb
+cfs	random_sim	should/count	ok	41
+cfs	random_sim	should/explain	ok	true 40715c6a sum of:
+cfs	random_sim	must_should/top	ok	25 hits 243:40715c6a 21:405d7db3 57:404cc7f6 64:404cc7f6 82:403e7dfb 88:403e7dfb 292:403e7dfb 299:403e7dfb 306:403e7dfb 137:4015344e
+cfs	random_sim	must_should/count	ok	25
+cfs	random_sim	must_should/explain	ok	true 40715c6a sum of:
+cfs	random_sim	must_filter/top	ok	0 hits
+cfs	random_sim	must_filter/count	ok	0
+cfs	random_sim	should_not/top	ok	16 hits 198:402fe9a0 241:401a4ac1 248:401a4ac1 13:400a651f 19:400a651f 26:400a651f 55:3ffb9699 62:3ffb9699 69:3ffb9699 80:3fe6e057
+cfs	random_sim	should_not/count	ok	16
+cfs	random_sim	should_not/explain	ok	true 402fe9a0 sum of:
+cfs	random_sim	phrase/top	ok	19 hits 122:4091b3f2 131:4082b0dc 166:406d953a 173:406d953a 180:406d953a 209:405a0622 216:405a0622 223:405a0622 230:405a0622 3:4049935c
+cfs	random_sim	phrase/count	ok	19
+cfs	random_sim	phrase/explain	ok	true 4091b3f2 weight(body:"w0 w17" in 122) [AssertingSimilarity], result of:
+cfs	random_sim	prefix/top	ok	166 hits 2:3f800000 3:3f800000 4:3f800000 9:3f800000 10:3f800000 11:3f800000 12:3f800000 15:3f800000 16:3f800000 18:3f800000
+cfs	random_sim	prefix/count	ok	166
+cfs	random_sim	prefix/explain	ok	true 3f800000 body:w1*
+cfs	random_sim	wildcard/top	ok	98 hits 3:3f800000 6:3f800000 10:3f800000 12:3f800000 16:3f800000 20:3f800000 23:3f800000 27:3f800000 30:3f800000 31:3f800000
+cfs	random_sim	wildcard/count	ok	98
+cfs	random_sim	wildcard/explain	ok	true 3f800000 body:w?3
+cfs	random_sim	point_range/top	ok	65 hits 17:3f800000 18:3f800000 19:3f800000 20:3f800000 21:3f800000 22:3f800000 46:3f800000 47:3f800000 48:3f800000 49:3f800000
+cfs	random_sim	point_range/count	ok	65
+cfs	random_sim	point_range/explain	ok	true 3f800000 p_int:[10 TO 50]
+cfs	random_sim	exists/top	ok	280 hits 0:3f800000 1:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000 10:3f800000
+cfs	random_sim	exists/count	ok	280
+cfs	random_sim	exists/explain	ok	true 3f800000 FieldExistsQuery [field=dv_num]
+cfs	random_sim	constant/top	ok	22 hits 0:3f800000 7:3f800000 34:3f800000 41:3f800000 48:3f800000 55:3f800000 76:3f800000 87:3f800000 93:3f800000 100:3f800000
+cfs	random_sim	constant/count	ok	22
+cfs	random_sim	constant/explain	ok	true 3f800000 ConstantScore(body:w7)
+cfs	random_sim	boost/top	ok	22 hits 177:40dfcc7b 220:40c44aef 227:40c44aef 0:40b0117b 7:40b0117b 263:40b0117b 34:40a0098a 41:40a0098a 48:40a0098a 55:40a0098a
+cfs	random_sim	boost/count	ok	22
+cfs	random_sim	boost/explain	ok	true 40dfcc7b weight(body:w7 in 27) [AssertingSimilarity], result of:
+cfs	random_sim	dismax/top	ok	41 hits 95:402a1caa 114:40276947 138:4005d4dd 144:4005d4dd 151:4005d4dd 201:40059e1c 158:4003b4ee 165:4003b4ee 172:4003b4ee 244:3ff53c35
+cfs	random_sim	dismax/count	ok	41
+cfs	random_sim	dismax/explain	ok	true 402a1caa max plus 0.1 times others of:
+cfs	random_sim	all/top	ok	309 hits 0:3f800000 1:3f800000 2:3f800000 3:3f800000 4:3f800000 5:3f800000 6:3f800000 7:3f800000 8:3f800000 9:3f800000
+cfs	random_sim	all/count	ok	309
+cfs	random_sim	all/explain	ok	true 3f800000 *:*
+cfs	random_sim	none/top	ok	0 hits
+cfs	random_sim	none/count	ok	0
+cfs	random_sim	knn/top	ok	5 hits 106:3f23d70a 158:3f088889 181:3ef83e10 215:3ef83e10 276:3ef0f0f1
+cfs	random_sim	knn/count	ok	5
+cfs	random_sim	knn/explain	ok	true 3f23d70a within top 5 docs
+cfs	random_sim	asserting/top	ok	22 hits 177:403309fc 220:401d08bf 227:401d08bf 0:400cdac9 7:400cdac9 263:400cdac9 34:400007a2 41:400007a2 48:400007a2 55:400007a2
+cfs	random_sim	asserting/count	ok	22
+cfs	random_sim	asserting/explain	ok	true 403309fc weight(body:w7 in 27) [AssertingSimilarity], result of:
+cfs	random_sim	random_approx/top	ok	41 hits 201:40715c6a 244:405d7db3 251:405d7db3 15:404cc7f6 22:404cc7f6 29:404cc7f6 58:403e7dfb 65:403e7dfb 71:403e7dfb 271:403e7dfb
+cfs	random_sim	random_approx/count	ok	41
+cfs	random_sim	random_approx/explain	ok	true 40715c6a sum of:
+cfs	random_sim	block_score/top	ok	41 hits 201:40715c6a 244:405d7db3 251:405d7db3 15:404cc7f6 22:404cc7f6 29:404cc7f6 58:403e7dfb 65:403e7dfb 71:403e7dfb 271:403e7dfb
+cfs	random_sim	block_score/count	ok	41
+cfs	random_sim	block_score/explain	ok	true 40715c6a sum of:
+cfs	random_sim	disabling_bulk/top	ok	41 hits 201:40715c6a 244:405d7db3 251:405d7db3 15:404cc7f6 22:404cc7f6 29:404cc7f6 58:403e7dfb 65:403e7dfb 71:403e7dfb 271:403e7dfb
+cfs	random_sim	disabling_bulk/count	ok	41
+cfs	random_sim	disabling_bulk/explain	ok	true 40715c6a sum of:
+cfs	random_sim	toString	ok	RandomSimilarity(queryNorm=false): {body=DFR I(ne)B2}
+cfs	random_sim	next	ok	2350717141523148580
+cfs	scorer	score_unpositioned	err	java.lang.AssertionError	ITERATING
+cfs	scorer	max_score_unpositioned	err	java.lang.AssertionError	Cannot get max scores until the iterator is positioned or advanceShallow has been called
+cfs	scorer	shallow_decreasing	err	java.lang.AssertionError	called on decreasing targets: target = -5 < last target = -1
+cfs	scorer	next	ok	0
+cfs	scorer	score	ok	3faa1d8f
+cfs	scorer	min_competitive	err	java.lang.AssertionError	<null>
+cfs	scorer	advance_same	err	java.lang.AssertionError	target must be > docID(), got 0 <= 0
+cfs	scorer	children	ok	1 SHOULD
+cfs	scorer	exhaust	ok	2147483647
+cfs	scorer	next_after_end	err	java.lang.AssertionError	nextDoc() called after NO_MORE_DOCS
+cfs	scorer	advance_after_end	err	java.lang.AssertionError	advance() called after NO_MORE_DOCS
+cfs	scorer	cannot_score	err	java.lang.AssertionError	<null>
+cfs	scorer	cannot_shallow	err	java.lang.AssertionError	<null>
+cfs	scorer	shallow	ok	2147483647
+cfs	scorer	shallow_below_doc	err	java.lang.AssertionError	target = 40 < docID = 41
+cfs	scorer	min_competitive_nan	err	java.lang.AssertionError	<null>
+cfs	scorer	min_competitive_decreasing	err	java.lang.AssertionError	<null>
+cfs	scorer	two_phase	ok	true
+cfs	scorer	matches_unpositioned	err	java.lang.AssertionError	ITERATING
+cfs	scorer	approx_next	ok	3
+cfs	scorer	approx_matches	ok	true
+cfs	scorer	approx_backwards	err	java.lang.AssertionError	target must be > docID(), got 0 <= 3
+cfs	scorer	approx_end	ok	2147483647
+cfs	scorer	approx_after_end	err	java.lang.AssertionError	advance() called after NO_MORE_DOCS
+cfs	collector	leaf_before_weight	err	java.lang.AssertionError	Set the weight first
+cfs	collector	weight	ok	null
+cfs	collector	weight_twice	err	java.lang.AssertionError	Weight set twice
+cfs	collector	collect5	ok	null
+cfs	collector	collect3	err	java.lang.AssertionError	collection is not in order: current doc=273 while 275 has already been collected
+cfs	collector	finish	ok	true
+cfs	collector	finish_twice	err	java.lang.AssertionError	<null>
+cfs	collector	leaf_out_of_order	err	java.lang.AssertionError	<null>
+cfs	leaf	out_of_range_max	err	java.lang.AssertionError	Out of range: 10 >= 10
+cfs	leaf	out_of_range_min	err	java.lang.AssertionError	Out of range: 1 < 2
+cfs	leaf	out_of_order	err	java.lang.AssertionError	Out of order : 4 4
+cfs	leaf	range_empty	err	java.lang.AssertionError	<null>
+cfs	leaf	range_beyond	err	java.lang.AssertionError	Out of range: 11 >= 10
+cfs	leaf	range_then_collect	err	java.lang.AssertionError	Out of order : 5 5
+cfs	leaf	finish_twice	err	java.lang.AssertionError	<null>
+cfs	bulk	rewrap	ok	true
+cfs	bulk	score_first	ok	100 9
+cfs	bulk	score_rest	ok	2147483647 14
+cfs	bulk	window	ok	20
+cfs	bulk	backward	err	java.lang.AssertionError	Scoring backward: min=5 while previous max was max=20
+cfs	bulk	inverted	err	java.lang.AssertionError	max must be greater than min, got min=40, and max=35
+cfs	matches	class	ok	AssertingMatches true
+cfs	matches	start_unpositioned	err	java.lang.AssertionError	UNPOSITIONED
+cfs	matches	offset_unpositioned	err	java.lang.AssertionError	UNPOSITIONED
+cfs	matches	next	ok	true
+cfs	matches	position	ok	1-1
+cfs	matches	drain	ok	0
+cfs	matches	next_exhausted	err	java.lang.AssertionError	EXHAUSTED
+cfs	matches	query_exhausted	err	java.lang.AssertionError	EXHAUSTED
+cfs	matches	other_field	ok	null
+cfs	weight	count_too_large	err	java.lang.AssertionError	count=151, numDocs=150
+cfs	weight	count	ok	14
+cfs	weight	supplier_get_twice	err	java.lang.AssertionError	<null>
+cfs	weight	supplier_negative_lead	err	java.lang.AssertionError	-1
+cfs	weight	supplier_top_level_after_get	err	java.lang.AssertionError	<null>
+cfs	query	negative_boost	err	java.lang.AssertionError	<null>
+cfs	query	wrap_twice	ok	true
+cfs	searcher	search_plain_weight	err	java.lang.AssertionError	<null>
+cfs	two_phase_view	match_cost	ok	43117580
+cfs	two_phase_view	matches_unpositioned	err	java.lang.AssertionError	matches() should not be called on doc ID -1
+cfs	two_phase_view	next	ok	0
+cfs	two_phase_view	matches	ok	true
+cfs	two_phase_view	matches_twice	err	java.lang.AssertionError	matches() has been called twice on doc ID 0
+cfs	two_phase_view	advance	ok	7 true
+cfs	two_phase_view	run_end	ok	20
+cfs	small	fixed_bit_set	ok	22 0 7 34 41 48 55 76 87 93 100 107 112 119 127 177 220 227 263 276 283 290 297
+cfs	small	dummy_total	ok	22
+cfs	small	disabling_no_match	err	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.search.ScorerSupplier.get(long)" because "this.val$scorerSupplier" is null
+cfs	small	bulk_wrapper_iterate	ok	24 2:3f81e3cd 3:3f716b1c 15:3fef8fdb 22:3fef8fdb 29:3fef8fdb 36:3f6db49a 37:3f5e82d0 43:3f6db49a 44:3f5e82d0 50:3f6db49a 51:3f5e82d0 58:3fdcccc7 65:3fdcccc7 71:3fdcccc7 95:3fd1e12b 114:3fcea6d6 138:3fa20212 144:3fa20212
+cfs	small	bulk_wrapper_advance	ok	50 51 2147483647 2147483647
+ctx	context	next	ok	7701796066904398090
+sim	random0	id	ok	IB SPL-LZ(0.3)
+sim	random0	body	ok	DFR I(ne)L1
+sim	random0	tv	ok	F2EXP
+sim	random0	p_int	ok	DFR GLZ(0.3)
+sim	random0	dv_num	ok	F2EXP
+sim	random0	f0	ok	DFR I(n)BZ(0.3)
+sim	random0	f1	ok	IB LL-LZ(0.3)
+sim	random0	f2	ok	IB SPL-D2
+sim	random0	f3	ok	LM Dirichlet(2000.000000)
+sim	random0	f4	ok	DFR I(n)L3(800.0)
+sim	random0	f5	ok	IB SPL-D1
+sim	random0	toString	ok	RandomSimilarity(queryNorm=true): {tv=F2EXP, p_int=DFR GLZ(0.3), dv_num=F2EXP, f0=DFR I(n)BZ(0.3), f1=IB LL-LZ(0.3), id=IB SPL-LZ(0.3), f2=IB SPL-D2, body=DFR I(ne)L1, f3=LM Dirichlet(2000.000000), f4=DFR I(n)L3(800.0), f5=IB SPL-D1}
+sim	random0	next	ok	-5121607137339136235
+sim	random1	id	ok	LM Jelinek-Mercer(0.100000)
+sim	random1	body	ok	IB SPL-LZ(0.3)
+sim	random1	tv	ok	DFI(Standardized)
+sim	random1	p_int	ok	IB LL-DZ(0.3)
+sim	random1	dv_num	ok	DFR I(ne)B2
+sim	random1	f0	ok	IB LL-L3(800.0)
+sim	random1	f1	ok	F1LOG
+sim	random1	f2	ok	F1EXP
+sim	random1	f3	ok	ClassicSimilarity
+sim	random1	f4	ok	IB LL-L2
+sim	random1	f5	ok	DFR GB3(800.0)
+sim	random1	toString	ok	RandomSimilarity(queryNorm=false): {tv=DFI(Standardized), p_int=IB LL-DZ(0.3), dv_num=DFR I(ne)B2, f0=IB LL-L3(800.0), f1=F1LOG, id=LM Jelinek-Mercer(0.100000), f2=F1EXP, body=IB SPL-LZ(0.3), f3=ClassicSimilarity, f4=IB LL-L2, f5=DFR GB3(800.0)}
+sim	random1	next	ok	3407244680303549079
+sim	random2	id	ok	LM Dirichlet(2000.000000)
+sim	random2	body	ok	DFR GB2
+sim	random2	tv	ok	IB LL-L1
+sim	random2	p_int	ok	DFR I(F)B2
+sim	random2	dv_num	ok	DFR I(ne)L2
+sim	random2	f0	ok	IB LL-LZ(0.3)
+sim	random2	f1	ok	DFR I(ne)LZ(0.3)
+sim	random2	f2	ok	F1LOG
+sim	random2	f3	ok	DFR GB3(800.0)
+sim	random2	f4	ok	DFR GB1
+sim	random2	f5	ok	DFR GL2
+sim	random2	toString	ok	RandomSimilarity(queryNorm=false): {tv=IB LL-L1, p_int=DFR I(F)B2, dv_num=DFR I(ne)L2, f0=IB LL-LZ(0.3), f1=DFR I(ne)LZ(0.3), id=LM Dirichlet(2000.000000), f2=F1LOG, body=DFR GB2, f3=DFR GB3(800.0), f4=DFR GB1, f5=DFR GL2}
+sim	random2	next	ok	-3732566698914955246
+sim	random3	id	ok	DFI(Standardized)
+sim	random3	body	ok	F1LOG
+sim	random3	tv	ok	IB SPL-L3(800.0)
+sim	random3	p_int	ok	IB SPL-L3(800.0)
+sim	random3	dv_num	ok	IB SPL-L3(800.0)
+sim	random3	f0	ok	F1LOG
+sim	random3	f1	ok	DFR I(F)L1
+sim	random3	f2	ok	DFR I(F)BZ(0.3)
+sim	random3	f3	ok	IB LL-D3(800.0)
+sim	random3	f4	ok	DFI(Saturated)
+sim	random3	f5	ok	IB LL-DZ(0.3)
+sim	random3	toString	ok	RandomSimilarity(queryNorm=true): {tv=IB SPL-L3(800.0), p_int=IB SPL-L3(800.0), dv_num=IB SPL-L3(800.0), f0=F1LOG, f1=DFR I(F)L1, id=DFI(Standardized), f2=DFR I(F)BZ(0.3), body=F1LOG, f3=IB LL-D3(800.0), f4=DFI(Saturated), f5=IB LL-DZ(0.3)}
+sim	random3	next	ok	4796285118727730068
+sim	random42	id	ok	DFR GL2
+sim	random42	body	ok	DFR GB2
+sim	random42	tv	ok	DFR GB1
+sim	random42	p_int	ok	IB SPL-D3(800.0)
+sim	random42	dv_num	ok	DFR I(n)B2
+sim	random42	f0	ok	F1LOG
+sim	random42	f1	ok	DFR I(n)L3(800.0)
+sim	random42	f2	ok	DFR GB3(800.0)
+sim	random42	f3	ok	IB LL-L2
+sim	random42	f4	ok	DFI(Saturated)
+sim	random42	f5	ok	DFR I(n)B1
+sim	random42	toString	ok	RandomSimilarity(queryNorm=false): {tv=DFR GB1, p_int=IB SPL-D3(800.0), dv_num=DFR I(n)B2, f0=F1LOG, f1=DFR I(n)L3(800.0), id=DFR GL2, f2=DFR GB3(800.0), body=DFR GB2, f3=IB LL-L2, f4=DFI(Saturated), f5=DFR I(n)B1}
+sim	random42	next	ok	5380112710085299282
+sim	random-7	id	ok	DFR I(F)L1
+sim	random-7	body	ok	IB LL-D3(800.0)
+sim	random-7	tv	ok	IB LL-LZ(0.3)
+sim	random-7	p_int	ok	DFR GB3(800.0)
+sim	random-7	dv_num	ok	DFR GL2
+sim	random-7	f0	ok	DFR I(n)B2
+sim	random-7	f1	ok	DFR GBZ(0.3)
+sim	random-7	f2	ok	DFR I(F)B3(800.0)
+sim	random-7	f3	ok	BM25(k1=1.2,b=0.75)
+sim	random-7	f4	ok	DFI(ChiSquared)
+sim	random-7	f5	ok	DFR I(ne)L1
+sim	random-7	toString	ok	RandomSimilarity(queryNorm=true): {tv=IB LL-LZ(0.3), p_int=DFR GB3(800.0), dv_num=DFR GL2, f0=DFR I(n)B2, f1=DFR GBZ(0.3), id=DFR I(F)L1, f2=DFR I(F)B3(800.0), body=IB LL-D3(800.0), f3=BM25(k1=1.2,b=0.75), f4=DFI(ChiSquared), f5=DFR I(ne)L1}
+sim	random-7	next	ok	-1467405014675614359
+sim	random123456789	id	ok	DFR I(ne)L2
+sim	random123456789	body	ok	F1EXP
+sim	random123456789	tv	ok	DFR I(F)L1
+sim	random123456789	p_int	ok	IB LL-L3(800.0)
+sim	random123456789	dv_num	ok	DFR I(F)LZ(0.3)
+sim	random123456789	f0	ok	DFR I(ne)L3(800.0)
+sim	random123456789	f1	ok	DFR I(n)LZ(0.3)
+sim	random123456789	f2	ok	DFR I(n)L3(800.0)
+sim	random123456789	f3	ok	DFR GB2
+sim	random123456789	f4	ok	DFR I(F)LZ(0.3)
+sim	random123456789	f5	ok	DFR I(F)L2
+sim	random123456789	toString	ok	RandomSimilarity(queryNorm=true): {tv=DFR I(F)L1, p_int=IB LL-L3(800.0), dv_num=DFR I(F)LZ(0.3), f0=DFR I(ne)L3(800.0), f1=DFR I(n)LZ(0.3), id=DFR I(ne)L2, f2=DFR I(n)L3(800.0), body=F1EXP, f3=DFR GB2, f4=DFR I(F)LZ(0.3), f5=DFR I(F)L2}
+sim	random123456789	next	ok	1687937037493770139
+sim	asserting	toString	ok	Asserting(BM25(k1=1.2,b=0.75))
+nocfs	new_searcher	plain0	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain1	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain2	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain3	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain4	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain5	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain6	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain7	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain8	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain9	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain10	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	plain11	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_wrap0	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_assert0	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	inter0	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	intra0	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	none0	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_wrap1	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_assert1	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	inter1	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	intra1	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	none1	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_wrap2	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_assert2	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	inter2	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	intra2	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	none2	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_wrap3	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	no_assert3	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	inter3	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	intra3	ok	plain same leaves=3 maxDoc=310 numDocs=309 timeout=true maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	none3	ok	asserting same leaves=3 maxDoc=310 numDocs=309 timeout=false maybeCache=true slices=[0:0-2147483647 1:0-2147483647 2:0-2147483647 ]
+nocfs	new_searcher	next	ok	1882806726941124786
+nocfs	wrap_reader	directory0	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf0	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory1	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf1	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory2	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf2	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory3	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf3	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory4	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf4	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory5	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf5	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory6	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf6	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory7	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf7	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory8	ok	composite leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf8	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	directory9	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	leaf9	ok	leaf leaves=1 maxDoc=150 numDocs=150 w7=14
+nocfs	wrap_reader	maybe0	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe1	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe2	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe3	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe4	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe5	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe6	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe7	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe8	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe9	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe10	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe11	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe12	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe13	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe14	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe15	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe16	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe17	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe18	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	maybe19	ok	directory leaves=3 maxDoc=310 numDocs=309 w7=22
+nocfs	wrap_reader	next	ok	-902774450806835151
+nocfs	qu_check	term	ok	pass
+nocfs	qu_check	term/next	ok	-5421417846664176405
+nocfs	qu_check	should	ok	pass
+nocfs	qu_check	should/next	ok	-4013672400767132450
+nocfs	qu_check	must_should	ok	pass
+nocfs	qu_check	must_should/next	ok	-2687358463040063112
+nocfs	qu_check	must_filter	ok	pass
+nocfs	qu_check	must_filter/next	ok	6582798577213824741
+nocfs	qu_check	should_not	ok	pass
+nocfs	qu_check	should_not/next	ok	-972665041469751218
+nocfs	qu_check	phrase	ok	pass
+nocfs	qu_check	phrase/next	ok	-2838766412589483319
+nocfs	qu_check	prefix	ok	pass
+nocfs	qu_check	prefix/next	ok	-5525817708371752241
+nocfs	qu_check	wildcard	ok	pass
+nocfs	qu_check	wildcard/next	ok	-2164996932202953902
+nocfs	qu_check	point_range	ok	pass
+nocfs	qu_check	point_range/next	ok	-2166460434984409361
+nocfs	qu_check	exists	err	java.lang.AssertionError	query collected 51 but advance(50) got to 50 expected:<51> but was:<50>
+nocfs	qu_check	exists/next	ok	-6028560556305669696
+nocfs	qu_check	constant	ok	pass
+nocfs	qu_check	constant/next	ok	8469228098842297918
+nocfs	qu_check	boost	ok	pass
+nocfs	qu_check	boost/next	ok	-7739511957399525051
+nocfs	qu_check	dismax	ok	pass
+nocfs	qu_check	dismax/next	ok	-924975933260027452
+nocfs	qu_check	all	err	java.lang.AssertionError	query collected 51 but advance(50) got to 50 expected:<51> but was:<50>
+nocfs	qu_check	all/next	ok	2729367417937755850
+nocfs	qu_check	none	ok	pass
+nocfs	qu_check	none/next	ok	-973911806537903113
+nocfs	qu_check	knn	err	java.lang.AssertionError	query's last doc was 65 but advance(66) got to 99
+nocfs	qu_check	knn/next	ok	8512836842361142337
+nocfs	qu_check	asserting	ok	pass
+nocfs	qu_check	asserting/next	ok	-1410437360590161524
+nocfs	qu_check	random_approx	ok	pass
+nocfs	qu_check	random_approx/next	ok	3113063630184228444
+nocfs	qu_check	block_score	ok	pass
+nocfs	qu_check	block_score/next	ok	-6276153101170789410
+nocfs	qu_check	disabling_bulk	err	java.lang.NullPointerException	Cannot invoke "org.apache.lucene.search.ScorerSupplier.get(long)" because "this.val$scorerSupplier" is null
+nocfs	qu_check	disabling_bulk/next	ok	3893544209719391853
+nocfs	qu_check	null_searcher	ok	pass
+nocfs	check_hits	hit_collector	ok	pass
+nocfs	check_hits	hit_collector/next	ok	-4557066722824285629
+nocfs	check_hits	hit_collector_wrong	err	java.lang.AssertionError	Simple: w7 expected:<[0, 7, 34, 41, 48, 55, 76, 87, 93, 100, 107, 112, 119, 127, 177, 220, 227, 263, 276, 283, 290, 297, 309]> but was:<[0, 7, 34, 41, 48, 55, 76, 87, 93, 100, 107, 112, 119, 127, 177, 220, 227, 263, 276, 283, 290, 297]>
+nocfs	check_hits	hits	ok	pass
+nocfs	check_hits	hits/next	ok	-2507566549822600913
+nocfs	check_hits	hits_wrong	err	java.lang.AssertionError	w7 expected:<[0, 7, 34, 41, 48, 55, 76, 87, 93, 100, 107, 112, 119, 127, 177, 220, 227, 263, 276, 283, 290, 297, 309]> but was:<[0, 7, 34, 41, 48, 55, 76, 87, 93, 100, 107, 112, 119, 127, 177, 220, 227, 263, 276, 283, 290, 297]>
+nocfs	check_hits	doc_ids	ok	pass
+nocfs	check_hits	doc_ids_count	err	java.lang.AssertionError	m nr of hits expected:<10> but was:<1>
+nocfs	check_hits	doc_ids_order	err	java.lang.AssertionError	m doc nrs for hit 0 expected:<244> but was:<201>
+nocfs	check_hits	hits_query	ok	pass
+nocfs	check_hits	equal_score	err	java.lang.AssertionError	Hit 2, doc nrs 251 and 251\nunequal       : 2.0453794\n           and: 2.0463793\nfor query:body:w1 body:w2
+nocfs	check_hits	equal_length	err	java.lang.AssertionError	Unequal lengths: hits1=10,hits2=1
+nocfs	check_hits	equal_doc	err	java.lang.AssertionError	Hit 1 docnumbers don't match\nHits length1=10\tlength2=10\nhit=0: doc201=2.2547655 shardIndex=-1,\t doc201=2.2547655 shardIndex=-1\nhit=1: doc244=2.0453794 shardIndex=-1,\t doc245=2.0453794 shardIndex=-1\nhit=2: doc251=2.0453794 shardIndex=-1,\t doc251=2.0453794 shardIndex=-1\nhit=3: doc15=1.8715776 shardIndex=-1,\t doc15=1.8715776 shardIndex=-1\nhit=4: doc22=1.8715776 shardIndex=-1,\t doc22=1.8715776 shardIndex=-1\nhit=5: doc29=1.8715776 shardIndex=-1,\t doc29=1.8715776 shardIndex=-1\nhit=6: doc58=1.7249993 shardIndex=-1,\t doc58=1.7249993 shardIndex=-1\nhit=7: doc65=1.7249993 shardIndex=-1,\t doc65=1.7249993 shardIndex=-1\nhit=8: doc71=1.7249993 shardIndex=-1,\t doc71=1.7249993 shardIndex=-1\nhit=9: doc271=1.7249993 shardIndex=-1,\t doc271=1.7249993 shardIndex=-1\nfor query:body:w1 body:w2
+nocfs	check_hits	hits2str	ok	Hits length1=10\tlength2=1\nhit=0: doc201=2.2547655 shardIndex=-1,\t doc201=2.2547655 shardIndex=-1\nhit=1: doc244=2.0453794 shardIndex=-1,\t\nhit=2: doc251=2.0453794 shardIndex=-1,\t\nhit=3: doc15=1.8715776 shardIndex=-1,\t\nhit=4: doc22=1.8715776 shardIndex=-1,\t\nhit=5: doc29=1.8715776 shardIndex=-1,\t\nhit=6: doc58=1.7249993 shardIndex=-1,\t\nhit=7: doc65=1.7249993 shardIndex=-1,\t\nhit=8: doc71=1.7249993 shardIndex=-1,\t\nhit=9: doc271=1.7249993 shardIndex=-1,\t\n
+nocfs	check_hits	topdocs	ok	TopDocs totalHits=41 hits top=5\n\t1) doc=244\tscore=2.0453794\n\t2) doc=251\tscore=2.0453794\n
+nocfs	check_hits	no_match	ok	pass
+nocfs	check_hits	no_match_wrong	err	java.lang.AssertionError	Explanation of [[w7]] for #0 doesn't indicate non-match: 1.329027 = weight(body:w7 in 0) [BM25Similarity], result of:\n  1.329027 = score(freq=1.0), computed as boost * idf * tf from:\n    2.6262777 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n      22 = n, number of documents containing term\n      310 = N, total number of documents with field\n    0.5060497 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n      1.0 = freq, occurrences of term within document\n      1.2 = k1, term saturation parameter\n      0.75 = b, length normalization parameter\n      3.0 = dl, length of field\n      3.9935484 = avgdl, average length of field\n
+nocfs	check_hits	explanations/term	ok	pass
+nocfs	check_hits	matches/term	ok	pass
+nocfs	check_hits	top_scores/term	ok	pass
+nocfs	check_hits	explanations/should	ok	pass
+nocfs	check_hits	matches/should	ok	pass
+nocfs	check_hits	top_scores/should	ok	pass
+nocfs	check_hits	explanations/must_should	ok	pass
+nocfs	check_hits	matches/must_should	ok	pass
+nocfs	check_hits	top_scores/must_should	ok	pass
+nocfs	check_hits	explanations/must_filter	ok	pass
+nocfs	check_hits	matches/must_filter	ok	pass
+nocfs	check_hits	top_scores/must_filter	ok	pass
+nocfs	check_hits	explanations/should_not	ok	pass
+nocfs	check_hits	matches/should_not	ok	pass
+nocfs	check_hits	top_scores/should_not	ok	pass
+nocfs	check_hits	explanations/phrase	ok	pass
+nocfs	check_hits	matches/phrase	ok	pass
+nocfs	check_hits	top_scores/phrase	ok	pass
+nocfs	check_hits	explanations/prefix	ok	pass
+nocfs	check_hits	matches/prefix	ok	pass
+nocfs	check_hits	top_scores/prefix	ok	pass
+nocfs	check_hits	explanations/wildcard	ok	pass
+nocfs	check_hits	matches/wildcard	ok	pass
+nocfs	check_hits	top_scores/wildcard	ok	pass
+nocfs	check_hits	explanations/point_range	ok	pass
+nocfs	check_hits	matches/point_range	ok	pass
+nocfs	check_hits	top_scores/point_range	ok	pass
+nocfs	check_hits	explanations/exists	ok	pass
+nocfs	check_hits	matches/exists	err	java.lang.AssertionError	Unexpected non-null Matches object in non-matching doc51 for query FieldExistsQuery [field=dv_num] expected null, but was:<org.apache.lucene.tests.search.AssertingMatches@HASH>
+nocfs	check_hits	top_scores/exists	ok	pass
+nocfs	check_hits	explanations/constant	ok	pass
+nocfs	check_hits	matches/constant	ok	pass
+nocfs	check_hits	top_scores/constant	ok	pass
+nocfs	check_hits	explanations/boost	ok	pass
+nocfs	check_hits	matches/boost	ok	pass
+nocfs	check_hits	top_scores/boost	ok	pass
+nocfs	check_hits	explanations/dismax	ok	pass
+nocfs	check_hits	matches/dismax	ok	pass
+nocfs	check_hits	top_scores/dismax	ok	pass
+nocfs	check_hits	explanations/all	ok	pass
+nocfs	check_hits	matches/all	err	java.lang.AssertionError	Unexpected non-null Matches object in non-matching doc51 for query *:* expected null, but was:<org.apache.lucene.tests.search.AssertingMatches@HASH>
+nocfs	check_hits	top_scores/all	ok	pass
+nocfs	check_hits	explanations/none	ok	pass
+nocfs	check_hits	matches/none	ok	pass
+nocfs	check_hits	top_scores/none	ok	pass
+nocfs	check_hits	explanations/knn	ok	pass
+nocfs	check_hits	matches/knn	ok	pass
+nocfs	check_hits	top_scores/knn	ok	pass
+nocfs	check_hits	explanations/asserting	ok	pass
+nocfs	check_hits	matches/asserting	ok	pass
+nocfs	check_hits	top_scores/asserting	ok	pass
+nocfs	check_hits	explanations/random_approx	ok	pass
+nocfs	check_hits	matches/random_approx	ok	pass
+nocfs	check_hits	top_scores/random_approx	err	java.lang.AssertionError	expected:<2> but was:<0>
+nocfs	check_hits	explanations/block_score	ok	pass
+nocfs	check_hits	matches/block_score	ok	pass
+nocfs	check_hits	top_scores/block_score	ok	pass
+nocfs	check_hits	explanations/disabling_bulk	ok	pass
+nocfs	check_hits	matches/disabling_bulk	ok	pass
+nocfs	check_hits	top_scores/disabling_bulk	ok	pass
+nocfs	check_hits	explanations/next	ok	1490301162865944154
+nocfs	verify	shallow	ok	pass
+nocfs	verify	shallow_wrong	err	java.lang.AssertionError	expected:<0.10000000149011612> but was:<1.0>
+nocfs	verify	sum	ok	pass
+nocfs	verify	sum_wrong	err	java.lang.AssertionError	expected:<3.0> but was:<3.5>
+nocfs	verify	sum_ulp	ok	pass
+nocfs	verify	product	ok	pass
+nocfs	verify	max	ok	pass
+nocfs	verify	max_plus	ok	pass
+nocfs	verify	max_plus_wrong	err	java.lang.AssertionError	expected:<2.549999952316284> but was:<2.0>
+nocfs	verify	max_plus_unterminated	err	java.lang.StringIndexOutOfBoundsException	Range [9, -1) out of bounds for length 12
+nocfs	verify	computed	ok	pass
+nocfs	verify	bad_description	err	java.lang.AssertionError	q: multi valued explanation description="combined:" must be 'max of plus x times others', 'computed as x from:' or end with 'product of' or 'sum of:' or 'max of:' - 3.0 = combined:\n  1.0 = a\n  2.0 = b\n
+nocfs	verify	single	ok	pass
+nocfs	verify	single_wrong	err	java.lang.AssertionError	expected:<1.0> but was:<2.0>
+nocfs	verify	freq	ok	pass
+nocfs	verify	child_docs	err	java.lang.AssertionError	Child doc explanations are missing
+nocfs	verify	computed_from	ok	pass
+nocfs	verify	no_match	ok	pass
+nocfs	scorer_branch	is_scorer	ok	true false
+nocfs	scorer_branch	scorable_not_scorer	ok	false
+nocfs	scorer_branch	unpositioned_score	err	java.lang.AssertionError	ITERATING
+nocfs	scorer_branch	score_in_range	err	java.lang.AssertionError	Scorable.score() must not be called inside collect(DocIdStream) or collectRange() since the scorer is not positioned on individual documents during batch collection
+nocfs	scorer_branch	score_in_collect	ok	3faa1d8f
+nocfs	scorer_branch	min_competitive_across_calls	err	java.lang.AssertionError	<null>
+nocfs	scorer_branch	min_competitive_reset_by_set_scorer	ok	0 7
+nocfs	scorer_branch	asserting_scorer_unchanged	err	java.lang.AssertionError	<null>
+nocfs	scorer_branch	asserting_identity	err	java.lang.AssertionError	<null>
+nocfs	scorer_branch	nested	ok	3faa1d8f
+nocfs	scorer_branch	nested_range	err	java.lang.AssertionError	Scorable.score() must not be called inside collect(DocIdStream) or collectRange() since the scorer is not positioned on individual documents during batch collection
+nocfs	scorer_branch	search	ok	22 hits;41 hits;22 hits;
+nocfs	scorer_branch	next	ok	3852050599904813758
+nocfs	sorted_search	explanation/num/term	ok	22 hits | doc=34 score=NaN shardIndex=-1 fields=[-39] | doc=297 score=NaN shardIndex=-1 fields=[-38] | doc=227 score=NaN shardIndex=-1 fields=[-33] | doc=119 score=NaN shardIndex=-1 fields=[-28] | doc=48 score=NaN shardIndex=-1 fields=[-26]
+nocfs	sorted_search	scores/num/term	ok	22 hits | doc=34 score=1.1929741 shardIndex=-1 fields=[-39] | doc=297 score=1.08219 shardIndex=-1 fields=[-38] | doc=227 score=1.5001069 shardIndex=-1 fields=[-33] | doc=119 score=0.9902333 shardIndex=-1 fields=[-28] | doc=48 score=1.1929741 shardIndex=-1 fields=[-26]
+nocfs	sorted_search	after/num/term	ok	22 hits | doc=119 score=NaN shardIndex=-1 fields=[-28] | doc=48 score=NaN shardIndex=-1 fields=[-26] | doc=263 score=NaN shardIndex=-1 fields=[-14]
+nocfs	sorted_search	after_scores/num/term	ok	22 hits | doc=227 score=1.5001069 shardIndex=-1 fields=[-33] | doc=119 score=0.9902333 shardIndex=-1 fields=[-28] | doc=48 score=1.1929741 shardIndex=-1 fields=[-26] | doc=263 score=1.329027 shardIndex=-1 fields=[-14]
+nocfs	sorted_search	explanation/num/should	ok	41 hits | doc=58 score=NaN shardIndex=-1 fields=[-999] | doc=3 score=NaN shardIndex=-1 fields=[-48] | doc=172 score=NaN shardIndex=-1 fields=[-48] | doc=71 score=NaN shardIndex=-1 fields=[-47] | doc=194 score=NaN shardIndex=-1 fields=[-42]
+nocfs	sorted_search	scores/num/should	ok	41 hits | doc=58 score=1.7249993 shardIndex=-1 fields=[-999] | doc=3 score=0.9430406 shardIndex=-1 fields=[-48] | doc=172 score=1.2462224 shardIndex=-1 fields=[-48] | doc=71 score=1.7249993 shardIndex=-1 fields=[-47] | doc=194 score=1.1361192 shardIndex=-1 fields=[-42]
+nocfs	sorted_search	after/num/should	ok	41 hits | doc=71 score=NaN shardIndex=-1 fields=[-47] | doc=194 score=NaN shardIndex=-1 fields=[-42] | doc=265 score=NaN shardIndex=-1 fields=[-41]
+nocfs	sorted_search	after_scores/num/should	ok	41 hits | doc=172 score=1.2462224 shardIndex=-1 fields=[-48] | doc=71 score=1.7249993 shardIndex=-1 fields=[-47] | doc=194 score=1.1361192 shardIndex=-1 fields=[-42] | doc=265 score=1.0147644 shardIndex=-1 fields=[-41]
+nocfs	sorted_search	explanation/num/all	ok	309 hits | doc=58 score=NaN shardIndex=-1 fields=[-999] | doc=61 score=NaN shardIndex=-1 fields=[-50] | doc=132 score=NaN shardIndex=-1 fields=[-50] | doc=232 score=NaN shardIndex=-1 fields=[-50] | doc=31 score=NaN shardIndex=-1 fields=[-49]
+nocfs	sorted_search	scores/num/all	ok	309 hits | doc=58 score=1.0 shardIndex=-1 fields=[-999] | doc=61 score=1.0 shardIndex=-1 fields=[-50] | doc=132 score=1.0 shardIndex=-1 fields=[-50] | doc=232 score=1.0 shardIndex=-1 fields=[-50] | doc=31 score=1.0 shardIndex=-1 fields=[-49]
+nocfs	sorted_search	after/num/all	ok	309 hits | doc=232 score=NaN shardIndex=-1 fields=[-50] | doc=31 score=NaN shardIndex=-1 fields=[-49] | doc=202 score=NaN shardIndex=-1 fields=[-49]
+nocfs	sorted_search	after_scores/num/all	ok	309 hits | doc=132 score=1.0 shardIndex=-1 fields=[-50] | doc=232 score=1.0 shardIndex=-1 fields=[-50] | doc=31 score=1.0 shardIndex=-1 fields=[-49] | doc=202 score=1.0 shardIndex=-1 fields=[-49]
+nocfs	sorted_search	explanation/num/constant	ok	22 hits | doc=34 score=NaN shardIndex=-1 fields=[-39] | doc=297 score=NaN shardIndex=-1 fields=[-38] | doc=227 score=NaN shardIndex=-1 fields=[-33] | doc=119 score=NaN shardIndex=-1 fields=[-28] | doc=48 score=NaN shardIndex=-1 fields=[-26]
+nocfs	sorted_search	scores/num/constant	ok	22 hits | doc=34 score=1.0 shardIndex=-1 fields=[-39] | doc=297 score=1.0 shardIndex=-1 fields=[-38] | doc=227 score=1.0 shardIndex=-1 fields=[-33] | doc=119 score=1.0 shardIndex=-1 fields=[-28] | doc=48 score=1.0 shardIndex=-1 fields=[-26]
+nocfs	sorted_search	after/num/constant	ok	22 hits | doc=119 score=NaN shardIndex=-1 fields=[-28] | doc=48 score=NaN shardIndex=-1 fields=[-26] | doc=263 score=NaN shardIndex=-1 fields=[-14]
+nocfs	sorted_search	after_scores/num/constant	ok	22 hits | doc=227 score=1.0 shardIndex=-1 fields=[-33] | doc=119 score=1.0 shardIndex=-1 fields=[-28] | doc=48 score=1.0 shardIndex=-1 fields=[-26] | doc=263 score=1.0 shardIndex=-1 fields=[-14]
+nocfs	sorted_search	explanation/num/exists	ok	280 hits | doc=58 score=NaN shardIndex=-1 fields=[-999] | doc=61 score=NaN shardIndex=-1 fields=[-50] | doc=132 score=NaN shardIndex=-1 fields=[-50] | doc=232 score=NaN shardIndex=-1 fields=[-50] | doc=31 score=NaN shardIndex=-1 fields=[-49]
+nocfs	sorted_search	scores/num/exists	ok	280 hits | doc=58 score=1.0 shardIndex=-1 fields=[-999] | doc=61 score=1.0 shardIndex=-1 fields=[-50] | doc=132 score=1.0 shardIndex=-1 fields=[-50] | doc=232 score=1.0 shardIndex=-1 fields=[-50] | doc=31 score=1.0 shardIndex=-1 fields=[-49]
+nocfs	sorted_search	after/num/exists	ok	280 hits | doc=232 score=NaN shardIndex=-1 fields=[-50] | doc=31 score=NaN shardIndex=-1 fields=[-49] | doc=202 score=NaN shardIndex=-1 fields=[-49]
+nocfs	sorted_search	after_scores/num/exists	ok	280 hits | doc=132 score=1.0 shardIndex=-1 fields=[-50] | doc=232 score=1.0 shardIndex=-1 fields=[-50] | doc=31 score=1.0 shardIndex=-1 fields=[-49] | doc=202 score=1.0 shardIndex=-1 fields=[-49]
+nocfs	sorted_search	explanation/num_rev/term	ok	22 hits | doc=283 score=NaN shardIndex=-1 fields=[50] | doc=93 score=NaN shardIndex=-1 fields=[47] | doc=0 score=NaN shardIndex=-1 fields=[43] | doc=177 score=NaN shardIndex=-1 fields=[36] | doc=41 score=NaN shardIndex=-1 fields=[18]
+nocfs	sorted_search	scores/num_rev/term	ok	22 hits | doc=283 score=1.08219 shardIndex=-1 fields=[50] | doc=93 score=0.9902333 shardIndex=-1 fields=[47] | doc=0 score=1.329027 shardIndex=-1 fields=[43] | doc=177 score=1.7217388 shardIndex=-1 fields=[36] | doc=41 score=1.1929741 shardIndex=-1 fields=[18]
+nocfs	sorted_search	after/num_rev/term	ok	22 hits | doc=177 score=NaN shardIndex=-1 fields=[36] | doc=41 score=NaN shardIndex=-1 fields=[18] | doc=112 score=NaN shardIndex=-1 fields=[16]
+nocfs	sorted_search	after_scores/num_rev/term	ok	22 hits | doc=0 score=1.329027 shardIndex=-1 fields=[43] | doc=177 score=1.7217388 shardIndex=-1 fields=[36] | doc=41 score=1.1929741 shardIndex=-1 fields=[18] | doc=112 score=0.9902333 shardIndex=-1 fields=[16]
+nocfs	sorted_search	explanation/num_rev/should	ok	41 hits | doc=50 score=NaN shardIndex=-1 fields=[48] | doc=251 score=NaN shardIndex=-1 fields=[47] | doc=180 score=NaN shardIndex=-1 fields=[46] | doc=158 score=NaN shardIndex=-1 fields=[40] | doc=36 score=NaN shardIndex=-1 fields=[35]
+nocfs	sorted_search	scores/num_rev/should	ok	41 hits | doc=50 score=0.928537 shardIndex=-1 fields=[48] | doc=251 score=2.0453794 shardIndex=-1 fields=[47] | doc=180 score=1.1361192 shardIndex=-1 fields=[46] | doc=158 score=1.2462224 shardIndex=-1 fields=[40] | doc=36 score=0.928537 shardIndex=-1 fields=[35]
+nocfs	sorted_search	after/num_rev/should	ok	41 hits | doc=158 score=NaN shardIndex=-1 fields=[40] | doc=36 score=NaN shardIndex=-1 fields=[35] | doc=237 score=NaN shardIndex=-1 fields=[34]
+nocfs	sorted_search	after_scores/num_rev/should	ok	41 hits | doc=180 score=1.1361192 shardIndex=-1 fields=[46] | doc=158 score=1.2462224 shardIndex=-1 fields=[40] | doc=36 score=0.928537 shardIndex=-1 fields=[35] | doc=237 score=1.030615 shardIndex=-1 fields=[34]
+nocfs	sorted_search	explanation/num_rev/all	ok	309 hits | doc=81 score=NaN shardIndex=-1 fields=[777] | doc=104 score=NaN shardIndex=-1 fields=[50] | doc=161 score=NaN shardIndex=-1 fields=[50] | doc=262 score=NaN shardIndex=-1 fields=[50] | doc=283 score=NaN shardIndex=-1 fields=[50]
+nocfs	sorted_search	scores/num_rev/all	ok	309 hits | doc=81 score=1.0 shardIndex=-1 fields=[777] | doc=104 score=1.0 shardIndex=-1 fields=[50] | doc=161 score=1.0 shardIndex=-1 fields=[50] | doc=262 score=1.0 shardIndex=-1 fields=[50] | doc=283 score=1.0 shardIndex=-1 fields=[50]
+nocfs	sorted_search	after/num_rev/all	ok	309 hits | doc=262 score=NaN shardIndex=-1 fields=[50] | doc=283 score=NaN shardIndex=-1 fields=[50] | doc=20 score=NaN shardIndex=-1 fields=[49]
+nocfs	sorted_search	after_scores/num_rev/all	ok	309 hits | doc=161 score=1.0 shardIndex=-1 fields=[50] | doc=262 score=1.0 shardIndex=-1 fields=[50] | doc=283 score=1.0 shardIndex=-1 fields=[50] | doc=20 score=1.0 shardIndex=-1 fields=[49]
+nocfs	sorted_search	explanation/num_rev/constant	ok	22 hits | doc=283 score=NaN shardIndex=-1 fields=[50] | doc=93 score=NaN shardIndex=-1 fields=[47] | doc=0 score=NaN shardIndex=-1 fields=[43] | doc=177 score=NaN shardIndex=-1 fields=[36] | doc=41 score=NaN shardIndex=-1 fields=[18]
+nocfs	sorted_search	scores/num_rev/constant	ok	22 hits | doc=283 score=1.0 shardIndex=-1 fields=[50] | doc=93 score=1.0 shardIndex=-1 fields=[47] | doc=0 score=1.0 shardIndex=-1 fields=[43] | doc=177 score=1.0 shardIndex=-1 fields=[36] | doc=41 score=1.0 shardIndex=-1 fields=[18]
+nocfs	sorted_search	after/num_rev/constant	ok	22 hits | doc=177 score=NaN shardIndex=-1 fields=[36] | doc=41 score=NaN shardIndex=-1 fields=[18] | doc=112 score=NaN shardIndex=-1 fields=[16]
+nocfs	sorted_search	after_scores/num_rev/constant	ok	22 hits | doc=0 score=1.0 shardIndex=-1 fields=[43] | doc=177 score=1.0 shardIndex=-1 fields=[36] | doc=41 score=1.0 shardIndex=-1 fields=[18] | doc=112 score=1.0 shardIndex=-1 fields=[16]
+nocfs	sorted_search	explanation/num_rev/exists	ok	280 hits | doc=81 score=NaN shardIndex=-1 fields=[777] | doc=104 score=NaN shardIndex=-1 fields=[50] | doc=161 score=NaN shardIndex=-1 fields=[50] | doc=262 score=NaN shardIndex=-1 fields=[50] | doc=283 score=NaN shardIndex=-1 fields=[50]
+nocfs	sorted_search	scores/num_rev/exists	ok	280 hits | doc=81 score=1.0 shardIndex=-1 fields=[777] | doc=104 score=1.0 shardIndex=-1 fields=[50] | doc=161 score=1.0 shardIndex=-1 fields=[50] | doc=262 score=1.0 shardIndex=-1 fields=[50] | doc=283 score=1.0 shardIndex=-1 fields=[50]
+nocfs	sorted_search	after/num_rev/exists	ok	280 hits | doc=262 score=NaN shardIndex=-1 fields=[50] | doc=283 score=NaN shardIndex=-1 fields=[50] | doc=20 score=NaN shardIndex=-1 fields=[49]
+nocfs	sorted_search	after_scores/num_rev/exists	ok	280 hits | doc=161 score=1.0 shardIndex=-1 fields=[50] | doc=262 score=1.0 shardIndex=-1 fields=[50] | doc=283 score=1.0 shardIndex=-1 fields=[50] | doc=20 score=1.0 shardIndex=-1 fields=[49]
+nocfs	sorted_search	explanation/sorted/term	ok	22 hits | doc=0 score=NaN shardIndex=-1 fields=[null] | doc=34 score=NaN shardIndex=-1 fields=[null] | doc=87 score=NaN shardIndex=-1 fields=[null] | doc=48 score=NaN shardIndex=-1 fields=[[73 30]] | doc=76 score=NaN shardIndex=-1 fields=[[73 30]]
+nocfs	sorted_search	scores/sorted/term	ok	22 hits | doc=0 score=1.329027 shardIndex=-1 fields=[null] | doc=34 score=1.1929741 shardIndex=-1 fields=[null] | doc=87 score=0.9902333 shardIndex=-1 fields=[null] | doc=48 score=1.1929741 shardIndex=-1 fields=[[73 30]] | doc=76 score=1.08219 shardIndex=-1 fields=[[73 30]]
+nocfs	sorted_search	after/sorted/term	ok	22 hits | doc=48 score=NaN shardIndex=-1 fields=[[73 30]] | doc=76 score=NaN shardIndex=-1 fields=[[73 30]] | doc=290 score=NaN shardIndex=-1 fields=[[73 31 32]]
+nocfs	sorted_search	after_scores/sorted/term	ok	22 hits | doc=87 score=0.9902333 shardIndex=-1 fields=[null] | doc=48 score=1.1929741 shardIndex=-1 fields=[[73 30]] | doc=76 score=1.08219 shardIndex=-1 fields=[[73 30]] | doc=290 score=1.08219 shardIndex=-1 fields=[[73 31 32]]
+nocfs	sorted_search	explanation/sorted/should	ok	41 hits | doc=22 score=NaN shardIndex=-1 fields=[null] | doc=58 score=NaN shardIndex=-1 fields=[null] | doc=114 score=NaN shardIndex=-1 fields=[null] | doc=144 score=NaN shardIndex=-1 fields=[null] | doc=180 score=NaN shardIndex=-1 fields=[null]
+nocfs	sorted_search	scores/sorted/should	ok	41 hits | doc=22 score=1.8715776 shardIndex=-1 fields=[null] | doc=58 score=1.7249993 shardIndex=-1 fields=[null] | doc=114 score=1.6144664 shardIndex=-1 fields=[null] | doc=144 score=1.2656882 shardIndex=-1 fields=[null] | doc=180 score=1.1361192 shardIndex=-1 fields=[null]
+nocfs	sorted_search	after/sorted/should	ok	41 hits | doc=144 score=NaN shardIndex=-1 fields=[null] | doc=180 score=NaN shardIndex=-1 fields=[null] | doc=222 score=NaN shardIndex=-1 fields=[null]
+nocfs	sorted_search	after_scores/sorted/should	ok	41 hits | doc=114 score=1.6144664 shardIndex=-1 fields=[null] | doc=144 score=1.2656882 shardIndex=-1 fields=[null] | doc=180 score=1.1361192 shardIndex=-1 fields=[null] | doc=222 score=1.1186461 shardIndex=-1 fields=[null]
+nocfs	sorted_search	explanation/sorted/all	ok	309 hits | doc=0 score=NaN shardIndex=-1 fields=[null] | doc=6 score=NaN shardIndex=-1 fields=[null] | doc=11 score=NaN shardIndex=-1 fields=[null] | doc=16 score=NaN shardIndex=-1 fields=[null] | doc=22 score=NaN shardIndex=-1 fields=[null]
+nocfs	sorted_search	scores/sorted/all	ok	309 hits | doc=0 score=1.0 shardIndex=-1 fields=[null] | doc=6 score=1.0 shardIndex=-1 fields=[null] | doc=11 score=1.0 shardIndex=-1 fields=[null] | doc=16 score=1.0 shardIndex=-1 fields=[null] | doc=22 score=1.0 shardIndex=-1 fields=[null]
+nocfs	sorted_search	after/sorted/all	ok	309 hits | doc=16 score=NaN shardIndex=-1 fields=[null] | doc=22 score=NaN shardIndex=-1 fields=[null] | doc=28 score=NaN shardIndex=-1 fields=[null]
+nocfs	sorted_search	after_scores/sorted/all	ok	309 hits | doc=11 score=1.0 shardIndex=-1 fields=[null] | doc=16 score=1.0 shardIndex=-1 fields=[null] | doc=22 score=1.0 shardIndex=-1 fields=[null] | doc=28 score=1.0 shardIndex=-1 fields=[null]
+nocfs	sorted_search	explanation/sorted/constant	ok	22 hits | doc=0 score=NaN shardIndex=-1 fields=[null] | doc=34 score=NaN shardIndex=-1 fields=[null] | doc=87 score=NaN shardIndex=-1 fields=[null] | doc=48 score=NaN shardIndex=-1 fields=[[73 30]] | doc=76 score=NaN shardIndex=-1 fields=[[73 30]]
+nocfs	sorted_search	scores/sorted/constant	ok	22 hits | doc=0 score=1.0 shardIndex=-1 fields=[null] | doc=34 score=1.0 shardIndex=-1 fields=[null] | doc=87 score=1.0 shardIndex=-1 fields=[null] | doc=48 score=1.0 shardIndex=-1 fields=[[73 30]] | doc=76 score=1.0 shardIndex=-1 fields=[[73 30]]
+nocfs	sorted_search	after/sorted/constant	ok	22 hits | doc=48 score=NaN shardIndex=-1 fields=[[73 30]] | doc=76 score=NaN shardIndex=-1 fields=[[73 30]] | doc=290 score=NaN shardIndex=-1 fields=[[73 31 32]]
+nocfs	sorted_search	after_scores/sorted/constant	ok	22 hits | doc=87 score=1.0 shardIndex=-1 fields=[null] | doc=48 score=1.0 shardIndex=-1 fields=[[73 30]] | doc=76 score=1.0 shardIndex=-1 fields=[[73 30]] | doc=290 score=1.0 shardIndex=-1 fields=[[73 31 32]]
+nocfs	sorted_search	explanation/sorted/exists	ok	280 hits | doc=0 score=NaN shardIndex=-1 fields=[null] | doc=6 score=NaN shardIndex=-1 fields=[null] | doc=11 score=NaN shardIndex=-1 fields=[null] | doc=16 score=NaN shardIndex=-1 fields=[null] | doc=28 score=NaN shardIndex=-1 fields=[null]
+nocfs	sorted_search	scores/sorted/exists	ok	280 hits | doc=0 score=1.0 shardIndex=-1 fields=[null] | doc=6 score=1.0 shardIndex=-1 fields=[null] | doc=11 score=1.0 shardIndex=-1 fields=[null] | doc=16 score=1.0 shardIndex=-1 fields=[null] | doc=28 score=1.0 shardIndex=-1 fields=[null]
+nocfs	sorted_search	after/sorted/exists	ok	280 hits | doc=16 score=NaN shardIndex=-1 fields=[null] | doc=28 score=NaN shardIndex=-1 fields=[null] | doc=34 score=NaN shardIndex=-1 fields=[null]
+nocfs	sorted_search	after_scores/sorted/exists	ok	280 hits | doc=11 score=1.0 shardIndex=-1 fields=[null] | doc=16 score=1.0 shardIndex=-1 fields=[null] | doc=28 score=1.0 shardIndex=-1 fields=[null] | doc=34 score=1.0 shardIndex=-1 fields=[null]
+nocfs	sorted_search	explanation/score_num/term	ok	22 hits | doc=177 score=NaN shardIndex=-1 fields=[1.7217388, 36] | doc=227 score=NaN shardIndex=-1 fields=[1.5001069, -33] | doc=220 score=NaN shardIndex=-1 fields=[1.5001069, 11] | doc=263 score=NaN shardIndex=-1 fields=[1.329027, -14] | doc=7 score=NaN shardIndex=-1 fields=[1.329027, -1]
+nocfs	sorted_search	scores/score_num/term	ok	22 hits | doc=177 score=1.7217388 shardIndex=-1 fields=[1.7217388, 36] | doc=227 score=1.5001069 shardIndex=-1 fields=[1.5001069, -33] | doc=220 score=1.5001069 shardIndex=-1 fields=[1.5001069, 11] | doc=263 score=1.329027 shardIndex=-1 fields=[1.329027, -14] | doc=7 score=1.329027 shardIndex=-1 fields=[1.329027, -1]
+nocfs	sorted_search	after/score_num/term	ok	22 hits | doc=263 score=NaN shardIndex=-1 fields=[1.329027, -14] | doc=7 score=NaN shardIndex=-1 fields=[1.329027, -1] | doc=0 score=NaN shardIndex=-1 fields=[1.329027, 43]
+nocfs	sorted_search	after_scores/score_num/term	ok	22 hits | doc=220 score=1.5001069 shardIndex=-1 fields=[1.5001069, 11] | doc=263 score=1.329027 shardIndex=-1 fields=[1.329027, -14] | doc=7 score=1.329027 shardIndex=-1 fields=[1.329027, -1] | doc=0 score=1.329027 shardIndex=-1 fields=[1.329027, 43]
+nocfs	sorted_search	explanation/score_num/should	ok	41 hits | doc=201 score=NaN shardIndex=-1 fields=[2.2547655, 15] | doc=244 score=NaN shardIndex=-1 fields=[2.0453794, -10] | doc=251 score=NaN shardIndex=-1 fields=[2.0453794, 47] | doc=15 score=NaN shardIndex=-1 fields=[1.8715776, -35] | doc=29 score=NaN shardIndex=-1 fields=[1.8715776, -22]
+nocfs	sorted_search	scores/score_num/should	ok	41 hits | doc=201 score=2.2547655 shardIndex=-1 fields=[2.2547655, 15] | doc=244 score=2.0453794 shardIndex=-1 fields=[2.0453794, -10] | doc=251 score=2.0453794 shardIndex=-1 fields=[2.0453794, 47] | doc=15 score=1.8715776 shardIndex=-1 fields=[1.8715776, -35] | doc=29 score=1.8715776 shardIndex=-1 fields=[1.8715776, -22]
+nocfs	sorted_search	after/score_num/should	ok	41 hits | doc=15 score=NaN shardIndex=-1 fields=[1.8715776, -35] | doc=29 score=NaN shardIndex=-1 fields=[1.8715776, -22] | doc=22 score=NaN shardIndex=-1 fields=[1.8715776, 0]
+nocfs	sorted_search	after_scores/score_num/should	ok	41 hits | doc=251 score=2.0453794 shardIndex=-1 fields=[2.0453794, 47] | doc=15 score=1.8715776 shardIndex=-1 fields=[1.8715776, -35] | doc=29 score=1.8715776 shardIndex=-1 fields=[1.8715776, -22] | doc=22 score=1.8715776 shardIndex=-1 fields=[1.8715776, 0]
+nocfs	sorted_search	explanation/score_num/all	ok	309 hits | doc=58 score=NaN shardIndex=-1 fields=[1.0, -999] | doc=61 score=NaN shardIndex=-1 fields=[1.0, -50] | doc=132 score=NaN shardIndex=-1 fields=[1.0, -50] | doc=232 score=NaN shardIndex=-1 fields=[1.0, -50] | doc=31 score=NaN shardIndex=-1 fields=[1.0, -49]
+nocfs	sorted_search	scores/score_num/all	ok	309 hits | doc=58 score=1.0 shardIndex=-1 fields=[1.0, -999] | doc=61 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=132 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=232 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=31 score=1.0 shardIndex=-1 fields=[1.0, -49]
+nocfs	sorted_search	after/score_num/all	ok	309 hits | doc=232 score=NaN shardIndex=-1 fields=[1.0, -50] | doc=31 score=NaN shardIndex=-1 fields=[1.0, -49] | doc=202 score=NaN shardIndex=-1 fields=[1.0, -49]
+nocfs	sorted_search	after_scores/score_num/all	ok	309 hits | doc=132 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=232 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=31 score=1.0 shardIndex=-1 fields=[1.0, -49] | doc=202 score=1.0 shardIndex=-1 fields=[1.0, -49]
+nocfs	sorted_search	explanation/score_num/constant	ok	22 hits | doc=34 score=NaN shardIndex=-1 fields=[1.0, -39] | doc=297 score=NaN shardIndex=-1 fields=[1.0, -38] | doc=227 score=NaN shardIndex=-1 fields=[1.0, -33] | doc=119 score=NaN shardIndex=-1 fields=[1.0, -28] | doc=48 score=NaN shardIndex=-1 fields=[1.0, -26]
+nocfs	sorted_search	scores/score_num/constant	ok	22 hits | doc=34 score=1.0 shardIndex=-1 fields=[1.0, -39] | doc=297 score=1.0 shardIndex=-1 fields=[1.0, -38] | doc=227 score=1.0 shardIndex=-1 fields=[1.0, -33] | doc=119 score=1.0 shardIndex=-1 fields=[1.0, -28] | doc=48 score=1.0 shardIndex=-1 fields=[1.0, -26]
+nocfs	sorted_search	after/score_num/constant	ok	22 hits | doc=119 score=NaN shardIndex=-1 fields=[1.0, -28] | doc=48 score=NaN shardIndex=-1 fields=[1.0, -26] | doc=263 score=NaN shardIndex=-1 fields=[1.0, -14]
+nocfs	sorted_search	after_scores/score_num/constant	ok	22 hits | doc=227 score=1.0 shardIndex=-1 fields=[1.0, -33] | doc=119 score=1.0 shardIndex=-1 fields=[1.0, -28] | doc=48 score=1.0 shardIndex=-1 fields=[1.0, -26] | doc=263 score=1.0 shardIndex=-1 fields=[1.0, -14]
+nocfs	sorted_search	explanation/score_num/exists	ok	280 hits | doc=58 score=NaN shardIndex=-1 fields=[1.0, -999] | doc=61 score=NaN shardIndex=-1 fields=[1.0, -50] | doc=132 score=NaN shardIndex=-1 fields=[1.0, -50] | doc=232 score=NaN shardIndex=-1 fields=[1.0, -50] | doc=31 score=NaN shardIndex=-1 fields=[1.0, -49]
+nocfs	sorted_search	scores/score_num/exists	ok	280 hits | doc=58 score=1.0 shardIndex=-1 fields=[1.0, -999] | doc=61 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=132 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=232 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=31 score=1.0 shardIndex=-1 fields=[1.0, -49]
+nocfs	sorted_search	after/score_num/exists	ok	280 hits | doc=232 score=NaN shardIndex=-1 fields=[1.0, -50] | doc=31 score=NaN shardIndex=-1 fields=[1.0, -49] | doc=202 score=NaN shardIndex=-1 fields=[1.0, -49]
+nocfs	sorted_search	after_scores/score_num/exists	ok	280 hits | doc=132 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=232 score=1.0 shardIndex=-1 fields=[1.0, -50] | doc=31 score=1.0 shardIndex=-1 fields=[1.0, -49] | doc=202 score=1.0 shardIndex=-1 fields=[1.0, -49]
+nocfs	sorted_search	explanation/doc/term	ok	22 hits | doc=0 score=NaN shardIndex=-1 fields=[0] | doc=7 score=NaN shardIndex=-1 fields=[7] | doc=34 score=NaN shardIndex=-1 fields=[34] | doc=41 score=NaN shardIndex=-1 fields=[41] | doc=48 score=NaN shardIndex=-1 fields=[48]
+nocfs	sorted_search	scores/doc/term	ok	22 hits | doc=0 score=1.329027 shardIndex=-1 fields=[0] | doc=7 score=1.329027 shardIndex=-1 fields=[7] | doc=34 score=1.1929741 shardIndex=-1 fields=[34] | doc=41 score=1.1929741 shardIndex=-1 fields=[41] | doc=48 score=1.1929741 shardIndex=-1 fields=[48]
+nocfs	sorted_search	after/doc/term	ok	22 hits | doc=41 score=NaN shardIndex=-1 fields=[41] | doc=48 score=NaN shardIndex=-1 fields=[48] | doc=55 score=NaN shardIndex=-1 fields=[55]
+nocfs	sorted_search	after_scores/doc/term	ok	22 hits | doc=34 score=1.1929741 shardIndex=-1 fields=[34] | doc=41 score=1.1929741 shardIndex=-1 fields=[41] | doc=48 score=1.1929741 shardIndex=-1 fields=[48] | doc=55 score=1.1929741 shardIndex=-1 fields=[55]
+nocfs	sorted_search	explanation/doc/should	ok	41 hits | doc=2 score=NaN shardIndex=-1 fields=[2] | doc=3 score=NaN shardIndex=-1 fields=[3] | doc=15 score=NaN shardIndex=-1 fields=[15] | doc=22 score=NaN shardIndex=-1 fields=[22] | doc=29 score=NaN shardIndex=-1 fields=[29]
+nocfs	sorted_search	scores/doc/should	ok	41 hits | doc=2 score=1.0147644 shardIndex=-1 fields=[2] | doc=3 score=0.9430406 shardIndex=-1 fields=[3] | doc=15 score=1.8715776 shardIndex=-1 fields=[15] | doc=22 score=1.8715776 shardIndex=-1 fields=[22] | doc=29 score=1.8715776 shardIndex=-1 fields=[29]
+nocfs	sorted_search	after/doc/should	ok	41 hits | doc=22 score=NaN shardIndex=-1 fields=[22] | doc=29 score=NaN shardIndex=-1 fields=[29] | doc=36 score=NaN shardIndex=-1 fields=[36]
+nocfs	sorted_search	after_scores/doc/should	ok	41 hits | doc=15 score=1.8715776 shardIndex=-1 fields=[15] | doc=22 score=1.8715776 shardIndex=-1 fields=[22] | doc=29 score=1.8715776 shardIndex=-1 fields=[29] | doc=36 score=0.928537 shardIndex=-1 fields=[36]
+nocfs	sorted_search	explanation/doc/all	ok	309 hits | doc=0 score=NaN shardIndex=-1 fields=[0] | doc=1 score=NaN shardIndex=-1 fields=[1] | doc=2 score=NaN shardIndex=-1 fields=[2] | doc=3 score=NaN shardIndex=-1 fields=[3] | doc=4 score=NaN shardIndex=-1 fields=[4]
+nocfs	sorted_search	scores/doc/all	ok	309 hits | doc=0 score=1.0 shardIndex=-1 fields=[0] | doc=1 score=1.0 shardIndex=-1 fields=[1] | doc=2 score=1.0 shardIndex=-1 fields=[2] | doc=3 score=1.0 shardIndex=-1 fields=[3] | doc=4 score=1.0 shardIndex=-1 fields=[4]
+nocfs	sorted_search	after/doc/all	ok	309 hits | doc=3 score=NaN shardIndex=-1 fields=[3] | doc=4 score=NaN shardIndex=-1 fields=[4] | doc=5 score=NaN shardIndex=-1 fields=[5]
+nocfs	sorted_search	after_scores/doc/all	ok	309 hits | doc=2 score=1.0 shardIndex=-1 fields=[2] | doc=3 score=1.0 shardIndex=-1 fields=[3] | doc=4 score=1.0 shardIndex=-1 fields=[4] | doc=5 score=1.0 shardIndex=-1 fields=[5]
+nocfs	sorted_search	explanation/doc/constant	ok	22 hits | doc=0 score=NaN shardIndex=-1 fields=[0] | doc=7 score=NaN shardIndex=-1 fields=[7] | doc=34 score=NaN shardIndex=-1 fields=[34] | doc=41 score=NaN shardIndex=-1 fields=[41] | doc=48 score=NaN shardIndex=-1 fields=[48]
+nocfs	sorted_search	scores/doc/constant	ok	22 hits | doc=0 score=1.0 shardIndex=-1 fields=[0] | doc=7 score=1.0 shardIndex=-1 fields=[7] | doc=34 score=1.0 shardIndex=-1 fields=[34] | doc=41 score=1.0 shardIndex=-1 fields=[41] | doc=48 score=1.0 shardIndex=-1 fields=[48]
+nocfs	sorted_search	after/doc/constant	ok	22 hits | doc=41 score=NaN shardIndex=-1 fields=[41] | doc=48 score=NaN shardIndex=-1 fields=[48] | doc=55 score=NaN shardIndex=-1 fields=[55]
+nocfs	sorted_search	after_scores/doc/constant	ok	22 hits | doc=34 score=1.0 shardIndex=-1 fields=[34] | doc=41 score=1.0 shardIndex=-1 fields=[41] | doc=48 score=1.0 shardIndex=-1 fields=[48] | doc=55 score=1.0 shardIndex=-1 fields=[55]
+nocfs	sorted_search	explanation/doc/exists	ok	280 hits | doc=0 score=NaN shardIndex=-1 fields=[0] | doc=1 score=NaN shardIndex=-1 fields=[1] | doc=3 score=NaN shardIndex=-1 fields=[3] | doc=4 score=NaN shardIndex=-1 fields=[4] | doc=5 score=NaN shardIndex=-1 fields=[5]
+nocfs	sorted_search	scores/doc/exists	ok	280 hits | doc=0 score=1.0 shardIndex=-1 fields=[0] | doc=1 score=1.0 shardIndex=-1 fields=[1] | doc=3 score=1.0 shardIndex=-1 fields=[3] | doc=4 score=1.0 shardIndex=-1 fields=[4] | doc=5 score=1.0 shardIndex=-1 fields=[5]
+nocfs	sorted_search	after/doc/exists	ok	280 hits | doc=4 score=NaN shardIndex=-1 fields=[4] | doc=5 score=NaN shardIndex=-1 fields=[5] | doc=6 score=NaN shardIndex=-1 fields=[6]
+nocfs	sorted_search	after_scores/doc/exists	ok	280 hits | doc=3 score=1.0 shardIndex=-1 fields=[3] | doc=4 score=1.0 shardIndex=-1 fields=[4] | doc=5 score=1.0 shardIndex=-1 fields=[5] | doc=6 score=1.0 shardIndex=-1 fields=[6]
+nocfs	sorted_search	after_out_of_range	err	java.lang.IllegalArgumentException	after.doc exceeds the number of documents in the reader: after.doc=310 limit=310
+nocfs	sorted_search	after_wrong_fields	err	java.lang.IllegalArgumentException	after.fields has 2 values but sort has 1
+nocfs	sorted_search	zero_hits	err	java.lang.IllegalArgumentException	numHits must be > 0; please use TotalHitCountCollector if you just need the total hit count
+nocfs	sorted_search	explanation_zero_hits	err	java.lang.IllegalArgumentException	numHits must be > 0; please use TotalHitCountCollector if you just need the total hit count
+nocfs	sorted_search	explanation_lie	err	java.lang.AssertionError	expected:<1.3290270566940308> but was:<2.3290271759033203>
+nocfs	sorted_search	plain_lie	ok	22 hits | doc=34 score=NaN shardIndex=-1 fields=[-39] | doc=297 score=NaN shardIndex=-1 fields=[-38] | doc=227 score=NaN shardIndex=-1 fields=[-33]
+nocfs	sorted_search	next	ok	-370459159885696479

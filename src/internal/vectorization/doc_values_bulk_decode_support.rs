@@ -23,7 +23,7 @@ use crate::error::Result;
 ///   hands out a `'static` reference to a shared singleton.
 /// * Java throws `IllegalArgumentException` for an unsupported
 ///   `bitsPerValue`; the port returns
-///   [`LuceneError::IllegalArgument`](crate::LuceneError::IllegalArgument),
+///   [`LuceneErrorKind::IllegalArgument`](crate::LuceneErrorKind::IllegalArgument),
 ///   which is how the crate models that exception everywhere else.
 pub trait DocValuesBulkDecodeSupport: Send + Sync + Debug {
     /// Decodes `count` byte-aligned packed values from `bytes` into `values`.
@@ -37,7 +37,7 @@ pub trait DocValuesBulkDecodeSupport: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::LuceneErrorKind::IllegalArgument)
     /// when `bits_per_value` is not one of 8, 16, 24, 32, 40, 48, 56 or 64.
     ///
     /// # Panics

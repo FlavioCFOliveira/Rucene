@@ -29,7 +29,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::resource_loader::{ClassLoader, ClassLoaderUtils, ServiceProvider};
 
 /// A service provider that carries a name.
@@ -126,15 +126,15 @@ impl<S: ?Sized> std::fmt::Debug for NamedSPIProvider<S> {
 /// class name seen earlier in the same scan skipped. Each item is the class
 /// name and its class object. Java refuses three providers with a
 /// `ServiceConfigurationError`, reported here as
-/// [`LuceneError::IllegalArgument`] with its message (the port has no
+/// [`LuceneErrorKind::IllegalArgument`] with its message (the port has no
 /// `ServiceConfigurationError`; see the SPI loaders for that stand-in): a
 /// class the loader cannot find, `<service>: Provider <class> not found`; a
 /// class object that is not a `C`, `<service>: <class> not a subtype`; and a
 /// class without a public no-argument constructor, `<service>: <class>
 /// Unable to get public no-arg constructor`, whose cause is the
 /// `NoSuchMethodException` `<class>.<init>()`, carried as
-/// [`LuceneError::NoSuchMethod`] with that message in
-/// [`LuceneError::IllegalArgumentWithCause`].
+/// [`LuceneErrorKind::NoSuchMethod`] with that message in
+/// [`LuceneErrorKind::IllegalArgument`].
 /// The items are produced in order and Java's iterator is lazy, so a caller
 /// that stops at the first error sees exactly the providers Java's would.
 /// Java oracle (`scratchpad/auditH/oracle/AuditHOracle.java`):
@@ -154,19 +154,21 @@ pub fn load_service_classes<'a, C: Any>(
         .map(move |provider| {
             let class_name = provider.class_name();
             if !provider.is_found() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "{service}: Provider {class_name} not found"
                 )));
             }
             let Some(class) = provider.class::<C>() else {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "{service}: {class_name} not a subtype"
                 )));
             };
             if !provider.has_public_no_arg_constructor() {
                 return Err(LuceneError::illegal_argument_with_cause(
                     format!("{service}: {class_name} Unable to get public no-arg constructor"),
-                    Arc::new(LuceneError::NoSuchMethod(format!("{class_name}.<init>()"))),
+                    Arc::new(LuceneError::from(LuceneErrorKind::NoSuchMethod(format!(
+                        "{class_name}.<init>()"
+                    )))),
                 ));
             }
             Ok((class_name, class))
@@ -241,7 +243,7 @@ impl<S: NamedSPI + ?Sized + 'static> NamedSPILoader<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a new provider's name is
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a new provider's name is
     /// not a legal service name, or when the scan reaches a provider that is
     /// not of this SPI (Java's `ServiceConfigurationError`).
     pub fn reload(&mut self, classloader: &Arc<ClassLoader>) -> Result<()> {
@@ -298,7 +300,7 @@ impl<S: NamedSPI + ?Sized> NamedSPILoader<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `name` is not a legal
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `name` is not a legal
     /// service name.
     pub fn register_as(&mut self, name: &str, service: Arc<S>) -> Result<bool> {
         if self.index.contains_key(name) {
@@ -318,17 +320,17 @@ impl<S: NamedSPI + ?Sized> NamedSPILoader<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Lucene's message.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] with Lucene's message.
     pub fn check_service_name(name: &str) -> Result<()> {
         // Based on harmony charset.java.
         if name.chars().count() >= 128 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal service name: '{name}' is too long (must be < 128 chars)."
             )));
         }
         for c in name.chars() {
             if !Self::is_letter_or_digit(c) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Illegal service name: '{name}' must be simple ascii alphanumeric."
                 )));
             }
@@ -346,13 +348,13 @@ impl<S: NamedSPI + ?Sized> NamedSPILoader<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] listing the available names,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] listing the available names,
     /// with Lucene's message: two spaces open each of its last two sentences,
     /// and the names are the key set's `toString()`, `[a, b]`.
     pub fn lookup(&self, name: &str) -> Result<Arc<S>> {
         match self.index.get(name) {
             Some(&i) => Ok(Arc::clone(&self.services[i])),
-            None => Err(LuceneError::IllegalArgument(format!(
+            None => Err(LuceneError::illegal_argument(format!(
                 "An SPI class of type {} with name '{name}' does not exist.  You need to add \
                  the corresponding JAR file supporting this SPI to your classpath.  The current \
                  classpath supports the following names: [{}]",
@@ -627,7 +629,10 @@ mod tests {
             ],
         );
         match loader.reload(&bad) {
-            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "Illegal service name: 'Bad-Name' must be simple ascii alphanumeric."
             ),
@@ -665,7 +670,10 @@ mod tests {
         );
         let clazz = ServiceClass::new(SVC, Arc::clone(&wrong));
         match NamedSPILoader::<Named>::new(&clazz, None) {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "org.example.Svc: org.example.Wrong not a subtype")
             }
             other => panic!("expected the not-a-subtype error, got {other:?}"),
@@ -684,7 +692,10 @@ mod tests {
     /// The scan's refusal of [`wrong_loader`]'s class.
     fn assert_not_a_subtype(service: &str, result: Result<()>) {
         match result {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(
                     message,
                     format!("{service}: org.example.Wrong not a subtype")
@@ -840,7 +851,10 @@ mod tests {
             ],
         );
         match NamedSPILoader::<Named>::new(&ServiceClass::new(SVC, missing), None) {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(
                     message,
                     "org.example.Svc: Provider org.example.Missing not found"
@@ -861,13 +875,20 @@ mod tests {
             ],
         );
         match NamedSPILoader::<Named>::new(&ServiceClass::new(SVC, no_constructor), None) {
-            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+            Err(LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            }) => {
                 assert_eq!(
                     message,
                     "org.example.Svc: org.example.NoCtor Unable to get public no-arg constructor"
                 );
                 assert!(
-                    matches!(&*cause, LuceneError::NoSuchMethod(m) if m == "org.example.NoCtor.<init>()"),
+                    matches!(&*cause, LuceneError { kind: LuceneErrorKind::NoSuchMethod(m), .. } if m == "org.example.NoCtor.<init>()"),
                     "{cause:?}"
                 );
                 // `NoSuchMethodException` is the cause's class (oracle

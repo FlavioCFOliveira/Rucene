@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Store, StringField};
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::filter_directory_reader::SlowCodecReaderWrapper;
 use rucene::index::index_reader::IndexReader;
@@ -100,7 +100,10 @@ fn index_with(count: usize) -> Arc<dyn Directory> {
 
 fn corrupt_message(error: &LuceneError) -> &str {
     match error {
-        LuceneError::CorruptIndex(message) => message,
+        LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(message),
+            ..
+        } => message,
         other => panic!("a CorruptIndexException, got {other:?}"),
     }
 }
@@ -152,9 +155,9 @@ fn opening_a_writer_over_too_many_documents_is_corrupt() {
 fn an_nrt_reader_over_too_many_documents_is_corrupt() {
     ensure_codec();
     let guard = MaxDocsGuard::acquire();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::new(ByteBuffersDirectory::new()), config).unwrap();
     writer.add_document(&id_doc("a")).unwrap();
@@ -229,9 +232,9 @@ fn add_indexes_codec_readers_refuses_readers_over_the_limit() {
     // Create the destination writer.
     let dest_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let scheduler = Arc::new(CountingSerialMergeScheduler::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>))
         .unwrap();
     let dest_writer = IndexWriter::new(Arc::clone(&dest_dir), config).unwrap();
     for i in 0..writer_max_docs {
@@ -252,7 +255,10 @@ fn add_indexes_codec_readers_refuses_readers_over_the_limit() {
 
     let error = dest_writer.add_indexes_codec_readers(&leaves).unwrap_err();
     match &error {
-        LuceneError::IllegalArgument(message) => assert!(
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => assert!(
             message.contains(&format!(
                 "number of documents in the index cannot exceed {writer_max_docs}"
             )),

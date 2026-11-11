@@ -40,11 +40,11 @@ impl TotalHits {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when `value` is negative.
     pub fn new(value: i64, relation: TotalHitsRelation) -> Result<Self> {
         if value < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "value must be >= 0, got {value}"
             )));
         }

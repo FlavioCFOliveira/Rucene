@@ -69,8 +69,9 @@ impl BitTableUtil {
             let num_remaining_bytes = (remaining_bits + 7) >> 3;
             // Prepare a mask with 1s on the right up to bit_index, exclusive.
             // Java shifts are taken modulo 64, which `bit_index & 63` spells
-            // out here.
-            let mask = (1i64 << remaining_bits) - 1;
+            // out here, and Java's `long` subtraction wraps: for 63 remaining
+            // bits, `(1L << 63) - 1L` is `Long.MAX_VALUE`.
+            let mask = (1i64 << remaining_bits).wrapping_sub(1);
             // Count the bits set only within the mask, so up to bit_index
             // exclusive.
             bit_count +=
@@ -179,4 +180,28 @@ fn read_up_to_8_bytes(mut num_bytes: i32, reader: &mut dyn BytesReader) -> Resul
 /// Equivalent to the private `BitTableUtil.bitCount8Bytes`.
 fn bit_count_8_bytes(reader: &mut dyn BytesReader) -> Result<i32> {
     Ok(reader.read_long()?.count_ones() as i32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::fst::ForwardBytesReader;
+
+    /// `countBitsUpTo` with 63 bits past the last full long: Java's mask
+    /// `(1L << 63) - 1L` wraps to `Long.MAX_VALUE` (rmp #342, reached by
+    /// `FSTTester` through a direct-addressing node). A bit index that is a
+    /// multiple of 64 counts whole longs only.
+    #[test]
+    fn count_bits_up_to_63_remaining_bits_wraps_like_java() {
+        let bytes = [0xffu8; 16];
+        let mut reader = ForwardBytesReader::new(&bytes);
+        assert_eq!(BitTableUtil::count_bits_up_to(63, &mut reader).unwrap(), 63);
+        let mut reader = ForwardBytesReader::new(&bytes);
+        assert_eq!(
+            BitTableUtil::count_bits_up_to(127, &mut reader).unwrap(),
+            127
+        );
+        let mut reader = ForwardBytesReader::new(&bytes);
+        assert_eq!(BitTableUtil::count_bits_up_to(64, &mut reader).unwrap(), 64);
+    }
 }

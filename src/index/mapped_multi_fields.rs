@@ -157,25 +157,25 @@ impl Terms for MappedMultiTerms {
     }
 
     fn size(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappedMultiTerms.size".to_string(),
         ))
     }
 
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappedMultiTerms.getSumTotalTermFreq".to_string(),
         ))
     }
 
     fn sum_doc_freq(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappedMultiTerms.getSumDocFreq".to_string(),
         ))
     }
 
     fn doc_count(&self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappedMultiTerms.getDocCount".to_string(),
         ))
     }
@@ -225,7 +225,7 @@ impl MappedMultiTermsEnum {
     }
 
     fn unsupported(&self, what: &str) -> LuceneError {
-        LuceneError::UnsupportedOperation(format!(
+        LuceneError::unsupported_operation(format!(
             "{what} is not available while merging field '{}': it would ignore deleted \
              documents; derive it from the postings instead",
             self.field
@@ -268,7 +268,7 @@ impl TermsEnum for MappedMultiTermsEnum {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> Result<BytesRef> {
+    fn term(&self) -> Result<Option<BytesRef>> {
         self.inner.term()
     }
 
@@ -296,14 +296,14 @@ impl TermsEnum for MappedMultiTermsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] — Java's `ClassCastException` —
+    /// Returns [`LuceneErrorKind::IllegalState`] — Java's `ClassCastException` —
     /// when the wrapped enum answers anything but a `MultiPostingsEnum`, and
     /// propagates whatever building or resetting the postings raises.
     fn postings(
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
         let mut mapping_docs_and_positions_enum: Box<dyn PostingsEnum> = match reuse {
             // `reuse instanceof MappingMultiPostingsEnum postings`
             Some(mut reuse) => match reuse
@@ -333,7 +333,10 @@ impl TermsEnum for MappedMultiTermsEnum {
 
         let mut docs_and_positions_enum = self
             .inner
-            .postings(mapping.take_multi_docs_and_positions_enum(), flags)?;
+            .postings(mapping.take_multi_docs_and_positions_enum(), flags)?
+            // A `null` passes Java's cast and fails in `reset`, which
+            // dereferences it at once.
+            .ok_or_else(LuceneError::null_pointer)?;
         // `(MultiPostingsEnum) in.postings(...)`
         if docs_and_positions_enum
             .as_any_mut()
@@ -346,7 +349,7 @@ impl TermsEnum for MappedMultiTermsEnum {
             )));
         }
         mapping.reset(docs_and_positions_enum)?;
-        Ok(mapping_docs_and_positions_enum)
+        Ok(Some(mapping_docs_and_positions_enum))
     }
 
     /// Inherited from `FilterTermsEnum.impacts(int)`, which delegates to the
@@ -376,6 +379,7 @@ impl TermsEnum for MappedMultiTermsEnum {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::util::automaton::CompiledAutomaton;
 
     use std::collections::{BTreeMap, HashMap};
@@ -521,8 +525,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
-            Ok(self.entries[self.pos as usize].0.clone())
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(Some(self.entries[self.pos as usize].0.clone()))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -541,12 +545,12 @@ mod tests {
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(VecPostings::boxed(&self.entries[self.pos as usize].3))
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(VecPostings::boxed(&self.entries[self.pos as usize].3)))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+            Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
         fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -791,7 +795,7 @@ mod tests {
             enumerator.seek_exact(&term(text)).unwrap(),
             "term '{text}' must exist"
         );
-        let mut postings = enumerator.postings(None, 0).unwrap();
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
         drain(postings.as_mut())
     }
 
@@ -817,7 +821,7 @@ mod tests {
         let terms = fields.inner().terms("body").unwrap().unwrap();
         let mut enumerator = terms.iterator().unwrap();
         assert!(enumerator.seek_exact(&term("apple")).unwrap());
-        let mut postings = enumerator.postings(None, 0).unwrap();
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
         assert_eq!(drain(postings.as_mut()), vec![0, 2, 4]);
     }
 
@@ -882,8 +886,15 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         // Java throws UnsupportedOperationException from all four
         // (MappedMultiFields.java:74-92).
-        let unsupported =
-            |e: Option<LuceneError>| matches!(e, Some(LuceneError::UnsupportedOperation(_)));
+        let unsupported = |e: Option<LuceneError>| {
+            matches!(
+                e,
+                Some(LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                })
+            )
+        };
         assert!(unsupported(terms.size().err()));
         assert!(unsupported(terms.sum_total_term_freq().err()));
         assert!(unsupported(terms.sum_doc_freq().err()));
@@ -898,11 +909,17 @@ mod tests {
         assert!(enumerator.seek_exact(&term("apple")).unwrap());
         assert!(matches!(
             enumerator.doc_freq(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             enumerator.total_term_freq(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 
@@ -943,7 +960,7 @@ mod tests {
             enumerator.seek_ceil(&term("peach")).unwrap(),
             SeekStatus::NOT_FOUND
         );
-        assert_eq!(text_of(&enumerator.term().unwrap()), "pear");
+        assert_eq!(text_of(&enumerator.term().unwrap().unwrap()), "pear");
         assert_eq!(enumerator.seek_ceil(&term("zzz")).unwrap(), SeekStatus::END);
     }
 
@@ -1010,7 +1027,7 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.intersect(&compiled, None).unwrap();
         assert_eq!(text_of(&enumerator.next().unwrap().unwrap()), "apple");
-        let mut postings = enumerator.postings(None, 0).unwrap();
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
         assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
         assert!(enumerator.next().unwrap().is_none());
     }
@@ -1053,7 +1070,10 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         assert!(matches!(
             terms.intersect(&compiled, None),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -1063,11 +1083,11 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.iterator().unwrap();
         assert!(enumerator.seek_exact(&term("apple")).unwrap());
-        let mut first = enumerator.postings(None, 0).unwrap();
+        let mut first = enumerator.postings(None, 0).unwrap().unwrap();
         assert_eq!(first.next_doc().unwrap(), 0);
         // Rucene never reuses the enum handed back as `reuse`, so the second
         // call starts from the beginning rather than resuming the first.
-        let mut second = enumerator.postings(Some(first), 0).unwrap();
+        let mut second = enumerator.postings(Some(first), 0).unwrap().unwrap();
         assert_eq!(drain(second.as_mut()), vec![0, 1, 3]);
     }
 
@@ -1104,7 +1124,7 @@ mod tests {
         let mut enumerator = terms.iterator().unwrap();
         assert!(enumerator.seek_exact(&term("pear")).unwrap());
         assert!(enumerator.seek_exact(&term("plum")).unwrap());
-        let mut postings = enumerator.postings(None, 0).unwrap();
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
         assert_eq!(
             drain(postings.as_mut()),
             vec![1, 3],
@@ -1139,13 +1159,13 @@ mod tests {
         let mut enumerator = terms.iterator().unwrap();
 
         assert_eq!(enumerator.next().unwrap(), Some(term("apple")));
-        let mut postings = enumerator.postings(None, 0).unwrap();
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
         let outer = identity(postings.as_ref());
         let inner = inner_identity(&mut postings);
         assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
 
         assert_eq!(enumerator.next().unwrap(), Some(term("pear")));
-        let mut postings = enumerator.postings(Some(postings), 0).unwrap();
+        let mut postings = enumerator.postings(Some(postings), 0).unwrap().unwrap();
         assert_eq!(
             identity(postings.as_ref()),
             outer,
@@ -1162,7 +1182,7 @@ mod tests {
         );
 
         assert_eq!(enumerator.next().unwrap(), Some(term("plum")));
-        let mut postings = enumerator.postings(Some(postings), 0).unwrap();
+        let mut postings = enumerator.postings(Some(postings), 0).unwrap().unwrap();
         assert_eq!(identity(postings.as_ref()), outer);
         assert_eq!(inner_identity(&mut postings), inner);
         assert_eq!(drain(postings.as_mut()), vec![2]);
@@ -1173,12 +1193,12 @@ mod tests {
         let (_state, fields) = scenario();
         let mut title = fields.terms("title").unwrap().unwrap().iterator().unwrap();
         assert_eq!(title.next().unwrap(), Some(term("rust")));
-        let foreign = title.postings(None, 0).unwrap();
+        let foreign = title.postings(None, 0).unwrap().unwrap();
         let foreign_identity = identity(foreign.as_ref());
 
         let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
         assert_eq!(body.next().unwrap(), Some(term("apple")));
-        let mut postings = body.postings(Some(foreign), 0).unwrap();
+        let mut postings = body.postings(Some(foreign), 0).unwrap().unwrap();
         assert_ne!(
             identity(postings.as_ref()),
             foreign_identity,
@@ -1199,7 +1219,7 @@ mod tests {
         assert_eq!(body.next().unwrap(), Some(term("apple")));
         let other = VecPostings::boxed(&[0]);
         let other_identity = identity(other.as_ref());
-        let mut postings = body.postings(Some(other), 0).unwrap();
+        let mut postings = body.postings(Some(other), 0).unwrap().unwrap();
         assert_ne!(identity(postings.as_ref()), other_identity);
         assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
     }

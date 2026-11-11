@@ -1,0 +1,3 @@
+# seed	TestRandomPostingsFull.testFull under RandomizedRunner (tests.seed=seed): per codec, testFull(codec, createTempDir(), DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, true), then random().nextLong()
+DEADBEEF	default=ok	FST50=ok	BlockTreeOrds=ok	next=-6063025177043107908
+1BADC0DE	default=ok	FST50=ok	BlockTreeOrds=ok	next=-7479835629462502044

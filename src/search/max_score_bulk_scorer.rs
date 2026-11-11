@@ -86,6 +86,37 @@ impl std::fmt::Debug for MaxScoreBulkScorer {
 }
 
 impl MaxScoreBulkScorer {
+    /// The package-private field `firstEssentialScorer`, read by
+    /// `TestMaxScoreBulkScorer`; `pub` because the port has no package
+    /// visibility.
+    pub fn first_essential_scorer(&self) -> usize {
+        self.first_essential_scorer
+    }
+
+    /// The package-private field `firstRequiredScorer`, read by
+    /// `TestMaxScoreBulkScorer`.
+    pub fn first_required_scorer(&self) -> usize {
+        self.first_required_scorer
+    }
+
+    /// The package-private field `allScorers`, which `TestMaxScoreBulkScorer`
+    /// shuffles: the positions of the clauses (see the type's divergence note).
+    pub fn all_scorers_mut(&mut self) -> &mut [usize] {
+        &mut self.all_scorers
+    }
+
+    /// `allScorers[i].scorer`, read by `TestMaxScoreBulkScorer`.
+    pub fn all_scorer(&mut self, i: usize) -> &mut dyn Scorer {
+        let position = self.all_scorers[i];
+        self.wrappers[position].scorer()
+    }
+
+    /// The package-private field `scorable`, whose `minCompetitiveScore`
+    /// `TestMaxScoreBulkScorer` sets.
+    pub fn scorable_mut(&mut self) -> &mut SimpleScorable {
+        &mut self.scorable
+    }
+
     /// Builds a MAXSCORE bulk scorer.
     ///
     /// Equivalent to `MaxScoreBulkScorer(int, List<Scorer>, Scorer)`.
@@ -596,8 +627,13 @@ impl MaxScoreBulkScorer {
     }
 
     /// Equivalent to the package-private
-    /// `MaxScoreBulkScorer.updateMaxWindowScores(int, int)`.
-    fn update_max_window_scores(&mut self, window_min: i32, window_max: i32) -> Result<()> {
+    /// `MaxScoreBulkScorer.updateMaxWindowScores(int, int)`; `pub` because
+    /// the port has no package visibility (`TestMaxScoreBulkScorer` calls it).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reading score upper bounds.
+    pub fn update_max_window_scores(&mut self, window_min: i32, window_max: i32) -> Result<()> {
         for position in 0..self.wrappers.len() {
             if self.wrappers[position].doc < window_max {
                 if self.wrappers[position].doc < window_min {
@@ -681,8 +717,9 @@ impl MaxScoreBulkScorer {
     /// Partitions the clauses into essential and non-essential ones.
     ///
     /// Equivalent to the package-private
-    /// `MaxScoreBulkScorer.partitionScorers()`.
-    fn partition_scorers(&mut self) -> bool {
+    /// `MaxScoreBulkScorer.partitionScorers()`; `pub` because the port has
+    /// no package visibility (`TestMaxScoreBulkScorer` calls it).
+    pub fn partition_scorers(&mut self) -> bool {
         // Partitioning scorers is an optimization problem: the optimal set of
         // non-essential scorers is the subset of scorers whose sum of max window
         // scores is less than the minimum competitive score that maximizes the
@@ -917,5 +954,9 @@ impl BulkScorer for MaxScoreBulkScorer {
 
     fn cost(&self) -> i64 {
         self.cost
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }

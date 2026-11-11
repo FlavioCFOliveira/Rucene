@@ -130,8 +130,10 @@ impl<T> ApproximatePriorityQueue<T> {
             + free_slots
                 .wrapping_shr(expected_slot as u32)
                 .trailing_zeros() as usize;
+        debug_assert!(destination_slot >= expected_slot);
         if destination_slot < SPARSE_SLOTS {
             self.used_slots |= 1u64 << destination_slot;
+            debug_assert!(self.slots[destination_slot].is_none());
             self.slots[destination_slot] = Some(entry);
         } else {
             self.slots.push(Some(entry));
@@ -267,6 +269,14 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
         self.queues.len()
     }
 
+    /// The shards: Java's package-private `locks` and `queues` arrays, the
+    /// lock `locks[i]` guarding `queues[i]` being `queues()[i]` itself. `pub`
+    /// for `TestConcurrentApproximatePriorityQueue`, which reads a shard and
+    /// holds its lock.
+    pub fn queues(&self) -> &[Mutex<ApproximatePriorityQueue<T>>] {
+        &self.queues
+    }
+
     /// Seeds the shard scan so entries spread across shards with a little thread
     /// affinity, as Java does with the thread's hash code.
     fn seed(&self) -> usize {
@@ -321,7 +331,15 @@ impl<T> ConcurrentApproximatePriorityQueue<T> {
 
 impl<T: PartialEq> ConcurrentApproximatePriorityQueue<T> {
     /// Returns `true` when `entry` is in any shard.
+    ///
+    /// Only used for assertions: as Java's (`ConcurrentApproximatePriorityQueue.java:137-142`),
+    /// it fails when assertions are disabled.
     pub fn contains(&self, entry: &T) -> bool {
+        // `boolean assertionsAreEnabled = false; assert assertionsAreEnabled =
+        // true; if (assertionsAreEnabled == false) throw new AssertionError(...)`.
+        if !cfg!(debug_assertions) {
+            panic!("contains should only be used for assertions");
+        }
         self.queues
             .iter()
             .any(|queue| queue.lock().map(|q| q.contains(entry)).unwrap_or(false))

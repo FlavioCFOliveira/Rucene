@@ -400,7 +400,7 @@ fn store_and_analysis_contracts_match_lucene() {
                 "{probe:?} trims to nothing in Java, so no word may be added"
             );
         } else {
-            let words: Vec<String> = set.iter().map(|w| w.iter().collect()).collect();
+            let words: Vec<String> = set.iter().map(String::from_utf16_lossy).collect();
             assert_eq!(
                 words,
                 vec![expected.clone()],
@@ -419,7 +419,7 @@ fn store_and_analysis_contracts_match_lucene() {
     let mut reader = StringCharReader::new(snowball);
     let lines = get_buffered_reader(&mut reader).expect("lines");
     let set = get_snowball_word_set(lines);
-    let mut actual_words: Vec<String> = set.iter().map(|w| w.iter().collect()).collect();
+    let mut actual_words: Vec<String> = set.iter().map(String::from_utf16_lossy).collect();
     actual_words.sort();
     assert_eq!(
         actual_words, expected_words,

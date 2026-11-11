@@ -6,13 +6,147 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::SameThreadExecutorService;
 
 /// A unit of work handed to an [`Executor`].
 ///
 /// Equivalent to `java.lang.Runnable`.
 pub type Command = Box<dyn FnOnce() + Send + 'static>;
+
+/// The value a [`Callable`] computes, type-erased: Java's `Callable<T>`
+/// result `T`.
+pub type TaskValue = Box<dyn std::any::Any + Send>;
+
+/// A task that returns a result and may fail.
+///
+/// Equivalent to `java.util.concurrent.Callable<V>`, with `V` type-erased to
+/// [`TaskValue`]: [`Executor`] is a trait object, so its
+/// [`submit`](Executor::submit) cannot be generic.
+pub type Callable = Box<dyn FnOnce() -> Result<TaskValue> + Send + 'static>;
+
+/// The shared completion state of a [`Future`].
+struct FutureState {
+    /// `None` until the task completed; then its value, or the cause of its
+    /// failure.
+    outcome: Mutex<Option<std::result::Result<TaskValue, LuceneError>>>,
+    done: Condvar,
+}
+
+impl FutureState {
+    fn complete(&self, outcome: std::result::Result<TaskValue, LuceneError>) {
+        let mut slot = self.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = Some(outcome);
+            self.done.notify_all();
+        }
+    }
+}
+
+/// The result of an asynchronous computation.
+///
+/// Equivalent to `java.util.concurrent.Future<V>` as
+/// [`Executor::submit`] returns it, with `V` type-erased to [`TaskValue`].
+pub struct Future {
+    state: Arc<FutureState>,
+}
+
+impl std::fmt::Debug for Future {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Future").finish_non_exhaustive()
+    }
+}
+
+impl Future {
+    /// A future already completed with the failure `cause`.
+    ///
+    /// Equivalent to `new CompletableFuture<>()` followed by
+    /// `completeExceptionally(cause)`.
+    pub fn failed(cause: LuceneError) -> Self {
+        let state = Arc::new(FutureState {
+            outcome: Mutex::new(Some(Err(cause))),
+            done: Condvar::new(),
+        });
+        Self { state }
+    }
+
+    /// Waits for the computation to complete, then retrieves its result.
+    ///
+    /// Equivalent to `Future.get()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the cause of the failure, the `getCause()` of the
+    /// `ExecutionException` Java throws, when the computation failed.
+    pub fn get(self) -> std::result::Result<TaskValue, LuceneError> {
+        let mut slot = self
+            .state
+            .outcome
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(outcome) = slot.take() {
+                return outcome;
+            }
+            slot = self
+                .state
+                .done
+                .wait(slot)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// A cancellable asynchronous computation: runs a [`Callable`] and
+/// completes the [`Future`] created with it.
+///
+/// Equivalent to `java.util.concurrent.FutureTask<V>`, as
+/// `AbstractExecutorService.newTaskFor(Callable)` creates it.
+pub struct FutureTask {
+    callable: Callable,
+    state: Arc<FutureState>,
+}
+
+impl std::fmt::Debug for FutureTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FutureTask").finish_non_exhaustive()
+    }
+}
+
+impl FutureTask {
+    /// Creates a task that runs `callable`, and the future its result
+    /// completes.
+    ///
+    /// Equivalent to `new FutureTask<>(callable)`; the task is its own
+    /// `Future` in Java.
+    pub fn new(callable: Callable) -> (Self, Future) {
+        let state = Arc::new(FutureState {
+            outcome: Mutex::new(None),
+            done: Condvar::new(),
+        });
+        let future = Future {
+            state: Arc::clone(&state),
+        };
+        (Self { callable, state }, future)
+    }
+
+    /// Runs the callable and completes the future with its value, or with
+    /// the throwable it raised.
+    ///
+    /// Equivalent to `FutureTask.run()`, which catches any `Throwable`
+    /// (`setException`); a panic is this crate's carrier of an unchecked
+    /// throwable, so it completes the future with
+    /// [`panic_to_error`](crate::util::concurrent::panic_to_error) of its
+    /// payload.
+    pub fn run(self) {
+        let callable = self.callable;
+        let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(callable)) {
+            Ok(outcome) => outcome,
+            Err(payload) => Err(crate::util::concurrent::panic_to_error(payload.as_ref())),
+        };
+        self.state.complete(outcome);
+    }
+}
 
 /// An [`Executor`] refused a command.
 ///
@@ -59,6 +193,31 @@ pub trait Executor: Send + Sync {
     /// Returns [`RejectedExecutionException`], carrying the command back, when
     /// the executor cannot accept it — for example once it is shut down.
     fn execute(&self, command: Command) -> std::result::Result<(), RejectedExecutionException>;
+
+    /// Submits a value-returning task for execution and returns a
+    /// [`Future`] representing its pending result.
+    ///
+    /// Equivalent to `ExecutorService.submit(Callable)` as
+    /// `AbstractExecutorService` implements it (`newTaskFor(task)` then
+    /// `execute(ftask)`); an executor overrides it as a Java
+    /// `ExecutorService` overrides `submit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RejectedExecutionException`] when [`execute`](Self::execute)
+    /// rejects the task.
+    fn submit(&self, task: Callable) -> std::result::Result<Future, RejectedExecutionException> {
+        let (task, future) = FutureTask::new(task);
+        self.execute(Box::new(move || task.run()))?;
+        Ok(future)
+    }
+
+    /// The executor as [`Any`](std::any::Any), for Java's `instanceof` on an
+    /// `Executor`: `None` by default, `Some(self)` for the concrete types a
+    /// caller tests ([`SameThreadExecutorService`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 impl Executor for SameThreadExecutorService {
@@ -74,6 +233,10 @@ impl Executor for SameThreadExecutorService {
         }
         command();
         Ok(())
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -226,11 +389,9 @@ impl<T> TaskGroup<T> {
 
     /// Collects the results in submission order, or the first failure.
     ///
-    /// Equivalent to `TaskExecutor.collectResults`. Java adds the subsequent
-    /// failures to the first one as suppressed exceptions; [`LuceneError`] has
-    /// no suppression channel, so the first failure is returned and the others
-    /// are dropped, exactly as Java's rethrown exception hides them from the
-    /// caller.
+    /// Equivalent to `TaskExecutor.collectResults` (`TaskExecutor.java:120-137`):
+    /// the subsequent failures are added to the first one as suppressed
+    /// exceptions (`IOUtils.useOrSuppress`).
     fn collect_results(&self) -> Result<Vec<T>> {
         debug_assert!(
             self.all_futures_completed(),
@@ -242,11 +403,10 @@ impl<T> TaskGroup<T> {
             let taken = std::mem::replace(&mut *self.lock_slot(id), Slot::Cancelled);
             match taken {
                 Slot::Done(Ok(value)) => results.push(value),
-                Slot::Done(Err(err)) => {
-                    if first_error.is_none() {
-                        first_error = Some(err);
-                    }
-                }
+                Slot::Done(Err(err)) => match &mut first_error {
+                    None => first_error = Some(err),
+                    Some(first) => first.add_suppressed(err),
+                },
                 Slot::Cancelled => {}
                 Slot::Pending(_) | Slot::Running => {
                     if first_error.is_none() {
@@ -258,9 +418,38 @@ impl<T> TaskGroup<T> {
             }
         }
         match first_error {
-            Some(err) => Err(err),
+            // `throw IOUtils.rethrowAlways(exc)` (`TaskExecutor.java:133-135`).
+            Some(err) => Err(rethrow_always(err)),
             None => Ok(results),
         }
+    }
+}
+
+/// `IOUtils.rethrowAlways(Throwable)` (`IOUtils.java:429-447`): an
+/// `IOException`, a `RuntimeException` or an `Error` is thrown as it is; any
+/// other (checked) throwable is wrapped in `new RuntimeException(th)`.
+///
+/// Every [`LuceneErrorKind`] variant but [`LuceneErrorKind::Unchecked`] stands
+/// for an `IOException`, a `RuntimeException` or an `Error`; an unchecked
+/// error carries its Java class, and the checked classes among the ones the
+/// port raises are wrapped.
+fn rethrow_always(error: LuceneError) -> LuceneError {
+    const CHECKED: &[&str] = &[
+        "java.lang.Exception",
+        "java.lang.Throwable",
+        "java.lang.InterruptedException",
+        "java.lang.CloneNotSupportedException",
+        "java.lang.ReflectiveOperationException",
+        "java.lang.ClassNotFoundException",
+        "java.text.ParseException",
+        "java.util.concurrent.TimeoutException",
+        "java.util.concurrent.ExecutionException",
+    ];
+    match &error.kind {
+        LuceneErrorKind::Unchecked { class, .. } if CHECKED.contains(class) => {
+            LuceneError::runtime_exception(error)
+        }
+        _ => error,
     }
 }
 

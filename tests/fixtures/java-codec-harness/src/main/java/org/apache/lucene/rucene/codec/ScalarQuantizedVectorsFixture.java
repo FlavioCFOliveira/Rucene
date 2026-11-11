@@ -92,8 +92,18 @@ public final class ScalarQuantizedVectorsFixture {
   static final String FIELD = "vec";
   static final int MAX_DOC = 12;
 
-  /** The vector of document {@code doc}, or {@code null} when it has none. */
-  static float[] vectorFor(int doc, int dim, boolean dense) {
+  /**
+   * The vector of document {@code doc}, or {@code null} when it has none.
+   *
+   * <p>For {@code COSINE} ({@code unit}) the vector is scaled to unit length, in
+   * {@code double} so that the Rust mirror computes the same bits: the
+   * merge-time supplier quantizes the raw stored vectors, and
+   * {@code OptimizedScalarQuantizer.scalarQuantize} asserts {@code
+   * VectorUtil.isUnitVector(vector)} for {@code COSINE}
+   * ({@code OptimizedScalarQuantizer.java:189}), as Lucene's own
+   * {@code BaseKnnVectorsFormatTestCase} feeds it normalised vectors.
+   */
+  static float[] vectorFor(int doc, int dim, boolean dense, boolean unit) {
     if (!dense && doc % 3 != 0) {
       return null;
     }
@@ -102,6 +112,16 @@ public final class ScalarQuantizedVectorsFixture {
       // A deterministic spread that is neither monotonic nor symmetric, so the
       // optimized interval search has something to do.
       v[i] = ((doc * 31 + i * 17) % 23) - 11 + (i % 5) * 0.25f;
+    }
+    if (unit) {
+      double sumSquares = 0;
+      for (float x : v) {
+        sumSquares += (double) x * x;
+      }
+      double length = Math.sqrt(sumSquares);
+      for (int i = 0; i < dim; i++) {
+        v[i] = (float) (v[i] / length);
+      }
     }
     return v;
   }
@@ -200,7 +220,7 @@ public final class ScalarQuantizedVectorsFixture {
         FlatFieldVectorsWriter<float[]> fieldWriter =
             (FlatFieldVectorsWriter<float[]>) writer.addField(info);
         for (int doc = 0; doc < MAX_DOC; doc++) {
-          float[] v = vectorFor(doc, dim, dense);
+          float[] v = vectorFor(doc, dim, dense, similarity == VectorSimilarityFunction.COSINE);
           if (v != null) {
             fieldWriter.addValue(doc, v);
           }
@@ -283,7 +303,7 @@ public final class ScalarQuantizedVectorsFixture {
         // Score a fixed query against every stored vector, through the
         // quantized query path (quantize, transpose for the asymmetric
         // encodings, quantizedScore).
-        float[] query = vectorFor(MAX_DOC + 1, dim, true);
+        float[] query = vectorFor(MAX_DOC + 1, dim, true, similarity == VectorSimilarityFunction.COSINE);
         RandomVectorScorer queryScorer = reader.getRandomVectorScorer(FIELD, query);
         for (int ord = 0; ord < queryScorer.maxOrd(); ord++) {
           System.out.println(

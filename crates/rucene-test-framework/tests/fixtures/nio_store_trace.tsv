@@ -1,0 +1,17 @@
+# step	trace of provider calls (FSDirectory over a recording FilterFileSystemProvider), $D = temp dir
+NIOFSDirectory.<init>	OK	readAttributes [] $D/idx | createDirectory $D/idx
+createOutput	OK	newOutputStream [CREATE_NEW, WRITE] $D/idx/_0.cfs | close OutputStream $D/idx/_0.cfs
+sync	OK	newFileChannel [WRITE] $D/idx/_0.cfs | force true $D/idx/_0.cfs | close FileChannel $D/idx/_0.cfs
+createTempOutput	OK	newOutputStream [CREATE_NEW, WRITE] $D/idx/pending_tmp_0.tmp | close OutputStream $D/idx/pending_tmp_0.tmp
+rename	OK	move [ATOMIC_MOVE] $D/idx/pending_tmp_0.tmp $D/idx/segments_1
+syncMetaData	OK	newFileChannel [READ] $D/idx | force true $D/idx | close FileChannel $D/idx
+fileLength	OK	readAttributes [] $D/idx/segments_1
+openInput	OK	newFileChannel [READ] $D/idx/segments_1 | size $D/idx/segments_1 | close FileChannel $D/idx/segments_1
+listAll	OK	newDirectoryStream $D/idx | close DirectoryStream $D/idx
+obtainLock	OK	createDirectory $D/idx | readAttributes [] $D/idx | newByteChannel [CREATE_NEW, WRITE] $D/idx/write.lock | close SeekableByteChannel $D/idx/write.lock | readAttributes [] $D/idx/write.lock | newFileChannel [CREATE, WRITE] $D/idx/write.lock | tryLock $D/idx/write.lock | size $D/idx/write.lock | readAttributes [] $D/idx/write.lock | close FileChannel $D/idx/write.lock
+deleteFile	OK	delete $D/idx/_0.cfs
+deleteFile missing	java.nio.file.NoSuchFileException $D/idx/_0.cfs	delete $D/idx/_0.cfs
+close	OK	
+MMapDirectory	OK	readAttributes [] $D/mm | createDirectory $D/mm | newOutputStream [CREATE_NEW, WRITE] $D/mm/a | close OutputStream $D/mm/a
+SimpleFSLockFactory	OK	readAttributes [] $D/s | createDirectory $D/s | createDirectory $D/s | readAttributes [] $D/s | newByteChannel [CREATE_NEW, WRITE] $D/s/write.lock | close SeekableByteChannel $D/s/write.lock | readAttributes [] $D/s/write.lock | readAttributes [] $D/s/write.lock | readAttributes [] $D/s/write.lock | delete $D/s/write.lock
+IOUtils.rm	OK	checkAccess [] $D/idx | readAttributes [NOFOLLOW_LINKS] $D/idx | newDirectoryStream $D/idx | readAttributes [NOFOLLOW_LINKS] $D/idx/write.lock | delete $D/idx/write.lock | readAttributes [NOFOLLOW_LINKS] $D/idx/segments_1 | delete $D/idx/segments_1 | close DirectoryStream $D/idx | delete $D/idx | checkAccess [] $D/mm | readAttributes [NOFOLLOW_LINKS] $D/mm | newDirectoryStream $D/mm | readAttributes [NOFOLLOW_LINKS] $D/mm/a | delete $D/mm/a | close DirectoryStream $D/mm | delete $D/mm | checkAccess [] $D/s | readAttributes [NOFOLLOW_LINKS] $D/s | newDirectoryStream $D/s | close DirectoryStream $D/s | delete $D/s

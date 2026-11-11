@@ -116,7 +116,7 @@ impl DisjunctionScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when fewer than two sub-scorers
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two sub-scorers
     /// are supplied, matching Java's `IllegalArgumentException`.
     pub fn new(
         sub_scorers: Vec<Box<dyn Scorer>>,
@@ -124,7 +124,7 @@ impl DisjunctionScorer {
         lead_cost: i64,
     ) -> Result<Self> {
         if sub_scorers.len() <= 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least 2 subScorers".to_string(),
             ));
         }

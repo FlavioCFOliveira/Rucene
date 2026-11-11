@@ -35,12 +35,12 @@ impl LongHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `initial_capacity` is zero
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `initial_capacity` is zero
     /// or at least `ArrayUtil::MAX_ARRAY_LENGTH`, mirroring the Java guard that
     /// exists to prevent a confusing `OutOfMemoryError`.
     pub fn new(initial_capacity: usize) -> Result<Self> {
         if !(1..ArrayUtil::MAX_ARRAY_LENGTH).contains(&initial_capacity) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "initialCapacity must be > 0 and < {}; got: {}",
                 ArrayUtil::MAX_ARRAY_LENGTH - 1,
                 initial_capacity
@@ -114,7 +114,7 @@ impl LongHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the heap is empty, which is
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the heap is empty, which is
     /// Java's `IllegalStateException("The heap is empty")`.
     pub fn pop(&mut self) -> Result<i64> {
         if self.size > 0 {
@@ -220,11 +220,11 @@ impl TernaryLongHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `initial_capacity` is zero
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `initial_capacity` is zero
     /// or at least `ArrayUtil::MAX_ARRAY_LENGTH`.
     pub fn new(initial_capacity: usize) -> Result<Self> {
         if !(1..ArrayUtil::MAX_ARRAY_LENGTH).contains(&initial_capacity) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "initialCapacity must be > 0 and < {}; got: {}",
                 ArrayUtil::MAX_ARRAY_LENGTH - 1,
                 initial_capacity
@@ -295,7 +295,7 @@ impl TernaryLongHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the heap is empty.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the heap is empty.
     pub fn pop(&mut self) -> Result<i64> {
         if self.size > 0 {
             let result = self.heap[1];

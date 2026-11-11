@@ -105,7 +105,7 @@ fn bytes(text: &str) -> BytesRef {
 /// `IndexingRamFixture.TV_TYPE`: `TextField.TYPE_NOT_STORED` with term vectors,
 /// positions and offsets.
 fn tv_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
@@ -120,7 +120,7 @@ fn tv_type() -> FieldType {
 /// `IndexingRamFixture.DOCS_FREQS_TYPE`: `TextField.TYPE_NOT_STORED` indexed
 /// with `DOCS_AND_FREQS`.
 fn docs_freqs_type() -> FieldType {
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).unwrap();
     field_type
         .set_index_options(IndexOptions::DOCS_AND_FREQS)
@@ -217,9 +217,9 @@ fn doc(kind: &str, id: i32) -> Document {
 /// `IndexingRamFixture.trace(String, int)`.
 fn trace(kind: &str, docs: i32) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config.set_ram_buffer_size_mb(256.0).unwrap();
     config.set_max_buffered_docs(1 << 30).unwrap();
@@ -341,12 +341,12 @@ fn doc_values_field_updates_ram_is_lucenes() {
 /// fixture prints after every operation when `TRACE` is set comes first.
 fn files(ram_mb: f64, ops: i32, seed: i64, trace: bool) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config.set_ram_buffer_size_mb(ram_mb).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
@@ -529,12 +529,12 @@ impl InfoStream for FlushProbe {
 fn flushing(docs: i32, max_buffered_docs: i32) -> String {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let probe = Arc::new(FlushProbe::default());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config.set_max_buffered_docs(max_buffered_docs).unwrap();
     config

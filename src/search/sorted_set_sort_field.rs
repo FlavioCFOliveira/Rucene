@@ -96,7 +96,7 @@ impl SortedSetSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field is unnamed.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field is unnamed.
     pub fn get_index_sorter(
         &self,
     ) -> Result<std::sync::Arc<dyn crate::index::index_sorter::IndexSorter>> {
@@ -104,7 +104,7 @@ impl SortedSetSortField {
         let field = self
             .get_field()
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("a sort field must name a field".to_string())
+                LuceneError::illegal_argument("a sort field must name a field".to_string())
             })?
             .to_string();
         let selector = self.get_selector();
@@ -144,11 +144,11 @@ impl SortedSetSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sort field is not one
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sort field is not one
     /// of this kind.
     pub fn from_sort_field(sort_field: SortField) -> Result<Self> {
         if !matches!(sort_field.kind(), SortFieldKind::SortedSet { .. }) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "expected a SortedSetSortField, got {sort_field}"
             )));
         }
@@ -202,12 +202,12 @@ impl SortedSetSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector, and
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an unknown selector, and
     /// propagates any I/O error.
     fn read_selector_type(input: &mut dyn DataInput) -> Result<SortedSetSelectorType> {
         let selector_ordinal = input.read_int()?;
         SortedSetSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "Cannot deserialize SortedSetSortField: unknown selector type {selector_ordinal}"
             ))
         })
@@ -219,7 +219,7 @@ impl SortedSetSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector, and
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an unknown selector, and
     /// propagates any I/O error.
     pub fn read_sort_field(input: &mut dyn DataInput) -> Result<Self> {
         let field = input.read_string()?;
@@ -284,6 +284,7 @@ impl crate::index::index_sorter::SortFieldProvider for Provider {
         sort_field: &crate::search::SortField,
         output: &mut dyn crate::store::DataOutput,
     ) -> Result<()> {
+        debug_assert!(matches!(sort_field.kind(), SortFieldKind::SortedSet { .. }));
         SortedSetSortField::from_sort_field(sort_field.clone())?.serialize(output)
     }
 }

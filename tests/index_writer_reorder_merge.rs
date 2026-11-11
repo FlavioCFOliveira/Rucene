@@ -119,9 +119,9 @@ fn reversing_policy() -> Arc<dyn MergePolicy> {
 fn rust_merge() -> Arc<dyn Directory> {
     let _ = rucene::codecs::register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut initial = IndexWriterConfig::new();
+    let initial = IndexWriterConfig::new();
     initial
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
     let mut i = 0;
@@ -140,8 +140,8 @@ fn rust_merge() -> Arc<dyn Directory> {
         SIZES.len()
     );
 
-    let mut config = IndexWriterConfig::new();
-    config.set_merge_policy(reversing_policy()).unwrap();
+    let config = IndexWriterConfig::new();
+    config.set_merge_policy(Some(reversing_policy())).unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.force_merge(1).unwrap();
     writer.commit().unwrap();
@@ -227,7 +227,7 @@ fn read_file(dir: &dyn Directory, name: &str) -> Vec<u8> {
     let length = dir.file_length(name).unwrap() as usize;
     let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
     let mut bytes = vec![0u8; length];
-    input.read_bytes(&mut bytes, 0, length).unwrap();
+    input.read_bytes(Some(&mut bytes), 0, length).unwrap();
     bytes
 }
 
@@ -413,9 +413,9 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
 
     // Two committed segments, then a forced merge: `mergeMiddle`.
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut initial = IndexWriterConfig::new();
+    let initial = IndexWriterConfig::new();
     initial
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), initial).unwrap();
     for i in 0..4 {
@@ -427,18 +427,18 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
     writer.close().unwrap();
 
     let reorderer = recording_reorderer(&seen);
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+        .set_merge_policy(Some(Arc::new(OneMergeWrappingMergePolicy::new(
             Arc::new(TieredMergePolicy::new()),
             Arc::new(move |mut merge: OneMerge| {
                 merge.set_reorder(Arc::clone(&reorderer));
                 merge
             }),
-        )))
+        ))))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.force_merge(1).unwrap();
@@ -454,14 +454,14 @@ fn the_reorderer_receives_the_schedulers_intra_merge_executor() {
         .map(|leaf| SlowCodecReaderWrapper::wrap(leaf.leaf_reader()).unwrap())
         .collect();
     let dest: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(ReorderingReadersPolicy {
+        .set_merge_policy(Some(Arc::new(ReorderingReadersPolicy {
             reorderer: recording_reorderer(&seen),
-        }))
+        })))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>)
+        .set_merge_scheduler(Some(Arc::clone(&scheduler) as Arc<dyn MergeScheduler>))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dest), config).unwrap();
     writer.add_indexes_codec_readers(&leaves).unwrap();

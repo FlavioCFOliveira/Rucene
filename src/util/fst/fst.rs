@@ -21,7 +21,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use crate::codecs::{check_header, write_header};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{
     ByteBuffersDataOutput, DataInput, DataOutput, InputStreamDataInput, OutputStreamDataOutput,
 };
@@ -521,6 +521,27 @@ impl BitTable {
         input.set_position(arc.bit_table_start);
         BitTableUtil::previous_bit_set(bit_index, input)
     }
+
+    /// Asserts the bit table of the provided arc is valid.
+    ///
+    /// Equivalent to `FST.Arc.BitTable.assertIsValid` (`FST.java:395-405`),
+    /// which Lucene calls only from assertions; like it, the checks move the
+    /// reader's position.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised by the reader.
+    pub fn assert_is_valid<T>(arc: &Arc<T>, input: &mut dyn BytesReader) -> Result<bool> {
+        debug_assert!(arc.bytes_per_arc > 0);
+        debug_assert!(arc.node_flags() == ARCS_FOR_DIRECT_ADDRESSING);
+        // First bit must be set.
+        debug_assert!(Self::is_bit_set(0, arc, input)?);
+        // Last bit must be set.
+        debug_assert!(Self::is_bit_set(arc.num_arcs() - 1, arc, input)?);
+        // No bit set after the last arc.
+        debug_assert!(Self::next_bit_set(arc.num_arcs() - 1, arc, input)? == -1);
+        Ok(true)
+    }
 }
 
 /// Metadata of a serialized FST.
@@ -662,7 +683,7 @@ impl<O: Outputs> FSTMetadata<O> {
 ///   cannot borrow one value both shared and mutably.
 pub struct FST<O: Outputs> {
     pub(crate) metadata: FSTMetadata<O>,
-    fst_reader: Box<dyn FSTReader>,
+    fst_reader: std::sync::Arc<dyn FSTReader>,
 }
 
 impl<O: Outputs> FST<O> {
@@ -686,7 +707,7 @@ impl<O: Outputs> FST<O> {
     pub fn from_reader(metadata: FSTMetadata<O>, fst_reader: Box<dyn FSTReader>) -> Self {
         Self {
             metadata,
-            fst_reader,
+            fst_reader: std::sync::Arc::from(fst_reader),
         }
     }
 
@@ -709,7 +730,7 @@ impl<O: Outputs> FST<O> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the input type byte is not
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the input type byte is not
     /// one of `0`, `1` or `2`, and propagates header and I/O errors.
     pub fn read_metadata(meta_in: &mut dyn DataInput, outputs: O) -> Result<FSTMetadata<O>> {
         let version = check_header(meta_in, FILE_FORMAT_NAME, VERSION_START, VERSION_CURRENT)?;
@@ -718,9 +739,9 @@ impl<O: Outputs> FST<O> {
             let mut empty_bytes = get_on_heap_reader_writer(10)?;
             let num_bytes = meta_in.read_v_int()?;
             if num_bytes < 0 {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "invalid empty output length {num_bytes}"
-                )));
+                ))));
             }
             empty_bytes.copy_bytes(meta_in, num_bytes as i64)?;
             empty_bytes.freeze();
@@ -741,7 +762,9 @@ impl<O: Outputs> FST<O> {
             1 => InputType::Byte2,
             2 => InputType::Byte4,
             _ => {
-                return Err(LuceneError::CorruptIndex(format!("invalid input type {t}")));
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "invalid input type {t}"
+                ))));
             }
         };
         let start_node = meta_in.read_v_long()?;
@@ -792,7 +815,7 @@ impl<O: Outputs> FST<O> {
     /// # Errors
     ///
     /// Propagates any error raised by the underlying outputs, including the
-    /// [`LuceneError::UnsupportedOperation`] raised by stores that cannot write
+    /// [`LuceneErrorKind::UnsupportedOperation`] raised by stores that cannot write
     /// themselves back, such as `OffHeapFSTStore`.
     pub fn save(&self, meta_out: &mut dyn DataOutput, out: &mut dyn DataOutput) -> Result<()> {
         self.metadata.save(meta_out)?;
@@ -866,6 +889,21 @@ impl<O: Outputs> FST<O> {
     /// wraps the same failure in an unchecked `RuntimeException`.
     pub fn get_bytes_reader(&self) -> Result<Box<dyn BytesReader + '_>> {
         self.fst_reader.get_reverse_bytes_reader()
+    }
+
+    /// Returns a reader of this FST's bytes that keeps a share of the store
+    /// rather than borrowing the FST.
+    ///
+    /// Equivalent to `FST.getBytesReader` for a caller that keeps the reader
+    /// while it holds the FST through an `Arc` (an [`FSTEnum`](super::FSTEnum)
+    /// created by [`FSTEnum::new_shared`](super::FSTEnum::new_shared)); see
+    /// [`FSTReader::get_owned_reverse_bytes_reader`].
+    ///
+    /// # Errors
+    ///
+    /// As [`get_bytes_reader`](Self::get_bytes_reader).
+    pub fn get_owned_bytes_reader(&self) -> Result<Box<dyn BytesReader>> {
+        std::sync::Arc::clone(&self.fst_reader).get_owned_reverse_bytes_reader()
     }
 
     /// Reads the presence bits of a direct-addressing node.
@@ -1134,7 +1172,7 @@ impl<O: Outputs> FST<O> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when called on the last arc,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when called on the last arc,
     /// and propagates reader errors.
     pub fn read_next_arc(
         &self,
@@ -1144,7 +1182,7 @@ impl<O: Outputs> FST<O> {
         if arc.label == END_LABEL {
             // This was a fake inserted "final" arc.
             if arc.next_arc <= 0 {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "cannot readNextArc when arc.isLast()=true".to_string(),
                 ));
             }
@@ -1203,8 +1241,10 @@ impl<O: Outputs> FST<O> {
                 ARCS_FOR_DIRECT_ADDRESSING => {
                     // Direct addressing node: the label is not stored but
                     // inferred from the first label and the arc index.
+                    debug_assert!(BitTable::assert_is_valid(arc, input)?);
+                    debug_assert!(BitTable::is_bit_set(arc.arc_idx, arc, input)?);
                     let next_index = BitTable::next_bit_set(arc.arc_idx, arc, input)?;
-                    debug_assert_ne!(next_index, -1);
+                    debug_assert!(next_index != -1);
                     return Ok(arc.first_label + next_index);
                 }
                 ARCS_FOR_CONTINUOUS => {
@@ -1280,7 +1320,9 @@ impl<O: Outputs> FST<O> {
         input: &mut dyn BytesReader,
         range_index: i32,
     ) -> Result<()> {
+        debug_assert!(BitTable::assert_is_valid(arc, input)?);
         debug_assert!(range_index >= 0 && range_index < arc.num_arcs);
+        debug_assert!(BitTable::is_bit_set(range_index, arc, input)?);
         let presence_index = BitTable::count_bits_up_to(range_index, arc, input)?;
         self.read_arc_by_direct_addressing_with_presence(arc, input, range_index, presence_index)
     }
@@ -1315,6 +1357,7 @@ impl<O: Outputs> FST<O> {
         arc: &mut Arc<O::Output>,
         input: &mut dyn BytesReader,
     ) -> Result<()> {
+        debug_assert!(BitTable::assert_is_valid(arc, input)?);
         let presence_index = BitTable::count_bits(arc, input)? - 1;
         let range_index = arc.num_arcs - 1;
         self.read_arc_by_direct_addressing_with_presence(arc, input, range_index, presence_index)
@@ -1359,6 +1402,8 @@ impl<O: Outputs> FST<O> {
                 arc.flags = input.read_byte()?;
             }
             ARCS_FOR_DIRECT_ADDRESSING => {
+                debug_assert!(BitTable::assert_is_valid(arc, input)?);
+                debug_assert!(arc.arc_idx == -1 || BitTable::is_bit_set(arc.arc_idx, arc, input)?);
                 let next_index = BitTable::next_bit_set(arc.arc_idx, arc, input)?;
                 let presence_index = arc.presence_index + 1;
                 return self.read_arc_by_direct_addressing_with_presence(

@@ -1,0 +1,7 @@
+=== require-assertions-mismatch
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Assertions
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Assertions)
+failure com.carrotsearch.randomizedtesting.RunnerOracle$Assertions | java.lang.Exception: Assertion state mismatch on Assertions: -ea was specified but -Dtests.asserts=false [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Assertions -Dtests.prefix=tests -Dfile.encoding=UTF-8
+runFinished run=0 fail=1 ignore=0 assumption=0

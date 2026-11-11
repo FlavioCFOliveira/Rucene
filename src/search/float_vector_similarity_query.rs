@@ -44,7 +44,7 @@ impl FloatVectorSimilarityQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `result_similarity` or `decay` is `NaN`, when `decay` is outside
     /// `[0, 1]`, or when `target` holds a non-finite value.
     pub fn with_strategy(

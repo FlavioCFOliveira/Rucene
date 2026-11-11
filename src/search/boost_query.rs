@@ -38,11 +38,13 @@ impl BoostQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `boost` is not a finite,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `boost` is not a finite,
     /// non-negative float, which is the `IllegalArgumentException` Java throws.
     pub fn new(query: Arc<dyn Query>, boost: f32) -> Result<Self> {
-        if !boost.is_finite() || boost < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+        // `Float.compare(boost, 0f) < 0` (`BoostQuery.java:40`) orders -0.0
+        // below 0.0, as `total_cmp` does.
+        if !boost.is_finite() || boost.total_cmp(&0.0).is_lt() {
+            return Err(LuceneError::illegal_argument(format!(
                 "boost must be a positive float, got {}",
                 java_float_to_string(boost)
             )));

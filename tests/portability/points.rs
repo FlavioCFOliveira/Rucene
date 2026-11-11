@@ -692,7 +692,7 @@ fn write_with_rucene(
     // The config requires an analyzer, but no field here is tokenized: point
     // fields never consult it.
     let analyzer: Arc<dyn Analyzer> = Arc::new(StandardAnalyzer::new());
-    let live = Arc::new(LiveIndexWriterConfig::new(analyzer));
+    let live = Arc::new(LiveIndexWriterConfig::new(Some(analyzer)));
     let directory: Box<dyn Directory> = Box::new(FSDirectory::open(out_dir).expect("directory"));
     let tracking = Arc::new(TrackingDirectoryWrapper::new(directory));
     let make_info = |max_doc: i32| {
@@ -735,7 +735,7 @@ fn write_with_rucene(
                     // indexing either: `IntPoint` always indexes every
                     // dimension, so the field type is built by hand with a
                     // smaller index dimension count.
-                    let mut field_type = FieldType::new();
+                    let field_type = FieldType::new();
                     field_type
                         .set_dimensions_with_index_count(values.len() as i32, *index_dims, 4)
                         .expect("selective dimensions");
@@ -758,7 +758,7 @@ fn write_with_rucene(
             }
         }
         chain
-            .process_document(doc_id as i32, &document, true, &mut field_infos)
+            .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
             .unwrap_or_else(|error| panic!("document {doc_id} must index cleanly: {error}"));
     }
     let finished = field_infos.finish().expect("field infos");

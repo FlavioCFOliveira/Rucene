@@ -66,7 +66,6 @@ impl PanamaVectorConstants {
     /// [`HAS_FAST_INTEGER_VECTORS`](Self::HAS_FAST_INTEGER_VECTORS) stays
     /// checkable; it does not, by itself, enable any vector path.
     pub fn is_amd64_without_avx2() -> bool {
-        // Rust names the architecture `x86_64` where the JVM names it `amd64`.
-        Constants::os_arch() == "x86_64" && Self::PREFERRED_VECTOR_BITSIZE < 256
+        Constants::os_arch() == "amd64" && Self::PREFERRED_VECTOR_BITSIZE < 256
     }
 }

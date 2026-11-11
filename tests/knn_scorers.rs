@@ -147,9 +147,9 @@ fn ensure_codec() {
 
 fn writer_config() -> IndexWriterConfig {
     ensure_codec();
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .unwrap();
     config
 }
@@ -309,7 +309,7 @@ impl Codec for QuantizedCodec {
 }
 
 fn quantized_config() -> IndexWriterConfig {
-    let mut config = writer_config();
+    let config = writer_config();
     config.set_codec(Arc::new(QuantizedCodec::new())).unwrap();
     config
 }
@@ -725,7 +725,7 @@ fn sparse_search(reader: &Arc<dyn DirectoryReader>, filter: Option<(i32, i32)>) 
         None => Box::new(from_live_docs(leaf.get_live_docs(), leaf.max_doc()).unwrap()),
         Some((lo, hi)) => Box::new(
             from_iterator_supplier(
-                move || Ok(Box::new(range(lo, hi)?) as Box<dyn DocIdSetIterator>),
+                Some(move || Ok(Box::new(range(lo, hi)?) as Box<dyn DocIdSetIterator>)),
                 leaf.get_live_docs(),
                 leaf.max_doc(),
             )
@@ -771,7 +771,7 @@ const SCAN_DOCS: i32 = 200;
 fn the_sparse_sizes_cover_the_graph_and_the_scan() {
     // Separate files, so the graph file can be measured.
     let separate_files = || {
-        let mut config = writer_config();
+        let config = writer_config();
         config.set_use_compound_file(false).unwrap();
         config
     };
@@ -900,7 +900,7 @@ fn readers_built_per_search(doc_count: i32) -> (u64, u64, usize) {
 
     let before_search = monotonic_reader_constructions();
     let mut accept_docs = from_iterator_supplier(
-        move || Ok(Box::new(range(lo, hi)?) as Box<dyn DocIdSetIterator>),
+        Some(move || Ok(Box::new(range(lo, hi)?) as Box<dyn DocIdSetIterator>)),
         None,
         max_doc,
     )
@@ -963,6 +963,23 @@ fn component(ord: usize, j: usize) -> f32 {
     ((ord * 7 + j * 3) % 9) as f32 / 2.0 - 1.0
 }
 
+/// Stored vector `ord` as the quantizer receives it; mirrors
+/// `KnnScorerFixture.storedVector`. For `COSINE` it is scaled to unit length
+/// in `f64`, as the fixture does: Lucene's writer normalises `COSINE` vectors
+/// before quantizing them, and `ScalarQuantizer.quantize` asserts
+/// `VectorUtil.isUnitVector` for `COSINE` (`ScalarQuantizer.java:118`).
+fn stored_vector(ord: usize, similarity: VectorSimilarityFunction) -> Vec<f32> {
+    let mut raw: Vec<f32> = (0..DIMENSION).map(|j| component(ord, j)).collect();
+    if similarity == VectorSimilarityFunction::COSINE {
+        let sum_squares: f64 = raw.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+        let length = sum_squares.sqrt();
+        for x in &mut raw {
+            *x = (f64::from(*x) / length) as f32;
+        }
+    }
+    raw
+}
+
 /// Quantized vectors held in memory, counting how many vectors are read;
 /// ordinal `ord` belongs to document `2 * ord + 1`, as in the fixture. When
 /// `slice` is present the four-bit components are also stored packed two to a
@@ -984,7 +1001,7 @@ impl MemoryValues {
         let mut vectors = Vec::new();
         let mut offsets = Vec::new();
         for ord in 0..SIZE {
-            let raw: Vec<f32> = (0..DIMENSION).map(|j| component(ord, j)).collect();
+            let raw = stored_vector(ord, similarity);
             let mut quantized = vec![0u8; DIMENSION];
             offsets.push(
                 quantizer
@@ -1040,10 +1057,6 @@ impl QuantizedByteVectorValues for MemoryValues {
         Ok(&self.vectors[ord as usize])
     }
 
-    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
-        Ok(self.offsets[ord as usize])
-    }
-
     fn size(&self) -> i32 {
         SIZE as i32
     }
@@ -1076,6 +1089,10 @@ impl QuantizedByteVectorValues for MemoryValues {
 impl LegacyQuantizedByteVectorValues for MemoryValues {
     fn scalar_quantizer(&self) -> &ScalarQuantizer {
         &self.quantizer
+    }
+
+    fn get_score_correction_constant(&mut self, ord: i32) -> Result<f32> {
+        Ok(self.offsets[ord as usize])
     }
 
     fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>> {
@@ -1264,7 +1281,7 @@ fn the_memory_segment_quantized_path_reads_the_mapped_nodes() {
                 std::fs::write(tmp.path().join(&name), node_bytes(&values, packed)).unwrap();
                 let input = provider
                     .open_input(
-                        &tmp.path().join(&name),
+                        tmp.path().join(&name),
                         30,
                         &*DEFAULT_IO_CONTEXT,
                         Arc::new(|_: &dyn IOContext| ReadAdvice::Normal),

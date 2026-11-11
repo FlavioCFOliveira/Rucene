@@ -97,7 +97,7 @@ impl DenseConjunctionBulkScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when no clause is supplied,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when no clause is supplied,
     /// which is the `IllegalArgumentException` Java throws.
     pub fn new(
         mut members: Vec<ConjunctionMember>,
@@ -105,7 +105,7 @@ impl DenseConjunctionBulkScorer {
         constant_score: f32,
     ) -> Result<Self> {
         if members.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Expected one or more iterators, got 0".to_string(),
             ));
         }
@@ -663,10 +663,10 @@ mod tests {
         let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
         let dir: Arc<dyn crate::store::Directory> =
             Arc::new(crate::store::ByteBuffersDirectory::default());
-        let mut config = IndexWriterConfig::new();
+        let config = IndexWriterConfig::new();
         // Keep the deletions in the segment instead of merging them away.
         config
-            .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
             .unwrap();
         let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for d in 0..4096i32 {

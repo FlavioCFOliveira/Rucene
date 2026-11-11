@@ -77,6 +77,38 @@ pub trait Scorable {
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         Ok(Vec::new())
     }
+
+    /// Returns this scorable viewed as a [`Scorer`], or `None` when it is not
+    /// one.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests `scorable instanceof
+    /// Scorer` (for example `AssertingScorable.wrap` and
+    /// `AssertingLeafCollector.setScorer` in the test framework). Rust cannot
+    /// downcast a `dyn Scorable` to a second trait, so the test is declared as a
+    /// method whose default answers `None` — Java's `false` branch. The bulk
+    /// scorers that hand a [`Scorer`] to a collector (`DefaultBulkScorer`,
+    /// `ConstantScoreBulkScorer`, `BooleanScorer`'s single-clause window) pass
+    /// it through [`ScorerAsScorable`](crate::search::ScorerAsScorable), which
+    /// answers `Some`; a [`Scorer`] may also override this method itself.
+    ///
+    /// [`Scorer`]: crate::search::Scorer
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        None
+    }
+
+    /// Returns the [`TypeId`](std::any::TypeId) of this scorable's concrete
+    /// class, or `None` when the class does not declare it.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests a scorable for a concrete
+    /// class with `instanceof` (for example `in instanceof AssertingScorable ||
+    /// in instanceof AssertingScorer` in `AssertingScorable.wrap`). A
+    /// `dyn Scorable` that borrows its state is not `'static` and cannot be a
+    /// [`dyn Any`](std::any::Any), so a class that takes part in such a test
+    /// returns the `TypeId` of its `'static` instantiation here; the default
+    /// answers `None` — Java's `false` branch.
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        None
+    }
 }
 
 /// A child [`Scorable`] and its relationship to its parent.
@@ -154,6 +186,11 @@ impl Scorable for SimpleScorable {
         self.min_competitive_score = min_score;
         Ok(())
     }
+
+    /// Answers `scorable.getClass()` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<SimpleScorable>())
+    }
 }
 
 /// Filters a [`Scorable`], intercepting methods and optionally changing their
@@ -192,6 +229,11 @@ impl Scorable for FilterScorable<'_> {
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         Ok(vec![ChildScorable::new(&mut *self.inner, "FILTER")])
     }
+
+    /// Answers `scorable.getClass()` (see [`Scorable::class_id`]).
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        Some(std::any::TypeId::of::<FilterScorable<'static>>())
+    }
 }
 
 impl<T: Scorable + ?Sized> Scorable for &mut T {
@@ -209,5 +251,13 @@ impl<T: Scorable + ?Sized> Scorable for &mut T {
 
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         (**self).children()
+    }
+
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        (**self).as_scorer()
+    }
+
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        (**self).class_id()
     }
 }

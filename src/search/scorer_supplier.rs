@@ -42,6 +42,20 @@ pub trait ScorerSupplier {
         Ok(Box::new(DefaultBulkScorer::new(self.get(i64::MAX)?)))
     }
 
+    /// Returns this supplier as a mutable [`Any`](std::any::Any), so that a
+    /// caller can test its concrete type and reach that type's members, or
+    /// `None` when the type does not take part in such a test.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java casts a supplier to its class
+    /// (`TestBooleanScorer` writes `((BooleanScorerSupplier) ss).booleanScorer()`).
+    /// Rust cannot downcast a `dyn ScorerSupplier`, so the escape hatch is
+    /// declared in the shape of [`PostingsEnum::as_any_mut`](crate::index::PostingsEnum::as_any_mut);
+    /// its default answers `None`, Java's failed cast, and a type that is cast
+    /// overrides it.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
     /// Returns an estimate of the cost of the scorer that
     /// [`get`](Self::get) would return.
     ///

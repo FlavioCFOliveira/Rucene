@@ -321,8 +321,10 @@ const _BLOCK_SIZE_BYTES: usize = 1 << 18;
 
 /// The open-addressing hash table backing one generation of the suffix cache.
 ///
-/// Equivalent to the inner class `NodeHash.PagedGrowableHash`.
-struct PagedGrowableHash {
+/// Equivalent to the inner class `NodeHash.PagedGrowableHash`. Public, with
+/// its constructor and node-byte members, for the port of `TestNodeHash`
+/// (same Java package, which reaches the package-private inner class).
+pub struct PagedGrowableHash {
     /// FST node address, at the slot given by the masked hash of the node arcs.
     fst_node_address: Vec<i64>,
     /// Address inside [`PagedGrowableHash::copied_nodes`] of the node stored at
@@ -340,7 +342,8 @@ impl PagedGrowableHash {
     /// Creates a table with 16 slots.
     ///
     /// Equivalent to `new PagedGrowableHash()`.
-    fn new() -> Self {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
         Self::with_size(16)
     }
 
@@ -363,8 +366,7 @@ impl PagedGrowableHash {
     /// Returns the copied bytes at the provided hash slot.
     ///
     /// Equivalent to `PagedGrowableHash.getBytes`.
-    #[allow(dead_code)]
-    fn bytes(&self, hash_slot: i64, length: usize) -> Vec<u8> {
+    pub fn bytes(&self, hash_slot: i64, length: usize) -> Vec<u8> {
         let address = self.copied_node_address[hash_slot as usize];
         debug_assert!(address - length as i64 + 1 >= 0);
         let mut buf = vec![0u8; length];
@@ -392,7 +394,7 @@ impl PagedGrowableHash {
     /// Copies the node bytes out of the FST.
     ///
     /// Equivalent to `PagedGrowableHash.copyNodeBytes`.
-    fn copy_node_bytes(&mut self, hash_slot: i64, bytes: &[u8], length: usize) -> Result<()> {
+    pub fn copy_node_bytes(&mut self, hash_slot: i64, bytes: &[u8], length: usize) -> Result<()> {
         debug_assert_eq!(self.copied_node_address[hash_slot as usize], 0);
         self.copied_nodes.append(&bytes[..length])?;
         // Write the offset, which points to the last byte of the node just
@@ -404,7 +406,7 @@ impl PagedGrowableHash {
     /// Promotes the node bytes from the fallback table.
     ///
     /// Equivalent to `PagedGrowableHash.copyFallbackNodeBytes`.
-    fn copy_fallback_node_bytes(
+    pub fn copy_fallback_node_bytes(
         &mut self,
         hash_slot: i64,
         fallback_table: &PagedGrowableHash,

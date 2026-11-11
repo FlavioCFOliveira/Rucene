@@ -93,7 +93,7 @@ fn doc(id: usize, rank: i64) -> Document {
 fn scenario(sorted: bool) {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_max_buffered_docs(10).unwrap();
     if sorted {
         config
@@ -233,9 +233,9 @@ fn concurrent_updates_commits_merges_and_nrt_reopens_finish_with_an_index_sort()
 fn a_merge_between_prepare_commit_and_commit_keeps_the_pending_commits_files() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     for id in 0..30 {
@@ -346,12 +346,12 @@ fn the_merge_asks_use_compound_file_under_the_writers_lock() {
         probed: AtomicBool::new(false),
         lock_held: AtomicBool::new(false),
     });
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::clone(&policy) as Arc<dyn MergePolicy>)
+        .set_merge_policy(Some(Arc::clone(&policy) as Arc<dyn MergePolicy>))
         .unwrap();
     config
-        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .set_merge_scheduler(Some(Arc::new(SerialMergeScheduler::new())))
         .unwrap();
     let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let _ = writer_slot.set(Arc::downgrade(&writer));
@@ -422,7 +422,7 @@ impl Directory for SyncRecordingDirectory {
     fn obtain_lock(&self, name: &str) -> rucene::Result<Box<dyn rucene::store::Lock>> {
         self.inner.obtain_lock(name)
     }
-    fn close(&mut self) -> rucene::Result<()> {
+    fn close(&self) -> rucene::Result<()> {
         Ok(())
     }
     fn get_pending_deletions(&self) -> rucene::Result<HashSet<String>> {

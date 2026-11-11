@@ -84,6 +84,19 @@ impl DState {
     }
 }
 
+/// A copy of the fields of one `NFARunAutomaton.DState` (a private class in
+/// Java), for the test framework's model of the Java object; see
+/// [`NFARunAutomaton::d_state_views`].
+#[derive(Clone, Debug)]
+pub struct DStateView {
+    /// `int[] nfaStates`.
+    pub nfa_states: Vec<i32>,
+    /// `int[] transitions`, `null` until the first transition is added.
+    pub transitions: Option<Vec<i32>>,
+    /// Whether `Transition minimalTransition` is non-`null`.
+    pub has_minimal_transition: bool,
+}
+
 /// Mutable determinization state, kept behind a [`Mutex`] so the read-only
 /// [`ByteRunnable`] and [`TransitionAccessor`] contracts can be honoured by an
 /// automaton shared between enums.
@@ -215,6 +228,35 @@ impl NFARunAutomaton {
     /// Returns the source automaton this NFA runs.
     pub fn automaton(&self) -> &Automaton {
         &self.automaton
+    }
+
+    /// Returns the char interval start points (Java's private field
+    /// `points`); public so that the test framework can model the Java object.
+    pub fn points(&self) -> &[i32] {
+        &self.points
+    }
+
+    /// Returns the map from char number to class (Java's package-private
+    /// field `classmap`); public so that the test framework can model the Java
+    /// object.
+    pub fn classmap(&self) -> &[i32] {
+        &self.classmap
+    }
+
+    /// Returns a copy of the fields of every DFA state found so far, in
+    /// ordinal order (the non-`null` slots of Java's private field `dStates`,
+    /// each of them also a key of `dStateToOrd`); public so that the test
+    /// framework can model the Java object.
+    pub fn d_state_views(&self) -> Vec<DStateView> {
+        self.inner()
+            .d_states
+            .iter()
+            .map(|state| DStateView {
+                nfa_states: state.nfa_states.clone(),
+                transitions: state.transitions.clone(),
+                has_minimal_transition: state.minimal_transition.is_some(),
+            })
+            .collect()
     }
 
     /// Gets the character class of the given codepoint.
@@ -466,6 +508,10 @@ impl Inner {
                 }
                 debug_assert!(points[char_class as usize] == last_point);
                 while (char_class as usize) < points.len() && points[char_class as usize] < point {
+                    debug_assert!(
+                        self.transition_at(ord, char_class) == NOT_COMPUTED
+                            || self.transition_at(ord, char_class) == dest_ord
+                    );
                     self.assign_transition(ord, char_class, dest_ord);
                     char_class += 1;
                 }
@@ -500,6 +546,14 @@ impl Inner {
             self.transition_set.points[i].starts.next = 0;
         }
         debug_assert!(self.states_set.size() == 0);
+        // it's also possible that some transitions after the charClass has
+        // already been explored
+        debug_assert!(self.d_states[ord as usize].computed_transitions >= char_class as usize);
+        debug_assert!(
+            char_class as usize == points.len()
+                || self.transition_at(ord, char_class) == MISSING
+                || self.transition_at(ord, char_class) == NOT_COMPUTED
+        );
         // no more outgoing transitions, set the rest of the transitions to MISSING
         for cls in char_class as usize..points.len() {
             self.force_transition(ord, cls as i32, MISSING);
@@ -526,6 +580,9 @@ impl ByteRunnable for NFARunAutomaton {
     fn step(&self, state: i32, c: i32) -> i32 {
         let char_class = self.get_char_class(c);
         let mut inner = self.inner();
+        // Java's `dStates[state] != null`: the Rust vector holds only the
+        // states created so far, so a created state is one within its length.
+        debug_assert!((state as usize) < inner.d_states.len());
         inner.next_state(
             state,
             char_class,
@@ -536,7 +593,9 @@ impl ByteRunnable for NFARunAutomaton {
     }
 
     fn is_accept(&self, state: i32) -> bool {
-        self.inner().d_states[state as usize].is_accept
+        let inner = self.inner();
+        debug_assert!((state as usize) < inner.d_states.len());
+        inner.d_states[state as usize].is_accept
     }
 
     fn size(&self) -> i32 {

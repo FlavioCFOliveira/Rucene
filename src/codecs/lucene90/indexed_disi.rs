@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 
 use std::cmp;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values::DocValuesIterator;
@@ -23,7 +24,13 @@ const DENSE_BLOCK_LONGS: usize = BLOCK_SIZE / 64;
 ///
 /// A value of `9` means one rank entry is stored for every 512 bits (2^9 bits).
 pub const DEFAULT_DENSE_RANK_POWER: i8 = 9;
-const MAX_ARRAY_LENGTH: usize = (1 << 12) - 1;
+/// The largest number of documents a block stores as a sparse array of
+/// shorts; a block with more is dense or all.
+///
+/// Equivalent to the package-private `IndexedDISI.MAX_ARRAY_LENGTH`; `pub`
+/// here, as tests outside the crate read it the way Java's same-package
+/// tests do.
+pub const MAX_ARRAY_LENGTH: usize = (1 << 12) - 1;
 
 fn flush(
     block: i32,
@@ -96,7 +103,7 @@ pub fn write_bit_set(
     dense_rank_power: i8,
 ) -> Result<i16> {
     if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "denseRankPower must be in [7, 15] or -1, got {dense_rank_power}"
         )));
     }
@@ -114,7 +121,7 @@ pub fn write_bit_set(
         let block_cardinality = buffer.cardinality();
         add_jumps(
             &mut jumps,
-            (out.file_pointer() - origo) as i32,
+            out.file_pointer() - origo,
             total_cardinality as i32,
             last_block,
             block + 1,
@@ -138,7 +145,7 @@ pub fn write_bit_set(
 
     add_jumps(
         &mut jumps,
-        (out.file_pointer() - origo) as i32,
+        out.file_pointer() - origo,
         total_cardinality as i32,
         last_block,
         last_block + 1,
@@ -154,7 +161,12 @@ pub fn write_bit_set(
     flush_block_jumps(last_block + 1, &jumps, out)
 }
 
-fn add_jumps(jumps: &mut Vec<i32>, offset: i32, index: i32, start_block: usize, end_block: usize) {
+fn add_jumps(jumps: &mut Vec<i32>, offset: i64, index: i32, start_block: usize, end_block: usize) {
+    debug_assert!(
+        offset < i64::from(i32::MAX),
+        "Logically the offset should not exceed 2^30 but was >= Integer.MAX_VALUE"
+    );
+    let offset = offset as i32;
     if jumps.len() < (end_block + 1) * 2 {
         jumps.resize((end_block + 1) * 2, 0);
     }
@@ -240,9 +252,17 @@ pub fn create_jump_table(
     }
 }
 
-enum Method {
+/// How a block of an [`IndexedDISI`] stores its documents.
+///
+/// Equivalent to the package-private `IndexedDISI.Method`; `pub` here, as
+/// tests outside the crate read it the way Java's same-package tests do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    /// At most [`MAX_ARRAY_LENGTH`] documents, as an array of shorts.
     Sparse,
+    /// More than [`MAX_ARRAY_LENGTH`] documents, as a bit set.
     Dense,
+    /// Every document of the block.
     All,
 }
 
@@ -261,7 +281,12 @@ pub struct IndexedDISI {
     block_end: i64,
     dense_bitmap_offset: i64,
     next_block_index: i32,
-    method: Method,
+    /// The storage of the current block.
+    ///
+    /// Equivalent to the package-private `IndexedDISI.method` field; `pub`
+    /// here, as tests outside the crate read it the way Java's same-package
+    /// tests do.
+    pub method: Method,
 
     index: i32,
     doc: i32,
@@ -275,6 +300,9 @@ pub struct IndexedDISI {
     word_index: i32,
     number_of_ones: i32,
     dense_origo_index: i32,
+    /// The words of the current dense block that `into_bit_set` has read,
+    /// allocated on its first use (`IndexedDISI.bitSet`).
+    bit_set: Option<FixedBitSet>,
 }
 
 impl IndexedDISI {
@@ -308,7 +336,7 @@ impl IndexedDISI {
         cost: i64,
     ) -> Result<Self> {
         if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "denseRankPower must be in [7, 15] or -1, got {dense_rank_power}"
             )));
         }
@@ -342,6 +370,7 @@ impl IndexedDISI {
             word_index: -1,
             number_of_ones: 0,
             dense_origo_index: 0,
+            bit_set: None,
         })
     }
 
@@ -353,21 +382,18 @@ impl IndexedDISI {
     /// Returns an iterator that delegates to this `IndexedDISI`. Advancing the
     /// returned iterator advances the underlying `IndexedDISI`, and vice-versa.
     ///
-    /// Divergence: Lucene wraps `disi` in an anonymous
-    /// `KnnVectorValues.DocIndexIterator` that forwards `docID`, `index`,
-    /// `nextDoc`, `advance` and `cost` to it
-    /// (`IndexedDISI.java:428-456`), because the Java `IndexedDISI` extends
-    /// `DocIdSetIterator` only. In this port `IndexedDISI` already implements
-    /// [`DocIndexIterator`] with exactly those five methods, so the forwarding
-    /// object would be pure indirection; the disi is moved into the box
-    /// instead. Rust ownership also means the caller cannot keep a second,
-    /// independently advanced handle on the same disi, which is why the value
-    /// is taken by move rather than by reference.
+    /// Lucene wraps `disi` in an anonymous `KnnVectorValues.DocIndexIterator`
+    /// that forwards `docID`, `index`, `nextDoc`, `advance` and `cost` to it
+    /// (`IndexedDISI.java:428-456`). The sparse vector values keep one `disi`
+    /// and hand out such a view on every `iterator()` call, so successive
+    /// iterators continue where the previous one stopped
+    /// (`OffHeapByteVectorValues.java:258-260`). The disi is therefore shared
+    /// behind `Arc<Mutex<_>>`: the view locks it for each forwarded call.
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene90.IndexedDISI#asDocIndexIterator`.
-    pub fn as_doc_index_iterator(disi: IndexedDISI) -> Box<dyn DocIndexIterator> {
-        Box::new(disi)
+    pub fn as_doc_index_iterator(disi: Arc<Mutex<IndexedDISI>>) -> Box<dyn DocIndexIterator> {
+        Box::new(SharedDocIndexIterator(disi))
     }
 
     fn advance_block(&mut self, target_block: i32) -> Result<()> {
@@ -397,19 +423,11 @@ impl IndexedDISI {
 
     fn read_block_header(&mut self) -> Result<()> {
         let block_short = self.slice.read_short()? as u16;
-        // Java writes `doc >>> 16` as a short and asserts `block >= 0` when it
-        // reads it back (`IndexedDISI.java:520-521`). A document id is a
-        // non-negative `int`, so a legal block index never exceeds 32767 and
-        // the top bit of this short is only ever set by corruption. Java's
-        // assertion is disabled at runtime and it carries on with a negative
-        // block; a `debug_assert!` here would instead abort the process on a
-        // corrupt file, so the invariant is enforced as an error.
-        if block_short > i16::MAX as u16 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "invalid IndexedDISI block index: {block_short}"
-            )));
-        }
+        // `Short.toUnsignedInt(slice.readShort()) << 16`, an `int` shift that
+        // wraps for a corrupt short with its top bit set, which Java only
+        // asserts against (`IndexedDISI.java:520-521`).
         self.block = (block_short as i32) << 16;
+        debug_assert!(self.block >= 0);
         let num_values = 1 + (self.slice.read_short()? as u16 as i32);
         self.index = self.next_block_index;
         // Java adds these as `int`s and wraps; a jump-table entry read off a
@@ -436,7 +454,8 @@ impl IndexedDISI {
             self.block_end = self.dense_bitmap_offset + (1i64 << 13);
             if self.dense_rank_power != -1 {
                 let len = self.dense_rank_table.len();
-                self.slice.read_bytes(&mut self.dense_rank_table, 0, len)?;
+                self.slice
+                    .read_bytes(Some(&mut self.dense_rank_table), 0, len)?;
             }
             self.word_index = -1;
             self.number_of_ones = self.index.wrapping_add(1);
@@ -542,6 +561,7 @@ impl IndexedDISI {
     fn sparse_advance_exact(&mut self, target: i32) -> Result<bool> {
         let target_in_block = target & 0xFFFF;
         if self.next_exist_doc_in_block > target_in_block {
+            debug_assert!(!self.exists);
             return Ok(false);
         }
         if target == self.doc {
@@ -563,6 +583,121 @@ impl IndexedDISI {
         }
         self.exists = false;
         Ok(false)
+    }
+
+    /// Sets the bits of the documents of the current block up to `up_to`,
+    /// shifted down by `offset`; returns whether the iterator stopped inside
+    /// the block, on the first document at or after `up_to`.
+    ///
+    /// Equivalent to `Method.intoBitSetWithinBlock(IndexedDISI, int,
+    /// FixedBitSet, int)` of each block method (`IndexedDISI.java`).
+    fn into_bit_set_within_block(
+        &mut self,
+        up_to: i32,
+        bit_set: &mut FixedBitSet,
+        offset: i32,
+    ) -> Result<bool> {
+        match self.method {
+            Method::Sparse => {
+                bit_set.set(self.doc.wrapping_sub(offset) as usize);
+                while self.index < self.next_block_index {
+                    let doc_in_block = self.slice.read_short()? as u16 as i32;
+                    let doc = self.block | doc_in_block;
+                    self.index = self.index.wrapping_add(1);
+                    if doc >= up_to {
+                        self.doc = doc;
+                        self.exists = true;
+                        self.next_exist_doc_in_block = doc_in_block;
+                        return Ok(true);
+                    }
+                    bit_set.set(doc.wrapping_sub(offset) as usize);
+                }
+                Ok(false)
+            }
+            Method::Dense => {
+                let mut source = self
+                    .bit_set
+                    .take()
+                    .unwrap_or_else(|| FixedBitSet::new(BLOCK_SIZE));
+                let result = self.dense_into_bit_set(&mut source, up_to, bit_set, offset);
+                self.bit_set = Some(source);
+                result
+            }
+            Method::All => {
+                let block_end = self.block | 0xFFFF;
+                if up_to <= block_end {
+                    bit_set.set_range(
+                        self.doc.wrapping_sub(offset) as usize,
+                        up_to.wrapping_sub(offset) as usize,
+                    );
+                    self.advance_within_block(up_to)?;
+                    Ok(true)
+                } else {
+                    bit_set.set_range(
+                        self.doc.wrapping_sub(offset) as usize,
+                        (block_end - offset + 1) as usize,
+                    );
+                    Ok(false)
+                }
+            }
+        }
+    }
+
+    /// `DENSE.intoBitSetWithinBlock`, over the block words `source`
+    /// (`disi.bitSet`).
+    fn dense_into_bit_set(
+        &mut self,
+        source: &mut FixedBitSet,
+        up_to: i32,
+        bit_set: &mut FixedBitSet,
+        offset: i32,
+    ) -> Result<bool> {
+        let dest_from = self.doc.wrapping_sub(offset);
+        let dest_to = crate::util::math_util::MathUtil::unsigned_min(
+            up_to,
+            offset.wrapping_add(bit_set.length() as i32),
+        );
+        let source_from = self.doc & 0xFFFF;
+        let source_to = cmp::min(dest_to.wrapping_sub(self.block), BLOCK_SIZE as i32);
+
+        let fp = self.slice.file_pointer();
+        // seek back a long to include current word (disi.word).
+        self.slice.seek(fp - 8)?;
+        let word_index = self.word_index as usize;
+        let num_words = FixedBitSet::bits2words(source_to as usize) - word_index;
+        let mut words = vec![0i64; num_words];
+        self.slice.read_longs(Some(&mut words), 0, num_words)?;
+        let bits = source.get_bits();
+        for (i, word) in words.into_iter().enumerate() {
+            bits[word_index + i].store(word as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        FixedBitSet::or_range(
+            source,
+            source_from as usize,
+            bit_set,
+            dest_from as usize,
+            (source_to - source_from) as usize,
+        );
+
+        let block_end = self.block | 0xFFFF;
+        if dest_to > block_end {
+            self.slice.seek(self.block_end)?;
+            self.index = self.index.wrapping_add(
+                source.cardinality_range(source_from as usize, source_to as usize) as i32,
+            );
+            Ok(false)
+        } else {
+            self.slice.seek(fp)?;
+            let found = self.dense_advance(dest_to)?;
+            if found && self.doc < up_to {
+                return Err(LuceneError::illegal_state(format!(
+                    "There are bits set in the source bitset that are not accounted for. \
+                     doc={} upTo={} disi.block={}",
+                    self.doc, up_to, self.block
+                )));
+            }
+            Ok(found)
+        }
     }
 
     fn dense_advance_exact(&mut self, target: i32) -> Result<bool> {
@@ -609,27 +744,88 @@ impl DocIdSetIterator for IndexedDISI {
             self.read_block_header()?;
         }
         // Java asserts here that the freshly read block yields its own first
-        // document (`IndexedDISI.java:582`), which holds for every block it
-        // writes. Assertions are off at runtime, so a corrupt block leaves Java
-        // with a stale `doc`; a `debug_assert!` would instead abort this
-        // process, so the broken invariant is reported as corruption.
-        if !self.advance_within_block(self.block)? {
-            return Err(LuceneError::CorruptIndex(format!(
-                "IndexedDISI block {} names no document of its own",
-                self.block
-            )));
-        }
+        // document (`IndexedDISI.java:470-471`), which holds for every block it
+        // writes; without assertions a corrupt block leaves a stale `doc`.
+        let found = self.advance_within_block(self.block)?;
+        debug_assert!(found);
         Ok(self.doc)
     }
 
     fn cost(&self) -> i64 {
         self.cost
     }
+
+    /// Equivalent to `IndexedDISI.intoBitSet(int, FixedBitSet, int)`.
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        debug_assert!(self.doc >= offset, "offset={offset} doc={}", self.doc);
+        while self.doc < up_to && !self.into_bit_set_within_block(up_to, bit_set, offset)? {
+            self.read_block_header()?;
+            // Java asserts the freshly read block yields its own first
+            // document, as `advance` does (`IndexedDISI.java:480-481`).
+            let found = self.advance_within_block(self.block)?;
+            debug_assert!(found);
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `IndexedDISI.docIDRunEnd()`, `Method.docIDRunEnd` of
+    /// the current block's method.
+    ///
+    /// Java's `int` additions wrap (`IndexedDISI.java:645-647, 757-762,
+    /// 792-794`): on an exhausted iterator (`doc == NO_MORE_DOCS`) the run end
+    /// is `Integer.MIN_VALUE`.
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        Ok(match self.method {
+            Method::Sparse => self.doc.wrapping_add(1),
+            Method::Dense => {
+                if self.word == u64::MAX {
+                    (self.doc | 0x3F).wrapping_add(1)
+                } else {
+                    self.doc.wrapping_add(1)
+                }
+            }
+            Method::All => (self.doc | 0xFFFF).wrapping_add(1),
+        })
+    }
 }
 
 impl DocIndexIterator for IndexedDISI {
     fn index(&self) -> i32 {
         self.index
+    }
+}
+
+/// The anonymous `DocIndexIterator` of `IndexedDISI.asDocIndexIterator`
+/// (`IndexedDISI.java:428-456`): every call is forwarded to the shared disi.
+struct SharedDocIndexIterator(Arc<Mutex<IndexedDISI>>);
+
+impl SharedDocIndexIterator {
+    fn disi(&self) -> MutexGuard<'_, IndexedDISI> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl DocIdSetIterator for SharedDocIndexIterator {
+    fn doc_id(&self) -> i32 {
+        self.disi().doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.disi().next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        DocIdSetIterator::advance(&mut *self.disi(), target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.disi().cost()
+    }
+}
+
+impl DocIndexIterator for SharedDocIndexIterator {
+    fn index(&self) -> i32 {
+        self.disi().index
     }
 }
 

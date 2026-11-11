@@ -153,11 +153,11 @@ impl BytesRefArray {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `index` is out of bounds,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `index` is out of bounds,
     /// which is Java's `IndexOutOfBoundsException` from `Objects.checkIndex`.
     pub fn get(&self, index: usize) -> Result<BytesRef> {
         if index >= self.last_element {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Index {index} out of bounds for length {}",
                 self.last_element
             )));
@@ -241,7 +241,11 @@ impl BytesRefArray {
     ) -> BytesRefArrayIterator<'_> {
         let size = self.size();
         let indices = sort_state.map(|s| s.indices);
-        debug_assert!(indices.as_ref().is_none_or(|i| i.len() == size));
+        debug_assert!(
+            indices.as_ref().is_none_or(|i| i.len() == size),
+            "{} != {size}",
+            indices.as_ref().map_or(0, |i| i.len())
+        );
         BytesRefArrayIterator {
             array: self,
             indices,
@@ -429,10 +433,10 @@ impl FixedLengthBytesRefArray {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `index` is out of bounds.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `index` is out of bounds.
     pub fn get(&self, index: usize) -> Result<BytesRef> {
         if index >= self.size {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Index {index} out of bounds for length {}",
                 self.size
             )));
@@ -477,7 +481,7 @@ impl FixedLengthBytesRefArray {
 impl SortableBytesRefArray for FixedLengthBytesRefArray {
     fn append(&mut self, bytes: &BytesRef) -> Result<usize> {
         if bytes.length != self.value_length {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "value length is {} but is supposed to always be {}",
                 bytes.length, self.value_length
             )));

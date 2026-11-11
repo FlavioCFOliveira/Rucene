@@ -3,7 +3,6 @@
 //! The fields that index a location, in both the geographic and the cartesian
 //! coordinate systems, as points for a BKD lookup or as doc values for a scan.
 
-use std::io::Read;
 use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
@@ -12,15 +11,15 @@ use crate::document::distance_sort::{LatLonPointSortField, XYPointSortField};
 use crate::document::nearest_neighbor;
 use crate::document::point_queries::{
     LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,
-    XYDocValuesPointInGeometryQuery,
+    XYDocValuesPointInGeometryQuery, XYPointInGeometryQuery,
 };
 use crate::document::range_fields::{RangeFieldQuery, RangeQueryType, RangeValueKind};
 use crate::document::shape_field::QueryRelation;
 use crate::document::spatial_query::{LatLonGeometryValue, XYGeometryValue};
 use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
-use crate::geo::geometry::{Circle, Polygon, Rectangle, XYCircle, XYRectangle};
+use crate::geo::geometry::{Circle, Polygon, Rectangle, XYCircle, XYPolygon, XYRectangle};
 use crate::index::{DocValuesType, IndexableField, IndexableFieldType, PointValues};
 use crate::search::boolean_query::Builder as BooleanQueryBuilder;
 use crate::search::boost_query::BoostQuery;
@@ -35,6 +34,7 @@ use crate::search::similarities::java_fmt;
 use crate::search::top_field_docs::TopFieldDocs;
 use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 use crate::search::{Occur, Query};
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
 use crate::util::sloppy_math::SloppyMath;
 use crate::util::{Bits, BytesRef, NumericUtils};
 
@@ -52,7 +52,7 @@ pub const COORDINATE_BYTES: usize = 4;
 /// Builds and freezes the type of a two-dimensional point of
 /// [`COORDINATE_BYTES`] bytes per dimension.
 fn new_point_field_type() -> FieldType {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_dimensions(2, COORDINATE_BYTES as i32)
         .expect("INVARIANT: two dimensions of four bytes fit a new, mutable type");
     ft.freeze();
@@ -62,7 +62,7 @@ fn new_point_field_type() -> FieldType {
 /// Builds and freezes the type of a location doc-values field: sorted-numeric
 /// doc values.
 fn new_doc_values_field_type() -> FieldType {
-    let mut ft = FieldType::new();
+    let ft = FieldType::new();
     ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
         .expect("INVARIANT: a new type is mutable");
     ft.freeze();
@@ -107,6 +107,24 @@ fn xy_doc_values_field_type() -> &'static FieldType {
     TYPE.get_or_init(new_doc_values_field_type)
 }
 
+/// Java's `IllegalArgumentException("field must not be null")`, thrown by
+/// the point query constructors (`PointRangeQuery.java:108`,
+/// `LatLonPointDistanceQuery.java:60`, `SpatialQuery.java:76`,
+/// `XYPointInGeometryQuery.java:56`, the doc-values point queries) and
+/// `LatLonPoint.nearest` (`LatLonPoint.java:415`).
+fn field_must_not_be_null() -> LuceneError {
+    LuceneError::illegal_argument("field must not be null".to_string())
+}
+
+/// The `if (field == null) throw ...` of the point query constructors.
+///
+/// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+/// field is `Option<&str>` in the point query factories; `None` is Java's
+/// `null` and fails exactly where Java fails.
+fn require_field(field: Option<&str>) -> Result<&str> {
+    field.ok_or_else(field_must_not_be_null)
+}
+
 /// A latitude/longitude pair indexed as a point.
 ///
 /// Equivalent to `org.apache.lucene.document.LatLonPoint`.
@@ -114,7 +132,7 @@ fn xy_doc_values_field_type() -> &'static FieldType {
 pub struct LatLonPoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl LatLonPoint {
@@ -123,10 +141,12 @@ impl LatLonPoint {
 
     /// Creates the field.
     pub fn new(name: impl Into<String>, latitude: f64, longitude: f64) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: lat_lon_point_type().clone(),
-            fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * COORDINATE_BYTES])),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(
+                vec![0u8; 2 * COORDINATE_BYTES],
+            ))),
         };
         field.set_location_value(latitude, longitude)?;
         Ok(field)
@@ -136,7 +156,7 @@ impl LatLonPoint {
     ///
     /// Equivalent to `LatLonPoint.setLocationValue(double, double)`: the two
     /// encoded coordinates are packed as sortable bytes, latitude first.
-    pub fn set_location_value(&mut self, latitude: f64, longitude: f64) -> Result<()> {
+    pub fn set_location_value(&self, latitude: f64, longitude: f64) -> Result<()> {
         let mut bytes = vec![0u8; 2 * COORDINATE_BYTES];
         NumericUtils::int_to_sortable_bytes(
             GeoEncodingUtils::encode_latitude(latitude)?,
@@ -148,7 +168,7 @@ impl LatLonPoint {
             &mut bytes,
             COORDINATE_BYTES,
         );
-        self.fields_data = FieldData::Bytes(BytesRef::new(bytes));
+        *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(bytes));
         Ok(())
     }
 
@@ -163,11 +183,12 @@ impl LatLonPoint {
     }
 
     /// Returns the packed coordinates.
-    pub fn packed_value(&self) -> Option<&[u8]> {
-        match &self.fields_data {
+    pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
-        }
+        })
+        .ok()
     }
 
     /// Checks that `field_info` describes a field this point type can read.
@@ -179,7 +200,7 @@ impl LatLonPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// a different number of dimensions or a different width.
     pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
         check_point_compatible(field_info, "LatLonPoint")
@@ -216,8 +237,13 @@ impl LatLonPoint {
     /// A box crossing the date line becomes the union of two boxes, each with
     /// an open longitude bound, under a constant score — so a multi-valued
     /// document matching both is not boosted for it.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_box_query(
-        field: &str,
+        field: Option<&str>,
         min_latitude: f64,
         max_latitude: f64,
         mut min_longitude: f64,
@@ -278,7 +304,9 @@ impl LatLonPoint {
     /// Equivalent to `LatLonPoint.newBoxInternal(String, byte[], byte[])`,
     /// whose anonymous subclass exists only to print dimension 0 as a latitude
     /// and dimension 1 as a longitude.
-    fn new_box_internal(field: &str, min: Vec<u8>, max: Vec<u8>) -> Result<Arc<dyn Query>> {
+    fn new_box_internal(field: Option<&str>, min: Vec<u8>, max: Vec<u8>) -> Result<Arc<dyn Query>> {
+        // `PointRangeQuery.checkArgs` (`PointRangeQuery.java:107-109`).
+        let field = require_field(field)?;
         Ok(Arc::new(PointRangeQuery::new(
             field,
             min,
@@ -291,12 +319,19 @@ impl LatLonPoint {
     /// Matches documents within `radius_meters` of a point.
     ///
     /// Equivalent to `LatLonPoint.newDistanceQuery(String, double, double, double)`.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_distance_query(
-        field: &str,
+        field: Option<&str>,
         latitude: f64,
         longitude: f64,
         radius_meters: f64,
     ) -> Result<Arc<dyn Query>> {
+        // `LatLonPointDistanceQuery.java:59-61`.
+        let field = require_field(field)?;
         Ok(Arc::new(LatLonPointDistanceQuery::new(
             field,
             latitude,
@@ -308,8 +343,13 @@ impl LatLonPoint {
     /// Matches documents whose point intersects any of the given polygons.
     ///
     /// Equivalent to `LatLonPoint.newPolygonQuery(String, Polygon...)`.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_polygon_query(
-        field: &str,
+        field: Option<&str>,
         polygons: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
         Self::new_geometry_query(field, QueryRelation::Intersects, polygons)
@@ -321,8 +361,13 @@ impl LatLonPoint {
     /// Equivalent to `LatLonPoint.newGeometryQuery(String, ShapeField.QueryRelation, LatLonGeometry...)`.
     /// A single rectangle or circle under `Intersects` is rewritten into the
     /// box or the distance query, which read the BKD tree more cheaply.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_geometry_query(
-        field: &str,
+        field: Option<&str>,
         query_relation: QueryRelation,
         geometries: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
@@ -351,6 +396,8 @@ impl LatLonPoint {
         if query_relation == QueryRelation::Contains {
             return Self::make_contains_geometry_query(field, geometries);
         }
+        // `SpatialQuery.java:75-77`.
+        let field = require_field(field)?;
         Ok(Arc::new(LatLonPointQuery::new(
             field,
             query_relation,
@@ -363,7 +410,7 @@ impl LatLonPoint {
     /// Equivalent to `LatLonPoint.makeContainsGeometryQuery(String, LatLonGeometry...)`.
     /// A point can only contain a point, so anything else matches nothing.
     fn make_contains_geometry_query(
-        field: &str,
+        field: Option<&str>,
         geometries: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
         let mut builder = BooleanQueryBuilder::new();
@@ -373,6 +420,8 @@ impl LatLonPoint {
                     "Contains LatLonPoint.newGeometryQuery with non-point geometries",
                 )));
             }
+            // `SpatialQuery.java:75-77`.
+            let field = require_field(field)?;
             builder.add(
                 Arc::new(LatLonPointQuery::new(
                     field,
@@ -438,7 +487,7 @@ impl LatLonPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an invalid latitude or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an invalid latitude or
     /// longitude, when `pivot_distance_meters` is not positive, and when
     /// `weight` is not a finite, non-negative float.
     pub fn new_distance_feature_query(
@@ -487,12 +536,17 @@ impl LatLonPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an out-of-bounds latitude
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an out-of-bounds latitude
     /// or longitude and for `n < 1`, and propagates whatever reading the point
     /// trees raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn nearest(
         searcher: &IndexSearcher,
-        field: &str,
+        field: Option<&str>,
         latitude: f64,
         longitude: f64,
         n: i32,
@@ -500,10 +554,12 @@ impl LatLonPoint {
         GeoUtils::check_latitude(latitude)?;
         GeoUtils::check_longitude(longitude)?;
         if n < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "n must be at least 1; got {n}"
             )));
         }
+        // `LatLonPoint.java:414-416`.
+        let field = require_field(field)?;
         let mut readers: Vec<Box<dyn PointValues>> = Vec::new();
         let mut doc_bases: Vec<i32> = Vec::new();
         let mut live_docs: Vec<Option<Box<dyn Bits>>> = Vec::new();
@@ -541,6 +597,13 @@ impl LatLonPoint {
 }
 
 impl IndexableField for LatLonPoint {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -551,14 +614,14 @@ impl IndexableField for LatLonPoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        point_token_stream(self.packed_value())
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(point_token_stream(self.packed_value().as_deref()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -568,7 +631,7 @@ impl IndexableField for LatLonPoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -592,16 +655,16 @@ impl IndexableField for LatLonPoint {
 pub struct LatLonDocValuesField {
     name: String,
     field_type: FieldType,
-    value: i64,
+    value: AtomicRefCell<i64>,
 }
 
 impl LatLonDocValuesField {
     /// Creates the field.
     pub fn new(name: impl Into<String>, latitude: f64, longitude: f64) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: lat_lon_doc_values_field_type().clone(),
-            value: 0,
+            value: AtomicRefCell::new(0),
         };
         field.set_location_value(latitude, longitude)?;
         Ok(field)
@@ -611,10 +674,10 @@ impl LatLonDocValuesField {
     ///
     /// Equivalent to `LatLonDocValuesField.setLocationValue`: the two encoded
     /// coordinates are packed into one long, latitude in the high half.
-    pub fn set_location_value(&mut self, latitude: f64, longitude: f64) -> Result<()> {
+    pub fn set_location_value(&self, latitude: f64, longitude: f64) -> Result<()> {
         let lat = GeoEncodingUtils::encode_latitude(latitude)?;
         let lon = GeoEncodingUtils::encode_longitude(longitude)?;
-        self.value = (i64::from(lat) << 32) | (i64::from(lon) & 0xFFFF_FFFF);
+        *self.value.borrow_mut() = (i64::from(lat) << 32) | (i64::from(lon) & 0xFFFF_FFFF);
         Ok(())
     }
 
@@ -630,7 +693,7 @@ impl LatLonDocValuesField {
 
     /// Returns the packed value.
     pub fn numeric_value(&self) -> i64 {
-        self.value
+        *self.value.borrow()
     }
 
     /// Creates a query matching documents whose point falls in the box.
@@ -643,8 +706,13 @@ impl LatLonDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_box_query(
-        field: &str,
+        field: Option<&str>,
         min_latitude: f64,
         max_latitude: f64,
         mut min_longitude: f64,
@@ -667,6 +735,15 @@ impl LatLonDocValuesField {
                 min_longitude = -180.0;
             }
         }
+        // `LatLonDocValuesBoxQuery.java:48-54`: the coordinates are checked
+        // before the field.
+        let Some(field) = field else {
+            GeoUtils::check_latitude(min_latitude)?;
+            GeoUtils::check_latitude(max_latitude)?;
+            GeoUtils::check_longitude(min_longitude)?;
+            GeoUtils::check_longitude(max_longitude)?;
+            return Err(field_must_not_be_null());
+        };
         Ok(Arc::new(LatLonDocValuesBoxQuery::new(
             field,
             min_latitude,
@@ -684,8 +761,13 @@ impl LatLonDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the circle or the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_distance_query(
-        field: &str,
+        field: Option<&str>,
         latitude: f64,
         longitude: f64,
         radius_meters: f64,
@@ -706,7 +788,15 @@ impl LatLonDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
-    pub fn new_slow_polygon_query(field: &str, polygons: Vec<Polygon>) -> Result<Arc<dyn Query>> {
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
+    pub fn new_slow_polygon_query(
+        field: Option<&str>,
+        polygons: Vec<Polygon>,
+    ) -> Result<Arc<dyn Query>> {
         Self::new_slow_geometry_query(
             field,
             QueryRelation::Intersects,
@@ -727,8 +817,13 @@ impl LatLonDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_geometry_query(
-        field: &str,
+        field: Option<&str>,
         query_relation: QueryRelation,
         geometries: Vec<LatLonGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
@@ -752,6 +847,8 @@ impl LatLonDocValuesField {
                 "Contains LatLonDocValuesField.newSlowGeometryQuery with non-point geometries",
             )));
         }
+        // `LatLonDocValuesQuery.java:57-59`.
+        let field = require_field(field)?;
         Ok(Arc::new(LatLonDocValuesQuery::new(
             field,
             query_relation,
@@ -785,7 +882,7 @@ impl LatLonDocValuesField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// a different doc-values type.
     pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
         check_doc_values_compatible(field_info, "LatLonDocValuesField")
@@ -803,6 +900,13 @@ impl LatLonDocValuesField {
 }
 
 impl IndexableField for LatLonDocValuesField {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -813,10 +917,12 @@ impl IndexableField for LatLonDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap())
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -827,12 +933,12 @@ impl IndexableField for LatLonDocValuesField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        Some(NumericValue::Long(self.value))
+        Some(NumericValue::Long(*self.value.borrow()))
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
@@ -851,7 +957,7 @@ impl IndexableField for LatLonDocValuesField {
 pub struct XYPointField {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl XYPointField {
@@ -860,17 +966,19 @@ impl XYPointField {
 
     /// Creates the field.
     pub fn new(name: impl Into<String>, x: f32, y: f32) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: xy_point_field_type().clone(),
-            fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * COORDINATE_BYTES])),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(
+                vec![0u8; 2 * COORDINATE_BYTES],
+            ))),
         };
         field.set_location_value(x, y)?;
         Ok(field)
     }
 
     /// Replaces the location.
-    pub fn set_location_value(&mut self, x: f32, y: f32) -> Result<()> {
+    pub fn set_location_value(&self, x: f32, y: f32) -> Result<()> {
         let mut bytes = vec![0u8; 2 * COORDINATE_BYTES];
         NumericUtils::int_to_sortable_bytes(XYEncodingUtils::encode(x)?, &mut bytes, 0);
         NumericUtils::int_to_sortable_bytes(
@@ -878,7 +986,7 @@ impl XYPointField {
             &mut bytes,
             COORDINATE_BYTES,
         );
-        self.fields_data = FieldData::Bytes(BytesRef::new(bytes));
+        *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(bytes));
         Ok(())
     }
 
@@ -893,11 +1001,12 @@ impl XYPointField {
     }
 
     /// Returns the packed coordinates.
-    pub fn packed_value(&self) -> Option<&[u8]> {
-        match &self.fields_data {
+    pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
-        }
+        })
+        .ok()
     }
 
     /// Checks that `field_info` describes a field this point type can read.
@@ -907,7 +1016,7 @@ impl XYPointField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// a different number of dimensions or a different width.
     pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
         check_point_compatible(field_info, "XYPoint")
@@ -940,9 +1049,126 @@ impl XYPointField {
         );
         Ok((lower, upper))
     }
+
+    /// Creates a query for matching a bounding box.
+    ///
+    /// Equivalent to `XYPointField.newBoxQuery(String, float, float, float,
+    /// float)` (`XYPointField.java`), which builds an `XYRectangle` and an
+    /// `XYPointInGeometryQuery` over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the box has invalid
+    /// coordinates, as `new XYRectangle(minX, maxX, minY, maxY)` throws.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
+    pub fn new_box_query(
+        field: Option<&str>,
+        min_x: f32,
+        max_x: f32,
+        min_y: f32,
+        max_y: f32,
+    ) -> Result<Arc<dyn Query>> {
+        let rectangle = XYRectangle::new(min_x, max_x, min_y, max_y)?;
+        // `XYPointInGeometryQuery.java:55-57`.
+        let field = require_field(field)?;
+        Ok(Arc::new(XYPointInGeometryQuery::new(
+            field,
+            vec![XYGeometryValue::Rectangle(rectangle)],
+        )?))
+    }
+
+    /// Creates a query for matching points within the specified distance of
+    /// the supplied location.
+    ///
+    /// Equivalent to `XYPointField.newDistanceQuery(String, float, float,
+    /// float)`, which builds an `XYCircle` and an `XYPointInGeometryQuery`
+    /// over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the center has invalid
+    /// coordinates or the radius is invalid, as `new XYCircle(x, y, radius)`
+    /// throws.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
+    pub fn new_distance_query(
+        field: Option<&str>,
+        x: f32,
+        y: f32,
+        radius: f32,
+    ) -> Result<Arc<dyn Query>> {
+        let circle = XYCircle::new(x, y, radius)?;
+        // `XYPointInGeometryQuery.java:55-57`.
+        let field = require_field(field)?;
+        Ok(Arc::new(XYPointInGeometryQuery::new(
+            field,
+            vec![XYGeometryValue::Circle(circle)],
+        )?))
+    }
+
+    /// Creates a query for matching one or more polygons.
+    ///
+    /// Equivalent to `XYPointField.newPolygonQuery(String, XYPolygon...)`,
+    /// which is `newGeometryQuery(field, polygons)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_geometry_query`](Self::new_geometry_query).
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
+    pub fn new_polygon_query(
+        field: Option<&str>,
+        polygons: Vec<XYPolygon>,
+    ) -> Result<Arc<dyn Query>> {
+        Self::new_geometry_query(
+            field,
+            polygons.into_iter().map(XYGeometryValue::Polygon).collect(),
+        )
+    }
+
+    /// Creates a query to find all indexed points that intersect a provided
+    /// geometry collection.
+    ///
+    /// Equivalent to `XYPointField.newGeometryQuery(String, XYGeometry...)`,
+    /// which is `new XYPointInGeometryQuery(field, xyGeometries)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`XYPointInGeometryQuery::new`] returns for an invalid
+    /// geometry collection.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
+    pub fn new_geometry_query(
+        field: Option<&str>,
+        xy_geometries: Vec<XYGeometryValue>,
+    ) -> Result<Arc<dyn Query>> {
+        // `XYPointInGeometryQuery.java:55-57`.
+        let field = require_field(field)?;
+        Ok(Arc::new(XYPointInGeometryQuery::new(field, xy_geometries)?))
+    }
 }
 
 impl IndexableField for XYPointField {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -953,14 +1179,14 @@ impl IndexableField for XYPointField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        point_token_stream(self.packed_value())
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(point_token_stream(self.packed_value().as_deref()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -970,7 +1196,7 @@ impl IndexableField for XYPointField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -994,26 +1220,26 @@ impl IndexableField for XYPointField {
 pub struct XYDocValuesField {
     name: String,
     field_type: FieldType,
-    value: i64,
+    value: AtomicRefCell<i64>,
 }
 
 impl XYDocValuesField {
     /// Creates the field.
     pub fn new(name: impl Into<String>, x: f32, y: f32) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: xy_doc_values_field_type().clone(),
-            value: 0,
+            value: AtomicRefCell::new(0),
         };
         field.set_location_value(x, y)?;
         Ok(field)
     }
 
     /// Replaces the location.
-    pub fn set_location_value(&mut self, x: f32, y: f32) -> Result<()> {
+    pub fn set_location_value(&self, x: f32, y: f32) -> Result<()> {
         let x = XYEncodingUtils::encode(x)?;
         let y = XYEncodingUtils::encode(y)?;
-        self.value = (i64::from(x) << 32) | (i64::from(y) & 0xFFFF_FFFF);
+        *self.value.borrow_mut() = (i64::from(x) << 32) | (i64::from(y) & 0xFFFF_FFFF);
         Ok(())
     }
 
@@ -1029,7 +1255,7 @@ impl XYDocValuesField {
 
     /// Returns the packed value.
     pub fn numeric_value(&self) -> i64 {
-        self.value
+        *self.value.borrow()
     }
 
     /// Creates a query matching documents whose point falls in the box.
@@ -1040,8 +1266,13 @@ impl XYDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the rectangle or the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_box_query(
-        field: &str,
+        field: Option<&str>,
         min_x: f32,
         max_x: f32,
         min_y: f32,
@@ -1059,8 +1290,13 @@ impl XYDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the circle or the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_distance_query(
-        field: &str,
+        field: Option<&str>,
         x: f32,
         y: f32,
         radius: f32,
@@ -1077,8 +1313,13 @@ impl XYDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_polygon_query(
-        field: &str,
+        field: Option<&str>,
         polygons: Vec<crate::geo::geometry::XYPolygon>,
     ) -> Result<Arc<dyn Query>> {
         Self::new_slow_geometry_query(
@@ -1095,10 +1336,17 @@ impl XYDocValuesField {
     /// # Errors
     ///
     /// Propagates whatever building the query raises.
+    ///
+    /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
+    /// field is `Option<&str>`; `None` fails with Java's
+    /// `IllegalArgumentException("field must not be null")` at the point
+    /// Java throws it, so the behaviour is identical.
     pub fn new_slow_geometry_query(
-        field: &str,
+        field: Option<&str>,
         geometries: Vec<XYGeometryValue>,
     ) -> Result<Arc<dyn Query>> {
+        // `XYDocValuesPointInGeometryQuery.java:45-47`.
+        let field = require_field(field)?;
         Ok(Arc::new(XYDocValuesPointInGeometryQuery::new(
             field, geometries,
         )?))
@@ -1123,7 +1371,7 @@ impl XYDocValuesField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// a different doc-values type.
     pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
         check_doc_values_compatible(field_info, "XYDocValuesField")
@@ -1141,6 +1389,13 @@ impl XYDocValuesField {
 }
 
 impl IndexableField for XYDocValuesField {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1151,10 +1406,12 @@ impl IndexableField for XYDocValuesField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap())
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -1165,12 +1422,12 @@ impl IndexableField for XYDocValuesField {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
     fn numeric_value(&self) -> Option<NumericValue> {
-        Some(NumericValue::Long(self.value))
+        Some(NumericValue::Long(*self.value.borrow()))
     }
 
     fn stored_value(&self) -> Result<Option<StoredValue>> {
@@ -1189,7 +1446,7 @@ impl IndexableField for XYDocValuesField {
 pub struct InetAddressPoint {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl InetAddressPoint {
@@ -1211,7 +1468,7 @@ impl InetAddressPoint {
     fn field_type_static() -> &'static FieldType {
         static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions(1, Self::BYTES as i32)
                 .expect("INVARIANT: one dimension of sixteen bytes fits a new, mutable type");
             ft.freeze();
@@ -1224,7 +1481,9 @@ impl InetAddressPoint {
         Ok(Self {
             name: name.into(),
             field_type: Self::field_type_static().clone(),
-            fields_data: FieldData::Bytes(BytesRef::new(Self::encode(address)?)),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(Self::encode(
+                address,
+            )?))),
         })
     }
 
@@ -1241,7 +1500,7 @@ impl InetAddressPoint {
                 Ok(bytes)
             }
             16 => Ok(address.to_vec()),
-            other => Err(LuceneError::IllegalArgument(format!(
+            other => Err(LuceneError::illegal_argument(format!(
                 "invalid address length {other}; must be 4 or 16 bytes"
             ))),
         }
@@ -1258,11 +1517,12 @@ impl InetAddressPoint {
     }
 
     /// Returns the encoded address.
-    pub fn packed_value(&self) -> Option<&[u8]> {
-        match &self.fields_data {
+    pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
-        }
+        })
+        .ok()
     }
 
     /// Replaces this field's address.
@@ -1275,46 +1535,106 @@ impl InetAddressPoint {
     ///
     /// Propagates whatever [`encode`](Self::encode) raises for an address that
     /// is neither 4 nor 16 bytes long.
-    pub fn set_inet_address_value(&mut self, value: &[u8]) -> Result<()> {
-        self.fields_data = FieldData::Bytes(BytesRef::new(Self::encode(value)?));
+    pub fn set_inet_address_value(&self, value: &[u8]) -> Result<()> {
+        *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(Self::encode(value)?));
         Ok(())
     }
 
-    /// Returns the address one greater than `address`, or `None` when it is
-    /// already the largest.
+    /// The minimum value an address can hold: `::`, sixteen zero bytes.
     ///
-    /// Equivalent to `InetAddressPoint.nextUp(InetAddress)`, which a range
-    /// query uses to turn an exclusive bound into an inclusive one.
-    pub fn next_up(address: &[u8]) -> Option<Vec<u8>> {
-        let mut bytes = address.to_vec();
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] != 0xFF {
-                bytes[i] += 1;
-                for slot in bytes.iter_mut().skip(i + 1) {
-                    *slot = 0;
-                }
-                return Some(bytes);
-            }
+    /// Equivalent to `InetAddressPoint.MIN_VALUE` (`InetAddressPoint.java:71,77`).
+    pub const MIN_VALUE: [u8; 16] = [0; 16];
+
+    /// The maximum value an address can hold: sixteen `0xFF` bytes.
+    ///
+    /// Equivalent to `InetAddressPoint.MAX_VALUE` (`InetAddressPoint.java:74-80`).
+    pub const MAX_VALUE: [u8; 16] = [0xFF; 16];
+
+    /// Decodes the 16-byte encoded form back into an address.
+    ///
+    /// Equivalent to `InetAddressPoint.decode(byte[])`, which returns
+    /// `InetAddress.getByAddress(value)`: an IPv4-mapped value comes back as
+    /// its 4-byte IPv4 address, any other 16-byte value as itself, and a
+    /// 4-byte value as itself.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::IllegalArgument`] `"encoded bytes are of incorrect
+    /// length"` when `value` is neither 4 nor 16 bytes long
+    /// (`InetAddressPoint.java:185-192`).
+    pub fn decode(value: &[u8]) -> Result<Vec<u8>> {
+        match value.len() {
+            4 => Ok(value.to_vec()),
+            16 if value[..12] == Self::IPV4_PREFIX => Ok(value[12..].to_vec()),
+            16 => Ok(value.to_vec()),
+            _ => Err(LuceneError::illegal_argument(
+                "encoded bytes are of incorrect length".to_string(),
+            )),
         }
-        None
     }
 
-    /// Returns the address one less than `address`, or `None` when it is
-    /// already the smallest.
+    /// Returns the address that compares immediately greater than `address`.
     ///
-    /// Equivalent to `InetAddressPoint.nextDown(InetAddress)`.
-    pub fn next_down(address: &[u8]) -> Option<Vec<u8>> {
-        let mut bytes = address.to_vec();
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] != 0x00 {
-                bytes[i] -= 1;
-                for slot in bytes.iter_mut().skip(i + 1) {
-                    *slot = 0xFF;
-                }
-                return Some(bytes);
-            }
+    /// Equivalent to `InetAddressPoint.nextUp(InetAddress)`
+    /// (`InetAddressPoint.java:89-99`): `NumericUtils.add` of one to the
+    /// 16-byte encoding, decoded back.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::Arithmetic`] `"Overflow: there is no greater InetAddress
+    /// than …"` when `address` is [`MAX_VALUE`](Self::MAX_VALUE); propagates
+    /// [`encode`](Self::encode)'s error for an address that is neither 4 nor
+    /// 16 bytes long.
+    pub fn next_up(address: &[u8]) -> Result<Vec<u8>> {
+        if address == Self::MAX_VALUE {
+            return Err(LuceneError::from(LuceneErrorKind::Arithmetic(format!(
+                "Overflow: there is no greater InetAddress than {}",
+                inet_address_host_address(address)
+            ))));
         }
-        None
+        let mut delta = [0u8; Self::BYTES];
+        delta[Self::BYTES - 1] = 1;
+        let mut next_up_bytes = [0u8; Self::BYTES];
+        crate::util::NumericUtils::add(
+            Self::BYTES,
+            0,
+            &Self::encode(address)?,
+            &delta,
+            &mut next_up_bytes,
+        )?;
+        Self::decode(&next_up_bytes)
+    }
+
+    /// Returns the address that compares immediately less than `address`.
+    ///
+    /// Equivalent to `InetAddressPoint.nextDown(InetAddress)`
+    /// (`InetAddressPoint.java:107-117`): `NumericUtils.subtract` of one from
+    /// the 16-byte encoding, decoded back.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::Arithmetic`] `"Underflow: there is no smaller
+    /// InetAddress than …"` when `address` is [`MIN_VALUE`](Self::MIN_VALUE);
+    /// propagates [`encode`](Self::encode)'s error for an address that is
+    /// neither 4 nor 16 bytes long.
+    pub fn next_down(address: &[u8]) -> Result<Vec<u8>> {
+        if address == Self::MIN_VALUE {
+            return Err(LuceneError::from(LuceneErrorKind::Arithmetic(format!(
+                "Underflow: there is no smaller InetAddress than {}",
+                inet_address_host_address(address)
+            ))));
+        }
+        let mut delta = [0u8; Self::BYTES];
+        delta[Self::BYTES - 1] = 1;
+        let mut next_down_bytes = [0u8; Self::BYTES];
+        crate::util::NumericUtils::subtract(
+            Self::BYTES,
+            0,
+            &Self::encode(address)?,
+            &delta,
+            &mut next_down_bytes,
+        )?;
+        Self::decode(&next_down_bytes)
     }
 
     /// Creates a prefix query matching a CIDR network range.
@@ -1331,7 +1651,7 @@ impl InetAddressPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `prefix_length` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `prefix_length` is outside
     /// `0..=8 * value.len()`, and propagates whatever
     /// [`new_range_query`](Self::new_range_query) raises.
     pub fn new_prefix_query(
@@ -1340,7 +1660,7 @@ impl InetAddressPoint {
         prefix_length: i32,
     ) -> Result<Arc<dyn Query>> {
         if prefix_length < 0 || prefix_length as usize > 8 * value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal prefixLength '{prefix_length}'. Must be 0-32 for IPv4 ranges, 0-128 for \
                  IPv6 ranges"
             )));
@@ -1453,6 +1773,7 @@ impl PointFormatter for InetAddressPointFormatter {
     /// `PointInSetQuery` subclass in `InetAddressPoint.newSetQuery`, which
     /// prints `decode(value).getHostAddress()`.
     fn format(&self, value: &[u8]) -> String {
+        debug_assert!(value.len() == InetAddressPoint::BYTES);
         inet_address_host_address(value)
     }
 
@@ -1495,6 +1816,13 @@ fn inet_address_host_address(value: &[u8]) -> String {
 }
 
 impl IndexableField for InetAddressPoint {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1505,14 +1833,14 @@ impl IndexableField for InetAddressPoint {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        point_token_stream(self.packed_value())
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(point_token_stream(self.packed_value().as_deref()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -1522,7 +1850,7 @@ impl IndexableField for InetAddressPoint {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1546,7 +1874,7 @@ impl IndexableField for InetAddressPoint {
 pub struct InetAddressRange {
     name: String,
     field_type: FieldType,
-    fields_data: FieldData,
+    fields_data: AtomicRefCell<FieldData>,
 }
 
 impl std::fmt::Display for InetAddressRange {
@@ -1559,7 +1887,7 @@ impl std::fmt::Display for InetAddressRange {
             f,
             &self.field_type,
             &self.name,
-            &crate::document::field_data_to_string(&self.fields_data),
+            &crate::document::field_data_to_string(&self.fields_data.borrow()),
         )
     }
 }
@@ -1577,7 +1905,7 @@ impl InetAddressRange {
     fn field_type_static() -> &'static FieldType {
         static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions(2, Self::BYTES as i32)
                 .expect("INVARIANT: two dimensions of sixteen bytes fit a new, mutable type");
             ft.freeze();
@@ -1587,10 +1915,13 @@ impl InetAddressRange {
 
     /// Creates the field from a minimum and a maximum address.
     pub fn new(name: impl Into<String>, min: &[u8], max: &[u8]) -> Result<Self> {
-        let mut field = Self {
+        let field = Self {
             name: name.into(),
             field_type: Self::field_type_static().clone(),
-            fields_data: FieldData::Bytes(BytesRef::new(vec![0u8; 2 * Self::BYTES])),
+            fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(vec![
+                0u8;
+                2 * Self::BYTES
+            ]))),
         };
         field.set_range_values(min, max)?;
         Ok(field)
@@ -1603,8 +1934,8 @@ impl InetAddressRange {
     /// # Errors
     ///
     /// Propagates whatever [`encode`](Self::encode) raises.
-    pub fn set_range_values(&mut self, min: &[u8], max: &[u8]) -> Result<()> {
-        self.fields_data = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
+    pub fn set_range_values(&self, min: &[u8], max: &[u8]) -> Result<()> {
+        *self.fields_data.borrow_mut() = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
         Ok(())
     }
 
@@ -1617,13 +1948,13 @@ impl InetAddressRange {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when either address is neither
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when either address is neither
     /// 4 nor 16 bytes long, and when `min` is greater than `max`.
     fn encode(min: &[u8], max: &[u8]) -> Result<Vec<u8>> {
         let min = InetAddressPoint::encode(min)?;
         let max = InetAddressPoint::encode(max)?;
         if min > max {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "min value cannot be greater than max value for InetAddressRange field".to_string(),
             ));
         }
@@ -1644,11 +1975,12 @@ impl InetAddressRange {
     }
 
     /// Returns the packed range.
-    pub fn packed_value(&self) -> Option<&[u8]> {
-        match &self.fields_data {
+    pub fn packed_value(&self) -> Option<AtomicRef<'_, [u8]>> {
+        AtomicRef::filter_map(self.fields_data.borrow(), |data| match data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
-        }
+        })
+        .ok()
     }
 
     /// Creates a query matching indexed ip ranges that *intersect* the given
@@ -1751,6 +2083,13 @@ impl InetAddressRange {
 }
 
 impl IndexableField for InetAddressRange {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1761,14 +2100,14 @@ impl IndexableField for InetAddressRange {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        point_token_stream(self.packed_value())
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(point_token_stream(self.packed_value().as_deref()))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        match &self.fields_data {
+        match &*self.fields_data.borrow() {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
@@ -1778,7 +2117,7 @@ impl IndexableField for InetAddressRange {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -1805,14 +2144,14 @@ fn check_point_compatible(field_info: &crate::index::FieldInfo, type_name: &str)
     let num_bytes = COORDINATE_BYTES as i32;
     if field_info.point_dimension_count != 0 && field_info.point_dimension_count != dimension_count
     {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "field=\"{}\" was indexed with numDims={} but this point type has \
              numDims={dimension_count}, is the field really a {type_name}?",
             field_info.name, field_info.point_dimension_count
         )));
     }
     if field_info.point_num_bytes != 0 && field_info.point_num_bytes != num_bytes {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "field=\"{}\" was indexed with bytesPerDim={} but this point type has \
              bytesPerDim={num_bytes}, is the field really a {type_name}?",
             field_info.name, field_info.point_num_bytes
@@ -1831,7 +2170,7 @@ fn check_doc_values_compatible(
     if field_info.doc_values_type != DocValuesType::NONE
         && field_info.doc_values_type != DocValuesType::SORTED_NUMERIC
     {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "field=\"{}\" was indexed with docValuesType={:?} but this type has \
              docValuesType=SORTED_NUMERIC, is the field really a {type_name}?",
             field_info.name, field_info.doc_values_type
@@ -1960,9 +2299,9 @@ impl std::fmt::Display for LatLonPoint {
             write!(
                 f,
                 "{},{}",
-                java_fmt::double_to_string(GeoEncodingUtils::decode_latitude_bytes(bytes, 0)),
+                java_fmt::double_to_string(GeoEncodingUtils::decode_latitude_bytes(&bytes, 0)),
                 java_fmt::double_to_string(GeoEncodingUtils::decode_longitude_bytes(
-                    bytes,
+                    &bytes,
                     COORDINATE_BYTES
                 ))
             )?;
@@ -1979,8 +2318,8 @@ impl std::fmt::Display for LatLonDocValuesField {
             f,
             "LatLonDocValuesField <{}:{},{}>",
             self.name,
-            java_fmt::double_to_string(Self::decode_latitude(self.value)),
-            java_fmt::double_to_string(Self::decode_longitude(self.value))
+            java_fmt::double_to_string(Self::decode_latitude(*self.value.borrow())),
+            java_fmt::double_to_string(Self::decode_longitude(*self.value.borrow()))
         )
     }
 }
@@ -1993,8 +2332,8 @@ impl std::fmt::Display for XYPointField {
             write!(
                 f,
                 "{},{}",
-                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(bytes, 0)),
-                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(bytes, COORDINATE_BYTES))
+                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(&bytes, 0)),
+                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(&bytes, COORDINATE_BYTES))
             )?;
         }
         f.write_str(">")
@@ -2009,8 +2348,8 @@ impl std::fmt::Display for XYDocValuesField {
             f,
             "XYDocValuesField <{}:{},{}>",
             self.name,
-            java_fmt::float_to_string(Self::decode_x(self.value)),
-            java_fmt::float_to_string(Self::decode_y(self.value))
+            java_fmt::float_to_string(Self::decode_x(*self.value.borrow())),
+            java_fmt::float_to_string(Self::decode_y(*self.value.borrow()))
         )
     }
 }
@@ -2030,7 +2369,7 @@ impl std::fmt::Display for InetAddressPoint {
                 && bytes[..10].iter().all(|&b| b == 0)
                 && bytes[10] == 0xFF
                 && bytes[11] == 0xFF;
-            let rendered = inet_address_host_address(bytes);
+            let rendered = inet_address_host_address(&bytes);
             if is_v4 {
                 f.write_str(&rendered)?;
             } else {
@@ -2038,5 +2377,145 @@ impl std::fmt::Display for InetAddressPoint {
             }
         }
         f.write_str(">")
+    }
+}
+
+#[cfg(test)]
+mod xy_point_field_query_tests {
+    use super::*;
+    use crate::error::LuceneErrorKind;
+
+    /// `XYPointField.newBoxQuery`, `newDistanceQuery`, `newPolygonQuery` and
+    /// `newGeometryQuery` all build an `XYPointInGeometryQuery`
+    /// (`XYPointField.java`), so each equals the query built directly over
+    /// the same geometry.
+    #[test]
+    fn factories_build_the_point_in_geometry_query() {
+        let rect = XYRectangle::new(-1.0, 2.0, -3.0, 4.0).unwrap();
+        let direct: Arc<dyn Query> = Arc::new(
+            XYPointInGeometryQuery::new("f", vec![XYGeometryValue::Rectangle(rect)]).unwrap(),
+        );
+        let boxed = XYPointField::new_box_query(Some("f"), -1.0, 2.0, -3.0, 4.0).unwrap();
+        assert!(boxed.query_eq(direct.as_ref()));
+        assert_eq!(boxed.query_hash(), direct.query_hash());
+        assert!(!boxed.query_eq(
+            XYPointField::new_box_query(Some("g"), -1.0, 2.0, -3.0, 4.0)
+                .unwrap()
+                .as_ref()
+        ));
+
+        let circle = XYCircle::new(1.0, 2.0, 3.0).unwrap();
+        let direct: Arc<dyn Query> = Arc::new(
+            XYPointInGeometryQuery::new("f", vec![XYGeometryValue::Circle(circle)]).unwrap(),
+        );
+        let distance = XYPointField::new_distance_query(Some("f"), 1.0, 2.0, 3.0).unwrap();
+        assert!(distance.query_eq(direct.as_ref()));
+
+        let polygon = XYPolygon::new(
+            vec![0.0, 1.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 1.0, 0.0],
+            Vec::new(),
+        )
+        .unwrap();
+        let by_polygon = XYPointField::new_polygon_query(Some("f"), vec![polygon.clone()]).unwrap();
+        let by_geometry =
+            XYPointField::new_geometry_query(Some("f"), vec![XYGeometryValue::Polygon(polygon)])
+                .unwrap();
+        assert!(by_polygon.query_eq(by_geometry.as_ref()));
+    }
+
+    /// The point query factories take Java's nullable field as
+    /// `Option<&str>`: `None` throws `IllegalArgumentException("field must
+    /// not be null")` where Java throws it (`PointRangeQuery.java:108`,
+    /// `LatLonPointDistanceQuery.java:60`, `SpatialQuery.java:76`,
+    /// `XYPointInGeometryQuery.java:56`, `LatLonDocValuesBoxQuery.java:53`,
+    /// `LatLonDocValuesQuery.java:58`, `XYDocValuesPointInGeometryQuery.java:46`),
+    /// and the coordinate checks that precede it in Java still win.
+    #[test]
+    fn a_none_field_is_javas_null_field() {
+        use crate::geo::geometry::Polygon;
+        fn is_null_field(r: Result<Arc<dyn Query>>) -> bool {
+            matches!(r, Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. }) if m == "field must not be null")
+        }
+        let polygon = Polygon::new(
+            vec![18.0, 18.0, 19.0, 19.0, 18.0],
+            vec![-66.0, -65.0, -65.0, -66.0, -66.0],
+            Vec::new(),
+        )
+        .unwrap();
+        let xy_polygon = XYPolygon::new(
+            vec![0.0, 1.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 1.0, 0.0],
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(is_null_field(LatLonPoint::new_box_query(
+            None, 18.0, 19.0, -66.0, -65.0
+        )));
+        assert!(is_null_field(LatLonPoint::new_distance_query(
+            None, 18.0, -65.0, 50_000.0
+        )));
+        assert!(is_null_field(LatLonPoint::new_polygon_query(
+            None,
+            vec![LatLonGeometryValue::Polygon(polygon.clone())]
+        )));
+        assert!(is_null_field(LatLonDocValuesField::new_slow_box_query(
+            None, 18.0, 19.0, -66.0, -65.0
+        )));
+        assert!(is_null_field(
+            LatLonDocValuesField::new_slow_distance_query(None, 18.0, -65.0, 50_000.0)
+        ));
+        assert!(is_null_field(LatLonDocValuesField::new_slow_polygon_query(
+            None,
+            vec![polygon]
+        )));
+        assert!(is_null_field(XYPointField::new_box_query(
+            None, 18.0, 19.0, -66.0, -65.0
+        )));
+        assert!(is_null_field(XYPointField::new_distance_query(
+            None, 18.0, -65.0, 50_000.0
+        )));
+        assert!(is_null_field(XYPointField::new_polygon_query(
+            None,
+            vec![xy_polygon.clone()]
+        )));
+        assert!(is_null_field(XYDocValuesField::new_slow_box_query(
+            None, 18.0, 19.0, -66.0, -65.0
+        )));
+        assert!(is_null_field(XYDocValuesField::new_slow_distance_query(
+            None, 18.0, -65.0, 50_000.0
+        )));
+        assert!(is_null_field(XYDocValuesField::new_slow_polygon_query(
+            None,
+            vec![xy_polygon]
+        )));
+        // Java checks the coordinates first: `newBoxQuery(null, 91, ...)`
+        // fails on the latitude, not on the field.
+        assert!(!is_null_field(LatLonPoint::new_box_query(
+            None, 91.0, 92.0, -66.0, -65.0
+        )));
+        assert!(!is_null_field(LatLonDocValuesField::new_slow_box_query(
+            None, 18.0, 91.0, -66.0, -65.0
+        )));
+        // `minLatitude == 90.0` short-circuits before any check, as in Java.
+        assert!(LatLonPoint::new_box_query(None, 90.0, 90.0, -66.0, -65.0).is_ok());
+    }
+
+    /// The geometry constructors reject what Java's reject: a NaN box and a
+    /// negative, NaN or infinite radius throw `IllegalArgumentException`.
+    #[test]
+    fn factories_reject_invalid_geometries() {
+        assert!(
+            XYPointField::new_box_query(Some("f"), f32::NAN, f32::NAN, f32::NAN, f32::NAN).is_err()
+        );
+        for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(matches!(
+                XYPointField::new_distance_query(Some("f"), 18.0, 19.0, radius),
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                })
+            ));
+        }
     }
 }

@@ -53,19 +53,19 @@ impl AxiomaticParams {
     /// collapsed here.
     fn new(discount_overlaps: bool, s: f32, query_len: i32, k: f32) -> Result<Self> {
         if !s.is_finite() || !(0.0..=1.0).contains(&s) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal s value: {}, must be between 0 and 1",
                 java_fmt::float_to_string(s)
             )));
         }
         if !k.is_finite() || !(0.0..=1.0).contains(&k) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal k value: {}, must be between 0 and 1",
                 java_fmt::float_to_string(k)
             )));
         }
         if query_len < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal query length value: {query_len}, must be larger 0"
             )));
         }
@@ -570,7 +570,7 @@ impl AxiomaticF1EXP {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `s` or `k` is not finite
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `s` or `k` is not finite
     /// or lies outside `[0, 1]`.
     pub fn with_s_and_k(s: f32, k: f32) -> Result<Self> {
         Ok(Self {
@@ -669,7 +669,7 @@ impl AxiomaticF1LOG {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `s` is not finite or lies
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `s` is not finite or lies
     /// outside `[0, 1]`.
     pub fn with_s(s: f32) -> Result<Self> {
         Ok(Self {
@@ -781,7 +781,7 @@ impl AxiomaticF2EXP {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `s` or `k` is not finite
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `s` or `k` is not finite
     /// or lies outside `[0, 1]`.
     pub fn with_s_and_k(s: f32, k: f32) -> Result<Self> {
         Ok(Self {
@@ -880,7 +880,7 @@ impl AxiomaticF2LOG {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `s` is not finite or lies
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `s` is not finite or lies
     /// outside `[0, 1]`.
     pub fn with_s(s: f32) -> Result<Self> {
         Ok(Self {
@@ -985,7 +985,7 @@ impl AxiomaticF3EXP {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `s` or `k` is not finite
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `s` or `k` is not finite
     /// or lies outside `[0, 1]`, or when `query_len` is negative.
     pub fn with_parameters(s: f32, query_len: i32, k: f32) -> Result<Self> {
         Ok(Self {
@@ -1072,7 +1072,7 @@ impl AxiomaticF3LOG {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `s` is not finite or lies
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `s` is not finite or lies
     /// outside `[0, 1]`, or when `query_len` is negative.
     pub fn with_s_and_query_len(s: f32, query_len: i32) -> Result<Self> {
         Ok(Self {

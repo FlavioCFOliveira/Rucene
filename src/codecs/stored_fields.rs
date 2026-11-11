@@ -60,12 +60,24 @@ pub trait StoredFieldsReader: Send + Sync + fmt::Debug {
     fn check_integrity(&self) -> Result<()>;
 
     /// Creates a clone that one caller at a time may use to read stored fields.
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader>;
+    ///
+    /// Equivalent to `StoredFieldsReader.clone()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchecked exception Java's `clone()` throws, such as the
+    /// `AlreadyClosedException` of a closed reader, and the error of cloning
+    /// its inputs.
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>>;
 
     /// Returns an instance optimized for merging.
     ///
     /// The default implementation returns a clone of `self`.
-    fn get_merge_instance(&self) -> Box<dyn StoredFieldsReader> {
+    ///
+    /// # Errors
+    ///
+    /// As [`clone_reader`](Self::clone_reader).
+    fn get_merge_instance(&self) -> Result<Box<dyn StoredFieldsReader>> {
         self.clone_reader()
     }
 
@@ -144,7 +156,7 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the declared
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when the declared
     /// length is negative, and propagates any I/O error.
     fn write_field_data_input(
         &mut self,
@@ -153,14 +165,14 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     ) -> Result<()> {
         let length = value.length();
         if length < 0 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "stored binary field \"{}\" has a negative length: {length}",
                 info.name
             )));
         }
         let length = length as usize;
         let mut bytes = vec![0u8; length];
-        value.data_input().read_bytes(&mut bytes, 0, length)?;
+        value.data_input().read_bytes(Some(&mut bytes), 0, length)?;
         self.write_field_bytes(info, &bytes)
     }
 
@@ -185,10 +197,10 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
-    /// when a source segment has no stored-fields reader — where Java's
-    /// `storedFieldsReader.checkIntegrity()` throws `NullPointerException` —
-    /// and propagates abort, integrity, read and write errors.
+    /// Returns Java's `NullPointerException` when a source segment has no
+    /// stored-fields reader, where `storedFieldsReader.checkIntegrity()`
+    /// dereferences `null` (`StoredFieldsWriter.java:132-134`), and propagates
+    /// abort, integrity, read and write errors.
     fn merge(&mut self, merge_state: &MergeState) -> Result<i32> {
         // The readers stay outside the merger: the sub carries only the index
         // of the one it walks, and the document is read through the merge
@@ -199,9 +211,10 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
         for (i, reader) in merge_state.stored_fields_readers.iter().enumerate() {
             merge_state.check_aborted()?;
             let Some(reader) = reader.as_deref() else {
-                return Err(crate::error::LuceneError::illegal_state(format!(
-                    "source segment {i} of the merge has no stored-fields reader"
-                )));
+                return Err(crate::error::LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.codecs.StoredFieldsReader.checkIntegrity()\" \
+                     because \"storedFieldsReader\" is null",
+                ));
             };
             reader.check_integrity()?;
             subs.push(StoredFieldsMergeSub {
@@ -252,8 +265,8 @@ impl StoredFieldsReader for EmptyStoredFieldsReader {
         Ok(())
     }
 
-    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-        Box::new(*self)
+    fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+        Ok(Box::new(*self))
     }
 }
 
@@ -315,7 +328,7 @@ mod tests {
         reader.check_integrity().unwrap();
         let mut visitor = NullStoredFieldVisitor;
         reader.document(0, &mut visitor).unwrap();
-        let _clone = reader.clone_reader();
+        let _clone = reader.clone_reader().unwrap();
     }
 
     #[test]
@@ -374,11 +387,11 @@ mod tests {
 
         /// A clone counts its reads apart, so a merge that read through a
         /// clone instead of the merge state's own reader is visible.
-        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(Self {
+        fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(Self {
                 field: self.field.clone(),
                 reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            })
+            }))
         }
     }
 
@@ -486,9 +499,18 @@ mod tests {
         let merge_state = two_segment_merge_state(vec![Some(Box::new(reader)), None], vec![3, 2]);
         let mut writer = RecordingStoredFieldsWriter::default();
         match writer.merge(&merge_state) {
-            Err(crate::error::LuceneError::IllegalState { message, .. }) => assert_eq!(
+            Err(crate::error::LuceneError {
+                kind:
+                    crate::error::LuceneErrorKind::Unchecked {
+                        class: "java.lang.NullPointerException",
+                        message: Some(message),
+                        ..
+                    },
+                ..
+            }) => assert_eq!(
                 message,
-                "source segment 1 of the merge has no stored-fields reader"
+                "Cannot invoke \"org.apache.lucene.codecs.StoredFieldsReader.checkIntegrity()\" \
+                 because \"storedFieldsReader\" is null"
             ),
             other => panic!("a missing reader must fail the merge, got {other:?}"),
         }

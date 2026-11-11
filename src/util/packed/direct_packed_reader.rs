@@ -52,7 +52,7 @@ impl DirectPackedReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `bits_per_value` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is
     /// outside `[1, 64]` or `value_count` is negative.
     pub fn new(
         bits_per_value: i32,
@@ -60,12 +60,12 @@ impl DirectPackedReader {
         input: Rc<RefCell<Box<dyn IndexInput>>>,
     ) -> Result<Self> {
         if !(1..=64).contains(&bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bitsPerValue must be in [1, 64], got {bits_per_value}"
             )));
         }
         if value_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
@@ -94,7 +94,7 @@ impl DirectPackedReader {
     /// # Errors
     ///
     /// Returns the I/O error raised while seeking or reading, or
-    /// [`LuceneError::IllegalState`] when the width would need more than nine
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the width would need more than nine
     /// bytes, which Lucene reports as an `AssertionError`.
     pub fn get_checked(&self, index: i32) -> Result<i64> {
         let major_bit_pos = i64::from(index) * i64::from(self.bits_per_value);
@@ -199,7 +199,7 @@ impl DirectPacked64SingleBlockReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `bits_per_value` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is
     /// outside `[1, 32]` or `value_count` is negative.
     pub fn new(
         bits_per_value: i32,
@@ -207,12 +207,12 @@ impl DirectPacked64SingleBlockReader {
         input: Rc<RefCell<Box<dyn IndexInput>>>,
     ) -> Result<Self> {
         if !(1..=32).contains(&bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bitsPerValue must be in [1, 32] for the single-block format, got {bits_per_value}"
             )));
         }
         if value_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }

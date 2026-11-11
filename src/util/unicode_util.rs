@@ -46,6 +46,16 @@ const HALF_MASK: u32 = 0x3FF;
 const SURROGATE_OFFSET: i32 =
     0x1_0000 - ((UNI_SUR_HIGH_START as i32) << HALF_SHIFT) - UNI_SUR_LOW_START as i32;
 
+/// `LEAD_SURROGATE_SHIFT_` (`UnicodeUtil.java:537`).
+const LEAD_SURROGATE_SHIFT: i32 = 10;
+/// `TRAIL_SURROGATE_MASK_` (`UnicodeUtil.java:540`).
+const TRAIL_SURROGATE_MASK: i32 = 0x3FF;
+/// `TRAIL_SURROGATE_MIN_VALUE` (`UnicodeUtil.java:543`).
+const TRAIL_SURROGATE_MIN_VALUE: i32 = 0xDC00;
+/// `LEAD_SURROGATE_OFFSET_ = LEAD_SURROGATE_MIN_VALUE -
+/// (SUPPLEMENTARY_MIN_VALUE >> LEAD_SURROGATE_SHIFT_)` (`UnicodeUtil.java:551-552`).
+const LEAD_SURROGATE_OFFSET: i32 = 0xD800 - (0x1_0000 >> LEAD_SURROGATE_SHIFT);
+
 /// A term that sorts after every legal UTF-8 term.
 ///
 /// Port of `UnicodeUtil.BIG_TERM`. Lucene's own comment notes this constant is
@@ -241,7 +251,7 @@ impl UnicodeUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the bytes are not valid
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the bytes are not valid
     /// UTF-8, which is Java's bare `IllegalArgumentException`.
     pub fn code_point_count(utf8: &BytesRef) -> Result<usize> {
         let mut pos = utf8.offset;
@@ -262,12 +272,12 @@ impl UnicodeUtil {
                     pos += 4;
                 } else {
                     // 5- and 6-byte sequences are invalid.
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "invalid UTF-8 lead byte".to_string(),
                     ));
                 }
             } else {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "invalid UTF-8 lead byte".to_string(),
                 ));
             }
@@ -276,7 +286,7 @@ impl UnicodeUtil {
 
         // Check we did not go over the limit on the last character.
         if pos > limit {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "truncated UTF-8 sequence".to_string(),
             ));
         }
@@ -291,7 +301,7 @@ impl UnicodeUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] on an invalid lead byte.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) on an invalid lead byte.
     pub fn utf8_to_utf32(utf8: &BytesRef, ints: &mut [i32]) -> Result<usize> {
         let mut utf32_count = 0usize;
         let mut utf8_upto = utf8.offset;
@@ -314,7 +324,7 @@ impl UnicodeUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the lead byte cannot start
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the lead byte cannot start
     /// a UTF-8 sequence.
     pub fn code_point_at(utf8: &[u8], pos: usize) -> Result<UTF8CodePoint> {
         let lead_byte = utf8[pos] as usize;
@@ -330,7 +340,7 @@ impl UnicodeUtil {
             3 => (lead_byte & 15) as u32, // 4 useful bits
             4 => (lead_byte & 7) as u32,  // 3 useful bits
             _ => {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Invalid UTF8 header byte: 0x{lead_byte:x}"
                 )))
             }
@@ -349,36 +359,78 @@ impl UnicodeUtil {
         })
     }
 
-    /// Builds a [`String`] from `count` code points starting at `offset`.
+    /// Builds the UTF-16 code units of the Java `String` made of `count` code
+    /// points starting at `offset`.
     ///
-    /// Port of `UnicodeUtil.newString(int[], int, int)`.
+    /// Port of `UnicodeUtil.newString(int[], int, int)`
+    /// (`UnicodeUtil.java:565-599`), whose result is a Java `String`: its
+    /// UTF-16 code units, which may include lone surrogates.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a value is negative, above
-    /// `0x10FFFF`, or is an unpaired surrogate — the last of which Java accepts
-    /// because a Java `String` may hold lone surrogates and a Rust `String` may
-    /// not. That is the only behavioural difference. Java's `new
-    /// IllegalArgumentException()` for an invalid code point
-    /// (`UnicodeUtil.java:571-575`) carries no message, and neither does the
-    /// error here; Java's other one, for a negative `count`, cannot arise from
-    /// a `usize`.
-    pub fn new_string(code_points: &[i32], offset: usize, count: usize) -> Result<String> {
-        let mut out = String::with_capacity(count);
-        for &cp in &code_points[offset..offset + count] {
-            if !(0..=0x10FFFF).contains(&cp) {
-                return Err(LuceneError::IllegalArgument(String::new()));
-            }
-            match char::from_u32(cp as u32) {
-                Some(c) => out.push(c),
-                None => {
-                    return Err(LuceneError::IllegalArgument(format!(
-                        "unpaired surrogate code point: {cp}"
-                    )))
-                }
-            }
+    /// Java's `new IllegalArgumentException()` (no message) for a negative
+    /// `count` and for a code point below `0` or above `0x10FFFF`, and the
+    /// `ArrayIndexOutOfBoundsException` of `codePoints[r]` for an index outside
+    /// `code_points`, in the order Java meets them.
+    pub fn new_string_utf16(code_points: &[i32], offset: i32, count: i32) -> Result<Vec<u16>> {
+        if count < 0 {
+            return Err(LuceneError::illegal_argument(String::new()));
         }
-        Ok(out)
+        let mut chars = Vec::with_capacity(count as usize);
+        let end = offset.wrapping_add(count);
+        let mut r = offset;
+        while r < end {
+            let cp = usize::try_from(r)
+                .ok()
+                .and_then(|index| code_points.get(index))
+                .copied()
+                .ok_or_else(|| {
+                    LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        message: Some(format!(
+                            "Index {r} out of bounds for length {}",
+                            code_points.len()
+                        )),
+                        cause: None,
+                    })
+                })?;
+            if !(0..=0x10FFFF).contains(&cp) {
+                return Err(LuceneError::illegal_argument(String::new()));
+            }
+            if cp < 0x010000 {
+                chars.push(cp as u16);
+            } else {
+                chars.push((LEAD_SURROGATE_OFFSET + (cp >> LEAD_SURROGATE_SHIFT)) as u16);
+                chars.push((TRAIL_SURROGATE_MIN_VALUE + (cp & TRAIL_SURROGATE_MASK)) as u16);
+            }
+            r += 1;
+        }
+        Ok(chars)
+    }
+
+    /// Builds a [`String`] from `count` code points starting at `offset`.
+    ///
+    /// [`new_string_utf16`](Self::new_string_utf16) decoded into a Rust
+    /// [`String`].
+    ///
+    /// # Errors
+    ///
+    /// As [`new_string_utf16`](Self::new_string_utf16), and
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+    /// for an unpaired surrogate, which Java accepts because a Java `String`
+    /// may hold lone surrogates and a Rust `String` may not. That is the only
+    /// behavioural difference.
+    pub fn new_string(code_points: &[i32], offset: usize, count: usize) -> Result<String> {
+        let (Ok(offset), Ok(count)) = (i32::try_from(offset), i32::try_from(count)) else {
+            return Err(LuceneError::illegal_argument(String::new()));
+        };
+        let chars = Self::new_string_utf16(code_points, offset, count)?;
+        String::from_utf16(&chars).map_err(|_| {
+            LuceneError::illegal_argument(format!(
+                "unpaired surrogate in code points {:?}",
+                &code_points[offset as usize..(offset + count) as usize]
+            ))
+        })
     }
 
     /// Renders the UTF-16 code units of `s` for debugging.

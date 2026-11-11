@@ -88,7 +88,7 @@ impl AbstractVectorSimilarityQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
     /// `result_similarity` or `decay` is `NaN`, or when `decay` is outside
     /// `[DECAY_MAX_APPROXIMATION, DECAY_MAX_QUALITY]`.
     pub fn new(
@@ -99,17 +99,17 @@ impl AbstractVectorSimilarityQuery {
         search_strategy: Option<KnnSearchStrategy>,
     ) -> Result<Self> {
         if result_similarity.is_nan() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "resultSimilarity must have a valid value; got {result_similarity}"
             )));
         }
         if decay.is_nan() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "decay must have a valid value; got {decay}"
             )));
         }
         if !(DECAY_MAX_APPROXIMATION..=DECAY_MAX_QUALITY).contains(&decay) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "decay must lie in range [DECAY_MAX_APPROXIMATION = 0, DECAY_MAX_QUALITY = 1]; got {decay}"
             )));
         }
@@ -449,7 +449,7 @@ impl Weight for VectorSimilarityWeight {
                 Some(scorer) => Ok(into_scorer_iterator(scorer).into_doc_id_set_iterator()),
             }
         };
-        let mut accept_docs = from_iterator_supplier(supplier, live_docs, max_doc)?;
+        let mut accept_docs = from_iterator_supplier(Some(supplier), live_docs, max_doc)?;
         let cardinality = accept_docs.cost()?;
         if cardinality == 0 {
             // There are no live matching docs.
@@ -590,9 +590,11 @@ fn from_accept_docs(
         ConjunctionUtils::intersect_iterators(vec![Box::new(vector_iterator), accept_docs])?
             .into_doc_id_set_iterator();
     let cost = conjunction.cost();
+    let vector_iterator = scorer.iterator();
     let iterator = ThresholdFilteredIterator {
         inner: conjunction,
         doc: -1,
+        vector_iterator,
         scorer,
         boost,
         threshold,
@@ -668,6 +670,9 @@ impl DocIdSetIterator for ScoreDocIterator {
 struct ThresholdFilteredIterator {
     inner: Box<dyn DocIdSetIterator>,
     doc: i32,
+    /// Java's `vectorIterator`, the scorer's iterator the conjunction drives;
+    /// read only by `match`'s assertion.
+    vector_iterator: crate::search::vector_scorer::SharedVectorScorerIterator,
     scorer: SharedVectorScorer,
     boost: f32,
     threshold: f32,
@@ -676,6 +681,8 @@ struct ThresholdFilteredIterator {
 
 impl ThresholdFilteredIterator {
     fn matches(&mut self) -> Result<bool> {
+        // Advance the scorer
+        debug_assert!(self.doc == self.vector_iterator.doc_id());
         // Compute the dot product.
         let score = self.scorer.score()?;
         self.cached_score.set(score * self.boost);
@@ -738,10 +745,6 @@ impl Scorable for VectorSimilarityScorer {
 }
 
 impl Scorer for VectorSimilarityScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.iterator.doc_id()
     }

@@ -60,7 +60,7 @@ impl ConjunctionBulkScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when fewer than two clauses are
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two clauses are
     /// supplied, which is the `IllegalArgumentException` Java throws.
     pub fn new(
         required_scoring: Vec<Box<dyn Scorer>>,
@@ -68,7 +68,7 @@ impl ConjunctionBulkScorer {
     ) -> Result<Self> {
         let num_clauses = required_scoring.len() + required_no_scoring.len();
         if num_clauses <= 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Expected 2 or more clauses, got {num_clauses}"
             )));
         }
@@ -149,7 +149,7 @@ impl Scorable for ConjunctionBulkScorer {
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         let mut children = Vec::with_capacity(self.scorers.len());
         for scorer in &mut self.scorers {
-            children.push(ChildScorable::new(scorer.as_scorable(), "MUST"));
+            children.push(ChildScorable::new(&mut **scorer, "MUST"));
         }
         Ok(children)
     }

@@ -26,7 +26,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 #[derive(Debug)]
 pub struct MaxScoreAccumulator {
     acc: AtomicI64,
-    mod_interval: i64,
+    /// Java's non-final `long modInterval`, which tests write after the
+    /// accumulator is shared by several collectors; an atomic lets the shared
+    /// instance be written through a shared reference.
+    mod_interval: AtomicI64,
 }
 
 /// The default sampling interval: `2^10 - 1`, so that the remainder can be
@@ -50,7 +53,7 @@ impl MaxScoreAccumulator {
         Self {
             // Scores are always positive, so the minimum is a safe seed.
             acc: AtomicI64::new(i64::MIN),
-            mod_interval: DEFAULT_INTERVAL,
+            mod_interval: AtomicI64::new(DEFAULT_INTERVAL),
         }
     }
 
@@ -60,14 +63,16 @@ impl MaxScoreAccumulator {
     /// Equivalent to reading the package-private `modInterval` field, which
     /// Java documents as non-final and visible for tests.
     pub fn mod_interval(&self) -> i64 {
-        self.mod_interval
+        self.mod_interval.load(Ordering::Relaxed)
     }
 
     /// Sets the sampling interval.
     ///
-    /// Equivalent to writing the package-private `modInterval` field.
-    pub fn set_mod_interval(&mut self, mod_interval: i64) {
-        self.mod_interval = mod_interval;
+    /// Equivalent to writing the package-private `modInterval` field, which
+    /// `TestTopDocsCollector.testConcurrentMinScore` does on the accumulator
+    /// its collectors share.
+    pub fn set_mod_interval(&self, mod_interval: i64) {
+        self.mod_interval.store(mod_interval, Ordering::Relaxed);
     }
 
     /// Accumulates an encoded `(doc, score)` pair, keeping the maximum.

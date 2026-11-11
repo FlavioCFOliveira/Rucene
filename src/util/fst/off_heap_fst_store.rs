@@ -71,8 +71,16 @@ impl FSTReader for OffHeapFSTStore {
         Ok(Box::new(ReverseRandomAccessReader::new(slice)))
     }
 
+    fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>> {
+        // The slice owns its own view of the input.
+        let slice = self
+            .input
+            .random_access_slice(self.offset, self.num_bytes)?;
+        Ok(Box::new(ReverseRandomAccessReader::new(slice)))
+    }
+
     fn write_to(&self, _out: &mut dyn DataOutput) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "writeToOutput operation is not supported for OffHeapFSTStore".to_string(),
         ))
     }

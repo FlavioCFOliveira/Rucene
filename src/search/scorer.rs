@@ -16,6 +16,33 @@ use crate::util::Bits;
 /// extends `Scorable`. A scorer exposes an [`iterator`](Self::iterator) over
 /// the documents matching a query in increasing order of doc ID.
 pub trait Scorer: Scorable {
+    /// Returns this scorer as [`Any`](std::any::Any), so that a caller can
+    /// test its concrete type, or `None` when the type does not take part in
+    /// such a test.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tests a scorer's class with
+    /// `instanceof` (`TestBooleanQuery.testConjunctionPropagatesApproximations`
+    /// and its siblings check `scorer instanceof ConjunctionScorer`). Rust
+    /// cannot downcast a `dyn Scorer`, so the escape hatch is declared in the
+    /// shape of [`BulkScorer::as_any`](crate::search::BulkScorer::as_any); its
+    /// default answers `None`, Java's `false` branch, and a type that is
+    /// tested overrides it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    /// Returns this scorer as a mutable [`Any`](std::any::Any), for the casts
+    /// after which Java calls a mutating method, or `None` when the type does
+    /// not take part in such a cast.
+    ///
+    /// Java casts a scorer to its class and then advances its state
+    /// (`TestSloppyPhraseQuery.MaxFreqCollector.collect` casts to
+    /// `PhraseScorer` and calls `matcher.nextMatch()`); this is the mutable
+    /// counterpart of [`as_any`](Self::as_any), with the same default.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
     /// Returns this scorer viewed as an [`IndriScorer`], or `None` when it is
     /// not one.
     ///
@@ -30,15 +57,6 @@ pub trait Scorer: Scorable {
     fn as_indri_scorer(&mut self) -> Option<&mut dyn crate::search::indri_scorer::IndriScorer> {
         None
     }
-
-    /// Returns this scorer viewed as a [`Scorable`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java gets this for free, because
-    /// `Scorer extends Scorable`. Rust before 1.86 cannot coerce a
-    /// `&mut dyn Scorer` into a `&mut dyn Scorable`, and this crate's minimum
-    /// supported Rust version is 1.80, so the upcast is spelled out as a
-    /// method. Every implementation writes `self`.
-    fn as_scorable(&mut self) -> &mut dyn Scorable;
 
     /// Returns the doc ID that is currently being scored.
     ///
@@ -57,6 +75,15 @@ pub trait Scorer: Scorable {
     /// with each other. Rust expresses the view as a borrow of the scorer
     /// rather than as an independent object.
     fn iterator(&mut self) -> &mut dyn DocIdSetIterator;
+
+    /// The object [`iterator`](Self::iterator) returns, lent immutably, for
+    /// the `instanceof` tests Java makes on `scorer.iterator()`
+    /// (`AcceptDocs.createBitSet`'s `instanceof BitSetIterator`, for one).
+    /// `None` when the scorer cannot lend it without `&mut`, which answers
+    /// those tests as a wrapper would.
+    fn iterator_ref(&self) -> Option<&dyn DocIdSetIterator> {
+        None
+    }
 
     /// Optionally returns a [`TwoPhaseIterator`] view of this scorer, or `None`
     /// when two-phase iteration is not supported.
@@ -143,19 +170,67 @@ pub trait Scorer: Scorable {
     }
 }
 
+/// A [`Scorable`] view of a borrowed [`Scorer`] that keeps its `Scorer`
+/// identity: [`Scorable::as_scorer`] answers the scorer.
+///
+/// **Divergence from Lucene 10.5.0.** Java hands the `Scorer` itself to
+/// `LeafCollector.setScorer`/`collect`, and a collector may test it with
+/// `instanceof Scorer`. Upcasting a `&mut dyn Scorer` to a `&mut dyn Scorable`
+/// keeps the concrete scorer's own [`Scorable::as_scorer`], which is `None`
+/// unless that scorer overrides it, so the bulk scorers
+/// that pass a `Scorer` to a collector (`DefaultBulkScorer`,
+/// `ConstantScoreBulkScorer`, `BooleanScorer`'s single-clause window) pass this
+/// view instead. Every other call is forwarded unchanged.
+pub struct ScorerAsScorable<'a> {
+    scorer: &'a mut dyn Scorer,
+}
+
+impl<'a> ScorerAsScorable<'a> {
+    /// Wraps the given scorer.
+    pub fn new(scorer: &'a mut dyn Scorer) -> Self {
+        Self { scorer }
+    }
+}
+
+impl std::fmt::Debug for ScorerAsScorable<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ScorerAsScorable")
+    }
+}
+
+impl Scorable for ScorerAsScorable<'_> {
+    fn score(&mut self) -> Result<f32> {
+        self.scorer.score()
+    }
+
+    fn smoothing_score(&mut self, doc_id: i32) -> Result<f32> {
+        self.scorer.smoothing_score(doc_id)
+    }
+
+    fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {
+        self.scorer.set_min_competitive_score(min_score)
+    }
+
+    fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
+        self.scorer.children()
+    }
+
+    fn as_scorer(&mut self) -> Option<&mut dyn Scorer> {
+        Some(&mut *self.scorer)
+    }
+
+    fn class_id(&self) -> Option<std::any::TypeId> {
+        self.scorer.class_id()
+    }
+}
+
 /// A [`DocIdSetIterator`] that owns the [`Scorer`] it iterates.
 ///
 /// **Divergence from Lucene 10.5.0.** Java writes `scorer.iterator()` and hands
 /// the result to a `ConstantScoreScorer`, because the scorer stays alive
 /// independently of the iterator it lent out. Rust needs whoever iterates to own
 /// the iteration, so this adapter takes the scorer and forwards every call to
-/// `scorer.iterator()`. The one behaviour it cannot forward is
-/// [`DocIdSetIterator::doc_id_run_end`], which the port declares on `&self`
-/// while [`Scorer::iterator`] needs `&mut self`; it therefore falls back to the
-/// trait's default, `doc_id() + 1`. That is always a legal answer — the contract
-/// only requires the end of *a* run of matching doc IDs containing the current
-/// one — so it can cost a bulk scorer a larger window, never a different set of
-/// matches.
+/// `scorer.iterator()`, [`DocIdSetIterator::doc_id_run_end`] included.
 pub struct ScorerAsIterator {
     scorer: Box<dyn Scorer>,
     cost: i64,
@@ -203,6 +278,15 @@ impl DocIdSetIterator for ScorerAsIterator {
         offset: i32,
     ) -> Result<()> {
         self.scorer.iterator().into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        self.scorer.iterator().doc_id_run_end()
+    }
+
+    /// `scorer.iterator() instanceof X`: the scorer's own iterator answers.
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.scorer.iterator_ref().and_then(|it| it.disi_as_any())
     }
 }
 
@@ -354,19 +438,32 @@ pub fn into_scorer_iterator(mut scorer: Box<dyn Scorer>) -> ScorerIterator {
 /// data, possibly transforming the data along the way.
 ///
 /// Equivalent to `org.apache.lucene.search.FilterScorer`, whose `docID()`,
-/// `iterator()` and `twoPhaseIterator()` are `final` delegations and whose
-/// `unwrap()` comes from `Unwrappable<Scorer>` — reproduced here as
-/// [`inner`](Self::inner) and [`into_inner`](Self::into_inner).
+/// `iterator()` and `twoPhaseIterator()` are `final` delegations, whose
+/// `score()` delegates, and whose `unwrap()` comes from `Unwrappable<Scorer>`
+/// — reproduced here as [`inner`](Self::inner) and
+/// [`into_inner`](Self::into_inner). Every other method keeps `Scorer`'s
+/// default, as in Java: `FilterScorer` overrides nothing else.
+///
+/// An anonymous Java subclass that overrides `score()` and `getMaxScore(int)`
+/// is a `FilterScorer` built with [`with_overrides`](Self::with_overrides), so
+/// that it still answers `instanceof FilterScorer`.
 ///
 /// **Divergence from Lucene 10.5.0.** Java leaves `getMaxScore(int)` abstract
 /// on purpose, since the point of the class is to change how the score is
-/// computed. Rust has no abstract methods on a concrete struct, so this wrapper
-/// is the identity filter: it delegates `score()` and `getMaxScore()` too. A
-/// "subclass" is a type that holds a `FilterScorer` and overrides those two by
-/// composition.
+/// computed. Rust has no abstract methods on a concrete struct, so a
+/// `FilterScorer` built with [`new`](Self::new) delegates `getMaxScore` too.
 pub struct FilterScorer {
     inner: Box<dyn Scorer>,
+    score_override: Option<FilterScoreFn>,
+    max_score_override: Option<FilterMaxScoreFn>,
 }
+
+/// The `score()` override of a [`FilterScorer`] "subclass": it receives the
+/// wrapped scorer, Java's `in`.
+pub type FilterScoreFn = Box<dyn FnMut(&mut dyn Scorer) -> Result<f32> + Send>;
+
+/// The `getMaxScore(int)` override of a [`FilterScorer`] "subclass".
+pub type FilterMaxScoreFn = Box<dyn FnMut(&mut dyn Scorer, i32) -> Result<f32> + Send>;
 
 impl FilterScorer {
     /// Wraps the given scorer.
@@ -374,7 +471,25 @@ impl FilterScorer {
     /// Equivalent to `new FilterScorer(Scorer)`; Java's null check is not
     /// needed because `Box<dyn Scorer>` cannot be null.
     pub fn new(inner: Box<dyn Scorer>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            score_override: None,
+            max_score_override: None,
+        }
+    }
+
+    /// Wraps the given scorer with the `score()` and `getMaxScore(int)`
+    /// overrides of an anonymous `FilterScorer` subclass.
+    pub fn with_overrides(
+        inner: Box<dyn Scorer>,
+        score: FilterScoreFn,
+        max_score: FilterMaxScoreFn,
+    ) -> Self {
+        Self {
+            inner,
+            score_override: Some(score),
+            max_score_override: Some(max_score),
+        }
     }
 
     /// Returns the wrapped scorer.
@@ -409,25 +524,17 @@ impl std::fmt::Debug for FilterScorer {
 
 impl Scorable for FilterScorer {
     fn score(&mut self) -> Result<f32> {
-        self.inner.score()
-    }
-
-    fn smoothing_score(&mut self, doc_id: i32) -> Result<f32> {
-        self.inner.smoothing_score(doc_id)
-    }
-
-    fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {
-        self.inner.set_min_competitive_score(min_score)
-    }
-
-    fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
-        self.inner.children()
+        match self.score_override.as_mut() {
+            Some(score) => score(&mut *self.inner),
+            None => self.inner.score(),
+        }
     }
 }
 
 impl Scorer for FilterScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
+    /// This scorer answers with itself: Java tests `instanceof FilterScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn doc_id(&self) -> i32 {
@@ -442,20 +549,10 @@ impl Scorer for FilterScorer {
         self.inner.two_phase_iterator()
     }
 
-    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
-        self.inner.advance_shallow(target)
-    }
-
     fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
-        self.inner.get_max_score(up_to)
-    }
-
-    fn next_docs_and_scores(
-        &mut self,
-        up_to: i32,
-        live_docs: Option<&dyn Bits>,
-        buffer: &mut DocAndFloatFeatureBuffer,
-    ) -> Result<()> {
-        self.inner.next_docs_and_scores(up_to, live_docs, buffer)
+        match self.max_score_override.as_mut() {
+            Some(max_score) => max_score(&mut *self.inner, up_to),
+            None => self.inner.get_max_score(up_to),
+        }
     }
 }

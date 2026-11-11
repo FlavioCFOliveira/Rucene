@@ -101,7 +101,7 @@ impl PointRangeQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when `num_dims` is not positive, when `lower_point` is empty
     /// or is not a fixed multiple of `num_dims`, or when the two points have
     /// different lengths.
@@ -120,22 +120,22 @@ impl PointRangeQuery {
         formatter: Arc<dyn DimensionFormatter>,
     ) -> Result<Self> {
         if num_dims <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numDims must be positive, got {num_dims}"
             )));
         }
         if lower_point.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "lowerPoint has length of zero".to_string(),
             ));
         }
         if !lower_point.len().is_multiple_of(num_dims as usize) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "lowerPoint is not a fixed multiple of numDims".to_string(),
             ));
         }
         if lower_point.len() != upper_point.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "lowerPoint has length={} but upperPoint has different length={}",
                 lower_point.len(),
                 upper_point.len()
@@ -264,7 +264,7 @@ impl PointRangeQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`] — with the message text Java
     /// produces — when the field was indexed with a different number of index
     /// dimensions or a different number of bytes per dimension.
     fn check_valid_point_values(&self, values: Option<&dyn PointValues>) -> Result<bool> {
@@ -273,7 +273,7 @@ impl PointRangeQuery {
             return Ok(false);
         };
         if values.num_index_dimensions()? != self.num_dims {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{}\" was indexed with numIndexDimensions={} but this query has numDims={}",
                 self.field,
                 values.num_index_dimensions()?,
@@ -281,7 +281,7 @@ impl PointRangeQuery {
             )));
         }
         if self.bytes_per_dim as i32 != values.bytes_per_dimension()? {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{}\" was indexed with bytesPerDim={} but this query has bytesPerDim={}",
                 self.field,
                 values.bytes_per_dimension()?,
@@ -397,7 +397,7 @@ struct CountingVisitor<'a> {
 impl IntersectVisitor for CountingVisitor<'_> {
     /// This branch is unreachable: the visitor is only ever handed leaf values.
     fn visit(&mut self, doc_id: i32) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "This IntersectVisitor does not perform any actions on a docID={doc_id} node being visited"
         )))
     }

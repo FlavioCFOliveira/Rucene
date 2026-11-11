@@ -288,13 +288,13 @@ impl crate::search::DocIdSetIterator for LongValuesAsNumericDocValues<'_> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "LongValuesSource.asNumericDocValues does not iterate".to_string(),
         ))
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "LongValuesSource.asNumericDocValues does not iterate".to_string(),
         ))
     }
@@ -312,7 +312,7 @@ impl crate::index::DocValuesIterator for LongValuesAsNumericDocValues<'_> {
 
 impl crate::index::NumericDocValues for LongValuesAsNumericDocValues<'_> {
     fn long_value(&self) -> Result<i64> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "LongValuesSource.asNumericDocValues reads through long_value_mut".to_string(),
         ))
     }
@@ -445,9 +445,47 @@ impl LongValuesComparatorSource {
             missing_value,
         }
     }
+
+    /// `LongValuesSortField.rewrite(IndexSearcher)` of `field`, the sort field
+    /// holding this source (`LongValuesSource.java:318-327`): `field` itself
+    /// when the producer rewrites to the same instance, else a new sort field
+    /// over the rewritten producer with the same reverse flag and missing
+    /// value.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the producer's rewrite error and the [`SortField`]
+    /// construction error.
+    pub fn rewrite_sort_field<'a>(
+        &self,
+        field: &'a SortField,
+        searcher: &IndexSearcher,
+    ) -> Result<std::borrow::Cow<'a, SortField>> {
+        let rewritten_source = Arc::clone(&self.producer).rewrite(searcher)?;
+        if std::ptr::addr_eq(Arc::as_ptr(&self.producer), Arc::as_ptr(&rewritten_source)) {
+            return Ok(std::borrow::Cow::Borrowed(field));
+        }
+        Ok(std::borrow::Cow::Owned(get_sort_field_with_missing(
+            rewritten_source,
+            field.reverse(),
+            self.missing_value,
+        )?))
+    }
+}
+
+impl LongValuesComparatorSource {
+    /// `producer.needsScores()`, which `LongValuesSortField.needsScores()`
+    /// answers (`LongValuesSource.java:304-307`).
+    pub(crate) fn producer_needs_scores(&self) -> bool {
+        self.producer.needs_scores()
+    }
 }
 
 impl FieldComparatorSource for LongValuesComparatorSource {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn new_comparator(
         &self,
         _fieldname: &str,

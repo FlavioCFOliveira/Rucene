@@ -43,7 +43,7 @@ impl MultiLeafFieldComparator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when the two collections have different lengths, and when
     /// they are empty, which Java reports as an `ArrayIndexOutOfBoundsException`
     /// while reading `comparators[0]`.
@@ -52,14 +52,14 @@ impl MultiLeafFieldComparator {
         reverse_mul: Vec<i32>,
     ) -> Result<Self> {
         if comparators.len() != reverse_mul.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Must have the same number of comparators and reverseMul, got {} and {}",
                 comparators.len(),
                 reverse_mul.len()
             )));
         }
         if comparators.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Must have at least one comparator".to_string(),
             ));
         }

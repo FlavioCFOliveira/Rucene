@@ -124,10 +124,10 @@ impl NormValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` is not strictly
     /// greater than the last document added, which in Lucene means the field
     /// was finished twice within one document, and
-    /// [`LuceneError::IllegalState`] when the field has already been flushed.
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been flushed.
     pub fn add_value(&mut self, doc_id: i32, value: i64) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::illegal_state(format!(
@@ -136,7 +136,7 @@ impl NormValuesWriter {
             )));
         }
         if doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Norm for \"{}\" appears more than once in this document (only one value is allowed per field)",
                 self.field_info.name
             )));
@@ -206,7 +206,7 @@ impl NormValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been
     /// flushed — writing it twice would put two metadata entries for one field
     /// into the same segment. Java reaches the same conclusion by way of
     /// `PackedLongValues.Builder`, which refuses to be built twice.
@@ -297,7 +297,7 @@ impl NormsProducer for BufferedNormsProducer {
     fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
             if field.number != self.field_number {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "wrong fieldInfo: expected {} ({}), got {} ({})",
                     self.field_name, self.field_number, field.name, field.number
                 )));
@@ -327,7 +327,7 @@ impl NormsProducer for BufferedNormsProducer {
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -377,7 +377,7 @@ impl DocIdSetIterator for BufferedNorms {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedNorms does not support advance".to_string(),
         ))
     }
@@ -389,7 +389,7 @@ impl DocIdSetIterator for BufferedNorms {
 
 impl DocValuesIterator for BufferedNorms {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BufferedNorms does not support advance_exact".to_string(),
         ))
     }
@@ -404,6 +404,7 @@ impl NumericDocValues for BufferedNorms {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::index::IndexOptions;
 
     fn field(name: &str, number: i32) -> FieldInfo {
@@ -468,7 +469,7 @@ mod tests {
         writer.add_value(4, 1).unwrap();
         let error = writer.add_value(4, 2).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m)
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("appears more than once") && m.contains("body")),
             "unexpected error: {error:?}"
         );
@@ -720,7 +721,7 @@ mod tests {
         writer.flush(&mut consumer, None).unwrap();
         let error = writer.flush(&mut consumer, None).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalState { message: ref m, .. } if m.contains("already been flushed")),
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. } if m.contains("already been flushed")),
             "unexpected error: {error:?}"
         );
         assert_eq!(consumer.fields.len(), 1);

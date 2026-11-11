@@ -69,9 +69,15 @@ impl Builder {
     /// Creates a builder for the given target field.
     ///
     /// Equivalent to the sole `Builder(String)` constructor.
-    pub fn new(field: impl Into<String>) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// As Java's `Objects.requireNonNull(field)` (`SynonymQuery.java`), with
+    /// `java.lang.NullPointerException` when `field` is `None`.
+    pub fn new(field: Option<&str>) -> Self {
+        let field = field.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         Self {
-            field: field.into(),
+            field: field.to_string(),
             terms: Vec::new(),
         }
     }
@@ -93,11 +99,11 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the term is on another
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the term is on another
     /// field, and the errors of [`add_bytes`](Self::add_bytes).
     pub fn add_term_with_boost(&mut self, term: &Term, boost: f32) -> Result<&mut Self> {
         if self.field != term.field() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Synonyms must be across the same field".to_string(),
             ));
         }
@@ -111,12 +117,12 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `boost` is not in
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `boost` is not in
     /// `(0, 1]`, and [`TooManyClauses`] once
     /// [`IndexSearcher::get_max_clause_count`] terms have been added.
     pub fn add_bytes(&mut self, term: BytesRef, boost: f32) -> Result<&mut Self> {
         if boost.is_nan() || boost <= 0.0 || boost > 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "boost must be a positive float between 0 (exclusive) and 1 (inclusive)"
                     .to_string(),
             ));
@@ -357,7 +363,9 @@ impl SynonymWeightState {
                 terms_enum.impacts(POSTINGS_ENUM_FREQS)?
             } else {
                 Box::new(SlowImpactsEnum::new(
-                    terms_enum.postings(None, POSTINGS_ENUM_FREQS)?,
+                    terms_enum
+                        .postings(None, POSTINGS_ENUM_FREQS)?
+                        .ok_or_else(LuceneError::null_pointer)?,
                 ))
             };
             // Java keeps the enum twice, in `iterators` and in `impacts`; a
@@ -869,10 +877,6 @@ impl Scorable for SynonymScorer {
 }
 
 impl Scorer for SynonymScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         DocIdSetIterator::doc_id(self)
     }
@@ -919,7 +923,7 @@ impl FreqBoostTermScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `boost` is not in
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `boost` is not in
     /// `[0, 1]`, which is the `IllegalArgumentException` Java throws.
     pub fn new(
         boost: f32,
@@ -933,7 +937,7 @@ impl FreqBoostTermScorer {
         #[allow(clippy::manual_range_contains)]
         let out_of_range = boost < 0.0 || boost > 1.0;
         if boost.is_nan() || out_of_range {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "boost must be a positive float between 0 (exclusive) and 1 (inclusive)"
                     .to_string(),
             ));
@@ -977,10 +981,6 @@ impl Scorable for FreqBoostTermScorer {
 }
 
 impl Scorer for FreqBoostTermScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         Scorer::doc_id(&self.inner)
     }

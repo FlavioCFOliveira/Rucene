@@ -35,7 +35,7 @@ use rucene::codecs::lucene99::hnsw_vectors_format::{
 };
 use rucene::codecs::state::SegmentReadState;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::{FieldInfo, FieldInfos, SegmentInfo, VectorEncoding, VectorSimilarityFunction};
 use rucene::search::NO_MORE_DOCS;
 use rucene::store::{Directory, FSDirectory, DEFAULT_IO_CONTEXT};
@@ -215,7 +215,10 @@ fn get_graph_decodes_lucenes_own_vex() {
     let dir = root.join("n40");
     let reader = open_reader(&dir, 40, 4);
     match reader.get_graph("absent") {
-        Err(LuceneError::IllegalArgument(message)) => {
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        }) => {
             assert!(
                 message.contains("absent"),
                 "the message names the missing field, got {message}"

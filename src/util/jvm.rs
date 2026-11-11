@@ -193,14 +193,14 @@ impl VirtualMethod {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `base_class` does not
-    /// declare `method`, and [`LuceneError::UnsupportedOperation`] when an
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `base_class` does not
+    /// declare `method`, and [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) when an
     /// instance for the same pair already exists — both reproducing Lucene's
     /// messages, which enforce that instances are singletons.
     pub fn new(base_class: Arc<MethodClass>, method: impl Into<String>) -> Result<Self> {
         let method = method.into();
         if !base_class.has_declared_method(&method) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "{} has no such method: {method}",
                 base_class.name
             )));
@@ -212,7 +212,7 @@ impl VirtualMethod {
                 .expect("INVARIANT: the singleton set mutex is never poisoned");
             let set = guard.get_or_insert_with(HashSet::new);
             if !set.insert(key) {
-                return Err(LuceneError::UnsupportedOperation(
+                return Err(LuceneError::unsupported_operation(
                     "VirtualMethod instances must be singletons and therefore assigned to static \
                      final members in the same class, they use as baseClass ctor param."
                         .to_string(),
@@ -231,7 +231,7 @@ impl VirtualMethod {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `subclazz` does not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `subclazz` does not
     /// descend from the base class.
     pub fn get_implementation_distance(&self, subclazz: &Arc<MethodClass>) -> Result<i32> {
         let key = Arc::as_ptr(subclazz) as *const () as usize;
@@ -267,11 +267,11 @@ impl VirtualMethod {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `subclazz` does not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `subclazz` does not
     /// descend from the base class.
     pub fn reflect_implementation_distance(&self, subclazz: &Arc<MethodClass>) -> Result<i32> {
         if !self.base_class.is_assignable_from(subclazz) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "{} is not a subclass of {}",
                 subclazz.name, self.base_class.name
             )));

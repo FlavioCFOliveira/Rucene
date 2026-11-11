@@ -129,22 +129,29 @@ pub struct Rectangle {
 impl Rectangle {
     /// Creates the box. A box whose minimum longitude exceeds its maximum
     /// crosses the dateline, which Lucene allows.
+    ///
+    /// Lucene only asserts `maxLat >= minLat` (`Rectangle.java:94`); the port
+    /// keeps that as a `debug_assert!` and raises no error of its own for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a coordinate is out of
+    /// range, as `GeoUtils.checkLatitude` / `checkLongitude` throw.
     pub fn new(min_lat: f64, max_lat: f64, min_lon: f64, max_lon: f64) -> Result<Self> {
         GeoUtils::check_latitude(min_lat)?;
         GeoUtils::check_latitude(max_lat)?;
         GeoUtils::check_longitude(min_lon)?;
         GeoUtils::check_longitude(max_lon)?;
-        if min_lat > max_lat {
-            return Err(LuceneError::IllegalArgument(format!(
-                "minLat must be lower than maxLat, got {min_lat} > {max_lat}"
-            )));
-        }
-        Ok(Self {
+        let rectangle = Self {
             min_lat,
             max_lat,
             min_lon,
             max_lon,
-        })
+        };
+        debug_assert!(max_lat >= min_lat);
+
+        // NOTE: cannot assert maxLon >= minLon since this rect could cross the dateline
+        Ok(rectangle)
     }
 
     /// Returns the smallest latitude.
@@ -218,14 +225,30 @@ pub struct Line {
 
 impl Line {
     /// Creates the line from parallel coordinate arrays.
-    pub fn new(lats: Vec<f64>, lons: Vec<f64>) -> Result<Self> {
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`lats must not be null`, `lons must not be null`).
+    pub fn new(
+        lats: impl Into<Option<Vec<f64>>>,
+        lons: impl Into<Option<Vec<f64>>>,
+    ) -> Result<Self> {
+        let Some(lats) = lats.into() else {
+            return Err(LuceneError::illegal_argument(
+                "lats must not be null".to_string(),
+            ));
+        };
+        let Some(lons) = lons.into() else {
+            return Err(LuceneError::illegal_argument(
+                "lons must not be null".to_string(),
+            ));
+        };
         if lats.len() != lons.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "lats and lons must be equal length".to_string(),
             ));
         }
         if lats.len() < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "at least 2 line points required".to_string(),
             ));
         }
@@ -345,26 +368,43 @@ pub struct Polygon {
 impl Polygon {
     /// Creates the polygon. The ring must be closed — the first and last
     /// vertices equal — as Lucene requires.
-    pub fn new(lats: Vec<f64>, lons: Vec<f64>, holes: Vec<Polygon>) -> Result<Self> {
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`polyLats must not be null`, `polyLons must not be null`).
+    pub fn new(
+        lats: impl Into<Option<Vec<f64>>>,
+        lons: impl Into<Option<Vec<f64>>>,
+        holes: Vec<Polygon>,
+    ) -> Result<Self> {
+        let Some(lats) = lats.into() else {
+            return Err(LuceneError::illegal_argument(
+                "polyLats must not be null".to_string(),
+            ));
+        };
+        let Some(lons) = lons.into() else {
+            return Err(LuceneError::illegal_argument(
+                "polyLons must not be null".to_string(),
+            ));
+        };
         if lats.len() != lons.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "lats and lons must be equal length".to_string(),
             ));
         }
         if lats.len() < 4 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "at least 4 polygon points required".to_string(),
             ));
         }
         if lats[0] != lats[lats.len() - 1] {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "first and last points of the polygon must be the same (it must close itself): \
                  lats[0]!=lats[lats.length-1]"
                     .to_string(),
             ));
         }
         if lons[0] != lons[lons.len() - 1] {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "first and last points of the polygon must be the same (it must close itself): \
                  lons[0]!=lons[lons.length-1]"
                     .to_string(),
@@ -376,7 +416,7 @@ impl Polygon {
         }
         for inner in &holes {
             if !inner.holes.is_empty() {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "holes may not contain holes: polygons may not nest.".to_string(),
                 ));
             }
@@ -488,7 +528,12 @@ impl Polygon {
     pub fn vertices_to_geojson(lats: &[f64], lons: &[f64]) -> String {
         let mut sb = String::from("[");
         for i in 0..lats.len() {
-            sb.push_str(&format!("[{}, {}]", lons[i], lats[i]));
+            // `StringBuilder.append(double)`: Java's `Double.toString`.
+            sb.push_str(&format!(
+                "[{}, {}]",
+                crate::util::java_fmt::double_to_string(lons[i]),
+                crate::util::java_fmt::double_to_string(lats[i])
+            ));
             if i != lats.len() - 1 {
                 sb.push_str(", ");
             }
@@ -590,8 +635,9 @@ impl Circle {
         GeoUtils::check_latitude(lat)?;
         GeoUtils::check_longitude(lon)?;
         if radius_meters <= 0.0 || !radius_meters.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "radiusMeters: '{radius_meters}' is invalid"
+            return Err(LuceneError::illegal_argument(format!(
+                "radiusMeters: '{}' is invalid",
+                crate::util::java_fmt::double_to_string(radius_meters)
             )));
         }
         Ok(Self {
@@ -688,12 +734,12 @@ impl XYRectangle {
         let min_y = XYEncodingUtils::check_val(min_y)?;
         let max_y = XYEncodingUtils::check_val(max_y)?;
         if min_x > max_x {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minX must be lower than maxX".to_string(),
             ));
         }
         if min_y > max_y {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minY must be lower than maxY".to_string(),
             ));
         }
@@ -769,14 +815,27 @@ pub struct XYLine {
 
 impl XYLine {
     /// Creates the line from parallel coordinate arrays.
-    pub fn new(xs: Vec<f32>, ys: Vec<f32>) -> Result<Self> {
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`x must not be null`, `y must not be null`).
+    pub fn new(xs: impl Into<Option<Vec<f32>>>, ys: impl Into<Option<Vec<f32>>>) -> Result<Self> {
+        let Some(xs) = xs.into() else {
+            return Err(LuceneError::illegal_argument(
+                "x must not be null".to_string(),
+            ));
+        };
+        let Some(ys) = ys.into() else {
+            return Err(LuceneError::illegal_argument(
+                "y must not be null".to_string(),
+            ));
+        };
         if xs.len() != ys.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "xs and ys must be equal length".to_string(),
             ));
         }
         if xs.len() < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "at least 2 line points required".to_string(),
             ));
         }
@@ -886,26 +945,43 @@ pub struct XYPolygon {
 
 impl XYPolygon {
     /// Creates the polygon. The ring must close itself.
-    pub fn new(xs: Vec<f32>, ys: Vec<f32>, holes: Vec<XYPolygon>) -> Result<Self> {
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`x must not be null`, `y must not be null`).
+    pub fn new(
+        xs: impl Into<Option<Vec<f32>>>,
+        ys: impl Into<Option<Vec<f32>>>,
+        holes: Vec<XYPolygon>,
+    ) -> Result<Self> {
+        let Some(xs) = xs.into() else {
+            return Err(LuceneError::illegal_argument(
+                "x must not be null".to_string(),
+            ));
+        };
+        let Some(ys) = ys.into() else {
+            return Err(LuceneError::illegal_argument(
+                "y must not be null".to_string(),
+            ));
+        };
         if xs.len() != ys.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "xs and ys must be equal length".to_string(),
             ));
         }
         if xs.len() < 4 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "at least 4 polygon points required".to_string(),
             ));
         }
         if xs[0] != xs[xs.len() - 1] || ys[0] != ys[ys.len() - 1] {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "first and last points of the polygon must be the same (it must close itself)"
                     .to_string(),
             ));
         }
         for inner in &holes {
             if !inner.holes.is_empty() {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "holes may not contain holes: polygons may not nest.".to_string(),
                 ));
             }
@@ -1021,7 +1097,12 @@ impl XYPolygon {
     pub fn vertices_to_geojson(xs: &[f32], ys: &[f32]) -> String {
         let mut sb = String::from("[");
         for i in 0..xs.len() {
-            sb.push_str(&format!("[{}, {}]", xs[i], ys[i]));
+            // `StringBuilder.append(float)`: Java's `Float.toString`.
+            sb.push_str(&format!(
+                "[{}, {}]",
+                crate::util::java_fmt::float_to_string(xs[i]),
+                crate::util::java_fmt::float_to_string(ys[i])
+            ));
             if i != xs.len() - 1 {
                 sb.push_str(", ");
             }
@@ -1080,14 +1161,30 @@ pub struct XYCircle {
 
 impl XYCircle {
     /// Creates the circle.
+    ///
+    /// Equivalent to `XYCircle(float x, float y, float radius)`
+    /// (`XYCircle.java:44-54`): the radius is checked first, positive then
+    /// finite, then the centre.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with Java's message for a radius that
+    /// is not positive or not finite, or an invalid centre coordinate.
     pub fn new(x: f32, y: f32, radius: f32) -> Result<Self> {
-        let x = XYEncodingUtils::check_val(x)?;
-        let y = XYEncodingUtils::check_val(y)?;
-        if radius <= 0.0 || !radius.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "radius: '{radius}' is invalid"
+        if radius <= 0.0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "radius must be bigger than 0, got {}",
+                crate::util::java_fmt::float_to_string(radius)
             )));
         }
+        if !radius.is_finite() {
+            return Err(LuceneError::illegal_argument(format!(
+                "radius must be finite, got {}",
+                crate::util::java_fmt::float_to_string(radius)
+            )));
+        }
+        let x = XYEncodingUtils::check_val(x)?;
+        let y = XYEncodingUtils::check_val(y)?;
         Ok(Self { x, y, radius })
     }
 
@@ -1153,7 +1250,7 @@ impl Rectangle {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the centre coordinates are
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the centre coordinates are
     /// out of range.
     pub fn from_point_distance(
         center_lat: f64,
@@ -1234,6 +1331,7 @@ impl Rectangle {
         };
 
         let mut l2 = (l1.cos() / r.cos()).acos();
+        debug_assert!(!l2.is_nan());
 
         // now adjust back to range [-pi/2, pi/2], ie latitude in radians
         l2 = if center_lat >= 0.0 {
@@ -1251,7 +1349,7 @@ impl Rectangle {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the resulting bounds are
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the resulting bounds are
     /// not a valid rectangle, which for an empty input is always the case.
     pub fn from_polygon(polygons: &[Polygon]) -> Result<Rectangle> {
         // compute bounding box
@@ -1305,19 +1403,21 @@ impl XYRectangle {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the centre is not finite,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the centre is not finite,
     /// or when the radius is negative or not finite.
     pub fn from_point_distance(x: f32, y: f32, radius: f32) -> Result<XYRectangle> {
         XYEncodingUtils::check_val(x)?;
         XYEncodingUtils::check_val(y)?;
         if radius < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "radius must be bigger than 0, got {radius}"
+            return Err(LuceneError::illegal_argument(format!(
+                "radius must be bigger than 0, got {}",
+                crate::util::java_fmt::float_to_string(radius)
             )));
         }
         if !radius.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "radius must be finite, got {radius}"
+            return Err(LuceneError::illegal_argument(format!(
+                "radius must be finite, got {}",
+                crate::util::java_fmt::float_to_string(radius)
             )));
         }
         // LUCENE-9243: We round up the bounding box to avoid numerical errors.
@@ -1346,7 +1446,7 @@ pub trait Geometry {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry cannot be
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry cannot be
     /// turned into a component, mirroring the `IllegalArgumentException` the
     /// Java factories throw.
     fn to_component2d(&self) -> Result<Arc<dyn Component2D>>;
@@ -1364,12 +1464,12 @@ impl dyn LatLonGeometry + '_ {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `geometries` is empty, as
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `geometries` is empty, as
     /// Java throws `IllegalArgumentException`. Java also rejects `null`
     /// entries; Rust's type system rules those out.
     pub fn create(geometries: &[&dyn LatLonGeometry]) -> Result<Arc<dyn Component2D>> {
         if geometries.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "geometries must not be empty".to_string(),
             ));
         }
@@ -1396,11 +1496,11 @@ impl dyn XYGeometry + '_ {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `geometries` is empty, as
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `geometries` is empty, as
     /// Java throws `IllegalArgumentException`.
     pub fn create(geometries: &[&dyn XYGeometry]) -> Result<Arc<dyn Component2D>> {
         if geometries.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "geometries must not be empty".to_string(),
             ));
         }
@@ -1957,7 +2057,34 @@ impl std::hash::Hash for XYPolygon {
 
 #[cfg(test)]
 mod signed_zero_equality_tests {
+
+    /// Regression test (rmp #358, `BaseXYPointTestCase.testDistanceInf`):
+    /// `XYCircle.java:44-54` rejects an infinite radius as not finite and a
+    /// negative one as not bigger than 0, with Java's messages.
+    #[test]
+    fn xy_circle_rejects_a_bad_radius_with_java_messages() {
+        let message = |r: f32| match XYCircle::new(18.0, 19.0, r) {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message: m, .. },
+                ..
+            }) => m,
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        };
+        assert_eq!(
+            message(f32::INFINITY),
+            "radius must be finite, got Infinity"
+        );
+        assert_eq!(
+            message(f32::NEG_INFINITY),
+            "radius must be bigger than 0, got -Infinity"
+        );
+        assert_eq!(message(0.0), "radius must be bigger than 0, got 0.0");
+        assert_eq!(message(f32::NAN), "radius must be finite, got NaN");
+    }
+
     use super::*;
+
+    use crate::error::LuceneErrorKind;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 

@@ -306,6 +306,12 @@ impl DocIdSetIterator for ReqExclScorer {
 }
 
 impl Scorable for ReqExclScorer {
+    /// This scorer answers with itself: Java's `instanceof` and
+    /// `getClass()` on a `Scorable` see the `ReqExclScorer`.
+    fn as_scorer(&mut self) -> Option<&mut dyn crate::search::Scorer> {
+        Some(self)
+    }
+
     fn score(&mut self) -> Result<f32> {
         // reqScorer may be null when next() or skipTo() already returned false
         self.inner.req_scorer.score()
@@ -318,15 +324,16 @@ impl Scorable for ReqExclScorer {
 
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {
         Ok(vec![ChildScorable::new(
-            self.inner.req_scorer.as_scorable(),
+            &mut *self.inner.req_scorer,
             "MUST",
         )])
     }
 }
 
 impl Scorer for ReqExclScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
+    /// This scorer answers with itself: Java tests `instanceof ReqExclScorer`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn doc_id(&self) -> i32 {

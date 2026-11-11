@@ -5,14 +5,13 @@
 //! point whose first four dimensions are its bounding box — which is what lets
 //! a BKD tree prune whole subtrees of a polygon.
 
-use std::io::Read;
-
 use crate::analysis::{Analyzer, TokenStream};
 use crate::document::{
     binary_doc_values_field_type, FieldData, FieldType, InvertableType, NumericValue, StoredValue,
 };
 use crate::error::{LuceneError, Result};
 use crate::index::{IndexableField, IndexableFieldType};
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
 use crate::util::{BytesRef, NumericUtils};
 
 /// How many bytes one encoded coordinate occupies.
@@ -72,7 +71,7 @@ impl TriangleType {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] for an ordinal outside `[0, 2]`,
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) for an ordinal outside `[0, 2]`,
     /// where Java throws `ArrayIndexOutOfBoundsException`.
     pub fn from_ordinal(ordinal: i32) -> Result<Self> {
         match ordinal {
@@ -222,7 +221,7 @@ impl ShapeField {
     pub fn field_type() -> &'static FieldType {
         static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
         TYPE.get_or_init(|| {
-            let mut ft = FieldType::new();
+            let ft = FieldType::new();
             ft.set_dimensions_with_index_count(7, 4, BYTES as i32)
                 .expect("INVARIANT: seven dimensions, four indexed, fit a new, mutable type");
             ft.freeze();
@@ -249,8 +248,9 @@ impl ShapeField {
         mut c_x: i32,
         mut ca: bool,
     ) -> Result<()> {
+        debug_assert!(bytes.len() == 7 * BYTES);
         if bytes.len() != 7 * BYTES {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bytes must be {} long, got {}",
                 7 * BYTES,
                 bytes.len()
@@ -307,6 +307,28 @@ impl ShapeField {
             }
         }
 
+        // change orientation if CW (`ShapeField.java:214-228`)
+        if crate::geo::GeoUtils::orient(
+            f64::from(a_x),
+            f64::from(a_y),
+            f64::from(b_x),
+            f64::from(b_y),
+            f64::from(c_x),
+            f64::from(c_y),
+        ) == -1
+        {
+            // swap b with c
+            let (temp_x, temp_y, temp_bool) = (b_x, b_y, ab);
+            // a_x and a_y do not change, ab becomes bc
+            ab = bc;
+            b_x = c_x;
+            b_y = c_y;
+            // bc does not change, ca becomes ab
+            c_x = temp_x;
+            c_y = temp_y;
+            ca = temp_bool;
+        }
+
         let min_x = a_x;
         let min_y = a_y.min(b_y).min(c_y);
         let max_x = a_x.max(b_x).max(c_x);
@@ -350,7 +372,7 @@ impl ShapeField {
             x = b_x;
             bits = Y_MINX_MINY_X_MAXY_MAXX;
         } else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Could not encode the provided triangle".to_string(),
             ));
         }
@@ -376,7 +398,7 @@ impl ShapeField {
     /// the bit field records.
     pub fn decode_triangle(bytes: &[u8]) -> Result<DecodedTriangle> {
         if bytes.len() < 7 * BYTES {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bytes must be at least {} long, got {}",
                 7 * BYTES,
                 bytes.len()
@@ -469,6 +491,17 @@ impl ShapeField {
                 ))
             }
         }
+        // Points of the decoded triangle must be co-planar or CCW oriented
+        debug_assert!(
+            crate::geo::GeoUtils::orient(
+                f64::from(t.a_x),
+                f64::from(t.a_y),
+                f64::from(t.b_x),
+                f64::from(t.b_y),
+                f64::from(t.c_x),
+                f64::from(t.c_y)
+            ) >= 0
+        );
         // Java's `decodeTriangle` finishes with `resolveTriangleType(triangle)`,
         // which both classifies the triangle and normalises a degenerate one.
         t.resolve_triangle_type();
@@ -584,6 +617,13 @@ impl Triangle {
 }
 
 impl IndexableField for Triangle {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -594,14 +634,16 @@ impl IndexableField for Triangle {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
         let value = self
             .packed_value()
             .map(|bytes| BytesRef::new(bytes.to_vec()))
             .unwrap_or_else(|| BytesRef::new(Vec::new()));
-        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
@@ -612,7 +654,7 @@ impl IndexableField for Triangle {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 
@@ -636,7 +678,7 @@ impl IndexableField for Triangle {
 #[derive(Clone, Debug)]
 pub struct LateInteractionField {
     name: String,
-    value: BytesRef,
+    value: AtomicRefCell<BytesRef>,
 }
 
 impl std::fmt::Display for LateInteractionField {
@@ -649,23 +691,26 @@ impl std::fmt::Display for LateInteractionField {
             f,
             crate::document::binary_doc_values_field_type(),
             &self.name,
-            &crate::document::bytes_ref_to_string(self.value.slice()),
+            &crate::document::bytes_ref_to_string(self.value.borrow().slice()),
         )
     }
 }
 
 impl LateInteractionField {
     /// Creates the field from one vector per token.
-    pub fn new(name: impl Into<String>, value: &[Vec<f32>]) -> Result<Self> {
+    ///
+    /// `value` is Java's `float[][]`, which may be `null` (`None`) and hold
+    /// `null` rows; [`encode`](Self::encode) raises Java's errors for them.
+    pub fn new(name: impl Into<String>, value: Option<&[Option<Vec<f32>>]>) -> Result<Self> {
         Ok(Self {
             name: name.into(),
-            value: Self::encode(value)?,
+            value: AtomicRefCell::new(Self::encode(value)?),
         })
     }
 
     /// Replaces the value.
-    pub fn set_value(&mut self, value: &[Vec<f32>]) -> Result<()> {
-        self.value = Self::encode(value)?;
+    pub fn set_value(&self, value: Option<&[Option<Vec<f32>>]>) -> Result<()> {
+        *self.value.borrow_mut() = Self::encode(value)?;
         Ok(())
     }
 
@@ -675,36 +720,51 @@ impl LateInteractionField {
     }
 
     /// Returns the stored bytes.
-    pub fn binary_value(&self) -> &BytesRef {
-        &self.value
+    pub fn binary_value(&self) -> AtomicRef<'_, BytesRef> {
+        self.value.borrow()
     }
 
     /// Returns the vectors the field holds.
     pub fn get_value(&self) -> Result<Vec<Vec<f32>>> {
-        Self::decode(&self.value)
+        Self::decode(&self.value.borrow())
     }
 
     /// Packs the vectors: the dimension as a little-endian int, then every
     /// vector's components as little-endian floats.
     ///
     /// Equivalent to `LateInteractionField.encode(float[][])`.
-    pub fn encode(value: &[Vec<f32>]) -> Result<BytesRef> {
-        if value.is_empty() {
-            return Err(LuceneError::IllegalArgument(
-                "Value should not be null or empty".to_string(),
-            ));
-        }
-        let dimension = value[0].len();
-        if dimension == 0 {
-            return Err(LuceneError::IllegalArgument(
-                "Composing token vectors should not be null or empty".to_string(),
-            ));
-        }
+    pub fn encode(value: Option<&[Option<Vec<f32>>]>) -> Result<BytesRef> {
+        // `if (value == null || value.length == 0)`.
+        let value = match value {
+            Some(v) if !v.is_empty() => v,
+            _ => {
+                return Err(LuceneError::illegal_argument(
+                    "Value should not be null or empty".to_string(),
+                ))
+            }
+        };
+        // `if (value[0] == null || value[0].length == 0)`.
+        let dimension = match &value[0] {
+            Some(first) if !first.is_empty() => first.len(),
+            _ => {
+                return Err(LuceneError::illegal_argument(
+                    "Composing token vectors should not be null or empty".to_string(),
+                ))
+            }
+        };
         let mut bytes = Vec::with_capacity(4 + value.len() * dimension * 4);
         bytes.extend_from_slice(&(dimension as i32).to_le_bytes());
         for (i, vector) in value.iter().enumerate() {
+            // `value[i].length` dereferences the row: a `null` one throws
+            // `NullPointerException`.
+            let vector = vector.as_ref().ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.NullPointerException",
+                    format!("Cannot read the array length because \"value[{i}]\" is null"),
+                )
+            })?;
             if vector.len() != dimension {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Composing token vectors should have the same dimension. Mismatching \
                      dimensions detected between token[0] and token[{i}], {dimension} != {}",
                     vector.len()
@@ -723,7 +783,7 @@ impl LateInteractionField {
     pub fn decode(payload: &BytesRef) -> Result<Vec<Vec<f32>>> {
         let bytes = payload.slice();
         if bytes.len() < 4 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Provided payload does not appear to have been encoded via \
                  LateInteractionField::encode"
                     .to_string(),
@@ -731,13 +791,13 @@ impl LateInteractionField {
         }
         let dimension = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         if dimension == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Provided payload declares a zero dimension".to_string(),
             ));
         }
         let num_vectors = (bytes.len() - 4) / (dimension * 4);
         if num_vectors * dimension * 4 + 4 != bytes.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Provided payload does not appear to have been encoded via \
                  LateInteractionField::encode. Payload length should be equal to 4 + numVectors * \
                  tokenVectorDimension, got {} != 4 + {num_vectors} * {dimension}",
@@ -764,6 +824,13 @@ impl LateInteractionField {
 }
 
 impl IndexableField for LateInteractionField {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -774,21 +841,23 @@ impl IndexableField for LateInteractionField {
 
     fn token_stream(
         &self,
-        _analyzer: &dyn Analyzer,
-        _reuse: Option<&mut dyn TokenStream>,
-    ) -> Box<dyn TokenStream> {
-        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(self.value.borrow().clone()).unwrap(),
+        ))
     }
 
     fn binary_value(&self) -> Option<BytesRef> {
-        Some(self.value.clone())
+        Some(self.value.borrow().clone())
     }
 
     fn string_value(&self) -> Option<String> {
         None
     }
 
-    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
         None
     }
 

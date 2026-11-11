@@ -92,20 +92,19 @@ impl DocAndScoreQuery {
     /// `searcher.getTopReaderContext()` are the same object in Java, so the
     /// leaves and the identity are the same values either way.
     ///
+    /// `top_k` must hold at least one hit, which Java only asserts; an empty
+    /// one panics on the first hit, as Java's `ArrayIndexOutOfBoundsException`.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `top_k` holds no hits,
-    /// which Java asserts rather than checks.
+    /// Propagates the errors of building the query.
     pub fn create_doc_and_score_query(
         searcher: &IndexSearcher,
         mut top_k: TopDocs,
     ) -> Result<Arc<dyn Query>> {
         let len = top_k.score_docs.len();
-        if len == 0 {
-            return Err(LuceneError::IllegalArgument(
-                "createDocAndScoreQuery requires at least one hit".to_string(),
-            ));
-        }
+
+        debug_assert!(len > 0);
         let max_score = top_k.score_docs[0].score;
 
         top_k.score_docs.sort_by_key(|hit| hit.doc);
@@ -154,9 +153,13 @@ pub fn find_segment_starts(leaves: &[Arc<LeafReaderContext>], docs: &[i32]) -> V
 
 impl Query for DocAndScoreQuery {
     fn to_query_string(&self, _field: &str) -> String {
+        // String concatenation renders the floats with `Float.toString`
+        // (`DocAndScoreQuery.java:176-178`).
         format!(
             "DocAndScoreQuery[{},...][{},...],{}",
-            self.docs[0], self.scores[0], self.max_score
+            self.docs[0],
+            crate::util::java_fmt::float_to_string(self.scores[0]),
+            crate::util::java_fmt::float_to_string(self.max_score)
         )
     }
 
@@ -346,15 +349,23 @@ struct DocAndScoreScorer {
 
 impl Scorable for DocAndScoreScorer {
     fn score(&mut self) -> Result<f32> {
-        Ok(self.scores[self.iterator.up_to as usize] * self.boost)
+        // `scores[upTo] * boost` (`DocAndScoreQuery.java:136-138`): before
+        // the iterator moves, `upTo` is `-1` and the array access throws.
+        let up_to = self.iterator.up_to;
+        match usize::try_from(up_to).ok().and_then(|i| self.scores.get(i)) {
+            Some(score) => Ok(score * self.boost),
+            None => crate::store::java_nio_file::throw_unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                Some(&format!(
+                    "Index {up_to} out of bounds for length {}",
+                    self.scores.len()
+                )),
+            ),
+        }
     }
 }
 
 impl Scorer for DocAndScoreScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
     fn doc_id(&self) -> i32 {
         self.iterator.doc_id_no_shadow()
     }

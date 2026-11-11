@@ -37,7 +37,7 @@ pub struct DefaultProvider;
 
 impl AutomatonProvider for DefaultProvider {
     fn get_automaton(&self, name: &str) -> Result<Automaton> {
-        Err(crate::error::LuceneError::IllegalArgument(format!(
+        Err(crate::error::LuceneError::illegal_argument(format!(
             "'{name}' not found"
         )))
     }
@@ -250,6 +250,11 @@ impl Query for RegexpQuery {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
     }
 
     fn rewrite(&self, index_searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {

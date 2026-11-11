@@ -105,7 +105,7 @@ impl Directory for LockValidatingDirectoryWrapper {
         self.inner.obtain_lock(name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 

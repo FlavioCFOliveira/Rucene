@@ -81,10 +81,10 @@ impl BitDocIdSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `cost` is negative.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `cost` is negative.
     pub fn new(set: Arc<dyn BitSet>, cost: i64) -> Result<Self> {
         if cost < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cost must be >= 0, got {cost}"
             )));
         }
@@ -97,7 +97,7 @@ impl BitDocIdSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] only if the approximate
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) only if the approximate
     /// cardinality is somehow negative, which it cannot be.
     pub fn from_set(set: Arc<dyn BitSet>) -> Result<Self> {
         let cost = set.approximate_cardinality() as i64;
@@ -124,6 +124,36 @@ impl DocIdSet for BitDocIdSet {
             Arc::clone(&self.set),
             self.cost,
         )?))
+    }
+
+    /// The wrapped set, as `BitDocIdSet.bits()` (`BitDocIdSet.java:60-64`)
+    /// returns it, so that a [`NotDocIdSet`] over this set has random
+    /// access too.
+    fn bits(&self) -> Result<Option<Box<dyn Bits>>> {
+        Ok(Some(Box::new(SharedBitSetBits(Arc::clone(&self.set)))))
+    }
+
+    fn doc_id_set_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+/// A shared [`BitSet`] as a boxed [`Bits`]: the object `BitDocIdSet.bits()`
+/// returns, which is the set itself in Java.
+#[derive(Debug)]
+struct SharedBitSetBits(Arc<dyn BitSet>);
+
+impl Bits for SharedBitSetBits {
+    fn get(&self, index: usize) -> bool {
+        self.0.get(index)
+    }
+
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.0.length()
     }
 }
 
@@ -163,17 +193,18 @@ impl IntArrayDocIdSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sentinel is missing,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sentinel is missing,
     /// which is Java's bare `IllegalArgumentException`.
     pub fn new(docs: Vec<i32>, length: usize) -> Result<Self> {
         if docs[length] != NO_MORE_DOCS {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "IntArrayDocIdSet requires docs[length] == NO_MORE_DOCS".to_string(),
             ));
         }
         debug_assert!(
             Self::assert_array_sorted(&docs, length),
-            "IntArrayDocIdSet need docs to be sorted"
+            "IntArrayDocIdSet need docs to be sorted{:?}",
+            &docs[..length]
         );
         Ok(Self {
             docs: Arc::new(docs),
@@ -194,6 +225,10 @@ impl DocIdSet for IntArrayDocIdSet {
             Arc::clone(&self.docs),
             self.length,
         )))
+    }
+
+    fn doc_id_set_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -398,7 +433,7 @@ impl DocIdSetIterator for NotDocIdSetIterator {
         }
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc != NO_MORE_DOCS);
         debug_assert!(self.next_skipped_doc > self.doc);
         Ok(self.next_skipped_doc.min(self.max_doc))
@@ -842,9 +877,32 @@ impl BulkAdder<'_> {
 /// only evaluates inside an `assert`.
 fn no_dups(a: &[i32], len: usize) -> bool {
     for i in 1..len {
-        if a[i - 1] >= a[i] {
-            return false;
-        }
+        debug_assert!(a[i - 1] < a[i]);
     }
     true
+}
+
+#[cfg(test)]
+mod bit_doc_id_set_bits_tests {
+    use super::*;
+
+    /// Regression test (rmp #350, `TestNotDocIdSet`): `BitDocIdSet.bits()`
+    /// returns its set (`BitDocIdSet.java:60-64`), so `NotDocIdSet.bits()`
+    /// is not null over it; the port answered `None`. Mirrors
+    /// `TestNotDocIdSet.testBits` (`TestNotDocIdSet.java:47-50`).
+    #[test]
+    fn not_doc_id_set_over_a_bit_doc_id_set_has_bits() {
+        let empty = NotDocIdSet::new(3, Arc::new(crate::search::doc_id_set::EmptyDocIdSet));
+        assert!(empty.bits().unwrap().is_none());
+        let mut set = FixedBitSet::new(3);
+        set.set(1);
+        let set = BitDocIdSet::from_set(Arc::new(set)).unwrap();
+        let not = NotDocIdSet::new(3, Arc::new(set));
+        let bits = not
+            .bits()
+            .unwrap()
+            .expect("bits of a NotDocIdSet over a BitDocIdSet");
+        assert_eq!(bits.length(), 3);
+        assert_eq!((bits.get(0), bits.get(1), bits.get(2)), (true, false, true));
+    }
 }

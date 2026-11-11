@@ -89,6 +89,18 @@ pub trait RandomVectorScorer {
     fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
         accept_docs.map(|bits| Box::new(BorrowedBits(bits)) as Box<dyn Bits + 'a>)
     }
+
+    /// Returns this scorer's string form.
+    ///
+    /// Equivalent to `toString()`. No Lucene scorer overrides it, so the
+    /// default is the `Object.toString()` every one inherits:
+    /// `getClass().getName() + "@" + hex identity`, rendered by
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// with the implementing type's name standing in for the Java class name,
+    /// since a Rust type has no Java binary name.
+    fn to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(std::any::type_name::<Self>(), self)
+    }
 }
 
 /// A [`Bits`] that forwards every query to a borrowed [`Bits`].
@@ -142,6 +154,19 @@ pub trait RandomVectorScorerSupplier: Send {
 
     /// Makes a copy of the supplier that is safe to use on another thread.
     fn copy(&self) -> Result<Box<dyn RandomVectorScorerSupplier>>;
+
+    /// Returns this supplier's string form.
+    ///
+    /// Equivalent to `toString()`. The default is the `Object.toString()` a
+    /// Java supplier inherits when it declares none:
+    /// `getClass().getName() + "@" + hex identity`, rendered by
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// with the implementing type's name standing in for the Java class name,
+    /// since a Rust type has no Java binary name. The suppliers whose Java
+    /// class overrides `toString()` override this with Java's string.
+    fn to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(std::any::type_name::<Self>(), self)
+    }
 }
 
 /// A scorer supplier that also carries a closeable resource and knows the total
@@ -166,7 +191,10 @@ pub trait CloseableRandomVectorScorerSupplier: RandomVectorScorerSupplier {
     /// so that a supplier holding no resource — which Java expresses by
     /// wrapping itself with `create(supplier, count, () -> {})` — does not have
     /// to restate an empty body.
-    fn close(&mut self) -> Result<()> {
+    ///
+    /// Takes `&self`: the supplier is shared with the graph merger that scores
+    /// through it, and Java closes it whoever else still holds it.
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -190,7 +218,7 @@ pub fn create(
     DelegatingCloseableSupplier {
         supplier,
         total_vector_count,
-        on_close,
+        on_close: std::sync::Mutex::new(on_close),
     }
 }
 
@@ -201,7 +229,9 @@ pub fn create(
 pub struct DelegatingCloseableSupplier {
     supplier: Box<dyn RandomVectorScorerSupplier>,
     total_vector_count: i32,
-    on_close: Box<dyn FnMut() -> Result<()> + Send + Sync>,
+    /// Behind a mutex so that [`close`](CloseableRandomVectorScorerSupplier::close)
+    /// runs it through `&self`.
+    on_close: std::sync::Mutex<Box<dyn FnMut() -> Result<()> + Send + Sync>>,
 }
 
 impl Debug for DelegatingCloseableSupplier {
@@ -227,7 +257,10 @@ impl CloseableRandomVectorScorerSupplier for DelegatingCloseableSupplier {
         self.total_vector_count
     }
 
-    fn close(&mut self) -> Result<()> {
-        (self.on_close)()
+    fn close(&self) -> Result<()> {
+        (self
+            .on_close
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))()
     }
 }

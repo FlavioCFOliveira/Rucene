@@ -106,7 +106,7 @@ impl FuzzyQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an out-of-range
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an out-of-range
     /// `max_edits`, a negative `prefix_length` or a non-positive
     /// `max_expansions`, which are the three `IllegalArgumentException`s Java
     /// throws.
@@ -119,17 +119,17 @@ impl FuzzyQuery {
         rewrite_method: Arc<dyn RewriteMethod>,
     ) -> Result<Self> {
         if !(0..=MAXIMUM_SUPPORTED_DISTANCE).contains(&max_edits) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxEdits must be between 0 and {MAXIMUM_SUPPORTED_DISTANCE}"
             )));
         }
         if prefix_length < 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "prefixLength cannot be negative.".to_string(),
             ));
         }
         if max_expansions <= 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxExpansions must be positive.".to_string(),
             ));
         }

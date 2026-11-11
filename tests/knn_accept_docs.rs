@@ -95,9 +95,9 @@ fn build_index(name: &str, deleted: Option<(i32, i32)>) -> Arc<dyn DirectoryRead
     std::fs::create_dir_all(&tmp).expect("create the index directory");
 
     let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(&tmp).expect("open the directory"));
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config
-        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .set_merge_policy(Some(NoMergePolicy::instance()))
         .expect("no merges, so the documents keep the ids they were written with");
     let writer = IndexWriter::new(Arc::clone(&dir), config).expect("index writer");
     for d in 0..DOC_COUNT {
@@ -187,7 +187,7 @@ fn a_caller_filter_is_honoured_by_a_knn_search() {
     // nodes an unfiltered graph search is expected to visit, so the search
     // stays on the graph path.
     let mut accept_docs = from_iterator_supplier(
-        || Ok(Box::new(range(500, DOC_COUNT)?) as Box<dyn DocIdSetIterator>),
+        Some(|| Ok(Box::new(range(500, DOC_COUNT)?) as Box<dyn DocIdSetIterator>)),
         None,
         leaf.max_doc(),
     )
@@ -380,7 +380,7 @@ fn a_sparse_field_returns_the_lucene_documents_not_the_ordinals() {
 
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-    let mut config = IndexWriterConfig::new();
+    let config = IndexWriterConfig::new();
     config.set_ram_buffer_size_mb(64.0).expect("RAM buffer");
     config
         .set_max_buffered_docs(100_000)

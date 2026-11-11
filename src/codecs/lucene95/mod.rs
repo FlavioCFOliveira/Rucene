@@ -216,20 +216,12 @@ impl OrdToDocDISIReaderConfiguration {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field is empty or dense,
-    /// and an I/O error when the doc-id encoding cannot be read.
-    ///
-    /// [`LuceneError::IllegalState`]: crate::error::LuceneError::IllegalState
+    /// Returns an I/O error when the doc-id encoding cannot be read.
     ///
     /// Equivalent to
     /// `OrdToDocDISIReaderConfiguration.getIndexedDISI(IndexInput)`.
     pub fn get_indexed_disi(&self, data_in: &dyn IndexInput) -> Result<IndexedDISI> {
-        if self.docs_with_field_offset <= -1 {
-            return Err(crate::error::LuceneError::illegal_state(format!(
-                "docsWithFieldOffset must be > -1 to read an IndexedDISI, but was {}",
-                self.docs_with_field_offset
-            )));
-        }
+        debug_assert!(self.docs_with_field_offset > -1);
         IndexedDISI::new(
             data_in,
             self.docs_with_field_offset,
@@ -258,10 +250,7 @@ impl OrdToDocDISIReaderConfiguration {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field is empty or dense,
-    /// and an I/O error when the addresses cannot be sliced or read.
-    ///
-    /// [`LuceneError::IllegalState`]: crate::error::LuceneError::IllegalState
+    /// Returns an I/O error when the addresses cannot be sliced or read.
     ///
     /// Equivalent to
     /// `OrdToDocDISIReaderConfiguration.getDirectMonotonicReader(IndexInput)`
@@ -270,12 +259,7 @@ impl OrdToDocDISIReaderConfiguration {
         &self,
         data_in: &dyn IndexInput,
     ) -> Result<Arc<SharedDirectMonotonicReader>> {
-        if self.docs_with_field_offset <= -1 {
-            return Err(crate::error::LuceneError::illegal_state(format!(
-                "docsWithFieldOffset must be > -1 to read an ord-to-doc mapping, but was {}",
-                self.docs_with_field_offset
-            )));
-        }
+        debug_assert!(self.docs_with_field_offset > -1);
         let mut addresses = Vec::new();
         if self.addresses_length > 0 {
             let mut addresses_data: Box<dyn RandomAccessInput> =

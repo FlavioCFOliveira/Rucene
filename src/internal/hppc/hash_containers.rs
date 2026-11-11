@@ -143,3 +143,25 @@ pub fn check_load_factor(load_factor: f64, min_allowed_inclusive: f64, max_allow
         .throw();
     }
 }
+
+/// The protected methods of the hash containers (`IntIntHashMap`,
+/// `IntHashSet`, `CharObjectHashMap`, …) that a subclass overrides:
+/// `verifyLoadFactor(double)` and `allocateBuffers(int)`.
+///
+/// **Divergence from Lucene 10.5.0.** Java overrides them in anonymous
+/// subclasses (`TestIntIntHashMap.testEnsureCapacity`,
+/// `testBug_HPPC73_FullCapacityGet`); Rust has no inheritance, so a container
+/// built with `with_overrides` calls these instead. Each method receives the
+/// class's own body as `sup`, Java's `super` call.
+pub trait HashContainerOverrides: Send + Sync {
+    /// `verifyLoadFactor(double loadFactor)`: validates the load factor
+    /// range and returns it.
+    fn verify_load_factor(&self, load_factor: f64, sup: &dyn Fn(f64) -> f64) -> f64 {
+        sup(load_factor)
+    }
+
+    /// `allocateBuffers(int arraySize)`: allocates new internal buffers.
+    fn allocate_buffers(&self, array_size: i32, sup: &mut dyn FnMut(i32)) {
+        sup(array_size)
+    }
+}

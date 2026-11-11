@@ -1,0 +1,6 @@
+# id	useDaylight	rawOffset	dstSavings	startYear	startMode	startMonth	startDay	startDayOfWeek	startTime	startTimeMode	endMode	endMonth	endDay	endDayOfWeek	endTime	endTimeMode	count	digest of (instant, getOffset) (TimeZoneOracle)
+DOM_NORTH	true	50400000	3600000	0	1	0	2	0	0	0	1	7	17	0	21600000	2	100	8feb6c598cb8ec3a
+DOM_SOUTH	true	0	3600000	0	1	11	1	0	7200000	0	1	3	1	0	7200000	0	98	575fec8f87dc3021
+DOW_LE	true	-18000000	1800000	0	4	2	21	1	7200000	1	4	9	7	1	7200000	1	96	5813429c1478c9c7
+DOW_IN_MONTH	true	-28800000	3600000	0	2	2	2	1	7200000	0	2	10	1	1	7200000	0	96	8fdbdb80cc3f17bc
+DOW_GE	true	36000000	3600000	0	3	9	1	1	7200000	2	2	3	-1	1	10800000	2	98	de023420188edc96

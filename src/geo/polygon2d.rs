@@ -61,7 +61,7 @@ impl Polygon2D {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when a hole cannot be
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when a hole cannot be
     /// turned into a component.
     pub fn create_from_polygon(polygon: &Polygon) -> Result<Arc<dyn Component2D>> {
         let gon_holes = polygon.get_holes();
@@ -89,7 +89,7 @@ impl Polygon2D {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when a hole cannot be
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when a hole cannot be
     /// turned into a component.
     pub fn create_from_xy_polygon(polygon: &XYPolygon) -> Result<Arc<dyn Component2D>> {
         let gon_holes = polygon.get_holes();

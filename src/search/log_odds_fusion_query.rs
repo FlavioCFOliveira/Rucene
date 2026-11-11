@@ -77,7 +77,7 @@ impl LogOddsFusionQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
     /// `alpha` is not in `[0, 1]`, or when the weights or bounds are invalid.
     pub fn new(
         clauses: Vec<Arc<dyn Query>>,
@@ -87,7 +87,7 @@ impl LogOddsFusionQuery {
         logit_max: Option<Vec<f32>>,
     ) -> Result<Self> {
         if alpha.is_nan() || !(0.0..=1.0).contains(&alpha) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "alpha must be in [0, 1], got {alpha}"
             )));
         }
@@ -95,7 +95,7 @@ impl LogOddsFusionQuery {
             None => None,
             Some(weights) => {
                 if weights.len() != clauses.len() {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "weights length {} must equal clauses size {}",
                         weights.len(),
                         clauses.len()
@@ -104,14 +104,14 @@ impl LogOddsFusionQuery {
                 let mut sum = 0f32;
                 for w in &weights {
                     if !w.is_finite() || *w < 0.0 {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "weights must be non-negative and finite, got {w}"
                         )));
                     }
                     sum += w;
                 }
                 if (sum - 1.0f32).abs() > 1e-3 {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "weights must sum to 1.0, got {sum}"
                     )));
                 }
@@ -121,14 +121,14 @@ impl LogOddsFusionQuery {
         let (logit_min, logit_max) = match (logit_min, logit_max) {
             (Some(min), Some(max)) => {
                 if min.len() != clauses.len() {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "logitMin length {} must equal clauses size {}",
                         min.len(),
                         clauses.len()
                     )));
                 }
                 if max.len() != clauses.len() {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "logitMax length {} must equal clauses size {}",
                         max.len(),
                         clauses.len()

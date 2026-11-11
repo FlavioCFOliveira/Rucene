@@ -21,7 +21,8 @@ impl<'a> PostingDecodingUtil<'a> {
 
     /// Reads `length` little-endian `i32` values into `dst[offset..]`.
     pub fn read_ints(&mut self, dst: &mut [i32], offset: i32, length: i32) -> Result<()> {
-        self.input.read_ints(dst, offset as usize, length as usize)
+        self.input
+            .read_ints(Some(dst), offset as usize, length as usize)
     }
 
     /// Core bulk split primitive.
@@ -42,7 +43,7 @@ impl<'a> PostingDecodingUtil<'a> {
     ) -> Result<()> {
         let count = count as usize;
         let c_index = c_index as usize;
-        self.input.read_ints(c, c_index, count)?;
+        self.input.read_ints(Some(c), c_index, count)?;
 
         let max_iter = ((b_shift - 1) / dec) as usize;
         for j in 0..=max_iter {

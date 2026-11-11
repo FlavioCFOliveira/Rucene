@@ -25,13 +25,13 @@ use crate::codecs::norms::NormsProducer;
 use crate::codecs::points::PointsReader;
 use crate::codecs::postings::FieldsProducer;
 use crate::codecs::stored_fields::StoredFieldsReader;
-use crate::codecs::stub::StoredFieldVisitor;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::codecs::DocValuesSkipper;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::index_reader::{
-    java_object_to_string, CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
+    add_closed_listener_to_set, java_object_to_string, CacheHelper, CacheKey, ClosedListener,
+    EnsureOpen, IndexReaderCore, StoredFields,
 };
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::{
@@ -45,7 +45,8 @@ use crate::index::{
 use crate::search::knn::KnnCollector;
 use crate::search::AcceptDocs;
 use crate::store::{Directory, IOContext, READONCE_IO_CONTEXT};
-use crate::util::{Bits, RefCount, RefCountRelease};
+use crate::util::bit_set::LiveDocs;
+use crate::util::{Bits, DenseLiveDocs, RefCount, RefCountRelease, SparseLiveDocs};
 
 // -----------------------------------------------------------------------------
 // SegmentCoreReaders
@@ -66,8 +67,9 @@ pub struct SegmentCoreReaders {
     segment: String,
     core_field_infos: FieldInfos,
     ref_count: AtomicI32,
+    /// Java's `coreCacheKey`, created with the core.
     core_cache_key: CacheKey,
-    core_closed_listeners: Mutex<Vec<Box<dyn ClosedListener>>>,
+    core_closed_listeners: Mutex<Vec<Arc<dyn ClosedListener>>>,
 }
 
 impl Debug for SegmentCoreReaders {
@@ -113,7 +115,7 @@ impl SegmentCoreReaders {
             segment: si.info.name.clone(),
             core_field_infos: FieldInfos::empty(),
             ref_count: AtomicI32::new(1),
-            core_cache_key: CacheKey,
+            core_cache_key: CacheKey::new(),
             core_closed_listeners: Mutex::new(Vec::new()),
         };
 
@@ -280,27 +282,32 @@ impl SegmentCoreReaders {
     /// cfsReader, normsProducer, pointsReader, knnVectorsReader)`
     /// (`SegmentCoreReaders.java:172-179`): every one is closed, in Java's
     /// order, and the first failure is returned.
+    ///
+    /// Java's fields are `final`: a closed producer stays where it is, and a
+    /// `SegmentReader` whose own `doClose()` ran without it being closed (a
+    /// `FilterCodecReader` calls its delegate's `doClose()`,
+    /// `FilterCodecReader.java:123-126`) still hands it out — cloning a closed
+    /// stored-fields reader throws `this FieldsReader is closed`, cloning a
+    /// closed term-vectors reader throws its closed input's `Already closed.`,
+    /// and `checkIntegrity()` reaches the closed postings first. The producers
+    /// are therefore closed in place, never taken out of their slots.
     fn close_producers(&self) -> Result<()> {
         use crate::util::IOUtils;
         IOUtils::close([
-            IOUtils::closeable(|| close_lock_arc(&self.fields, |producer| producer.close())),
+            IOUtils::closeable(|| close_lock_shared(&self.fields, |producer| producer.close())),
             IOUtils::closeable(|| {
                 close_lock(&self.term_vectors_reader_orig, |reader| reader.close())
             }),
             IOUtils::closeable(|| close_lock(&self.fields_reader_orig, |reader| reader.close())),
-            IOUtils::closeable(|| match self.cfs_reader.write() {
-                Ok(mut guard) => match guard.take() {
-                    Some(mut reader) => reader.close(),
-                    None => Ok(()),
-                },
-                Err(_) => Ok(()),
+            IOUtils::closeable(|| close_lock(&self.cfs_reader, |reader| reader.close())),
+            IOUtils::closeable(|| {
+                close_lock_shared(&self.norms_producer, |producer| producer.close())
             }),
             IOUtils::closeable(|| {
-                close_lock_arc(&self.norms_producer, |producer| producer.close())
+                close_lock_shared(&self.points_reader, |producer| producer.close())
             }),
-            IOUtils::closeable(|| close_lock_arc(&self.points_reader, |producer| producer.close())),
             IOUtils::closeable(|| {
-                close_lock_arc(&self.knn_vectors_reader, |producer| producer.close())
+                close_lock_shared(&self.knn_vectors_reader, |producer| producer.close())
             }),
         ])
     }
@@ -309,14 +316,17 @@ impl SegmentCoreReaders {
         let guard = self.core_closed_listeners.lock().map_err(|_| {
             LuceneError::illegal_state("core closed listeners lock poisoned".to_string())
         })?;
-        for listener in guard.iter() {
-            listener.on_close(CacheKey)?;
-        }
-        Ok(())
+        // `IOUtils.applyToAll(coreClosedListeners, l -> l.onClose(cacheHelper.getKey()))`
+        // (`SegmentCoreReaders.java:203-207`): every listener runs; the first
+        // error is returned with the later ones suppressed into it.
+        crate::util::IOUtils::apply_to_all(guard.iter().map(Some).collect(), |listener| {
+            listener.on_close(self.core_cache_key.clone())
+        })
     }
 }
 
-/// Closes the value stored in `lock`, taking ownership of it.
+/// Closes the value stored in `lock` in place: the closed value stays in its
+/// slot, as Java's `final` field keeps the closed producer.
 ///
 /// The helper is generic over a sized `T` (e.g. `Box<dyn StoredFieldsReader>`)
 /// so that it works through a concrete `RwLock` without trait-object
@@ -328,43 +338,26 @@ fn close_lock<T>(
     let mut guard = lock
         .write()
         .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
-    if let Some(mut value) = guard.take() {
-        close(&mut value)?;
+    if let Some(value) = guard.as_mut() {
+        close(value)?;
     }
     Ok(())
 }
 
-/// Closes a producer held behind an `Arc`, taking it out of `lock` first.
-///
-/// The producers a `SegmentCoreReaders` owns are shared through `Arc` so that
-/// [`CodecReader`](crate::index::CodecReader) can hand them out, which mirrors
-/// Java's sharing of the producer object. Closing therefore needs sole
-/// ownership: when another `Arc` is still outstanding the close is skipped, as
-/// the producer is still in use.
-fn close_lock_arc<T: ?Sized>(
+/// Closes a producer held behind an `Arc` in place whoever else still shares
+/// it, as Java's `close()` closes the one producer object: the closed producer
+/// stays in its slot, as Java's `final` field keeps it.
+fn close_lock_shared<T: ?Sized>(
     lock: &RwLock<Option<Arc<T>>>,
-    mut close: impl FnMut(&mut T) -> Result<()>,
+    close: impl FnOnce(&T) -> Result<()>,
 ) -> Result<()> {
-    let mut guard = lock
-        .write()
-        .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
-    if let Some(mut value) = guard.take() {
-        if let Some(inner) = Arc::get_mut(&mut value) {
-            close(inner)?;
-        }
-    }
-    Ok(())
-}
-
-/// Checks the integrity of the value stored in `lock`.
-fn check_lock<T>(lock: &RwLock<Option<T>>, mut check: impl FnMut(&T) -> Result<()>) -> Result<()> {
     let guard = lock
         .read()
         .map_err(|_| LuceneError::illegal_state("codec reader lock poisoned".to_string()))?;
-    if let Some(ref value) = *guard {
-        check(value)?;
+    match guard.as_deref() {
+        Some(inner) => close(inner),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 impl Drop for SegmentCoreReaders {
@@ -391,10 +384,10 @@ impl CacheHelper for SegmentCoreReaders {
     }
 
     /// The `addClosedListener` of the same anonymous `CacheHelper`, which
-    /// appends to `coreClosedListeners`.
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    /// adds to the `coreClosedListeners` set (`SegmentCoreReaders.java:194-196`).
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
         if let Ok(mut listeners) = self.core_closed_listeners.lock() {
-            listeners.push(listener);
+            add_closed_listener_to_set(&mut listeners, listener);
         }
     }
 }
@@ -495,7 +488,7 @@ impl SegmentDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the segment carries no codec,
+    /// Returns [`LuceneErrorKind::IllegalState`] when the segment carries no codec,
     /// and propagates whatever the doc-values format raises while opening the
     /// generation's files.
     fn new_doc_values_producer(
@@ -513,12 +506,13 @@ impl SegmentDocValues {
             (&*si.info.directory, radix36(gen))
         };
 
-        // The read state lists only the fields relevant to this generation.
+        // The read state lists only the fields relevant to this generation;
+        // its context is `IOContext.DEFAULT` (`SegmentDocValues.java:48-49`).
         let state = crate::codecs::state::SegmentReadState::with_suffix(
             dv_dir,
             &si.info,
             infos,
-            &*READONCE_IO_CONTEXT,
+            &*crate::store::DEFAULT_IO_CONTEXT,
             segment_suffix,
         );
 
@@ -745,11 +739,11 @@ impl DocValuesProducer for SharedDocValuesProducer {
         }
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         let mut guard = self.producer.write().map_err(|_| {
             LuceneError::illegal_state("doc-values producer lock poisoned".to_string())
         })?;
-        if let Some(mut producer) = guard.take() {
+        if let Some(producer) = guard.take() {
             producer.close()?;
         }
         Ok(())
@@ -841,10 +835,11 @@ impl SegmentDocValuesProducer {
 impl DocValuesProducer for SegmentDocValuesProducer {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -855,10 +850,11 @@ impl DocValuesProducer for SegmentDocValuesProducer {
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -869,10 +865,11 @@ impl DocValuesProducer for SegmentDocValuesProducer {
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -886,10 +883,11 @@ impl DocValuesProducer for SegmentDocValuesProducer {
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -900,10 +898,11 @@ impl DocValuesProducer for SegmentDocValuesProducer {
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         {
+            debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -916,10 +915,11 @@ impl DocValuesProducer for SegmentDocValuesProducer {
     /// (`index/SegmentDocValuesProducer.java:126-131`): the answer of the
     /// producer serving the field, `None` included.
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        debug_assert!(self.dv_producers_by_field.contains_key(&field.number));
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "no doc-values producer for field {}",
                     field.name
                 ))
@@ -940,7 +940,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         // Reference counting is performed explicitly by the owner
         // (`SegmentReader::do_close`) using `dv_gens`.
         Ok(())
@@ -999,7 +999,7 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DocValuesLeafReader does not support term vectors".to_string(),
         ))
     }
@@ -1013,13 +1013,13 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DocValuesLeafReader does not support stored fields".to_string(),
         ))
     }
 
     fn do_close(&self) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DocValuesLeafReader does not support close".to_string(),
         ))
     }
@@ -1033,7 +1033,7 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DocValuesLeafReader does not support terms".to_string(),
         ))
     }
@@ -1231,7 +1231,7 @@ impl SegmentReader {
         context: &dyn IOContext,
     ) -> Result<Self> {
         let max_doc = segment_info.info.max_doc()?;
-        let si = segment_info.clone();
+        let si = segment_info.java_clone(); // `this.si = si.clone()` (`SegmentReader.java:83`)
         let original_si = segment_info;
         let dir: &dyn Directory = &*original_si.info.directory;
 
@@ -1271,6 +1271,7 @@ impl SegmentReader {
                         &*READONCE_IO_CONTEXT,
                     )?))
                 } else {
+                    debug_assert!(original_si_for_closure.get_del_count() == 0);
                     None
                 };
                 let hard_live_docs = live_docs.clone();
@@ -1303,12 +1304,19 @@ impl SegmentReader {
                 )?;
                 drop(cfs_dir_guard);
 
-                let reader_cache_helper = SegmentReaderCacheHelper::new();
-                let core_cache_helper =
-                    SegmentReaderCoreCacheHelper::new(Arc::clone(&core_readers));
+                // The two helpers are anonymous inner classes in Java, whose
+                // `addClosedListener` calls this reader's `ensureOpen()`
+                // (`SegmentReader.java:339-343, 363-367`); they reach the
+                // reader's state through a handle on its core.
+                let core = IndexReaderCore::new();
+                let reader_cache_helper = SegmentReaderCacheHelper::new(core.ensure_open_handle());
+                let core_cache_helper = SegmentReaderCoreCacheHelper::new(
+                    Arc::clone(&core_readers),
+                    core.ensure_open_handle(),
+                );
 
                 Ok(Self {
-                    core: IndexReaderCore::new(),
+                    core,
                     segment_info: si,
                     original_segment_info: original_si_for_closure,
                     meta_data,
@@ -1358,25 +1366,51 @@ impl SegmentReader {
         num_docs: i32,
         is_nrt: bool,
     ) -> Result<Self> {
+        Self::new_shared_bits(
+            segment_info,
+            parent,
+            live_docs.map(SharedBits::new),
+            hard_live_docs.map(SharedBits::new),
+            num_docs,
+            is_nrt,
+        )
+    }
+
+    /// [`new_shared`](Self::new_shared) over bits handed in as shared handles,
+    /// so that a caller passing the same `Bits` object twice — as Java's
+    /// `StandardDirectoryReader` does for a reader that is not near-real-time
+    /// — keeps it one object (`SegmentReader.java:151`).
+    pub(crate) fn new_shared_bits(
+        segment_info: SegmentCommitInfo,
+        parent: &SegmentReader,
+        live_docs: Option<SharedBits>,
+        hard_live_docs: Option<SharedBits>,
+        num_docs: i32,
+        is_nrt: bool,
+    ) -> Result<Self> {
         let max_doc = segment_info.info.max_doc()?;
         if num_docs > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numDocs={num_docs} but maxDoc={max_doc}"
             )));
         }
         if let Some(ref bits) = live_docs {
             if bits.length() != max_doc as usize {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "maxDoc={max_doc} but liveDocs.size()={}",
                     bits.length()
                 )));
             }
         }
 
-        let si = segment_info.clone();
+        let si = segment_info.java_clone(); // `this.si = si.clone()` (`SegmentReader.java:146`)
         let original_si = segment_info;
-        let live_docs = live_docs.map(SharedBits::new);
-        let hard_live_docs = hard_live_docs.map(SharedBits::new);
+        // `SegmentReader.java:151`.
+        debug_assert!(Self::assert_live_docs(
+            is_nrt,
+            hard_live_docs.as_ref(),
+            live_docs.as_ref()
+        ));
 
         parent.core_readers.inc_ref()?;
         let core_readers = Arc::clone(&parent.core_readers);
@@ -1413,12 +1447,19 @@ impl SegmentReader {
                 )?;
                 drop(cfs_dir_guard);
 
-                let reader_cache_helper = SegmentReaderCacheHelper::new();
-                let core_cache_helper =
-                    SegmentReaderCoreCacheHelper::new(Arc::clone(&core_readers));
+                // The two helpers are anonymous inner classes in Java, whose
+                // `addClosedListener` calls this reader's `ensureOpen()`
+                // (`SegmentReader.java:339-343, 363-367`); they reach the
+                // reader's state through a handle on its core.
+                let core = IndexReaderCore::new();
+                let reader_cache_helper = SegmentReaderCacheHelper::new(core.ensure_open_handle());
+                let core_cache_helper = SegmentReaderCoreCacheHelper::new(
+                    Arc::clone(&core_readers),
+                    core.ensure_open_handle(),
+                );
 
                 Ok(Self {
-                    core: IndexReaderCore::new(),
+                    core,
                     segment_info: si,
                     original_segment_info: original_si_for_closure,
                     meta_data: parent.meta_data.clone(),
@@ -1535,6 +1576,18 @@ impl SegmentReader {
         self.is_nrt
     }
 
+    /// The live docs as the shared handle this reader holds, Java's
+    /// `liveDocs` object itself.
+    pub(crate) fn live_docs_shared(&self) -> Option<SharedBits> {
+        self.live_docs.clone()
+    }
+
+    /// The hard live docs as the shared handle this reader holds, Java's
+    /// `hardLiveDocs` object itself.
+    pub(crate) fn hard_live_docs_shared(&self) -> Option<SharedBits> {
+        self.hard_live_docs.clone()
+    }
+
     /// Returns the live docs that are not hard-deleted, if any.
     pub fn get_hard_live_docs(&self) -> Option<Box<dyn Bits>> {
         self.hard_live_docs
@@ -1558,7 +1611,10 @@ impl SegmentReader {
         let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
             LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
         })?;
-        Ok(guard.as_ref().map(|reader| reader.clone_reader()))
+        guard
+            .as_ref()
+            .map(|reader| reader.clone_reader())
+            .transpose()
     }
 
     /// Returns the underlying term-vectors reader.
@@ -1571,7 +1627,10 @@ impl SegmentReader {
             .map_err(|_| {
                 LuceneError::illegal_state("term vectors reader lock poisoned".to_string())
             })?;
-        Ok(guard.as_ref().map(|reader| reader.clone_reader()))
+        guard
+            .as_ref()
+            .map(|reader| reader.clone_reader())
+            .transpose()
     }
 
     /// Returns the underlying norms producer.
@@ -1601,8 +1660,11 @@ impl SegmentReader {
     }
 
     /// Returns the underlying KNN vectors reader.
+    ///
+    /// Equivalent to `SegmentReader.getVectorReader()` (`SegmentReader.java:282-285`),
+    /// the one producer accessor of the class that does not call
+    /// `ensureOpen()`.
     pub fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
-        self.ensure_open()?;
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
             LuceneError::illegal_state("knn vectors reader lock poisoned".to_string())
         })?;
@@ -1611,6 +1673,14 @@ impl SegmentReader {
 }
 
 impl LeafReader for SegmentReader {
+    /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
+    /// is `true`.
+    fn as_codec_reader(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::index::codec_reader::CodecReader>> {
+        Some(self)
+    }
+
     fn as_segment_reader(&self) -> Option<&SegmentReader> {
         Some(self)
     }
@@ -1631,7 +1701,7 @@ impl LeafReader for SegmentReader {
         if let Some(reader) = guard.as_ref() {
             // `TermVectorsReader` extends `TermVectors`, so the codec reader
             // itself is the caller's `TermVectors` (`CodecReader.java:107-114`).
-            Ok(reader.clone_reader())
+            Ok(reader.clone_reader()?)
         } else {
             Ok(Box::new(crate::index::leaf_reader::EmptyTermVectors))
         }
@@ -1645,21 +1715,11 @@ impl LeafReader for SegmentReader {
         self.max_doc
     }
 
+    /// `CodecReader.storedFields()`, `final` (`CodecReader.java:86-104`):
+    /// a view over the clone [`get_fields_reader`](SegmentReader::get_fields_reader)
+    /// answers, which checks the document bounds before it dispatches.
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        self.ensure_open()?;
-        let guard = self.core_readers.fields_reader_orig.read().map_err(|_| {
-            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
-        })?;
-        if let Some(_reader) = guard.as_ref() {
-            Ok(Box::new(CodecStoredFields {
-                core: Arc::clone(&self.core_readers),
-                max_doc: self.max_doc,
-            }))
-        } else {
-            Err(LuceneError::already_closed(
-                "stored fields reader is closed".to_string(),
-            ))
-        }
+        crate::index::codec_reader::final_members::stored_fields(self)
     }
 
     fn do_close(&self) -> Result<()> {
@@ -1908,17 +1968,35 @@ impl LeafReader for SegmentReader {
         }
     }
 
+    /// Equivalent to `SegmentReader.getFieldInfos()` (`SegmentReader.java:233-237`),
+    /// which calls `ensureOpen()` first.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
     fn get_field_infos(&self) -> FieldInfos {
+        self.core.ensure_open_unchecked();
         self.field_infos.clone()
     }
 
+    /// Equivalent to `SegmentReader.getLiveDocs()` (`SegmentReader.java:213-217`),
+    /// which calls `ensureOpen()` first.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        self.core.ensure_open_unchecked();
         self.live_docs
             .as_ref()
             .map(|bits| Box::new(bits.clone()) as Box<dyn Bits>)
     }
 
+    /// Equivalent to `CodecReader.getPointValues(String)`
+    /// (`CodecReader.java:221-231`), which calls `ensureOpen()` before it
+    /// looks at the field.
     fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn IndexPointValues>>> {
+        self.ensure_open()?;
         // A field has point values iff its FieldInfo declares a non-zero
         // `point_dimension_count` (set when the field is first indexed with a
         // point value). Fields without points return `None`, matching Lucene's
@@ -1939,30 +2017,11 @@ impl LeafReader for SegmentReader {
         guard.get_values(field)
     }
 
+    /// Equivalent to `SegmentReader.checkIntegrity()`
+    /// (`SegmentReader.java:399-405`): `CodecReader.checkIntegrity()` through
+    /// this reader's own accessors, in Java's order, then the compound file.
     fn check_integrity(&self) -> Result<()> {
-        self.ensure_open()?;
-        check_lock(&self.core_readers.fields, |producer| {
-            producer.check_integrity()
-        })?;
-        check_lock(&self.core_readers.norms_producer, |producer| {
-            producer.check_integrity()
-        })?;
-        if let Some(ref producer) = self.doc_values_producer {
-            producer.check_integrity()?;
-        }
-        check_lock(&self.core_readers.fields_reader_orig, |reader| {
-            reader.check_integrity()
-        })?;
-        check_lock(&self.core_readers.term_vectors_reader_orig, |reader| {
-            reader.check_integrity()
-        })?;
-        check_lock(&self.core_readers.points_reader, |producer| {
-            producer.check_integrity()
-        })?;
-        check_lock(&self.core_readers.knn_vectors_reader, |producer| {
-            producer.check_integrity()
-        })?;
-
+        crate::index::codec_reader::final_members::check_integrity(self)?;
         if let Ok(guard) = self.core_readers.cfs_reader.read() {
             if let Some(reader) = guard.as_ref() {
                 reader.check_integrity()?;
@@ -1994,12 +2053,8 @@ impl SegmentReader {
     /// `hardLiveDocs == liveDocs`, a *reference* comparison — its constructors
     /// are handed the same `Bits` object twice. This port's [`SharedBits`]
     /// names that sharing with an `Arc`, so the identity test is
-    /// [`Arc::ptr_eq`] over the two handles. Only
-    /// [`SegmentReader::new`] can satisfy it: the reopen constructor
-    /// [`SegmentReader::new_shared`] receives its two views as separate owned
-    /// `Box<dyn Bits>`, which it must wrap in two distinct handles, so the
-    /// identity Java's assert tests is not expressible there and the check is
-    /// not run from it.
+    /// [`Arc::ptr_eq`] over the two handles; a caller handing the same bits
+    /// twice passes the same handle ([`SegmentReader::new_shared_bits`]).
     fn assert_live_docs(
         is_nrt: bool,
         hard_live_docs: Option<&SharedBits>,
@@ -2014,7 +2069,10 @@ impl SegmentReader {
             debug_assert!(
                 match (hard_live_docs, live_docs) {
                     (None, None) => true,
-                    (Some(hard), Some(live)) => Arc::ptr_eq(&hard.0, &live.0),
+                    // Java's `hardLiveDocs == liveDocs`: the identity of the
+                    // shared bits, which a reopen hands in through two
+                    // handles (`SegmentReader.java:170-176`).
+                    (Some(hard), Some(live)) => hard.identity() == live.identity(),
                     _ => false,
                 },
                 "non-nrt case must have identical liveDocs"
@@ -2122,58 +2180,94 @@ impl Bits for SharedBits {
     fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
         self.0.bits_as_any()
     }
+
+    /// Java's `liveDocs instanceof LiveDocs` sees the shared bits themselves:
+    /// the `SparseLiveDocs` or `DenseLiveDocs` `Lucene90LiveDocsFormat`
+    /// reads (`Lucene90LiveDocsFormat.java:108-128`) are [`LiveDocs`], so the
+    /// handle answers as a [`SharedLiveDocs`] over them.
+    fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
+        SharedLiveDocs::live_docs_of(self.0.as_ref())?;
+        Some(Box::new(SharedLiveDocs(self.0)))
+    }
 }
 
-/// `StoredFields` implementation used by `SegmentReader` that performs
-/// document-id bounds checks before delegating to the codec reader.
-#[derive(Debug)]
-struct CodecStoredFields {
-    core: Arc<SegmentCoreReaders>,
-    max_doc: i32,
-}
+/// A [`SharedBits`] handle whose shared bits are [`LiveDocs`] (the
+/// `SparseLiveDocs` or `DenseLiveDocs` of a segment), answering as them.
+///
+/// Rust cannot narrow the shared `Arc<dyn Bits>` to a `dyn LiveDocs`, so each
+/// call reaches the concrete live docs through [`Bits::bits_as_any`].
+struct SharedLiveDocs(Arc<dyn Bits>);
 
-impl StoredFields for CodecStoredFields {
-    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
-        check_index(doc_id, self.max_doc)?;
-        let guard = self.core.fields_reader_orig.read().map_err(|_| {
-            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
-        })?;
-        if let Some(reader) = guard.as_ref() {
-            reader.prefetch(doc_id)
-        } else {
-            Err(LuceneError::already_closed(
-                "stored fields reader is closed".to_string(),
-            ))
+impl SharedLiveDocs {
+    /// The live docs `bits` are, when they are one of the two `LiveDocs`
+    /// implementations.
+    fn live_docs_of(bits: &dyn Bits) -> Option<&dyn LiveDocs> {
+        let any = bits.bits_as_any()?;
+        if let Some(sparse) = any.downcast_ref::<SparseLiveDocs>() {
+            return Some(sparse);
         }
+        any.downcast_ref::<DenseLiveDocs>()
+            .map(|dense| dense as &dyn LiveDocs)
     }
 
-    fn document_with_visitor(
-        &self,
-        doc_id: i32,
-        visitor: &mut dyn StoredFieldVisitor,
-    ) -> Result<()> {
-        check_index(doc_id, self.max_doc)?;
-        let guard = self.core.fields_reader_orig.read().map_err(|_| {
-            LuceneError::illegal_state("stored fields reader lock poisoned".to_string())
-        })?;
-        if let Some(reader) = guard.as_ref() {
-            reader.document(doc_id, visitor)
-        } else {
-            Err(LuceneError::already_closed(
-                "stored fields reader is closed".to_string(),
-            ))
-        }
+    /// The shared live docs; [`SharedBits::into_live_docs`] builds this
+    /// handle only over bits [`live_docs_of`](Self::live_docs_of) accepts.
+    fn live_docs(&self) -> &dyn LiveDocs {
+        Self::live_docs_of(self.0.as_ref())
+            .expect("a SharedLiveDocs is only built over SparseLiveDocs or DenseLiveDocs")
     }
 }
 
-/// Checks that `doc_id` is in the range `[0, max_doc)`.
-fn check_index(doc_id: i32, max_doc: i32) -> Result<()> {
-    if doc_id < 0 || doc_id >= max_doc {
-        return Err(LuceneError::IllegalArgument(format!(
-            "docID must be 0..{max_doc} but was {doc_id}"
-        )));
+impl Debug for SharedLiveDocs {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedLiveDocs")
+            .field("length", &self.0.length())
+            .finish()
     }
-    Ok(())
+}
+
+impl Bits for SharedLiveDocs {
+    fn get(&self, index: usize) -> bool {
+        self.0.get(index)
+    }
+
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
+    }
+
+    fn apply_mask(&self, bit_set: &mut crate::util::FixedBitSet, offset: usize) -> Result<()> {
+        self.0.apply_mask(bit_set, offset)
+    }
+
+    fn length(&self) -> usize {
+        self.0.length()
+    }
+
+    fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
+        Some(self)
+    }
+
+    fn identity(&self) -> *const () {
+        self.0.identity()
+    }
+
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.0.bits_as_any()
+    }
+}
+
+impl LiveDocs for SharedLiveDocs {
+    fn live_docs_iterator(&self) -> Result<Box<dyn crate::search::DocIdSetIterator>> {
+        self.live_docs().live_docs_iterator()
+    }
+
+    fn deleted_docs_iterator(&self) -> Result<Box<dyn crate::search::DocIdSetIterator>> {
+        self.live_docs().deleted_docs_iterator()
+    }
+
+    fn deleted_count(&self) -> i32 {
+        self.live_docs().deleted_count()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -2181,11 +2275,19 @@ fn check_index(doc_id: i32, max_doc: i32) -> Result<()> {
 // -----------------------------------------------------------------------------
 
 /// Reader-level cache helper for `SegmentReader`.
+///
+/// Java keeps one anonymous `CacheHelper` per reader, with one `cacheKey`
+/// object (`SegmentReader.java:330-349`), so every `getReaderCacheHelper()`
+/// answers the same key. [`SegmentReader::get_reader_cache_helper`] hands out
+/// clones of this helper; a [`CacheKey`] clone is the same key object, so every
+/// clone answers the one key.
 #[derive(Clone)]
 struct SegmentReaderCacheHelper {
     key: CacheKey,
-    listeners: Arc<Mutex<Vec<Box<dyn ClosedListener>>>>,
+    listeners: Arc<Mutex<Vec<Arc<dyn ClosedListener>>>>,
     closed: Arc<AtomicBool>,
+    /// The owning reader's `ensureOpen()`.
+    reader: EnsureOpen,
 }
 
 impl Debug for SegmentReaderCacheHelper {
@@ -2197,11 +2299,12 @@ impl Debug for SegmentReaderCacheHelper {
 }
 
 impl SegmentReaderCacheHelper {
-    fn new() -> Self {
+    fn new(reader: EnsureOpen) -> Self {
         Self {
-            key: CacheKey,
+            key: CacheKey::new(),
             listeners: Arc::new(Mutex::new(Vec::new())),
             closed: Arc::new(AtomicBool::new(false)),
+            reader,
         }
     }
 
@@ -2212,10 +2315,12 @@ impl SegmentReaderCacheHelper {
         let guard = self.listeners.lock().map_err(|_| {
             LuceneError::illegal_state("reader closed listeners lock poisoned".to_string())
         })?;
-        for listener in guard.iter() {
-            listener.on_close(CacheKey)?;
-        }
-        Ok(())
+        // `IOUtils.applyToAll(readerClosedListeners, l -> l.onClose(readerCacheHelper.getKey()))`
+        // (`SegmentReader.java:323-327`): every listener runs; the first error
+        // is returned with the later ones suppressed into it.
+        crate::util::IOUtils::apply_to_all(guard.iter().map(Some).collect(), |listener| {
+            listener.on_close(self.key.clone())
+        })
     }
 }
 
@@ -2224,22 +2329,36 @@ impl CacheHelper for SegmentReaderCacheHelper {
         &self.key
     }
 
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    /// Equivalent to the anonymous helper's `addClosedListener`
+    /// (`SegmentReader.java:338-343`): `ensureOpen()` on the reader, then the
+    /// listener is recorded.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
+        self.reader.ensure_open_unchecked();
         if let Ok(mut listeners) = self.listeners.lock() {
-            listeners.push(listener);
+            add_closed_listener_to_set(&mut listeners, listener);
         }
     }
 }
 
 /// Wrapper around the core cache helper used by `SegmentReader`.
+///
+/// Equivalent to `SegmentReader.coreCacheHelper` (`SegmentReader.java:350-369`),
+/// which wraps the core's helper "to add ensureOpen() calls that make sure
+/// users do not register closed listeners on closed indices".
 #[derive(Clone, Debug)]
 struct SegmentReaderCoreCacheHelper {
     core: Arc<SegmentCoreReaders>,
+    /// The owning reader's `ensureOpen()`.
+    reader: EnsureOpen,
 }
 
 impl SegmentReaderCoreCacheHelper {
-    fn new(core: Arc<SegmentCoreReaders>) -> Self {
-        Self { core }
+    fn new(core: Arc<SegmentCoreReaders>, reader: EnsureOpen) -> Self {
+        Self { core, reader }
     }
 }
 
@@ -2248,7 +2367,14 @@ impl CacheHelper for SegmentReaderCoreCacheHelper {
         self.core.get_key()
     }
 
-    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+    /// `ensureOpen()` on the reader, then the core helper's
+    /// `addClosedListener` (`SegmentReader.java:362-367`).
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
+    fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
+        self.reader.ensure_open_unchecked();
         self.core.add_closed_listener(listener);
     }
 }
@@ -2286,9 +2412,9 @@ impl crate::internal::tests_hooks::SegmentReaderAccess for SegmentReaderAccessIm
 pub(crate) fn register_test_secrets() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
     INITIALIZED.call_once(|| {
-        crate::internal::tests_hooks::TestSecrets::set_segment_reader_access(Arc::new(
+        crate::internal::tests_hooks::TestSecrets::set_segment_reader_access(Some(Arc::new(
             SegmentReaderAccessImpl,
-        ))
+        )))
         .expect("INVARIANT: SegmentReader's static initializer runs once, from this file");
     });
 }
@@ -2296,6 +2422,7 @@ pub(crate) fn register_test_secrets() {
 #[cfg(test)]
 mod shared_bits_tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::util::FixedBitSet;
 
     /// A segment's live docs answer `applyMask` with `FixedBitSet.applyMask`,
@@ -2312,7 +2439,7 @@ mod shared_bits_tests {
         mask.set(20);
         assert!(matches!(
             shared.apply_mask(&mut mask, 0),
-            Err(LuceneError::IllegalArgument(ref message))
+            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. })
                 if message == "Some bits are set beyond the end of live docs"
         ));
     }
@@ -2336,6 +2463,7 @@ mod tests {
     use crate::codecs::stored_fields::{
         StoredFieldsFormat, StoredFieldsReader, StoredFieldsWriter,
     };
+    use crate::codecs::stub::StoredFieldVisitor;
     use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVectorsWriter};
     use crate::codecs::tests::{
         test_segment_commit_info, test_segment_info, DummyCodec, DummyFormat,
@@ -2368,7 +2496,10 @@ mod tests {
         assert_eq!(reader.get_segment_name(), "_0");
         assert_eq!(LeafReader::max_doc(&reader), 7);
         assert_eq!(LeafReader::num_docs(&reader), 7);
-        assert_eq!(reader.get_segment_info(), &info);
+        // `getSegmentInfo()` returns `si`, the reader's `si.clone()`
+        // (`SegmentReader.java:72`): a copy, not the caller's object.
+        assert!(!reader.get_segment_info().same_object(&info));
+        assert_eq!(reader.get_segment_info().info.name, info.info.name);
         assert!(!reader.has_deletions());
     }
 
@@ -2390,6 +2521,37 @@ mod tests {
         assert_eq!(reader.core_readers().ref_count(), 1);
         reader.close().unwrap();
         assert_eq!(reader.core_readers().ref_count(), 0);
+    }
+
+    /// rmp #261: the core cache key `LRUQueryCache` keys its leaves on is the
+    /// core's own object, distinct from every other live core's key, and the
+    /// core cache helper answers that same key — the identity Java's
+    /// `coreCacheKey` object has. Two reader cache helpers of one reader also
+    /// answer one key (`SegmentReader.java:330-349`).
+    #[test]
+    fn core_cache_keys_are_distinct_objects() {
+        let readers: Vec<SegmentReader> = (0..4)
+            .map(|i| {
+                SegmentReader::new(
+                    test_segment_commit_info(&format!("_{i}"), 5),
+                    Version::LATEST.major as i32,
+                    &*DEFAULT_IO_CONTEXT,
+                )
+                .unwrap()
+            })
+            .collect();
+        let mut keys = std::collections::HashSet::new();
+        for reader in &readers {
+            let core = reader.core_readers();
+            let helper = reader.get_core_cache_helper().unwrap();
+            assert_eq!(helper.get_key(), core.get_key());
+            let first = LeafReader::get_reader_cache_helper(reader).unwrap();
+            let second = LeafReader::get_reader_cache_helper(reader).unwrap();
+            assert_eq!(first.get_key(), second.get_key());
+            assert_ne!(first.get_key(), core.get_key());
+            keys.insert(core.get_key().clone());
+        }
+        assert_eq!(keys.len(), readers.len());
     }
 
     #[test]
@@ -2515,7 +2677,7 @@ mod tests {
             }))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -2558,7 +2720,7 @@ mod tests {
             }))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -2593,19 +2755,19 @@ mod tests {
             self.inner.check_integrity()
         }
 
-        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(RecordingStoredFieldsReader::new(
-                self.inner.clone_reader(),
+        fn clone_reader(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(RecordingStoredFieldsReader::new(
+                self.inner.clone_reader()?,
                 self.closed.clone(),
-            ))
+            )))
         }
 
-        fn get_merge_instance(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(RecordingStoredFieldsReader {
-                inner: self.inner.get_merge_instance(),
+        fn get_merge_instance(&self) -> Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(RecordingStoredFieldsReader {
+                inner: self.inner.get_merge_instance()?,
                 closed: self.closed.clone(),
                 merge_instance: true,
-            })
+            }))
         }
 
         fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -2643,19 +2805,19 @@ mod tests {
             self.inner.check_integrity()
         }
 
-        fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(RecordingTermVectorsReader::new(
-                self.inner.clone_reader(),
+        fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+            Ok(Box::new(RecordingTermVectorsReader::new(
+                self.inner.clone_reader()?,
                 self.closed.clone(),
-            ))
+            )))
         }
 
-        fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(RecordingTermVectorsReader {
-                inner: self.inner.get_merge_instance(),
+        fn get_merge_instance(&self) -> Result<Box<dyn TermVectorsReader>> {
+            Ok(Box::new(RecordingTermVectorsReader {
+                inner: self.inner.get_merge_instance()?,
                 closed: self.closed.clone(),
                 merge_instance: true,
-            })
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -2711,7 +2873,7 @@ mod tests {
             }))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -2790,7 +2952,7 @@ mod tests {
             self.inner.get_off_heap_byte_size(field_info)
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -2861,7 +3023,7 @@ mod tests {
         /// `UnsupportedOperationException`; `SegmentDocValues` propagates a
         /// close error as Java's `RefCount.decRef` does, and a real producer
         /// closes cleanly, so the dummy is not closed.
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             Ok(())
         }
@@ -2960,7 +3122,7 @@ mod tests {
             self.inner.get_pending_deletions()
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closed.store(true, Ordering::SeqCst);
             self.inner.close()
         }
@@ -3552,7 +3714,7 @@ mod tests {
         del_docs.set(3);
         let del_count = del_docs.cardinality() as i32;
         let info = {
-            let mut i = test_segment_commit_info("_0", max_doc);
+            let i = test_segment_commit_info("_0", max_doc);
             i.set_del_count(del_count).unwrap();
             i
         };
@@ -3563,13 +3725,19 @@ mod tests {
             &*DEFAULT_IO_CONTEXT,
         )
         .unwrap();
-        let reader = SegmentReader::new_shared(
+        // Not NRT: `liveDocs` and `hardLiveDocs` are one object
+        // (`SegmentReader.java:151`).
+        let live_docs = SharedBits::new(Box::new(del_docs));
+        let reader = SegmentReader::new_shared_bits(
             info,
             &parent,
-            Some(Box::new(del_docs)),
-            Some(Box::new(FixedBitSet::new(max_doc as usize))),
+            Some(live_docs.clone()),
+            Some(live_docs),
             max_doc - del_count,
-            false,
+            // Distinct live-docs and hard-live-docs instances are only legal
+            // for an NRT reader: the non-NRT case asserts they are the same
+            // object (`SegmentReader.java:170-176`).
+            true,
         )
         .unwrap();
 
@@ -3607,8 +3775,8 @@ mod tests {
             Ok(())
         }
 
-        fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(Self::default())
+        fn clone_reader(&self) -> Result<Box<dyn TermVectorsReader>> {
+            Ok(Box::new(Self::default()))
         }
     }
 
@@ -3737,7 +3905,7 @@ mod segment_doc_values_ref_count_tests {
         fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
             Err(LuceneError::illegal_state("no merge instance".to_string()))
         }
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             self.closes.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
                 return Err(LuceneError::illegal_state("close failed".to_string()));
@@ -3793,6 +3961,7 @@ mod core_close_order_tests {
     use super::*;
     use crate::codecs::tests::{CloseLog, CloseTrackingDirectory};
     use crate::document::{Document, Store, TextField};
+    use crate::error::LuceneErrorKind;
     use crate::index::index_reader::{CacheHelper, CacheKey, ClosedListener};
     use crate::index::index_writer::IndexWriter;
     use crate::index::index_writer_config::IndexWriterConfig;
@@ -3838,7 +4007,7 @@ mod core_close_order_tests {
         let seen = Arc::new(std::sync::Mutex::new(None));
         CacheHelper::add_closed_listener(
             reader.core_readers().as_ref(),
-            Box::new(CloseCountAtNotification {
+            Arc::new(CloseCountAtNotification {
                 log: Arc::clone(&log),
                 seen: Arc::clone(&seen),
             }),
@@ -3885,7 +4054,7 @@ mod core_close_order_tests {
         let seen = Arc::new(std::sync::Mutex::new(None));
         CacheHelper::add_closed_listener(
             reader.core_readers().as_ref(),
-            Box::new(CloseCountAtNotification {
+            Arc::new(CloseCountAtNotification {
                 log: Arc::clone(&log),
                 seen: Arc::clone(&seen),
             }),
@@ -3899,6 +4068,93 @@ mod core_close_order_tests {
         assert!(
             seen.lock().unwrap().is_some(),
             "the core-closed listeners run after the panic"
+        );
+        Ok(())
+    }
+    /// The `AlreadyClosedException` message of `error`, or a panic.
+    fn already_closed_message(error: LuceneError) -> String {
+        match error {
+            LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            } => message,
+            other => panic!("expected an AlreadyClosedException, got {other:?}"),
+        }
+    }
+
+    /// `SegmentCoreReaders.decRef()` closes its producers but keeps them in
+    /// its `final` fields (`SegmentCoreReaders.java:168-182`). A
+    /// `SegmentReader` whose `doClose()` ran while it stays open — what
+    /// `FilterCodecReader.doClose()` does to its delegate
+    /// (`FilterCodecReader.java:123-126`) — still hands the closed producers
+    /// out: `getFieldsReader()` clones the closed stored-fields reader, which
+    /// throws `this FieldsReader is closed`; `getTermVectorsReader()` clones the
+    /// closed term-vectors reader, whose closed `.tvd` input throws
+    /// `Already closed.`; `checkIntegrity()` reaches the closed postings first
+    /// (`CodecReader.java:294-332`). Measured against `lucene-core-10.5.0.jar`
+    /// by `IndexWrappersOracle` (`core_filter_codec wrapper_closed.*`).
+    #[test]
+    fn a_closed_core_keeps_its_closed_producers() -> Result<()> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())?;
+        let mut doc = Document::new();
+        let term_vectors = crate::document::FieldType::new();
+        term_vectors.set_tokenized(true)?;
+        term_vectors.set_index_options(crate::index::IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)?;
+        term_vectors.set_store_term_vectors(true)?;
+        term_vectors.set_stored(true)?;
+        term_vectors.freeze();
+        doc.add(Box::new(crate::document::Field::new(
+            "body",
+            "some words".to_string(),
+            term_vectors,
+        )?));
+        writer.add_document(&doc)?;
+        writer.commit()?;
+        writer.close()?;
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir))?;
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            Version::LATEST.major as i32,
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        // Open, the reader answers.
+        assert!(reader.get_fields_reader()?.is_some());
+        assert!(reader.get_term_vectors_reader()?.is_some());
+        LeafReader::check_integrity(&reader)?;
+
+        LeafReader::do_close(&reader)?;
+        assert_eq!(reader.core_readers().ref_count(), 0);
+        assert_eq!(
+            crate::index::index_reader::IndexReader::get_ref_count(&reader),
+            1,
+            "the reader itself stays open"
+        );
+        assert!(
+            reader.get_postings_reader()?.is_some(),
+            "the closed producers stay in place"
+        );
+        assert_eq!(
+            already_closed_message(reader.get_fields_reader().unwrap_err()),
+            "this FieldsReader is closed"
+        );
+        assert_eq!(
+            already_closed_message(LeafReader::stored_fields(&reader).unwrap_err()),
+            "this FieldsReader is closed"
+        );
+        assert_eq!(
+            already_closed_message(reader.get_term_vectors_reader().unwrap_err()),
+            "Already closed."
+        );
+        assert_eq!(
+            already_closed_message(LeafReader::term_vectors(&reader).unwrap_err()),
+            "Already closed."
+        );
+        assert_eq!(
+            already_closed_message(LeafReader::check_integrity(&reader).unwrap_err()),
+            "Already closed."
         );
         Ok(())
     }

@@ -16,6 +16,7 @@ use std::{
 use crate::{
     error::LuceneError,
     util::{Accountable, ArrayUtil, StrictStringTokenizer},
+    LuceneErrorKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,14 @@ pub trait LongValues {
     ///
     /// Equivalent to `org.apache.lucene.util.LongValues#get`.
     fn get(&self, index: i64) -> i64;
+
+    /// Answers `instanceof` and the identity of the shared `LongValues.ZEROES`
+    /// and `LongValues.IDENTITY` instances: the default `None`, overridden by
+    /// [`ZeroesLongValues`] and [`IdentityLongValues`], which stand for those
+    /// two singletons (`LongValues.java:27-44`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// A `LongValues` implementation that returns `index`.
@@ -50,6 +59,10 @@ impl LongValues for IdentityLongValues {
     fn get(&self, index: i64) -> i64 {
         index
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// A `LongValues` implementation that always returns zero.
@@ -59,6 +72,10 @@ pub struct ZeroesLongValues;
 impl LongValues for ZeroesLongValues {
     fn get(&self, _index: i64) -> i64 {
         0
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -88,11 +105,11 @@ impl LongBitSet {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `num_bits` is negative or
+    /// Returns `LuceneErrorKind::IllegalArgument` if `num_bits` is negative or
     /// exceeds [`Self::MAX_NUM_BITS`].
     pub fn bits2words(num_bits: i64) -> Result<i32, LuceneError> {
         if !(0..=Self::MAX_NUM_BITS).contains(&num_bits) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBits must be 0 .. {}; got: {}",
                 Self::MAX_NUM_BITS,
                 num_bits
@@ -105,7 +122,7 @@ impl LongBitSet {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `num_bits` is out of range.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `num_bits` is out of range.
     pub fn new(num_bits: i64) -> Result<Self, LuceneError> {
         let num_words = Self::bits2words(num_bits)?;
         Ok(Self {
@@ -134,7 +151,7 @@ impl LongBitSet {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` when `num_bits` is out of the
+    /// Returns `LuceneErrorKind::IllegalArgument` when `num_bits` is out of the
     /// range [`bits2words`](Self::bits2words) accepts.
     pub fn ensure_capacity(bits: LongBitSet, num_bits: i64) -> Result<LongBitSet, LuceneError> {
         if num_bits < bits.num_bits {
@@ -157,11 +174,11 @@ impl LongBitSet {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the buffer is too small.
+    /// Returns `LuceneErrorKind::IllegalArgument` if the buffer is too small.
     pub fn from_bits(stored_bits: Vec<i64>, num_bits: i64) -> Result<Self, LuceneError> {
         let num_words = Self::bits2words(num_bits)?;
         if (num_words as usize) > stored_bits.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "The given long array is too small to hold {} bits",
                 num_bits
             )));
@@ -171,11 +188,7 @@ impl LongBitSet {
             num_bits,
             num_words,
         };
-        if !set.verify_ghost_bits_clear() {
-            return Err(LuceneError::IllegalArgument(
-                "ghost bits past numBits are not clear".to_string(),
-            ));
-        }
+        debug_assert!(set.verify_ghost_bits_clear());
         Ok(set)
     }
 
@@ -188,7 +201,8 @@ impl LongBitSet {
         if (self.num_bits & 0x3f) == 0 {
             return true;
         }
-        let mask = (-1i64 as u64) << self.num_bits;
+        // Java's `-1L << numBits` uses only the low six bits of the count.
+        let mask = (-1i64 as u64).wrapping_shl(self.num_bits as u32);
         let last = self.bits[(self.num_words - 1) as usize] as u64;
         (last & mask) == 0
     }
@@ -218,7 +232,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get(&self, index: i64) -> bool {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         ((self.bits[word_num] as u64) & (bitmask as u64)) != 0
@@ -230,7 +248,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn set(&mut self, index: i64) {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index} numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         self.bits[word_num] |= bitmask;
@@ -242,7 +264,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_set(&mut self, index: i64) -> bool {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         let val = (self.bits[word_num] as u64 & bitmask as u64) != 0;
@@ -256,7 +282,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn clear(&mut self, index: i64) {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         self.bits[word_num] &= !bitmask;
@@ -268,7 +298,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_clear(&mut self, index: i64) -> bool {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         let val = (self.bits[word_num] as u64 & bitmask as u64) != 0;
@@ -282,7 +316,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn next_set_bit(&self, index: i64) -> i64 {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index}, numBits={}",
+            self.num_bits
+        );
         let mut i = (index >> 6) as usize;
         let word = (self.bits[i] as u64) >> (index & 0x3f);
         if word != 0 {
@@ -305,7 +343,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn prev_set_bit(&self, index: i64) -> i64 {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index} numBits={}",
+            self.num_bits
+        );
         let i = (index >> 6) as usize;
         let sub_index = (index & 0x3f) as i32;
         let word = (self.bits[i] as u64) << (63 - sub_index);
@@ -329,7 +371,12 @@ impl LongBitSet {
     ///
     /// Panics if `other` has more words than `self`.
     pub fn or(&mut self, other: &LongBitSet) {
-        assert!(other.num_words <= self.num_words);
+        assert!(
+            other.num_words <= self.num_words,
+            "numWords={}, other.numWords={}",
+            self.num_words,
+            other.num_words
+        );
         let pos = self.num_words.min(other.num_words) as usize;
         for i in 0..pos {
             self.bits[i] |= other.bits[i];
@@ -342,7 +389,12 @@ impl LongBitSet {
     ///
     /// Panics if `other` has more words than `self`.
     pub fn xor(&mut self, other: &LongBitSet) {
-        assert!(other.num_words <= self.num_words);
+        assert!(
+            other.num_words <= self.num_words,
+            "numWords={}, other.numWords={}",
+            self.num_words,
+            other.num_words
+        );
         let pos = self.num_words.min(other.num_words) as usize;
         for i in 0..pos {
             self.bits[i] ^= other.bits[i];
@@ -423,7 +475,11 @@ impl LongBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn flip(&mut self, index: i64) {
-        assert!(index >= 0 && index < self.num_bits);
+        assert!(
+            index >= 0 && index < self.num_bits,
+            "index={index} numBits={}",
+            self.num_bits
+        );
         let word_num = (index >> 6) as usize;
         let bitmask = 1i64.wrapping_shl(index as u32);
         self.bits[word_num] ^= bitmask;
@@ -435,8 +491,16 @@ impl LongBitSet {
     ///
     /// Panics if the range is out of bounds or reversed.
     pub fn set_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(start_index >= 0 && start_index < self.num_bits);
-        assert!(end_index >= 0 && end_index <= self.num_bits);
+        assert!(
+            start_index >= 0 && start_index < self.num_bits,
+            "startIndex={start_index}, numBits={}",
+            self.num_bits
+        );
+        assert!(
+            end_index >= 0 && end_index <= self.num_bits,
+            "endIndex={end_index}, numBits={}",
+            self.num_bits
+        );
         if end_index <= start_index {
             return;
         }
@@ -461,8 +525,16 @@ impl LongBitSet {
     ///
     /// Panics if the range is out of bounds or reversed.
     pub fn clear_range(&mut self, start_index: i64, end_index: i64) {
-        assert!(start_index >= 0 && start_index < self.num_bits);
-        assert!(end_index >= 0 && end_index <= self.num_bits);
+        assert!(
+            start_index >= 0 && start_index < self.num_bits,
+            "startIndex={start_index}, numBits={}",
+            self.num_bits
+        );
+        assert!(
+            end_index >= 0 && end_index <= self.num_bits,
+            "endIndex={end_index}, numBits={}",
+            self.num_bits
+        );
         if end_index <= start_index {
             return;
         }
@@ -558,7 +630,7 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
     /// Creates an empty priority queue of the configured size.
     pub fn new(max_size: usize, comparator: C) -> Result<Self, LuceneError> {
         if max_size >= ArrayUtil::MAX_ARRAY_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxSize must be >= 0 and < {}; got: {}",
                 ArrayUtil::MAX_ARRAY_LENGTH,
                 max_size
@@ -577,15 +649,35 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
 
     /// Adds all elements to the queue in bulk, building the heap in a single
     /// pass.
+    ///
+    /// Equivalent to `PriorityQueue.addAll(Collection)`
+    /// (`PriorityQueue.java:125-139`): an element past the heap array throws
+    /// `ArrayIndexOutOfBoundsException`, and the `finally` block still
+    /// re-heapifies the elements added before it.
     pub fn add_all<I: IntoIterator<Item = T>>(&mut self, elements: I) {
+        let mut overflow = None;
         for element in elements {
-            self.heap[self.size + 1] = Some(element);
+            let index = self.size + 1;
+            if index >= self.heap.len() {
+                overflow = Some(index);
+                break;
+            }
+            self.heap[index] = Some(element);
             self.size += 1;
         }
         if self.size > 0 {
             for i in (1..=(self.size / 2)).rev() {
                 self.down_heap(i);
             }
+        }
+        if let Some(index) = overflow {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                Some(&format!(
+                    "Index {index} out of bounds for length {}",
+                    self.heap.len()
+                )),
+            );
         }
     }
 
@@ -744,6 +836,18 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
             }
         }
         self.heap[i] = Some(node);
+    }
+
+    /// Returns an iterator over the live elements, in heap order (unspecified
+    /// to the caller).
+    ///
+    /// Equivalent to `org.apache.lucene.util.PriorityQueue#iterator()` (the
+    /// queue is `Iterable<T>`). Rust's `Iterator::next` returns `None` when
+    /// exhausted where Java's throws `NoSuchElementException`.
+    pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
+        self.heap[1..=self.size]
+            .iter()
+            .map(|e| e.as_ref().expect("INVARIANT: slots 1..=size hold elements"))
     }
 
     /// Returns the internal heap array.
@@ -1137,27 +1241,27 @@ impl Version {
         // NOTE: do not enforce major version so we remain future proof, except to
         // make sure it fits in the 8 bits we encode it into:
         if !(0..=255).contains(&major) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal major version: {major}"
             )));
         }
         if !(0..=255).contains(&minor) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal minor version: {minor}"
             )));
         }
         if !(0..=255).contains(&bugfix) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal bugfix version: {bugfix}"
             )));
         }
         if !(0..=2).contains(&prerelease) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal prerelease version: {prerelease}"
             )));
         }
         if prerelease != 0 && (minor != 0 || bugfix != 0) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Prerelease version only supported with major release (got prerelease: {}, minor: {}, bugfix: {})",
                 prerelease, minor, bugfix
             )));
@@ -1178,6 +1282,13 @@ impl Version {
         debug_assert_eq!(i32::from(self.bugfix), (self.encoded >> 2) & 0xFF);
         debug_assert_eq!(i32::from(self.prerelease), self.encoded & 0x03);
         true
+    }
+
+    /// Returns this version's hash code: its encoded value.
+    ///
+    /// Equivalent to `Version.hashCode()` (`return encodedValue;`).
+    pub fn hash_code(&self) -> i32 {
+        self.encoded
     }
 
     /// Returns the crate's full implementation version.
@@ -1201,16 +1312,16 @@ impl Version {
     ///
     /// # Errors
     ///
-    /// Java throws `java.text.ParseException`, which has no counterpart in
-    /// [`LuceneError`]; this port reports [`LuceneError::IllegalArgument`] with
-    /// Java's messages, and keeps the `NumberFormatException` or
-    /// `IllegalArgumentException` Java attaches with `initCause` as the
-    /// [`source`](std::error::Error::source).
+    /// Java's `java.text.ParseException` ([`PARSE_EXCEPTION`]), as a
+    /// [`LuceneErrorKind::Unchecked`] of that class with Java's message; the
+    /// `NumberFormatException` or `IllegalArgumentException` Java attaches
+    /// with `initCause` is its [`source`](std::error::Error::source).
     pub fn parse(version: &str) -> Result<Self, LuceneError> {
         let not_in_form = || {
-            LuceneError::IllegalArgument(format!(
-                "Version is not in form major.minor.bugfix(.prerelease) (got: {version})"
-            ))
+            parse_exception(
+                format!("Version is not in form major.minor.bugfix(.prerelease) (got: {version})"),
+                None,
+            )
         };
         let mut tokens = StrictStringTokenizer::new(version, '.');
         if !tokens.has_more_tokens() {
@@ -1228,9 +1339,12 @@ impl Version {
             if tokens.has_more_tokens() {
                 prerelease = parse_version_component(&tokens.next_token()?, "prerelease", version)?;
                 if prerelease == 0 {
-                    return Err(LuceneError::IllegalArgument(format!(
-                        "Invalid value {prerelease} for prerelease; should be 1 or 2 (got: {version})"
-                    )));
+                    return Err(parse_exception(
+                        format!(
+                            "Invalid value {prerelease} for prerelease; should be 1 or 2 (got: {version})"
+                        ),
+                        None,
+                    ));
                 }
                 if tokens.has_more_tokens() {
                     // Too many tokens!
@@ -1239,12 +1353,12 @@ impl Version {
             }
         }
         Self::from_ints(major, minor, bugfix, prerelease).map_err(|iae| {
-            LuceneError::illegal_argument_with_cause(
+            parse_exception(
                 format!(
                     "failed to parse version string \"{version}\": {}",
                     java_message(&iae)
                 ),
-                std::sync::Arc::new(iae),
+                Some(iae),
             )
         })
     }
@@ -1261,9 +1375,8 @@ impl Version {
     ///
     /// When [`parse`](Self::parse) fails, Java throws a new `ParseException`
     /// `failed to parse lenient version string "<input>": <reason>` whose cause
-    /// is the first; this port reports it as [`LuceneError::IllegalArgument`]
-    /// with that message and the first error as its source (see
-    /// [`parse`](Self::parse) for the exception mapping).
+    /// is the first; this port raises the same [`PARSE_EXCEPTION`] kind with
+    /// that message and the first error as its source.
     pub fn parse_leniently(version: &str) -> Result<Self, LuceneError> {
         let version_orig = version;
         let version = version.to_uppercase();
@@ -1272,12 +1385,12 @@ impl Version {
             _ => {
                 let version = Self::lenient_rewrite(&version);
                 Self::parse(&version).map_err(|pe| {
-                    LuceneError::illegal_argument_with_cause(
+                    parse_exception(
                         format!(
                             "failed to parse lenient version string \"{version_orig}\": {}",
                             java_message(&pe)
                         ),
-                        std::sync::Arc::new(pe),
+                        Some(pe),
                     )
                 })
             }
@@ -1348,10 +1461,38 @@ impl Ord for Version {
 /// `Version.parse` chains, which [`Display`] would prefix with the variant.
 fn java_message(error: &LuceneError) -> String {
     match error {
-        LuceneError::IllegalArgument(message) => message.clone(),
-        LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => message.clone(),
+        LuceneError {
+            kind:
+                LuceneErrorKind::Unchecked {
+                    message: Some(message),
+                    ..
+                },
+            ..
+        } => message.clone(),
         other => other.to_string(),
     }
+}
+
+/// The binary name of `java.text.ParseException`, which `Version.parse` and
+/// `Version.parseLeniently` throw.
+pub const PARSE_EXCEPTION: &str = "java.text.ParseException";
+
+/// The binary name of `java.lang.NumberFormatException`, which
+/// `Integer.parseInt` throws.
+const NUMBER_FORMAT_EXCEPTION: &str = "java.lang.NumberFormatException";
+
+/// `new ParseException(message, 0)`, with `initCause(cause)` when `cause` is
+/// given.
+fn parse_exception(message: String, cause: Option<LuceneError>) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::Unchecked {
+        class: PARSE_EXCEPTION,
+        message: Some(message),
+        cause: cause.map(std::sync::Arc::new),
+    })
 }
 
 /// Reads one component with `Integer.parseInt`, wrapping its failure as
@@ -1360,11 +1501,12 @@ fn java_message(error: &LuceneError) -> String {
 /// "<token>"`) as its cause.
 fn parse_version_component(token: &str, name: &str, version: &str) -> Result<i32, LuceneError> {
     java_parse_int(token).ok_or_else(|| {
-        LuceneError::illegal_argument_with_cause(
+        parse_exception(
             format!("Failed to parse {name} version from \"{token}\" (got: {version})"),
-            std::sync::Arc::new(LuceneError::IllegalArgument(format!(
-                "For input string: \"{token}\""
-            ))),
+            Some(LuceneError::unchecked(
+                NUMBER_FORMAT_EXCEPTION,
+                format!("For input string: \"{token}\""),
+            )),
         )
     })
 }
@@ -1373,7 +1515,7 @@ fn parse_version_component(token: &str, name: &str, version: &str) -> Result<i32
 /// `NumberFormatException`: an optional leading `-` or `+`, then at least one
 /// digit, each UTF-16 code unit read with `Character.digit(char, 10)` — so the
 /// decimal digits of every script count — and a result that fits an `int`.
-pub(crate) fn java_parse_int(s: &str) -> Option<i32> {
+pub fn java_parse_int(s: &str) -> Option<i32> {
     const RADIX: i32 = 10;
     let units: Vec<u16> = s.encode_utf16().collect();
     let digit = |unit: u16| {
@@ -1415,6 +1557,51 @@ pub(crate) fn java_parse_int(s: &str) -> Option<i32> {
     Some(if negative { result } else { -result })
 }
 
+/// `Long.parseLong(String)`, or `None` where it throws
+/// `NumberFormatException`: the same grammar as [`java_parse_int`], with a
+/// result that fits a `long`.
+pub fn java_parse_long(s: &str) -> Option<i64> {
+    const RADIX: i64 = 10;
+    let units: Vec<u16> = s.encode_utf16().collect();
+    let digit = |unit: u16| {
+        char::from_u32(u32::from(unit))
+            .and_then(|c| crate::util::java_character_digit(c, RADIX as u32))
+            .map(i64::from)
+    };
+    let first = *units.first()?;
+    let mut i = 0;
+    let mut negative = false;
+    let mut limit = -i64::MAX;
+    if first < u16::from(b'0') {
+        // Possible leading "+" or "-".
+        if first == u16::from(b'-') {
+            negative = true;
+            limit = i64::MIN;
+        } else if first != u16::from(b'+') {
+            return None;
+        }
+        if units.len() == 1 {
+            return None;
+        }
+        i += 1;
+    }
+    let multmin = limit / RADIX;
+    let mut result = 0i64;
+    while i < units.len() {
+        let d = digit(units[i])?;
+        i += 1;
+        if result < multmin {
+            return None;
+        }
+        result *= RADIX;
+        if result < limit + d {
+            return None;
+        }
+        result -= d;
+    }
+    Some(if negative { result } else { -result })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1422,6 +1609,19 @@ pub(crate) fn java_parse_int(s: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// JDK 25 `Long.parseLong`: an optional sign, the full `long` range, and
+    /// `NumberFormatException` one past it.
+    #[test]
+    fn java_parse_long_matches_jdk_25() {
+        assert_eq!(java_parse_long("+42"), Some(42));
+        assert_eq!(java_parse_long("-9223372036854775808"), Some(i64::MIN));
+        assert_eq!(java_parse_long("9223372036854775807"), Some(i64::MAX));
+        assert_eq!(java_parse_long("9223372036854775808"), None);
+        assert_eq!(java_parse_long("-"), None);
+        assert_eq!(java_parse_long(""), None);
+        assert_eq!(java_parse_long("1 "), None);
+    }
 
     /// `Version.parse` reads each component with `Integer.parseInt`, whose
     /// `Character.digit` accepts the decimal digits of every script, and a
@@ -1438,14 +1638,26 @@ mod tests {
             "9.1.0"
         );
         match Version::parse("+.1.0") {
-            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+            Err(LuceneError {
+                kind:
+                    LuceneErrorKind::Unchecked {
+                        class: PARSE_EXCEPTION,
+                        message: Some(message),
+                        cause: Some(cause),
+                    },
+                ..
+            }) => {
                 assert_eq!(
                     message,
                     "Failed to parse major version from \"+\" (got: +.1.0)"
                 );
                 assert!(matches!(
                     cause.as_ref(),
-                    LuceneError::IllegalArgument(m) if m == "For input string: \"+\""
+                    LuceneError { kind: LuceneErrorKind::Unchecked {
+                        class: NUMBER_FORMAT_EXCEPTION,
+                        message: Some(m),
+                        ..
+                    }, .. } if m == "For input string: \"+\""
                 ));
             }
             other => panic!("expected the major-version failure, got {other:?}"),
@@ -1687,9 +1899,14 @@ mod tests {
             ),
         ] {
             let error = Version::parse_leniently(input).unwrap_err();
-            let LuceneError::IllegalArgumentWithCause {
-                message,
-                cause: source,
+            let LuceneError {
+                kind:
+                    LuceneErrorKind::Unchecked {
+                        class: PARSE_EXCEPTION,
+                        message: Some(message),
+                        cause: Some(source),
+                    },
+                ..
             } = &error
             else {
                 panic!("{error:?}");
@@ -1713,12 +1930,12 @@ mod tests {
             (
                 "256.0.0",
                 "failed to parse version string \"256.0.0\": Illegal major version: 256",
-                Some("Illegal major version: 256"),
+                Some("illegal argument: Illegal major version: 256"),
             ),
             (
                 "-1.0.0",
                 "failed to parse version string \"-1.0.0\": Illegal major version: -1",
-                Some("Illegal major version: -1"),
+                Some("illegal argument: Illegal major version: -1"),
             ),
             (
                 "10",
@@ -1733,17 +1950,13 @@ mod tests {
             (
                 "",
                 "Failed to parse major version from \"\" (got: )",
-                Some("For input string: \"\""),
+                Some("java.lang.NumberFormatException: For input string: \"\""),
             ),
         ] {
             let error = Version::parse(input).unwrap_err();
             assert_eq!(java_message(&error), message, "{input}");
             let source = std::error::Error::source(&error).map(|e| e.to_string());
-            assert_eq!(
-                source,
-                cause.map(|c| format!("illegal argument: {c}")),
-                "{input}"
-            );
+            assert_eq!(source, cause.map(str::to_string), "{input}");
         }
     }
 

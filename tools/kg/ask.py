@@ -16,6 +16,9 @@ are escaped as Cypher literals.
     python3 tools/kg/ask.py awaits                      # W-blocked items, by Java caller
     python3 tools/kg/ask.py absent                      # member work still open
     python3 tools/kg/ask.py tasks                       # open tasks and their blockers
+    python3 tools/kg/ask.py coverage                    # in-scope classes per module and status
+    python3 tools/kg/ask.py coverage --module lucene/codecs --list   # each class and its status
+    python3 tools/kg/ask.py early --module lucene/test-framework     # cycle-rule early members
     python3 tools/kg/ask.py cypher "MATCH (n:Module) RETURN n.name"
 
 Every command needs the graph server (`rmp graph serve -r rucene`). Run
@@ -30,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from kgio import esc, kg_target, read  # noqa: E402
+import port_modules_kg as pm  # noqa: E402
 
 R = "rucene"
 TYPE_LABELS = ("RustStruct", "RustTrait", "RustEnum", "RustAlias")
@@ -126,7 +130,7 @@ def cmd_status(_a):
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     changed = None
     if graph:
-        changed = subprocess.run(["git", "diff", "--stat", graph, "HEAD", "--", "src", "tests"],
+        changed = subprocess.run(["git", "diff", "--stat", graph, "HEAD", "--", "src", "tests", "crates"],
                                  capture_output=True, text=True).stdout.strip().splitlines()
     print(json.dumps({"graphCommit": graph, "head": head, "current": graph == head,
                       "codeChangedSinceGraph": changed[-1] if changed else "none"}))
@@ -177,6 +181,28 @@ def cmd_tasks(_a):
     emit(read(R, Q_TASKS), ["id", "status", "name", "blockedBy"])
 
 
+def q_coverage_list(module):
+    """Each in-scope class of `module` and its status, missing first."""
+    return ("MATCH (c:Class) WHERE c.portScope = 'in' AND c.module = " + esc(module) + " "
+            "RETURN c.qualifiedName AS class, "
+            "CASE WHEN c.portState = 'ported' THEN 'ported' ELSE 'missing' END AS status, "
+            "c.portState AS portState ORDER BY status, class")
+
+
+def cmd_coverage(a):
+    if a.list:
+        if not a.module:
+            raise SystemExit("--list needs --module")
+        emit(read(R, q_coverage_list(a.module)), ["class", "status", "portState"])
+    else:
+        emit(read(R, pm.coverage_query(a.module)), ["module", "status", "classes"])
+
+
+def cmd_early(a):
+    emit(read(R, pm.early_query(a.module)),
+         ["module", "class", "member", "task", "ownerTask", "rustItem"])
+
+
 def cmd_cypher(a):
     for row in read(R, a.statement):
         print(json.dumps(row, ensure_ascii=False))
@@ -202,6 +228,13 @@ def main(argv=None):
     sub.add_parser("awaits").set_defaults(f=cmd_awaits)
     sub.add_parser("absent").set_defaults(f=cmd_absent)
     sub.add_parser("tasks").set_defaults(f=cmd_tasks)
+    p = sub.add_parser("coverage")
+    p.add_argument("--module", choices=sorted(pm.BY_NAME))
+    p.add_argument("--list", action="store_true")
+    p.set_defaults(f=cmd_coverage)
+    p = sub.add_parser("early")
+    p.add_argument("--module", choices=sorted(pm.BY_NAME))
+    p.set_defaults(f=cmd_early)
     p = sub.add_parser("cypher"); p.add_argument("statement"); p.set_defaults(f=cmd_cypher)
     a = ap.parse_args(argv)
     a.f(a)

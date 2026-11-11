@@ -51,7 +51,7 @@ impl RescoreTopNQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's message — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's message — when
     /// `n` is less than 1.
     pub fn new(
         query: Arc<dyn Query>,
@@ -59,7 +59,7 @@ impl RescoreTopNQuery {
         n: i32,
     ) -> Result<Self> {
         if n < 1 {
-            return Err(LuceneError::IllegalArgument("n must be >= 1".to_string()));
+            return Err(LuceneError::illegal_argument("n must be >= 1".to_string()));
         }
         Ok(Self {
             n,
@@ -118,8 +118,8 @@ impl RescoreTopNQuery {
         let values_source: Arc<dyn DoubleValuesSource> =
             Arc::new(LateInteractionFloatValuesSource::with_similarity(
                 field_name,
-                query_vector,
-                vector_similarity_function,
+                Some(query_vector.into_iter().map(Some).collect()),
+                Some(vector_similarity_function),
             )?);
         Ok(Arc::new(RescoreTopNQuery::new(inner, values_source, n)?))
     }

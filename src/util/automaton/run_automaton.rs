@@ -75,11 +75,11 @@ impl RunAutomaton {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the automaton is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton is not
     /// deterministic.
     pub fn new(a: Automaton, alphabet_size: i32) -> Result<Self> {
         if !a.is_deterministic() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Automaton must be deterministic".to_string(),
             ));
         }
@@ -147,6 +147,25 @@ impl RunAutomaton {
     /// Returns the source automaton used to build this table.
     pub fn automaton(&self) -> &Automaton {
         &self.automaton
+    }
+
+    /// Returns the accept states (Java's `protected` field `accept`); public
+    /// so that the test framework can model the Java object.
+    pub fn accept(&self) -> &FixedBitSet {
+        &self.accept
+    }
+
+    /// Returns the transition table (Java's `protected` field `transitions`);
+    /// public so that the test framework can model the Java object.
+    pub fn transitions(&self) -> &[i32] {
+        &self.transitions
+    }
+
+    /// Returns the map from char number to class (Java's package-private
+    /// field `classmap`); public so that the test framework can model the Java
+    /// object.
+    pub fn classmap(&self) -> &[i32] {
+        &self.classmap
     }
 
     /// Gets the character class of the given codepoint.

@@ -116,7 +116,7 @@ pub fn prefix8_to_comparable_unsigned_long(term: &BytesRef) -> u64 {
 /// [`reset`](Self::reset) (`MultiTermsEnum.java:361-364`). The field is
 /// therefore an `Option`, and every operation that would dereference a `null`
 /// enum in Java reports the `NullPointerException` as
-/// [`LuceneError::IllegalState`] with the JDK's message.
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) with the JDK's message.
 pub struct TermsEnumIndex {
     terms_enum: Option<Box<dyn TermsEnum>>,
     sub_index: usize,
@@ -142,7 +142,7 @@ impl std::fmt::Display for TermsEnumIndex {
 /// The error Java raises when a method is invoked on the `null` `termsEnum`
 /// field: `NullPointerException` with the JDK's helpful message.
 fn null_terms_enum(method: &str) -> LuceneError {
-    LuceneError::illegal_state(format!(
+    LuceneError::null_pointer_with_message(format!(
         "Cannot invoke \"org.apache.lucene.index.TermsEnum.{method}\" because \"this.termsEnum\" is null"
     ))
 }
@@ -273,7 +273,7 @@ impl TermsEnumIndex {
         let positioned = if status == SeekStatus::END {
             None
         } else {
-            Some(terms_enum.term()?)
+            terms_enum.term()?
         };
         self.set_term(positioned);
         Ok(status)
@@ -291,11 +291,7 @@ impl TermsEnumIndex {
     pub fn seek_exact(&mut self, term: &BytesRef) -> Result<bool> {
         let terms_enum = self.enum_for("seekExact(org.apache.lucene.util.BytesRef)")?;
         let found = terms_enum.seek_exact(term)?;
-        let positioned = if found {
-            Some(terms_enum.term()?)
-        } else {
-            None
-        };
+        let positioned = if found { terms_enum.term()? } else { None };
         self.set_term(positioned);
         Ok(found)
     }
@@ -314,7 +310,7 @@ impl TermsEnumIndex {
         let terms_enum = self.enum_for("seekExact(long)")?;
         terms_enum.seek_ord(ord)?;
         let positioned = terms_enum.term()?;
-        self.set_term(Some(positioned));
+        self.set_term(positioned);
         Ok(())
     }
 
@@ -352,7 +348,9 @@ impl TermsEnumIndex {
         match (&self.current_term, &other.current_term) {
             (Some(this), Some(that)) => {
                 if self.current_term_prefix8 != other.current_term_prefix8 {
-                    self.current_term_prefix8.cmp(&other.current_term_prefix8)
+                    let cmp = self.current_term_prefix8.cmp(&other.current_term_prefix8);
+                    debug_assert!(cmp == this.cmp(that));
+                    cmp
                 } else {
                     this.cmp(that)
                 }
@@ -493,15 +491,16 @@ mod tests {
             let idx = usize::try_from(ord)
                 .ok()
                 .filter(|&idx| idx < self.terms.len())
-                .ok_or_else(|| LuceneError::IllegalArgument(format!("bad ord {ord}")))?;
+                .ok_or_else(|| LuceneError::illegal_argument(format!("bad ord {ord}")))?;
             self.pos = Some(idx);
             Ok(())
         }
 
-        fn term(&self) -> Result<BytesRef> {
+        fn term(&self) -> Result<Option<BytesRef>> {
             self.pos
                 .map(|idx| self.terms[idx].clone())
                 .ok_or_else(|| LuceneError::illegal_state("not positioned".to_string()))
+                .map(Some)
         }
 
         fn ord(&self) -> Result<i64> {
@@ -522,12 +521,12 @@ mod tests {
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> Result<Box<dyn PostingsEnum>> {
-            Err(LuceneError::UnsupportedOperation("postings".to_string()))
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Err(LuceneError::unsupported_operation("postings".to_string()))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-            Err(LuceneError::UnsupportedOperation("impacts".to_string()))
+            Err(LuceneError::unsupported_operation("impacts".to_string()))
         }
 
         fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -958,7 +957,7 @@ mod tests {
         let err = tei.next().unwrap_err();
         assert_eq!(
             err.to_string(),
-            LuceneError::illegal_state(
+            LuceneError::null_pointer_with_message(
                 "Cannot invoke \"org.apache.lucene.index.TermsEnum.next()\" because \"this.termsEnum\" is null"
                     .to_string()
             )

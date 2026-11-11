@@ -20,7 +20,6 @@ use crate::search::dense_conjunction_bulk_scorer::{
     DenseConjunctionBulkScorer, DENSITY_THRESHOLD_INVERSE, WINDOW_SIZE,
 };
 use crate::search::disjunction_sum_scorer::DisjunctionSumScorer;
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::doc_id_stream::DocIdStream;
 use crate::search::max_score_bulk_scorer::MaxScoreBulkScorer;
 use crate::search::req_excl_bulk_scorer::ReqExclBulkScorer;
@@ -31,7 +30,7 @@ use crate::search::score_mode::ScoreMode;
 use crate::search::scorer::{into_scorer_iterator, Scorer, ScorerAsIterator};
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::scorer_util::ScorerUtil;
-use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
+use crate::search::two_phase_iterator::ScorerIterator;
 use crate::search::wand_scorer::WANDScorer;
 use crate::util::Bits;
 
@@ -77,55 +76,15 @@ impl ClauseSuppliers {
     }
 }
 
-/// A scorer that reports a score of zero for every document it matches.
-///
-/// Equivalent to the anonymous `FilterScorer` subclasses of
-/// `BooleanScorerSupplier` that override `score()` and `getMaxScore(int)` to
-/// return `0f`.
-///
-/// **Divergence from Lucene 10.5.0.** This port does not build on
-/// [`FilterScorer`](crate::search::FilterScorer), because that type delegates
-/// `setMinCompetitiveScore`, `advanceShallow`, `getChildren` and
-/// `smoothingScore` to the wrapped scorer, where Java's `FilterScorer` leaves
-/// them at `Scorer`'s defaults. Those defaults are load-bearing here: a
-/// filter-only required clause must not let a minimum competitive score reach
-/// the clause it hides the score of.
-struct ZeroScoreScorer {
-    inner: Box<dyn Scorer>,
-}
-
-impl std::fmt::Debug for ZeroScoreScorer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ZeroScoreScorer")
-    }
-}
-
-impl Scorable for ZeroScoreScorer {
-    fn score(&mut self) -> Result<f32> {
-        Ok(0.0)
-    }
-}
-
-impl Scorer for ZeroScoreScorer {
-    fn as_scorable(&mut self) -> &mut dyn Scorable {
-        self
-    }
-
-    fn doc_id(&self) -> i32 {
-        self.inner.doc_id()
-    }
-
-    fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
-        self.inner.iterator()
-    }
-
-    fn two_phase_iterator(&mut self) -> Option<&mut dyn TwoPhaseIterator> {
-        self.inner.two_phase_iterator()
-    }
-
-    fn get_max_score(&mut self, _up_to: i32) -> Result<f32> {
-        Ok(0.0)
-    }
+/// The anonymous `FilterScorer` subclasses of `BooleanScorerSupplier` that
+/// override `score()` and `getMaxScore(int)` to return `0f`
+/// (`BooleanScorerSupplier.java:436-445, 490-499`).
+fn zero_score_scorer(inner: Box<dyn Scorer>) -> Box<dyn Scorer> {
+    Box::new(crate::search::FilterScorer::with_overrides(
+        inner,
+        Box::new(|_| Ok(0.0)),
+        Box::new(|_, _| Ok(0.0)),
+    ))
 }
 
 /// The collector a [`disable_scoring`] wrapper installs, which hands the
@@ -260,7 +219,7 @@ impl BooleanScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for each of the four
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for each of the four
     /// `IllegalArgumentException`s Java throws: a negative minimum-should-match,
     /// one that is not strictly below the number of `SHOULD` clauses, purely
     /// optional clauses when scores are not needed, and the absence of any
@@ -272,13 +231,13 @@ impl BooleanScorerSupplier {
         max_doc: i32,
     ) -> Result<Self> {
         if min_should_match < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minShouldMatch must be positive, but got: {min_should_match}"
             )));
         }
         let min_should_match = min_should_match as usize;
         if min_should_match != 0 && min_should_match >= subs.should.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minShouldMatch must be strictly less than the number of SHOULD clauses"
                     .to_string(),
             ));
@@ -288,12 +247,12 @@ impl BooleanScorerSupplier {
             && !subs.should.is_empty()
             && subs.must.len() + subs.filter.len() > 0
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot pass purely optional clauses if scores are not needed".to_string(),
             ));
         }
         if subs.should.len() + subs.must.len() + subs.filter.len() == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There should be at least one positive clause".to_string(),
             ));
         }
@@ -706,7 +665,7 @@ impl BooleanScorerSupplier {
                     .pop()
                     .expect("INVARIANT: the vector was just observed to hold one element");
                 conjunction_scorer = if self.score_mode.needs_scores() {
-                    Box::new(ZeroScoreScorer { inner })
+                    zero_score_scorer(inner)
                 } else {
                     inner
                 };
@@ -757,7 +716,7 @@ fn req(
             // Scores are needed but we only have a filter clause. BooleanWeight
             // expects that calling score() is ok so we need to wrap to prevent
             // score() from being propagated.
-            return Ok(Box::new(ZeroScoreScorer { inner: requirement }));
+            return Ok(zero_score_scorer(requirement));
         }
 
         return Ok(requirement);
@@ -864,6 +823,12 @@ fn opt(
 }
 
 impl ScorerSupplier for BooleanScorerSupplier {
+    /// This supplier answers with itself: Java casts to
+    /// `BooleanScorerSupplier` to reach `booleanScorer()`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn cost(&self) -> i64 {
         if self.cost.get() == -1 {
             self.cost.set(self.compute_cost());

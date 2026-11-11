@@ -23,11 +23,10 @@ pub mod stop_filter;
 pub mod tokenattributes;
 pub mod wordlist_loader;
 
+use crate::util::atomic_ref_cell::AtomicRefCell;
 use std::any::Any;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -36,7 +35,7 @@ pub use char_array_map::CharArrayMap;
 pub use char_array_set::CharArraySet;
 pub use character_utils::{
     fill, fill_buffer, new_character_buffer, to_chars, to_code_points, to_lower_case,
-    to_upper_case, CharacterBuffer,
+    to_lower_case_utf16, to_upper_case, to_upper_case_utf16, CharacterBuffer,
 };
 pub use filtering_token_filter::{
     new_filtering_token_filter, FilteringTokenFilter, FilteringTokenFilterAdapter,
@@ -45,9 +44,10 @@ pub use filtering_token_filter::{
 pub use lower_case_filter::{new_lower_case_filter, LowerCaseFilter, LowerCaseFilterLogic};
 pub use reusable_string_reader::ReusableStringReader;
 pub use standard::{
-    new_standard_tokenizer, StandardAnalyzer, StandardTokenizer, StandardTokenizerLogic,
-    StopwordAnalyzerBase, ALPHANUM, DEFAULT_MAX_TOKEN_LENGTH, EMOJI, HANGUL, HIRAGANA, IDEOGRAPHIC,
-    KATAKANA, MAX_TOKEN_LENGTH_LIMIT, NUM, SOUTHEAST_ASIAN, TOKEN_TYPES,
+    new_standard_tokenizer, new_standard_tokenizer_with_factory, StandardAnalyzer,
+    StandardTokenizer, StandardTokenizerLogic, StopwordAnalyzerBase, ALPHANUM,
+    DEFAULT_MAX_TOKEN_LENGTH, EMOJI, HANGUL, HIRAGANA, IDEOGRAPHIC, KATAKANA,
+    MAX_TOKEN_LENGTH_LIMIT, NUM, SOUTHEAST_ASIAN, TOKEN_TYPES,
 };
 pub use stop_filter::{make_stop_set, new_stop_filter, StopFilter, StopFilterLogic};
 pub use tokenattributes::{
@@ -77,12 +77,17 @@ use crate::util::BytesRef;
 /// Character-oriented input source for tokenizers.
 ///
 /// Equivalent to `java.io.Reader`. Rust's `std::io::Read` is byte-oriented, so
-/// this trait exposes the character-level operations that tokenizers need.
-pub trait CharReader: Debug {
-    /// Reads characters into `buf`, returning the number read.
+/// this trait exposes the character-level operations that tokenizers need. As
+/// Java's `Reader`, it hands out UTF-16 code units (`u16`, Java's `char`), so a
+/// supplementary character is read as its two surrogates and may be split
+/// across two reads, and a lone surrogate passes through unchanged.
+pub trait CharReader: Debug + Send + Sync {
+    /// Reads UTF-16 code units into `buf`, returning the number read.
     ///
-    /// A return value of `0` indicates end-of-stream.
-    fn read(&mut self, buf: &mut [char]) -> Result<usize>;
+    /// Equivalent to `Reader.read(char[], int, int)` over the window `buf`.
+    /// A return value of `0` indicates end-of-stream, where Java's answers
+    /// `-1`; callers never ask for an empty window.
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize>;
 
     /// Closes the reader and releases any resources.
     fn close(&mut self) -> Result<()>;
@@ -93,30 +98,38 @@ pub trait CharReader: Debug {
     }
 }
 
-/// A [`CharReader`] backed by an in-memory string.
+/// A [`CharReader`] backed by an in-memory string: `java.io.StringReader`.
 #[derive(Debug)]
 pub struct StringCharReader {
-    chars: Vec<char>,
+    chars: Vec<u16>,
     position: usize,
 }
 
 impl StringCharReader {
-    /// Creates a reader over the characters of `text`.
+    /// Creates a reader over the UTF-16 encoding of `text`.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
-            chars: text.into().chars().collect(),
+            chars: text.into().encode_utf16().collect(),
+            position: 0,
+        }
+    }
+
+    /// Creates a reader over the UTF-16 code units `units`: `new
+    /// StringReader(s)` for a Java string that a Rust `str` cannot hold (one
+    /// with a lone surrogate).
+    pub fn from_utf16(units: impl Into<Vec<u16>>) -> Self {
+        Self {
+            chars: units.into(),
             position: 0,
         }
     }
 }
 
 impl CharReader for StringCharReader {
-    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
         let remaining = self.chars.len().saturating_sub(self.position);
         let n = remaining.min(buf.len());
-        for (i, dst) in buf.iter_mut().enumerate().take(n) {
-            *dst = self.chars[self.position + i];
-        }
+        buf[..n].copy_from_slice(&self.chars[self.position..self.position + n]);
         self.position += n;
         Ok(n)
     }
@@ -185,7 +198,7 @@ impl<F> CharReader for CharFilterFn<F>
 where
     F: Fn(i32) -> i32 + Send + Sync + 'static,
 {
-    fn read(&mut self, buf: &mut [char]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize> {
         self.input.read(buf)
     }
 
@@ -235,7 +248,7 @@ where
 /// not have, and the property it defends is already guaranteed here — Rust has
 /// no implementation inheritance, so an implementor's `increment_token` cannot
 /// be overridden by anything.
-pub trait TokenStream: Debug {
+pub trait TokenStream: Debug + Send + Sync {
     /// Advances to the next token and updates the attributes.
     ///
     /// Returns `true` while tokens remain; `false` at end-of-stream.
@@ -274,6 +287,22 @@ pub trait TokenStream: Debug {
     fn as_unwrappable(&self) -> Option<&dyn Unwrappable<dyn TokenStream>> {
         None
     }
+
+    /// Returns this stream as [`Any`], for the `instanceof` tests Java code
+    /// performs on a `TokenStream`, when the implementation offers it.
+    ///
+    /// The default is `None`: a stream that a consumer must recognize
+    /// overrides this with `Some(self)`.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
+    /// [`as_any`](Self::as_any) for a caller that changes the stream it
+    /// recognizes, as `Field.tokenStream` casts `reuse` to set its value
+    /// (`Field.java:472-485`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
 }
 
 impl AsUnwrappable<dyn TokenStream> for dyn TokenStream {
@@ -290,13 +319,93 @@ impl AsUnwrappable<dyn TokenStream> for dyn TokenStream {
 /// implementation serves every token attribute interface it implements and
 /// the delegate serves the others.
 pub fn default_token_attribute_factory() -> Arc<dyn AttributeFactory> {
-    Arc::new(crate::util::attribute::get_static_implementation::<
-        PackedTokenAttributeImpl,
-    >(Arc::new(DefaultAttributeFactory::new())))
+    static FACTORY: std::sync::OnceLock<Arc<dyn AttributeFactory>> = std::sync::OnceLock::new();
+    Arc::clone(FACTORY.get_or_init(|| {
+        Arc::new(crate::util::attribute::get_static_implementation::<
+            PackedTokenAttributeImpl,
+        >(default_attribute_factory()))
+    }))
 }
 
-fn illegal_state_message() -> String {
-    "TokenStream contract violation: reset()/close() call missing, reset() called multiple times, or subclass does not call super.reset().".to_string()
+/// Returns Lucene's default attribute factory, which creates the
+/// implementation `XImpl` of each attribute interface `X`.
+///
+/// Equivalent to `AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY`
+/// (`AttributeFactory.java:66-95`). Java finds the class `X.getName() +
+/// "Impl"` by reflection the first time an interface is asked for; Rust has
+/// no reflection, so every implementation `lucene-core` defines is registered
+/// up front under its interface (and under its own type, the key a
+/// [`AttributeSource::add_attribute`] by implementation uses). The pairs are
+/// those Java's naming rule yields: `CharTermAttribute`, `OffsetAttribute`,
+/// `PositionIncrementAttribute`, `PositionLengthAttribute`, `TypeAttribute`,
+/// `FlagsAttribute`, `PayloadAttribute`, `KeywordAttribute`,
+/// `TermFrequencyAttribute`, `SentenceAttribute` and `BytesTermAttribute`
+/// (`org.apache.lucene.analysis.tokenattributes`), `BoostAttribute` and
+/// `MaxNonCompetitiveBoostAttribute` (`org.apache.lucene.search`).
+/// `TermToBytesRefAttribute` has no `TermToBytesRefAttributeImpl`, so asking
+/// for it fails, as Java's lookup does.
+///
+/// **Divergence from Lucene 10.5.0.** An attribute defined outside the crate
+/// cannot be discovered; a caller registers it in its own
+/// [`DefaultAttributeFactory`].
+pub fn default_attribute_factory() -> Arc<dyn AttributeFactory> {
+    static FACTORY: std::sync::OnceLock<Arc<dyn AttributeFactory>> = std::sync::OnceLock::new();
+    Arc::clone(FACTORY.get_or_init(|| {
+        use crate::search::{
+            BoostAttribute, BoostAttributeImpl, MaxNonCompetitiveBoostAttribute,
+            MaxNonCompetitiveBoostAttributeImpl,
+        };
+        use std::any::TypeId;
+        use tokenattributes::{SentenceAttribute, SentenceAttributeImpl};
+        let mut f = DefaultAttributeFactory::new();
+        macro_rules! register {
+            ($($iface:ident => $imp:ident),* $(,)?) => {
+                $(
+                    f.register(TypeId::of::<dyn $iface>(), $imp::default);
+                    f.register_self::<$imp>();
+                )*
+            };
+        }
+        register!(
+            CharTermAttribute => CharTermAttributeImpl,
+            OffsetAttribute => OffsetAttributeImpl,
+            PositionIncrementAttribute => PositionIncrementAttributeImpl,
+            PositionLengthAttribute => PositionLengthAttributeImpl,
+            TypeAttribute => TypeAttributeImpl,
+            FlagsAttribute => FlagsAttributeImpl,
+            PayloadAttribute => PayloadAttributeImpl,
+            KeywordAttribute => KeywordAttributeImpl,
+            TermFrequencyAttribute => TermFrequencyAttributeImpl,
+            SentenceAttribute => SentenceAttributeImpl,
+            BytesTermAttribute => BytesTermAttributeImpl,
+            BoostAttribute => BoostAttributeImpl,
+            MaxNonCompetitiveBoostAttribute => MaxNonCompetitiveBoostAttributeImpl,
+        );
+        f.register_self::<PackedTokenAttributeImpl>();
+        Arc::new(f)
+    }))
+}
+
+/// The message of the `IllegalStateException` Java's `ILLEGAL_STATE_READER`
+/// throws on every read (`Tokenizer.java:117-126`).
+const ILLEGAL_STATE_READER_MESSAGE: &str = "TokenStream contract violation: reset()/close() call missing, reset() called multiple times, or subclass does not call super.reset(). Please see Javadocs of TokenStream class for more information about the correct consuming workflow.";
+
+/// The reader a [`Tokenizer`] holds while it has no real input: every read
+/// fails with Java's contract-violation message, and closing does nothing.
+///
+/// Equivalent to the private `Tokenizer.ILLEGAL_STATE_READER`
+/// (`Tokenizer.java:113-127`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IllegalStateReader;
+
+impl CharReader for IllegalStateReader {
+    fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
+        Err(LuceneError::illegal_state(ILLEGAL_STATE_READER_MESSAGE))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -304,7 +413,7 @@ fn illegal_state_message() -> String {
 // -----------------------------------------------------------------------------
 
 /// User-supplied tokenization logic for a [`Tokenizer`].
-pub trait TokenizerLogic: Debug {
+pub trait TokenizerLogic: Debug + Send + Sync {
     /// Produces the next token, updating `source`.
     fn increment_token(
         &mut self,
@@ -345,11 +454,47 @@ pub trait TokenizerLogic: Debug {
     /// logic a [`Tokenizer`] is built from.
     ///
     /// Equivalent to `org.apache.lucene.analysis.Tokenizer#setReaderTestPoint`.
-    fn set_reader_test_point(&mut self) {}
+    fn set_reader_test_point(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// A boxed logic is a logic: what lets a [`Tokenizer`] hold a logic chosen at
+/// run time, as the `Tokenizer` a `TokenizerFactory` creates does.
+impl<T: TokenizerLogic + ?Sized> TokenizerLogic for Box<T> {
+    fn increment_token(
+        &mut self,
+        source: &mut AttributeSource,
+        reader: &mut dyn CharReader,
+    ) -> Result<bool> {
+        (**self).increment_token(source, reader)
+    }
+
+    fn end(&mut self, source: &mut AttributeSource, input: Option<&dyn CharReader>) -> Result<()> {
+        (**self).end(source, input)
+    }
+
+    fn reset(&mut self, source: &mut AttributeSource, reader: &mut dyn CharReader) -> Result<()> {
+        (**self).reset(source, reader)
+    }
+
+    fn close(&mut self, reader: &mut dyn CharReader) -> Result<()> {
+        (**self).close(reader)
+    }
+
+    fn set_reader_test_point(&mut self) -> Result<()> {
+        (**self).set_reader_test_point()
+    }
 }
 
 /// A `TokenStream` whose input is a [`CharReader`], equivalent to
 /// `org.apache.lucene.analysis.Tokenizer`.
+///
+/// Java holds the private `ILLEGAL_STATE_READER` in `input` and
+/// `inputPending` while no real reader is installed; here `None` stands for
+/// it, and [`IllegalStateReader`] is what the logic reads from then, so that
+/// a read outside the `setReader`/`reset` workflow fails exactly where and
+/// how Java's does.
 #[derive(Debug)]
 pub struct Tokenizer<T: TokenizerLogic> {
     source: AttributeSource,
@@ -360,10 +505,39 @@ pub struct Tokenizer<T: TokenizerLogic> {
 
 impl<T: TokenizerLogic> Tokenizer<T> {
     /// Creates a tokenizer with no input, awaiting a call to [`Self::set_reader`].
+    ///
+    /// The source is built over [`default_token_attribute_factory`] and holds
+    /// the `CharTermAttribute`, which that factory implements with a
+    /// [`PackedTokenAttributeImpl`] serving every core token attribute: what
+    /// a Java subclass's fields add (`termAtt = addAttribute(...)`). A logic
+    /// that adds other attributes, or adds them in its own order, builds its
+    /// source and calls [`Self::with_source`].
     pub fn new(logic: T) -> Self {
-        let factory = default_token_attribute_factory();
-        let mut source = AttributeSource::new_with_factory(factory);
-        source.add_attribute::<PackedTokenAttributeImpl>().unwrap();
+        let mut tokenizer = Self::with_factory(default_token_attribute_factory(), logic);
+        tokenizer
+            .source
+            .add_attribute_interface::<dyn CharTermAttribute>()
+            .expect("INVARIANT: the default token attribute factory implements CharTermAttribute");
+        tokenizer
+    }
+
+    /// Creates a tokenizer whose attributes come from `factory`.
+    ///
+    /// Equivalent to the constructor `Tokenizer(AttributeFactory)`. No
+    /// attribute is added: the logic adds the ones it uses, as a Java
+    /// subclass's field initializers do.
+    pub fn with_factory(factory: Arc<dyn AttributeFactory>, logic: T) -> Self {
+        Self::with_source(AttributeSource::new_with_factory(factory), logic)
+    }
+
+    /// Creates a tokenizer over a source already holding the attributes the
+    /// logic uses.
+    ///
+    /// A Java subclass's field initializers (`termAtt =
+    /// addAttribute(CharTermAttribute.class)`) run right after
+    /// `Tokenizer(AttributeFactory)`; a logic that keeps its attribute handles
+    /// adds them to `source` first and is then given to this constructor.
+    pub fn with_source(source: AttributeSource, logic: T) -> Self {
         Self {
             source,
             input: None,
@@ -376,7 +550,7 @@ impl<T: TokenizerLogic> Tokenizer<T> {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if the previous input has not been
+    /// Returns `LuceneErrorKind::IllegalState` if the previous input has not been
     /// closed.
     pub fn set_reader(&mut self, reader: Box<dyn CharReader>) -> Result<()> {
         if self.input.is_some() {
@@ -385,8 +559,12 @@ impl<T: TokenizerLogic> Tokenizer<T> {
             ));
         }
         self.input_pending = Some(reader);
-        self.logic.set_reader_test_point();
-        Ok(())
+        self.logic.set_reader_test_point()
+    }
+
+    /// Returns a reference to the tokenizer logic.
+    pub fn logic(&self) -> &T {
+        &self.logic
     }
 
     /// Returns a mutable reference to the tokenizer logic.
@@ -438,40 +616,47 @@ impl<T: TokenizerLogic> Tokenizer<T> {
 
 impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
     fn increment_token(&mut self) -> Result<bool> {
-        let reader = self
-            .input
-            .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state(illegal_state_message()))?;
-        self.logic
-            .increment_token(&mut self.source, reader.as_mut())
+        let mut illegal = IllegalStateReader;
+        let reader: &mut dyn CharReader = match self.input.as_mut() {
+            Some(reader) => reader.as_mut(),
+            None => &mut illegal,
+        };
+        self.logic.increment_token(&mut self.source, reader)
     }
 
+    /// `TokenStream.end()` — `endAttributes()` — and then the logic's own
+    /// end-of-stream work, the order of a Java subclass's `end()`, which
+    /// calls `super.end()` first and sets the final offset afterwards.
     fn end(&mut self) -> Result<()> {
-        self.logic.end(&mut self.source, self.input.as_deref())?;
         self.source.end_attributes();
-        Ok(())
+        self.logic.end(&mut self.source, self.input.as_deref())
     }
 
+    /// `Tokenizer.reset()`: `input = inputPending; inputPending =
+    /// ILLEGAL_STATE_READER;` — which cannot fail, a missing reader being the
+    /// illegal one — and then the logic's reset.
     fn reset(&mut self) -> Result<()> {
-        // The base TokenStream::reset default is a no-op; the Java Tokenizer
-        // contracts the reader move before delegating to subclass state reset.
-        let reader = self
-            .input_pending
-            .take()
-            .ok_or_else(|| LuceneError::illegal_state(illegal_state_message()))?;
-        self.input = Some(reader);
-        let reader = self.input.as_mut().unwrap();
-        self.logic.reset(&mut self.source, reader.as_mut())
+        self.input = self.input_pending.take();
+        let mut illegal = IllegalStateReader;
+        let reader: &mut dyn CharReader = match self.input.as_mut() {
+            Some(reader) => reader.as_mut(),
+            None => &mut illegal,
+        };
+        self.logic.reset(&mut self.source, reader)
     }
 
+    /// `Tokenizer.close()`: `input.close(); inputPending = input =
+    /// ILLEGAL_STATE_READER;`, and then the logic's close, which, like a Java
+    /// subclass's code after `super.close()`, sees the illegal reader.
     fn close(&mut self) -> Result<()> {
-        if let Some(reader) = self.input.as_mut() {
-            self.logic.close(reader.as_mut())?;
-            reader.close()?;
-        }
+        let closed = match self.input.as_mut() {
+            Some(reader) => reader.close(),
+            None => Ok(()),
+        };
         self.input = None;
         self.input_pending = None;
-        Ok(())
+        closed?;
+        self.logic.close(&mut IllegalStateReader)
     }
 
     fn attribute_source(&self) -> &AttributeSource {
@@ -488,7 +673,7 @@ impl<T: TokenizerLogic> TokenStream for Tokenizer<T> {
 // -----------------------------------------------------------------------------
 
 /// User-supplied filtering logic for a [`TokenFilter`].
-pub trait TokenFilterLogic: Debug {
+pub trait TokenFilterLogic: Debug + Send + Sync {
     /// Produces the next filtered token.
     fn increment_token(
         &mut self,
@@ -529,6 +714,16 @@ impl<T: TokenFilterLogic> TokenFilter<T> {
             input,
             logic,
         }
+    }
+
+    /// Returns a reference to the filter logic.
+    pub fn logic(&self) -> &T {
+        &self.logic
+    }
+
+    /// Returns a mutable reference to the filter logic.
+    pub fn logic_mut(&mut self) -> &mut T {
+        &mut self.logic
     }
 }
 
@@ -579,13 +774,13 @@ impl<T: TokenFilterLogic> Unwrappable<dyn TokenStream> for TokenFilter<T> {
 /// and the input of a [`TokenFilter`] chain without giving up ownership.
 #[derive(Debug)]
 pub struct SharedTokenStream {
-    inner: Rc<RefCell<dyn TokenStream>>,
+    inner: Arc<AtomicRefCell<dyn TokenStream>>,
     source: AttributeSource,
 }
 
 impl SharedTokenStream {
     /// Wraps `inner` in a stream that shares its attributes.
-    pub fn new(inner: Rc<RefCell<dyn TokenStream>>) -> Self {
+    pub fn new(inner: Arc<AtomicRefCell<dyn TokenStream>>) -> Self {
         let source = AttributeSource::new_from(inner.borrow().attribute_source());
         Self { inner, source }
     }
@@ -623,27 +818,70 @@ impl TokenStream for SharedTokenStream {
 
 /// Emits a single token containing a fixed string.
 ///
-/// Equivalent to the private `Analyzer.StringTokenStream` in Lucene.
+/// Equivalent to the private `Analyzer.StringTokenStream` in Lucene, and to
+/// `Field.StringTokenStream`, its twin over the default token attribute
+/// factory ([`new`](Self::new)). The term and offset attributes are held by
+/// interface, as Java's `addAttribute(CharTermAttribute.class)` and
+/// `addAttribute(OffsetAttribute.class)` fields are, whatever implementation
+/// the factory chooses; the offsets count UTF-16 code units, Java's `char`s.
 #[derive(Debug)]
 pub struct StringTokenStream {
     source: AttributeSource,
     value: String,
-    length: usize,
+    length: i32,
     used: bool,
+    /// Whether this is `Field.StringTokenStream`, built by [`Self::new`];
+    /// `Analyzer.StringTokenStream` ([`Self::new_with_factory`]) is a
+    /// different Java class, which `Field.tokenStream` does not reuse.
+    field_stream: bool,
 }
 
 impl StringTokenStream {
-    /// Creates a stream that will emit `value` as a single token.
+    /// Creates a stream that will emit `value` as a single token whose end
+    /// offset is `value.length()`, over the default token attribute factory.
+    ///
+    /// Equivalent to `Field.StringTokenStream` (`Field.java:592-635`).
     pub fn new(value: String) -> Result<Self> {
-        let factory = default_token_attribute_factory();
-        let mut source = AttributeSource::new_with_factory(factory);
-        source.add_attribute::<PackedTokenAttributeImpl>()?;
-        let length = value.chars().count();
+        let length = value.encode_utf16().count() as i32;
+        let mut stream = Self::new_with_factory(default_token_attribute_factory(), value, length)?;
+        stream.field_stream = true;
+        Ok(stream)
+    }
+
+    /// Whether this is `Field.StringTokenStream` (see [`Self::new`]).
+    pub fn is_field_stream(&self) -> bool {
+        self.field_stream
+    }
+
+    /// Sets the string value, whose `value.length()` is the token's end
+    /// offset.
+    ///
+    /// Equivalent to `Field.StringTokenStream.setValue(String)`
+    /// (`Field.java:559-561`).
+    pub fn set_value(&mut self, value: String) {
+        self.length = value.encode_utf16().count() as i32;
+        self.value = value;
+    }
+
+    /// Creates a stream over `attribute_factory` that will emit `value` as a
+    /// single token with the offsets `0` and `length`.
+    ///
+    /// Equivalent to `Analyzer.StringTokenStream(AttributeFactory, String,
+    /// int)` (`Analyzer.java:540-575`).
+    pub fn new_with_factory(
+        attribute_factory: Arc<dyn AttributeFactory>,
+        value: String,
+        length: i32,
+    ) -> Result<Self> {
+        let mut source = AttributeSource::new_with_factory(attribute_factory);
+        source.add_attribute_interface::<dyn CharTermAttribute>()?;
+        source.add_attribute_interface::<dyn OffsetAttribute>()?;
         Ok(Self {
             source,
             value,
             length,
             used: true,
+            field_stream: false,
         })
     }
 }
@@ -654,12 +892,14 @@ impl TokenStream for StringTokenStream {
             return Ok(false);
         }
         self.source.clear_attributes();
-        let mut term = self
-            .source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap();
-        term.append_string(&self.value);
-        term.set_offset(0, self.length as i32);
+        self.source
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .expect("INVARIANT: added by the constructor")
+            .append_string(Some(&self.value));
+        self.source
+            .get_attribute_interface_mut::<dyn OffsetAttribute>()
+            .expect("INVARIANT: added by the constructor")
+            .set_offset(0, self.length);
         self.used = true;
         Ok(true)
     }
@@ -671,11 +911,10 @@ impl TokenStream for StringTokenStream {
 
     fn end(&mut self) -> Result<()> {
         self.source.end_attributes();
-        let mut term = self
-            .source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap();
-        term.set_offset(self.length as i32, self.length as i32);
+        self.source
+            .get_attribute_interface_mut::<dyn OffsetAttribute>()
+            .expect("INVARIANT: added by the constructor")
+            .set_offset(self.length, self.length);
         Ok(())
     }
 
@@ -685,6 +924,14 @@ impl TokenStream for StringTokenStream {
 
     fn attribute_source_mut(&mut self) -> &mut AttributeSource {
         &mut self.source
+    }
+
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
 }
 
@@ -713,6 +960,14 @@ impl BinaryTokenStream {
             value,
             used: true,
         })
+    }
+
+    /// Sets the binary value.
+    ///
+    /// Equivalent to `Field.BinaryTokenStream.setValue(BytesRef)`
+    /// (`Field.java:517-519`).
+    pub fn set_value(&mut self, value: BytesRef) {
+        self.value = value;
     }
 }
 
@@ -748,6 +1003,14 @@ impl TokenStream for BinaryTokenStream {
     fn attribute_source_mut(&mut self) -> &mut AttributeSource {
         &mut self.source
     }
+
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -759,16 +1022,16 @@ impl TokenStream for BinaryTokenStream {
 ///
 /// Equivalent to `Analyzer.TokenStreamComponents`.
 pub struct TokenStreamComponents {
-    source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()>>,
-    sink: Rc<RefCell<dyn TokenStream>>,
+    source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()> + Send + Sync>,
+    sink: Arc<AtomicRefCell<dyn TokenStream>>,
     reusable_string_reader: Option<ReusableStringReader>,
 }
 
 impl TokenStreamComponents {
     /// Creates components from a source function and a sink stream.
     pub fn new(
-        source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()>>,
-        sink: Rc<RefCell<dyn TokenStream>>,
+        source: Box<dyn FnMut(Box<dyn CharReader>) -> Result<()> + Send + Sync>,
+        sink: Arc<AtomicRefCell<dyn TokenStream>>,
     ) -> Self {
         Self {
             source,
@@ -782,10 +1045,10 @@ impl TokenStreamComponents {
     /// Equivalent to the constructor `TokenStreamComponents(Tokenizer)`,
     /// `this(tokenizer::setReader, tokenizer)`.
     pub fn from_tokenizer<T: TokenizerLogic + 'static>(
-        tokenizer: Rc<RefCell<Tokenizer<T>>>,
+        tokenizer: Arc<AtomicRefCell<Tokenizer<T>>>,
     ) -> Self {
-        let sink: Rc<RefCell<dyn TokenStream>> = tokenizer.clone();
-        let tokenizer_for_source = Rc::clone(&tokenizer);
+        let sink: Arc<AtomicRefCell<dyn TokenStream>> = tokenizer.clone();
+        let tokenizer_for_source = Arc::clone(&tokenizer);
         let source = Box::new(move |reader: Box<dyn CharReader>| {
             tokenizer_for_source.borrow_mut().set_reader(reader)
         });
@@ -798,12 +1061,12 @@ impl TokenStreamComponents {
     }
 
     /// Returns a shared handle to the sink token stream.
-    pub fn token_stream(&self) -> Rc<RefCell<dyn TokenStream>> {
-        Rc::clone(&self.sink)
+    pub fn token_stream(&self) -> Arc<AtomicRefCell<dyn TokenStream>> {
+        Arc::clone(&self.sink)
     }
 
     /// Replaces the sink stream while keeping the source and reusable reader.
-    pub fn with_sink(self, sink: Rc<RefCell<dyn TokenStream>>) -> Self {
+    pub fn with_sink(self, sink: Arc<AtomicRefCell<dyn TokenStream>>) -> Self {
         Self {
             source: self.source,
             sink,
@@ -881,14 +1144,14 @@ pub trait ReuseStrategy: Debug + Send + Sync {
         &self,
         state: &AnalyzerState,
         field_name: &str,
-    ) -> Option<Rc<RefCell<TokenStreamComponents>>>;
+    ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>>;
 
     /// Stores `components` as the reusable components for `field_name`.
     fn set_reusable_components(
         &self,
         state: &AnalyzerState,
         field_name: &str,
-        components: Rc<RefCell<TokenStreamComponents>>,
+        components: Arc<AtomicRefCell<TokenStreamComponents>>,
     );
 }
 
@@ -903,11 +1166,11 @@ impl ReuseStrategy for GlobalReuseStrategy {
         &self,
         state: &AnalyzerState,
         _field_name: &str,
-    ) -> Option<Rc<RefCell<TokenStreamComponents>>> {
+    ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
         let stored = state.stored_value().get();
         let borrow = stored.borrow();
         borrow.as_ref().and_then(|any| {
-            any.downcast_ref::<Rc<RefCell<TokenStreamComponents>>>()
+            any.downcast_ref::<Arc<AtomicRefCell<TokenStreamComponents>>>()
                 .cloned()
         })
     }
@@ -916,7 +1179,7 @@ impl ReuseStrategy for GlobalReuseStrategy {
         &self,
         state: &AnalyzerState,
         _field_name: &str,
-        components: Rc<RefCell<TokenStreamComponents>>,
+        components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         state.stored_value().set(Some(Box::new(components)));
     }
@@ -933,11 +1196,11 @@ impl ReuseStrategy for PerFieldReuseStrategy {
         &self,
         state: &AnalyzerState,
         field_name: &str,
-    ) -> Option<Rc<RefCell<TokenStreamComponents>>> {
+    ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
         let stored = state.stored_value().get();
         let borrow = stored.borrow();
         borrow.as_ref().and_then(|any| {
-            any.downcast_ref::<HashMap<String, Rc<RefCell<TokenStreamComponents>>>>()
+            any.downcast_ref::<HashMap<String, Arc<AtomicRefCell<TokenStreamComponents>>>>()
                 .and_then(|map| map.get(field_name).cloned())
         })
     }
@@ -946,19 +1209,19 @@ impl ReuseStrategy for PerFieldReuseStrategy {
         &self,
         state: &AnalyzerState,
         field_name: &str,
-        components: Rc<RefCell<TokenStreamComponents>>,
+        components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         let stored = state.stored_value().get();
         let mut borrow = stored.borrow_mut();
         if borrow.is_none() {
             *borrow = Some(Box::new(HashMap::<
                 String,
-                Rc<RefCell<TokenStreamComponents>>,
+                Arc<AtomicRefCell<TokenStreamComponents>>,
             >::new()));
         }
         if let Some(any) = borrow.as_mut() {
             if let Some(map) =
-                any.downcast_mut::<HashMap<String, Rc<RefCell<TokenStreamComponents>>>>()
+                any.downcast_mut::<HashMap<String, Arc<AtomicRefCell<TokenStreamComponents>>>>()
             {
                 map.insert(field_name.to_string(), components);
             }
@@ -1061,7 +1324,7 @@ pub trait Analyzer: Debug + Send + Sync {
         &self,
         field_name: &str,
         reader: Box<dyn CharReader>,
-    ) -> Result<Rc<RefCell<dyn TokenStream>>> {
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         if self.analyzer_state().is_closed() {
             return Err(LuceneError::already_closed(
                 "this Analyzer is closed".to_string(),
@@ -1075,10 +1338,10 @@ pub trait Analyzer: Debug + Send + Sync {
         let components = match components {
             Some(c) => c,
             None => {
-                let c = Rc::new(RefCell::new(self.create_components(field_name)?));
+                let c = Arc::new(AtomicRefCell::new(self.create_components(field_name)?));
                 self.analyzer_state()
                     .reuse_strategy()
-                    .set_reusable_components(self.analyzer_state(), field_name, Rc::clone(&c));
+                    .set_reusable_components(self.analyzer_state(), field_name, Arc::clone(&c));
                 c
             }
         };
@@ -1097,7 +1360,7 @@ pub trait Analyzer: Debug + Send + Sync {
         &self,
         field_name: &str,
         text: &str,
-    ) -> Result<Rc<RefCell<dyn TokenStream>>> {
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         if self.analyzer_state().is_closed() {
             return Err(LuceneError::already_closed(
                 "this Analyzer is closed".to_string(),
@@ -1113,10 +1376,10 @@ pub trait Analyzer: Debug + Send + Sync {
         let components = match components {
             Some(c) => c,
             None => {
-                let c = Rc::new(RefCell::new(self.create_components(field_name)?));
+                let c = Arc::new(AtomicRefCell::new(self.create_components(field_name)?));
                 self.analyzer_state()
                     .reuse_strategy()
-                    .set_reusable_components(self.analyzer_state(), field_name, Rc::clone(&c));
+                    .set_reusable_components(self.analyzer_state(), field_name, Arc::clone(&c));
                 c
             }
         };
@@ -1142,21 +1405,31 @@ pub trait Analyzer: Debug + Send + Sync {
         let filtered_text = {
             let mut reader = self
                 .init_reader_for_normalization(field_name, Box::new(StringCharReader::new(text)));
-            let mut buffer = ['\0'; 64];
-            let mut builder = String::new();
+            let mut buffer = [0u16; 64];
+            let mut builder = Vec::new();
             loop {
                 let n = reader.read(&mut buffer)?;
                 if n == 0 {
                     break;
                 }
-                builder.extend(buffer[..n].iter());
+                builder.extend_from_slice(&buffer[..n]);
             }
             reader.close()?;
-            builder
+            // A Rust `String` cannot hold a lone surrogate, which becomes
+            // U+FFFD (see `utf16_to_string`).
+            character_utils::utf16_to_string(&builder)
         };
 
-        let string_stream = Box::new(StringTokenStream::new(filtered_text.clone())?);
+        let attribute_factory = self.attribute_factory(field_name);
+        let string_stream = Box::new(StringTokenStream::new_with_factory(
+            attribute_factory,
+            filtered_text,
+            text.encode_utf16().count() as i32,
+        )?);
         let mut token_stream = self.normalize_token_stream(field_name, string_stream);
+        token_stream
+            .attribute_source_mut()
+            .add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
 
         token_stream.reset()?;
         if !token_stream.increment_token()? {
@@ -1167,10 +1440,8 @@ pub trait Analyzer: Debug + Send + Sync {
         }
         let term = token_stream
             .attribute_source()
-            .get_attribute::<PackedTokenAttributeImpl>()
-            .ok_or_else(|| {
-                LuceneError::illegal_state("missing TermToBytesRefAttribute".to_string())
-            })?
+            .get_attribute_interface::<dyn TermToBytesRefAttribute>()
+            .expect("INVARIANT: added above")
             .get_bytes_ref();
         let term = BytesRef::deep_copy_of(&term);
         if token_stream.increment_token()? {
@@ -1200,6 +1471,26 @@ pub trait Analyzer: Debug + Send + Sync {
 pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// Returns the analyzer to delegate to for `field_name`.
     fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer;
+
+    /// The wrapper's position increment gap for `field_name`.
+    ///
+    /// Equivalent to `AnalyzerWrapper.getPositionIncrementGap(String)`
+    /// (`AnalyzerWrapper.java:129-132`), which a subclass may override
+    /// (LUCENE-5324); the default asks the wrapped analyzer.
+    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+        self.get_wrapped_analyzer(field_name)
+            .get_position_increment_gap(field_name)
+    }
+
+    /// The wrapper's offset gap for `field_name`.
+    ///
+    /// Equivalent to `AnalyzerWrapper.getOffsetGap(String)`
+    /// (`AnalyzerWrapper.java:134-137`), which a subclass may override
+    /// (LUCENE-5324); the default asks the wrapped analyzer.
+    fn get_offset_gap(&self, field_name: &str) -> i32 {
+        self.get_wrapped_analyzer(field_name)
+            .get_offset_gap(field_name)
+    }
 
     /// Wraps the components produced by the wrapped analyzer.
     ///
@@ -1315,15 +1606,11 @@ impl Analyzer for AnalyzerWrapper {
     }
 
     fn get_position_increment_gap(&self, field_name: &str) -> i32 {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .get_position_increment_gap(field_name)
+        self.logic.get_position_increment_gap(field_name)
     }
 
     fn get_offset_gap(&self, field_name: &str) -> i32 {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .get_offset_gap(field_name)
+        self.logic.get_offset_gap(field_name)
     }
 }
 
@@ -1335,6 +1622,26 @@ impl Analyzer for AnalyzerWrapper {
 pub trait DelegatingAnalyzerWrapperLogic: Debug + Send + Sync {
     /// Returns the analyzer to delegate to for `field_name`.
     fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer;
+
+    /// The wrapper's position increment gap for `field_name`.
+    ///
+    /// Equivalent to `AnalyzerWrapper.getPositionIncrementGap(String)`
+    /// (`AnalyzerWrapper.java:129-132`), which a subclass may override
+    /// (LUCENE-5324); the default asks the wrapped analyzer.
+    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+        self.get_wrapped_analyzer(field_name)
+            .get_position_increment_gap(field_name)
+    }
+
+    /// The wrapper's offset gap for `field_name`.
+    ///
+    /// Equivalent to `AnalyzerWrapper.getOffsetGap(String)`
+    /// (`AnalyzerWrapper.java:134-137`), which a subclass may override
+    /// (LUCENE-5324); the default asks the wrapped analyzer.
+    fn get_offset_gap(&self, field_name: &str) -> i32 {
+        self.get_wrapped_analyzer(field_name)
+            .get_offset_gap(field_name)
+    }
 }
 
 /// An analyzer wrapper that delegates all work to another analyzer without
@@ -1409,22 +1716,18 @@ impl Analyzer for DelegatingAnalyzerWrapper {
     }
 
     fn get_position_increment_gap(&self, field_name: &str) -> i32 {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .get_position_increment_gap(field_name)
+        self.logic.get_position_increment_gap(field_name)
     }
 
     fn get_offset_gap(&self, field_name: &str) -> i32 {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .get_offset_gap(field_name)
+        self.logic.get_offset_gap(field_name)
     }
 
     fn token_stream(
         &self,
         field_name: &str,
         reader: Box<dyn CharReader>,
-    ) -> Result<Rc<RefCell<dyn TokenStream>>> {
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         self.logic
             .get_wrapped_analyzer(field_name)
             .token_stream(field_name, reader)
@@ -1434,7 +1737,7 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         &self,
         field_name: &str,
         text: &str,
-    ) -> Result<Rc<RefCell<dyn TokenStream>>> {
+    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
         self.logic
             .get_wrapped_analyzer(field_name)
             .token_stream_from_str(field_name, text)
@@ -1456,6 +1759,18 @@ mod tests {
     use std::any::TypeId;
 
     use super::*;
+    use crate::error::LuceneErrorKind;
+
+    /// `CharTermAttribute.toString()`: the term text.
+    trait TermText {
+        fn term(&self) -> String;
+    }
+
+    impl<T: CharTermAttribute + ?Sized> TermText for T {
+        fn term(&self) -> String {
+            self.buffer()[..self.length()].iter().collect()
+        }
+    }
     use crate::util::attribute::unwrap_all;
 
     #[derive(Debug, Default)]
@@ -1477,9 +1792,9 @@ mod tests {
             let word = &self.words[self.index];
             self.index += 1;
             source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
-                .append_string(word);
+                .append_string(Some(word));
             Ok(true)
         }
 
@@ -1489,7 +1804,7 @@ mod tests {
             reader: &mut dyn CharReader,
         ) -> Result<()> {
             let mut buffer = Vec::new();
-            let mut buf = ['\0'; 256];
+            let mut buf = [0u16; 256];
             loop {
                 let n = reader.read(&mut buf)?;
                 if n == 0 {
@@ -1497,9 +1812,7 @@ mod tests {
                 }
                 buffer.extend_from_slice(&buf[..n]);
             }
-            self.words = buffer
-                .iter()
-                .collect::<String>()
+            self.words = String::from_utf16_lossy(&buffer)
                 .split_whitespace()
                 .map(|s| s.to_string())
                 .collect();
@@ -1535,18 +1848,18 @@ mod tests {
                 return Ok(false);
             }
             let term = source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
                 .term()
                 .to_uppercase();
             source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
                 .set_empty();
             source
-                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .get_attribute_interface_mut::<dyn CharTermAttribute>()
                 .unwrap()
-                .append_string(&term);
+                .append_string(Some(&term));
             Ok(true)
         }
     }
@@ -1554,7 +1867,7 @@ mod tests {
     fn term_of(stream: &dyn TokenStream) -> String {
         stream
             .attribute_source()
-            .get_attribute::<PackedTokenAttributeImpl>()
+            .get_attribute_interface::<dyn CharTermAttribute>()
             .unwrap()
             .term()
     }
@@ -1662,7 +1975,113 @@ mod tests {
         tokenizer.reset().unwrap();
         // Without close, set_reader must be rejected.
         let result = tokenizer.set_reader(Box::new(StringCharReader::new("b")));
-        assert!(matches!(result, Err(LuceneError::IllegalState { .. })));
+        assert!(matches!(
+            result,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            })
+        ));
+    }
+
+    /// Java's `Tokenizer.reset()` cannot fail: without a reader it installs
+    /// `ILLEGAL_STATE_READER`, and the first read throws its message
+    /// (`Tokenizer.java:94-127`; oracle row `mis 0 nochecks.noreader` of
+    /// `analysis_mocks.tsv`).
+    #[test]
+    fn tokenizer_reset_without_a_reader_fails_on_the_first_read() {
+        let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
+        let reset = tokenizer.reset();
+        assert!(matches!(
+            reset,
+            Err(LuceneError { kind: LuceneErrorKind::IllegalState { ref message, .. }, .. }) if message == ILLEGAL_STATE_READER_MESSAGE
+        ));
+        let mut tokenizer = Tokenizer::new(CountingLogic::default());
+        tokenizer.reset().unwrap();
+        match tokenizer.increment_token() {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => {
+                assert_eq!(message, ILLEGAL_STATE_READER_MESSAGE)
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A logic that reads one character per token and counts its hooks.
+    #[derive(Debug, Default)]
+    struct CountingLogic {
+        closes: usize,
+    }
+
+    impl TokenizerLogic for CountingLogic {
+        fn increment_token(
+            &mut self,
+            _source: &mut AttributeSource,
+            reader: &mut dyn CharReader,
+        ) -> Result<bool> {
+            let mut c = [0u16; 1];
+            Ok(reader.read(&mut c)? == 1)
+        }
+
+        fn end(
+            &mut self,
+            source: &mut AttributeSource,
+            _input: Option<&dyn CharReader>,
+        ) -> Result<()> {
+            source
+                .get_attribute_interface_mut::<dyn OffsetAttribute>()
+                .unwrap()
+                .set_offset(3, 3);
+            Ok(())
+        }
+
+        fn close(&mut self, _reader: &mut dyn CharReader) -> Result<()> {
+            self.closes += 1;
+            Ok(())
+        }
+    }
+
+    /// `Tokenizer.close()` runs whatever the reader state (Java's subclass
+    /// code after `super.close()` always runs; oracle row `mis 0
+    /// checks.closenoreset`), and `end()` is `endAttributes()` followed by
+    /// the subclass's work, so the final offset the logic sets survives.
+    #[test]
+    fn tokenizer_close_and_end_reach_the_logic_in_javas_order() {
+        let mut tokenizer = Tokenizer::new(CountingLogic::default());
+        tokenizer.close().unwrap();
+        assert_eq!(tokenizer.logic().closes, 1);
+        tokenizer
+            .set_reader(Box::new(StringCharReader::new("ab")))
+            .unwrap();
+        tokenizer.close().unwrap();
+        assert_eq!(tokenizer.logic().closes, 2);
+
+        tokenizer
+            .set_reader(Box::new(StringCharReader::new("ab")))
+            .unwrap();
+        tokenizer.reset().unwrap();
+        assert!(tokenizer.increment_token().unwrap());
+        tokenizer
+            .attribute_source()
+            .get_attribute_interface_mut::<dyn CharTermAttribute>()
+            .unwrap()
+            .append_string(Some("x"));
+        tokenizer.end().unwrap();
+        let source = tokenizer.attribute_source();
+        let offset = source
+            .get_attribute_interface::<dyn OffsetAttribute>()
+            .unwrap();
+        assert_eq!((offset.start_offset(), offset.end_offset()), (3, 3));
+        let term = source
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
+        assert_eq!(term.term(), "");
+        let pos_inc = source
+            .get_attribute_interface::<dyn PositionIncrementAttribute>()
+            .unwrap();
+        assert_eq!(pos_inc.get_position_increment(), 0);
     }
 
     #[test]
@@ -1688,7 +2107,9 @@ mod tests {
     fn default_factory_creates_packed_token_attribute() {
         let factory = default_token_attribute_factory();
         let mut source = AttributeSource::new_with_factory(factory);
-        source.add_attribute::<PackedTokenAttributeImpl>().unwrap();
+        source
+            .add_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
 
         assert!(source.has_attribute::<PackedTokenAttributeImpl>());
         assert!(source.has_attribute_by_id(TypeId::of::<dyn OffsetAttribute>()));
@@ -1724,13 +2145,13 @@ mod tests {
         let mut reader = ReusableStringReader::new();
         reader.set_value("hello world");
 
-        let mut buf = ['\0'; 5];
+        let mut buf = [0u16; 5];
         assert_eq!(reader.read(&mut buf).unwrap(), 5);
-        assert_eq!(buf.iter().collect::<String>(), "hello");
+        assert_eq!(String::from_utf16_lossy(&buf), "hello");
 
         reader.set_value("foo");
         assert_eq!(reader.read(&mut buf).unwrap(), 3);
-        assert_eq!(buf[..3].iter().collect::<String>(), "foo");
+        assert_eq!(String::from_utf16_lossy(&buf[..3]), "foo");
     }
 
     // -------------------------------------------------------------------------
@@ -1741,7 +2162,7 @@ mod tests {
     fn lower_case_filter_ascii_and_unicode() -> Result<()> {
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         tokenizer.set_reader(Box::new(StringCharReader::new("HELLO Ω É ß")))?;
-        let mut filter = new_lower_case_filter(Box::new(tokenizer));
+        let mut filter = new_lower_case_filter(Box::new(tokenizer)).unwrap();
         filter.reset()?;
 
         assert!(filter.increment_token()?);
@@ -1771,7 +2192,7 @@ mod tests {
     impl FilteringTokenFilterLogic for RejectShortLogic {
         fn accept(&mut self, source: &AttributeSource) -> Result<bool> {
             let len = source
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn CharTermAttribute>()
                 .unwrap()
                 .length();
             Ok(len >= self.min_len)
@@ -1783,7 +2204,8 @@ mod tests {
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         tokenizer.set_reader(Box::new(StringCharReader::new("a big cat")))?;
         let mut filter =
-            new_filtering_token_filter(Box::new(tokenizer), RejectShortLogic { min_len: 3 });
+            new_filtering_token_filter(Box::new(tokenizer), RejectShortLogic { min_len: 3 })
+                .unwrap();
         filter.reset()?;
 
         // 'a' is rejected, 'big' is accepted with position increment 2.
@@ -1792,7 +2214,7 @@ mod tests {
         assert_eq!(
             filter
                 .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn PositionIncrementAttribute>()
                 .unwrap()
                 .get_position_increment(),
             2
@@ -1803,7 +2225,7 @@ mod tests {
         assert_eq!(
             filter
                 .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn PositionIncrementAttribute>()
                 .unwrap()
                 .get_position_increment(),
             1
@@ -1814,7 +2236,7 @@ mod tests {
         assert_eq!(
             filter
                 .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn PositionIncrementAttribute>()
                 .unwrap()
                 .get_position_increment(),
             0
@@ -1832,7 +2254,7 @@ mod tests {
         let stop_words = make_stop_set(["is", "a", "the"], false);
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         tokenizer.set_reader(Box::new(StringCharReader::new("the quick is a fox")))?;
-        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words);
+        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words).unwrap();
         filter.reset()?;
 
         assert!(filter.increment_token()?);
@@ -1851,7 +2273,7 @@ mod tests {
         let stop_words = make_stop_set(["The"], true);
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         tokenizer.set_reader(Box::new(StringCharReader::new("the cat")))?;
-        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words);
+        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words).unwrap();
         filter.reset()?;
 
         assert!(filter.increment_token()?);
@@ -1872,8 +2294,8 @@ mod tests {
         let text = "  hello  \n\nworld\n  \n";
         let set = get_word_set(text.lines());
         assert_eq!(set.size(), 2);
-        assert!(set.contains("hello"));
-        assert!(set.contains("world"));
+        assert!(set.contains(Some("hello")));
+        assert!(set.contains(Some("world")));
     }
 
     #[test]
@@ -1881,9 +2303,9 @@ mod tests {
         let text = "alpha\n# comment\nbeta\n# another\ngamma";
         let set = get_word_set_ignoring_comments(text.lines(), "#");
         assert_eq!(set.size(), 3);
-        assert!(set.contains("alpha"));
-        assert!(set.contains("beta"));
-        assert!(set.contains("gamma"));
+        assert!(set.contains(Some("alpha")));
+        assert!(set.contains(Some("beta")));
+        assert!(set.contains(Some("gamma")));
     }
 
     #[test]
@@ -1892,7 +2314,7 @@ mod tests {
         let set = get_snowball_word_set(text.lines());
         assert_eq!(set.size(), 7);
         for word in ["a", "an", "the", "is", "are", "was", "were"] {
-            assert!(set.contains(word));
+            assert!(set.contains(Some(word)));
         }
     }
 
@@ -1923,19 +2345,21 @@ mod tests {
         }
 
         fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-            let tokenizer = Rc::new(RefCell::new(Tokenizer::new(WhitespaceTokenizer::default())));
+            let tokenizer = Arc::new(AtomicRefCell::new(Tokenizer::new(
+                WhitespaceTokenizer::default(),
+            )));
             Ok(TokenStreamComponents::from_tokenizer(tokenizer))
         }
     }
 
-    fn collect_terms(stream: Rc<RefCell<dyn TokenStream>>) -> Result<Vec<String>> {
+    fn collect_terms(stream: Arc<AtomicRefCell<dyn TokenStream>>) -> Result<Vec<String>> {
         let mut terms = Vec::new();
         let mut stream = stream.borrow_mut();
         stream.reset()?;
         while stream.increment_token()? {
             let term = stream
                 .attribute_source()
-                .get_attribute::<PackedTokenAttributeImpl>()
+                .get_attribute_interface::<dyn CharTermAttribute>()
                 .unwrap()
                 .term();
             terms.push(term);
@@ -1978,7 +2402,7 @@ mod tests {
             .get_reusable_components(analyzer.analyzer_state(), "field");
         assert!(components1.is_some());
         assert!(components2.is_some());
-        assert!(Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             components1.as_ref().unwrap(),
             components2.as_ref().unwrap()
         ));
@@ -2008,7 +2432,9 @@ mod tests {
         }
 
         fn create_components(&self, _field_name: &str) -> Result<TokenStreamComponents> {
-            let tokenizer = Rc::new(RefCell::new(Tokenizer::new(WhitespaceTokenizer::default())));
+            let tokenizer = Arc::new(AtomicRefCell::new(Tokenizer::new(
+                WhitespaceTokenizer::default(),
+            )));
             Ok(TokenStreamComponents::from_tokenizer(tokenizer))
         }
     }
@@ -2028,7 +2454,7 @@ mod tests {
             .get_reusable_components(analyzer.analyzer_state(), "body");
         assert!(title_components.is_some());
         assert!(body_components.is_some());
-        assert!(!Rc::ptr_eq(
+        assert!(!Arc::ptr_eq(
             title_components.as_ref().unwrap(),
             body_components.as_ref().unwrap()
         ));
@@ -2055,7 +2481,8 @@ mod tests {
                 let sink = components.token_stream();
                 let shared = SharedTokenStream::new(sink);
                 let filter = TokenFilter::new(Box::new(shared), UpperCaseFilter);
-                let new_sink: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(filter));
+                let new_sink: Arc<AtomicRefCell<dyn TokenStream>> =
+                    Arc::new(AtomicRefCell::new(filter));
                 components.with_sink(new_sink)
             }
         }

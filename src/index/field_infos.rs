@@ -223,7 +223,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the supplied combination of
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the supplied combination of
     /// options is inconsistent.
     #[allow(clippy::too_many_arguments)]
     pub fn new_full(
@@ -327,14 +327,14 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the type is `None` or if it
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the type is `None` or if it
     /// conflicts with a previously set type.
     pub fn set_doc_values_type(&mut self, doc_values_type: DocValuesType) -> Result<()> {
         if self.doc_values_type != DocValuesType::NONE
             && doc_values_type != DocValuesType::NONE
             && self.doc_values_type != doc_values_type
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cannot change DocValues type from {} to {} for field '{}'",
                 self.doc_values_type as i32, doc_values_type as i32, self.name
             )));
@@ -370,7 +370,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the field is not indexed.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the field is not indexed.
     pub fn set_store_term_vectors(&mut self) -> Result<()> {
         if self.index_options == IndexOptions::NONE {
             return Err(LuceneError::illegal_state(format!(
@@ -391,7 +391,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the field is not indexed.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the field is not indexed.
     pub fn set_omits_norms(&mut self) -> Result<()> {
         if self.index_options == IndexOptions::NONE {
             return Err(LuceneError::illegal_state(format!(
@@ -465,7 +465,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the dimensions or byte count
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the dimensions or byte count
     /// are invalid or conflict with previously set values.
     pub fn set_point_dimensions(
         &mut self,
@@ -474,39 +474,39 @@ impl FieldInfo {
         num_bytes: i32,
     ) -> Result<()> {
         if dimension_count <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "point dimension count must be > 0; got {dimension_count} for field='{}'",
                 self.name
             )));
         }
         if index_dimension_count > MAX_INDEX_DIMENSIONS {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "point index dimension count must be <= PointValues.MAX_INDEX_DIMENSIONS (={}); got {index_dimension_count} for field='{}'",
                 MAX_INDEX_DIMENSIONS,
                 self.name
             )));
         }
         if index_dimension_count > dimension_count {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "point index dimension count must be <= point dimension count (={dimension_count}); got {index_dimension_count} for field='{}'",
                 self.name
             )));
         }
         if num_bytes <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "point numBytes must be > 0; got {num_bytes} for field='{}'",
                 self.name
             )));
         }
         if num_bytes > MAX_NUM_BYTES {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "point numBytes must be <= PointValues.MAX_NUM_BYTES (={}); got {num_bytes} for field='{}'",
                 MAX_NUM_BYTES,
                 self.name
             )));
         }
         if self.point_dimension_count != 0 && self.point_dimension_count != dimension_count {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cannot change point dimension count from {} to {dimension_count} for field='{}'",
                 self.point_dimension_count, self.name
             )));
@@ -514,13 +514,13 @@ impl FieldInfo {
         if self.point_index_dimension_count != 0
             && self.point_index_dimension_count != index_dimension_count
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cannot change point index dimension count from {} to {index_dimension_count} for field='{}'",
                 self.point_index_dimension_count, self.name
             )));
         }
         if self.point_num_bytes != 0 && self.point_num_bytes != num_bytes {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cannot change point numBytes from {} to {num_bytes} for field='{}'",
                 self.point_num_bytes, self.name
             )));
@@ -593,7 +593,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if any option combination is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if any option combination is
     /// invalid.
     pub fn check_consistency(&self) -> Result<()> {
         if self.index_options != IndexOptions::NONE {
@@ -602,26 +602,26 @@ impl FieldInfo {
                 .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
                 && self.store_payloads
             {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "indexed field '{}' cannot have payloads without positions",
                     self.name
                 )));
             }
         } else {
             if self.store_term_vector {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "non-indexed field '{}' cannot store term vectors",
                     self.name
                 )));
             }
             if self.store_payloads {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "non-indexed field '{}' cannot store payloads",
                     self.name
                 )));
             }
             if self.omit_norms {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "non-indexed field '{}' cannot omit norms",
                     self.name
                 )));
@@ -632,65 +632,65 @@ impl FieldInfo {
             .doc_values_skip_index_type
             .is_compatible_with(self.doc_values_type)
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field '{}' cannot have docValuesSkipIndexType={:?} with doc values type {:?}",
                 self.name, self.doc_values_skip_index_type, self.doc_values_type
             )));
         }
 
         if self.doc_values_gen != -1 && self.doc_values_type == DocValuesType::NONE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field '{}' cannot have a docvalues update generation without having docvalues",
                 self.name
             )));
         }
 
         if self.point_dimension_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointDimensionCount must be >= 0; got {} (field: '{}')",
                 self.point_dimension_count, self.name
             )));
         }
         if self.point_index_dimension_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointIndexDimensionCount must be >= 0; got {} (field: '{}')",
                 self.point_index_dimension_count, self.name
             )));
         }
         if self.point_num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointNumBytes must be >= 0; got {} (field: '{}')",
                 self.point_num_bytes, self.name
             )));
         }
         if self.point_dimension_count != 0 && self.point_num_bytes == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointNumBytes must be > 0 when pointDimensionCount={} (field: '{}')",
                 self.point_dimension_count, self.name
             )));
         }
         if self.point_index_dimension_count != 0 && self.point_dimension_count == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointIndexDimensionCount must be 0 when pointDimensionCount=0 (field: '{}')",
                 self.name
             )));
         }
         if self.point_num_bytes != 0 && self.point_dimension_count == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointDimensionCount must be > 0 when pointNumBytes={} (field: '{}')",
                 self.point_num_bytes, self.name
             )));
         }
 
         if self.vector_dimension < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vectorDimension must be >= 0; got {} (field: '{}')",
                 self.vector_dimension, self.name
             )));
         }
 
         if self.soft_deletes_field && self.is_parent_field {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field can't be used as soft-deletes field and parent document field (field: '{}')",
                 self.name
             )));
@@ -703,7 +703,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the schemas differ.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the schemas differ.
     pub fn verify_same_schema(&self, other: &FieldInfo) -> Result<()> {
         verify_same_index_options(&self.name, self.index_options, other.index_options)?;
         if self.index_options != IndexOptions::NONE {
@@ -748,7 +748,7 @@ fn verify_same_index_options(
     index_options2: IndexOptions,
 ) -> Result<()> {
     if index_options1 != index_options2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from index options={index_options1:?} to inconsistent index options={index_options2:?}"
         )))
     } else {
@@ -762,7 +762,7 @@ fn verify_same_doc_values_type(
     doc_values_type2: DocValuesType,
 ) -> Result<()> {
     if doc_values_type1 != doc_values_type2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from doc values type={doc_values_type1:?} to inconsistent doc values type={doc_values_type2:?}"
         )))
     } else {
@@ -776,7 +776,7 @@ fn verify_same_doc_values_skip_index(
     skip_index2: DocValuesSkipIndexType,
 ) -> Result<()> {
     if skip_index1 != skip_index2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from docValuesSkipIndexType={skip_index1:?} to inconsistent docValuesSkipIndexType={skip_index2:?}"
         )))
     } else {
@@ -790,7 +790,7 @@ fn verify_same_store_term_vectors(
     store_term_vector2: bool,
 ) -> Result<()> {
     if store_term_vector1 != store_term_vector2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from storeTermVector={store_term_vector1} to inconsistent storeTermVector={store_term_vector2}"
         )))
     } else {
@@ -800,7 +800,7 @@ fn verify_same_store_term_vectors(
 
 fn verify_same_omit_norms(field_name: &str, omit_norms1: bool, omit_norms2: bool) -> Result<()> {
     if omit_norms1 != omit_norms2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from omitNorms={omit_norms1} to inconsistent omitNorms={omit_norms2}"
         )))
     } else {
@@ -821,7 +821,7 @@ fn verify_same_points_options(
         || point_index_dimension_count1 != point_index_dimension_count2
         || point_num_bytes1 != point_num_bytes2
     {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from points dimensionCount={point_dimension_count1}, indexDimensionCount={point_index_dimension_count1}, numBytes={point_num_bytes1} to inconsistent dimensionCount={point_dimension_count2}, indexDimensionCount={point_index_dimension_count2}, numBytes={point_num_bytes2}"
         )))
     } else {
@@ -842,7 +842,7 @@ fn verify_same_vector_options(
         || vector_encoding1 != vector_encoding2
         || vector_similarity_function1 != vector_similarity_function2
     {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from vector dimension={vector_dimension1}, vector encoding={vector_encoding1:?}, vector similarity function={vector_similarity_function1:?} to inconsistent vector dimension={vector_dimension2}, vector encoding={vector_encoding2:?}, vector similarity function={vector_similarity_function2:?}"
         )))
     } else {
@@ -908,7 +908,7 @@ impl FieldInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if any field number is negative,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if any field number is negative,
     /// if field names or numbers are duplicated, or if multiple soft-deletes or
     /// parent fields are present.
     pub fn new(infos: Vec<FieldInfo>) -> Result<Self> {
@@ -933,7 +933,7 @@ impl FieldInfos {
             info.check_consistency()?;
 
             if info.number < 0 {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "illegal field number: {} for field {}",
                     info.number, info.name
                 )));
@@ -945,7 +945,7 @@ impl FieldInfos {
             }
 
             if let Some(previous) = by_name.insert(info.name.clone(), info.number) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "duplicate field names: {previous} and {} have: {}",
                     info.number, info.name
                 )));
@@ -969,7 +969,7 @@ impl FieldInfos {
             if info.is_soft_deletes_field() {
                 if let Some(ref existing) = soft_deletes_field {
                     if existing != &info.name {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "multiple soft-deletes fields [{}, {}]",
                             info.name, existing
                         )));
@@ -981,7 +981,7 @@ impl FieldInfos {
             if info.is_parent_field() {
                 if let Some(ref existing) = parent_field {
                     if existing != &info.name {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "multiple parent fields [{}, {}]",
                             info.name, existing
                         )));
@@ -1001,7 +1001,7 @@ impl FieldInfos {
             let slot = &mut by_number[info.number as usize];
             if slot.is_some() {
                 let existing = slot.as_ref().unwrap();
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "duplicate field numbers: {} and {} have: {}",
                     existing.name, info.name, info.number
                 )));
@@ -1156,7 +1156,7 @@ impl FieldInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the leaves disagree about
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the leaves disagree about
     /// the parent field, and propagates whatever adding a field raises.
     pub fn get_merged_field_infos(reader: Arc<dyn IndexReader>) -> Result<FieldInfos> {
         let leaves = reader.leaves()?;
@@ -1190,7 +1190,7 @@ impl FieldInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when two leaves name different
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when two leaves name different
     /// parent fields.
     pub fn get_and_validate_parent_field(
         leaves: &[Arc<LeafReaderContext>],
@@ -1224,7 +1224,7 @@ impl FieldInfos {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when `reader` is closed, as Java's
+    /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) when `reader` is closed, as Java's
     /// `reader.leaves()` fails.
     pub fn get_indexed_fields(reader: Arc<dyn IndexReader>) -> Result<HashSet<String>> {
         let mut fields = HashSet::new();
@@ -1362,7 +1362,7 @@ impl FieldNumbers {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the same field name is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the same field name is
     /// configured both as the soft-deletes field and as the parent field.
     pub fn new(
         soft_deletes_field_name: Option<String>,
@@ -1370,7 +1370,7 @@ impl FieldNumbers {
     ) -> Result<Self> {
         if let (Some(soft), Some(parent)) = (&soft_deletes_field_name, &parent_field_name) {
             if soft == parent {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "parent document and soft-deletes field can't be the same field \"{parent}\""
                 )));
             }
@@ -1403,7 +1403,7 @@ impl FieldNumbers {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the schema conflicts.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the schema conflicts.
     pub fn verify_field_info(&self, info: &FieldInfo) -> Result<()> {
         let name = info.get_name();
         self.verify_soft_deletes_field_name(name, info.is_soft_deletes_field())?;
@@ -1422,7 +1422,7 @@ impl FieldNumbers {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field schema conflicts
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field schema conflicts
     /// with the schema already recorded for that name.
     pub fn add_or_get(&self, info: &FieldInfo) -> Result<i32> {
         let name = info.get_name();
@@ -1472,12 +1472,13 @@ impl FieldNumbers {
 
     /// Returns every field name this registry knows about.
     ///
-    /// Equivalent to `FieldInfos.FieldNumbers.getFieldNames()`, which hands back
-    /// an unmodifiable copy; the Rust counterpart returns an owned set for the
-    /// same reason — the caller must not be able to mutate the registry through
-    /// it, and the lock must not be held past the call.
-    pub fn get_field_names(&self) -> HashSet<String> {
-        self.lock().field_properties.keys().cloned().collect()
+    /// Equivalent to `FieldInfos.FieldNumbers.getFieldNames()`:
+    /// `Set.copyOf(fieldProperties.keySet())` (`FieldInfos.java:690-692`), an
+    /// unmodifiable copy.
+    pub fn get_field_names(&self) -> crate::util::java_collections::ImmutableSet<String> {
+        crate::util::java_collections::ImmutableSet::copy_of(
+            self.lock().field_properties.keys().cloned(),
+        )
     }
 
     /// Builds a doc-values-only [`FieldInfo`] for an existing global field, under
@@ -1548,7 +1549,7 @@ impl FieldNumbers {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field does not exist and
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field does not exist and
     /// `field_must_exist` is set, when its doc-values type differs from
     /// `dv_type`, or when it is not a doc-values-only field.
     pub fn verify_or_create_dv_only_field(
@@ -1560,7 +1561,7 @@ impl FieldNumbers {
         let existing = self.lock().field_properties.get(field_name).cloned();
         let Some(properties) = existing else {
             if field_must_exist {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Can't update [{dv_type:?}] doc values; the field [{field_name}] doesn't exist."
                 )));
             }
@@ -1593,32 +1594,32 @@ impl FieldNumbers {
         };
 
         if dv_type != properties.doc_values_type {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Can't update [{dv_type:?}] doc values; the field [{field_name}] has inconsistent \
                  doc values' type of [{:?}].",
                 properties.doc_values_type
             )));
         }
         if properties.doc_values_skip_index_type != DocValuesSkipIndexType::NONE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
                  values only field, bit it has doc values skip index"
             )));
         }
         if properties.point_dimension_count != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
                  values only field, but is also indexed with points."
             )));
         }
         if properties.index_options != IndexOptions::NONE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
                  values only field, but is also indexed with postings."
             )));
         }
         if properties.vector_dimension != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
                  values only field, but is also indexed with vectors."
             )));
@@ -1655,16 +1656,16 @@ impl FieldNumbers {
 
     fn verify_soft_deletes_field_name(&self, name: &str, is_soft_deletes: bool) -> Result<()> {
         match (&self.soft_deletes_field_name, is_soft_deletes) {
-            (None, true) => Err(LuceneError::IllegalArgument(format!(
+            (None, true) => Err(LuceneError::illegal_argument(format!(
                 "this index has [{name}] as soft-deletes already but soft-deletes field is not configured in IWC"
             ))),
             (Some(configured), true) if configured != name => {
-                Err(LuceneError::IllegalArgument(format!(
+                Err(LuceneError::illegal_argument(format!(
                     "cannot configure [{configured}] as soft-deletes; this index uses [{name}] as soft-deletes already"
                 )))
             }
             (Some(configured), false) if configured == name => {
-                Err(LuceneError::IllegalArgument(format!(
+                Err(LuceneError::illegal_argument(format!(
                     "cannot configure [{configured}] as soft-deletes; this index uses [{name}] as non-soft-deletes already"
                 )))
             }
@@ -1674,16 +1675,16 @@ impl FieldNumbers {
 
     fn verify_parent_field_name(&self, name: &str, is_parent: bool) -> Result<()> {
         match (&self.parent_field_name, is_parent) {
-            (None, true) => Err(LuceneError::IllegalArgument(format!(
+            (None, true) => Err(LuceneError::illegal_argument(format!(
                 "can't add field [{name}] as parent document field; this IndexWriter has no parent document field configured"
             ))),
             (Some(configured), true) if configured != name => {
-                Err(LuceneError::IllegalArgument(format!(
+                Err(LuceneError::illegal_argument(format!(
                     "can't add field [{name}] as parent document field; this IndexWriter is configured with [{configured}] as parent document field"
                 )))
             }
             (Some(configured), false) if configured == name => {
-                Err(LuceneError::IllegalArgument(format!(
+                Err(LuceneError::illegal_argument(format!(
                     "can't add [{name}] as non parent document field; this IndexWriter is configured with [{configured}] as parent document field"
                 )))
             }
@@ -1738,9 +1739,9 @@ impl FieldInfosBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the schema conflicts with a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the schema conflicts with a
     /// previous definition of the same field, and
-    /// [`LuceneError::IllegalState`] if the builder has already been finished.
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the builder has already been finished.
     pub fn add(&mut self, info: &FieldInfo) -> Result<&FieldInfo> {
         self.add_with_doc_values_gen(info, -1)
     }
@@ -1852,6 +1853,7 @@ impl FieldInfosBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     #[test]
     fn field_info_default_is_empty() {
@@ -1905,7 +1907,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.store_payloads = true; // direct mutation for test
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1913,7 +1921,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.store_term_vector = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1921,7 +1935,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.omit_norms = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1929,7 +1949,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.doc_values_skip_index_type = DocValuesSkipIndexType::RANGE;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1966,7 +1992,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.doc_values_gen = 1;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1975,7 +2007,13 @@ mod tests {
         fi.soft_deletes_field = true;
         fi.is_parent_field = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1989,7 +2027,13 @@ mod tests {
         let err = fi
             .set_point_dimensions(3, 1, 8)
             .expect_err("dimension change should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2001,7 +2045,13 @@ mod tests {
             false,
         );
         let err = a.verify_same_schema(&b).expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2050,7 +2100,13 @@ mod tests {
     fn field_infos_rejects_negative_number() {
         let fi = FieldInfo::new("bad", -1);
         let err = FieldInfos::new(vec![fi]).expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2058,7 +2114,13 @@ mod tests {
         let a = FieldInfo::new("dup", 0);
         let b = FieldInfo::new("dup", 1);
         let err = FieldInfos::new(vec![a, b]).expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2066,7 +2128,13 @@ mod tests {
         let a = FieldInfo::new("a", 0);
         let b = FieldInfo::new("b", 0);
         let err = FieldInfos::new(vec![a, b]).expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2146,7 +2214,13 @@ mod tests {
         let mut conflicting = indexed_field("a");
         conflicting.index_options = IndexOptions::DOCS_AND_FREQS;
         let error = numbers.add_or_get(&conflicting).unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
         assert!(numbers.verify_field_info(&conflicting).is_err());
         assert!(numbers.verify_field_info(&indexed_field("a")).is_ok());
     }
@@ -2226,7 +2300,13 @@ mod tests {
         // Re-adding a known field is still fine; a new one is not.
         assert!(builder.add(&indexed_field("a")).is_ok());
         let error = builder.add(&indexed_field("b")).unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

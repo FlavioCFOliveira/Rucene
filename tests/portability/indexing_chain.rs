@@ -17,11 +17,10 @@
 //! (`.fnm`, `.si`, stored fields, norms) are written by components that are not
 //! part of the indexing chain and are deliberately ignored here.
 
-use std::cell::RefCell;
+use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rucene::analysis::tokenattributes::{
@@ -172,7 +171,7 @@ impl TokenStream for ScriptedTokenStream {
                 .source
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .expect("packed token attribute");
-            packed.append_string(&token.term);
+            packed.append_string(Some(&token.term));
             packed.set_position_increment(token.pos_incr);
             packed.set_offset(token.start, token.end);
         }
@@ -590,7 +589,7 @@ fn write_with_rucene(
     let codec = ensure_codec();
     let options = index_options(case);
 
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).expect("tokenized");
     field_type.set_omit_norms(true).expect("omit norms");
     field_type
@@ -613,7 +612,7 @@ fn write_with_rucene(
         1,
         "the two analyzers must apply the same offset gap"
     );
-    let live = Arc::new(LiveIndexWriterConfig::new(Arc::clone(&analyzer)));
+    let live = Arc::new(LiveIndexWriterConfig::new(Some(Arc::clone(&analyzer))));
 
     let mut chain = DefaultIndexingChain::new(Arc::clone(&live));
     let numbers = Arc::new(FieldNumbers::new(None, None).expect("field numbers"));
@@ -622,15 +621,15 @@ fn write_with_rucene(
     for (doc_id, values) in documents.iter().enumerate() {
         let mut document = Document::new();
         for tokens in values {
-            let stream: Rc<RefCell<dyn TokenStream>> =
-                Rc::new(RefCell::new(ScriptedTokenStream::new(tokens.clone())));
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+                Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens.clone())));
             document.add(Box::new(
                 Field::new_with_token_stream(FIELD, stream, field_type.clone())
                     .expect("token stream field"),
             ));
         }
         chain
-            .process_document(doc_id as i32, &document, true, &mut field_infos)
+            .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
             .expect("process document");
     }
 
@@ -740,7 +739,7 @@ fn assert_case_matches_lucene(case: &str) {
 fn rucene_invert_states(case: &str, documents: &[Vec<Vec<OwnedTok>>]) -> Vec<InvertStats> {
     ensure_codec();
     let options = index_options(case);
-    let mut field_type = FieldType::new();
+    let field_type = FieldType::new();
     field_type.set_tokenized(true).expect("tokenized");
     field_type
         .set_index_options(options)
@@ -748,7 +747,7 @@ fn rucene_invert_states(case: &str, documents: &[Vec<Vec<OwnedTok>>]) -> Vec<Inv
     field_type.freeze();
 
     let analyzer: Arc<dyn Analyzer> = Arc::new(StandardAnalyzer::new());
-    let live = Arc::new(LiveIndexWriterConfig::new(analyzer));
+    let live = Arc::new(LiveIndexWriterConfig::new(Some(analyzer)));
     let mut chain = DefaultIndexingChain::new(live);
     let numbers = Arc::new(FieldNumbers::new(None, None).expect("field numbers"));
     let mut field_infos = FieldInfosBuilder::new(numbers);
@@ -757,15 +756,15 @@ fn rucene_invert_states(case: &str, documents: &[Vec<Vec<OwnedTok>>]) -> Vec<Inv
     for (doc_id, values) in documents.iter().enumerate() {
         let mut document = Document::new();
         for tokens in values {
-            let stream: Rc<RefCell<dyn TokenStream>> =
-                Rc::new(RefCell::new(ScriptedTokenStream::new(tokens.clone())));
+            let stream: Arc<AtomicRefCell<dyn TokenStream>> =
+                Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens.clone())));
             document.add(Box::new(
                 Field::new_with_token_stream(FIELD, stream, field_type.clone())
                     .expect("token stream field"),
             ));
         }
         chain
-            .process_document(doc_id as i32, &document, true, &mut field_infos)
+            .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
             .expect("process document");
         let state = chain.field_invert_state(FIELD).expect("invert state");
         if state.length() == 0 {

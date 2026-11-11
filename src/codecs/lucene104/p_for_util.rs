@@ -10,6 +10,10 @@ use crate::store::{DataInput, DataOutput};
 use super::for_util::{ForUtil, BLOCK_SIZE};
 use super::posting_decoding_util::PostingDecodingUtil;
 
+// `PForUtil.java:41`: Java asserts this in its static initializer; it is a
+// property of a constant, checked here at compile time.
+const _: () = assert!(BLOCK_SIZE <= 256, "blocksize must fit in one byte");
+
 /// Maximum number of values that can be patched as exceptions in a block.
 const MAX_EXCEPTIONS: usize = 7;
 
@@ -41,7 +45,7 @@ impl PForUtil {
         let mut max_bits_required = 0;
         for &v in ints.iter() {
             if v < 0 {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "PForUtil cannot encode negative values".to_string(),
                 ));
             }
@@ -80,7 +84,10 @@ impl PForUtil {
                     exception_count += 1;
                 }
             }
-            assert_eq!(exception_count, num_exceptions as usize);
+            debug_assert_eq!(
+                exception_count, num_exceptions as usize,
+                "{exception_count} {num_exceptions}"
+            );
         }
 
         if all_equal(ints) && max_bits_required <= 8 {
