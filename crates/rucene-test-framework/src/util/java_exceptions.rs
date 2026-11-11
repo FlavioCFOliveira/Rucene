@@ -264,15 +264,20 @@ pub fn java_throwable(e: &LuceneError) -> Throwable {
                 .collect(),
         );
     }
-    // `getCause()`: the kind's cause, held as an `Arc<LuceneError>`.
-    if let Some(source) = std::error::Error::source(e) {
-        let cause = source
-            .downcast_ref::<std::sync::Arc<LuceneError>>()
-            .map(|cause| &**cause)
-            .or_else(|| source.downcast_ref::<LuceneError>());
-        if let Some(cause) = cause {
-            throwable.set_cause(java_throwable(cause));
-        }
+    // `getCause()`: for an `IOException`, the cause the `io::Error` carries
+    // (`new IOException(message, cause)`, read back with `java_cause_of`);
+    // for any other kind, the kind's cause, held as an `Arc<LuceneError>`.
+    let cause = match e.kind() {
+        LuceneErrorKind::Io(io) => rucene::store::java_nio_file::java_cause_of(io),
+        _ => std::error::Error::source(e).and_then(|source| {
+            source
+                .downcast_ref::<std::sync::Arc<LuceneError>>()
+                .map(|cause| &**cause)
+                .or_else(|| source.downcast_ref::<LuceneError>())
+        }),
+    };
+    if let Some(cause) = cause {
+        throwable.set_cause(java_throwable(cause));
     }
     // `getSuppressed()` of an error that `addSuppressed` was called on.
     for suppressed in e.get_suppressed() {
@@ -348,4 +353,45 @@ pub fn expect_throws_any_of<T>(
     LuceneTestCase::expect_throws_any_of(classes, || {
         runnable().map(|_| ()).map_err(|e| java_throwable(&e))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `new IOException(message, cause).getCause()` is `cause`
+    /// (`IndexWriter.java:2259-2260` throws one for a failed background
+    /// merge); an `IOException` without one has a `null` cause.
+    #[test]
+    fn an_io_exception_reports_the_cause_it_carries() {
+        let cause = LuceneError::from(LuceneErrorKind::MergeAborted("merge is aborted: _0".into()));
+        let e = LuceneError::from(LuceneErrorKind::Io(
+            rucene::store::java_nio_file::io_exception_with_cause(
+                "background merge hit exception: _0",
+                Some(cause),
+            ),
+        ));
+        let t = java_throwable(&e);
+        assert_eq!(t.class_name(), "java.io.IOException");
+        assert_eq!(t.message(), Some("background merge hit exception: _0"));
+        let cause = t.cause().expect("getCause()");
+        assert!(cause.is_instance("org.apache.lucene.index.MergePolicy$MergeAbortedException"));
+        assert_eq!(cause.message(), Some("merge is aborted: _0"));
+
+        let plain = LuceneError::from(LuceneErrorKind::Io(
+            rucene::store::java_nio_file::io_exception("no cause"),
+        ));
+        assert!(java_throwable(&plain).cause().is_none());
+    }
+
+    /// The cause of any other kind is still its `Arc<LuceneError>` cause.
+    #[test]
+    fn an_unchecked_exception_reports_its_cause() {
+        let e = LuceneError::illegal_state_with_cause(
+            "outer",
+            std::sync::Arc::new(LuceneError::illegal_argument("inner")),
+        );
+        let cause = java_throwable(&e).cause().cloned().expect("getCause()");
+        assert_eq!(cause.class_name(), "java.lang.IllegalArgumentException");
+    }
 }

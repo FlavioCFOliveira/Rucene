@@ -25,7 +25,7 @@ use rucene::document::{
     Document, Field, FieldType, IntPoint, NumericDocValuesField, NumericValue, Store, StringField,
     TextField,
 };
-use rucene::error::{LuceneError, LuceneErrorKind, Result};
+use rucene::error::{LuceneError, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::filter_directory_reader::{
@@ -228,25 +228,9 @@ fn codec_leaves(reader: &Arc<dyn DirectoryReader>) -> Result<Vec<Arc<dyn CodecRe
 
 /// `IOException.getCause() instanceof MergePolicy.MergeAbortedException`.
 fn cause_is_merge_aborted(e: &LuceneError) -> bool {
-    use std::error::Error;
-    let cause: Option<&(dyn Error + 'static)> = match e {
-        LuceneError {
-            kind: LuceneErrorKind::Io(io),
-            ..
-        } => rucene::store::java_nio_file::java_cause_of(io).map(|c| c as &(dyn Error + 'static)),
-        other => other.source(),
-    };
-    cause
-        .and_then(|c| c.downcast_ref::<LuceneError>())
-        .is_some_and(|c| {
-            matches!(
-                c,
-                LuceneError {
-                    kind: LuceneErrorKind::MergeAborted(_),
-                    ..
-                }
-            )
-        })
+    java_throwable(e).cause().is_some_and(|cause| {
+        cause.is_instance("org.apache.lucene.index.MergePolicy$MergeAbortedException")
+    })
 }
 
 /// `private IndexWriter newWriter(Directory dir, IndexWriterConfig conf)`.
