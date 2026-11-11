@@ -79,7 +79,7 @@ use rucene::index::segment_info::SegmentInfo;
 use rucene::index::segment_infos::SegmentInfos;
 use rucene::index::terms::{Fields, Terms};
 use rucene::index::{IndexableField, LeafReader};
-use rucene::search::{DocIdSetIterator, Sort, NO_MORE_DOCS};
+use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::{
     flush_io_context, BufferedChecksumIndexInput, DataInput, Directory, FlushInfo, IOContext,
     IndexInput, IndexOutput, Lock, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
@@ -598,7 +598,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::default(),
+            None,
         )?;
         let field_infos_of_reader = one_doc_reader.get_field_infos();
         let proto = field_infos_of_reader
@@ -1188,7 +1188,7 @@ pub fn is_corrupt_index(e: &LuceneError) -> bool {
     matches!(
         e,
         LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(_),
+            kind: LuceneErrorKind::CorruptIndex { .. },
             ..
         } | LuceneError {
             kind: LuceneErrorKind::IndexFormatTooOld { .. },
@@ -1590,7 +1590,7 @@ impl ReadBytesIndexInputWrapper {
 
 impl DataInput for ReadBytesIndexInputWrapper {
     fn read_byte(&mut self) -> Result<u8> {
-        (self.read_byte)(to_int_exact(self.file_pointer())?);
+        (self.read_byte)(to_int_exact(self.file_pointer()?)?);
         self.r#in.read_byte()
     }
 
@@ -1599,7 +1599,7 @@ impl DataInput for ReadBytesIndexInputWrapper {
     }
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
-        let fp = to_int_exact(self.file_pointer())?;
+        let fp = to_int_exact(self.file_pointer()?)?;
         for i in 0..len as i32 {
             (self.read_byte)(fp.checked_add(i).ok_or_else(|| {
                 LuceneError::from(LuceneErrorKind::Arithmetic("integer overflow".to_string()))
@@ -1615,7 +1615,7 @@ impl DataInput for ReadBytesIndexInputWrapper {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = self.file_pointer() + num_bytes;
+        let skip_to = self.file_pointer()? + num_bytes;
         self.seek(skip_to)
     }
 }
@@ -1625,7 +1625,7 @@ impl IndexInput for ReadBytesIndexInputWrapper {
         self.r#in.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.r#in.file_pointer()
     }
 

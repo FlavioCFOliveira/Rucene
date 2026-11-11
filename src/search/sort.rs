@@ -1578,9 +1578,9 @@ pub fn write_sort(output: &mut dyn DataOutput, sort: &Sort) -> Result<()> {
 pub fn read_sort(input: &mut dyn DataInput) -> Result<Option<Sort>> {
     let count = input.read_v_int()?;
     if count < 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid index sort field count: {count}"
-        ))));
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid index sort field count: {count}"),
+        )));
     }
     if count == 0 {
         return Ok(None);

@@ -295,7 +295,7 @@ impl KnnVectorsReader for AssertingKnnVectorsReader {
         }
     }
 
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
         self.delegate.get_off_heap_byte_size(field_info)
     }
 

@@ -1245,7 +1245,9 @@ impl SegmentReader {
         let meta_data = LeafMetaData::new(
             created_version_major,
             original_si.info.min_version(),
-            (*index_sort != crate::search::Sort::new()).then(|| index_sort.clone()),
+            index_sort
+                .filter(|sort| **sort != crate::search::Sort::new())
+                .cloned(),
             original_si.info.get_has_blocks(),
         )?;
 
@@ -2948,7 +2950,10 @@ mod tests {
             self.inner.finish_merge()
         }
 
-        fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
+        fn get_off_heap_byte_size(
+            &self,
+            field_info: &FieldInfo,
+        ) -> crate::error::Result<HashMap<String, i64>> {
             self.inner.get_off_heap_byte_size(field_info)
         }
 
@@ -3542,7 +3547,7 @@ mod tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("recording segment info should be valid");
 

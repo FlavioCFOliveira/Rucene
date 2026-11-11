@@ -43,9 +43,9 @@ impl OnHeapFSTStore {
             )));
         }
         if num_bytes < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "invalid FST length {num_bytes}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("invalid FST length {num_bytes}"),
+            )));
         }
 
         if num_bytes > (1i64 << max_block_bits) {
@@ -60,7 +60,7 @@ impl OnHeapFSTStore {
         } else {
             // The FST fits into a single block: use the cheaper reader.
             let len = usize::try_from(num_bytes).map_err(|_| {
-                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                     "FST length {num_bytes} does not fit in memory"
                 )))
             })?;

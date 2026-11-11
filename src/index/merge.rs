@@ -456,7 +456,8 @@ impl MergeState {
         // `SegmentInfo` spells "no index sort" — Java's `null` — as the
         // relevance `Sort::new()` (or an empty sort), as `SegmentReader` reads
         // it for its metadata.
-        let index_sort = Some(segment_info.index_sort())
+        let index_sort = segment_info
+            .index_sort()
             .filter(|sort| !sort.fields().is_empty() && **sort != crate::search::Sort::new())
             .cloned();
         // `verifyIndexSort(readers, segmentInfo)`, the constructor's first
@@ -1171,7 +1172,7 @@ mod tests {
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         let commit = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap();

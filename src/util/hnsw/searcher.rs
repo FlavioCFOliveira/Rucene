@@ -388,6 +388,28 @@ impl HnswGraphSearcher {
             self.bulk_scores.resize(bulk, 0.0);
         }
     }
+
+    /// Searches one level of `graph` from `eps`, collecting the `top_k` nearest
+    /// nodes, with no accept filter.
+    ///
+    /// Equivalent to the public `HnswGraphSearcher.searchLevel(RandomVectorScorer,
+    /// int, int, int[], HnswGraph)` (`HnswGraphSearcher.java:201-210`), which
+    /// returns a new `GraphBuilderKnnCollector(topK)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the scorer's and the graph's errors.
+    pub fn search_level_top_k(
+        &mut self,
+        scorer: &mut dyn RandomVectorScorer,
+        top_k: i32,
+        level: i32,
+        eps: &[i32],
+        graph: &mut dyn HnswGraph,
+    ) -> Result<crate::util::hnsw::builder::GraphBuilderKnnCollector> {
+        let _ = (scorer, top_k, level, eps, graph);
+        todo!("PORT G-404")
+    }
 }
 
 /// Thread-safe searcher for `OnHeapHnswGraph` that avoids mutating the graph.

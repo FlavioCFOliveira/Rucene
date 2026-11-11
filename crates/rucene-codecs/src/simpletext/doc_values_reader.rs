@@ -197,8 +197,8 @@ impl SimpleTextDocValuesReader {
                 read_line(data.as_mut(), &mut scratch)?;
                 debug_assert!(scratch.starts_with(PATTERN));
                 field.pattern = strip_prefix(&scratch, PATTERN);
-                field.data_start_file_pointer = data.file_pointer();
-                let fp = data.file_pointer()
+                field.data_start_file_pointer = data.file_pointer()?;
+                let fp = data.file_pointer()?
                     + (1 + field.pattern.encode_utf16().count() as i64 + 2) * i64::from(max_doc);
                 data.seek(fp)?;
                 field.skip_intervals = Arc::new(read_skip_data(data.as_mut(), &mut scratch)?);
@@ -208,8 +208,8 @@ impl SimpleTextDocValuesReader {
                 read_line(data.as_mut(), &mut scratch)?;
                 debug_assert!(scratch.starts_with(PATTERN));
                 field.pattern = strip_prefix(&scratch, PATTERN);
-                field.data_start_file_pointer = data.file_pointer();
-                let fp = data.file_pointer()
+                field.data_start_file_pointer = data.file_pointer()?;
+                let fp = data.file_pointer()?
                     + (9 + field.pattern.encode_utf16().count() as i64
                         + i64::from(field.max_length)
                         + 2)
@@ -230,8 +230,8 @@ impl SimpleTextDocValuesReader {
                 read_line(data.as_mut(), &mut scratch)?;
                 debug_assert!(scratch.starts_with(ORDPATTERN));
                 field.ord_pattern = strip_prefix(&scratch, ORDPATTERN);
-                field.data_start_file_pointer = data.file_pointer();
-                let fp = data.file_pointer()
+                field.data_start_file_pointer = data.file_pointer()?;
+                let fp = data.file_pointer()?
                     + (9 + field.pattern.encode_utf16().count() as i64
                         + i64::from(field.max_length))
                         * field.num_values
@@ -1089,14 +1089,14 @@ impl DocValuesProducer for SimpleTextDocValuesReader {
         let mut input = BufferedChecksumIndexInput::new(clone);
         loop {
             read_line(&mut input, &mut scratch)?;
-            if input.file_pointer() >= footer_start_pos {
+            if input.file_pointer()? >= footer_start_pos {
                 // Make sure we landed at precisely the right location:
-                if input.file_pointer() != footer_start_pos {
+                if input.file_pointer()? != footer_start_pos {
                     return Err(LuceneError::corrupt_index(
                         format!(
                             "SimpleText failure: footer does not start at expected position \
                              current={} vs expected={footer_start_pos}",
-                            input.file_pointer()
+                            input.file_pointer()?
                         ),
                         rucene::store::IndexInput::resource_description(&input),
                     ));

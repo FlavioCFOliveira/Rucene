@@ -215,7 +215,7 @@ impl<B: AsRef<[Vec<u8>]>> BlockReverseBytesReader<B> {
             self.next_buffer = index - 1;
             if index < 0 || index as usize >= self.blocks.as_ref().len() {
                 return Err(crate::error::LuceneError::from(
-                    crate::error::LuceneErrorKind::CorruptIndex(format!(
+                    crate::error::LuceneErrorKind::corrupt_index_message(format!(
                         "FST block index {index} is outside the {} available blocks",
                         self.blocks.as_ref().len()
                     )),
@@ -229,7 +229,7 @@ impl<B: AsRef<[Vec<u8>]>> BlockReverseBytesReader<B> {
         let block = &self.blocks.as_ref()[self.current];
         if pos < 0 || pos as usize >= block.len() {
             return Err(crate::error::LuceneError::from(
-                crate::error::LuceneErrorKind::CorruptIndex(format!(
+                crate::error::LuceneErrorKind::corrupt_index_message(format!(
                     "FST read position {pos} is outside the {} bytes of block {}",
                     block.len(),
                     self.current

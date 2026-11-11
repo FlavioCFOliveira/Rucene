@@ -84,7 +84,7 @@ fn test_ints(dir: &dyn Directory, ints: &[i32]) -> Result<()> {
                 read_ints[i] = read[offset + i] as i32;
             }
             assert_array_equals(ints, &read_ints);
-            assert_equals(&len, &r#in.file_pointer());
+            assert_equals(&len, &r#in.file_pointer()?);
             Ok(())
         })();
         result.and(r#in.close())?;

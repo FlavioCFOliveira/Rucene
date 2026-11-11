@@ -88,8 +88,9 @@ pub struct SegmentInfo {
     /// 16-byte id that uniquely identifies this segment.
     id: [u8; ID_LENGTH],
 
-    /// Sort order of the segment, if any.
-    index_sort: Sort,
+    /// Sort order of the segment, if any: `None` for an unsorted segment, as
+    /// Java's `indexSort` is `null` (`SegmentInfo.java:92`).
+    index_sort: Option<Sort>,
 
     /// Files referenced by this segment.
     ///
@@ -128,7 +129,7 @@ impl SegmentInfo {
         diagnostics: HashMap<String, String>,
         id: [u8; ID_LENGTH],
         attributes: HashMap<String, String>,
-        index_sort: Sort,
+        index_sort: Option<Sort>,
     ) -> Result<Self> {
         Ok(Self {
             directory,
@@ -171,7 +172,7 @@ impl SegmentInfo {
         diagnostics: HashMap<String, String>,
         id: [u8; ID_LENGTH],
         attributes: HashMap<String, String>,
-        index_sort: Sort,
+        index_sort: Option<Sort>,
     ) -> Result<Self> {
         Ok(Self {
             directory,
@@ -358,13 +359,16 @@ impl SegmentInfo {
         self.attributes.read().unwrap().clone()
     }
 
-    /// Returns the index sort for this segment.
-    pub fn index_sort(&self) -> &Sort {
-        &self.index_sort
+    /// Returns the index sort for this segment, `None` when it is unsorted.
+    ///
+    /// Equivalent to `SegmentInfo.getIndexSort()`, which returns `null` for
+    /// an unsorted segment.
+    pub fn index_sort(&self) -> Option<&Sort> {
+        self.index_sort.as_ref()
     }
 
     /// Replaces the index sort for this segment.
-    pub fn set_index_sort(&mut self, sort: Sort) {
+    pub fn set_index_sort(&mut self, sort: Option<Sort>) {
         self.index_sort = sort;
     }
 
@@ -536,18 +540,16 @@ impl SegmentInfo {
     /// Lucene itself, so this port sorts. The entries are identical; only their
     /// order inside the braces differs.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java guards the sort with
-    /// `indexSort != null`. This port has no null `Sort`: a segment with no
-    /// index sort carries `Sort::new()`, the relevance sort, which is the same
-    /// value `write_segment_sort` recognises when it writes a field count of
-    /// zero. The test is therefore against that value rather than against null.
+    /// Java guards the sort with `indexSort != null`. Until the G-027 code
+    /// pass removes them, some callers still pass the relevance sort
+    /// `Sort::new()` for an unsorted segment, so it is treated as `None` too.
     /// Lucene rejects `SortField.FIELD_SCORE` as an index sort, so no segment
-    /// can be sorted by the value that stands in for "unsorted" here.
+    /// is sorted by that value.
     pub fn to_string_verbose(&self) -> String {
         let mut s = self.to_string_with_del_count(0);
-        if self.index_sort != Sort::new() {
+        if let Some(index_sort) = self.index_sort.as_ref().filter(|s| **s != Sort::new()) {
             s.push_str(":[indexSort=");
-            s.push_str(&self.index_sort.to_string());
+            s.push_str(&index_sort.to_string());
             s.push(']');
         }
         if !self.diagnostics.is_empty() {
@@ -1490,7 +1492,7 @@ mod tests {
             HashMap::from([("source".to_string(), "flush".to_string())]),
             StringHelper::random_id(),
             HashMap::from([("test".to_string(), "value".to_string())]),
-            Sort::default(),
+            None,
         )
         .unwrap()
     }
@@ -1526,7 +1528,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap();
         assert_eq!(info.max_doc().unwrap(), -2);
@@ -1642,7 +1644,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::default(),
+            None,
         );
         assert_eq!(result.unwrap().max_doc().unwrap(), -3);
     }

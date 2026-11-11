@@ -403,10 +403,12 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
 
         let doc_delta = doc_id - self.last_doc_id;
         if doc_id < 0 || doc_delta <= 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "docs out of order ({doc_id} <= {last_doc_id})",
-                last_doc_id = self.last_doc_id
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "docs out of order ({doc_id} <= {last_doc_id})",
+                    last_doc_id = self.last_doc_id
+                ),
+            )));
         }
 
         let idx = self.doc_buffer_upto as usize;
@@ -455,9 +457,9 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         end_offset: i32,
     ) -> Result<()> {
         if !(0..=MAX_POSITION).contains(&position) {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "position={position} out of range [0, {MAX_POSITION}]"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("position={position} out of range [0, {MAX_POSITION}]"),
+            )));
         }
 
         let idx = self.pos_buffer_upto as usize;

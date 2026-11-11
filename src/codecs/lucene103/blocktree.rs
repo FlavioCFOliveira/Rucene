@@ -1266,7 +1266,7 @@ impl PendingBlock {
                 floor_data,
             },
         );
-        scratch_bytes.reset();
+        scratch_bytes.reset()?;
 
         // Fold in the index of every sub-block.
         for block in blocks.iter_mut() {
@@ -1747,7 +1747,7 @@ impl<'a> TermsWriter<'a> {
                 }
             }
             if compression_alg == CompressionAlgorithm::NoCompression {
-                self.spare_writer.reset();
+                self.spare_writer.reset()?;
                 if self.spare_bytes.len() < suffix_len {
                     self.spare_bytes = vec![0u8; crate::util::ArrayUtil::oversize(suffix_len, 1)];
                 }
@@ -1775,7 +1775,7 @@ impl<'a> TermsWriter<'a> {
             self.spare_writer.copy_to(self.terms_out)?;
         }
         self.suffix_writer.clear();
-        self.spare_writer.reset();
+        self.spare_writer.reset()?;
 
         // Suffix lengths
         let num_suffix_bytes = self.suffix_lengths_writer.size();
@@ -1784,7 +1784,7 @@ impl<'a> TermsWriter<'a> {
         // (`Lucene103BlockTreeTermsWriter.java:939`).
         self.suffix_lengths_writer
             .copy_to(&mut ByteArrayDataOutput::new(&mut self.spare_bytes))?;
-        self.suffix_lengths_writer.reset();
+        self.suffix_lengths_writer.reset()?;
         // Java tests `allEqual(spareBytes, 1, numSuffixBytes, spareBytes[0])`,
         // which is vacuously true for a single length byte — the common case of
         // a block holding one term. Requiring more than one byte here produced
@@ -1805,12 +1805,12 @@ impl<'a> TermsWriter<'a> {
         let num_stats_bytes = self.stats_writer.size();
         self.terms_out.write_v_int(num_stats_bytes as i32)?;
         self.stats_writer.copy_to(self.terms_out)?;
-        self.stats_writer.reset();
+        self.stats_writer.reset()?;
 
         // Term metadata
         self.terms_out.write_v_int(self.meta_writer.size() as i32)?;
         self.meta_writer.copy_to(self.terms_out)?;
-        self.meta_writer.reset();
+        self.meta_writer.reset()?;
 
         if has_floor_lead_label {
             prefix.bytes[prefix.length] = floor_lead_label as u8;
@@ -2843,7 +2843,7 @@ mod tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test segment info should be valid")
     }
@@ -3843,7 +3843,7 @@ mod close_family_tests {
             matches!(
                 error,
                 crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex(_),
+                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),

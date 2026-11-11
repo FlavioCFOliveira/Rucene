@@ -1671,7 +1671,7 @@ pub fn dump_vectors(
     }
     out.push(sb);
     let visited = collector.visited_count();
-    let top = collector.top_docs();
+    let top = collector.top_docs()?;
     let mut knn = format!("  knn visited={visited}");
     for sd in &top.score_docs {
         knn.push_str(&format!(" {}:{}", sd.doc, fbits(sd.score)));

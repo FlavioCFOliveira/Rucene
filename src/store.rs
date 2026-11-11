@@ -287,9 +287,9 @@ pub trait DataInput {
         const CHUNK: usize = 16 * 1024;
         let length = self.read_v_int()?;
         if length < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "invalid string length: {length}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("invalid string length: {length}"),
+            )));
         }
         let mut remaining = length as usize;
         let mut bytes: Vec<u8> = Vec::new();
@@ -697,7 +697,16 @@ pub trait IndexInput: DataInput + Send + Sync {
 
     /// Returns the current position in this file, where the next read will
     /// occur.
-    fn file_pointer(&self) -> i64;
+    ///
+    /// Equivalent to `org.apache.lucene.store.IndexInput.getFilePointer()`.
+    ///
+    /// # Errors
+    ///
+    /// An implementation that checks it is open, as
+    /// `MemorySegmentIndexInput.getFilePointer()` does through `ensureOpen()`
+    /// (`MemorySegmentIndexInput.java:330-333`, `:770-773`), returns
+    /// `AlreadyClosed` on a closed input.
+    fn file_pointer(&self) -> Result<i64>;
 
     /// Returns the total number of bytes in this file.
     fn length(&self) -> i64;
@@ -904,7 +913,7 @@ impl IndexInput for RandomAccessInputAdapter {
         self.input.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.input.file_pointer()
     }
 
@@ -1071,7 +1080,7 @@ impl DataInput for FilterIndexInput {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = IndexInput::file_pointer(self) + num_bytes;
+        let skip_to = IndexInput::file_pointer(self)? + num_bytes;
         IndexInput::seek(self, skip_to)
     }
 }
@@ -1081,7 +1090,7 @@ impl IndexInput for FilterIndexInput {
         self.inner.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.inner.file_pointer()
     }
 
@@ -1208,11 +1217,11 @@ impl BufferedIndexInput {
     /// does.
     pub(crate) fn clone_buffered(&self) -> Result<Self> {
         let mut source_clone = self.source.clone_input()?;
-        source_clone.seek(self.file_pointer())?;
+        source_clone.seek(self.file_pointer()?)?;
         Ok(Self {
             source: source_clone,
             buffer: vec![0u8; self.buffer_size],
-            buffer_start: self.file_pointer(),
+            buffer_start: self.file_pointer()?,
             buffer_position: 0,
             buffer_limit: 0,
             buffer_size: self.buffer_size,
@@ -1432,14 +1441,14 @@ impl DataInput for BufferedIndexInput {
                     self.buffer_position += len;
                 }
             } else {
-                let after = self.file_pointer() + len as i64;
+                let after = self.file_pointer()? + len as i64;
                 if after > self.source.length() {
                     return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
                     ))));
                 }
-                self.source.seek(self.file_pointer())?;
+                self.source.seek(self.file_pointer()?)?;
                 self.source.read_bytes(Some(b), offset, len)?;
                 self.buffer_start = after;
                 self.buffer_position = 0;
@@ -1455,7 +1464,7 @@ impl DataInput for BufferedIndexInput {
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
-        let target = self.file_pointer() + num_bytes;
+        let target = self.file_pointer()? + num_bytes;
         self.seek(target)
     }
 
@@ -1597,8 +1606,8 @@ impl IndexInput for BufferedIndexInput {
         self.source.close()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.buffer_start + self.buffer_position as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.buffer_start + self.buffer_position as i64)
     }
 
     fn length(&self) -> i64 {
@@ -1906,14 +1915,14 @@ impl DataInput for SlicedIndexInput {
                     self.buffer_position += len;
                 }
             } else {
-                let after = self.file_pointer() + len as i64;
+                let after = self.file_pointer()? + len as i64;
                 if after > self.length {
                     return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
                     ))));
                 }
-                self.base.seek(self.file_offset + self.file_pointer())?;
+                self.base.seek(self.file_offset + self.file_pointer()?)?;
                 self.base.read_bytes(Some(b), offset, len)?;
                 self.buffer_start = after;
                 self.buffer_position = 0;
@@ -1929,7 +1938,7 @@ impl DataInput for SlicedIndexInput {
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
-        let target = self.file_pointer() + num_bytes;
+        let target = self.file_pointer()? + num_bytes;
         self.seek(target)
     }
 
@@ -1977,8 +1986,8 @@ impl IndexInput for SlicedIndexInput {
         self.base.close()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.buffer_start + self.buffer_position as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.buffer_start + self.buffer_position as i64)
     }
 
     fn length(&self) -> i64 {
@@ -2025,13 +2034,13 @@ impl IndexInput for SlicedIndexInput {
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
         let mut base_clone = self.base.clone_input()?;
-        base_clone.seek(self.file_offset + self.file_pointer())?;
+        base_clone.seek(self.file_offset + self.file_pointer()?)?;
         Ok(Box::new(Self {
             base: base_clone,
             file_offset: self.file_offset,
             length: self.length,
             buffer: vec![0u8; self.buffer_size],
-            buffer_start: self.file_pointer(),
+            buffer_start: self.file_pointer()?,
             buffer_position: 0,
             buffer_limit: 0,
             buffer_size: self.buffer_size,
@@ -3180,8 +3189,8 @@ impl IndexInput for MockIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos as i64)
     }
 
     fn length(&self) -> i64 {
@@ -5063,7 +5072,7 @@ pub trait ChecksumIndexInput: IndexInput {
     /// file pointer by reading the skipped bytes through the per-instance skip
     /// buffer, so the digest remains correct.
     fn seek(&mut self, pos: i64) -> Result<()> {
-        let cur = self.file_pointer();
+        let cur = self.file_pointer()?;
         if pos < cur {
             return Err(LuceneError::illegal_state(format!(
                 "{} cannot seek backwards (pos={pos}, file_pointer={cur})",
@@ -5207,7 +5216,7 @@ impl DataInput for BufferedChecksumIndexInput {
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
-        let target = self.file_pointer() + num_bytes;
+        let target = self.file_pointer()? + num_bytes;
         ChecksumIndexInput::seek(self, target)
     }
 }
@@ -5217,7 +5226,7 @@ impl IndexInput for BufferedChecksumIndexInput {
         self.main.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.main.file_pointer()
     }
 
@@ -7708,8 +7717,9 @@ pub type BlockAllocator = Arc<dyn Fn(usize) -> Vec<u8> + Send + Sync>;
 ///
 /// Equivalent to the `Consumer<ByteBuffer> blockReuse` argument of
 /// `ByteBuffersDataOutput(int, int, IntFunction<ByteBuffer>,
-/// Consumer<ByteBuffer>)` (`ByteBuffersDataOutput.java:149-153`).
-pub type BlockReuse = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+/// Consumer<ByteBuffer>)` (`ByteBuffersDataOutput.java:149-153`). It returns a
+/// `Result` because a Java consumer may throw, as `NO_REUSE` does.
+pub type BlockReuse = Arc<dyn Fn(Vec<u8>) -> Result<()> + Send + Sync>;
 
 /// `ByteBuffersDataOutput.NO_REUSE` (`ByteBuffersDataOutput.java:45-48`): "A
 /// singleton instance of \"no-reuse\" buffer strategy." Every call answers
@@ -7722,7 +7732,7 @@ pub type BlockReuse = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 /// port's default outputs do.
 pub fn no_reuse() -> BlockReuse {
     static NO_REUSE: std::sync::LazyLock<BlockReuse> =
-        std::sync::LazyLock::new(|| Arc::new(|_block: Vec<u8>| {}));
+        std::sync::LazyLock::new(|| Arc::new(|_block: Vec<u8>| Ok(())));
     Arc::clone(&NO_REUSE)
 }
 
@@ -7897,7 +7907,8 @@ impl ByteBuffersDataOutput {
                     reuser
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .reuse(block)
+                        .reuse(block);
+                    Ok(())
                 })),
             )
         } else {
@@ -8126,18 +8137,25 @@ impl ByteBuffersDataOutput {
     /// `blocks`, here `completed` and an allocated `current`) goes to the
     /// recycler, `ramBytesUsed` drops to zero and `currentBlock` becomes
     /// `EMPTY`. The block size (`blockBits`) is kept.
-    pub fn reset(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// Whatever the block reuse strategy raises: `NO_REUSE` raises
+    /// `RuntimeException("reset() is not allowed on this buffer.")`
+    /// (`ByteBuffersDataOutput.java:45-48`).
+    pub fn reset(&mut self) -> Result<()> {
         let current = std::mem::take(&mut self.current);
         if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                reuse(block);
+                reuse(block)?;
             }
             if current.capacity() > 0 {
-                reuse(current);
+                reuse(current)?;
             }
         } else {
             self.completed.clear();
         }
+        Ok(())
     }
 
     fn allocate(&mut self, size: usize) -> Vec<u8> {
@@ -8188,9 +8206,9 @@ impl ByteBuffersDataOutput {
         }
         if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                reuse(block);
+                let _ = reuse(block);
             }
-            reuse(std::mem::take(&mut self.current));
+            let _ = reuse(std::mem::take(&mut self.current));
         } else {
             self.completed.clear();
             self.current.clear();
@@ -8886,8 +8904,8 @@ impl IndexInput for ByteBuffersIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.input.as_ref().map_or(0, |i| i.position() as i64)
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.input.as_ref().map_or(0, |i| i.position() as i64))
     }
 
     fn length(&self) -> i64 {
@@ -8933,7 +8951,7 @@ impl IndexInput for ByteBuffersIndexInput {
             cloned_input,
             format!("(clone of) {}", self.resource_description),
         );
-        cloned.seek(self.file_pointer())?;
+        cloned.seek(self.file_pointer()?)?;
         Ok(Box::new(cloned))
     }
 
@@ -10183,8 +10201,8 @@ impl IndexInput for FileIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos as i64)
     }
 
     fn length(&self) -> i64 {
@@ -10578,8 +10596,8 @@ impl IndexInput for RawNioFsIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos as i64
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos as i64)
     }
 
     fn length(&self) -> i64 {
@@ -10772,7 +10790,7 @@ impl IndexInput for NIOFSIndexInput {
         self.inner.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.inner.file_pointer()
     }
 
@@ -11768,7 +11786,7 @@ mod tests {
         out.write_int(0x9ABCDEF0u32 as i32).unwrap();
         assert_eq!(out.size(), 8);
 
-        out.reset();
+        out.reset().unwrap();
         assert_eq!(out.size(), 0);
 
         out.write_byte(0x42).unwrap();
@@ -11784,7 +11802,7 @@ mod tests {
         }
         assert!(out.size() >= 2048);
 
-        out.reset();
+        out.reset().unwrap();
         assert_eq!(out.size(), 0);
 
         // Re-writing should reuse buffers without issue.
@@ -11860,15 +11878,15 @@ mod tests {
         let mut input = input_from_output(out, "round-trip");
         assert_eq!(input.resource_description(), "round-trip");
         assert_eq!(input.length(), 15);
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
 
         assert_eq!(input.read_int().unwrap(), 0xDEAD_BEEFu32 as i32);
-        assert_eq!(input.file_pointer(), 4);
+        assert_eq!(input.file_pointer().unwrap(), 4);
 
         input.seek(4).unwrap();
         assert_eq!(input.read_string().unwrap(), "Rucene");
         assert_eq!(input.read_v_long().unwrap(), 123456789);
-        assert_eq!(input.file_pointer(), input.length());
+        assert_eq!(input.file_pointer().unwrap(), input.length());
     }
 
     #[test]
@@ -11903,12 +11921,12 @@ mod tests {
         let mut slice = input.slice("middle", 4, 8).unwrap();
         assert_eq!(slice.resource_description(), "slice-source [slice=middle]");
         assert_eq!(slice.length(), 8);
-        assert_eq!(slice.file_pointer(), 0);
+        assert_eq!(slice.file_pointer().unwrap(), 0);
         assert_eq!(slice.read_int().unwrap(), 0x1122_3344u32 as i32);
         assert_eq!(slice.read_int().unwrap(), 0x5566_7788u32 as i32);
 
         // Original input is untouched.
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
         assert_eq!(input.length(), 12);
 
         // Out-of-bounds slice is rejected.
@@ -11926,13 +11944,13 @@ mod tests {
         let mut clone = input.clone_input().unwrap();
 
         // Both start at the same position.
-        assert_eq!(clone.file_pointer(), input.file_pointer());
+        assert_eq!(clone.file_pointer().unwrap(), input.file_pointer().unwrap());
         assert_eq!(clone.read_int().unwrap(), input.read_int().unwrap());
 
         // Advancing the original does not affect the clone.
         input.read_int().unwrap();
-        assert_eq!(input.file_pointer(), 8);
-        assert_eq!(clone.file_pointer(), 4);
+        assert_eq!(input.file_pointer().unwrap(), 8);
+        assert_eq!(clone.file_pointer().unwrap(), 4);
         assert_eq!(clone.read_int().unwrap(), 0x0506_0708u32 as i32);
     }
 
@@ -12035,12 +12053,12 @@ mod tests {
 
         assert_eq!(input.resource_description(), "buffered-basic");
         assert_eq!(input.length(), 1024);
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
 
         for i in 0i32..=255 {
             assert_eq!(input.read_int().unwrap(), i);
         }
-        assert_eq!(input.file_pointer(), input.length());
+        assert_eq!(input.file_pointer().unwrap(), input.length());
     }
 
     #[test]
@@ -12097,14 +12115,14 @@ mod tests {
             "buffered-slice-source [slice=middle]"
         );
         assert_eq!(slice.length(), 512);
-        assert_eq!(slice.file_pointer(), 0);
+        assert_eq!(slice.file_pointer().unwrap(), 0);
 
         // Slice starts at int 64.
         assert_eq!(slice.read_int().unwrap(), 64);
-        assert_eq!(slice.file_pointer(), 4);
+        assert_eq!(slice.file_pointer().unwrap(), 4);
 
         // Original is untouched.
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
 
         assert!(input.slice("bad", 0, 2000).is_err());
     }
@@ -12146,7 +12164,7 @@ mod tests {
         assert_eq!(ra.read_int_at(60).unwrap(), 47);
 
         // Original is untouched.
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
     }
 
     #[test]
@@ -12184,14 +12202,14 @@ mod tests {
 
         input.read_int().unwrap(); // position 4
         let mut clone = input.clone_input().unwrap();
-        assert_eq!(clone.file_pointer(), 4);
+        assert_eq!(clone.file_pointer().unwrap(), 4);
 
         input.read_int().unwrap(); // position 8
-        assert_eq!(input.file_pointer(), 8);
-        assert_eq!(clone.file_pointer(), 4);
+        assert_eq!(input.file_pointer().unwrap(), 8);
+        assert_eq!(clone.file_pointer().unwrap(), 4);
 
         assert_eq!(clone.read_int().unwrap(), 1);
-        assert_eq!(clone.file_pointer(), 8);
+        assert_eq!(clone.file_pointer().unwrap(), 8);
     }
 
     #[test]
@@ -12230,7 +12248,7 @@ mod tests {
         assert_eq!(slice.read_int().unwrap(), 64);
         slice.seek(256).unwrap();
         assert_eq!(slice.read_int().unwrap(), 128);
-        assert_eq!(slice.file_pointer(), 260);
+        assert_eq!(slice.file_pointer().unwrap(), 260);
 
         // Random access within slice.
         assert_eq!(slice.read_int_at(128).unwrap(), 96);
@@ -12400,7 +12418,7 @@ mod tests {
                 self.closes.fetch_add(1, Ordering::SeqCst);
                 self.inner.close()
             }
-            fn file_pointer(&self) -> i64 {
+            fn file_pointer(&self) -> Result<i64> {
                 self.inner.file_pointer()
             }
             fn length(&self) -> i64 {
@@ -12606,7 +12624,7 @@ mod tests {
             fn close(&mut self) -> Result<()> {
                 self.0.close()
             }
-            fn file_pointer(&self) -> i64 {
+            fn file_pointer(&self) -> Result<i64> {
                 self.0.file_pointer()
             }
             fn length(&self) -> i64 {
@@ -14129,7 +14147,7 @@ mod tests {
 
         // Seek forward far enough to require multiple skip-buffer iterations.
         IndexInput::seek(&mut input, 3000).unwrap();
-        assert_eq!(input.file_pointer(), 3000);
+        assert_eq!(input.file_pointer().unwrap(), 3000);
 
         // Read the rest.
         let remaining = payload.len() - 3000;
@@ -14229,7 +14247,7 @@ mod tests {
         assert_eq!(input.read_int().unwrap(), 0xDEAD_BEEFu32 as i32);
         assert_eq!(input.read_string().unwrap(), "Rucene");
         assert_eq!(input.read_v_long().unwrap(), 123_456_789);
-        assert_eq!(input.file_pointer(), input.length());
+        assert_eq!(input.file_pointer().unwrap(), input.length());
     }
 
     /// Exercises file listing, existence, length, rename, and delete.
@@ -14324,14 +14342,14 @@ mod tests {
         assert_eq!(slice.length(), 8);
         assert_eq!(slice.read_int().unwrap(), 0x0506_0708u32 as i32);
         assert_eq!(slice.read_int().unwrap(), 0x090A_0B0Cu32 as i32);
-        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.file_pointer().unwrap(), 0);
 
         // Clone is independent of the original.
         let mut clone = input.clone_input().unwrap();
         input.seek(8).unwrap();
-        assert_eq!(clone.file_pointer(), 0);
+        assert_eq!(clone.file_pointer().unwrap(), 0);
         assert_eq!(clone.read_int().unwrap(), 0x0102_0304u32 as i32);
-        assert_eq!(input.file_pointer(), 8);
+        assert_eq!(input.file_pointer().unwrap(), 8);
 
         // Random-access view over the last 8 bytes.
         let mut random = input.random_access_slice(4, 8).unwrap();
@@ -14586,7 +14604,7 @@ mod tests {
         let inner = MockIndexInput::new(data, "inner");
         let mut filter = FilterIndexInput::new("filter", Box::new(inner));
 
-        assert_eq!(filter.file_pointer(), 0);
+        assert_eq!(filter.file_pointer().unwrap(), 0);
         assert_eq!(filter.length(), 8);
         assert_eq!(filter.read_int().unwrap(), 0x0403_0201_i32);
         filter.seek(0).unwrap();
@@ -15295,7 +15313,7 @@ mod tests {
                 matches!(
                     error,
                     LuceneError {
-                        kind: LuceneErrorKind::CorruptIndex(_),
+                        kind: LuceneErrorKind::CorruptIndex { .. },
                         ..
                     }
                 ),

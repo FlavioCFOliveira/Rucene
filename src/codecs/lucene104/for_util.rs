@@ -809,7 +809,11 @@ mod tests {
                 }
                 other => panic!("unexpected error for {bits} bits: {other:?}"),
             }
-            assert_eq!(input.file_pointer(), 0, "nothing is read before the check");
+            assert_eq!(
+                input.file_pointer().unwrap(),
+                0,
+                "nothing is read before the check"
+            );
         }
     }
 

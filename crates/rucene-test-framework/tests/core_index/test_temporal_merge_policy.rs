@@ -22,7 +22,6 @@ use rucene::index::merge_policy::{
 };
 use rucene::index::segment_infos::SegmentInfos;
 use rucene::index::{IndexReader, SegmentCommitInfo, SegmentInfo};
-use rucene::search::Sort;
 use rucene::store::{ByteBuffersDirectory, Directory};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{InfoStream, NoOutputInfoStream, Version};
@@ -353,7 +352,7 @@ fn new_segment(name: &str, max_doc: i32) -> Result<SegmentCommitInfo> {
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )?;
     info.set_files([segment_file_name(&segment_name, "", "si")])?;
     SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, StringHelper::random_id())
@@ -454,8 +453,8 @@ impl MergeContext for StubMergeContext {
         Ok(*self.delete_counts.get(&key(info)).unwrap_or(&0))
     }
 
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        *self.delete_counts.get(&key(info)).unwrap_or(&0)
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> rucene::error::Result<i32> {
+        Ok(*self.delete_counts.get(&key(info)).unwrap_or(&0))
     }
 
     fn get_info_stream(&self) -> Arc<dyn InfoStream> {

@@ -188,7 +188,7 @@ impl KnnCollector for MultiLeafKnnCollector {
         )
     }
 
-    fn top_docs(&mut self) -> TopDocs {
+    fn top_docs(&mut self) -> Result<TopDocs> {
         self.sub_collector.top_docs()
     }
 

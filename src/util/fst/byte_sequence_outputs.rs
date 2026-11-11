@@ -118,9 +118,11 @@ impl Outputs for ByteSequenceOutputs {
             Ok(self.no_output())
         } else {
             let len = usize::try_from(len).map_err(|_| {
-                crate::error::LuceneError::from(crate::error::LuceneErrorKind::CorruptIndex(
-                    format!("invalid output length {len}"),
-                ))
+                crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::corrupt_index_message(format!(
+                        "invalid output length {len}"
+                    )),
+                )
             })?;
             let mut bytes = vec![0u8; len];
             input.read_bytes(Some(&mut bytes), 0, len)?;

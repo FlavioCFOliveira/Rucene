@@ -454,7 +454,7 @@ impl IndexFileDeleter {
                 .expect("checked is_some above");
             let sis =
                 SegmentInfos::read_commit(Arc::clone(&directory_orig), name).map_err(|e| {
-                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                         "unable to read current segments_N file \"{name}\": {e}"
                     )))
                 })?;
@@ -986,7 +986,7 @@ pub fn inflate_gens(
                 chars.as_str()
             };
             let ordinal = i64::from_str_radix(ordinal_str, MAX_RADIX).map_err(|e| {
-                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                     "cannot parse segment ordinal from \"{file_name}\": {e}"
                 )))
             })?;
@@ -1278,14 +1278,14 @@ mod tests {
         let mut info = test_segment_info_with_codec(name, 10, codec());
         // The shared helper defaults to `Sort::default()`, a SCORE sort the
         // segment-info format cannot serialise; give it a writable one.
-        info.set_index_sort(
+        info.set_index_sort(Some(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
                 SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
         let data = format!("{name}.fnm");
         let data2 = format!("{name}.fdt");
         touch(dir, &data);
@@ -1808,7 +1808,7 @@ mod tests {
             matches!(
                 err,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),

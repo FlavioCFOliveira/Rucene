@@ -138,7 +138,7 @@ impl SimpleTextFieldsReader {
                 return Ok(fields);
             } else if scratch.starts_with(FIELD) {
                 let field_name = java_utf8_to_string(&scratch[FIELD.len()..]);
-                let fp = input.file_pointer();
+                let fp = input.file_pointer()?;
                 // `TreeMap.put`.
                 match fields.binary_search_by(|(name, _)| {
                     name.encode_utf16().cmp(field_name.encode_utf16())
@@ -500,7 +500,7 @@ impl SimpleTextDocsEnum {
         let mut first = true;
         let mut term_freq = 0;
         loop {
-            let line_start = self.input.file_pointer();
+            let line_start = self.input.file_pointer()?;
             read_line(self.input.as_mut(), &mut self.scratch)?;
             if self.scratch.starts_with(DOC) {
                 if !first {
@@ -713,7 +713,7 @@ impl SimpleTextPostingsEnum {
         self.input.seek(self.next_doc_start)?;
         let mut pos_start = 0i64;
         loop {
-            let line_start = self.input.file_pointer();
+            let line_start = self.input.file_pointer()?;
             read_line(self.input.as_mut(), &mut self.scratch)?;
             if self.scratch.starts_with(DOC) {
                 if !first {
@@ -726,7 +726,7 @@ impl SimpleTextPostingsEnum {
                 first = false;
             } else if self.scratch.starts_with(FREQ) {
                 self.tf = parse_int_at(&self.scratch, FREQ.len())?;
-                pos_start = self.input.file_pointer();
+                pos_start = self.input.file_pointer()?;
             } else if self.scratch.starts_with(POS) {
                 // skip
             } else if self.scratch.starts_with(START_OFFSET) {
@@ -828,7 +828,7 @@ impl PostingsEnum for SimpleTextPostingsEnum {
             self.end_offset = parse_int_at(&self.scratch, END_OFFSET.len())?;
         }
 
-        let fp = self.input.file_pointer();
+        let fp = self.input.file_pointer()?;
         read_line(self.input.as_mut(), &mut self.scratch)?;
         if self.scratch.starts_with(PAYLOAD) {
             self.payload = Some(self.scratch[PAYLOAD.len()..].to_vec());
@@ -962,7 +962,7 @@ impl SimpleTextTerms {
             } else if scratch.starts_with(FREQ) {
                 total_term_freq += i64::from(parse_int_at(&scratch, FREQ.len())? - 1);
             } else if scratch.starts_with(SKIP_LIST) {
-                skip_pointer = input.file_pointer();
+                skip_pointer = input.file_pointer()?;
             } else if scratch.starts_with(TERM) {
                 if last_docs_start != -1 {
                     fst_compiler.add(
@@ -976,7 +976,7 @@ impl SimpleTextTerms {
                         ),
                     )?;
                 }
-                last_docs_start = input.file_pointer();
+                last_docs_start = input.file_pointer()?;
                 last_term.clear();
                 last_term.extend_from_slice(&scratch[TERM.len()..]);
                 doc_freq = 0;

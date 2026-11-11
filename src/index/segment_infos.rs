@@ -1782,14 +1782,14 @@ mod tests {
     fn round_trip_single_segment() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
         let mut info = test_segment_info_with_codec("_0", 42, test_codec());
-        info.set_index_sort(
+        info.set_index_sort(Some(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
                 SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
         info.set_diagnostics(std::collections::HashMap::from([(
             "source".to_string(),
             "test".to_string(),

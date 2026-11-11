@@ -328,8 +328,8 @@ impl IndexInput for FaultyIndexInput {
         self.delegate.close()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.pos
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.pos)
     }
 
     fn length(&self) -> i64 {

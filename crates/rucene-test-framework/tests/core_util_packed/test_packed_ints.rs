@@ -253,7 +253,7 @@ fn test_packed_ints() -> Result<()> {
                         assert_equals(&(i as i32), &r.ord());
                     }
                 }
-                assert_equals(&fp, &r#in.file_pointer());
+                assert_equals(&fp, &r#in.file_pointer()?);
                 r#in.close()?;
             }
 
@@ -286,7 +286,7 @@ fn test_packed_ints() -> Result<()> {
                         i += next.len();
                     }
                 }
-                assert_equals(&fp, &r#in.file_pointer());
+                assert_equals(&fp, &r#in.file_pointer()?);
                 r#in.close()?;
             }
             drop(dir);
@@ -332,7 +332,7 @@ fn test_end_pointer() -> Result<()> {
                         it.next()?;
                     }
                 }
-                assert_equals_msg(Some(&msg), &byte_count, &r#in.file_pointer());
+                assert_equals_msg(Some(&msg), &byte_count, &r#in.file_pointer()?);
             }
         }
     }
@@ -1457,7 +1457,7 @@ fn test_packed_input_output() -> Result<()> {
     }
     assert_equals(
         &((total_bits as f64 / 8.0).ceil() as i64),
-        &r#in.file_pointer(),
+        &r#in.file_pointer()?,
     );
     r#in.close()?;
     drop(dir);
@@ -1591,7 +1591,7 @@ fn test_block_packed_reader_writer() -> Result<()> {
         if random.next_boolean() {
             check_block_packed_reads(
                 in1.as_mut(),
-                |i| i.file_pointer(),
+                |i| i.file_pointer().unwrap(),
                 |i| i.seek(0),
                 &*random,
                 &values,
@@ -1664,7 +1664,7 @@ fn test_monotonic_block_packed_reader_writer() -> Result<()> {
             block_size,
             value_count as i64,
         )?;
-        assert_equals(&fp, &r#in.file_pointer());
+        assert_equals(&fp, &r#in.file_pointer()?);
         for i in 0..value_count {
             assert_equals_msg(Some(&format!("i={i}")), &values[i], &reader.get(i as i64));
         }

@@ -69,7 +69,7 @@ impl DirectPackedReader {
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
-        let start_pointer = input.borrow().file_pointer();
+        let start_pointer = input.borrow().file_pointer()?;
         let value_mask = if bits_per_value == 64 {
             u64::MAX
         } else {
@@ -216,7 +216,7 @@ impl DirectPacked64SingleBlockReader {
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
-        let start_pointer = input.borrow().file_pointer();
+        let start_pointer = input.borrow().file_pointer()?;
         Ok(Self {
             input,
             bits_per_value,

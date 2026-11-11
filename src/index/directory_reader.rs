@@ -832,6 +832,27 @@ impl StandardDirectoryReader {
     pub(crate) fn segment_readers(&self) -> &[Arc<SegmentReader>] {
         &self.segment_readers
     }
+
+    /// Opens a reader over `infos`, reusing the segment readers of
+    /// `old_readers` whose segments are unchanged.
+    ///
+    /// Equivalent to the public `org.apache.lucene.index.StandardDirectoryReader.open(Directory,
+    /// SegmentInfos, List<? extends LeafReader>, Comparator<LeafReader>,
+    /// ExecutorService)` (`StandardDirectoryReader.java:175-185`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the segment readers raises.
+    pub fn open_with_segment_infos(
+        directory: Arc<dyn Directory>,
+        infos: SegmentInfos,
+        old_readers: Option<&[Arc<SegmentReader>]>,
+        leaf_sorter: Option<Arc<dyn LeafComparator>>,
+        executor: Option<&Arc<dyn crate::search::Executor>>,
+    ) -> Result<Arc<dyn DirectoryReader>> {
+        let _ = (directory, infos, old_readers, leaf_sorter, executor);
+        todo!("PORT G-104")
+    }
 }
 
 impl IndexReader for StandardDirectoryReader {
@@ -2299,14 +2320,14 @@ mod tests {
         max_doc: i32,
     ) -> crate::index::SegmentInfo {
         let mut info = test_segment_info_with_codec(name, max_doc, test_codec());
-        info.set_index_sort(
+        info.set_index_sort(Some(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
                 SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
         info.set_files(HashSet::from([
             crate::index::index_file_names::segment_file_name(
                 name,

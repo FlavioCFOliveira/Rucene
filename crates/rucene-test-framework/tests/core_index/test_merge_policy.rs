@@ -17,7 +17,6 @@ use randomizedtesting::junit::Assert;
 use rucene::error::Result;
 use rucene::index::merge_policy::{MergeSpecification, OneMerge};
 use rucene::index::{SegmentCommitInfo, SegmentInfo};
-use rucene::search::sort::Sort;
 use rucene::store::Directory;
 use rucene::util::string_helper::{StringHelper, ID_LENGTH};
 use rucene::util::Version;
@@ -212,8 +211,8 @@ fn create_random_merge_specification(
             false,
             HashMap::new(), // diagnostics
             id,
-            HashMap::new(),  // attributes
-            Sort::default(), // indexSort
+            HashMap::new(), // attributes
+            None,           // indexSort
         )?;
         let segments: Vec<SegmentCommitInfo> = vec![SegmentCommitInfo::new(
             si,

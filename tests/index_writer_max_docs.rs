@@ -101,7 +101,7 @@ fn index_with(count: usize) -> Arc<dyn Directory> {
 fn corrupt_message(error: &LuceneError) -> &str {
     match error {
         LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(message),
+            kind: LuceneErrorKind::CorruptIndex { message, .. },
             ..
         } => message,
         other => panic!("a CorruptIndexException, got {other:?}"),

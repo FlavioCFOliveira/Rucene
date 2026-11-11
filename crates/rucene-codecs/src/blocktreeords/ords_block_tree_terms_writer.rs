@@ -429,7 +429,7 @@ fn compile_index(
         &Util::to_ints_ref(&prefix, scratch_ints_ref),
         FST_OUTPUTS.new_output(bytes, 0, i64::MAX - (sum_total_term_count - 1)),
     )?;
-    scratch_bytes.reset();
+    scratch_bytes.reset()?;
 
     // Copy over index for all sub-blocks
 
@@ -866,17 +866,17 @@ impl TermsWriter {
         w.out
             .write_v_int(((self.suffix_writer.size() << 1) as i32) | i32::from(is_leaf_block))?;
         self.suffix_writer.copy_to(w.out.as_mut())?;
-        self.suffix_writer.reset();
+        self.suffix_writer.reset()?;
 
         // Write term stats byte[] blob
         w.out.write_v_int(self.stats_writer.size() as i32)?;
         self.stats_writer.copy_to(w.out.as_mut())?;
-        self.stats_writer.reset();
+        self.stats_writer.reset()?;
 
         // Write term meta data byte[] blob
         w.out.write_v_int(self.meta_writer.size() as i32)?;
         self.meta_writer.copy_to(w.out.as_mut())?;
-        self.meta_writer.reset();
+        self.meta_writer.reset()?;
 
         if has_floor_lead_label {
             // We already allocated to length+1 above:

@@ -1305,7 +1305,7 @@ impl DataInput for MockAssertFileExistIndexInput {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let pos = self.file_pointer() + num_bytes;
+        let pos = self.file_pointer()? + num_bytes;
         self.seek(pos)
     }
 }
@@ -1315,7 +1315,7 @@ impl IndexInput for MockAssertFileExistIndexInput {
         self.delegate.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.delegate.file_pointer()
     }
 

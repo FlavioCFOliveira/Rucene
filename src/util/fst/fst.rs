@@ -739,9 +739,9 @@ impl<O: Outputs> FST<O> {
             let mut empty_bytes = get_on_heap_reader_writer(10)?;
             let num_bytes = meta_in.read_v_int()?;
             if num_bytes < 0 {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "invalid empty output length {num_bytes}"
-                ))));
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    format!("invalid empty output length {num_bytes}"),
+                )));
             }
             empty_bytes.copy_bytes(meta_in, num_bytes as i64)?;
             empty_bytes.freeze();
@@ -762,9 +762,9 @@ impl<O: Outputs> FST<O> {
             1 => InputType::Byte2,
             2 => InputType::Byte4,
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "invalid input type {t}"
-                ))));
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    format!("invalid input type {t}"),
+                )));
             }
         };
         let start_node = meta_in.read_v_long()?;

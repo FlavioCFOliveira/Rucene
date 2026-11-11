@@ -197,7 +197,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                     if code & 1 != 0 {
                         let length = input.read_v_int()?;
                         let length = usize::try_from(length).map_err(|_| {
-                            LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                            LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                                 "negative term-vector payload length: {length}"
                             )))
                         })?;
@@ -660,7 +660,7 @@ mod tests {
             matches!(
                 error,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),

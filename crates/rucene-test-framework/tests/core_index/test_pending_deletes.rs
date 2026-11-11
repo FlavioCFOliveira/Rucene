@@ -16,7 +16,6 @@ use rucene::codecs;
 use rucene::error::{LuceneError, Result};
 use rucene::index::field_infos::FieldInfos;
 use rucene::index::{PendingDeletes, PendingSoftDeletes, SegmentCommitInfo, SegmentInfo};
-use rucene::search::Sort;
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{Bits, Version};
@@ -117,7 +116,7 @@ pub fn test_segment_info(dir: &Arc<dyn Directory>, max_doc: i32) -> Result<Segme
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )
 }
 

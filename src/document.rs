@@ -2569,6 +2569,37 @@ impl StoredField {
     pub fn new_with_field_type(name: &str, value: String, field_type: FieldType) -> Result<Self> {
         Ok(Self(Field::new(name, value, field_type)?))
     }
+
+    /// Creates a stored field with only a name and a field type; the value is
+    /// set later.
+    ///
+    /// Equivalent to the protected `StoredField(String, FieldType)`
+    /// (`StoredField.java:46-48`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the `Field` constructor raises.
+    pub fn new_type_only(name: &str, field_type: FieldType) -> Result<Self> {
+        let _ = (name, field_type);
+        todo!("PORT G-102")
+    }
+
+    /// Creates a stored field with a binary value and an explicit field type.
+    ///
+    /// Equivalent to `StoredField(String, BytesRef, FieldType)`
+    /// (`StoredField.java:61-63`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the `Field` constructor raises.
+    pub fn new_bytes_with_field_type(
+        name: &str,
+        bytes: BytesRef,
+        field_type: FieldType,
+    ) -> Result<Self> {
+        let _ = (name, bytes, field_type);
+        todo!("PORT G-102")
+    }
 }
 
 /// `StoredField extends Field`: the inherited `Field` members (the value
@@ -5720,6 +5751,44 @@ impl IntField {
             SortedNumericDocValuesField::new_slow_set_query(field, &points),
         )))
     }
+
+    /// Creates a sort over this field's int values.
+    ///
+    /// Equivalent to `org.apache.lucene.document.IntField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type)` (`IntField.java:173-176`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedNumericSortField::with_missing_value`](crate::search::SortedNumericSortField)
+    /// raises.
+    pub fn new_sort_field(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        let _ = (field, reverse, selector);
+        todo!("PORT G-001")
+    }
+
+    /// Creates a sort over this field's int values, with an explicit missing
+    /// value.
+    ///
+    /// Equivalent to `org.apache.lucene.document.IntField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type, int)` (`IntField.java:186-189`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new_sort_field`](Self::new_sort_field).
+    pub fn new_sort_field_with_missing(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+        missing_value: i32,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        let _ = (field, reverse, selector, missing_value);
+        todo!("PORT G-001")
+    }
 }
 
 impl IndexableField for IntField {
@@ -6125,6 +6194,44 @@ impl FloatField {
             SortedNumericDocValuesField::new_slow_set_query(field, &points),
         )))
     }
+
+    /// Creates a sort over this field's float values.
+    ///
+    /// Equivalent to `org.apache.lucene.document.FloatField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type)` (`FloatField.java:180-183`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedNumericSortField::with_missing_value`](crate::search::SortedNumericSortField)
+    /// raises.
+    pub fn new_sort_field(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        let _ = (field, reverse, selector);
+        todo!("PORT G-002")
+    }
+
+    /// Creates a sort over this field's float values, with an explicit missing
+    /// value.
+    ///
+    /// Equivalent to `org.apache.lucene.document.FloatField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type, float)` (`FloatField.java:193-196`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new_sort_field`](Self::new_sort_field).
+    pub fn new_sort_field_with_missing(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+        missing_value: f32,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        let _ = (field, reverse, selector, missing_value);
+        todo!("PORT G-002")
+    }
 }
 
 impl IndexableField for FloatField {
@@ -6288,6 +6395,44 @@ impl DoubleField {
             DoublePoint::new_set_query(field, values)?,
             SortedNumericDocValuesField::new_slow_set_query(field, &points),
         )))
+    }
+
+    /// Creates a sort over this field's double values.
+    ///
+    /// Equivalent to `org.apache.lucene.document.DoubleField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type)` (`DoubleField.java:180-183`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedNumericSortField::with_missing_value`](crate::search::SortedNumericSortField)
+    /// raises.
+    pub fn new_sort_field(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        let _ = (field, reverse, selector);
+        todo!("PORT G-003")
+    }
+
+    /// Creates a sort over this field's double values, with an explicit missing
+    /// value.
+    ///
+    /// Equivalent to `org.apache.lucene.document.DoubleField.newSortField(String,
+    /// boolean, SortedNumericSelector.Type, double)` (`DoubleField.java:193-196`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new_sort_field`](Self::new_sort_field).
+    pub fn new_sort_field_with_missing(
+        field: &str,
+        reverse: bool,
+        selector: crate::search::SortedNumericSelectorType,
+        missing_value: f64,
+    ) -> Result<crate::search::SortedNumericSortField> {
+        let _ = (field, reverse, selector, missing_value);
+        todo!("PORT G-003")
     }
 }
 

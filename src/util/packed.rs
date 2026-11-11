@@ -1436,16 +1436,18 @@ impl SharedDirectMonotonicReader {
     /// As [`DirectMonotonicReader::get_checked`].
     pub fn get_checked(&self, index: i64) -> Result<i64> {
         if index < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "negative index {index} into a monotonic block"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("negative index {index} into a monotonic block"),
+            )));
         }
         let block = (index >> self.block_shift) as usize;
         if block >= self.bpvs.len() {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "index {index} falls in block {block} of {}",
-                self.bpvs.len()
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "index {index} falls in block {block} of {}",
+                    self.bpvs.len()
+                ),
+            )));
         }
         let block_index = index & self.block_mask;
         let delta = if self.bpvs[block] == 0 {
@@ -1599,16 +1601,18 @@ impl DirectMonotonicReader {
     /// is shorter than the index it is asked for.
     pub fn get_checked(&self, index: i64) -> Result<i64> {
         if index < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "negative index {index} into a monotonic block"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("negative index {index} into a monotonic block"),
+            )));
         }
         let block = (index >> self.block_shift) as usize;
         if block >= self.readers.len() {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "index {index} falls in block {block} of {}",
-                self.readers.len()
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "index {index} falls in block {block} of {}",
+                    self.readers.len()
+                ),
+            )));
         }
         let block_index = index & self.block_mask;
         let delta = self.readers[block].get_checked(block_index)?;
@@ -1643,10 +1647,12 @@ impl DirectMonotonicReader {
             (index as u64).wrapping_shr(self.block_shift as u32) as i64,
         )? as usize;
         if block >= self.readers.len() {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "index {index} falls in block {block} of {}",
-                self.readers.len()
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "index {index} falls in block {block} of {}",
+                    self.readers.len()
+                ),
+            )));
         }
         let block_index = index & self.block_mask;
         // Java composes both bounds with plain `long` arithmetic, which wraps;
@@ -2068,7 +2074,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
             let token = self.input.read_byte()? as i32;
             let bits_per_value = token >> BPV_SHIFT;
             if !(0..=64).contains(&bits_per_value) {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     "invalid bitsPerValue in block-packed stream".to_string(),
                 )));
             }
@@ -2114,7 +2120,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         let min_equals_0 = (token & MIN_VALUE_EQUALS_0) != 0;
         let bits_per_value = token >> BPV_SHIFT;
         if !(0..=64).contains(&bits_per_value) {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "invalid bitsPerValue in block-packed stream".to_string(),
             )));
         }

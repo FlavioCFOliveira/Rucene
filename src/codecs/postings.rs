@@ -1505,7 +1505,7 @@ mod tests {
             std::collections::HashMap::new(),
             crate::util::StringHelper::random_id(),
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
@@ -1556,7 +1556,7 @@ mod tests {
             std::collections::HashMap::new(),
             crate::util::StringHelper::random_id(),
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
@@ -1615,7 +1615,7 @@ mod tests {
             std::collections::HashMap::new(),
             crate::util::StringHelper::random_id(),
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
@@ -1683,7 +1683,7 @@ mod tests {
             std::collections::HashMap::new(),
             crate::util::StringHelper::random_id(),
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();

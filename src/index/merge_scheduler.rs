@@ -3765,7 +3765,7 @@ mod intra_merge_executor_tests {
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         let commit = SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap();

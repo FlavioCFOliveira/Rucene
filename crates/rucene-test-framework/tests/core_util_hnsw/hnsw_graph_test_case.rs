@@ -832,7 +832,7 @@ fn test_aknn_diverse<C: HnswCase>(this: &mut Fixture<C>) -> Result<()> {
         None,
         i32::MAX as i64,
     )?;
-    let top_docs = nn.top_docs();
+    let top_docs = nn.top_docs()?;
     assert_equals_msg(
         Some("Number of found results is not equal to [10]."),
         &10,
@@ -880,7 +880,7 @@ fn test_search_with_accept_ords<C: HnswCase>(this: &mut Fixture<C>) -> Result<()
         Some(&accept_ords),
         i32::MAX as i64,
     )?;
-    let nodes = nn.top_docs();
+    let nodes = nn.top_docs()?;
     assert_equals_msg(
         Some("Number of found results is not equal to [10]."),
         &10,
@@ -926,7 +926,7 @@ fn test_search_with_selective_accept_ords<C: HnswCase>(this: &mut Fixture<C>) ->
         Some(&accept_ords),
         i32::MAX as i64,
     )?;
-    let nodes = nn.top_docs();
+    let nodes = nn.top_docs()?;
     assert_equals(&(num_accepted as usize), &nodes.score_docs.len());
     for node in &nodes.score_docs {
         assert_true(
@@ -1285,9 +1285,11 @@ impl KnnCollector for FindAllCollector {
     fn min_competitive_similarity(&self) -> f32 {
         self.final_min_score
     }
-    fn top_docs(&mut self) -> TopDocs {
-        // Java returns `null`.
-        empty_top_docs()
+    fn top_docs(&mut self) -> rucene::error::Result<TopDocs> {
+        Ok({
+            // Java returns `null`.
+            empty_top_docs()
+        })
     }
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {
         self.state.get_search_strategy()
@@ -1532,7 +1534,7 @@ fn test_random<C: HnswCase>(this: &mut Fixture<C>) -> Result<()> {
             accept_ords.as_ref().map(|b| b as &dyn Bits),
             i32::MAX as i64,
         )?;
-        let top_docs = actual.top_docs();
+        let top_docs = actual.top_docs()?;
         let mut expected = NeighborQueue::new(top_k, false)?;
         for j in 0..size {
             // `vectorValue(vectors, j) != null`: a null row raises before the comparison here.
@@ -1652,8 +1654,8 @@ fn test_on_heap_hnsw_graph_search<C: HnswCase>(this: &mut Fixture<C>) -> Result<
     }
     exec.shutdown_now();
     for i in 0..expects.len() {
-        let expect = expects[i].top_docs();
-        let actual = actuals[i].top_docs();
+        let expect = expects[i].top_docs()?;
+        let actual = actuals[i].top_docs()?;
         let mut expected_docs = vec![0; expect.score_docs.len()];
         for j in 0..expect.score_docs.len() {
             expected_docs[j] = expect.score_docs[j].doc;

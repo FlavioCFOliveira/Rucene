@@ -637,7 +637,7 @@ impl MemorySegmentIndexInput {
             Arc::clone(&self.shared_prefetch_counter),
             self.layout,
         )?;
-        clone.seek(self.file_pointer())?;
+        clone.seek(self.file_pointer()?)?;
         Ok(clone)
     }
 
@@ -724,7 +724,7 @@ impl DataInput for MemorySegmentIndexInput {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = self.file_pointer() + num_bytes;
+        let skip_to = self.file_pointer()? + num_bytes;
         self.seek(skip_to)
     }
 
@@ -904,14 +904,16 @@ impl IndexInput for MemorySegmentIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
-        match self.layout {
-            Layout::Single => self.cur_position,
-            Layout::Multi { offset } => {
-                ((self.cur_segment_index as i64) << self.chunk_size_power) + self.cur_position
-                    - offset
+    fn file_pointer(&self) -> Result<i64> {
+        Ok({
+            match self.layout {
+                Layout::Single => self.cur_position,
+                Layout::Multi { offset } => {
+                    ((self.cur_segment_index as i64) << self.chunk_size_power) + self.cur_position
+                        - offset
+                }
             }
-        }
+        })
     }
 
     fn length(&self) -> i64 {

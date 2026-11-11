@@ -537,7 +537,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
                 &[0i64, 3, i64::MAX, -3],
                 &l,
             );
-            Assert::assert_equals(25, input.file_pointer());
+            Assert::assert_equals(25, input.file_pointer()?);
             input.close()
         })();
         result.and(dir.close())
@@ -563,7 +563,7 @@ pub trait BaseChunkedDirectoryTestCase: BaseDirectoryTestCase {
             for (e, a) in [0f32, 3.0, f32::MAX, -3.0].iter().zip(ff.iter()) {
                 Assert::assert_equals_float_msg(None, *e, *a, 0.0);
             }
-            Assert::assert_equals(13, input.file_pointer());
+            Assert::assert_equals(13, input.file_pointer()?);
             input.close()
         })();
         result.and(dir.close())

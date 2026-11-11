@@ -169,7 +169,7 @@ impl AbstractVectorSimilarityQueryImpl for FloatVectorSimilarityQuery {
             collector.as_mut(),
             accept_docs,
         )?;
-        Ok(collector.top_docs())
+        collector.top_docs()
     }
 }
 

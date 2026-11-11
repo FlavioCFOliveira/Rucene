@@ -486,12 +486,12 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
 
         for i in (1..self.number_of_skip_levels).rev() {
             let length = self.skip_data_reader.read_level_length(base.as_mut())?;
-            self.skip_pointer[i as usize] = base.file_pointer();
+            self.skip_pointer[i as usize] = base.file_pointer()?;
             self.skip_stream[i as usize] = Some(base.clone_input()?);
-            base.seek(base.file_pointer() + length)?;
+            base.seek(base.file_pointer()? + length)?;
         }
 
-        self.skip_pointer[0] = base.file_pointer();
+        self.skip_pointer[0] = base.file_pointer()?;
         self.skip_stream[0] = Some(base);
         Ok(())
     }
@@ -515,7 +515,7 @@ impl<R: SkipDataReader> MultiLevelSkipListReader<R> {
                         > self.skip_stream[level as usize - 1]
                             .as_ref()
                             .expect("INVARIANT: level stream is set")
-                            .file_pointer()
+                            .file_pointer()?
                 {
                     self.seek_child(level - 1)?;
                 }

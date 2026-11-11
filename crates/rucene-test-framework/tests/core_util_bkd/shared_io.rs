@@ -142,7 +142,7 @@ impl IndexInput for SharedIndexInput {
         Ok(())
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.inner.lock().unwrap().file_pointer()
     }
 

@@ -27,7 +27,7 @@ fn test_collect_and_provide_results() -> Result<()> {
     for i in 0..nodes.len() {
         results.collect(nodes[i], scores[i]);
     }
-    let top_docs = results.top_docs();
+    let top_docs = results.top_docs()?;
     let mut sorted_nodes = vec![0i32; top_docs.score_docs.len()];
     let mut sorted_scores = vec![0f32; top_docs.score_docs.len()];
     for i in 0..top_docs.score_docs.len() {

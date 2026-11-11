@@ -123,12 +123,38 @@ impl ReaderManager {
         ))
     }
 
-    // TODO(task: IndexWriter): implement the `ReaderManager(IndexWriter,
-    // apply_all_deletes, write_all_deletes)` constructor once IndexWriter is
-    // ported. It should call
-    // `DirectoryReader::open_if_changed_with_writer` (or the NRT `open`
-    // equivalent) for refresh, instead of the directory-based
-    // `DirectoryReaderRefreshSource`. Do NOT add a fake IndexWriter stub.
+    /// Creates a manager over a near-real-time reader of `writer`, applying
+    /// and writing all deletes.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ReaderManager(IndexWriter)`
+    /// (`ReaderManager.java:41-43`), which is `this(writer, true, false)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the reader raises.
+    pub fn from_writer(writer: &dyn crate::index::DirectoryReaderIndexWriter) -> Result<Self> {
+        let _ = writer;
+        todo!("PORT G-035")
+    }
+
+    /// Creates a manager over a near-real-time reader of `writer`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ReaderManager(IndexWriter,
+    /// boolean, boolean)` (`ReaderManager.java:60-64`):
+    /// `DirectoryReader.open(writer, applyAllDeletes, writeAllDeletes)`,
+    /// refreshed through `DirectoryReader.openIfChanged(reader, writer, ...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the reader raises.
+    pub fn from_writer_with(
+        writer: &dyn crate::index::DirectoryReaderIndexWriter,
+        apply_all_deletes: bool,
+        write_all_deletes: bool,
+    ) -> Result<Self> {
+        let _ = (writer, apply_all_deletes, write_all_deletes);
+        todo!("PORT G-035")
+    }
 }
 
 #[cfg(test)]
@@ -181,14 +207,14 @@ mod tests {
         max_doc: i32,
     ) -> crate::index::SegmentInfo {
         let mut info = test_segment_info_with_codec(name, max_doc, test_codec());
-        info.set_index_sort(
+        info.set_index_sort(Some(
             crate::search::Sort::new_fields(vec![crate::search::SortField::new(
                 Some("id".to_string()),
                 crate::search::SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
         info.set_files(HashSet::from([segment_file_name(
             name,
             "",

@@ -976,7 +976,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             self.data.write_long(min)?;
         } else {
             let bits_per_value = DirectWriter::unsigned_bits_required(max.wrapping_sub(min) / gcd);
-            encode_buffer.reset();
+            encode_buffer.reset()?;
             debug_assert!(encode_buffer.size() == 0);
             let mut writer = DirectWriter::new(encode_buffer, values.len() as i64, bits_per_value)?;
             for &v in values {
@@ -1645,7 +1645,7 @@ impl Lucene90DocValuesConsumer<'_> {
 fn try_zeroed(length: usize) -> Result<Vec<u8>> {
     let mut buffer: Vec<u8> = Vec::new();
     buffer.try_reserve_exact(length).map_err(|_| {
-        LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+        LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
             "cannot allocate {length} bytes"
         )))
     })?;
@@ -1654,7 +1654,9 @@ fn try_zeroed(length: usize) -> Result<Vec<u8>> {
 }
 
 fn corrupt<T>(message: String) -> Result<T> {
-    Err(LuceneError::from(LuceneErrorKind::CorruptIndex(message)))
+    Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+        message,
+    )))
 }
 
 /// The largest table `readNumeric` accepts, verbatim from
@@ -3814,7 +3816,7 @@ impl TermsDict {
 
     fn block_byte(&mut self) -> Result<u8> {
         let byte = *self.block.get(self.block_pos).ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::CorruptIndex(
+            LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "a terms block ended before its terms did".to_string(),
             ))
         })?;
@@ -3848,7 +3850,7 @@ impl TermsDict {
 
         // The final block of a dictionary whose last block holds one term has
         // nothing compressed after it (`TermsDict.decompressBlock`).
-        let offset = self.bytes.file_pointer();
+        let offset = self.bytes.file_pointer()?;
         if offset < self.data_length - 1 {
             let uncompressed_length = self.bytes.read_v_int()?;
             if uncompressed_length < 0 {
@@ -4815,7 +4817,7 @@ mod tests {
     use crate::codecs::stub::{BufferedUpdates, SegmentInfo};
     use crate::codecs::tests::DummyCodec;
     use crate::index::FieldInfos;
-    use crate::search::Sort;
+
     use crate::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Version;
@@ -5634,7 +5636,7 @@ mod tests {
             HashMap::new(),
             [0u8; ID_LENGTH],
             HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap()
     }
@@ -6038,7 +6040,7 @@ mod tests {
             let mut skipper = Lucene90DocValuesSkipper::new(entry, input);
             match skipper.advance(0) {
                 Err(LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(message),
+                    kind: LuceneErrorKind::CorruptIndex { message, .. },
                     ..
                 }) => assert!(
                     message.contains(&format!("level out of range [{}]", level as i8)),
@@ -6487,7 +6489,7 @@ mod close_family_tests {
             matches!(
                 error,
                 crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex(_),
+                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),

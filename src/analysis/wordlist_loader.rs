@@ -261,6 +261,122 @@ pub fn get_stem_dict(reader: &mut dyn CharReader, result: &mut CharArrayMap<Stri
     Ok(())
 }
 
+/// Reads lines from `reader` into a new [`CharArraySet`], trimming each line
+/// and skipping blank lines.
+///
+/// Equivalent to `org.apache.lucene.analysis.WordlistLoader.getWordSet(Reader)`
+/// (`WordlistLoader.java:74-76`).
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_word_set_reader(reader: &mut dyn CharReader) -> Result<CharArraySet> {
+    let _ = reader;
+    todo!("PORT G-101")
+}
+
+/// Reads lines from `reader` into `result`, trimming each line and skipping
+/// blank lines, and returns `result`.
+///
+/// Equivalent to `WordlistLoader.getWordSet(Reader, CharArraySet)`
+/// (`WordlistLoader.java:52-65`).
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_word_set_reader_into(
+    reader: &mut dyn CharReader,
+    result: &mut CharArraySet,
+) -> Result<()> {
+    let _ = (reader, result);
+    todo!("PORT G-101")
+}
+
+/// Reads UTF-8 lines from `stream` into a new [`CharArraySet`].
+///
+/// Equivalent to `WordlistLoader.getWordSet(InputStream)` and, with
+/// `charset`, `getWordSet(InputStream, Charset)` (`WordlistLoader.java:88-104`),
+/// which decode through `IOUtils.getDecodingReader` (malformed input is an
+/// error).
+///
+/// # Errors
+///
+/// Propagates I/O and decoding errors.
+pub fn get_word_set_stream(stream: &mut dyn std::io::Read, charset: &str) -> Result<CharArraySet> {
+    let _ = (stream, charset);
+    todo!("PORT G-101")
+}
+
+/// Reads lines from `reader` into `result` (or a new set), skipping lines that
+/// start with `comment`.
+///
+/// Equivalent to `WordlistLoader.getWordSet(Reader, String, CharArraySet)` and
+/// `getWordSet(Reader, String)` (`WordlistLoader.java:117-145`).
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_word_set_reader_with_comment(
+    reader: &mut dyn CharReader,
+    comment: &str,
+    result: Option<&mut CharArraySet>,
+) -> Result<CharArraySet> {
+    let _ = (reader, comment, result);
+    todo!("PORT G-101")
+}
+
+/// Reads lines from `stream` decoded with `charset`, skipping lines that start
+/// with `comment`.
+///
+/// Equivalent to `WordlistLoader.getWordSet(InputStream, String)` and
+/// `getWordSet(InputStream, Charset, String)` (`WordlistLoader.java:158-176`).
+///
+/// # Errors
+///
+/// Propagates I/O and decoding errors.
+pub fn get_word_set_stream_with_comment(
+    stream: &mut dyn std::io::Read,
+    charset: &str,
+    comment: &str,
+) -> Result<CharArraySet> {
+    let _ = (stream, charset, comment);
+    todo!("PORT G-101")
+}
+
+/// Reads a snowball-format stop word file from `reader` into `result` (or a
+/// new set): `|` starts a comment, and a line may hold several words.
+///
+/// Equivalent to `WordlistLoader.getSnowballWordSet(Reader, CharArraySet)` and
+/// `getSnowballWordSet(Reader)` (`WordlistLoader.java:193-225`).
+///
+/// # Errors
+///
+/// Propagates the reader's I/O errors.
+pub fn get_snowball_word_set_reader(
+    reader: &mut dyn CharReader,
+    result: Option<&mut CharArraySet>,
+) -> Result<CharArraySet> {
+    let _ = (reader, result);
+    todo!("PORT G-101")
+}
+
+/// Reads a snowball-format stop word file from `stream` decoded with
+/// `charset`.
+///
+/// Equivalent to `WordlistLoader.getSnowballWordSet(InputStream)` and
+/// `getSnowballWordSet(InputStream, Charset)` (`WordlistLoader.java:242-264`).
+///
+/// # Errors
+///
+/// Propagates I/O and decoding errors.
+pub fn get_snowball_word_set_stream(
+    stream: &mut dyn std::io::Read,
+    charset: &str,
+) -> Result<CharArraySet> {
+    let _ = (stream, charset);
+    todo!("PORT G-101")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

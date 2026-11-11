@@ -1626,10 +1626,11 @@ impl KnnVectorsReader for KnnFieldsReader {
         Ok(())
     }
 
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
-        self.reader_for(field_info)
-            .map(|r| r.get_off_heap_byte_size(field_info))
-            .unwrap_or_default()
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        match self.reader_for(field_info) {
+            Ok(reader) => reader.get_off_heap_byte_size(field_info),
+            Err(_) => Ok(HashMap::new()),
+        }
     }
 
     /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.close()`

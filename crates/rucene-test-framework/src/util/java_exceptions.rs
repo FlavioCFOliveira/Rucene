@@ -178,7 +178,9 @@ fn register_hierarchy() {
 pub fn java_class_name(e: &LuceneError) -> String {
     match e.kind() {
         LuceneErrorKind::Io(io) => java_nio_file::java_class_of(io).to_string(),
-        LuceneErrorKind::CorruptIndex(_) => "org.apache.lucene.index.CorruptIndexException".into(),
+        LuceneErrorKind::CorruptIndex { .. } => {
+            "org.apache.lucene.index.CorruptIndexException".into()
+        }
         LuceneErrorKind::IndexFormatTooOld { .. } => {
             "org.apache.lucene.index.IndexFormatTooOldException".into()
         }

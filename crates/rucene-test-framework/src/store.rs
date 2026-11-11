@@ -99,7 +99,7 @@ macro_rules! forward_mock_index_input {
                 let $this = self;
                 $close
             }
-            fn file_pointer(&self) -> i64 {
+            fn file_pointer(&self) -> Result<i64> {
                 self.inner.file_pointer()
             }
             fn length(&self) -> i64 {

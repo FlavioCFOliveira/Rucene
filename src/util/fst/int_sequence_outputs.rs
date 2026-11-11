@@ -107,7 +107,7 @@ impl Outputs for IntSequenceOutputs {
             Ok(self.no_output())
         } else {
             let len = usize::try_from(len).map_err(|_| {
-                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                     "invalid output length {len}"
                 )))
             })?;

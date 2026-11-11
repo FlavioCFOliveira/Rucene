@@ -895,7 +895,7 @@ fn a_corrupt_leaf_count_is_refused_on_the_whole_cell_path_too() {
             matches!(
                 error,
                 rucene::error::LuceneError {
-                    kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                    kind: rucene::error::LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),
@@ -938,7 +938,7 @@ fn a_compressed_dimension_with_a_full_common_prefix_is_refused() {
         matches!(
             error,
             rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                kind: rucene::error::LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ),

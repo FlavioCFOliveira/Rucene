@@ -3764,7 +3764,7 @@ mod pending_soft_deletes_tests {
         let mut bits = FixedBitSet::new(4);
         bits.set_range(0, 4);
         let error = PendingSoftDeletes::apply_soft_deletes(&mut bits, || {
-            Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+            Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "unreadable".to_string(),
             )))
         })
@@ -3773,7 +3773,7 @@ mod pending_soft_deletes_tests {
             matches!(
                 error,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),
@@ -3935,7 +3935,7 @@ mod tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test SegmentInfo should be valid");
         SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16])
@@ -4332,7 +4332,7 @@ mod tests {
                 HashMap::new(),
                 [0u8; crate::util::string_helper::ID_LENGTH],
                 HashMap::new(),
-                crate::search::Sort::default(),
+                None,
             )
             .unwrap();
             SegmentCommitInfo::new(si, 5, 0, 1, -1, -1, [0u8; 16]).unwrap()

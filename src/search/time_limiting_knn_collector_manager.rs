@@ -127,21 +127,23 @@ impl KnnCollector for TimeLimitingKnnCollector {
         self.delegate.min_competitive_similarity()
     }
 
-    fn top_docs(&mut self) -> TopDocs {
-        let docs = self.delegate.top_docs();
+    fn top_docs(&mut self) -> crate::error::Result<TopDocs> {
+        Ok({
+            let docs = self.delegate.top_docs()?;
 
-        // Mark the results as partial if the timeout is met.
-        let relation = if self.query_timeout.should_exit() {
-            TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
-        } else {
-            docs.total_hits.relation()
-        };
+            // Mark the results as partial if the timeout is met.
+            let relation = if self.query_timeout.should_exit() {
+                TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
+            } else {
+                docs.total_hits.relation()
+            };
 
-        TopDocs {
-            total_hits: TotalHits::new(docs.total_hits.value(), relation)
-                .expect("INVARIANT: a hit count read back from a TopDocs is never negative"),
-            score_docs: docs.score_docs,
-        }
+            TopDocs {
+                total_hits: TotalHits::new(docs.total_hits.value(), relation)
+                    .expect("INVARIANT: a hit count read back from a TopDocs is never negative"),
+                score_docs: docs.score_docs,
+            }
+        })
     }
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {

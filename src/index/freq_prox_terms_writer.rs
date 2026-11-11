@@ -347,7 +347,7 @@ impl ByteSliceReader {
         let mut shift = 7;
         while byte & 0x80 != 0 {
             if shift > 28 {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     "invalid vInt in buffered postings".to_string(),
                 )));
             }
@@ -446,10 +446,12 @@ impl<'a> PooledSliceReader<'a> {
     fn ensure(&self, len: usize) -> Result<()> {
         let remaining = self.reader.remaining();
         if (remaining as i64) < len as i64 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "read past the end of a buffered term stream: {len} bytes requested, \
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "read past the end of a buffered term stream: {len} bytes requested, \
                  {remaining} available"
-            ))));
+                ),
+            )));
         }
         Ok(())
     }
@@ -3350,7 +3352,7 @@ impl SortingPostingsEnum {
         self.start_offset = -1;
         self.end_offset = -1;
 
-        self.buffer.reset();
+        self.buffer.reset()?;
         let mut records: Vec<(i32, i64)> = Vec::new();
         let mut doc = in_.next_doc()?;
         while doc != NO_MORE_DOCS {
@@ -5105,7 +5107,7 @@ mod tests {
             matches!(
                 error,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),
@@ -5123,7 +5125,7 @@ mod tests {
             matches!(
                 error,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),

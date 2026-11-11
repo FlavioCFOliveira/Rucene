@@ -620,7 +620,7 @@ impl KnnCollector for AssertingKnnCollector {
         self.collector.min_competitive_similarity()
     }
 
-    fn top_docs(&mut self) -> TopDocs {
+    fn top_docs(&mut self) -> rucene::error::Result<TopDocs> {
         self.collector.top_docs()
     }
 

@@ -704,7 +704,7 @@ impl XYPointDistanceComparator {
 ///
 /// Equivalent to `org.apache.lucene.document.LatLonPointSortField`, which
 /// `LatLonDocValuesField.newDistanceSort` builds.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LatLonPointSortField {
     sort_field: SortField,
     latitude: f64,
@@ -888,6 +888,27 @@ impl LatLonPointSortField {
     pub fn set_missing_value(&mut self, missing_value: f64) -> Result<()> {
         self.sort_field
             .set_missing_value(Some(MissingValue::Double(missing_value)))
+    }
+}
+
+/// Equivalent to `org.apache.lucene.document.LatLonPointSortField.equals(Object)`
+/// (`LatLonPointSortField.java:73-82`), which compares the coordinates through
+/// `Double.doubleToLongBits`.
+impl PartialEq for LatLonPointSortField {
+    fn eq(&self, other: &Self) -> bool {
+        let _ = other;
+        todo!("PORT G-008")
+    }
+}
+
+impl LatLonPointSortField {
+    /// Returns the Java hash code of this sort field.
+    ///
+    /// Equivalent to `org.apache.lucene.document.LatLonPointSortField.hashCode()`
+    /// (`LatLonPointSortField.java:61-71`): `super.hashCode()` combined with the
+    /// `Double.doubleToLongBits` of latitude and longitude.
+    pub fn hash_code(&self) -> i32 {
+        todo!("PORT G-008")
     }
 }
 

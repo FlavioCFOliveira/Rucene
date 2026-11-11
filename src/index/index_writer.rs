@@ -2666,19 +2666,6 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Returns how many documents the index holds, including buffered ones and
-    /// excluding deletions not yet applied.
-    ///
-    /// Equivalent to `IndexWriter.numDocs()`.
-    pub fn num_docs(&self) -> Result<i32> {
-        let state = self.state()?;
-        let mut count = self.documents_writer.num_docs();
-        for info in state.segment_infos.iter() {
-            count += info.info.max_doc()? - info.get_del_count();
-        }
-        Ok(count)
-    }
-
     /// Returns whether the index has deletions, including buffered ones.
     ///
     /// Equivalent to `IndexWriter.hasDeletions()`. As in Lucene, buffered term
@@ -4244,7 +4231,7 @@ impl IndexWriter {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            self.config.index_sort().unwrap_or_default(),
+            self.config.index_sort(),
         )?;
         let details = HashMap::from([
             (
@@ -5185,7 +5172,7 @@ impl IndexWriter {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            self.config.index_sort().unwrap_or_default(),
+            self.config.index_sort(),
         )?;
 
         let mut readers: Vec<Arc<dyn CodecReader>> = Vec::with_capacity(merge_readers.len());
@@ -5639,10 +5626,8 @@ impl MergeContext for LockedMergeContext<'_> {
 
     /// `IndexWriter.numDeletedDocs(SegmentCommitInfo)`, read through the held
     /// guard.
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        self.writer
-            .num_deleted_docs_with(self.state, info)
-            .unwrap_or_else(|_| info.get_del_count())
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        self.writer.num_deleted_docs_with(self.state, info)
     }
 
     /// `IndexWriter.getMergingSegments()`, read through the held guard.
@@ -5660,14 +5645,8 @@ impl MergeContext for IndexWriter {
         self.num_deletes_to_merge_for(info)
     }
 
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        // Java's override declares no checked exception even though
-        // `ensureOpen`/`validate` can raise one; a merge policy only calls this
-        // through an already-open, already-validated writer, so falling back to
-        // the segment's own recorded delete count on the (unreachable in
-        // practice) error path is the closest infallible equivalent.
-        self.num_deleted_docs(info)
-            .unwrap_or_else(|_| info.get_del_count())
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        IndexWriter::num_deleted_docs(self, info)
     }
 
     fn get_merging_segments(&self) -> HashSet<String> {
@@ -6670,7 +6649,7 @@ fn is_java_io_exception(error: &LuceneError) -> bool {
             kind: LuceneErrorKind::Io(_),
             ..
         } | LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(_),
+            kind: LuceneErrorKind::CorruptIndex { .. },
             ..
         } | LuceneError {
             kind: LuceneErrorKind::IndexFormatNotSupported(_),
@@ -7129,16 +7108,12 @@ impl IndexWriter {
             return Ok(());
         };
         for info in segment_infos.iter() {
-            let segment_sort = info.info.index_sort();
-            // `SegmentInfo.getIndexSort()` is `null` for an unsorted segment;
-            // this port stores the relevance sort there instead.
-            let unsorted = segment_sort.fields().is_empty() || *segment_sort == Sort::default();
-            if unsorted || !Self::is_congruent_sort(&index_sort, segment_sort) {
-                let segment_sort = if unsorted {
-                    "null".to_string()
-                } else {
-                    segment_sort.to_string()
-                };
+            let segment_sort = info
+                .info
+                .index_sort()
+                .filter(|sort| !sort.fields().is_empty() && **sort != Sort::default());
+            if segment_sort.is_none_or(|sort| !Self::is_congruent_sort(&index_sort, sort)) {
+                let segment_sort = segment_sort.map_or_else(|| "null".to_string(), Sort::to_string);
                 return Err(LuceneError::illegal_argument(format!(
                     "cannot change previous indexSort={segment_sort} (from segment={info}) to new indexSort={index_sort}"
                 )));
@@ -8494,15 +8469,16 @@ impl IndexWriter {
                 for info in sis.iter() {
                     let segment_index_sort = info.info.index_sort();
                     if let Some(index_sort) = index_sort.as_ref() {
-                        if segment_index_sort.fields().is_empty()
-                            || !Self::is_congruent_sort(index_sort, segment_index_sort)
-                        {
+                        if segment_index_sort.is_none_or(|segment_index_sort| {
+                            segment_index_sort.fields().is_empty()
+                                || !Self::is_congruent_sort(index_sort, segment_index_sort)
+                        }) {
                             // `"cannot change index sort from " + segmentIndexSort
                             // + " to " + indexSort` (`IndexWriter.java:3135-3139`).
                             // A segment without an index sort carries the
                             // relevance sort here (`SegmentInfo::to_string_verbose`),
                             // which is Java's `null`.
-                            let segment_index_sort = Some(segment_index_sort)
+                            let segment_index_sort = segment_index_sort
                                 .filter(|sort| !sort.fields().is_empty() && **sort != Sort::new());
                             return Err(LuceneError::illegal_argument(format!(
                                 "cannot change index sort from {} to {index_sort}",
@@ -8586,7 +8562,7 @@ impl IndexWriter {
             info.info.get_diagnostics().to_std(),
             info.info.id(),
             info.info.get_attributes(),
-            info.info.index_sort().clone(),
+            info.info.index_sort().cloned(),
         )?;
         new_info.set_files(info.info.files_ordered()?)?;
 
@@ -12338,7 +12314,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap();
         info.set_files(["_9.cfs".to_string()]).unwrap();
@@ -14254,7 +14230,7 @@ mod tests {
                 HashMap::new(),
                 StringHelper::random_id(),
                 HashMap::new(),
-                Sort::new(),
+                None,
             )
             .unwrap();
             merged.set_files(Vec::<String>::new()).unwrap();
@@ -14735,7 +14711,7 @@ mod tests {
                 HashMap::new(),
                 StringHelper::random_id(),
                 HashMap::new(),
-                Sort::new(),
+                None,
             )
             .unwrap(),
             0,

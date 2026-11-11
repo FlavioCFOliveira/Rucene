@@ -752,9 +752,9 @@ impl Lucene90PointsReader {
                     break;
                 }
                 if field_number < 0 {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "illegal field number in points meta file: {field_number}"
-                    ))));
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!("illegal field number in points meta file: {field_number}"),
+                    )));
                 }
                 let reader = BKDReader::new(meta_in.as_mut(), index_in.as_mut(), data_in.as_mut())?;
                 readers.insert(field_number, BkdPointValues::new(reader));
@@ -1090,7 +1090,7 @@ mod tests {
                 self.bytes_per_dim,
                 vec![self.points.clone()],
             )?;
-            Ok(values.point_tree()?)
+            values.point_tree()
         }
 
         fn size(&self) -> Result<i64> {
@@ -1765,7 +1765,7 @@ mod tests {
                 matches!(
                     err,
                     LuceneError {
-                        kind: LuceneErrorKind::CorruptIndex(_),
+                        kind: LuceneErrorKind::CorruptIndex { .. },
                         ..
                     }
                 ),

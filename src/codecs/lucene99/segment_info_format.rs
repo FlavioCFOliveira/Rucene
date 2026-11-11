@@ -126,17 +126,17 @@ fn parse_segment_info(
             input.read_int()? as u8,
         )?),
         _ => {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "illegal boolean value {has_min_version}"
-            ))))
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("illegal boolean value {has_min_version}"),
+            )))
         }
     };
 
     let doc_count = input.read_int()?;
     if doc_count < 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid docCount: {doc_count}"
-        ))));
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid docCount: {doc_count}"),
+        )));
     }
 
     let is_compound_file = input.read_byte()? == SegmentInfo::YES as u8;
@@ -162,7 +162,7 @@ fn parse_segment_info(
         diagnostics.to_std(),
         id,
         attributes.to_std(),
-        index_sort.unwrap_or_default(),
+        index_sort,
     )?;
     info.set_files(files)?;
     Ok(info)
@@ -240,16 +240,20 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
 /// (`Lucene99SegmentInfoFormat.java:223-234`), because `SegmentInfo.getIndexSort()`
 /// returns `null` for an unsorted segment.
 ///
-/// **Divergence from Lucene 10.5.0.** This port's [`SegmentInfo`] carries a
-/// [`Sort`](crate::search::Sort) rather than an `Option`, and encodes "unsorted"
-/// as the relevance sort — the same convention
-/// `IndexingChain::maybe_sort_segment` reads. The relevance sort therefore has
-/// to be mapped back to a zero field count here, exactly as `read_segment_sort`
-/// maps a zero field count to it. Writing it as one `SCORE` field instead would
-/// both fail (a `SCORE` sort field has no `IndexSorter`, so Java refuses to
-/// serialize it too) and produce a `.si` Lucene could not read. The bytes on
-/// disk are identical to Java's for both the sorted and the unsorted case.
-fn write_segment_sort(output: &mut dyn IndexOutput, sort: &crate::search::Sort) -> Result<()> {
+/// [`SegmentInfo`] carries `None` for an unsorted segment. Until the G-027
+/// code pass removes them, some callers still pass the relevance sort for an
+/// unsorted segment, so it is also written as a zero field count (writing it
+/// as one `SCORE` field would fail: a `SCORE` sort field has no `IndexSorter`).
+/// The bytes on disk are identical to Java's for both the sorted and the
+/// unsorted case.
+fn write_segment_sort(
+    output: &mut dyn IndexOutput,
+    sort: Option<&crate::search::Sort>,
+) -> Result<()> {
+    let Some(sort) = sort else {
+        output.write_v_int(0)?;
+        return Ok(());
+    };
     if *sort == crate::search::Sort::new() {
         output.write_v_int(0)?;
         return Ok(());
@@ -284,7 +288,7 @@ mod tests {
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap();
         let error = Lucene99SegmentInfoFormat::new()
@@ -310,14 +314,14 @@ mod tests {
         info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]))
             .unwrap();
         info.set_use_compound_file(true);
-        info.set_index_sort(
+        info.set_index_sort(Some(
             Sort::new_fields(vec![SortField::new(
                 Some("id".to_string()),
                 SortFieldType::String,
             )
             .unwrap()])
             .unwrap(),
-        );
+        ));
 
         format
             .write(dir.as_ref(), &info, &*crate::store::DEFAULT_IO_CONTEXT)
@@ -346,6 +350,6 @@ mod tests {
         assert_eq!(read_files, info_files);
 
         assert_eq!(read.get_diagnostics(), info.get_diagnostics());
-        assert_eq!(*read.index_sort(), *info.index_sort());
+        assert_eq!(read.index_sort(), info.index_sort());
     }
 }

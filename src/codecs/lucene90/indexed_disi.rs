@@ -435,17 +435,17 @@ impl IndexedDISI {
         self.next_block_index = self.index.wrapping_add(num_values);
         if num_values <= MAX_ARRAY_LENGTH as i32 {
             self.method = Method::Sparse;
-            self.block_end = self.slice.file_pointer() + (num_values as i64 * 2);
+            self.block_end = self.slice.file_pointer()? + (num_values as i64 * 2);
             self.next_exist_doc_in_block = -1;
         } else if num_values == BLOCK_SIZE as i32 {
             self.method = Method::All;
-            self.block_end = self.slice.file_pointer();
+            self.block_end = self.slice.file_pointer()?;
             let gap = self.block.wrapping_sub(self.index).wrapping_sub(1);
             self.doc = -1; // will be set by advance
             self.dense_origo_index = gap; // repurpose for ALL gap
         } else {
             self.method = Method::Dense;
-            self.dense_bitmap_offset = self.slice.file_pointer()
+            self.dense_bitmap_offset = self.slice.file_pointer()?
                 + if self.dense_rank_power == -1 {
                     0
                 } else {
@@ -574,7 +574,7 @@ impl IndexedDISI {
                 self.next_exist_doc_in_block = doc_in_block;
                 if doc_in_block != target_in_block {
                     self.index = self.index.wrapping_sub(1);
-                    self.slice.seek(self.slice.file_pointer() - 2)?;
+                    self.slice.seek(self.slice.file_pointer()? - 2)?;
                     break;
                 }
                 self.exists = true;
@@ -660,7 +660,7 @@ impl IndexedDISI {
         let source_from = self.doc & 0xFFFF;
         let source_to = cmp::min(dest_to.wrapping_sub(self.block), BLOCK_SIZE as i32);
 
-        let fp = self.slice.file_pointer();
+        let fp = self.slice.file_pointer()?;
         // seek back a long to include current word (disi.word).
         self.slice.seek(fp - 8)?;
         let word_index = self.word_index as usize;

@@ -185,7 +185,7 @@ fn test_ints(dir: &TestDirectory, ints: &[i32]) -> Result<()> {
         let mut read = vec![0i32; ints.len()];
         DocIdsWriter::read_doc_ids(input.as_mut(), ints.len(), &mut read, version)?;
         assert_array_equals(ints, &read);
-        assert_equals(&len, &input.file_pointer());
+        assert_equals(&len, &input.file_pointer()?);
         input.close()?;
     }
     {
@@ -206,7 +206,7 @@ fn test_ints(dir: &TestDirectory, ints: &[i32]) -> Result<()> {
             )?;
         }
         assert_array_equals(ints, &read);
-        assert_equals(&len, &input.file_pointer());
+        assert_equals(&len, &input.file_pointer()?);
         input.close()?;
     }
     dir.delete_file("tmp")

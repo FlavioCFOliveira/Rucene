@@ -502,9 +502,9 @@ impl Lucene90NormsProducer {
                 &state.segment_suffix,
             )?;
             if version != version2 {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "Format versions mismatch: meta={version}, data={version2}"
-                ))));
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    format!("Format versions mismatch: meta={version}, data={version2}"),
+                )));
             }
             // Cheap structural check of the data footer; the actual checksum is
             // verified by `check_integrity` on demand.
@@ -592,10 +592,12 @@ impl Lucene90NormsProducer {
         // that caused it.
         let length = entry.num_docs_with_field as i64 * entry.bytes_per_norm as i64;
         if length < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "invalid norms slice: numDocsWithField={}, bytesPerNorm={}",
-                entry.num_docs_with_field, entry.bytes_per_norm
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "invalid norms slice: numDocsWithField={}, bytesPerNorm={}",
+                    entry.num_docs_with_field, entry.bytes_per_norm
+                ),
+            )));
         }
         self.data
             .read()
@@ -722,15 +724,14 @@ fn read_fields(
             break;
         }
         let info = infos.field_info_by_number(field_number).ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+            LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                 "Invalid field number: {field_number}"
             )))
         })?;
         if !info.has_norms() {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Invalid field: {} (no norms)",
-                info.name
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("Invalid field: {} (no norms)", info.name),
+            )));
         }
         let mut entry = NormsEntry {
             docs_with_field_offset: meta.read_long()?,
@@ -744,10 +745,12 @@ fn read_fields(
         match entry.bytes_per_norm {
             0 | 1 | 2 | 4 | 8 => {}
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "Invalid bytesPerNorm: {}, field: {}",
-                    entry.bytes_per_norm, info.name
-                ))))
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    format!(
+                        "Invalid bytesPerNorm: {}, field: {}",
+                        entry.bytes_per_norm, info.name
+                    ),
+                )))
             }
         }
         entry.norms_offset = meta.read_long()?;
@@ -871,7 +874,7 @@ impl IndexInput for SharedRandomAccessSlice {
         lock_random_access_input(&self.input).close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         lock_random_access_input(&self.input).file_pointer()
     }
 
@@ -1010,8 +1013,8 @@ impl IndexInput for MergingDisiInput {
         unused_by_indexed_disi()
     }
 
-    fn file_pointer(&self) -> i64 {
-        self.offset
+    fn file_pointer(&self) -> Result<i64> {
+        Ok(self.offset)
     }
 
     fn length(&self) -> i64 {
@@ -1066,9 +1069,9 @@ fn read_norm_at(slice: &mut dyn RandomAccessInput, index: i32, bytes_per_norm: i
         4 => Ok(slice.read_int_at(index << 2)? as i64),
         8 => slice.read_long_at(index << 3),
         // `read_fields` rejects every other width before an entry is stored.
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid bytes per norm: {bytes_per_norm}"
-        )))),
+        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid bytes per norm: {bytes_per_norm}"),
+        ))),
     }
 }
 
@@ -1424,7 +1427,7 @@ mod tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap()
     }
@@ -1854,7 +1857,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ));
@@ -1887,7 +1890,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ));

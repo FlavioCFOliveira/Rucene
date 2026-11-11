@@ -297,9 +297,9 @@ fn test_write_very_long_suffix() -> Result<()> {
 
     let mut input = temp_input(&out)?;
     check_index_header(&mut input, "foobar", 5, 5, &id, &just_long_enough)?;
-    assert_equals(&input.file_pointer(), &input.length());
+    assert_equals(&input.file_pointer()?, &input.length());
     assert_equals(
-        &input.file_pointer(),
+        &input.file_pointer()?,
         &(index_header_length("foobar", &just_long_enough) as i64),
     );
     input.close()

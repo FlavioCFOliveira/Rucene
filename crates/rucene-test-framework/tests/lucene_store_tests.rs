@@ -407,7 +407,7 @@ fn test_sequential_reads() -> Result<()> {
             let mut input = dir.open_input("test", &*with_hint(DataAccessHint::Sequential))?;
             input.read_byte()?;
             let count = dir.count();
-            while input.file_pointer() < input.length() {
+            while input.file_pointer()? < input.length() {
                 input.read_byte()?;
             }
             // Sequential reads are free with the normal advice
@@ -418,7 +418,7 @@ fn test_sequential_reads() -> Result<()> {
             let mut input = dir.open_input("test", &*with_hint(DataAccessHint::Random))?;
             input.read_byte()?;
             let count = dir.count();
-            while input.file_pointer() < input.length() {
+            while input.file_pointer()? < input.length() {
                 input.read_byte()?;
             }
             // But not with the random advice

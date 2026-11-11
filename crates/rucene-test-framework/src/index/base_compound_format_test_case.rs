@@ -55,7 +55,7 @@ use rucene::document::{Document, Store, StoredField};
 use rucene::error::{LuceneError, Result};
 use rucene::index::segment_info::SegmentInfo;
 use rucene::index::segment_infos::SegmentInfos;
-use rucene::search::{Sort, NO_MORE_DOCS};
+use rucene::search::NO_MORE_DOCS;
 use rucene::store::{
     flush_io_context, BufferedChecksumIndexInput, Directory, FlushInfo, IOContext, IndexInput,
     IndexOutput, Lock, NRTCachingDirectory, DEFAULT_IO_CONTEXT,
@@ -192,7 +192,7 @@ pub fn new_segment_info(dir: &Arc<dyn Directory>, name: &str) -> Result<SegmentI
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )
 }
 
@@ -259,14 +259,14 @@ pub fn assert_same_streams(
     );
     Assert::assert_equals_msg(
         Some(&format!("{msg} position")),
-        expected.file_pointer(),
-        test.file_pointer(),
+        expected.file_pointer()?,
+        test.file_pointer()?,
     );
 
     let mut expected_buffer = vec![0u8; 512];
     let mut test_buffer = vec![0u8; expected_buffer.len()];
 
-    let mut remainder = expected.length() - expected.file_pointer();
+    let mut remainder = expected.length() - expected.file_pointer()?;
     while remainder > 0 {
         let read_len = remainder.min(expected_buffer.len() as i64) as usize;
         expected.read_bytes(Some(&mut expected_buffer), 0, read_len)?;
@@ -426,8 +426,8 @@ fn assert_independent_positions(
     // Seek the first pair
     e1.seek(100)?;
     a1.seek(100)?;
-    Assert::assert_equals(100, e1.file_pointer());
-    Assert::assert_equals(100, a1.file_pointer());
+    Assert::assert_equals(100, e1.file_pointer()?);
+    Assert::assert_equals(100, a1.file_pointer()?);
     let mut be1 = e1.read_byte()?;
     let mut ba1 = a1.read_byte()?;
     Assert::assert_equals(byte(be1), byte(ba1));
@@ -435,15 +435,15 @@ fn assert_independent_positions(
     // Now seek the second pair
     e2.seek(1027)?;
     a2.seek(1027)?;
-    Assert::assert_equals(1027, e2.file_pointer());
-    Assert::assert_equals(1027, a2.file_pointer());
+    Assert::assert_equals(1027, e2.file_pointer()?);
+    Assert::assert_equals(1027, a2.file_pointer()?);
     let mut be2 = e2.read_byte()?;
     let mut ba2 = a2.read_byte()?;
     Assert::assert_equals(byte(be2), byte(ba2));
 
     // Now make sure the first one didn't move
-    Assert::assert_equals(101, e1.file_pointer());
-    Assert::assert_equals(101, a1.file_pointer());
+    Assert::assert_equals(101, e1.file_pointer()?);
+    Assert::assert_equals(101, a1.file_pointer()?);
     be1 = e1.read_byte()?;
     ba1 = a1.read_byte()?;
     Assert::assert_equals(byte(be1), byte(ba1));
@@ -451,15 +451,15 @@ fn assert_independent_positions(
     // Now more the first one again, past the buffer length
     e1.seek(1910)?;
     a1.seek(1910)?;
-    Assert::assert_equals(1910, e1.file_pointer());
-    Assert::assert_equals(1910, a1.file_pointer());
+    Assert::assert_equals(1910, e1.file_pointer()?);
+    Assert::assert_equals(1910, a1.file_pointer()?);
     be1 = e1.read_byte()?;
     ba1 = a1.read_byte()?;
     Assert::assert_equals(byte(be1), byte(ba1));
 
     // Now make sure the second set didn't move
-    Assert::assert_equals(1028, e2.file_pointer());
-    Assert::assert_equals(1028, a2.file_pointer());
+    Assert::assert_equals(1028, e2.file_pointer()?);
+    Assert::assert_equals(1028, a2.file_pointer()?);
     be2 = e2.read_byte()?;
     ba2 = a2.read_byte()?;
     Assert::assert_equals(byte(be2), byte(ba2));
@@ -467,16 +467,16 @@ fn assert_independent_positions(
     // Move the second set back, again cross the buffer size
     e2.seek(17)?;
     a2.seek(17)?;
-    Assert::assert_equals(17, e2.file_pointer());
-    Assert::assert_equals(17, a2.file_pointer());
+    Assert::assert_equals(17, e2.file_pointer()?);
+    Assert::assert_equals(17, a2.file_pointer()?);
     be2 = e2.read_byte()?;
     ba2 = a2.read_byte()?;
     Assert::assert_equals(byte(be2), byte(ba2));
 
     // Finally, make sure the first set didn't move
     // Now make sure the first one didn't move
-    Assert::assert_equals(1911, e1.file_pointer());
-    Assert::assert_equals(1911, a1.file_pointer());
+    Assert::assert_equals(1911, e1.file_pointer()?);
+    Assert::assert_equals(1911, a1.file_pointer()?);
     be1 = e1.read_byte()?;
     ba1 = a1.read_byte()?;
     Assert::assert_equals(byte(be1), byte(ba1));

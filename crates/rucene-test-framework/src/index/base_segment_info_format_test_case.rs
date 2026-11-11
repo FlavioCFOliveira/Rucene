@@ -196,7 +196,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
             diagnostics,
             id,
             attributes,
-            index_sort,
+            Some(index_sort),
         )
         .unwrap_or_else(|e| rethrow(e))
     }
@@ -430,7 +430,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                         HashMap::new(),
                         id,
                         HashMap::new(),
-                        Sort::default(),
+                        None,
                     )?;
                     set_no_files(&info);
                     codec.segment_info_format().write(
@@ -627,7 +627,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                     &id,
                     &*DEFAULT_IO_CONTEXT,
                 )?;
-                assert_equals_debug(&sort, info2.index_sort());
+                assert_equals_debug(&Some(&sort), &info2.index_sort());
             }
             dir.close()?;
         }
@@ -819,7 +819,7 @@ pub trait BaseSegmentInfoFormatTestCase: BaseIndexFileFormatTestCase {
                     diagnostics,
                     id,
                     attributes,
-                    Sort::default(),
+                    None,
                 )?;
                 info.set_files(files.iter().cloned())?;
                 codec

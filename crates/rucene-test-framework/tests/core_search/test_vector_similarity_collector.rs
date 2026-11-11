@@ -55,7 +55,7 @@ fn test_result_collection() -> Result<()> {
         collector.collect(nodes[i], scores[i]);
     }
 
-    let score_docs = collector.top_docs().score_docs;
+    let score_docs = collector.top_docs()?.score_docs;
     let mut result_nodes = vec![0i32; score_docs.len()];
     let mut result_scores = vec![0f32; score_docs.len()];
     for i in 0..score_docs.len() {

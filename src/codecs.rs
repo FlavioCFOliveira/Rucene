@@ -925,7 +925,7 @@ pub(crate) mod tests {
                 HashMap::new(),
                 id,
                 HashMap::new(),
-                crate::search::Sort::default(),
+                None,
             )
         }
 
@@ -1311,7 +1311,7 @@ pub(crate) mod tests {
             self.log.record_close(&self.name)
         }
 
-        fn file_pointer(&self) -> i64 {
+        fn file_pointer(&self) -> Result<i64> {
             self.inner.file_pointer()
         }
 
@@ -1572,7 +1572,7 @@ pub(crate) mod tests {
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test segment info should be valid")
     }

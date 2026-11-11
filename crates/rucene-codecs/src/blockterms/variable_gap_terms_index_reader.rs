@@ -118,11 +118,11 @@ impl VariableGapTermsIndexReader {
         while field != -1 {
             let index_start = meta_in.read_v_long()?;
             let field_info = field_info_by_number(state, field)?;
-            if index_in.file_pointer() != index_start {
+            if index_in.file_pointer()? != index_start {
                 return Err(LuceneError::corrupt_index(
                     format!(
                         "Gap in FST, expected position {}, got {index_start}",
-                        index_in.file_pointer()
+                        index_in.file_pointer()?
                     ),
                     meta_in.resource_description(),
                 ));

@@ -825,3 +825,36 @@ mod tests {
         assert_eq!(to_hex_string(-1), "ffffffff");
     }
 }
+
+/// A `java.text.DecimalFormat` under `Locale.ROOT` symbols: the subset of its
+/// pattern syntax and rounding (`RoundingMode.HALF_EVEN`) that Lucene's callers
+/// pass, implemented from the JDK specification.
+///
+/// Equivalent to `java.text.DecimalFormat`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecimalFormat {
+    /// The pattern, as `DecimalFormat.toPattern()` returns it.
+    pattern: String,
+}
+
+impl DecimalFormat {
+    /// Creates a format from `pattern` with `DecimalFormatSymbols.getInstance(Locale.ROOT)`.
+    ///
+    /// Equivalent to `new DecimalFormat(String, DecimalFormatSymbols)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgument` for a malformed pattern, as `applyPattern` throws.
+    pub fn new(pattern: &str) -> crate::error::Result<Self> {
+        let _ = pattern;
+        todo!("PORT G-108")
+    }
+
+    /// Formats `value`.
+    ///
+    /// Equivalent to `NumberFormat.format(double)`.
+    pub fn format(&self, value: f64) -> String {
+        let _ = value;
+        todo!("PORT G-108")
+    }
+}

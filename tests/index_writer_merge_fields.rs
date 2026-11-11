@@ -967,7 +967,7 @@ fn a_corrupt_bit_set_postings_block_is_an_error_not_a_panic() {
         matches!(
             error,
             rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                kind: rucene::error::LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         )
@@ -1029,7 +1029,7 @@ fn a_corrupt_bit_set_postings_block_is_an_error_not_a_panic() {
         matches!(
             error,
             rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                kind: rucene::error::LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ),

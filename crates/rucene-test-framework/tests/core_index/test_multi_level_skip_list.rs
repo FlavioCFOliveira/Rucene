@@ -274,7 +274,7 @@ impl DataInput for CountingStream {
 
     /// `IndexInput.skipBytes`: `seek(getFilePointer() + numBytes)`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        let pos = self.r#in.file_pointer() + num_bytes;
+        let pos = self.r#in.file_pointer()? + num_bytes;
         self.r#in.seek(pos)
     }
 }
@@ -284,7 +284,7 @@ impl IndexInput for CountingStream {
         self.r#in.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.r#in.file_pointer()
     }
 

@@ -2557,7 +2557,7 @@ mod tests {
             )))
         }
 
-        fn file_pointer(&self) -> i64 {
+        fn file_pointer(&self) -> Result<i64> {
             self.inner.file_pointer()
         }
 

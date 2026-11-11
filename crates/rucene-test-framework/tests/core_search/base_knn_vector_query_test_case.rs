@@ -1375,7 +1375,7 @@ fn test_time_limiting_knn_collector_manager<C: KnnVectorCase>() -> Result<()> {
             Assert::assert_false(no_timeout_collector.early_terminated());
 
             // Check that results are complete
-            let no_timeout_top_docs = no_timeout_collector.top_docs();
+            let no_timeout_top_docs = no_timeout_collector.top_docs()?;
             assert_equals(
                 &TotalHitsRelation::EQUAL_TO,
                 &no_timeout_top_docs.total_hits.relation(),
@@ -1400,7 +1400,7 @@ fn test_time_limiting_knn_collector_manager<C: KnnVectorCase>() -> Result<()> {
             Assert::assert_true(timeout_collector.early_terminated());
 
             // Check that partial results are returned
-            let timeout_top_docs = timeout_collector.top_docs();
+            let timeout_top_docs = timeout_collector.top_docs()?;
             assert_equals(
                 &TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO,
                 &timeout_top_docs.total_hits.relation(),

@@ -886,6 +886,25 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
     pub fn comparator_mut(&mut self) -> &mut C {
         &mut self.comparator
     }
+
+    /// Creates a queue pre-populated with `max_size` sentinel objects, so that
+    /// `size() == max_size` after construction.
+    ///
+    /// Equivalent to `PriorityQueue(int maxSize, Supplier<T> sentinelObjectSupplier)`
+    /// (`PriorityQueue.java:79-112`); a supplier returning `None` for its first
+    /// call (Java's `null`) leaves the queue empty.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_sentinels(
+        max_size: usize,
+        comparator: C,
+        sentinel_object_supplier: impl FnMut() -> Option<T>,
+    ) -> Result<Self, LuceneError> {
+        let _ = (max_size, comparator, sentinel_object_supplier);
+        todo!("PORT G-107")
+    }
 }
 
 impl<T, C: PriorityQueueComparator<T>> IntoIterator for PriorityQueue<T, C> {

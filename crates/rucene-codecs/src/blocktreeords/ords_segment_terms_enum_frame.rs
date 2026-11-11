@@ -268,7 +268,7 @@ impl OrdsSegmentTermsEnumFrame {
 
         // Sub-blocks of a single floor block are always
         // written one after another -- tail recurse:
-        self.fp_end = input.file_pointer();
+        self.fp_end = input.file_pointer()?;
         Ok(())
     }
 

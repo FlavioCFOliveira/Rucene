@@ -34,7 +34,6 @@ use rucene::index::merge_scheduler::{
 use rucene::index::segment_infos::SegmentInfos;
 use rucene::index::terms::Term;
 use rucene::index::{SegmentCommitInfo, SegmentInfo};
-use rucene::search::Sort;
 use rucene::util::concurrent::SameThreadExecutorService;
 use rucene::util::string_helper::StringHelper;
 use rucene::util::{InfoStream, NoOutputInfoStream, Version};
@@ -602,7 +601,7 @@ fn test_intra_merge_thread_pool_is_limited_by_max_threads() -> Result<()> {
                 std::collections::HashMap::new(),
                 StringHelper::random_id(),
                 std::collections::HashMap::new(),
-                Sort::default(),
+                None,
             )?,
             0,
             0,

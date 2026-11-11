@@ -2136,7 +2136,7 @@ mod tests {
         struct FailingVisitor;
         impl IntersectVisitor for FailingVisitor {
             fn visit(&mut self, _doc_id: i32) -> Result<()> {
-                Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     "boom".to_string(),
                 )))
             }

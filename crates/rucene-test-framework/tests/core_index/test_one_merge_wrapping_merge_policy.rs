@@ -19,7 +19,6 @@ use rucene::index::merge_policy::{
 };
 use rucene::index::segment_info::{SegmentCommitInfo, SegmentInfo};
 use rucene::index::segment_infos::SegmentInfos;
-use rucene::search::sort::Sort;
 use rucene::store::Directory;
 use rucene::util::string_helper::ID_LENGTH;
 use rucene::util::{InfoStream, StringHelper, Version};
@@ -112,7 +111,7 @@ impl MergeContext for NoContext {
     fn num_deletes_to_merge(&self, _info: &SegmentCommitInfo) -> Result<i32> {
         unreachable!("PredeterminedMergePolicy reads no argument")
     }
-    fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> i32 {
+    fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> rucene::error::Result<i32> {
         unreachable!("PredeterminedMergePolicy reads no argument")
     }
     fn get_merging_segments(&self) -> HashSet<String> {
@@ -248,7 +247,7 @@ fn create_random_merge_specification(
                 HashMap::new(), // diagnostics
                 id,             // id
                 HashMap::new(), // attributes
-                Sort::new(),    // indexSort: `null`
+                None,           // indexSort: `null`
             )?;
             let segments = vec![SegmentCommitInfo::new(
                 si,

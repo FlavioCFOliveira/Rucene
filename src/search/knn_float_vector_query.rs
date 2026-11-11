@@ -181,7 +181,7 @@ impl AbstractKnnVectorQueryImpl for KnnFloatVectorQuery {
             knn_collector.as_mut(),
             accept_docs,
         )?;
-        Ok(knn_collector.top_docs())
+        knn_collector.top_docs()
     }
 
     fn create_vector_scorer(

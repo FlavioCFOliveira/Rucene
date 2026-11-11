@@ -179,7 +179,7 @@ fn write_compound_file(
 
             // copy all bytes except the footer
             let num_bytes_to_copy =
-                input.length() - codec_util::footer_length() as i64 - input.file_pointer();
+                input.length() - codec_util::footer_length() as i64 - input.file_pointer()?;
             data.copy_bytes(input.as_mut(), num_bytes_to_copy)?;
 
             // verify footer (checksum) matches for the incoming file we are copying
@@ -287,11 +287,13 @@ impl Lucene90CompoundReader {
             // We also validate length, because e.g. if you strip 16 bytes off the .cfs we otherwise
             // would not detect it:
             if handle.length() != expected_length {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "length should be {expected_length} bytes, but is {} instead (resource={})",
-                    handle.length(),
-                    handle.resource_description()
-                ))));
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    format!(
+                        "length should be {expected_length} bytes, but is {} instead (resource={})",
+                        handle.length(),
+                        handle.resource_description()
+                    ),
+                )));
             }
             Ok(())
         })();
@@ -355,10 +357,12 @@ fn read_mapping(entries_stream: &mut dyn IndexInput) -> Result<CompoundEntries> 
         let id = entries_stream.read_string()?;
         if mapping.contains_key(&id) {
             // `new CorruptIndexException("Duplicate cfs entry id=" + id + " in CFS ", entriesStream)`
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Duplicate cfs entry id={id} in CFS  (resource={})",
-                entries_stream.resource_description()
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "Duplicate cfs entry id={id} in CFS  (resource={})",
+                    entries_stream.resource_description()
+                ),
+            )));
         }
         let offset = entries_stream.read_long()?;
         let length = entries_stream.read_long()?;
@@ -605,7 +609,7 @@ mod tests {
         overwrite(&dir, "_0.cfs", &cfs);
         match Lucene90CompoundReader::new(&dir, &info) {
             Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(message),
+                kind: LuceneErrorKind::CorruptIndex { message, .. },
                 ..
             }) => {
                 assert!(message.starts_with("length should be "), "{message}")
@@ -657,7 +661,7 @@ mod tests {
         out.close().unwrap();
         match Lucene90CompoundReader::new(&dir, &info) {
             Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(message),
+                kind: LuceneErrorKind::CorruptIndex { message, .. },
                 ..
             }) => {
                 // `"Duplicate cfs entry id=" + id + " in CFS "`, then

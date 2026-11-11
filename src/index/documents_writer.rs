@@ -3717,7 +3717,7 @@ impl DocumentsWriterPerThread {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            index_writer_config.index_sort().unwrap_or_default(),
+            index_writer_config.index_sort(),
         )?;
         let delete_slice = delete_queue.new_slice();
         let has_parent_field = index_writer_config.parent_field().is_some();
@@ -7226,10 +7226,10 @@ mod tests {
             _field_infos: &mut FieldInfosBuilder,
         ) -> Result<()> {
             if self.corrupt_on_doc == Some(doc_id) {
-                self.aborting_error = Some(LuceneError::from(LuceneErrorKind::CorruptIndex(
-                    "scripted".to_string(),
-                )));
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                self.aborting_error = Some(LuceneError::from(
+                    LuceneErrorKind::corrupt_index_message("scripted".to_string()),
+                ));
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     "scripted".to_string(),
                 )));
             }

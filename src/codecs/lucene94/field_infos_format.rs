@@ -167,9 +167,9 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
     let name = input.read_string()?;
     let field_number = input.read_v_int()?;
     if field_number < 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid field number for field: {name}, fieldNumber={field_number}"
-        ))));
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid field number for field: {name}, fieldNumber={field_number}"),
+        )));
     }
 
     let bits = input.read_byte()?;
@@ -184,19 +184,19 @@ fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo>
     };
 
     if (bits & 0xC0) != 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "unused bits are set \"{bits:08b}\""
-        ))));
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("unused bits are set \"{bits:08b}\""),
+        )));
     }
     if format < FORMAT_PARENT_FIELD && (bits & 0xF0) != 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "parent field bit is set but shouldn't \"{bits:08b}\""
-        ))));
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("parent field bit is set but shouldn't \"{bits:08b}\""),
+        )));
     }
     if format < FORMAT_DOCVALUE_SKIPPER && (bits & DOCVALUES_SKIPPER) != 0 {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "doc values skipper bit is set but shouldn't \"{bits:08b}\""
-        ))));
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("doc values skipper bit is set but shouldn't \"{bits:08b}\""),
+        )));
     }
 
     let index_options = index_options_from_byte(input.read_byte()?)?;
@@ -384,9 +384,9 @@ fn index_options_from_byte(b: u8) -> Result<IndexOptions> {
         3 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
         4 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
         5 => Ok(IndexOptions::DOCS_AND_CUSTOM_FREQS),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid IndexOptions byte: {b}"
-        )))),
+        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid IndexOptions byte: {b}"),
+        ))),
     }
 }
 
@@ -398,9 +398,9 @@ fn doc_values_type_from_byte(b: u8) -> Result<DocValuesType> {
         3 => Ok(DocValuesType::SORTED),
         4 => Ok(DocValuesType::SORTED_SET),
         5 => Ok(DocValuesType::SORTED_NUMERIC),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid docvalues byte: {b}"
-        )))),
+        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid docvalues byte: {b}"),
+        ))),
     }
 }
 
@@ -408,9 +408,9 @@ fn doc_values_skip_index_type_from_byte(b: u8) -> Result<DocValuesSkipIndexType>
     match b {
         0 => Ok(DocValuesSkipIndexType::NONE),
         1 => Ok(DocValuesSkipIndexType::RANGE),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid docvaluesskipindex byte: {b}"
-        )))),
+        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid docvaluesskipindex byte: {b}"),
+        ))),
     }
 }
 
@@ -418,9 +418,9 @@ fn vector_encoding_from_byte(b: u8) -> Result<VectorEncoding> {
     match b {
         0 => Ok(VectorEncoding::BYTE),
         1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid vector encoding: {b}"
-        )))),
+        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid vector encoding: {b}"),
+        ))),
     }
 }
 

@@ -51,6 +51,7 @@ pub mod sloppy_math;
 pub mod small_float;
 pub mod sorter;
 pub mod spi;
+pub mod strict_math;
 pub mod string_helper;
 pub mod unicode_util;
 
@@ -1097,6 +1098,17 @@ const SHIFT4: u32 = 16;
 /// Maximum length of a single group-varint: 1 flag byte + 4 integers.
 pub const MAX_LENGTH_PER_GROUP: usize = 1 + 4 * 4;
 
+/// Reads an `int` value at a position, for the deprecated
+/// [`GroupVIntUtil::read_group_vint_reader`].
+///
+/// Equivalent to the deprecated functional interface
+/// `org.apache.lucene.util.GroupVIntUtil.IntReader` (`GroupVIntUtil.java:140-150`).
+#[deprecated(note = "No longer used.")]
+pub trait IntReader {
+    /// Equivalent to `IntReader.read(long)`.
+    fn read(&self, v: i64) -> i32;
+}
+
 /// Utility methods for group-varint encoding, matching Lucene 10.5.0.
 pub struct GroupVIntUtil;
 
@@ -1399,6 +1411,28 @@ impl GroupVIntUtil {
     fn num_bytes(v: i32) -> usize {
         let uv = (v as u32) | 1;
         4 - (uv.leading_zeros() >> 3) as usize
+    }
+
+    /// Always fails: this method is no longer implemented.
+    ///
+    /// Equivalent to the deprecated `GroupVIntUtil.readGroupVInt(DataInput,
+    /// long, IntReader, long, int[], int)` (`GroupVIntUtil.java:152-167`).
+    ///
+    /// # Errors
+    ///
+    /// Always `UnsupportedOperation("No longer implemented.")`.
+    #[deprecated(note = "No longer implemented; any caller should be removed.")]
+    #[allow(deprecated)]
+    pub fn read_group_vint_reader<I: DataInput + ?Sized>(
+        input: &mut I,
+        remaining: i64,
+        reader: &dyn IntReader,
+        pos: i64,
+        dst: &mut [i32],
+        offset: usize,
+    ) -> crate::error::Result<i32> {
+        let _ = (input, remaining, reader, pos, dst, offset);
+        todo!("PORT G-111")
     }
 }
 
@@ -2607,6 +2641,21 @@ impl IOUtils {
                 .map(|t| Some(move || (consumer.borrow_mut())(t))),
         )
     }
+
+    /// Deletes every named file of `dir`, ignoring every exception.
+    ///
+    /// Equivalent to `IOUtils.deleteFilesIgnoringExceptions(Directory,
+    /// Collection<String>)` and `(Directory, String...)`
+    /// (`IOUtils.java:223-237`).
+    pub fn delete_files_ignoring_exceptions_in<I, S>(dir: &dyn crate::store::Directory, files: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let _ = dir;
+        let _ = files.into_iter();
+        todo!("PORT G-106")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3391,6 +3440,19 @@ impl RamUsageEstimator {
         } else {
             format!("{bytes} bytes")
         }
+    }
+
+    /// Renders `bytes` in human-readable units — GB, MB, KB, or bytes — with
+    /// the number formatted by `df`.
+    ///
+    /// Equivalent to `RamUsageEstimator.humanReadableUnits(long, DecimalFormat)`
+    /// (`RamUsageEstimator.java:606-617`).
+    pub fn human_readable_units_with(
+        bytes: i64,
+        df: &crate::util::java_fmt::DecimalFormat,
+    ) -> String {
+        let _ = (bytes, df);
+        todo!("PORT G-108")
     }
 }
 

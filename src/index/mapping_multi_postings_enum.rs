@@ -646,7 +646,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap()
     }
@@ -942,7 +942,7 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), 0);
         let err = postings.next_position().unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex(m), .. } if m.contains("is negative")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex { message: m, .. }, .. } if m.contains("is negative")),
             "unexpected error: {err:?}"
         );
     }
@@ -958,7 +958,7 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), 0);
         let err = postings.next_position().unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex(m), .. } if m.contains("too large")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex { message: m, .. }, .. } if m.contains("too large")),
             "unexpected error: {err:?}"
         );
     }

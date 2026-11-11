@@ -225,7 +225,7 @@ mod tests {
         let trailing_offset = (data.len() - 2) as i64;
         let mut input = MockIndexInput::new(data, "pfor-skip");
         PForUtil::skip(&mut input).unwrap();
-        assert_eq!(input.file_pointer(), trailing_offset);
+        assert_eq!(input.file_pointer().unwrap(), trailing_offset);
         assert_eq!(input.read_byte().unwrap(), 0xAA);
         assert_eq!(input.read_byte().unwrap(), 0xBB);
     }

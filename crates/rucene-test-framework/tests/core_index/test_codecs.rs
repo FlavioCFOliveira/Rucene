@@ -31,7 +31,7 @@ use rucene::index::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers,
     IndexOptions, SegmentInfo, VectorEncoding, VectorSimilarityFunction,
 };
-use rucene::search::{DocIdSetIterator, Sort, NO_MORE_DOCS};
+use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::Directory;
 use rucene::util::attribute::AttributeSource;
 use rucene::util::string_helper::StringHelper;
@@ -273,7 +273,7 @@ fn new_segment_info(dir: Arc<dyn Directory>, codec: Arc<dyn Codec>) -> Result<Se
         std::collections::HashMap::new(),
         StringHelper::random_id(),
         std::collections::HashMap::new(),
-        Sort::default(),
+        None,
     )
 }
 

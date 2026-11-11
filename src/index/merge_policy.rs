@@ -52,7 +52,13 @@ pub trait MergeContext {
     /// Returns how many documents of `info` are deleted.
     ///
     /// Equivalent to `MergeContext.numDeletedDocs(SegmentCommitInfo)`.
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32;
+    ///
+    /// # Errors
+    ///
+    /// Whatever the implementation raises: `IndexWriter` raises
+    /// `AlreadyClosed` (`ensureOpen(false)`) and `IllegalArgument`
+    /// (`validate`).
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32>;
 
     /// Returns the segments already taking part in a running merge.
     ///
@@ -1947,7 +1953,10 @@ pub fn seg_string<'a>(
             // pendingDelCount)`, which adds the segment's own deletion count
             // back: the segment renders with every deletion the context knows.
             info.to_string_with_pending_del_count(
-                merge_context.num_deleted_docs(info) - info.get_del_count(),
+                merge_context
+                    .num_deleted_docs(info)
+                    .unwrap_or_else(|_| info.get_del_count())
+                    - info.get_del_count(),
             )
         })
         .collect::<Vec<_>>()
@@ -4552,7 +4561,7 @@ impl MergeContext for CachingMergeContext<'_> {
         Ok(count)
     }
 
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
         self.inner.num_deleted_docs(info)
     }
 
@@ -6651,7 +6660,7 @@ mod reader_variant_forwarding_tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap()
@@ -6727,8 +6736,8 @@ mod log_merge_policy_size_tests {
             Ok(self.0)
         }
 
-        fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> i32 {
-            self.0
+        fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> crate::error::Result<i32> {
+            Ok(self.0)
         }
 
         fn get_merging_segments(&self) -> HashSet<String> {
@@ -6758,7 +6767,7 @@ mod log_merge_policy_size_tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         info.set_files(["_0.dat".to_string()]).unwrap();
@@ -6957,8 +6966,8 @@ mod tiered_merge_policy_selection_tests {
         fn num_deletes_to_merge(&self, info: &SegmentCommitInfo) -> Result<i32> {
             Ok(info.get_del_count())
         }
-        fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-            info.get_del_count()
+        fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> crate::error::Result<i32> {
+            Ok(info.get_del_count())
         }
         fn get_merging_segments(&self) -> HashSet<String> {
             HashSet::new()
@@ -6988,7 +6997,7 @@ mod tiered_merge_policy_selection_tests {
             HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap();
         info.set_files([file]).unwrap();

@@ -156,6 +156,20 @@ impl Drop for RegExp {
     }
 }
 
+/// Parses a signed decimal `int` as `java.lang.Integer.parseInt(String)` does:
+/// an optional `+` or `-`, then digits of any Unicode `Nd` block
+/// (`Character.digit(ch, 10)`).
+///
+/// # Errors
+///
+/// `java.lang.NumberFormatException` (`For input string: "<s>"`) for an empty,
+/// malformed or out-of-range string.
+#[allow(dead_code)] // Called by the G-204 code pass.
+fn java_parse_int(s: &str) -> Result<i32> {
+    let _ = s;
+    todo!("PORT G-204")
+}
+
 impl RegExp {
     /// Syntax flag, enables intersection (`&`).
     pub const INTERSECTION: i32 = 0x0001;

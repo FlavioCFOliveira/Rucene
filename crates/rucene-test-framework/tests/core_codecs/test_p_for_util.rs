@@ -52,7 +52,7 @@ fn test_encode_decode() -> Result<()> {
                 &ints,
             );
         }
-        assert_equals(&end_pointer, &pdu.input.file_pointer());
+        assert_equals(&end_pointer, &pdu.input.file_pointer()?);
     }
     r#in.close()?;
     d.close()

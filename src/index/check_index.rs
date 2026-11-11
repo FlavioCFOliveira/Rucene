@@ -60,6 +60,19 @@ use crate::util::{
 // CheckIndexException
 // ---------------------------------------------------------------------------
 
+/// Runs one check, recording any throwable it raises — a panic included — as
+/// its error, as `CheckIndex.testSegment` and every `test*` method do with
+/// `catch (Throwable t)`; with `fail_fast` the throwable propagates instead.
+///
+/// Equivalent to the `try { ... } catch (Throwable e)` blocks of
+/// `CheckIndex.testSegment` and the `test*` methods (`CheckIndex.java:1050-1180`
+/// and the per-test bodies).
+#[allow(dead_code)] // Called by the G-205 code pass.
+fn record_throwable<T>(fail_fast: bool, check: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _ = (fail_fast, check);
+    todo!("PORT G-205")
+}
+
 /// Builds the error `CheckIndex` raises when it detects an integrity failure:
 /// `new CheckIndexException(message)`, [`LuceneErrorKind::CheckIndex`].
 fn check_index_error(message: impl Into<String>) -> LuceneError {
@@ -1641,11 +1654,8 @@ impl CheckIndex {
             // (`lucene99/segment_info_format.rs`, `write_segment_sort`). Java
             // runs `testSort` only for a non-null sort (`CheckIndex.java:974-977`, `:1089-1092`).
             let index_sort = info.info.index_sort();
-            let index_sort = if index_sort.fields().is_empty() || *index_sort == Sort::new() {
-                None
-            } else {
-                Some(index_sort)
-            };
+            let index_sort =
+                index_sort.filter(|sort| !sort.fields().is_empty() && **sort != Sort::new());
             if let Some(index_sort) = index_sort {
                 msg(info_stream, &format!("    sort={index_sort}"));
             }
@@ -5611,7 +5621,7 @@ fn check_float_vector_values(
                     &mut collector,
                     &mut accept_docs,
                 )?;
-                let docs = crate::search::knn::KnnCollector::top_docs(&mut collector);
+                let docs = crate::search::knn::KnnCollector::top_docs(&mut collector)?;
                 if docs.score_docs.is_empty() {
                     return Err(check_index_error(format!(
                         "Field \"{}\" failed to search k nearest neighbors",
@@ -5672,7 +5682,7 @@ fn check_byte_vector_values(
                 &mut collector,
                 &mut accept_docs,
             )?;
-            let docs = crate::search::knn::KnnCollector::top_docs(&mut collector);
+            let docs = crate::search::knn::KnnCollector::top_docs(&mut collector)?;
             if docs.score_docs.is_empty() {
                 return Err(check_index_error(format!(
                     "Field \"{}\" failed to search k nearest neighbors",

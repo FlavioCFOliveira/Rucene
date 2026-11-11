@@ -14,7 +14,6 @@ use rucene::codecs::lucene104::Lucene104Codec;
 use rucene::error::Result;
 use rucene::index::merge_policy::{CachingMergeContext, MergeContext};
 use rucene::index::segment_info::{SegmentCommitInfo, SegmentInfo};
-use rucene::search::sort::Sort;
 use rucene::store::ByteBuffersDirectory;
 use rucene::util::{InfoStream, NoOutputInfoStream, StringHelper, Version};
 
@@ -42,7 +41,7 @@ fn null_info() -> Result<SegmentCommitInfo> {
         HashMap::new(),
         StringHelper::random_id(),
         HashMap::new(),
-        Sort::default(),
+        None,
     )?;
     SegmentCommitInfo::new(si, 0, 0, -1, -1, -1, StringHelper::random_id())
 }
@@ -100,8 +99,8 @@ impl MergeContext for MockMergeContext {
         Ok(self.count.fetch_add(1, Ordering::SeqCst) + 1)
     }
 
-    fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> i32 {
-        0
+    fn num_deleted_docs(&self, _info: &SegmentCommitInfo) -> rucene::error::Result<i32> {
+        Ok(0)
     }
 
     /// Java returns `null`; the trait returns a stream, so this is the one

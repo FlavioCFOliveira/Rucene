@@ -70,10 +70,12 @@ pub trait StoredFieldVisitor {
     ) -> Result<()> {
         let length = value.length();
         if length < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "stored binary field \"{}\" declares a negative length: {length}",
-                field_info.name
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "stored binary field \"{}\" declares a negative length: {length}",
+                    field_info.name
+                ),
+            )));
         }
         let length = length as usize;
         let mut data = vec![0u8; length];
@@ -337,7 +339,7 @@ mod tests {
             matches!(
                 error,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),

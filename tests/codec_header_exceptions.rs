@@ -128,7 +128,7 @@ fn report(
             .unwrap();
         }
         Err(LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(message),
+            kind: LuceneErrorKind::CorruptIndex { message, .. },
             ..
         }) => {
             writeln!(out, "{label}: CorruptIndexException: {}", escaped(&message)).unwrap();
@@ -151,7 +151,7 @@ fn report_checksum(
     match outcome {
         Ok(_) => writeln!(out, "{label}: ok").unwrap(),
         Err(LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(message),
+            kind: LuceneErrorKind::CorruptIndex { message, .. },
             ..
         }) => {
             writeln!(out, "{label}: CorruptIndexException: {}", escaped(&message)).unwrap();

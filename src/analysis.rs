@@ -1644,6 +1644,44 @@ pub trait DelegatingAnalyzerWrapperLogic: Debug + Send + Sync {
     }
 }
 
+/// The reuse strategy of a [`DelegatingAnalyzerWrapper`]: for the wrapper
+/// itself it delegates to the reuse strategy of the wrapped analyzer, for any
+/// other analyzer to the fallback strategy.
+///
+/// Equivalent to the private `DelegatingAnalyzerWrapper.DelegatingReuseStrategy`
+/// (`DelegatingAnalyzerWrapper.java:76-111`).
+#[derive(Debug)]
+#[allow(dead_code)] // Built by the G-006 code pass.
+pub(crate) struct DelegatingReuseStrategy {
+    /// `fallbackStrategy`, used when the analyzer is not the wrapper.
+    fallback_strategy: Box<dyn ReuseStrategy>,
+}
+
+impl ReuseStrategy for DelegatingReuseStrategy {
+    /// Equivalent to `DelegatingReuseStrategy.getReusableComponents(Analyzer, String)`
+    /// (`DelegatingAnalyzerWrapper.java:84-92`).
+    fn get_reusable_components(
+        &self,
+        state: &AnalyzerState,
+        field_name: &str,
+    ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
+        let _ = (state, field_name);
+        todo!("PORT G-006")
+    }
+
+    /// Equivalent to `DelegatingReuseStrategy.setReusableComponents(Analyzer, String,
+    /// TokenStreamComponents)` (`DelegatingAnalyzerWrapper.java:94-105`).
+    fn set_reusable_components(
+        &self,
+        state: &AnalyzerState,
+        field_name: &str,
+        components: Arc<AtomicRefCell<TokenStreamComponents>>,
+    ) {
+        let _ = (state, field_name, components);
+        todo!("PORT G-006")
+    }
+}
+
 /// An analyzer wrapper that delegates all work to another analyzer without
 /// wrapping components or readers.
 ///

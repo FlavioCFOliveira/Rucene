@@ -319,7 +319,7 @@ impl BytesRefIterator for ByteSequencesReader {
             ReaderBody::Base { input, end } => (input, *end),
             ReaderBody::Override(overriding) => return overriding.next(),
         };
-        if input.file_pointer() >= end {
+        if input.file_pointer()? >= end {
             return Ok(None);
         }
         let length = input.read_short()? as usize;

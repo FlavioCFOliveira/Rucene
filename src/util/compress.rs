@@ -657,11 +657,13 @@ impl Lz4 {
                 // of a block legitimately writes a few bytes past it, which is
                 // why callers pass a padded destination.
                 if literal_len > dest.len() - d_off {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "LZ4 literal run of {literal_len} bytes overruns the buffer \
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!(
+                            "LZ4 literal run of {literal_len} bytes overruns the buffer \
                          ({} bytes left)",
-                        dest.len() - d_off
-                    ))));
+                            dest.len() - d_off
+                        ),
+                    )));
                 }
                 input.read_bytes(Some(dest), d_off, literal_len)?;
                 d_off += literal_len;
@@ -695,15 +697,17 @@ impl Lz4 {
             // Both copies below index `d_off - match_dec`, and the match may
             // not reach behind the start of the block.
             if match_dec > d_off {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "LZ4 match reaches {match_dec} bytes back from offset {d_off}"
-                ))));
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    format!("LZ4 match reaches {match_dec} bytes back from offset {d_off}"),
+                )));
             }
             if match_len > dest.len() - d_off {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "LZ4 match of {match_len} bytes overruns the buffer ({} bytes left)",
-                    dest.len() - d_off
-                ))));
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    format!(
+                        "LZ4 match of {match_len} bytes overruns the buffer ({} bytes left)",
+                        dest.len() - d_off
+                    ),
+                )));
             }
 
             let fast_len = (match_len + 7) & !7;

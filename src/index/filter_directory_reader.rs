@@ -2969,23 +2969,27 @@ impl KnnVectorsReader for SlowKnnVectorsReader {
         }))
     }
 
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
-        // Java unwraps the reader down to its SegmentReader and asks its own
-        // vectors reader, going through PerFieldKnnVectorsFormat when one is in
-        // the way. `segmentReader(LeafReader)` (`SlowCodecReaderWrapper.java:
-        // 207-216`) steps through `FilterLeafReader.unwrap` and tests for a
-        // `SegmentReader` (`as_segment_reader`). Its `FilterCodecReader` branch
-        // has no counterpart: a `dyn LeafReader` cannot be asked whether it is a
-        // `FilterCodecReader`, so such a reader reaches the fallback below,
-        // which answers an empty map where Java throws `AssertionError`.
-        let reader = crate::index::filter_reader::FilterLeafReader::unwrap(&self.reader);
-        match reader.as_segment_reader() {
-            Some(segment_reader) => match segment_reader.get_vector_reader() {
-                Ok(Some(vectors_reader)) => vectors_reader.get_off_heap_byte_size(field_info),
-                _ => HashMap::new(),
-            },
-            None => HashMap::new(),
-        }
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        Ok({
+            // Java unwraps the reader down to its SegmentReader and asks its own
+            // vectors reader, going through PerFieldKnnVectorsFormat when one is in
+            // the way. `segmentReader(LeafReader)` (`SlowCodecReaderWrapper.java:
+            // 207-216`) steps through `FilterLeafReader.unwrap` and tests for a
+            // `SegmentReader` (`as_segment_reader`). Its `FilterCodecReader` branch
+            // has no counterpart: a `dyn LeafReader` cannot be asked whether it is a
+            // `FilterCodecReader`, so such a reader reaches the fallback below,
+            // which answers an empty map where Java throws `AssertionError`.
+            let reader = crate::index::filter_reader::FilterLeafReader::unwrap(&self.reader);
+            match reader.as_segment_reader() {
+                Some(segment_reader) => match segment_reader.get_vector_reader() {
+                    Ok(Some(vectors_reader)) => {
+                        vectors_reader.get_off_heap_byte_size(field_info)?
+                    }
+                    _ => HashMap::new(),
+                },
+                None => HashMap::new(),
+            }
+        })
     }
 
     fn close(&self) -> Result<()> {

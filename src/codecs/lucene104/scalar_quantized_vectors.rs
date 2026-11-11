@@ -2487,17 +2487,19 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
     /// Adds this format's `.veq` bytes to what the delegate reports.
     ///
     /// Equivalent to `Lucene104ScalarQuantizedVectorsReader.getOffHeapByteSize(FieldInfo)`.
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
-        let raw = self.raw_vectors_reader.get_off_heap_byte_size(field_info);
-        let Some(entry) = self.fields.get(&field_info.name) else {
-            // Java asserts the field is byte-encoded here: only float fields
-            // are quantized, so only they have an entry.
-            debug_assert_eq!(field_info.vector_encoding, VectorEncoding::BYTE);
-            return raw;
-        };
-        let mut quant = HashMap::new();
-        quant.insert(VECTOR_DATA_EXTENSION.to_string(), entry.vector_data_length);
-        crate::codecs::knn_vectors::merge_off_heap_byte_size_maps(raw, quant)
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        Ok({
+            let raw = self.raw_vectors_reader.get_off_heap_byte_size(field_info)?;
+            let Some(entry) = self.fields.get(&field_info.name) else {
+                // Java asserts the field is byte-encoded here: only float fields
+                // are quantized, so only they have an entry.
+                debug_assert_eq!(field_info.vector_encoding, VectorEncoding::BYTE);
+                return Ok(raw);
+            };
+            let mut quant = HashMap::new();
+            quant.insert(VECTOR_DATA_EXTENSION.to_string(), entry.vector_data_length);
+            crate::codecs::knn_vectors::merge_off_heap_byte_size_maps(raw, quant)
+        })
     }
 
     /// This reader is a [`FlatVectorsReader`], so it answers with itself.

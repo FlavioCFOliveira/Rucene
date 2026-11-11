@@ -708,7 +708,7 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .unwrap()
     }

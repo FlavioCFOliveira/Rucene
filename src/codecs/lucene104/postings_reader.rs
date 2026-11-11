@@ -390,10 +390,12 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         )?;
         let index_block_size = terms_in.read_v_int()?;
         if index_block_size != BS_I32 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "index-time BLOCK_SIZE ({}) != read-time BLOCK_SIZE ({BS_I32})",
-                index_block_size
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "index-time BLOCK_SIZE ({}) != read-time BLOCK_SIZE ({BS_I32})",
+                    index_block_size
+                ),
+            )));
         }
         Ok(())
     }
@@ -967,7 +969,7 @@ impl BlockPostingsEnum {
     fn prefetch_postings(doc_in: &dyn IndexInput, state: &BlockTermState) -> Result<()> {
         // Singletons are inlined in the terms dict, nothing to prefetch.
         debug_assert!(state.doc_freq > 1);
-        if doc_in.file_pointer() != state.doc_start_fp {
+        if doc_in.file_pointer()? != state.doc_start_fp {
             doc_in.prefetch(state.doc_start_fp, 1)?;
         }
         Ok(())
@@ -1069,7 +1071,7 @@ impl BlockPostingsEnum {
             if self.needs_freq {
                 // Decoded lazily, on the first `freq()` of the block
                 // (`Lucene104PostingsReader.java:628-633`).
-                self.freq_fp.set(doc_in.file_pointer());
+                self.freq_fp.set(doc_in.file_pointer()?);
             }
             PForUtil::skip(doc_in)?;
         }
@@ -1146,10 +1148,10 @@ impl BlockPostingsEnum {
             let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
             self.level1_last_doc_id += doc_in.read_v_int()?;
             let delta = doc_in.read_v_long()?;
-            self.level1_doc_end_fp = delta + doc_in.file_pointer();
+            self.level1_doc_end_fp = delta + doc_in.file_pointer()?;
 
             if self.index_has_freq {
-                let skip1_end_fp = doc_in.read_short()? as i64 + doc_in.file_pointer();
+                let skip1_end_fp = doc_in.read_short()? as i64 + doc_in.file_pointer()?;
                 let num_impact_bytes = doc_in.read_short()? as usize;
                 if self.needs_impacts && self.level1_last_doc_id >= target {
                     doc_in.read_bytes(
@@ -1169,7 +1171,7 @@ impl BlockPostingsEnum {
                         self.level1_block_pay_upto = doc_in.read_v_int()?;
                     }
                 }
-                debug_assert_eq!(doc_in.file_pointer(), skip1_end_fp);
+                debug_assert_eq!(doc_in.file_pointer()?, skip1_end_fp);
             }
 
             if self.level1_last_doc_id >= target {
@@ -1183,14 +1185,14 @@ impl BlockPostingsEnum {
         debug_assert_eq!(self.doc, self.level0_last_doc_id);
         if self.pos_in.is_some() {
             if self.level0_pos_end_fp
-                >= unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer()
+                >= unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer()?
             {
                 unsafe { Self::input_ref(self.pos_in_ptr()?) }.seek(self.level0_pos_end_fp)?;
                 self.pos_pending_count = self.level0_block_pos_upto;
                 if self.pay_in.is_some() {
                     debug_assert!(
                         self.level0_pay_end_fp
-                            >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()
+                            >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()?
                     );
                     unsafe { Self::input_ref(self.pay_in_ptr()?) }.seek(self.level0_pay_end_fp)?;
                     self.payload_byte_upto = self.level0_block_pay_upto;
@@ -1212,7 +1214,7 @@ impl BlockPostingsEnum {
             let doc_delta = read_v_int15(doc_in)?;
             self.level0_last_doc_id += doc_delta;
             let block_length = read_v_long15(doc_in)?;
-            self.level0_doc_end_fp = doc_in.file_pointer() + block_length;
+            self.level0_doc_end_fp = doc_in.file_pointer()? + block_length;
 
             if self.index_has_freq {
                 let num_impact_bytes = doc_in.read_v_int()? as usize;
@@ -1259,7 +1261,7 @@ impl BlockPostingsEnum {
                     .as_mut()
                     .ok_or_else(|| LuceneError::illegal_state("doc_in is not open".to_string()))?;
                 let level0_num_bytes = doc_in.read_v_long()?;
-                let level0_end = doc_in.file_pointer() + level0_num_bytes;
+                let level0_end = doc_in.file_pointer()? + level0_num_bytes;
                 let doc_delta = read_v_int15(doc_in.as_mut())?;
                 doc_in.seek(level0_end)?;
                 doc_delta
@@ -1306,14 +1308,14 @@ impl BlockPostingsEnum {
         pay_fp: i64,
         pay_upto: i32,
     ) -> Result<()> {
-        if pos_fp >= unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer() {
+        if pos_fp >= unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer()? {
             unsafe { Self::input_ref(self.pos_in_ptr()?) }.seek(pos_fp)?;
             self.pos_pending_count = pos_upto;
             if self.pay_in.is_some() {
                 // needs payloads or offsets
                 debug_assert!(
                     self.level0_pay_end_fp
-                        >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()
+                        >= unsafe { Self::input_ref(self.pay_in_ptr()?) }.file_pointer()?
                 );
                 unsafe { Self::input_ref(self.pay_in_ptr()?) }.seek(pay_fp)?;
                 self.payload_byte_upto = pay_upto;
@@ -1345,12 +1347,12 @@ impl BlockPostingsEnum {
             if self.doc_count_left >= BS_I32 {
                 let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
                 let num_skip_bytes = doc_in.read_v_long()?;
-                let skip0_end = doc_in.file_pointer() + num_skip_bytes;
+                let skip0_end = doc_in.file_pointer()? + num_skip_bytes;
                 let doc_delta = read_v_int15(doc_in)?;
                 self.level0_last_doc_id += doc_delta;
                 let found = target <= self.level0_last_doc_id;
                 let block_length = read_v_long15(doc_in)?;
-                self.level0_doc_end_fp = doc_in.file_pointer() + block_length;
+                self.level0_doc_end_fp = doc_in.file_pointer()? + block_length;
 
                 if self.index_has_freq {
                     if !found && !self.needs_pos {
@@ -1431,14 +1433,14 @@ impl BlockPostingsEnum {
                 None
             };
             while to_skip >= BS_I32 {
-                debug_assert_ne!(pos_in.file_pointer(), self.last_pos_block_fp);
+                debug_assert_ne!(pos_in.file_pointer()?, self.last_pos_block_fp);
                 PForUtil::skip(pos_in)?;
 
                 if let Some(pay_in) = pay_in.as_deref_mut() {
                     if self.index_has_payloads {
                         PForUtil::skip(pay_in)?;
                         let num_bytes = pay_in.read_v_int()?;
-                        pay_in.seek(pay_in.file_pointer() + num_bytes as i64)?;
+                        pay_in.seek(pay_in.file_pointer()? + num_bytes as i64)?;
                     }
                     if self.index_has_offsets {
                         PForUtil::skip(pay_in)?;
@@ -1536,7 +1538,7 @@ impl BlockPostingsEnum {
                 let pay_in = unsafe { Self::input_ref(self.pay_in_ptr()?) };
                 PForUtil::skip(pay_in)?;
                 let num_bytes = pay_in.read_v_int()?;
-                pay_in.seek(pay_in.file_pointer() + num_bytes as i64)?;
+                pay_in.seek(pay_in.file_pointer()? + num_bytes as i64)?;
             }
             self.payload_byte_upto = 0;
         }
@@ -1565,7 +1567,7 @@ impl BlockPostingsEnum {
     }
 
     fn refill_positions(&mut self) -> Result<()> {
-        let fp = unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer();
+        let fp = unsafe { Self::input_ref(self.pos_in_ptr()?) }.file_pointer()?;
         if fp == self.last_pos_block_fp {
             self.refill_last_position_block()
         } else {
@@ -1902,10 +1904,12 @@ impl PostingsEnum for BlockPostingsEnum {
         }
         let upto = self.doc_buffer_upto;
         if !(1..=BS_I32).contains(&upto) {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "postings block position {} is outside the {BS}-document block",
-                upto - 1
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "postings block position {} is outside the {BS}-document block",
+                    upto - 1
+                ),
+            )));
         }
         Ok(self.freq_buffer.borrow()[upto as usize - 1])
     }
@@ -2459,7 +2463,7 @@ mod tests {
             read_v_long15(&mut input).unwrap(); // blockLength
             let num_impact_bytes = input.read_v_int().unwrap();
             input.skip_bytes(i64::from(num_impact_bytes)).unwrap();
-            let width_at = input.file_pointer() as usize;
+            let width_at = input.file_pointer().unwrap() as usize;
             assert_eq!(bytes[width_at], 10, "the width byte of the first block");
             bytes[width_at] = 40;
             dir.delete_file(&name).unwrap();

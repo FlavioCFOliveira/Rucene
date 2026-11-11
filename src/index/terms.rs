@@ -711,6 +711,22 @@ impl TermState for EmptyTermState {
     }
 }
 
+/// Returns the [`Terms`] index of `field` in `reader`, or an empty `Terms`
+/// when the field has none.
+///
+/// Equivalent to `org.apache.lucene.index.Terms.getTerms(LeafReader, String)`
+/// (`Terms.java:35-45`), which returns the private `Terms.EMPTY`
+/// (`Terms.java:229-275`) for an absent field.
+///
+/// # Errors
+///
+/// Propagates whatever [`LeafReader::terms`](crate::index::LeafReader::terms)
+/// raises.
+pub fn get_terms(reader: &dyn crate::index::LeafReader, field: &str) -> Result<Box<dyn Terms>> {
+    let _ = (reader, field);
+    todo!("PORT G-034")
+}
+
 /// Access to the terms of a specific field.
 ///
 /// Equivalent to `org.apache.lucene.index.Terms`.

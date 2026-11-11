@@ -1682,9 +1682,9 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
     match ordinal {
         0 => Ok(VectorEncoding::BYTE),
         1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid VectorEncoding ordinal: {ordinal}"
-        )))),
+        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid VectorEncoding ordinal: {ordinal}"),
+        ))),
     }
 }
 
@@ -1713,9 +1713,9 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
         1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
         2 => Ok(VectorSimilarityFunction::COSINE),
         3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "invalid VectorSimilarityFunction ordinal: {ordinal}"
-        )))),
+        _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("invalid VectorSimilarityFunction ordinal: {ordinal}"),
+        ))),
     }
 }
 
@@ -2116,7 +2116,7 @@ impl Lucene99HnswVectorsReader {
                 &state.segment_suffix,
             )?;
             if version_meta != version_vector_data {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                     "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
                 ))));
             }
@@ -2454,6 +2454,15 @@ impl HnswGraphProvider for Lucene99HnswVectorsReader {
     }
 }
 
+/// Equivalent to `Lucene99HnswVectorsReader.ramBytesUsed()`
+/// (`Lucene99HnswVectorsReader.java:264-270`): the shallow size, the field
+/// entries and the flat vectors reader.
+impl crate::util::Accountable for Lucene99HnswVectorsReader {
+    fn ram_bytes_used(&self) -> i64 {
+        todo!("PORT G-005")
+    }
+}
+
 impl KnnVectorsReader for Lucene99HnswVectorsReader {
     /// This reader answers with itself: Java's `instanceof
     /// Lucene99HnswVectorsReader`, `instanceof HnswGraphProvider` and
@@ -2538,15 +2547,19 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         ])
     }
 
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
-        let mut map = self.flat_vectors_reader.get_off_heap_byte_size(field_info);
-        if let Ok(entry) = self.get_field_entry_or_throw(&field_info.name) {
-            map.insert(
-                VECTOR_INDEX_EXTENSION.to_string(),
-                entry.vector_index_length,
-            );
-        }
-        map
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        Ok({
+            let mut map = self
+                .flat_vectors_reader
+                .get_off_heap_byte_size(field_info)?;
+            if let Ok(entry) = self.get_field_entry_or_throw(&field_info.name) {
+                map.insert(
+                    VECTOR_INDEX_EXTENSION.to_string(),
+                    entry.vector_index_length,
+                );
+            }
+            map
+        })
     }
 }
 
@@ -2596,7 +2609,7 @@ fn read_fields(
         let info = field_infos
             .field_info_by_number(field_number)
             .ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                     "invalid field number: {field_number}"
                 )))
             })?;
@@ -2621,10 +2634,12 @@ fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry>
     let vector_encoding = read_vector_encoding(input.read_int()?)?;
     let similarity_function = read_similarity_function(input)?;
     if similarity_function != info.vector_similarity_function {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "inconsistent vector similarity function for field=\"{}\"",
-            info.name
-        ))));
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!(
+                "inconsistent vector similarity function for field=\"{}\"",
+                info.name
+            ),
+        )));
     }
     FieldEntry::create(input, vector_encoding, similarity_function, info)
 }
@@ -2635,10 +2650,9 @@ fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry>
 /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#validateFieldEntry`.
 fn validate_field_entry(info: &FieldInfo, field_entry: &FieldEntry) -> Result<()> {
     if info.vector_dimension != field_entry.dimension {
-        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-            "inconsistent vector dimension for field=\"{}\"",
-            info.name
-        ))));
+        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+            format!("inconsistent vector dimension for field=\"{}\"", info.name),
+        )));
     }
     Ok(())
 }
@@ -2667,10 +2681,12 @@ impl FieldEntry {
         // is catchable, whereas `vec![None; negative as usize]` asks for an
         // allocation of about 2^64 entries and aborts the process.
         if num_levels < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "field \"{}\" declares {num_levels} graph levels",
-                field_info.name
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "field \"{}\" declares {num_levels} graph levels",
+                    field_info.name
+                ),
+            )));
         }
         // Grown as the levels are read rather than sized up front: one level
         // costs at least one byte of input, so a hostile count runs out of file
@@ -2683,10 +2699,12 @@ impl FieldEntry {
             if level > 0 {
                 let num_nodes = input.read_v_int()?;
                 if num_nodes < 0 {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "level {level} of field \"{}\" declares {num_nodes} nodes",
-                        field_info.name
-                    ))));
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!(
+                            "level {level} of field \"{}\" declares {num_nodes} nodes",
+                            field_info.name
+                        ),
+                    )));
                 }
                 number_of_offsets += i64::from(num_nodes);
                 // Java reads `nodesByLevel[level][0]` unconditionally and hits
@@ -2695,10 +2713,12 @@ impl FieldEntry {
                 // level is refused here, exactly as `OffHeapHnswGraph::seek`
                 // below refuses a level outside the graph for the same reason.
                 if num_nodes == 0 {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "level {level} of field \"{}\" declares no nodes",
-                        field_info.name
-                    ))));
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!(
+                            "level {level} of field \"{}\" declares no nodes",
+                            field_info.name
+                        ),
+                    )));
                 }
 
                 // Again grown, not pre-sized: each node is at least one byte,
@@ -2860,10 +2880,12 @@ impl HnswGraph for OffHeapHnswGraph {
         // `ArrayIndexOutOfBoundsException`, which is catchable. A Rust panic is
         // not the same thing, so the bound is checked.
         if level < 0 || level as usize >= self.nodes_by_level.len() {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "level {level} is outside the {} levels of the graph",
-                self.nodes_by_level.len()
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "level {level} is outside the {} levels of the graph",
+                    self.nodes_by_level.len()
+                ),
+            )));
         }
         let target_index = if level == 0 {
             target
@@ -2871,7 +2893,7 @@ impl HnswGraph for OffHeapHnswGraph {
             let nodes = self.nodes_by_level[level as usize]
                 .as_ref()
                 .ok_or_else(|| {
-                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                         "missing nodes for level {level}"
                     )))
                 })?;
@@ -2886,16 +2908,16 @@ impl HnswGraph for OffHeapHnswGraph {
             match found {
                 Ok(idx) => idx as i32,
                 Err(_) => {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "node {target} not found on level {level}"
-                    ))));
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!("node {target} not found on level {level}"),
+                    )));
                 }
             }
         };
         let offset_index =
             target_index as i64 + self.graph_level_node_index_offsets[level as usize];
         let offsets = self.offsets.as_ref().ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::CorruptIndex(
+            LuceneError::from(LuceneErrorKind::corrupt_index_message(
                 "the graph has no node offsets, so no node can be sought".to_string(),
             ))
         })?;
@@ -2926,11 +2948,13 @@ impl HnswGraph for OffHeapHnswGraph {
             self.arc_count
         );
         if self.arc_count > max_arcs.min(self.current_neighbors_buffer.len()) {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
                 "node {target} on level {level} claims {} neighbours, more than the {} a graph \
                  with maxConn {} can have",
                 self.arc_count, max_arcs, self.max_conn
-            ))));
+            ),
+            )));
         }
         if self.arc_count > 0 {
             if self.version >= VERSION_GROUPVARINT {
@@ -2960,11 +2984,13 @@ impl HnswGraph for OffHeapHnswGraph {
                 // where it is used, so no consumer of this graph can be handed
                 // an ordinal it would index an array with.
                 if sum < 0 || sum >= self.size {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "neighbour {sum} of node {target} on level {level} is outside the {} \
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!(
+                            "neighbour {sum} of node {target} on level {level} is outside the {} \
                          nodes of the graph",
-                        self.size
-                    ))));
+                            self.size
+                        ),
+                    )));
                 }
             }
         }
@@ -3006,7 +3032,7 @@ impl HnswGraph for OffHeapHnswGraph {
             Ok(Box::new(DenseNodesIterator::new(self.size)))
         } else {
             let nodes = self.nodes_by_level[level as usize].clone().ok_or_else(|| {
-                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                     "missing nodes for level {level}"
                 )))
             })?;
@@ -3083,7 +3109,7 @@ mod tests {
             HashMap::new(),
             [0u8; ID_LENGTH],
             HashMap::new(),
-            crate::search::Sort::new(),
+            None,
         )
     }
 
@@ -3606,7 +3632,7 @@ mod tests {
             self.inner.min_competitive_similarity()
         }
 
-        fn top_docs(&mut self) -> crate::search::knn::TopDocs {
+        fn top_docs(&mut self) -> crate::error::Result<crate::search::knn::TopDocs> {
             self.inner.top_docs()
         }
 
@@ -3699,7 +3725,7 @@ mod tests {
             self.inner.min_competitive_similarity()
         }
 
-        fn top_docs(&mut self) -> crate::search::knn::TopDocs {
+        fn top_docs(&mut self) -> crate::error::Result<crate::search::knn::TopDocs> {
             self.inner.top_docs()
         }
 

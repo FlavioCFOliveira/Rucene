@@ -257,6 +257,13 @@ pub struct FieldInvertState {
     unique_term_count: i32,
     last_start_offset: i32,
     last_position: i32,
+    /// The attribute source of the token stream being inverted.
+    ///
+    /// Equivalent to `FieldInvertState.attributeSource`
+    /// (`FieldInvertState.java:47`); the attributes Java caches from it
+    /// (`FieldInvertState.java:49-53`) are read through this source.
+    #[allow(dead_code)] // Read by the G-004 code pass.
+    attribute_source: Option<crate::util::attribute::AttributeSource>,
 }
 
 impl FieldInvertState {
@@ -278,6 +285,7 @@ impl FieldInvertState {
             unique_term_count: 0,
             last_start_offset: 0,
             last_position: 0,
+            attribute_source: None,
         }
     }
 
@@ -327,6 +335,28 @@ impl FieldInvertState {
     /// Returns the field name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Sets the attribute source of the token stream being inverted, and
+    /// caches its term, term-frequency, position-increment, offset and payload
+    /// attributes (`None` clears them).
+    ///
+    /// Equivalent to `org.apache.lucene.index.FieldInvertState.setAttributeSource(AttributeSource)`
+    /// (`FieldInvertState.java:96-113`).
+    pub fn set_attribute_source(
+        &mut self,
+        attribute_source: Option<crate::util::attribute::AttributeSource>,
+    ) {
+        let _ = attribute_source;
+        todo!("PORT G-004")
+    }
+
+    /// Returns the attribute source of the token stream being inverted.
+    ///
+    /// Equivalent to `org.apache.lucene.index.FieldInvertState.getAttributeSource()`
+    /// (`FieldInvertState.java:176-179`).
+    pub fn get_attribute_source(&self) -> Option<&crate::util::attribute::AttributeSource> {
+        todo!("PORT G-004")
     }
 
     /// Returns the index options the field is inverted with.
@@ -1544,7 +1574,9 @@ impl DefaultIndexingChain {
         // returns `null` for an unsorted segment; this port carries a `Sort`
         // there and encodes "unsorted" as the relevance sort, which is what
         // `Sort::default()` builds. An empty sort means the same thing.
-        if index_sort.fields().is_empty() || *index_sort == crate::search::Sort::default() {
+        if index_sort
+            .is_none_or(|sort| sort.fields().is_empty() || *sort == crate::search::Sort::default())
+        {
             return Ok(None);
         }
 
@@ -1563,7 +1595,8 @@ impl DefaultIndexingChain {
         doc_values_reader: &BufferedDocValuesReader,
         max_doc: i32,
     ) -> Result<Option<SorterDocMap>> {
-        let index_sort = state.segment_info.index_sort();
+        let unsorted = crate::search::Sort::default();
+        let index_sort = state.segment_info.index_sort().unwrap_or(&unsorted);
         let mut parents: Option<Arc<dyn crate::util::bit_set::BitSet>> = None;
 
         if state.segment_info.get_has_blocks() {
@@ -3788,8 +3821,9 @@ impl DefaultIndexingChain {
 /// **Divergence from Lucene 10.5.0** (already declared on `maybe_sort_segment`):
 /// `SegmentInfo.getIndexSort()` is `null` for an unsorted segment; this port
 /// carries the relevance sort, or no field at all, there instead.
-fn is_index_sorted(index_sort: &crate::search::Sort) -> bool {
-    !index_sort.fields().is_empty() && *index_sort != crate::search::Sort::default()
+fn is_index_sorted(index_sort: Option<&crate::search::Sort>) -> bool {
+    index_sort
+        .is_some_and(|sort| !sort.fields().is_empty() && *sort != crate::search::Sort::default())
 }
 
 /// The stored-fields consumer of the chain: Lucene's `StoredFieldsConsumer`,

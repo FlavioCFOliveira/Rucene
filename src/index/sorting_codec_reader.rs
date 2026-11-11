@@ -2570,15 +2570,17 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
     /// (`SlowCompositeCodecReaderWrapper.java:845-852`). Java dereferences
     /// every reader's vectors reader, including a `null` one; a reader without
     /// one contributes nothing here.
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
-        let mut map = HashMap::new();
-        for reader in self.vectors_readers.iter().flatten() {
-            map = crate::codecs::knn_vectors::merge_off_heap_byte_size_maps(
-                map,
-                reader.get_off_heap_byte_size(field_info),
-            );
-        }
-        map
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        Ok({
+            let mut map = HashMap::new();
+            for reader in self.vectors_readers.iter().flatten() {
+                map = crate::codecs::knn_vectors::merge_off_heap_byte_size_maps(
+                    map,
+                    reader.get_off_heap_byte_size(field_info)?,
+                );
+            }
+            map
+        })
     }
 
     /// Java `IOUtils.close(readers)` (`SlowCompositeCodecReaderWrapper.java:822-825`):
@@ -4211,7 +4213,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
 
     /// Equivalent to the anonymous reader's `getOffHeapByteSize(FieldInfo)`
     /// (`SortingCodecReader.java:597-600`).
-    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
         self.delegate.get_off_heap_byte_size(field_info)
     }
 

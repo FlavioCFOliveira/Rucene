@@ -526,7 +526,13 @@ pub trait KnnCollector: Send {
     /// action and the collector should not be used afterwards, which is why —
     /// unlike Java, whose `topDocs()` merely looks `const` — the receiver is
     /// `&mut self`.
-    fn top_docs(&mut self) -> TopDocs;
+    ///
+    /// # Errors
+    ///
+    /// A collector that produces no results raises `IllegalArgument`, as
+    /// `HnswGraphBuilder.GraphBuilderKnnCollector.topDocs()` throws
+    /// `IllegalArgumentException`.
+    fn top_docs(&mut self) -> crate::error::Result<TopDocs>;
 
     /// Returns the search strategy used by this collector, if any.
     ///
@@ -665,27 +671,29 @@ impl KnnCollector for TopKnnCollector {
         }
     }
 
-    fn top_docs(&mut self) -> TopDocs {
-        debug_assert!(
-            self.queue.size() <= self.base.k(),
-            "Tried to collect more results than the maximum number allowed"
-        );
-        let len = self.queue.size() as usize;
-        let mut score_docs = vec![ScoreDoc::new(0, 0.0); len];
-        for i in 1..=len {
-            score_docs[len - i] = ScoreDoc::new(self.queue.top_node(), self.queue.top_score());
-            self.queue.pop();
-        }
-        let relation = if self.early_terminated() {
-            TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
-        } else {
-            TotalHitsRelation::EQUAL_TO
-        };
-        TopDocs {
-            total_hits: TotalHits::new(self.visited_count(), relation)
-                .expect("INVARIANT: a visited count is never negative"),
-            score_docs,
-        }
+    fn top_docs(&mut self) -> crate::error::Result<TopDocs> {
+        Ok({
+            debug_assert!(
+                self.queue.size() <= self.base.k(),
+                "Tried to collect more results than the maximum number allowed"
+            );
+            let len = self.queue.size() as usize;
+            let mut score_docs = vec![ScoreDoc::new(0, 0.0); len];
+            for i in 1..=len {
+                score_docs[len - i] = ScoreDoc::new(self.queue.top_node(), self.queue.top_score());
+                self.queue.pop();
+            }
+            let relation = if self.early_terminated() {
+                TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
+            } else {
+                TotalHitsRelation::EQUAL_TO
+            };
+            TopDocs {
+                total_hits: TotalHits::new(self.visited_count(), relation)
+                    .expect("INVARIANT: a visited count is never negative"),
+                score_docs,
+            }
+        })
     }
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {

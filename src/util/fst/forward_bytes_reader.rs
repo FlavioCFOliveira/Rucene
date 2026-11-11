@@ -29,7 +29,7 @@ impl<'a> ForwardBytesReader<'a> {
     }
 
     fn out_of_bounds(&self, pos: i64) -> LuceneError {
-        LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+        LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
             "FST read position {pos} is outside the {} available bytes",
             self.bytes.len()
         )))

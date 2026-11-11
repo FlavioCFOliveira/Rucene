@@ -403,7 +403,9 @@ fn assert_binary_index_sort_flush(variant: &str) {
     let info = infos.info(0);
     assert_eq!(info.info.name, java.value("name"));
     assert_eq!(
-        info.info.index_sort().to_string(),
+        info.info
+            .index_sort()
+            .map_or_else(|| "null".to_string(), ToString::to_string),
         java.value("indexSort"),
         "the segment records the binary index sort"
     );
@@ -796,8 +798,8 @@ impl MergeContext for ScoreContext {
         Ok(info.get_del_count())
     }
 
-    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        info.get_del_count()
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> rucene::error::Result<i32> {
+        Ok(info.get_del_count())
     }
 
     fn get_merging_segments(&self) -> std::collections::HashSet<String> {
@@ -830,7 +832,7 @@ fn tiered_merge_score_and_explanation_match_lucene() {
             std::collections::HashMap::new(),
             StringHelper::random_id(),
             std::collections::HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap();
         let mut output = dir
@@ -1530,7 +1532,12 @@ fn assert_sorted_full_flush(variant: &str) {
     assert_eq!(infos.size().to_string(), java.value("segments"));
     let info = infos.info(0);
     assert_eq!(info.info.name, java.value("name"));
-    assert_eq!(info.info.index_sort().to_string(), java.value("indexSort"));
+    assert_eq!(
+        info.info
+            .index_sort()
+            .map_or_else(|| "null".to_string(), ToString::to_string),
+        java.value("indexSort")
+    );
     assert_eq!(info.get_del_count().to_string(), java.value("delCount"));
 
     let rust_files: BTreeSet<String> = info.files().unwrap().into_iter().collect();
@@ -1599,7 +1606,12 @@ fn assert_sorted_merge(variant: &str) {
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
     assert_eq!(infos.size().to_string(), java.value("segments"));
     let info = infos.info(0);
-    assert_eq!(info.info.index_sort().to_string(), java.value("indexSort"));
+    assert_eq!(
+        info.info
+            .index_sort()
+            .map_or_else(|| "null".to_string(), ToString::to_string),
+        java.value("indexSort")
+    );
     assert_eq!(info.get_del_count().to_string(), java.value("delCount"));
     let reader = open_reader(&dir);
     let leaf = Arc::clone(&reader).leaves().unwrap()[0].leaf_reader();

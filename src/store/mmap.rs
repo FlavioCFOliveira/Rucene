@@ -618,7 +618,7 @@ mod tests {
         // A long starting at 13 spans chunks 0 and 1.
         input.seek(13).unwrap();
         assert_eq!(input.read_long().unwrap(), expected_long(13));
-        assert_eq!(input.file_pointer(), 21);
+        assert_eq!(input.file_pointer().unwrap(), 21);
         // An int at 30 spans chunks 1 and 2.
         input.seek(30).unwrap();
         assert_eq!(

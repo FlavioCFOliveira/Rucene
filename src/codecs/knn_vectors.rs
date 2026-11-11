@@ -1932,8 +1932,16 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
     }
 
     /// Returns the desired off-heap memory size for the given field.
-    fn get_off_heap_byte_size(&self, _field_info: &FieldInfo) -> HashMap<String, i64> {
-        HashMap::new()
+    ///
+    /// Equivalent to `KnnVectorsReader.getOffHeapByteSize(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// What the implementation raises: `Lucene99HnswVectorsReader` raises
+    /// `IllegalArgument` for a field it holds no entry for
+    /// (`getFieldEntryOrThrow`).
+    fn get_off_heap_byte_size(&self, _field_info: &FieldInfo) -> Result<HashMap<String, i64>> {
+        Ok(HashMap::new())
     }
 
     /// Closes this reader, releasing all resources.
@@ -2251,8 +2259,8 @@ impl KnnCollector for EmptyKnnCollector {
         f32::NEG_INFINITY
     }
 
-    fn top_docs(&mut self) -> TopDocs {
-        crate::search::empty_top_docs()
+    fn top_docs(&mut self) -> Result<TopDocs> {
+        Ok(crate::search::empty_top_docs())
     }
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {
@@ -2541,6 +2549,7 @@ mod tests {
         // nothing (`codecs/KnnVectorsFormat.java:128-129, 153-156`) — rmp #231.
         assert!(reader
             .get_off_heap_byte_size(&FieldInfo::default())
+            .unwrap()
             .is_empty());
         reader.check_integrity().unwrap();
         let _merge = reader.get_merge_instance().unwrap();

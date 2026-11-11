@@ -157,11 +157,15 @@ impl SegmentMerger {
         // `SegmentMerger.java:90-95`. Java tests `getIndexSort() != null`; this
         // crate spells the null sort `Sort::new()`, as `SegmentInfo` declares
         // (`SegmentInfo::to_string_verbose`).
-        if merge_state.info_stream.is_enabled("SM") && *segment_info.index_sort() != Sort::new() {
-            merge_state.info_stream.message(
-                "SM",
-                &format!("index sort during merge: {}", segment_info.index_sort()),
-            );
+        if let Some(index_sort) = segment_info
+            .index_sort()
+            .filter(|sort| **sort != Sort::new())
+        {
+            if merge_state.info_stream.is_enabled("SM") {
+                merge_state
+                    .info_stream
+                    .message("SM", &format!("index sort during merge: {index_sort}"));
+            }
         }
 
         Ok(Self {
@@ -643,7 +647,7 @@ mod tests {
             Default::default(),
             [3u8; 16],
             Default::default(),
-            index_sort,
+            Some(index_sort),
         )
         .unwrap();
         SegmentMerger::new(

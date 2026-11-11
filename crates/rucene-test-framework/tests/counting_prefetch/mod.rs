@@ -141,7 +141,7 @@ impl DataInput for CountingPrefetchIndexInput {
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
-        let skip_to = self.file_pointer() + num_bytes;
+        let skip_to = self.file_pointer()? + num_bytes;
         self.seek(skip_to)
     }
 }
@@ -151,7 +151,7 @@ impl IndexInput for CountingPrefetchIndexInput {
         self.r#in.close()
     }
 
-    fn file_pointer(&self) -> i64 {
+    fn file_pointer(&self) -> Result<i64> {
         self.r#in.file_pointer()
     }
 

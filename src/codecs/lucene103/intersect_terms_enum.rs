@@ -303,7 +303,7 @@ impl IntersectTermsEnumFrame {
         self.bytes_pos = 0;
         self.bytes_limit = num_meta_bytes;
 
-        self.fp_end = terms_in.file_pointer();
+        self.fp_end = terms_in.file_pointer()?;
         Ok(())
     }
 
@@ -442,6 +442,28 @@ impl IntersectTermsEnumFrame {
         // `SegmentTermsEnum.seekExact(BytesRef, TermState)` reads back.
         self.state_data.term_block_ord = self.meta_data_upto;
         Ok(())
+    }
+
+    /// Loads this frame's block; for the first block of a floor run, `node`
+    /// carries the trie node whose floor data lets the frame skip the floor
+    /// blocks the automaton cannot accept.
+    ///
+    /// Equivalent to `IntersectTermsEnumFrame.load(TrieReader.Node)`
+    /// (`IntersectTermsEnumFrame.java:141-170`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the input's I/O errors; an unknown compression code is a
+    /// `CorruptIndex` with the cause.
+    pub fn load(
+        &mut self,
+        terms_in: &mut dyn IndexInput,
+        trie_reader: &mut TrieReader,
+        node: Option<&Node>,
+        accept: bool,
+    ) -> Result<()> {
+        let _ = (terms_in, trie_reader, node, accept);
+        todo!("PORT G-112")
     }
 }
 

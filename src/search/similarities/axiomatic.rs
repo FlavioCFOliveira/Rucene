@@ -37,7 +37,7 @@ const DEFAULT_QUERY_LEN: i32 = 1;
 /// this struct instead, so that the validation Java performs in
 /// `Axiomatic(boolean, float, int, float)` is written once.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct AxiomaticParams {
+pub struct AxiomaticParams {
     s: f32,
     k: f32,
     query_len: i32,
@@ -51,7 +51,7 @@ impl AxiomaticParams {
     /// (`Axiomatic.java:57-75`). Java tests `Float.isFinite(x) == false ||
     /// Float.isNaN(x)`, which is redundant — a NaN is not finite — and is
     /// collapsed here.
-    fn new(discount_overlaps: bool, s: f32, query_len: i32, k: f32) -> Result<Self> {
+    pub fn new(discount_overlaps: bool, s: f32, query_len: i32, k: f32) -> Result<Self> {
         if !s.is_finite() || !(0.0..=1.0).contains(&s) {
             return Err(LuceneError::illegal_argument(format!(
                 "illegal s value: {}, must be between 0 and 1",
@@ -75,6 +75,39 @@ impl AxiomaticParams {
             query_len,
             discount_overlaps,
         })
+    }
+
+    /// Equivalent to `Axiomatic(float s, int queryLen, float k)`
+    /// (`Axiomatic.java:53-55`), which is `this(true, s, queryLen, k)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_s_query_len_k(s: f32, query_len: i32, k: f32) -> Result<Self> {
+        let _ = (s, query_len, k);
+        todo!("PORT G-105")
+    }
+
+    /// Equivalent to `Axiomatic(float s)` (`Axiomatic.java:87-89`), which is
+    /// `this(s, 1, 0.35f)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_s(s: f32) -> Result<Self> {
+        let _ = s;
+        todo!("PORT G-105")
+    }
+
+    /// Equivalent to `Axiomatic(float s, int queryLen)` (`Axiomatic.java:97-99`),
+    /// which is `this(s, queryLen, 0.35f)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_s_query_len(s: f32, query_len: i32) -> Result<Self> {
+        let _ = (s, query_len);
+        todo!("PORT G-105")
     }
 }
 

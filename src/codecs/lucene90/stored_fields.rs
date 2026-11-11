@@ -313,9 +313,9 @@ impl StoredFieldsInts {
             16 => Self::read_ints16(input, count, values, offset)?,
             32 => Self::read_ints32(input, count, values, offset)?,
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                    "Unsupported number of bits per value: {bpv}"
-                ))))
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                    format!("Unsupported number of bits per value: {bpv}"),
+                )))
             }
         }
         Ok(())
@@ -1015,9 +1015,9 @@ impl FieldsIndexWriter {
                     }
                     docs.finish()?;
                     if doc != i64::from(self.total_docs) {
-                        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                            "Docs don't add up (resource={docs_name})"
-                        ))));
+                        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                            format!("Docs don't add up (resource={docs_name})"),
+                        )));
                     }
                     Ok(())
                 })();
@@ -1058,9 +1058,9 @@ impl FieldsIndexWriter {
                         file_pointers.add(fp)?;
                     }
                     if max_pointer < fp {
-                        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                            "File pointers don't add up (resource={file_pointers_name})"
-                        ))));
+                        return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                            format!("File pointers don't add up (resource={file_pointers_name})"),
+                        )));
                     }
                     file_pointers.add(max_pointer)?;
                     file_pointers.finish()?;
@@ -1437,7 +1437,7 @@ impl Lucene90CompressingStoredFieldsWriter {
 
         self.doc_base += self.num_buffered_docs as i32;
         self.num_buffered_docs = 0;
-        self.buffered_docs.reset();
+        self.buffered_docs.reset()?;
         Ok(())
     }
 
@@ -1588,9 +1588,9 @@ impl Lucene90CompressingStoredFieldsWriter {
                 let code = raw_docs.read_v_int()?;
                 let buffered_docs = ((code as u32) >> 2) as i32;
                 if base != doc_id {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "invalid state: base={base}, docID={doc_id}"
-                    ))));
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!("invalid state: base={base}, docID={doc_id}"),
+                    )));
                 }
                 // write a new index entry and new header for this chunk.
                 self.index_writer
@@ -1600,9 +1600,11 @@ impl Lucene90CompressingStoredFieldsWriter {
                 doc_id += buffered_docs;
                 self.doc_base += buffered_docs;
                 if doc_id > to_doc_id {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!(
                         "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
-                    ))));
+                    ),
+                    )));
                 }
                 // copy bytes until the next chunk boundary (or end of chunk data).
                 // using the stored fields index for this isn't the most efficient, but fast
@@ -1612,7 +1614,7 @@ impl Lucene90CompressingStoredFieldsWriter {
                 } else {
                     reader.index_reader().get_start_pointer(doc_id)?
                 };
-                let to_copy = end_chunk_pointer - raw_docs.file_pointer();
+                let to_copy = end_chunk_pointer - raw_docs.file_pointer()?;
                 self.fields_stream.copy_bytes(raw_docs.as_mut(), to_copy)?;
                 self.num_chunks += 1;
                 let dirty_chunk = (code & 2) != 0;
@@ -2149,10 +2151,12 @@ impl BlockState {
         self.sliced = (token & 1) != 0;
 
         if !self.contains(doc_id) || self.doc_base + self.chunk_docs > num_docs {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Corrupted: doc_id={doc_id}, doc_base={}, chunk_docs={}, num_docs={num_docs}",
-                self.doc_base, self.chunk_docs
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "Corrupted: doc_id={doc_id}, doc_base={}, chunk_docs={}, num_docs={num_docs}",
+                    self.doc_base, self.chunk_docs
+                ),
+            )));
         }
 
         self.offsets.resize(self.chunk_docs as usize + 1, 0);
@@ -2181,14 +2185,14 @@ impl BlockState {
                 let len = self.offsets[i + 1] - self.offsets[i];
                 let stored = self.num_stored_fields[i];
                 if (len == 0) != (stored == 0) {
-                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                        "length={len}, num_stored_fields={stored}"
-                    ))));
+                    return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                        format!("length={len}, num_stored_fields={stored}"),
+                    )));
                 }
             }
         }
 
-        self.start_pointer = fields_stream.file_pointer();
+        self.start_pointer = fields_stream.file_pointer()?;
 
         if merging {
             // `Math.toIntExact(offsets[chunkDocs])`
@@ -2276,11 +2280,13 @@ impl BlockState {
         // further down; both surface as an exception, so both are reported
         // here rather than turning into a wild slice index.
         if offset < 0 || length < 0 {
-            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "document {doc_id} spans [{}, {}) inside its chunk",
-                self.offsets[index],
-                self.offsets[index + 1]
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!(
+                    "document {doc_id} spans [{}, {}) inside its chunk",
+                    self.offsets[index],
+                    self.offsets[index + 1]
+                ),
+            )));
         }
         let offset = offset as usize;
         let length = length as usize;
@@ -2434,7 +2440,7 @@ impl Lucene90CompressingStoredFieldsReader {
             )?;
             debug_assert!(
                 i64::from(index_header_length(format_name, segment_suffix))
-                    == fields_stream.file_pointer()
+                    == fields_stream.file_pointer()?
             );
             retrieve_checksum(fields_stream.as_mut())?;
 
@@ -2468,17 +2474,17 @@ impl Lucene90CompressingStoredFieldsReader {
             let num_dirty_docs = meta_in.read_v_long()?;
 
             if num_chunks < num_dirty_chunks {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                 "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, numDirtyChunks={num_dirty_chunks}"
             ))));
             }
             if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
                 )));
             }
             if num_dirty_docs < num_dirty_chunks {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                 "Cannot have more dirty chunks than documents within dirty chunks: numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
             ))));
             }
@@ -2586,7 +2592,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
                 .field_infos
                 .field_info_by_number(field_number)
                 .ok_or_else(|| {
-                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                         "field number {field_number} not found"
                     )))
                 })?;
@@ -2920,9 +2926,9 @@ impl Lucene90CompressingStoredFieldsReader {
             TYPE_NUMERIC_FLOAT => visitor.float_field(info, Self::read_z_float(input)?),
             TYPE_NUMERIC_LONG => visitor.long_field(info, Self::read_t_long(input)?),
             TYPE_NUMERIC_DOUBLE => visitor.double_field(info, Self::read_z_double(input)?),
-            _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Unknown type flag: 0x{bits:x}"
-            )))),
+            _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("Unknown type flag: 0x{bits:x}"),
+            ))),
         }
     }
 
@@ -2948,9 +2954,9 @@ impl Lucene90CompressingStoredFieldsReader {
                 Self::read_z_double(input)?;
                 Ok(())
             }
-            _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
-                "Unknown type flag: 0x{bits:x}"
-            )))),
+            _ => Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
+                format!("Unknown type flag: 0x{bits:x}"),
+            ))),
         }
     }
 
@@ -3016,7 +3022,7 @@ impl Lucene90CompressingStoredFieldsReader {
             DAY_ENCODING => l = l.wrapping_mul(DAY_MS),
             0 => {}
             _ => {
-                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::corrupt_index_message(
                     "Invalid TLong encoding".to_string(),
                 )))
             }
@@ -3344,7 +3350,7 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
 mod tests {
     use super::*;
     use crate::index::FieldInfo as RealFieldInfo;
-    use crate::search::Sort;
+
     use crate::store::ByteBuffersDirectory;
     use crate::store::DEFAULT_IO_CONTEXT;
     use crate::util::string_helper::ID_LENGTH;
@@ -3418,7 +3424,7 @@ mod tests {
         let mut visitor = DocumentStoredFieldVisitor::new();
         match merge.document(0, &mut visitor) {
             Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(message),
+                kind: LuceneErrorKind::CorruptIndex { message, .. },
                 ..
             }) => assert!(
                 message.starts_with("Corrupted: expected chunk size = -5, got 0 (resource="),
@@ -3510,7 +3516,7 @@ mod tests {
             HashMap::new(),
             [0u8; ID_LENGTH],
             HashMap::new(),
-            Sort::default(),
+            None,
         )
         .unwrap()
     }
@@ -4511,7 +4517,7 @@ mod tests {
             matches!(
                 error,
                 LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex(_),
+                    kind: LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),
@@ -5531,7 +5537,7 @@ mod tests {
             self.inner.close()
         }
 
-        fn file_pointer(&self) -> i64 {
+        fn file_pointer(&self) -> Result<i64> {
             self.inner.file_pointer()
         }
 
@@ -5595,14 +5601,14 @@ mod tests {
         assert!(matches!(
             index.get_block_start_pointer(-1),
             Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             })
         ));
         assert!(matches!(
             index.get_block_length(-1),
             Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             })
         ));
@@ -5610,7 +5616,7 @@ mod tests {
         assert!(matches!(
             reader.serialized_document(0),
             Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             })
         ));
@@ -5890,7 +5896,7 @@ mod close_family_tests {
             matches!(
                 error,
                 crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex(_),
+                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
                     ..
                 }
             ),

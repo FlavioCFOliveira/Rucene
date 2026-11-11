@@ -1077,13 +1077,11 @@ impl KnnCollector for GraphBuilderKnnCollector {
         }
     }
 
-    /// # Panics
-    ///
-    /// Always. Equivalent to `HnswGraphBuilder.GraphBuilderKnnCollector.topDocs()`,
+    /// Equivalent to `HnswGraphBuilder.GraphBuilderKnnCollector.topDocs()`,
     /// which throws `IllegalArgumentException`: this collector feeds graph
     /// construction and never produces search results.
-    fn top_docs(&mut self) -> crate::search::knn::TopDocs {
-        panic!("GraphBuilderKnnCollector does not produce TopDocs")
+    fn top_docs(&mut self) -> crate::error::Result<crate::search::knn::TopDocs> {
+        todo!("PORT G-402")
     }
 
     fn get_search_strategy(&self) -> Option<&crate::search::knn::KnnSearchStrategy> {

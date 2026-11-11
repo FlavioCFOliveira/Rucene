@@ -456,7 +456,11 @@ pub fn check_footer_with_prior(
     // unchecked throwables the input raises — a panic here, such as the
     // `RuntimeException` a closed test input throws from `length()`.
     let tried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let remaining = input.length() - input.file_pointer();
+        let file_pointer = match input.file_pointer() {
+            Ok(file_pointer) => file_pointer,
+            Err(e) => return Tried::Checked(Err(e)),
+        };
+        let remaining = input.length() - file_pointer;
         if remaining < footer_length() as i64 {
             // corruption caused us to read into the checksum footer already: we can't proceed
             return Tried::Remaining(remaining);
@@ -498,7 +502,7 @@ pub fn check_footer_with_prior(
         }
         // `corruptException.addSuppressed(priorException); throw corruptException;`
         Ok(Tried::Checked(Err(mut corruption)))
-            if matches!(corruption.kind(), LuceneErrorKind::CorruptIndex(_)) =>
+            if matches!(corruption.kind(), LuceneErrorKind::CorruptIndex { .. }) =>
         {
             corruption.add_suppressed(prior);
             corruption
@@ -569,7 +573,7 @@ pub fn read_index_header(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
     }
     let codec = input.read_string()?;
     read_be_int(input)?;
-    let pos = input.file_pointer() + ID_LENGTH as i64;
+    let pos = input.file_pointer()? + ID_LENGTH as i64;
     input.seek(pos)?;
     let suffix_length = input.read_byte()? as usize;
     let len = header_length(&codec) as usize + ID_LENGTH + 1 + suffix_length;
@@ -705,7 +709,7 @@ pub fn checksum_entire_file_shared(input: &dyn IndexInput) -> Result<i64> {
     let mut clone = input.clone_input()?;
     clone.seek(0)?;
     let mut checksum_input = BufferedChecksumIndexInput::new(clone);
-    debug_assert!(checksum_input.file_pointer() == 0);
+    debug_assert!(checksum_input.file_pointer()? == 0);
     if checksum_input.length() < footer_length() as i64 {
         // `CodecUtil.java:611-617`: Java prints `footerLength==`.
         return Err(LuceneError::corrupt_index(
@@ -726,7 +730,7 @@ pub fn checksum_entire_file_shared(input: &dyn IndexInput) -> Result<i64> {
 /// (`CodecUtil.java:560-598`): every failure is a
 /// `CorruptIndexException(String, DataInput)` naming the input.
 fn validate_footer(input: &mut dyn IndexInput) -> Result<()> {
-    let remaining = input.length() - input.file_pointer();
+    let remaining = input.length() - input.file_pointer()?;
     let expected = footer_length() as i64;
     if remaining < expected {
         return Err(LuceneError::corrupt_index(
@@ -734,7 +738,7 @@ fn validate_footer(input: &mut dyn IndexInput) -> Result<()> {
                 "misplaced codec footer (file truncated?): remaining={}, expected={}, fp={}",
                 remaining,
                 expected,
-                input.file_pointer()
+                input.file_pointer()?
             ),
             input.to_java_string(),
         ));
@@ -745,7 +749,7 @@ fn validate_footer(input: &mut dyn IndexInput) -> Result<()> {
                 "misplaced codec footer (file extended?): remaining={}, expected={}, fp={}",
                 remaining,
                 expected,
-                input.file_pointer()
+                input.file_pointer()?
             ),
             input.to_java_string(),
         ));
@@ -971,7 +975,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ));
@@ -990,7 +994,7 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "WrongCodec", 1, 10).unwrap_err();
         let LuceneError {
-            kind: LuceneErrorKind::CorruptIndex(message),
+            kind: LuceneErrorKind::CorruptIndex { message, .. },
             ..
         } = &err
         else {
@@ -1118,7 +1122,7 @@ mod tests {
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(m),
+                kind: LuceneErrorKind::CorruptIndex { message: m, .. },
                 ..
             } => {
                 assert!(m.starts_with("checksum failed"), "{m}");
@@ -1136,7 +1140,7 @@ mod tests {
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(m),
+                kind: LuceneErrorKind::CorruptIndex { message: m, .. },
                 ..
             } => {
                 assert_eq!(
@@ -1181,7 +1185,7 @@ mod tests {
             fn close(&mut self) -> Result<()> {
                 Ok(())
             }
-            fn file_pointer(&self) -> i64 {
+            fn file_pointer(&self) -> Result<i64> {
                 panic!("Abusing closed IndexInput!")
             }
             fn length(&self) -> i64 {
@@ -1234,7 +1238,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ));
@@ -1260,7 +1264,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::CorruptIndex(_),
+                kind: LuceneErrorKind::CorruptIndex { .. },
                 ..
             }
         ));

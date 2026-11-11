@@ -276,7 +276,7 @@ impl SegmentTermsEnumFrame {
             self.is_last_in_floor
         );
 
-        let start_suffix_fp = terms_in.file_pointer();
+        let start_suffix_fp = terms_in.file_pointer()?;
         let code_l = terms_in.read_v_long()?;
         self.is_leaf_block = code_l & 0x04 != 0;
         let num_suffix_bytes = ((code_l as u64) >> 3) as usize;
@@ -304,7 +304,7 @@ impl SegmentTermsEnumFrame {
         }
         self.suffix_lengths_pos = 0;
         self.suffix_lengths_limit = n;
-        self.total_suffix_bytes = terms_in.file_pointer() - start_suffix_fp;
+        self.total_suffix_bytes = terms_in.file_pointer()? - start_suffix_fp;
 
         let num_stat_bytes = terms_in.read_v_int()?.max(0) as usize;
         if self.stat_bytes.len() < num_stat_bytes {
@@ -328,7 +328,7 @@ impl SegmentTermsEnumFrame {
         self.bytes_pos = 0;
         self.bytes_limit = num_meta_bytes;
 
-        self.fp_end = terms_in.file_pointer();
+        self.fp_end = terms_in.file_pointer()?;
         Ok(())
     }
 
