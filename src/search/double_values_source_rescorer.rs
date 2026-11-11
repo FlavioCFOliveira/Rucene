@@ -141,7 +141,7 @@ impl<I: DoubleValuesSourceRescorerImpl> Rescorer for DoubleValuesSourceRescorer<
             doc_id >= ctx.doc_base() && doc_id < ctx.doc_base() + ctx.leaf_reader().max_doc()
         });
         let Some(leaf_with_doc) = leaf_with_doc else {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "docId={doc_id} not found in any leaf in provided searcher"
             )));
         };

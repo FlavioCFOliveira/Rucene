@@ -103,7 +103,7 @@ pub fn write_bit_set(
     dense_rank_power: i8,
 ) -> Result<i16> {
     if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "denseRankPower must be in [7, 15] or -1, got {dense_rank_power}"
         )));
     }
@@ -336,7 +336,7 @@ impl IndexedDISI {
         cost: i64,
     ) -> Result<Self> {
         if (dense_rank_power < 7 || dense_rank_power > 15) && dense_rank_power != -1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "denseRankPower must be in [7, 15] or -1, got {dense_rank_power}"
             )));
         }

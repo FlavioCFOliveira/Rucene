@@ -156,7 +156,7 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the declared
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when the declared
     /// length is negative, and propagates any I/O error.
     fn write_field_data_input(
         &mut self,
@@ -165,7 +165,7 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     ) -> Result<()> {
         let length = value.length();
         if length < 0 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "stored binary field \"{}\" has a negative length: {length}",
                 info.name
             )));
@@ -197,7 +197,7 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState)
     /// when a source segment has no stored-fields reader — where Java's
     /// `storedFieldsReader.checkIntegrity()` throws `NullPointerException` —
     /// and propagates abort, integrity, read and write errors.
@@ -498,7 +498,10 @@ mod tests {
         let merge_state = two_segment_merge_state(vec![Some(Box::new(reader)), None], vec![3, 2]);
         let mut writer = RecordingStoredFieldsWriter::default();
         match writer.merge(&merge_state) {
-            Err(crate::error::LuceneError::IllegalState { message, .. }) => assert_eq!(
+            Err(crate::error::LuceneError {
+                kind: crate::error::LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "source segment 1 of the merge has no stored-fields reader"
             ),

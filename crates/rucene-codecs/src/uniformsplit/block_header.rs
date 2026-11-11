@@ -237,6 +237,7 @@ mod tests {
     use rucene::store::{ByteArrayDataInput, ByteBuffersDataOutput};
 
     use super::*;
+    use rucene::error::LuceneErrorKind;
 
     fn encoded(values: &[i64]) -> Vec<u8> {
         let mut out = ByteBuffersDataOutput::new();
@@ -256,7 +257,16 @@ mod tests {
     }
 
     fn message(e: LuceneError) -> String {
-        assert!(matches!(&e, LuceneError::CorruptIndex { .. }), "{e:?}");
+        assert!(
+            matches!(
+                &e,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex { .. },
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
         e.to_string()
     }
 

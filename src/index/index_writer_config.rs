@@ -352,7 +352,7 @@ impl LiveIndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::IllegalState`] once a writer is attached.
+    /// [`LuceneErrorKind::IllegalState`] once a writer is attached.
     pub(crate) fn check_not_attached(&self) -> Result<()> {
         match &self.index_writer {
             Some(slot) if slot.get().is_some() => Err(LuceneError::illegal_state(
@@ -373,7 +373,7 @@ impl LiveIndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the configuration is already
+    /// Returns [`LuceneErrorKind::IllegalState`] if the configuration is already
     /// attached to a writer.
     pub(crate) fn attach_writer(&self, writer: Weak<dyn IndexWriterTrait>) -> Result<()> {
         match &self.index_writer {
@@ -407,7 +407,7 @@ impl LiveIndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the value is non-positive when
+    /// Returns `LuceneErrorKind::IllegalArgument` if the value is non-positive when
     /// enabled, or if both RAM and document-count flushing would be disabled.
     pub fn set_ram_buffer_size_mb(&self, ram_buffer_size_mb: f64) -> Result<&Self> {
         self.synchronized_flush_settings(|settings| {
@@ -431,7 +431,7 @@ impl LiveIndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the value is enabled but less
+    /// Returns `LuceneErrorKind::IllegalArgument` if the value is enabled but less
     /// than 2, or if both flushing triggers would be disabled.
     pub fn set_max_buffered_docs(&self, max_buffered_docs: i32) -> Result<&Self> {
         self.synchronized_flush_settings(|settings| {
@@ -474,11 +474,11 @@ impl LiveIndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` (`"mergePolicy must not be
+    /// Returns `LuceneErrorKind::IllegalArgument` (`"mergePolicy must not be
     /// null"`) if `merge_policy` is `None`, Java's `null`.
     pub fn set_merge_policy(&self, merge_policy: Option<Arc<dyn MergePolicy>>) -> Result<&Self> {
         let Some(merge_policy) = merge_policy else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "mergePolicy must not be null".to_string(),
             ));
         };
@@ -862,7 +862,7 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `open_mode` is null-equivalent
+    /// Returns `LuceneErrorKind::IllegalArgument` if `open_mode` is null-equivalent
     /// (not possible for the enum, but kept for API parity).
     pub fn set_open_mode(&self, open_mode: OpenMode) -> Result<&Self> {
         self.live.open_mode.set(open_mode);
@@ -873,7 +873,7 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the value is outside the
+    /// Returns `LuceneErrorKind::IllegalArgument` if the value is outside the
     /// supported range `[LATEST.major - 1, LATEST.major]`.
     pub fn set_index_created_version_major(
         &self,
@@ -881,12 +881,12 @@ impl IndexWriterConfig {
     ) -> Result<&Self> {
         let latest_major = Version::LATEST.major as i32;
         if index_created_version_major > latest_major {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "indexCreatedVersionMajor may not be in the future: current major version is {latest_major}, but got: {index_created_version_major}"
             )));
         }
         if index_created_version_major < latest_major - 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "indexCreatedVersionMajor may not be less than the minimum supported version: {}, but got: {index_created_version_major}",
                 latest_major - 1
             )));
@@ -901,7 +901,7 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` (`"indexDeletionPolicy must not
+    /// Returns `LuceneErrorKind::IllegalArgument` (`"indexDeletionPolicy must not
     /// be null"`) if `del_policy` is `None`, Java's `null`
     /// (`IndexWriterConfig.java:214-220`).
     pub fn set_index_deletion_policy(
@@ -909,7 +909,7 @@ impl IndexWriterConfig {
         del_policy: Option<Arc<dyn IndexDeletionPolicy>>,
     ) -> Result<&Self> {
         let Some(del_policy) = del_policy else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "indexDeletionPolicy must not be null".to_string(),
             ));
         };
@@ -927,12 +927,12 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` (`"similarity must not be
+    /// Returns `LuceneErrorKind::IllegalArgument` (`"similarity must not be
     /// null"`) if `similarity` is `None`, Java's `null`
     /// (`IndexWriterConfig.java:251-257`).
     pub fn set_similarity(&self, similarity: Option<Arc<dyn Similarity>>) -> Result<&Self> {
         let Some(similarity) = similarity else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "similarity must not be null".to_string(),
             ));
         };
@@ -944,7 +944,7 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` (`"mergeScheduler must not be
+    /// Returns `LuceneErrorKind::IllegalArgument` (`"mergeScheduler must not be
     /// null"`) if `merge_scheduler` is `None`, Java's `null`
     /// (`IndexWriterConfig.java:272-278`).
     pub fn set_merge_scheduler(
@@ -952,7 +952,7 @@ impl IndexWriterConfig {
         merge_scheduler: Option<Arc<dyn MergeScheduler>>,
     ) -> Result<&Self> {
         let Some(merge_scheduler) = merge_scheduler else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "mergeScheduler must not be null".to_string(),
             ));
         };
@@ -984,10 +984,10 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the value is not in `(0, 2048)`.
+    /// Returns `LuceneErrorKind::IllegalArgument` if the value is not in `(0, 2048)`.
     pub fn set_ram_per_thread_hard_limit_mb(&self, per_thread_hard_limit_mb: i32) -> Result<&Self> {
         if per_thread_hard_limit_mb <= 0 || per_thread_hard_limit_mb >= 2048 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "PerThreadHardLimit must be greater than 0 and less than 2048MB".to_string(),
             ));
         }
@@ -1011,7 +1011,7 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `info_stream` is null.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `info_stream` is null.
     pub fn set_info_stream(&self, info_stream: Arc<dyn InfoStream>) -> Result<&Self> {
         self.live.info_stream.set(info_stream);
         Ok(self)
@@ -1048,7 +1048,7 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if any sort field does not
+    /// Returns `LuceneErrorKind::IllegalArgument` if any sort field does not
     /// support index sorting.
     pub fn set_index_sort(&self, sort: Sort) -> Result<&Self> {
         // `IndexWriterConfig.setIndexSort` (`IndexWriterConfig.java:475-485`)
@@ -1057,7 +1057,7 @@ impl IndexWriterConfig {
         // its own — sort an index.
         for field in sort.fields() {
             if field.get_index_sorter().is_none() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Cannot sort index with sort field {field}"
                 )));
             }
@@ -1158,7 +1158,7 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` (`"mergePolicy must not be
+    /// Returns `LuceneErrorKind::IllegalArgument` (`"mergePolicy must not be
     /// null"`) if `merge_policy` is `None`, Java's `null`.
     pub fn set_merge_policy(&self, merge_policy: Option<Arc<dyn MergePolicy>>) -> Result<&Self> {
         self.live.set_merge_policy(merge_policy)?;
@@ -1351,12 +1351,12 @@ impl LiveFlushSettings<'_> {
     pub fn set_ram_buffer_size_mb(&self, ram_buffer_size_mb: f64) -> Result<()> {
         let disable = LiveIndexWriterConfig::DISABLE_AUTO_FLUSH;
         if ram_buffer_size_mb != disable as f64 && ram_buffer_size_mb <= 0.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "ramBufferSize should be > 0.0 MB when enabled".to_string(),
             ));
         }
         if ram_buffer_size_mb == disable as f64 && self.config.max_buffered_docs() == disable {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "at least one of ramBufferSize and maxBufferedDocs must be enabled".to_string(),
             ));
         }
@@ -1375,12 +1375,12 @@ impl LiveFlushSettings<'_> {
     pub fn set_max_buffered_docs(&self, max_buffered_docs: i32) -> Result<()> {
         let disable = LiveIndexWriterConfig::DISABLE_AUTO_FLUSH;
         if max_buffered_docs != disable && max_buffered_docs < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxBufferedDocs must at least be 2 when enabled".to_string(),
             ));
         }
         if max_buffered_docs == disable && self.config.ram_buffer_size_mb() == disable as f64 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "at least one of ramBufferSize and maxBufferedDocs must be enabled".to_string(),
             ));
         }
@@ -1507,6 +1507,7 @@ mod set_info_stream_print_stream_tests {
 mod tests {
     use super::*;
     use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::error::LuceneErrorKind;
     use crate::search::{SortField, SortFieldType};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Once;
@@ -1803,7 +1804,7 @@ mod tests {
         assert!(live.attach_writer(Arc::downgrade(&writer)).is_ok());
         let error = live.attach_writer(Arc::downgrade(&writer)).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::IllegalState { message, .. }
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalState { message, .. }, .. }
                 if message == "do not share IndexWriterConfig instances across IndexWriters"),
             "{error}"
         );

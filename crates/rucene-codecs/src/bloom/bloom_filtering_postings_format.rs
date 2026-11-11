@@ -29,7 +29,7 @@ use rucene::codecs::{
     FieldsConsumer, FieldsProducer, NormsProducer, PostingsFormat, SegmentReadState,
     SegmentWriteState,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::{
     FieldInfo, Fields, ImpactsEnum, PostingsEnum, SeekStatus, TermState, Terms, TermsEnum,
@@ -169,7 +169,7 @@ impl PostingsFormat for BloomFilteringPostingsFormat {
         state: &SegmentWriteState<'a>,
     ) -> Result<Box<dyn FieldsConsumer + 'a>> {
         let Some(delegate_postings_format) = &self.delegate_postings_format else {
-            return Err(LuceneError::UnsupportedOperation(
+            return Err(LuceneError::unsupported_operation(
                 "Error - org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat has been \
                  constructed without a choice of PostingsFormat"
                     .to_string(),
@@ -233,7 +233,7 @@ impl BloomFilteredFieldsProducer {
                 let field_num = input.read_int()?;
                 let bloom = FuzzySet::deserialize(input.as_mut())?;
                 if field_num < 0 {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Illegal field number: {field_num}"
                     )));
                 }
@@ -494,7 +494,7 @@ impl TermsEnum for BloomFilteredTermsEnum {
     /// `IllegalArgumentException`.
     fn seek_term_state(&mut self, text: &BytesRef, _state: &dyn TermState) -> Result<()> {
         if !self.seek_exact(text)? {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "term={text:?} does not exist"
             )));
         }
@@ -622,7 +622,9 @@ impl FieldsConsumer for BloomFilteredFieldsConsumer<'_> {
                                     == field_info.as_ref().map(|i| i.number)
                             })
                         {
-                            return Err(LuceneError::AssertionError(String::new()));
+                            return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                                String::new(),
+                            )));
                         }
                         self.bloom_filters.push((field_info.clone(), set));
                         let index = self.bloom_filters.len() - 1;

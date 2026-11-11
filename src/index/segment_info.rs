@@ -194,7 +194,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if `max_doc` has not been set.
+    /// Returns `LuceneErrorKind::IllegalState` if `max_doc` has not been set.
     pub fn max_doc(&self) -> Result<i32> {
         // `if (this.maxDoc == -1)` (`SegmentInfo.java:189-194`).
         if self.max_doc == UNSET_MAX_DOC {
@@ -212,7 +212,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if `max_doc` was already set (is
+    /// Returns `LuceneErrorKind::IllegalState` if `max_doc` was already set (is
     /// not `-1`).
     pub fn set_max_doc(&mut self, max_doc: i32) -> Result<()> {
         if self.max_doc != -1 {
@@ -283,12 +283,12 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::IllegalArgument`] `"codec must be non-null"` when
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) `"codec must be non-null"` when
     /// `codec` is `None`.
     pub fn set_codec(&mut self, codec: Option<Arc<dyn Codec>>) -> Result<()> {
         debug_assert!(self.codec.is_none());
         let Some(codec) = codec else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "codec must be non-null".to_string(),
             ));
         };
@@ -372,7 +372,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if the file set has not been computed.
+    /// Returns `LuceneErrorKind::IllegalState` if the file set has not been computed.
     pub fn files(&self) -> Result<HashSet<String>> {
         Ok(self.files_ordered()?.to_std())
     }
@@ -386,7 +386,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if the file set has not been
+    /// Returns `LuceneErrorKind::IllegalState` if the file set has not been
     /// computed.
     pub fn files_ordered(&self) -> Result<JavaHashSet> {
         let files = self.files.read().unwrap();
@@ -411,7 +411,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a name is not a codec
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a name is not a codec
     /// file name or ends with `.tmp`, with Java's message.
     pub fn set_files<I>(&self, files: I) -> Result<()>
     where
@@ -433,7 +433,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for the first offending name,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for the first offending name,
     /// where Java throws `IllegalArgumentException`.
     pub fn check_file_names<'a, I>(files: I) -> Result<()>
     where
@@ -441,12 +441,12 @@ impl SegmentInfo {
     {
         for file in files {
             if !is_codec_file(file) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "invalid codec filename '{file}', must match: {CODEC_FILE_PATTERN}"
                 )));
             }
             if file.to_lowercase().ends_with(".tmp") {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "invalid codec filename '{file}', cannot end with .tmp extension"
                 )));
             }
@@ -460,7 +460,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a name fails
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a name fails
     /// [`check_file_names`](Self::check_file_names), which is where Java throws.
     pub fn add_files(&self, files: &[String]) -> Result<()> {
         Self::check_file_names(files)?;
@@ -488,7 +488,7 @@ impl SegmentInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the name fails
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the name fails
     /// [`check_file_names`](Self::check_file_names).
     pub fn add_file(&self, file: String) -> Result<()> {
         self.add_files(&[file])
@@ -768,7 +768,7 @@ impl SegmentCommitInfo {
     pub fn set_del_count(&mut self, del_count: i32) -> Result<()> {
         let max_doc = self.info.max_doc()?;
         if del_count < 0 || del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid delCount={del_count} (maxDoc={max_doc})"
             )));
         }
@@ -778,7 +778,7 @@ impl SegmentCommitInfo {
             self.soft_del_count
         );
         if del_count + self.soft_del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "delCount + softDelCount > maxDoc (maxDoc={max_doc}, delCount={del_count}, softDelCount={})",
                 self.soft_del_count
             )));
@@ -796,7 +796,7 @@ impl SegmentCommitInfo {
     pub fn set_soft_del_count(&mut self, soft_del_count: i32) -> Result<()> {
         let max_doc = self.info.max_doc()?;
         if soft_del_count < 0 || soft_del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid softDelCount={soft_del_count} (maxDoc={max_doc})"
             )));
         }
@@ -806,7 +806,7 @@ impl SegmentCommitInfo {
             self.del_count
         );
         if self.del_count + soft_del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "delCount + softDelCount > maxDoc (maxDoc={max_doc}, delCount={}, softDelCount={soft_del_count})",
                 self.del_count
             )));
@@ -1433,6 +1433,7 @@ mod tests {
     use crate::codecs::state::{SegmentReadState, SegmentWriteState};
     use crate::codecs::tests::DummyCodec;
     use crate::codecs::FilterCodec;
+    use crate::error::LuceneErrorKind;
     use crate::index::FieldInfos;
     use crate::store::{ByteBuffersDirectory, DefaultIOContext, Directory};
     use crate::util::Version;
@@ -1495,7 +1496,13 @@ mod tests {
             Sort::default(),
         )
         .unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1533,7 +1540,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "invalid codec filename 'foo.bar', must match: _[a-z0-9]+(_.*)?\\..*".to_string()
             )
             .to_string()
@@ -1546,7 +1553,7 @@ mod tests {
         let error = info.set_files(["_0.TMP".to_string()]).unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "invalid codec filename '_0.TMP', cannot end with .tmp extension".to_string()
             )
             .to_string()

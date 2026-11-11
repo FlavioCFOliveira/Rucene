@@ -178,7 +178,7 @@ impl TermsEnum for STBlockReader {
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn seek_term_state(&mut self, text: &BytesRef, state: &dyn TermState) -> Result<()> {
@@ -191,7 +191,7 @@ impl TermsEnum for STBlockReader {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {

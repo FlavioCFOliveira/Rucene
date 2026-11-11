@@ -85,7 +85,10 @@ fn bitvectors_resolves_by_name() {
 #[test]
 fn bitvectors_constructor_checks_its_arguments() {
     let message = |r: rucene::error::Result<HnswBitVectorsFormat>| match r {
-        Err(rucene::error::LuceneError::IllegalArgument(m)) => m,
+        Err(rucene::error::LuceneError {
+            kind: rucene::error::LuceneErrorKind::IllegalArgument { message: m, .. },
+            ..
+        }) => m,
         other => panic!("expected IllegalArgumentException, got {other:?}"),
     };
     assert_eq!(

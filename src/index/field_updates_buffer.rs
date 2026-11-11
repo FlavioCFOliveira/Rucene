@@ -294,7 +294,7 @@ impl FieldUpdatesBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] for a binary buffer (Java asserts
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) for a binary buffer (Java asserts
     /// `isNumeric`) or a finished one, and propagates whatever appending the
     /// term raises.
     pub fn add_numeric_update(&mut self, term: &Term, value: i64, doc_up_to: i32) -> Result<()> {
@@ -338,7 +338,7 @@ impl FieldUpdatesBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] for a finished buffer, and
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) for a finished buffer, and
     /// propagates whatever appending the term raises.
     pub fn add_no_value(&mut self, term: &Term, doc_up_to: i32) -> Result<()> {
         self.check_not_finished()?;
@@ -354,7 +354,7 @@ impl FieldUpdatesBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] for a numeric buffer (Java asserts
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) for a numeric buffer (Java asserts
     /// `isNumeric == false`) or a finished one, and propagates whatever
     /// appending the term or the value raises.
     pub fn add_binary_update(
@@ -398,7 +398,7 @@ impl FieldUpdatesBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the buffer was finished
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the buffer was finished
     /// already, with Java's message.
     pub fn finish(&mut self) -> Result<()> {
         if self.finished {
@@ -461,7 +461,7 @@ impl FieldUpdatesBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the buffer is not finished
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the buffer is not finished
     /// yet, with Java's message.
     pub fn iterator(&self) -> Result<BufferedUpdateIterator<'_>> {
         if !self.finished {

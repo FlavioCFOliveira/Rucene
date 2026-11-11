@@ -1552,7 +1552,7 @@ pub trait BaseStoredFieldsFormatTestCase: BaseIndexFileFormatTestCase {
         // Use an FS dir and a non-randomized IWC to not slow down indexing
         let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
         {
-            let docs = LineFileDocs::with_default_file(&*random()).map_err(LuceneError::Io)?;
+            let docs = LineFileDocs::with_default_file(&*random()).map_err(LuceneError::from)?;
             let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
             let outcome = (|| -> Result<()> {
                 let num_docs = LuceneTestCase::at_least(10_000);

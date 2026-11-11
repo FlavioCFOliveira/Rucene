@@ -105,23 +105,23 @@ fn dim_bounds(ranges: &[u8], d: usize, num_dims: usize, bytes_per_dim: usize) ->
 /// Checks that a min/max pair is well formed.
 fn check_args<T: PartialOrd + std::fmt::Debug>(min: &[T], max: &[T], kind: &str) -> Result<()> {
     if min.is_empty() || max.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "min/max range values cannot be null or empty".to_string(),
         ));
     }
     if min.len() != max.len() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "min/max ranges must agree".to_string(),
         ));
     }
     if min.len() > MAX_RANGE_DIMENSIONS {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "{kind} does not support greater than {MAX_RANGE_DIMENSIONS} dimensions"
         )));
     }
     for d in 0..min.len() {
         if min[d] > max[d] {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "min value ({:?}) is greater than max value ({:?})",
                 min[d], max[d]
             )));
@@ -180,7 +180,7 @@ macro_rules! range_field {
                 check_args(min, max, $kind)?;
                 let dims = IndexableFieldType::point_dimension_count(&self.field_type) / 2;
                 if min.len() as i32 != dims {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field (name={}) uses {dims} dimensions; cannot change to (incoming) {}",
                         self.name,
                         min.len()
@@ -209,7 +209,7 @@ macro_rules! range_field {
                 let dims =
                     (IndexableFieldType::point_dimension_count(&self.field_type) / 2) as usize;
                 if dimension >= dims {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "dimension {dimension} is out of range for {dims} dimensions"
                     )));
                 }
@@ -226,7 +226,7 @@ macro_rules! range_field {
                 let dims =
                     (IndexableFieldType::point_dimension_count(&self.field_type) / 2) as usize;
                 if dimension >= dims {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "dimension {dimension} is out of range for {dims} dimensions"
                     )));
                 }
@@ -290,13 +290,13 @@ macro_rules! range_field {
             ///
             /// # Errors
             ///
-            /// Returns [`LuceneError::IllegalArgument`] when a minimum exceeds
+            /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a minimum exceeds
             /// its maximum, or when `bytes` is not `2 * n * BYTES` long.
             pub fn verify_and_encode(min: &[$prim], max: &[$prim], bytes: &mut [u8]) -> Result<()> {
                 check_args(min, max, $kind)?;
                 let n = min.len();
                 if bytes.len() != $bytes * 2 * n {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "encoded range must be {} bytes long, got {}",
                         $bytes * 2 * n,
                         bytes.len()
@@ -310,13 +310,13 @@ macro_rules! range_field {
                     // Double.isNaN on an int is always false — so the predicate
                     // is a constant `false` for them.
                     if ($is_nan)(min[d]) {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "invalid min value (NaN) in {}",
                             $kind
                         )));
                     }
                     if ($is_nan)(max[d]) {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "invalid max value (NaN) in {}",
                             $kind
                         )));
@@ -850,7 +850,7 @@ impl BinaryRangeFieldRangeQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] for any relation other
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for any relation other
     /// than [`Intersects`](RangeQueryType::Intersects), which is what Java
     /// throws: the doc-values scan implements no other relation, and accepting
     /// one would answer a question it has not been taught to answer.
@@ -862,7 +862,7 @@ impl BinaryRangeFieldRangeQuery {
         query_type: RangeQueryType,
     ) -> Result<Self> {
         if query_type != RangeQueryType::Intersects {
-            return Err(LuceneError::UnsupportedOperation(
+            return Err(LuceneError::unsupported_operation(
                 "INTERSECTS is the only query type supported for this field type right now"
                     .to_string(),
             ));
@@ -1085,7 +1085,7 @@ impl RangeQueryType {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] for
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for
     /// [`Crosses`](Self::Crosses), which Lucene also refuses: a crossing
     /// relation cannot be decided from a cell's bounds alone, so its query
     /// always visits every point.
@@ -1136,7 +1136,7 @@ impl RangeQueryType {
                 }
                 Ok(PointRelation::CellCrossesQuery)
             }
-            Self::Crosses => Err(LuceneError::UnsupportedOperation(
+            Self::Crosses => Err(LuceneError::unsupported_operation(
                 "CROSSES cannot be decided from a cell's bounds".to_string(),
             )),
         }
@@ -1280,7 +1280,7 @@ impl RangeFieldQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field name is empty,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field name is empty,
     /// the dimension count exceeds four, or the encoded range is empty.
     pub fn new(
         field: impl Into<String>,
@@ -1315,17 +1315,17 @@ impl RangeFieldQuery {
     /// Equivalent to `RangeFieldQuery.checkArgs(String, byte[], int)`.
     fn check_args(field: &str, ranges: &[u8], num_dims: usize) -> Result<()> {
         if field.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "field must not be null".to_string(),
             ));
         }
         if num_dims > MAX_RANGE_DIMENSIONS {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "dimension size cannot be greater than {MAX_RANGE_DIMENSIONS}"
             )));
         }
         if ranges.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "encoded ranges cannot be null or empty".to_string(),
             ));
         }
@@ -1338,7 +1338,7 @@ impl RangeFieldQuery {
     pub fn check_field_info(&self, field_info: &crate::index::FieldInfo) -> Result<()> {
         let indexed_dims = (field_info.point_dimension_count / 2) as usize;
         if indexed_dims != self.num_dims {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{}\" was indexed with numDims={indexed_dims} but this query has \
                  numDims={}",
                 self.field, self.num_dims

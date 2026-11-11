@@ -14,7 +14,7 @@ use crate::codecs::lucene90::{
 };
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 use crate::codecs::{
     Codec, CompoundFormat, DocValuesFormat, FieldInfosFormat, KnnVectorsFormat, LiveDocsFormat,
@@ -85,11 +85,11 @@ impl Lucene104Codec {
     /// `NullPointerException` (an unchecked error) when `mode` is `None`.
     pub fn with_mode(mode: Option<Mode>) -> Result<Self> {
         let Some(mode) = mode else {
-            return Err(LuceneError::Unchecked {
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.NullPointerException",
                 message: None,
                 cause: None,
-            });
+            }));
         };
         let stored_fields_format = Lucene90StoredFieldsFormat::with_mode(Some(mode.stored_mode()))?;
         let default_postings_format: Arc<dyn PostingsFormat> =

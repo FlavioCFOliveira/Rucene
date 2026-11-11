@@ -223,7 +223,7 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when `target` does not match
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `target` does not match
     /// the field dimension, and propagates whatever
     /// [`Lucene99MemorySegmentFloatVectorScorer::create`] returns.
     pub fn random_vector_scorer_float(
@@ -251,7 +251,7 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument) when `target` does not match
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `target` does not match
     /// the field dimension, and propagates whatever
     /// [`Lucene99MemorySegmentByteVectorScorer::create`] returns.
     pub fn random_vector_scorer_byte(

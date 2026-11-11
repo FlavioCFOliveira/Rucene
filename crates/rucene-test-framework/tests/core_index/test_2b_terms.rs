@@ -231,7 +231,7 @@ impl AttributeFactory for MyAttributeFactory {
             return Ok(Box::new(MyTermAttributeImpl));
         }
         if att_class == TypeId::of::<dyn CharTermAttribute>() {
-            return Err(LuceneError::IllegalArgument("no".to_string()));
+            return Err(LuceneError::illegal_argument("no".to_string()));
         }
         self.delegate.create_attribute_instance(att_class)
     }

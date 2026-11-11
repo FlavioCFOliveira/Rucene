@@ -123,7 +123,7 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the weight is below `1`,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the weight is below `1`,
     /// which is the `IllegalArgumentException` Java throws.
     pub fn add_field_with_weight(
         &mut self,
@@ -131,7 +131,7 @@ impl Builder {
         weight: f32,
     ) -> Result<&mut Self> {
         if weight < 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "weight must be greater or equal to 1".to_string(),
             ));
         }
@@ -296,7 +296,7 @@ impl CombinedFieldQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the norms are
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the norms are
     /// inconsistent, which is the `IllegalArgumentException` Java throws.
     fn validate_consistent_norms(&self, searcher: &IndexSearcher) -> Result<()> {
         let mut all_fields_have_norms = true;
@@ -313,7 +313,7 @@ impl CombinedFieldQuery {
         }
 
         if !all_fields_have_norms && !no_fields_have_norms {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "CombinedFieldQuery requires norms to be consistent across fields: some fields \
                  cannot  have norms enabled, while others have norms disabled"
                     .to_string(),

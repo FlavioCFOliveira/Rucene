@@ -339,7 +339,7 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
             .float_values(field)?
             .ok_or_else(|| null_values("FloatVectorValues"))?;
         if target.len() as i32 != values.dimension() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector query dimension: {} differs from field dimension: {}",
                 target.len(),
                 values.dimension()
@@ -382,7 +382,7 @@ impl KnnVectorsReader for SimpleTextKnnVectorsReader {
             .byte_values(field)?
             .ok_or_else(|| null_values("ByteVectorValues"))?;
         if target.len() as i32 != values.dimension() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector query dimension: {} differs from field dimension: {}",
                 target.len(),
                 values.dimension()

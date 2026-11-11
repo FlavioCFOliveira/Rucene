@@ -55,7 +55,7 @@ impl Rectangle2D {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when a bound is out of
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when a bound is out of
     /// range, which the encoders reject.
     pub fn create_from_rectangle(rectangle: &Rectangle) -> Result<Arc<dyn Component2D>> {
         // behavior of LatLonPoint.newBoxQuery()

@@ -69,7 +69,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
         SCALAR.dot_product_bytes(a, b)
     }
@@ -81,7 +81,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn uint8_dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
         SCALAR.uint8_dot_product(a, b)
     }
@@ -94,7 +94,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn int4_dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
         SCALAR.int4_dot_product(a, b)
     }
@@ -107,7 +107,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when `unpacked` is
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when `unpacked` is
     /// shorter than twice the length of `packed`.
     pub fn int4_dot_product_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<i32> {
         SCALAR.int4_dot_product_single_packed(unpacked, packed)
@@ -121,7 +121,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn int4_dot_product_both_packed(a: &[u8], b: &[u8]) -> Result<i32> {
         SCALAR.int4_dot_product_both_packed(a, b)
     }
@@ -133,7 +133,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn cosine(a: &[u8], b: &[u8]) -> Result<f32> {
         SCALAR.cosine_bytes(a, b)
     }
@@ -145,7 +145,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn square_distance(a: &[u8], b: &[u8]) -> Result<i32> {
         SCALAR.square_distance_bytes(a, b)
     }
@@ -157,7 +157,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn uint8_square_distance(a: &[u8], b: &[u8]) -> Result<i32> {
         SCALAR.uint8_square_distance(a, b)
     }
@@ -170,7 +170,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn int4_square_distance(a: &[u8], b: &[u8]) -> Result<i32> {
         SCALAR.int4_square_distance(a, b)
     }
@@ -183,7 +183,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when `unpacked` is
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when `unpacked` is
     /// shorter than twice the length of `packed`.
     pub fn int4_square_distance_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<i32> {
         SCALAR.int4_square_distance_single_packed(unpacked, packed)
@@ -197,7 +197,7 @@ impl PanamaVectorUtilSupport {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the lengths differ.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the lengths differ.
     pub fn int4_square_distance_both_packed(a: &[u8], b: &[u8]) -> Result<i32> {
         SCALAR.int4_square_distance_both_packed(a, b)
     }

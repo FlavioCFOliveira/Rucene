@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::leaf_reader::TermVectors;
 use crate::store::{DataInput, Directory, IOContext};
 use crate::util::{Accountable, BytesRef};
@@ -197,9 +197,9 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                     if code & 1 != 0 {
                         let length = input.read_v_int()?;
                         let length = usize::try_from(length).map_err(|_| {
-                            LuceneError::CorruptIndex(format!(
+                            LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                                 "negative term-vector payload length: {length}"
-                            ))
+                            )))
                         })?;
                         payload.bytes.clear();
                         payload.bytes.resize(length, 0);
@@ -654,7 +654,16 @@ mod tests {
         let error = writer
             .add_prox(1, Some(&mut positions), None)
             .expect_err("a negative length is not a length");
-        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]

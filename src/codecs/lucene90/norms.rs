@@ -55,7 +55,7 @@ use crate::codecs::lucene90::indexed_disi::{
 use crate::codecs::norms::{NormsConsumer, NormsFormat, NormsProducer};
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::doc_values::{DocValues, DocValuesIterator, NumericDocValues};
 use crate::index::index_file_names::{segment_file_name, NORMS_EXTENSION, NORMS_META_EXTENSION};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
@@ -495,9 +495,9 @@ impl Lucene90NormsProducer {
                 &state.segment_suffix,
             )?;
             if version != version2 {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "Format versions mismatch: meta={version}, data={version2}"
-                )));
+                ))));
             }
             // Cheap structural check of the data footer; the actual checksum is
             // verified by `check_integrity` on demand.
@@ -585,10 +585,10 @@ impl Lucene90NormsProducer {
         // that caused it.
         let length = entry.num_docs_with_field as i64 * entry.bytes_per_norm as i64;
         if length < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "invalid norms slice: numDocsWithField={}, bytesPerNorm={}",
                 entry.num_docs_with_field, entry.bytes_per_norm
-            )));
+            ))));
         }
         self.data.random_access_slice(entry.norms_offset, length)
     }
@@ -713,13 +713,15 @@ fn read_fields(
             break;
         }
         let info = infos.field_info_by_number(field_number).ok_or_else(|| {
-            LuceneError::CorruptIndex(format!("Invalid field number: {field_number}"))
+            LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                "Invalid field number: {field_number}"
+            )))
         })?;
         if !info.has_norms() {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Invalid field: {} (no norms)",
                 info.name
-            )));
+            ))));
         }
         let mut entry = NormsEntry {
             docs_with_field_offset: meta.read_long()?,
@@ -733,10 +735,10 @@ fn read_fields(
         match entry.bytes_per_norm {
             0 | 1 | 2 | 4 | 8 => {}
             _ => {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "Invalid bytesPerNorm: {}, field: {}",
                     entry.bytes_per_norm, info.name
-                )))
+                ))))
             }
         }
         entry.norms_offset = meta.read_long()?;
@@ -749,7 +751,7 @@ impl Lucene90NormsProducer {
     /// The body of `Lucene90NormsProducer.getNorms(FieldInfo)`.
     fn norms_of(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         let entry = self.norms.get(&field.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("no norms for field {}", field.name))
+            LuceneError::illegal_argument(format!("no norms for field {}", field.name))
         })?;
 
         if entry.docs_with_field_offset == -2 {
@@ -936,7 +938,7 @@ struct MergingDisiInput {
 
 /// `new UnsupportedOperationException("Unused by IndexedDISI")`.
 fn unused_by_indexed_disi<T>() -> Result<T> {
-    Err(LuceneError::UnsupportedOperation(
+    Err(LuceneError::unsupported_operation(
         "Unused by IndexedDISI".to_string(),
     ))
 }
@@ -977,7 +979,7 @@ impl DataInput for MergingDisiInput {
     /// `IndexInput.skipBytes`: `seek(getFilePointer() + numBytes)`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
@@ -1055,9 +1057,9 @@ fn read_norm_at(slice: &mut dyn RandomAccessInput, index: i32, bytes_per_norm: i
         4 => Ok(slice.read_int_at(index << 2)? as i64),
         8 => slice.read_long_at(index << 3),
         // `read_fields` rejects every other width before an entry is stored.
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid bytes per norm: {bytes_per_norm}"
-        ))),
+        )))),
     }
 }
 
@@ -1384,7 +1386,7 @@ mod tests {
     use super::*;
     use crate::codecs::state::{SegmentReadState, SegmentWriteState};
     use crate::codecs::stub::BufferedUpdates;
-    use crate::error::LuceneError;
+    use crate::error::{LuceneError, LuceneErrorKind};
     use crate::index::{DocValuesType, FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
     use crate::store::{ByteBuffersDirectory, Directory};
@@ -1840,7 +1842,13 @@ mod tests {
         let err = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &empty_fis))
             .unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1867,7 +1875,13 @@ mod tests {
         let err = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
     }
     // -----------------------------------------------------------------------
     // Regression tests

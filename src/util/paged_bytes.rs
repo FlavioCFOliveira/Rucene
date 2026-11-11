@@ -167,7 +167,7 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the arena was already frozen,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the arena was already frozen,
     /// or when [`PagedBytes::copy`] was used — both reproducing Lucene's
     /// `IllegalStateException`s.
     pub fn freeze(&mut self, trim: bool) -> Result<PagedBytesReader> {
@@ -217,12 +217,12 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the value is 32767 bytes
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the value is 32767 bytes
     /// or longer, or when the page size cannot hold it — both reproducing
     /// Lucene's messages.
     pub fn copy_using_length_prefix(&mut self, bytes: &BytesRef) -> Result<i64> {
         if bytes.length >= 32768 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "max length is 32767 (got {})",
                 bytes.length
             )));
@@ -230,7 +230,7 @@ impl PagedBytes {
 
         if self.upto + bytes.length + 2 > self.block_size {
             if bytes.length + 2 > self.block_size {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "block size {} is too small to store length {} bytes",
                     self.block_size, bytes.length
                 )));
@@ -275,7 +275,7 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the arena is not frozen,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the arena is not frozen,
     /// reproducing Lucene's "must call freeze() before getDataInput".
     pub fn get_data_input(&self) -> Result<PagedBytesDataInput<'_>> {
         if !self.frozen {
@@ -305,7 +305,7 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the arena is not frozen,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the arena is not frozen,
     /// reproducing Lucene's "must call freeze() before getDataInput".
     pub fn get_shared_data_input(&self) -> Result<PagedBytesDataInput<'static>> {
         if !self.frozen {
@@ -327,7 +327,7 @@ impl PagedBytes {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the arena is frozen,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the arena is frozen,
     /// reproducing Lucene's "cannot get DataOutput after freeze()".
     pub fn get_data_output(&mut self) -> Result<PagedBytesDataOutput<'_>> {
         if self.frozen {
@@ -576,7 +576,7 @@ impl DataInput for PagedBytesDataInput<'_> {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }

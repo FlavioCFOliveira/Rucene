@@ -72,7 +72,7 @@ pub trait Query: Debug + Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] by default, and propagates
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) by default, and propagates
     /// any I/O error an implementation raises.
     fn create_weight(
         &self,
@@ -80,7 +80,7 @@ pub trait Query: Debug + Send + Sync + 'static {
         _score_mode: ScoreMode,
         _boost: f32,
     ) -> Result<Arc<dyn Weight>> {
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "Query {} does not implement createWeight",
             self.to_query_string("")
         )))

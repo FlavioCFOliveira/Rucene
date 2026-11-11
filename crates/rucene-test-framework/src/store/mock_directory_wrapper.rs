@@ -68,7 +68,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::ThreadId;
 
 use randomizedtesting::jdk::random::{JdkRandom, Random};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::check_index::Level;
 use rucene::index::directory_reader::{self, index_exists};
 use rucene::index::index_file_names::{is_codec_file, PENDING_SEGMENTS, SEGMENTS};
@@ -126,7 +126,9 @@ pub const FAKE_IO_EXCEPTION: &str =
 /// `new FakeIOException()`: use this when throwing a fake `IOException`, for
 /// example from a [`Failure`].
 pub fn fake_io_exception() -> LuceneError {
-    LuceneError::Io(JavaIoException::new(FAKE_IO_EXCEPTION, None).into_io_error())
+    LuceneError::from(LuceneErrorKind::Io(
+        JavaIoException::new(FAKE_IO_EXCEPTION, None).into_io_error(),
+    ))
 }
 
 /// Port of `MockDirectoryWrapper.Failure`: a fail-able condition registered
@@ -787,13 +789,13 @@ impl MockDirectoryWrapper {
             let action: String;
             let unexpected = |e: LuceneError| -> LuceneError {
                 if e.is_io_exception() {
-                    LuceneError::Unchecked {
+                    LuceneError::from(LuceneErrorKind::Unchecked {
                         class: "java.lang.RuntimeException",
                         message: Some(format!(
                             "hit unexpected IOException while trying to corrupt file {name}"
                         )),
                         cause: Some(Arc::new(e)),
-                    }
+                    })
                 } else {
                     e
                 }
@@ -905,7 +907,11 @@ impl MockDirectoryWrapper {
                     let _ = out.file_pointer(); // just fake access to prevent compiler warning
                     out.close().map_err(unexpected)?;
                 }
-                _ => return Err(LuceneError::AssertionError(String::new())),
+                _ => {
+                    return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                        String::new(),
+                    )))
+                }
             }
 
             if *VERBOSE {
@@ -1033,7 +1039,7 @@ impl MockDirectoryWrapper {
                 );
                 println!("java.io.IOException: a random IOException{suffix}");
             }
-            return Err(LuceneError::Io(ioe));
+            return Err(LuceneError::from(LuceneErrorKind::Io(ioe)));
         }
         Ok(())
     }
@@ -1059,12 +1065,14 @@ impl MockDirectoryWrapper {
                 .load(Ordering::SeqCst)
                 || random.next_boolean()
             {
-                return Err(LuceneError::Io(io_exception(message)));
+                return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
+                    message,
+                ))));
             } else {
                 return Err(if random.next_boolean() {
                     file_not_found_exception(message)
                 } else {
-                    LuceneError::Io(no_such_file_exception(message))
+                    LuceneError::from(LuceneErrorKind::Io(no_such_file_exception(message)))
                 });
             }
         }
@@ -1228,8 +1236,8 @@ impl MockDirectoryWrapper {
 
     fn check_crashed(&self, what: &str) -> Result<()> {
         if self.is_crashed() {
-            return Err(LuceneError::Io(io_exception(format!(
-                "cannot {what} after crash"
+            return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
+                format!("cannot {what} after crash"),
             ))));
         }
         Ok(())
@@ -1393,9 +1401,9 @@ impl MockDirectoryWrapper {
         ir2.close()?;
         drop(ir2);
         if cfg!(debug_assertions) && num_docs1 != num_docs2 {
-            return Err(LuceneError::AssertionError(format!(
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "numDocs changed after opening/closing IW: before={num_docs1} after={num_docs2}"
-            )));
+            ))));
         }
         Ok(())
     }
@@ -1433,9 +1441,9 @@ impl Directory for MockDirectoryWrapper {
                 .insert(name.to_string());
             if self.get_assert_no_delete_open_file() {
                 return Err(self.fill_open_trace(
-                    LuceneError::Io(io_exception(format!(
+                    LuceneError::from(LuceneErrorKind::Io(io_exception(format!(
                         "MockDirectoryWrapper: file \"{name}\" is still open: cannot delete"
-                    ))),
+                    )))),
                     name,
                     true,
                 ));
@@ -1474,15 +1482,17 @@ impl Directory for MockDirectoryWrapper {
         {
             let mut state = lock(&self.core.state);
             if state.created_files.contains(name) {
-                return Err(LuceneError::Io(file_already_exists_exception(format!(
-                    "File \"{name}\" was already written to."
-                ))));
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    file_already_exists_exception(format!(
+                        "File \"{name}\" was already written to."
+                    )),
+                )));
             }
 
             if self.get_assert_no_delete_open_file() && state.open_files.contains_key(name) {
-                return Err(LuceneError::AssertionError(format!(
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                     "MockDirectoryWrapper: file \"{name}\" is still open: cannot overwrite"
-                )));
+                ))));
             }
 
             state.un_synced_files.insert(name.to_string());
@@ -1580,7 +1590,9 @@ impl Directory for MockDirectoryWrapper {
         self.maybe_throw_deterministic_exception()?;
 
         if self.is_crashed() {
-            return Err(LuceneError::Io(io_exception("cannot rename after crash")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
+                "cannot rename after crash",
+            ))));
         }
 
         let (source_open, dest_open) = {
@@ -1592,9 +1604,9 @@ impl Directory for MockDirectoryWrapper {
         };
         if source_open && self.get_assert_no_delete_open_file() {
             return Err(self.fill_open_trace(
-                LuceneError::AssertionError(format!(
+                LuceneError::from(LuceneErrorKind::AssertionError(format!(
                     "MockDirectoryWrapper: source file \"{source}\" is still open: cannot rename"
-                )),
+                ))),
                 source,
                 true,
             ));
@@ -1602,9 +1614,9 @@ impl Directory for MockDirectoryWrapper {
 
         if dest_open && self.get_assert_no_delete_open_file() {
             return Err(self.fill_open_trace(
-                LuceneError::AssertionError(format!(
+                LuceneError::from(LuceneErrorKind::AssertionError(format!(
                     "MockDirectoryWrapper: dest file \"{dest}\" is still open: cannot rename"
-                )),
+                ))),
                 dest,
                 true,
             ));
@@ -1643,7 +1655,7 @@ impl Directory for MockDirectoryWrapper {
             return Err(if self.core.random_state.next_boolean() {
                 file_not_found_exception(message)
             } else {
-                LuceneError::Io(no_such_file_exception(message))
+                LuceneError::from(LuceneErrorKind::Io(no_such_file_exception(message)))
             });
         }
 
@@ -1655,9 +1667,9 @@ impl Directory for MockDirectoryWrapper {
             && lock(&self.core.state).open_files_for_write.contains(name)
         {
             return Err(self.fill_open_trace(
-                LuceneError::Io(access_denied_exception(format!(
+                LuceneError::from(LuceneErrorKind::Io(access_denied_exception(format!(
                     "MockDirectoryWrapper: file \"{name}\" is still open for writing"
-                ))),
+                )))),
                 name,
                 false,
             ));
@@ -1807,21 +1819,21 @@ impl fmt::Debug for MockDirectoryWrapper {
 
 /// `new RuntimeException(message, cause)`.
 pub(crate) fn runtime_exception(message: String, cause: Option<Arc<LuceneError>>) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.RuntimeException",
         message: Some(message),
         cause,
-    }
+    })
 }
 
 /// `new FileNotFoundException(message)`, of kind `NotFound` as the
 /// `catch (NoSuchFileException | FileNotFoundException e)` sites of the port
 /// test it.
 pub(crate) fn file_not_found_exception(message: String) -> LuceneError {
-    LuceneError::Io(std::io::Error::new(
+    LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
         std::io::ErrorKind::NotFound,
         JavaIoException::new("java.io.FileNotFoundException", Some(message)),
-    ))
+    )))
 }
 
 /// Java's `try`-with-resources outcome: the body's error, or else the first
@@ -1868,12 +1880,19 @@ fn java_list<S: AsRef<str>>(items: &[S]) -> String {
 /// `Throwable.toString()` of an unchecked exception.
 fn throwable_to_string(e: &LuceneError) -> String {
     match e {
-        LuceneError::Unchecked {
-            class,
-            message: Some(message),
+        LuceneError {
+            kind:
+                LuceneErrorKind::Unchecked {
+                    class,
+                    message: Some(message),
+                    ..
+                },
             ..
         } => format!("{class}: {message}"),
-        LuceneError::Unchecked { class, .. } => class.to_string(),
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { class, .. },
+            ..
+        } => class.to_string(),
         other => other.to_string(),
     }
 }

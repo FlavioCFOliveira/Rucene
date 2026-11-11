@@ -26,7 +26,7 @@ use std::sync::{Arc, LazyLock};
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 
 use crate::codecs::MergeState;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
 use crate::util::compress::{
     FastCompressionHashTable, HighCompressionHashTable, Lz4, LZ4_MAX_DISTANCE,
@@ -447,10 +447,10 @@ impl Decompressor for Lz4Decompressor {
         }
         let decompressed_length = Lz4::decompress(input, offset + length, &mut bytes.bytes, 0)?;
         if decompressed_length > original_length {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("corrupted: lengths mismatch: {decompressed_length} > {original_length}"),
-            )));
+            ))));
         }
         bytes.offset = offset;
         bytes.length = length;
@@ -602,9 +602,9 @@ impl Lz4WithPresetDictDecompressor {
         }
         while total_length < original_length {
             if count >= self.compressed_lengths.len() {
-                return Err(LuceneError::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                     "more compressed sub blocks than the chunk can hold".to_string(),
-                ));
+                )));
             }
             self.compressed_lengths[count] = input.read_v_int()?;
             count += 1;
@@ -637,10 +637,16 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
             return Ok(());
         }
 
-        let dict_length = usize::try_from(input.read_v_int()?)
-            .map_err(|_| LuceneError::CorruptIndex("negative dictionary length".to_string()))?;
-        let block_length = usize::try_from(input.read_v_int()?)
-            .map_err(|_| LuceneError::CorruptIndex("negative block length".to_string()))?;
+        let dict_length = usize::try_from(input.read_v_int()?).map_err(|_| {
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "negative dictionary length".to_string(),
+            ))
+        })?;
+        let block_length = usize::try_from(input.read_v_int()?).map_err(|_| {
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "negative block length".to_string(),
+            ))
+        })?;
 
         let num_blocks =
             self.read_compressed_lengths(input, original_length, dict_length, block_length)?;
@@ -652,7 +658,9 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
 
         // The dictionary is needed by every block, so it is always read.
         if Lz4::decompress(input, dict_length, &mut self.buffer, 0)? != dict_length {
-            return Err(LuceneError::CorruptIndex("Illegal dict length".to_string()));
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "Illegal dict length".to_string(),
+            )));
         }
 
         let mut offset_in_block = dict_length;
@@ -764,14 +772,16 @@ fn deflate_to(compressor: &mut Compress, input: &[u8], scratch: &mut Vec<u8>) ->
         let produced = compressor.total_out();
         let status = compressor
             .compress_vec(&input[consumed..], scratch, FlushCompress::Finish)
-            .map_err(|error| LuceneError::Other(format!("deflate failed: {error}")))?;
+            .map_err(|error| {
+                LuceneError::from(LuceneErrorKind::Other(format!("deflate failed: {error}")))
+            })?;
         if status == Status::StreamEnd {
             return Ok(());
         }
         if compressor.total_in() as usize == consumed && compressor.total_out() == produced {
-            return Err(LuceneError::Other(
+            return Err(LuceneError::from(LuceneErrorKind::Other(
                 "deflate made no progress and did not finish".to_string(),
-            ));
+            )));
         }
     }
 }
@@ -814,9 +824,9 @@ fn read_deflate_block(
 ) -> Result<()> {
     let compressed_length = input.read_v_int()?;
     if compressed_length < 0 {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "negative compressed block length: {compressed_length}"
-        )));
+        ))));
     }
     if compressed_length == 0 {
         return Ok(());
@@ -835,14 +845,18 @@ fn read_deflate_block(
         let produced = decompressor.total_out();
         let status = decompressor
             .decompress_vec(&compressed[consumed..], out, FlushDecompress::Finish)
-            .map_err(|error| LuceneError::CorruptIndex(format!("inflate failed: {error}")))?;
+            .map_err(|error| {
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "inflate failed: {error}"
+                )))
+            })?;
         if status == Status::StreamEnd {
             return Ok(());
         }
         if decompressor.total_in() as usize == consumed && decompressor.total_out() == produced {
-            return Err(LuceneError::CorruptIndex(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                 "invalid decoder state: inflate made no progress and did not finish".to_string(),
-            ));
+            )));
         }
     }
 }
@@ -937,10 +951,10 @@ impl Decompressor for DeflateDecompressor {
             original_length,
         )?;
         if out.len() != original_length {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Lengths mismatch: {} != {original_length}",
                 out.len()
-            )));
+            ))));
         }
         bytes.bytes = out;
         bytes.offset = offset;
@@ -1020,7 +1034,9 @@ impl Compressor for DeflateWithPresetDictCompressor {
             self.compressor
                 .set_dictionary(&self.buffer[..dict_length])
                 .map_err(|error| {
-                    LuceneError::Other(format!("deflate dictionary rejected: {error}"))
+                    LuceneError::from(LuceneErrorKind::Other(format!(
+                        "deflate dictionary rejected: {error}"
+                    )))
                 })?;
             let l = std::cmp::min(block_length, len - start);
             self.buffer[dict_length..dict_length + l].copy_from_slice(&bytes[start..start + l]);
@@ -1078,16 +1094,22 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
             return Ok(());
         }
 
-        let dict_length = usize::try_from(input.read_v_int()?)
-            .map_err(|_| LuceneError::CorruptIndex("negative dictionary length".to_string()))?;
-        let block_length = usize::try_from(input.read_v_int()?)
-            .map_err(|_| LuceneError::CorruptIndex("negative block length".to_string()))?;
+        let dict_length = usize::try_from(input.read_v_int()?).map_err(|_| {
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "negative dictionary length".to_string(),
+            ))
+        })?;
+        let block_length = usize::try_from(input.read_v_int()?).map_err(|_| {
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "negative block length".to_string(),
+            ))
+        })?;
         if block_length == 0 {
             // Only a zero-length chunk can have zero-length blocks, and that
             // case returned above; a zero here would loop forever.
-            return Err(LuceneError::CorruptIndex(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                 "a non-empty chunk cannot have zero-length sub blocks".to_string(),
-            ));
+            )));
         }
 
         let mut out: Vec<u8> = Vec::with_capacity(dict_length + block_length);
@@ -1100,10 +1122,10 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
             dict_length,
         )?;
         if out.len() != dict_length {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Unexpected dict length: {} != {dict_length}",
                 out.len()
-            )));
+            ))));
         }
 
         let mut offset_in_block = dict_length;
@@ -1112,9 +1134,9 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
         while offset_in_block + block_length < offset {
             let compressed_length = input.read_v_int()?;
             if compressed_length < 0 {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "negative compressed block length: {compressed_length}"
-                )));
+                ))));
             }
             input.skip_bytes(i64::from(compressed_length))?;
             offset_in_block += block_length;
@@ -1127,7 +1149,9 @@ impl Decompressor for DeflateWithPresetDictDecompressor {
             self.decompressor
                 .set_dictionary(&out[..dict_length])
                 .map_err(|error| {
-                    LuceneError::CorruptIndex(format!("inflate dictionary rejected: {error}"))
+                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                        "inflate dictionary rejected: {error}"
+                    )))
                 })?;
             read_deflate_block(
                 input,

@@ -17,7 +17,7 @@ use crate::document::range_fields::{RangeFieldQuery, RangeQueryType, RangeValueK
 use crate::document::shape_field::QueryRelation;
 use crate::document::spatial_query::{LatLonGeometryValue, XYGeometryValue};
 use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
 use crate::geo::geometry::{Circle, Polygon, Rectangle, XYCircle, XYPolygon, XYRectangle};
 use crate::index::{DocValuesType, IndexableField, IndexableFieldType, PointValues};
@@ -113,7 +113,7 @@ fn xy_doc_values_field_type() -> &'static FieldType {
 /// `XYPointInGeometryQuery.java:56`, the doc-values point queries) and
 /// `LatLonPoint.nearest` (`LatLonPoint.java:415`).
 fn field_must_not_be_null() -> LuceneError {
-    LuceneError::IllegalArgument("field must not be null".to_string())
+    LuceneError::illegal_argument("field must not be null".to_string())
 }
 
 /// The `if (field == null) throw ...` of the point query constructors.
@@ -200,7 +200,7 @@ impl LatLonPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// a different number of dimensions or a different width.
     pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
         check_point_compatible(field_info, "LatLonPoint")
@@ -487,7 +487,7 @@ impl LatLonPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an invalid latitude or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an invalid latitude or
     /// longitude, when `pivot_distance_meters` is not positive, and when
     /// `weight` is not a finite, non-negative float.
     pub fn new_distance_feature_query(
@@ -536,7 +536,7 @@ impl LatLonPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an out-of-bounds latitude
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an out-of-bounds latitude
     /// or longitude and for `n < 1`, and propagates whatever reading the point
     /// trees raises.
     ///
@@ -554,7 +554,7 @@ impl LatLonPoint {
         GeoUtils::check_latitude(latitude)?;
         GeoUtils::check_longitude(longitude)?;
         if n < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "n must be at least 1; got {n}"
             )));
         }
@@ -882,7 +882,7 @@ impl LatLonDocValuesField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// a different doc-values type.
     pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
         check_doc_values_compatible(field_info, "LatLonDocValuesField")
@@ -1016,7 +1016,7 @@ impl XYPointField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// a different number of dimensions or a different width.
     pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
         check_point_compatible(field_info, "XYPoint")
@@ -1058,7 +1058,7 @@ impl XYPointField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the box has invalid
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the box has invalid
     /// coordinates, as `new XYRectangle(minX, maxX, minY, maxY)` throws.
     ///
     /// **Divergence from Lucene 10.5.0 (API only).** Java's nullable `String`
@@ -1090,7 +1090,7 @@ impl XYPointField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the center has invalid
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the center has invalid
     /// coordinates or the radius is invalid, as `new XYCircle(x, y, radius)`
     /// throws.
     ///
@@ -1371,7 +1371,7 @@ impl XYDocValuesField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// a different doc-values type.
     pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
         check_doc_values_compatible(field_info, "XYDocValuesField")
@@ -1500,7 +1500,7 @@ impl InetAddressPoint {
                 Ok(bytes)
             }
             16 => Ok(address.to_vec()),
-            other => Err(LuceneError::IllegalArgument(format!(
+            other => Err(LuceneError::illegal_argument(format!(
                 "invalid address length {other}; must be 4 or 16 bytes"
             ))),
         }
@@ -1559,7 +1559,7 @@ impl InetAddressPoint {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::IllegalArgument`] `"encoded bytes are of incorrect
+    /// [`LuceneErrorKind::IllegalArgument`] `"encoded bytes are of incorrect
     /// length"` when `value` is neither 4 nor 16 bytes long
     /// (`InetAddressPoint.java:185-192`).
     pub fn decode(value: &[u8]) -> Result<Vec<u8>> {
@@ -1567,7 +1567,7 @@ impl InetAddressPoint {
             4 => Ok(value.to_vec()),
             16 if value[..12] == Self::IPV4_PREFIX => Ok(value[12..].to_vec()),
             16 => Ok(value.to_vec()),
-            _ => Err(LuceneError::IllegalArgument(
+            _ => Err(LuceneError::illegal_argument(
                 "encoded bytes are of incorrect length".to_string(),
             )),
         }
@@ -1581,16 +1581,16 @@ impl InetAddressPoint {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::Arithmetic`] `"Overflow: there is no greater InetAddress
+    /// [`LuceneErrorKind::Arithmetic`] `"Overflow: there is no greater InetAddress
     /// than …"` when `address` is [`MAX_VALUE`](Self::MAX_VALUE); propagates
     /// [`encode`](Self::encode)'s error for an address that is neither 4 nor
     /// 16 bytes long.
     pub fn next_up(address: &[u8]) -> Result<Vec<u8>> {
         if address == Self::MAX_VALUE {
-            return Err(LuceneError::Arithmetic(format!(
+            return Err(LuceneError::from(LuceneErrorKind::Arithmetic(format!(
                 "Overflow: there is no greater InetAddress than {}",
                 inet_address_host_address(address)
-            )));
+            ))));
         }
         let mut delta = [0u8; Self::BYTES];
         delta[Self::BYTES - 1] = 1;
@@ -1613,16 +1613,16 @@ impl InetAddressPoint {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::Arithmetic`] `"Underflow: there is no smaller
+    /// [`LuceneErrorKind::Arithmetic`] `"Underflow: there is no smaller
     /// InetAddress than …"` when `address` is [`MIN_VALUE`](Self::MIN_VALUE);
     /// propagates [`encode`](Self::encode)'s error for an address that is
     /// neither 4 nor 16 bytes long.
     pub fn next_down(address: &[u8]) -> Result<Vec<u8>> {
         if address == Self::MIN_VALUE {
-            return Err(LuceneError::Arithmetic(format!(
+            return Err(LuceneError::from(LuceneErrorKind::Arithmetic(format!(
                 "Underflow: there is no smaller InetAddress than {}",
                 inet_address_host_address(address)
-            )));
+            ))));
         }
         let mut delta = [0u8; Self::BYTES];
         delta[Self::BYTES - 1] = 1;
@@ -1651,7 +1651,7 @@ impl InetAddressPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `prefix_length` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `prefix_length` is outside
     /// `0..=8 * value.len()`, and propagates whatever
     /// [`new_range_query`](Self::new_range_query) raises.
     pub fn new_prefix_query(
@@ -1660,7 +1660,7 @@ impl InetAddressPoint {
         prefix_length: i32,
     ) -> Result<Arc<dyn Query>> {
         if prefix_length < 0 || prefix_length as usize > 8 * value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal prefixLength '{prefix_length}'. Must be 0-32 for IPv4 ranges, 0-128 for \
                  IPv6 ranges"
             )));
@@ -1948,13 +1948,13 @@ impl InetAddressRange {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when either address is neither
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when either address is neither
     /// 4 nor 16 bytes long, and when `min` is greater than `max`.
     fn encode(min: &[u8], max: &[u8]) -> Result<Vec<u8>> {
         let min = InetAddressPoint::encode(min)?;
         let max = InetAddressPoint::encode(max)?;
         if min > max {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "min value cannot be greater than max value for InetAddressRange field".to_string(),
             ));
         }
@@ -2144,14 +2144,14 @@ fn check_point_compatible(field_info: &crate::index::FieldInfo, type_name: &str)
     let num_bytes = COORDINATE_BYTES as i32;
     if field_info.point_dimension_count != 0 && field_info.point_dimension_count != dimension_count
     {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "field=\"{}\" was indexed with numDims={} but this point type has \
              numDims={dimension_count}, is the field really a {type_name}?",
             field_info.name, field_info.point_dimension_count
         )));
     }
     if field_info.point_num_bytes != 0 && field_info.point_num_bytes != num_bytes {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "field=\"{}\" was indexed with bytesPerDim={} but this point type has \
              bytesPerDim={num_bytes}, is the field really a {type_name}?",
             field_info.name, field_info.point_num_bytes
@@ -2170,7 +2170,7 @@ fn check_doc_values_compatible(
     if field_info.doc_values_type != DocValuesType::NONE
         && field_info.doc_values_type != DocValuesType::SORTED_NUMERIC
     {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "field=\"{}\" was indexed with docValuesType={:?} but this type has \
              docValuesType=SORTED_NUMERIC, is the field really a {type_name}?",
             field_info.name, field_info.doc_values_type
@@ -2383,6 +2383,7 @@ impl std::fmt::Display for InetAddressPoint {
 #[cfg(test)]
 mod xy_point_field_query_tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// `XYPointField.newBoxQuery`, `newDistanceQuery`, `newPolygonQuery` and
     /// `newGeometryQuery` all build an `XYPointInGeometryQuery`
@@ -2434,7 +2435,7 @@ mod xy_point_field_query_tests {
     fn a_none_field_is_javas_null_field() {
         use crate::geo::geometry::Polygon;
         fn is_null_field(r: Result<Arc<dyn Query>>) -> bool {
-            matches!(r, Err(LuceneError::IllegalArgument(m)) if m == "field must not be null")
+            matches!(r, Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. }) if m == "field must not be null")
         }
         let polygon = Polygon::new(
             vec![18.0, 18.0, 19.0, 19.0, 18.0],
@@ -2510,7 +2511,10 @@ mod xy_point_field_query_tests {
         for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(matches!(
                 XYPointField::new_distance_query(Some("f"), 18.0, 19.0, radius),
-                Err(LuceneError::IllegalArgument(_))
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                })
             ));
         }
     }

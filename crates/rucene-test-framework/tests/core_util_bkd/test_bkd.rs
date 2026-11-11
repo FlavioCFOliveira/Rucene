@@ -1613,7 +1613,7 @@ struct OptimalOrderVisitor {
 
 impl IntersectVisitor for OptimalOrderVisitor {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn visit_with_value(&mut self, _doc_id: i32, packed_value: &[u8]) -> Result<()> {
@@ -1937,7 +1937,7 @@ struct ConstantPointTree {
 }
 
 fn unsupported<T>() -> Result<T> {
-    Err(LuceneError::UnsupportedOperation(String::new()))
+    Err(LuceneError::unsupported_operation(String::new()))
 }
 
 impl PointTree for ConstantPointTree {

@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{
     sub_index_from_leaves, IndexReader, IndexReaderContext, LeafReaderContext, QueryTimeout,
     StoredFields, Term,
@@ -118,8 +118,7 @@ const MAX_SEGMENTS_PER_SLICE: usize = 5;
 ///
 /// **Divergence from Lucene 10.5.0.** Rust has no exceptions, so this is a
 /// value. Where Java throws it, this port returns
-/// [`LuceneError::ResourceLimit`] carrying [`Self::to_string`]; the type is
-/// still available so that callers can build the same message.
+/// [`LuceneErrorKind::TooManyClauses`] carrying it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TooManyClauses {
     message: String,
@@ -173,7 +172,7 @@ impl std::error::Error for TooManyClauses {}
 
 impl From<TooManyClauses> for LuceneError {
     fn from(err: TooManyClauses) -> Self {
-        LuceneError::ResourceLimit(err.to_string())
+        LuceneError::from(LuceneErrorKind::TooManyClauses(err))
     }
 }
 
@@ -226,7 +225,7 @@ impl std::error::Error for TooManyNestedClauses {}
 
 impl From<TooManyNestedClauses> for LuceneError {
     fn from(err: TooManyNestedClauses) -> Self {
-        LuceneError::ResourceLimit(err.to_string())
+        LuceneError::from(LuceneErrorKind::TooManyNestedClauses(err))
     }
 }
 
@@ -262,18 +261,18 @@ impl LeafReaderContextPartition {
         max_docs: i32,
     ) -> Result<Self> {
         if min_doc_id >= max_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDocId is greater than or equal to maxDocId: [{min_doc_id}] > [{max_doc_id}]"
             )));
         }
         if min_doc_id < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDocId is lower than 0: [{min_doc_id}]"
             )));
         }
         let leaf_max_doc = leaf_reader_context.leaf_reader().max_doc();
         if min_doc_id >= leaf_max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDocId is greater than than maxDoc: [{min_doc_id}] > [{leaf_max_doc}]"
             )));
         }
@@ -294,7 +293,7 @@ impl LeafReaderContextPartition {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty leaf, which Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an empty leaf, which Java
     /// rejects with the same `minDocId >= maxDocId` check.
     pub fn create_for_entire_segment(ctx: Arc<LeafReaderContext>) -> Result<Self> {
         let max_docs = ctx.leaf_reader().max_doc();
@@ -823,7 +822,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// As [`new`](Self::new), and [`LuceneError::AlreadyClosed`] when `reader`
+    /// As [`new`](Self::new), and [`LuceneErrorKind::AlreadyClosed`] when `reader`
     /// is closed, as `reader.getContext()` fails.
     pub fn with_executor(
         reader: Arc<dyn IndexReader>,
@@ -841,7 +840,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the context is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the context is not
     /// top-level, which Java asserts, and propagates the slice construction
     /// error for an empty leaf.
     pub fn from_context(
@@ -849,7 +848,7 @@ impl IndexSearcher {
         executor: Option<Arc<dyn Executor>>,
     ) -> Result<Self> {
         if !context.is_top_level() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "IndexSearcher's ReaderContext must be topLevel for reader {:?}",
                 context.reader()
             )));
@@ -976,10 +975,10 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value` is below 1.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `value` is below 1.
     pub fn set_max_clause_count(value: i32) -> Result<()> {
         if value < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxClauseCount must be >= 1".to_string(),
             ));
         }
@@ -1222,7 +1221,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a slice targets several
+    /// Returns [`LuceneErrorKind::IllegalState`] when a slice targets several
     /// partitions of the same leaf, and propagates the slice construction
     /// error.
     pub fn get_slices(&self) -> Result<&[LeafSlice]> {
@@ -1365,7 +1364,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `after.doc` exceeds the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `after.doc` exceeds the
     /// number of documents in the reader, and propagates any I/O error.
     pub fn search_after(
         &self,
@@ -1394,7 +1393,7 @@ impl IndexSearcher {
         let limit = self.reader.max_doc().max(1);
         if let Some(after) = after.as_ref() {
             if after.doc >= limit {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "after.doc exceeds the number of documents in the reader: after.doc={} limit={limit}",
                     after.doc
                 )));
@@ -1543,7 +1542,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `after.doc` exceeds the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `after.doc` exceeds the
     /// number of documents in the reader, or when
     /// [`TopFieldCollectorManager::new`] rejects its arguments, and propagates
     /// any I/O error.
@@ -1594,7 +1593,7 @@ impl IndexSearcher {
         let limit = self.reader.max_doc().max(1);
         if let Some(after) = after.as_ref() {
             if after.score_doc.doc >= limit {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "after.doc exceeds the number of documents in the reader: after.doc={} limit={limit}",
                     after.score_doc.doc
                 )));
@@ -1714,7 +1713,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the manager produces
+    /// Returns [`LuceneErrorKind::IllegalState`] when the manager produces
     /// collectors with differing score modes, and propagates any I/O error.
     pub fn search_with_manager<M>(&self, query: Arc<dyn Query>, manager: &M) -> Result<M::Output>
     where
@@ -1931,8 +1930,7 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::ResourceLimit`] carrying a
-    /// [`TooManyNestedClauses`] message when the query has more than
+    /// Returns [`LuceneErrorKind::TooManyNestedClauses`] when the query has more than
     /// [`get_max_clause_count`](Self::get_max_clause_count) clauses
     /// cumulatively, and propagates any I/O error.
     pub fn rewrite(&self, original: Arc<dyn Query>) -> Result<Arc<dyn Query>> {
@@ -2043,7 +2041,7 @@ impl IndexSearcher {
     /// # Errors
     ///
     /// Propagates any error raised while building the weight, including the
-    /// [`LuceneError::UnsupportedOperation`] a query that does not implement
+    /// [`LuceneErrorKind::UnsupportedOperation`] a query that does not implement
     /// `create_weight` returns.
     pub fn create_weight(
         &self,

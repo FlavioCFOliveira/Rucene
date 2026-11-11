@@ -102,11 +102,11 @@ impl SparseFixedBitSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Java's message, `length
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with Java's message, `length
     /// needs to be >= 1`, when `length` is zero (`SparseFixedBitSet.java:63-66`).
     pub fn new(length: usize) -> Result<Self> {
         if length < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "length needs to be >= 1".to_string(),
             ));
         }
@@ -1411,13 +1411,13 @@ impl RoaringDocIdSetBuilder {
     /// Returns an error if `doc_id` is out of order or out of bounds.
     pub fn add(&mut self, doc_id: usize) -> crate::error::Result<()> {
         if doc_id as i32 <= self.last_doc_id {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "doc ids must be added in-order, got {doc_id} which is <= lastDocId={}",
                 self.last_doc_id
             )));
         }
         if doc_id >= self.max_doc {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "doc_id={doc_id} is >= maxDoc={}",
                 self.max_doc
             )));
@@ -1439,7 +1439,7 @@ impl RoaringDocIdSetBuilder {
     /// Returns an error if the range is invalid or out of order.
     pub fn add_range(&mut self, min: usize, max: usize) -> crate::error::Result<()> {
         if min > max {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "min must be <= max, got min={min} max={max}"
             )));
         }
@@ -1447,13 +1447,13 @@ impl RoaringDocIdSetBuilder {
             return Ok(());
         }
         if min as i32 <= self.last_doc_id {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "doc ids must be added in-order, got range starting at {min} which is <= lastDocId={}",
                 self.last_doc_id
             )));
         }
         if max > self.max_doc {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "max={max} exceeds maxDoc={}",
                 self.max_doc
             )));
@@ -2117,6 +2117,7 @@ impl SparseLiveDocsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::search::NO_MORE_DOCS;
 
     /// `new SparseFixedBitSet(0)` throws (`SparseFixedBitSet.java:63-66`).
@@ -2126,7 +2127,7 @@ mod tests {
     fn an_empty_sparse_fixed_bit_set_is_lucenes_illegal_argument() {
         assert!(matches!(
             SparseFixedBitSet::new(0),
-            Err(LuceneError::IllegalArgument(ref message)) if message == "length needs to be >= 1"
+            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message == "length needs to be >= 1"
         ));
     }
 

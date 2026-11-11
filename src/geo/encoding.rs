@@ -50,7 +50,7 @@ impl GeoUtils {
     /// Equivalent to `GeoUtils.checkLatitude(double)`.
     pub fn check_latitude(latitude: f64) -> Result<()> {
         if latitude.is_nan() || !(Self::MIN_LAT_INCL..=Self::MAX_LAT_INCL).contains(&latitude) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid latitude {latitude}; must be between {} and {}",
                 Self::MIN_LAT_INCL,
                 Self::MAX_LAT_INCL
@@ -64,7 +64,7 @@ impl GeoUtils {
     /// Equivalent to `GeoUtils.checkLongitude(double)`.
     pub fn check_longitude(longitude: f64) -> Result<()> {
         if longitude.is_nan() || !(Self::MIN_LON_INCL..=Self::MAX_LON_INCL).contains(&longitude) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid longitude {longitude}; must be between {} and {}",
                 Self::MIN_LON_INCL,
                 Self::MAX_LON_INCL
@@ -420,7 +420,7 @@ impl XYEncodingUtils {
     /// Equivalent to `XYEncodingUtils.checkVal(float)`.
     pub fn check_val(x: f32) -> Result<f32> {
         if !x.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid value {x}; must be between {} and {}",
                 Self::MIN_VAL_INCL,
                 Self::MAX_VAL_INCL
@@ -488,14 +488,14 @@ impl WindingOrder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `sign` is not `-1`, `0` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `sign` is not `-1`, `0` or
     /// `1`, as Java throws `IllegalArgumentException`.
     pub fn from_sign(sign: i32) -> Result<Self> {
         match sign {
             -1 => Ok(Self::CW),
             0 => Ok(Self::COLINEAR),
             1 => Ok(Self::CCW),
-            other => Err(LuceneError::IllegalArgument(format!(
+            other => Err(LuceneError::illegal_argument(format!(
                 "Invalid WindingOrder sign: {other}"
             ))),
         }
@@ -545,7 +545,7 @@ impl GeoUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `min_lon > max_lon`, as
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `min_lon > max_lon`, as
     /// Java throws `IllegalArgumentException`.
     #[allow(clippy::too_many_arguments)]
     pub fn relate(
@@ -559,7 +559,7 @@ impl GeoUtils {
         axis_lat: f64,
     ) -> Result<Relation> {
         if min_lon > max_lon {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Box crosses the dateline".to_string(),
             ));
         }

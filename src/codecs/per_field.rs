@@ -216,7 +216,7 @@ impl<'a> FieldsWriter<'a> {
                 .field_infos
                 .field_info(field)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!("field {} not found", field))
+                    LuceneError::illegal_argument(format!("field {} not found", field))
                 })?;
             let format = (self.resolver)(field);
             let format_name = format.name().to_string();
@@ -973,7 +973,7 @@ impl DvFieldsReader {
 
     fn producer_for(&self, field: &FieldInfo) -> Result<&(dyn DocValuesProducer + '_)> {
         let suffix = self.fields.get(&field.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "field \"{}\" has no doc-values producer",
                 field.name
             ))
@@ -1396,7 +1396,7 @@ impl KnnFieldsReader {
     /// # Errors
     ///
     /// Propagates the error of a delegate reader, after closing the readers
-    /// already opened, and returns [`LuceneError::IllegalState`] when a vector
+    /// already opened, and returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a vector
     /// field with a format attribute lacks its suffix attribute or names an
     /// unknown format. A vector field without a format attribute is skipped,
     /// as Java skips it.
@@ -1469,7 +1469,7 @@ impl KnnFieldsReader {
 
     fn reader_for(&self, field: &FieldInfo) -> Result<&(dyn KnnVectorsReader + '_)> {
         let suffix = self.fields.get(field.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "field \"{}\" has no KNN-vectors reader",
                 field.name
             ))
@@ -1763,7 +1763,7 @@ impl Fields for FilterFieldsProducer {
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
         if !self.filtered.iter().any(|name| name == field) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "The field named '{field}' is not accessible in the current merge context, \
                  available ones are: [{}]",
                 self.filtered.join(", ")
@@ -1801,6 +1801,7 @@ impl FieldsProducer for FilterFieldsProducer {
 mod tests {
     use super::*;
     use crate::codecs::stub::FieldInfos;
+    use crate::error::LuceneErrorKind;
     use crate::index::{IndexOptions, SegmentInfo};
 
     fn write_state() -> SegmentWriteState<'static> {
@@ -2212,7 +2213,10 @@ mod tests {
         assert!(producer.terms("title").unwrap().is_none());
         assert!(matches!(
             producer.terms("body"),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(restricted.fields_producers[1].is_none());
     }
@@ -2253,6 +2257,7 @@ mod tests {
 mod close_family_tests {
     use super::*;
     use crate::codecs::postings::{Fields, Terms};
+    use crate::error::LuceneErrorKind;
     use std::sync::Mutex;
 
     /// A sub-format reader or writer that records its `close()` and fails it
@@ -2268,7 +2273,9 @@ mod close_family_tests {
         fn record(&self) -> Result<()> {
             self.log.lock().unwrap().push(self.name);
             if self.fail {
-                return Err(LuceneError::Io(std::io::Error::other(self.name)));
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other(self.name),
+                )));
             }
             Ok(())
         }
@@ -2418,7 +2425,7 @@ mod close_family_tests {
             &mut self,
             _field_info: &FieldInfo,
         ) -> Result<super::super::knn_vectors::FieldVectorWriter> {
-            Err(LuceneError::UnsupportedOperation("test".to_string()))
+            Err(LuceneError::unsupported_operation("test".to_string()))
         }
         fn flush(
             &mut self,
@@ -2474,7 +2481,10 @@ mod close_family_tests {
     /// The message of the `IOException` a [`Closing`] raised.
     fn surfaced(error: LuceneError) -> String {
         match error {
-            LuceneError::Io(e) => e.to_string(),
+            LuceneError {
+                kind: LuceneErrorKind::Io(e),
+                ..
+            } => e.to_string(),
             other => format!("{other:?}"),
         }
     }

@@ -402,23 +402,23 @@ pub(crate) struct WriterParts<'w> {
 /// `IllegalArgumentException` for invalid settings.
 pub fn validate_settings(target_num_block_lines: i32, delta_num_lines: i32) -> Result<()> {
     if target_num_block_lines <= 0 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Invalid negative or nul targetNumBlockLines={target_num_block_lines}"
         )));
     }
     if delta_num_lines < 0 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Invalid negative deltaNumLines={delta_num_lines}"
         )));
     }
     if delta_num_lines >= target_num_block_lines {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Invalid too large deltaNumLines={delta_num_lines}, it must be < \
              targetNumBlockLines={target_num_block_lines}"
         )));
     }
     if target_num_block_lines.wrapping_add(delta_num_lines) > MAX_NUM_BLOCK_LINES {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Invalid (targetNumBlockLines + deltaNumLines)={}, it must be <= \
              MAX_NUM_BLOCK_LINES={MAX_NUM_BLOCK_LINES}",
             target_num_block_lines.wrapping_add(delta_num_lines)

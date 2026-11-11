@@ -220,7 +220,7 @@ fn caller_file(location: &Location<'static>) -> String {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] — this crate's stand-in for Java's
+/// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — this crate's stand-in for Java's
 /// `IllegalCallerException` — with Lucene's message, when the caller is not one
 /// of the known Lucene classes.
 #[track_caller]

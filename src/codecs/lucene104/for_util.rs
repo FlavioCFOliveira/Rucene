@@ -294,7 +294,7 @@ fn decode_slow(
         .ok()
         .and_then(|index| MASKS32.get(index))
     else {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Index {bits_per_value} out of bounds for length {}",
             MASKS32.len()
         )));
@@ -736,6 +736,7 @@ fn decode16(pdu: &mut PostingDecodingUtil, ints: &mut [i32; BLOCK_SIZE]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::store::{IndexInput, MockIndexInput, VecDataOutput};
 
     fn round_trip_bits(bits_per_value: i32) {
@@ -800,7 +801,10 @@ mod tests {
                     .expect_err("a width outside MASKS32 must fail")
             };
             match error {
-                LuceneError::IllegalArgument(message) => {
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    ..
+                } => {
                     assert_eq!(message, format!("Index {bits} out of bounds for length 32"))
                 }
                 other => panic!("unexpected error for {bits} bits: {other:?}"),

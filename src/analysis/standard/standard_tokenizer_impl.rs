@@ -29,7 +29,7 @@ use super::standard_tokenizer_impl_tables::{
 };
 use super::{ALPHANUM, EMOJI, HANGUL, HIRAGANA, IDEOGRAPHIC, KATAKANA, NUM, SOUTHEAST_ASIAN};
 use crate::analysis::{CharReader, CharTermAttribute};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// This character denotes the end of file.
 ///
@@ -277,9 +277,9 @@ impl StandardTokenizerImpl {
 
         /* not supposed to occur according to specification of java.io.Reader */
         if num_read == 0 {
-            return Err(LuceneError::Io(std::io::Error::other(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(
                 "Reader returned 0 characters. See JFlex examples/zero-reader for a workaround.",
-            )));
+            ))));
         }
         if num_read > 0 {
             self.zz_end_read += num_read as usize;
@@ -321,14 +321,14 @@ impl StandardTokenizerImpl {
     /// length n`).
     fn read_units(&mut self, reader: &mut dyn CharReader, off: usize, len: i64) -> Result<i64> {
         if len < 0 {
-            return Err(LuceneError::Unchecked {
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.IndexOutOfBoundsException",
                 message: Some(format!(
                     "Range [{off}, {off} + {len}) out of bounds for length {}",
                     self.zz_buffer.len()
                 )),
                 cause: None,
-            });
+            }));
         }
         let len = len as usize;
         if len == 0 {
@@ -631,11 +631,11 @@ fn char_count(code_point: i32) -> usize {
 /// `limit > a.length`.
 fn code_point_at(a: &[u16], index: usize, limit: usize) -> Result<i32> {
     if index >= limit || limit > a.len() {
-        return Err(LuceneError::Unchecked {
+        return Err(LuceneError::from(LuceneErrorKind::Unchecked {
             class: "java.lang.IndexOutOfBoundsException",
             message: None,
             cause: None,
-        });
+        }));
     }
     let c1 = a[index];
     if is_high_surrogate(c1) && index + 1 < limit {
@@ -654,10 +654,12 @@ fn code_point_at(a: &[u16], index: usize, limit: usize) -> Result<i32> {
 /// Java's `ArrayIndexOutOfBoundsException`, with its message, for a negative
 /// length or a range past the end of the array.
 fn array_copy_within(buf: &mut [u16], src_pos: usize, dest_pos: usize, length: i64) -> Result<()> {
-    let aioobe = |message: String| LuceneError::Unchecked {
-        class: "java.lang.ArrayIndexOutOfBoundsException",
-        message: Some(message),
-        cause: None,
+    let aioobe = |message: String| {
+        LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+            message: Some(message),
+            cause: None,
+        })
     };
     if length < 0 {
         return Err(aioobe(format!("arraycopy: length {length} is negative")));

@@ -877,7 +877,13 @@ fn a_corrupt_leaf_count_is_refused_on_the_whole_cell_path_too() {
         let error = intersect_field(&corrupt, &info, 0, &mut visitor)
             .expect_err("a leaf count no leaf can hold must be refused");
         assert!(
-            matches!(error, rucene::error::LuceneError::CorruptIndex(_)),
+            matches!(
+                error,
+                rucene::error::LuceneError {
+                    kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
             "count={name}: {error:?}"
         );
     }
@@ -914,7 +920,13 @@ fn a_compressed_dimension_with_a_full_common_prefix_is_refused() {
     let error = intersect_field(&corrupt, &info, 1, &mut visitor)
         .expect_err("a compressed dimension with no byte left to compress must be refused");
     assert!(
-        matches!(error, rucene::error::LuceneError::CorruptIndex(_)),
+        matches!(
+            error,
+            rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ),
         "{error:?}"
     );
 }

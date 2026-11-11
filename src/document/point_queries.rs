@@ -175,7 +175,7 @@ impl LatLonPointQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry list is
     /// empty.
     pub fn create_component_2d(
         geometries: &[LatLonGeometryValue],
@@ -190,7 +190,7 @@ impl LatLonPointQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a `WITHIN` query over a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a `WITHIN` query over a
     /// line geometry, for a `CONTAINS` query over a non-point geometry, and for
     /// an empty geometry list.
     pub fn new(
@@ -265,7 +265,7 @@ fn validate_geometry(
     if query_relation == QueryRelation::Within {
         for geometry in geometries {
             if matches!(geometry, LatLonGeometryValue::Line(_)) {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "LatLonPointQuery does not support Within queries with line geometries"
                         .to_string(),
                 ));
@@ -275,7 +275,7 @@ fn validate_geometry(
     if query_relation == QueryRelation::Contains {
         for geometry in geometries {
             if !matches!(geometry, LatLonGeometryValue::Point(_)) {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "LatLonPointQuery does not support Contains queries with non-points geometries"
                         .to_string(),
                 ));
@@ -464,7 +464,7 @@ impl LatLonDocValuesQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a `WITHIN` query over a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a `WITHIN` query over a
     /// line geometry, for a `CONTAINS` query over a non-point geometry, and for
     /// an empty geometry list.
     pub fn new(
@@ -475,7 +475,7 @@ impl LatLonDocValuesQuery {
         if query_relation == QueryRelation::Within {
             for geometry in &geometries {
                 if matches!(geometry, LatLonGeometryValue::Line(_)) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "LatLonDocValuesPointQuery does not support Within queries with line \
                          geometries"
                             .to_string(),
@@ -486,7 +486,7 @@ impl LatLonDocValuesQuery {
         if query_relation == QueryRelation::Contains {
             for geometry in &geometries {
                 if !matches!(geometry, LatLonGeometryValue::Point(_)) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "LatLonDocValuesPointQuery does not support Contains queries with \
                          non-points geometries"
                             .to_string(),
@@ -645,7 +645,7 @@ impl LatLonDocValuesBoxQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a coordinate outside its
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a coordinate outside its
     /// valid range.
     pub fn new(
         field: impl Into<String>,
@@ -779,10 +779,10 @@ impl XYDocValuesPointInGeometryQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty geometry list.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an empty geometry list.
     pub fn new(field: impl Into<String>, geometries: Vec<XYGeometryValue>) -> Result<Self> {
         if geometries.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "geometries must not be empty".to_string(),
             ));
         }
@@ -959,10 +959,10 @@ impl XYPointInGeometryQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty geometry list.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an empty geometry list.
     pub fn new(field: impl Into<String>, xy_geometries: Vec<XYGeometryValue>) -> Result<Self> {
         if xy_geometries.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "geometries must not be empty".to_string(),
             ));
         }
@@ -996,7 +996,7 @@ impl XYPointInGeometryQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// an incompatible point type, and propagates whatever the point tree
     /// raises.
     pub fn matching_docs(
@@ -1437,7 +1437,7 @@ impl LatLonPointDistanceQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a non-finite or negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a non-finite or negative
     /// radius, and for an invalid latitude or longitude.
     pub fn new(
         field: impl Into<String>,
@@ -1446,7 +1446,7 @@ impl LatLonPointDistanceQuery {
         radius_meters: f64,
     ) -> Result<Self> {
         if !radius_meters.is_finite() || radius_meters < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "radiusMeters: '{radius_meters}' is invalid"
             )));
         }
@@ -1497,7 +1497,7 @@ impl LatLonPointDistanceQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// an incompatible point type, and propagates whatever the point tree
     /// raises.
     pub fn matching_docs(

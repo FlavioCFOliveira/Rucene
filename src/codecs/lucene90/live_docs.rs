@@ -7,7 +7,7 @@
 use crate::codecs::codec_util;
 use crate::codecs::live_docs::LiveDocsFormat;
 use crate::codecs::stub::SegmentCommitInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{file_name_from_generation, LIVE_DOCS_EXTENSION};
 use crate::store::{Directory, IOContext, IndexInput, IndexOutput};
 use crate::util::bit_sets::{DenseLiveDocs, SparseFixedBitSet, SparseLiveDocs};
@@ -118,13 +118,13 @@ impl LiveDocsFormat for Lucene90LiveDocsFormat {
 
         let expected = info.get_del_count() + new_del_count;
         if del_count != expected as usize {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "bits.deleted={del_count} info.delcount={} newdelcount={new_del_count}",
                     info.get_del_count()
                 ),
-            )));
+            ))));
         }
         Ok(())
     }
@@ -165,10 +165,10 @@ fn read_live_docs(
         };
 
     if actual_del_count != expected_del_count {
-        return Err(LuceneError::Io(std::io::Error::new(
+        return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("bits.deleted={actual_del_count} info.delcount={expected_del_count}"),
-        )));
+        ))));
     }
     Ok(live_docs)
 }

@@ -130,10 +130,10 @@ impl<'a> SimpleTextFieldsWriter<'a> {
                 continue;
             };
             let field_info = field_infos.field_info(field).ok_or_else(|| {
-                LuceneError::illegal_state(format!(
+                LuceneError::null_pointer_with_message(
                     "Cannot invoke \"org.apache.lucene.index.FieldInfo.hasPayloads()\" because \
-                     \"fieldInfo\" is null (field={field})"
-                ))
+                     \"fieldInfo\" is null",
+                )
             })?;
 
             let mut wrote_field = false;

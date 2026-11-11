@@ -32,7 +32,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::SegmentInfo;
 use rucene::store::{
     ByteBuffersDataOutput, ByteBuffersDirectory, DataOutput, Directory, DEFAULT_IO_CONTEXT,
@@ -221,12 +221,21 @@ fn compressing_readers_report_already_closed() {
     // An open reader may answer nothing for a segment with no documents, but it
     // must not answer `AlreadyClosed`.
     assert!(
-        !matches!(reader.get(0), Err(LuceneError::AlreadyClosed { .. })),
+        !matches!(
+            reader.get(0),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            })
+        ),
         "an open reader must not report itself closed"
     );
     reader.close().expect("close");
     match reader.get(0) {
-        Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+        Err(LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        }) => assert_eq!(
             message, "this FieldsReader is closed",
             "the message is Lucene's own"
         ),

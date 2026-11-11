@@ -38,13 +38,15 @@ pub mod cranky_term_vectors_format;
 pub use cranky_codec::CrankyCodec;
 
 use randomizedtesting::jdk::random::Random;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::java_nio_file::io_exception;
 
 /// `if (random.nextInt(bound) == 0) throw new IOException(message);`
 pub(crate) fn maybe_fail(random: &dyn Random, bound: i32, message: &str) -> Result<()> {
     if random.next_int_bound(bound) == 0 {
-        return Err(LuceneError::Io(io_exception(message)));
+        return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
+            message,
+        ))));
     }
     Ok(())
 }

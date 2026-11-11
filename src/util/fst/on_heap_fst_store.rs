@@ -1,6 +1,6 @@
 //! Port of `org.apache.lucene.util.fst.OnHeapFSTStore`.
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 use crate::util::Accountable;
 
@@ -33,19 +33,19 @@ impl OnHeapFSTStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `max_block_bits` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `max_block_bits` is
     /// outside `1 ..= 30` or `num_bytes` is negative, and propagates read
     /// errors.
     pub fn new(max_block_bits: i32, input: &mut dyn DataInput, num_bytes: i64) -> Result<Self> {
         if !(1..=30).contains(&max_block_bits) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxBlockBits should be 1 .. 30; got {max_block_bits}"
             )));
         }
         if num_bytes < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "invalid FST length {num_bytes}"
-            )));
+            ))));
         }
 
         if num_bytes > (1i64 << max_block_bits) {
@@ -60,7 +60,9 @@ impl OnHeapFSTStore {
         } else {
             // The FST fits into a single block: use the cheaper reader.
             let len = usize::try_from(num_bytes).map_err(|_| {
-                LuceneError::CorruptIndex(format!("FST length {num_bytes} does not fit in memory"))
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "FST length {num_bytes} does not fit in memory"
+                )))
             })?;
             let mut bytes_array = vec![0u8; len];
             input.read_bytes(Some(&mut bytes_array), 0, len)?;

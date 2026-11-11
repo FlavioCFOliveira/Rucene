@@ -22,7 +22,7 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
 use rucene::document::{Document, Field, NumericDocValuesField, NumericValue, Store, StringField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader;
 use rucene::index::filter_directory_reader::{
@@ -787,11 +787,11 @@ fn test_carry_over_new_deletes_on_commit() -> Result<()> {
 /// `new AssertionError(e)`: an `AssertionError` whose cause is `e`.
 fn assertion_error_from(e: LuceneError) -> LuceneError {
     let message = rucene_test_framework::util::java_exceptions::java_throwable(&e).to_string();
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.AssertionError",
         message: Some(message),
         cause: Some(Arc::new(e)),
-    }
+    })
 }
 
 /// This test makes sure we release the merge readers on abort. MDW will fail if it can't close all
@@ -1303,7 +1303,7 @@ impl DataInput for MockAssertFileExistIndexInput {
     /// + numBytes)` after the argument check.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }

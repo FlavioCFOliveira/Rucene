@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::{AfterClass, Assert, BeforeClass};
 use rucene::document::{Document, DocumentStoredFieldVisitor};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::field_infos::{FieldInfo, FieldInfosBuilder, FieldNumbers};
 use rucene::index::index_writer::IndexWriter;
@@ -289,8 +289,8 @@ impl FaultyIndexInput {
             self.count += 1;
             count % 2 == 1
         } {
-            return Err(LuceneError::Io(std::io::Error::other(
-                "Simulated network outage",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("Simulated network outage"),
             )));
         }
         Ok(())

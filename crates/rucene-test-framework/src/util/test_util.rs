@@ -42,7 +42,7 @@ use rucene::document::{
     BinaryDocValuesField, BinaryPoint, Document, Field, FieldType, IntField, KeywordField,
     NumericDocValuesField, NumericValue, SortedDocValuesField, Store,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::check_index::{self, CheckIndex, Level, Status};
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::index::filter_directory_reader::SlowCodecReaderWrapper;
@@ -963,11 +963,11 @@ impl TestUtil {
         if !index_status.clean {
             println!("CheckIndex failed");
             println!("{}", String::from_utf8_lossy(&text));
-            Err(LuceneError::Unchecked {
+            Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.RuntimeException",
                 message: Some("CheckIndex failed".to_string()),
                 cause: None,
-            })
+            }))
         } else {
             if *crate::util::lucene_test_case::INFOSTREAM {
                 println!("{}", String::from_utf8_lossy(&text));
@@ -1846,31 +1846,31 @@ impl TestUtil {
 
 /// A `java.lang.RuntimeException` with `message`.
 fn runtime_exception(message: String) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.RuntimeException",
         message: Some(message),
         cause: None,
-    }
+    })
 }
 
 /// The `NullPointerException` Java raises dereferencing a `null` value.
 fn null_pointer() -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.NullPointerException",
         message: None,
         cause: None,
-    }
+    })
 }
 
 /// `Field(String, CharSequence, IndexableFieldType)`'s refusal of a `null`
 /// value.
 fn value_must_not_be_null() -> LuceneError {
-    LuceneError::IllegalArgument("value must not be null".to_string())
+    LuceneError::illegal_argument("value must not be null".to_string())
 }
 
 /// `Field(String, BytesRef, IndexableFieldType)`'s refusal of a `null` value.
 fn bytes_must_not_be_null() -> LuceneError {
-    LuceneError::IllegalArgument("bytes must not be null".to_string())
+    LuceneError::illegal_argument("bytes must not be null".to_string())
 }
 
 /// `Number.intValue()`: the Java narrowing conversion of the number to an

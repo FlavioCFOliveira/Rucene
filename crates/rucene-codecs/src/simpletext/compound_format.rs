@@ -21,7 +21,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use rucene::codecs::{CompoundDirectory, CompoundFormat};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_file_names::{segment_file_name, strip_segment_name};
 use rucene::index::SegmentInfo;
 use rucene::store::java_nio_file::JavaIoException;
@@ -257,7 +257,7 @@ impl SimpleTextCompoundDirectory {
         self.file_names
             .binary_search_by(|probe| probe.encode_utf16().cmp(name.encode_utf16()))
             .map_err(|_| {
-                LuceneError::Io(
+                LuceneError::from(LuceneErrorKind::Io(
                     JavaIoException::new(
                         "java.io.FileNotFoundException",
                         Some(format!(
@@ -266,7 +266,7 @@ impl SimpleTextCompoundDirectory {
                         )),
                     )
                     .into_io_error(),
-                )
+                ))
             })
     }
 }
@@ -284,7 +284,7 @@ impl Directory for SimpleTextCompoundDirectory {
     }
 
     fn delete_file(&self, _name: &str) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn file_length(&self, name: &str) -> Result<i64> {
@@ -293,7 +293,7 @@ impl Directory for SimpleTextCompoundDirectory {
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn create_temp_output(
@@ -302,19 +302,19 @@ impl Directory for SimpleTextCompoundDirectory {
         _suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sync(&self, _names: &[String]) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sync_metadata(&self) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn rename(&self, _source: &str, _dest: &str) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
@@ -328,7 +328,7 @@ impl Directory for SimpleTextCompoundDirectory {
     }
 
     fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn close(&mut self) -> Result<()> {

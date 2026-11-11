@@ -452,7 +452,7 @@ impl FakeScorer {
 
 impl Scorable for FakeScorer {
     fn score(&mut self) -> Result<f32> {
-        Err(rucene::error::LuceneError::UnsupportedOperation(
+        Err(rucene::error::LuceneError::unsupported_operation(
             String::new(),
         ))
     }

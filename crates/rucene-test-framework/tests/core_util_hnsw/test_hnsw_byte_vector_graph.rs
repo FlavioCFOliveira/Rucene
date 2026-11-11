@@ -112,7 +112,7 @@ impl HnswCase for ByteCase {
     ) -> Result<Arc<MockByteVectorValues>> {
         let vector_values = reader
             .get_byte_vector_values(field_name)?
-            .ok_or_else(|| LuceneError::illegal_state("null ByteVectorValues".to_string()))?;
+            .ok_or_else(|| LuceneError::null_pointer_with_message("null ByteVectorValues"))?;
         let mut vectors: Vec<Option<Vec<u8>>> = vec![None; reader.max_doc() as usize];
         for i in 0..vector_values.size() {
             let value = vector_values.vector_value(i)?;
@@ -276,7 +276,7 @@ impl ByteVectorValues for CircularByteVectorValues {
     }
 
     fn scorer(&self, _target: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 

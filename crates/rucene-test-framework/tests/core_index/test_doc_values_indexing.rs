@@ -14,7 +14,7 @@ use rucene::document::{
     NumericValue, SharedReader, SortedDocValuesField, SortedSetDocValuesField, Store, StoredValue,
     StringField, TextField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::doc_values::DocValues;
 use rucene::index::field_infos::FieldInfos;
@@ -934,11 +934,11 @@ struct ThrowingTokenStream {
 
 impl TokenStream for ThrowingTokenStream {
     fn increment_token(&mut self) -> Result<bool> {
-        Err(LuceneError::Unchecked {
+        Err(LuceneError::from(LuceneErrorKind::Unchecked {
             class: "java.lang.RuntimeException",
             message: None,
             cause: None,
-        })
+        }))
     }
 
     fn attribute_source(&self) -> &AttributeSource {

@@ -19,7 +19,7 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
 use rucene::document::{Document, FieldType, NumericDocValuesField, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::{IndexWriter, MAX_TERM_LENGTH};
 use rucene::index::index_writer_config::IndexWriterConfig;
@@ -614,8 +614,8 @@ impl Failure for FailOnlyOnAbortOrFlush {
             if self.only_once {
                 self.do_fail.store(false, Ordering::SeqCst);
             }
-            return Err(LuceneError::Io(std::io::Error::other(
-                "now failing on purpose",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("now failing on purpose"),
             )));
         }
         Ok(())
@@ -683,8 +683,8 @@ impl Failure for FailOnlyInWriteSegment {
             if self.only_once {
                 self.do_fail.store(false, Ordering::SeqCst);
             }
-            return Err(LuceneError::Io(std::io::Error::other(
-                "now failing on purpose",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("now failing on purpose"),
             )));
         }
         Ok(())

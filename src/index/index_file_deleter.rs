@@ -75,7 +75,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_commit::IndexCommit;
 use crate::index::index_deletion_policy::IndexDeletionPolicy;
 use crate::index::index_file_names::{
@@ -454,9 +454,9 @@ impl IndexFileDeleter {
                 .expect("checked is_some above");
             let sis =
                 SegmentInfos::read_commit(Arc::clone(&directory_orig), name).map_err(|e| {
-                    LuceneError::CorruptIndex(format!(
+                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "unable to read current segments_N file \"{name}\": {e}"
-                    ))
+                    )))
                 })?;
             if info_stream.is_enabled(IFD) {
                 info_stream.message(IFD, &format!("forced open of current segments file {name}"));
@@ -836,7 +836,7 @@ impl IndexFileDeleter {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when the writer is closed, and also when
+    /// [`LuceneErrorKind::AlreadyClosed`] when the writer is closed, and also when
     /// it hit a tragic error, with that error as its cause.
     pub fn ensure_open(&self, writer: &IndexWriter) -> Result<()> {
         writer.ensure_open_with(false)?;
@@ -924,7 +924,7 @@ impl IndexFileDeleter {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] if a per-segment file name carries a
+/// Returns [`LuceneErrorKind::CorruptIndex`] if a per-segment file name carries a
 /// segment ordinal that does not fit in an `i64`. Java lets the resulting
 /// `NumberFormatException` escape at the same point
 /// (`IndexFileDeleter.java:303-304` is deliberately *not* inside a `try`, unlike
@@ -986,9 +986,9 @@ pub fn inflate_gens(
                 chars.as_str()
             };
             let ordinal = i64::from_str_radix(ordinal_str, MAX_RADIX).map_err(|e| {
-                LuceneError::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "cannot parse segment ordinal from \"{file_name}\": {e}"
-                ))
+                )))
             })?;
             max_segment_name = max_segment_name.max(ordinal);
 
@@ -1259,7 +1259,7 @@ mod tests {
         dir.delete_file("_1.fdt").unwrap();
         let error = d.checkpoint(&sis, false, &names).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(io) if io.kind() == std::io::ErrorKind::NotFound),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::NotFound),
             "{error:?}"
         );
         assert!(d.last_files.is_empty(), "{:?}", d.last_files);
@@ -1778,7 +1778,7 @@ mod tests {
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
 
         assert!(
-            matches!(&err, LuceneError::Unchecked { class, .. }
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Unchecked { class, .. }, .. }
                 if *class == "java.lang.NullPointerException"),
             "expected a NullPointerException, got {err:?}"
         );
@@ -1804,6 +1804,15 @@ mod tests {
         // The point of the test is that it does not panic: byte-slicing the
         // leading character used to abort the process here.
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
     }
 }

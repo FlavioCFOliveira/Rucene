@@ -28,7 +28,7 @@
 
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Message used when an operation is attempted on a closed manager.
 ///
@@ -195,7 +195,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the manager is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the manager is closed.
     ///
     /// [`release`]: ReferenceManager::release
     pub fn acquire(&self) -> Result<Arc<G>> {
@@ -287,7 +287,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     ///
     /// # Errors
     ///
-    /// Returns an error if refreshing fails, or [`LuceneError::AlreadyClosed`]
+    /// Returns an error if refreshing fails, or [`LuceneErrorKind::AlreadyClosed`]
     /// if the manager is closed.
     pub fn maybe_refresh(&self) -> Result<bool> {
         self.ensure_open()?;
@@ -307,7 +307,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     ///
     /// # Errors
     ///
-    /// Returns an error if refreshing fails, or [`LuceneError::AlreadyClosed`]
+    /// Returns an error if refreshing fails, or [`LuceneErrorKind::AlreadyClosed`]
     /// if the manager is closed.
     pub fn maybe_refresh_blocking(&self) -> Result<()> {
         self.ensure_open()?;
@@ -330,7 +330,10 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     pub fn close(&self) -> Result<()> {
         match self.swap_reference(None) {
             Ok(()) => self.source.after_close(),
-            Err(LuceneError::AlreadyClosed { .. }) => Ok(()),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            }) => Ok(()),
             Err(e) => Err(e),
         }
     }

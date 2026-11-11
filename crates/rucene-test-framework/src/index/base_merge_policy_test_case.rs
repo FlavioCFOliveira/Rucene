@@ -45,7 +45,7 @@ use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::reflect::{modifier, Class, Method};
 use randomizedtesting::junit::Assert;
 use rucene::document::Document;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::{IndexWriter, SOURCE_FLUSH, SOURCE_MERGE};
 use rucene::index::merge_policy::{
@@ -200,7 +200,7 @@ fn add_double(a: i64, b: f64) -> i64 {
 struct FakeDirectory;
 
 fn unsupported<T>() -> Result<T> {
-    Err(LuceneError::UnsupportedOperation(String::new()))
+    Err(LuceneError::unsupported_operation(String::new()))
 }
 
 impl Directory for FakeDirectory {
@@ -217,13 +217,12 @@ impl Directory for FakeDirectory {
             return Ok(0);
         }
         if !name.ends_with(".fake") {
-            return Err(LuceneError::IllegalArgument(name.to_string()));
+            return Err(LuceneError::illegal_argument(name.to_string()));
         }
         let start_index = name.find("_size=").map_or(0, |i| i) + "_size=".len();
         let end_index = name.len() - ".fake".len();
-        name[start_index..end_index]
-            .parse::<i64>()
-            .map_err(|_| LuceneError::Unchecked {
+        name[start_index..end_index].parse::<i64>().map_err(|_| {
+            LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.NumberFormatException",
                 message: Some(format!(
                     "For input string: \"{}\"",
@@ -231,6 +230,7 @@ impl Directory for FakeDirectory {
                 )),
                 cause: None,
             })
+        })
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
@@ -301,7 +301,7 @@ pub fn make_segment_commit_info(
     source: &str,
 ) -> Result<SegmentCommitInfo> {
     if !name.starts_with('_') {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "name must start with an _, got {name}"
         )));
     }
@@ -399,7 +399,7 @@ pub fn apply_deletes(infos: &SegmentInfos, mut num_deletes: i32) -> Result<Segme
         total_num_docs += s.info.max_doc()? - s.get_del_count();
     }
     if num_deletes > total_num_docs {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "More deletes than documents".to_string(),
         ));
     }

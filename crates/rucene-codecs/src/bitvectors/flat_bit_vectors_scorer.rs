@@ -54,7 +54,7 @@ impl FlatVectorsScorer for FlatBitVectorsScorer {
         _similarity_function: VectorSimilarityFunction,
         _vector_values: Box<dyn FloatVectorValues>,
     ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
-        Err(LuceneError::IllegalArgument(
+        Err(LuceneError::illegal_argument(
             "vectorValues must be an instance of ByteVectorValues".to_string(),
         ))
     }
@@ -75,7 +75,7 @@ impl FlatVectorsScorer for FlatBitVectorsScorer {
         _vector_values: Box<dyn FloatVectorValues>,
         _target: &[f32],
     ) -> Result<Box<dyn RandomVectorScorer>> {
-        Err(LuceneError::IllegalArgument(
+        Err(LuceneError::illegal_argument(
             "bit vectors do not support float[] targets".to_string(),
         ))
     }

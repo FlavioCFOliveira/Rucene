@@ -21,11 +21,13 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::random::Random;
 use rucene::analysis::{TokenFilter, TokenFilterLogic, TokenStream};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::util::attribute::AttributeSource;
 
 fn fake(message: &str) -> LuceneError {
-    LuceneError::Io(std::io::Error::other(message.to_string()))
+    LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(
+        message.to_string(),
+    )))
 }
 
 /// The logic of [`CrankyTokenFilter`].

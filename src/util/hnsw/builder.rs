@@ -148,16 +148,16 @@ pub const HNSW_COMPONENT: &str = "HNSW";
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `m` or `beam_width` is not
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `m` or `beam_width` is not
 /// positive.
 pub(crate) fn check_params(m: i32, beam_width: i32) -> Result<()> {
     if m <= 0 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "M (max connections) must be positive".to_string(),
         ));
     }
     if beam_width <= 0 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "beamWidth must be positive".to_string(),
         ));
     }
@@ -250,7 +250,7 @@ impl HnswGraphBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when another builder still shares
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when another builder still shares
     /// the graph, which happens only while a concurrent merge's workers are
     /// alive.
     pub fn into_graph(mut self) -> Result<OnHeapHnswGraph> {
@@ -561,7 +561,7 @@ impl HnswGraphBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once the builder is frozen, and
+    /// Returns [`LuceneErrorKind::IllegalState`] once the builder is frozen, and
     /// propagates whatever adding a node raises.
     pub(crate) fn build_skipping(
         &mut self,
@@ -994,7 +994,7 @@ impl GraphBuilderKnnCollector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `k < 1`, as Java's
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `k < 1`, as Java's
     /// `NeighborQueue` constructor throws `IllegalArgumentException`; see
     /// [`NeighborQueue::new`].
     pub fn new(k: i32) -> Result<Self> {

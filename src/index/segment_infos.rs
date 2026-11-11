@@ -14,7 +14,7 @@ use std::io;
 use std::sync::{Arc, RwLock};
 
 use crate::codecs::codec_util;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{file_name_from_generation, PENDING_SEGMENTS, SEGMENTS};
 use crate::index::SegmentCommitInfo;
 use crate::store::{Directory, IndexOutput};
@@ -125,18 +125,18 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the creation version is out of
+    /// Returns `LuceneErrorKind::IllegalArgument` if the creation version is out of
     /// the supported range.
     ///
     /// Equivalent to `SegmentInfos(int)`.
     pub fn new(index_created_version_major: i32) -> Result<Self> {
         if index_created_version_major > Version::LATEST.major as i32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "indexCreatedVersionMajor is in the future: {index_created_version_major}"
             )));
         }
         if index_created_version_major < 6 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "indexCreatedVersionMajor must be >= 6, got: {index_created_version_major}"
             )));
         }
@@ -179,11 +179,11 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the wrapped `SegmentInfo` does
+    /// Returns `LuceneErrorKind::IllegalArgument` if the wrapped `SegmentInfo` does
     /// not record `min_version` for an index created on or after Lucene 7.
     pub fn add(&mut self, si: SegmentCommitInfo) -> Result<()> {
         if self.index_created_version_major >= 7 && si.info.min_version().is_none() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "All segments must record the minVersion for indices created on or after Lucene 7: {:?}",
                 si.info
             )));
@@ -300,8 +300,8 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IndexFormatTooOld`] when a `Lucene` codec cannot
-    /// be resolved, [`LuceneError::IndexFormatNotSupported`] when another
+    /// Returns [`LuceneErrorKind::IndexFormatTooOld`] when a `Lucene` codec cannot
+    /// be resolved, [`LuceneErrorKind::IndexFormatNotSupported`] when another
     /// codec cannot be, and propagates any I/O error.
     fn read_codec(
         input: &mut dyn crate::store::ChecksumIndexInput,
@@ -310,18 +310,22 @@ impl SegmentInfos {
         match crate::codecs::lookup(&name) {
             Ok(codec) => Ok(codec),
             // Maybe it is an old default codec that has moved.
-            Err(LuceneError::IllegalArgument(message)) if name.starts_with("Lucene") => {
-                Err(LuceneError::index_format_too_old_reason(
-                    input.resource_description(),
-                    format!(
-                        "Could not load codec '{name}'. {message}. Did you forget to add \
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) if name.starts_with("Lucene") => Err(LuceneError::index_format_too_old_reason(
+                input.resource_description(),
+                format!(
+                    "Could not load codec '{name}'. {message}. Did you forget to add \
                          lucene-backward-codecs.jar?"
-                    ),
-                ))
-            }
-            Err(LuceneError::IllegalArgument(_)) => Err(LuceneError::IndexFormatNotSupported(
-                format!("Could not load codec '{name}'."),
+                ),
             )),
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }) => Err(LuceneError::from(LuceneErrorKind::IndexFormatNotSupported(
+                format!("Could not load codec '{name}'."),
+            ))),
             Err(error) => Err(error),
         }
     }
@@ -404,7 +408,7 @@ impl SegmentInfos {
     /// Sets the version, failing if it would decrease.
     pub fn set_version(&mut self, new_version: i64) -> Result<()> {
         if new_version < self.version {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "newVersion (={new_version}) cannot be less than current version (={})",
                 self.version
             )));
@@ -449,7 +453,7 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the merged segment records
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the merged segment records
     /// no minimum version and the index was created by Lucene 7 or later, which
     /// requires one.
     pub fn apply_merge_changes(
@@ -459,7 +463,7 @@ impl SegmentInfos {
         drop_segment: bool,
     ) -> Result<()> {
         if self.index_created_version_major >= 7 && merged.info.min_version().is_none() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "All segments must record the minVersion for indices created on or after Lucene 7"
                     .to_string(),
             ));
@@ -505,7 +509,7 @@ impl SegmentInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Arithmetic`] with the message `integer overflow`
+    /// Returns [`LuceneErrorKind::Arithmetic`] with the message `integer overflow`
     /// when the sum does not fit in an `i32`: Java's `Math.toIntExact(count)`
     /// throwing `ArithmeticException("integer overflow")`.
     ///
@@ -624,7 +628,7 @@ impl SegmentInfos {
     /// Equivalent to `SegmentInfos.generationFromSegmentsFileName(String)`.
     pub fn generation_from_segments_file_name(file_name: &str) -> Result<i64> {
         if file_name == OLD_SEGMENTS_GEN {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "\"{OLD_SEGMENTS_GEN}\" is not a valid segment file name since 4.0"
             )));
         }
@@ -634,12 +638,12 @@ impl SegmentInfos {
         if file_name.starts_with(SEGMENTS) {
             let gen_str = &file_name[1 + SEGMENTS.len()..];
             i64::from_str_radix(gen_str, 36).map_err(|e| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "fileName \"{file_name}\" does not contain a valid generation: {e}"
                 ))
             })
         } else {
-            Err(LuceneError::IllegalArgument(format!(
+            Err(LuceneError::illegal_argument(format!(
                 "fileName \"{file_name}\" is not a segments file"
             )))
         }
@@ -1105,10 +1109,10 @@ impl SegmentInfos {
                 }
             } else {
                 return Err(exc.unwrap_or_else(|| {
-                    LuceneError::Io(io::Error::new(
+                    LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::NotFound,
                         "no segments* file found".to_string(),
-                    ))
+                    )))
                 }));
             }
         }
@@ -1451,7 +1455,10 @@ mod tests {
                       lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}";
         let message =
             |dir: &Arc<dyn Directory>| match SegmentInfos::read_latest_commit(Arc::clone(dir)) {
-                Err(LuceneError::IndexNotFound(message)) => message,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IndexNotFound(message),
+                    ..
+                }) => message,
                 other => panic!("expected IndexNotFoundException, got {:?}", other.err()),
             };
         let empty = message(&dir);
@@ -1705,7 +1712,7 @@ mod tests {
         } else {
             let error = total.unwrap().unwrap_err();
             assert!(
-                matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
                 "{error:?}"
             );
         }
@@ -1850,7 +1857,13 @@ mod tests {
         let error = SegmentInfos::read_commit_with_min_version(Arc::clone(&dir), "segments_1", 11)
             .unwrap_err();
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(
@@ -1869,7 +1882,13 @@ mod tests {
         bytes[3] ^= 1;
         let (error, resource) = read_patched(&dir, bytes);
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(
@@ -1900,7 +1919,13 @@ mod tests {
         bytes[3] ^= 1;
         let (error, resource) = read_as_written(&dir, bytes);
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(
@@ -1919,7 +1944,13 @@ mod tests {
         bytes[16] = 8;
         let (error, resource) = read_as_written(&dir, bytes);
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "the header's refusal, not the footer's checksum failure: {error:?}"
         );
         assert_eq!(
@@ -1955,7 +1986,13 @@ mod tests {
         bytes[at[0]..at[0] + 9].copy_from_slice(b"Lucene000");
         let (error, resource) = read_patched(&dir, bytes);
         assert!(
-            matches!(error, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         let message = error.to_string();

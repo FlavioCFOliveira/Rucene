@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Once};
 
 use randomizedtesting::jdk::random::JdkRandom;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::check_index::Level as CheckIndexLevel;
 use rucene::index::{directory_reader, IndexReader};
 use rucene::store::java_nio_file::{java_class_of, java_message_of};
@@ -84,25 +84,39 @@ fn m(s: &str) -> String {
 fn class_and_message(e: &LuceneError) -> (String, String) {
     let null = || "<null>".to_string();
     match e {
-        LuceneError::Io(io) => (
+        LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(null),
         ),
-        LuceneError::Unchecked { class, message, .. } => {
-            (class.to_string(), message.clone().unwrap_or_else(null))
-        }
-        LuceneError::AssertionError(message) => {
-            ("java.lang.AssertionError".to_string(), message.clone())
-        }
-        LuceneError::AlreadyClosed { message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { class, message, .. },
+            ..
+        } => (class.to_string(), message.clone().unwrap_or_else(null)),
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(message),
+            ..
+        } => ("java.lang.AssertionError".to_string(), message.clone()),
+        LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        } => (
             "org.apache.lucene.store.AlreadyClosedException".to_string(),
             message.clone(),
         ),
-        LuceneError::IllegalState { message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => (
             "java.lang.IllegalStateException".to_string(),
             message.clone(),
         ),
-        LuceneError::IllegalArgument(message) => (
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => (
             "java.lang.IllegalArgumentException".to_string(),
             if message.is_empty() {
                 null()
@@ -110,11 +124,17 @@ fn class_and_message(e: &LuceneError) -> (String, String) {
                 message.clone()
             },
         ),
-        LuceneError::CorruptIndex(message) => (
+        LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(message),
+            ..
+        } => (
             "org.apache.lucene.index.CorruptIndexException".to_string(),
             message.clone(),
         ),
-        LuceneError::IndexNotFound(message) => (
+        LuceneError {
+            kind: LuceneErrorKind::IndexNotFound(message),
+            ..
+        } => (
             "org.apache.lucene.index.IndexNotFoundException".to_string(),
             message.clone(),
         ),
@@ -130,9 +150,13 @@ fn class_and_message(e: &LuceneError) -> (String, String) {
 fn err(e: &LuceneError) -> String {
     let (class, message) = class_and_message(e);
     let mut s = format!("{class}\t{}", m(&message));
-    if let LuceneError::Unchecked {
-        class: "java.lang.RuntimeException",
-        cause: Some(cause),
+    if let LuceneError {
+        kind:
+            LuceneErrorKind::Unchecked {
+                class: "java.lang.RuntimeException",
+                cause: Some(cause),
+                ..
+            },
         ..
     } = e
     {

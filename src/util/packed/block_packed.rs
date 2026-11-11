@@ -9,7 +9,7 @@
 
 use super::bulk_operation::get_encoder;
 use super::{Format, PackedInts};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 use crate::util::{Accountable, LongValues, RamUsageEstimator};
 
@@ -83,7 +83,7 @@ impl<'a> AbstractBlockPackedWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `block_size` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `block_size` is not a
     /// power of two in `[MIN_BLOCK_SIZE, MAX_BLOCK_SIZE]`.
     pub fn new(out: &'a mut dyn DataOutput, block_size: usize) -> Result<Self> {
         PackedInts::check_block_size(block_size, MIN_BLOCK_SIZE, MAX_BLOCK_SIZE)?;
@@ -120,7 +120,7 @@ impl<'a> AbstractBlockPackedWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once [`Self::finished`] holds.
+    /// Returns [`LuceneErrorKind::IllegalState`] once [`Self::finished`] holds.
     pub fn check_not_finished(&self) -> Result<()> {
         if self.finished {
             return Err(LuceneError::illegal_state("Already finished".to_string()));
@@ -190,7 +190,7 @@ pub trait AbstractBlockPackedWriterOps<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once the writer is finished, or
+    /// Returns [`LuceneErrorKind::IllegalState`] once the writer is finished, or
     /// the I/O error raised while flushing a full block.
     fn add(&mut self, l: i64) -> Result<()> {
         self.base().check_not_finished()?;
@@ -213,7 +213,7 @@ pub trait AbstractBlockPackedWriterOps<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once the writer is finished or
+    /// Returns [`LuceneErrorKind::IllegalState`] once the writer is finished or
     /// when a block is only partly filled, or the I/O error raised while
     /// flushing.
     fn add_block_of_zeros(&mut self) -> Result<()> {
@@ -241,7 +241,7 @@ pub trait AbstractBlockPackedWriterOps<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when already finished, or the I/O
+    /// Returns [`LuceneErrorKind::IllegalState`] when already finished, or the I/O
     /// error raised while flushing.
     fn finish(&mut self) -> Result<()> {
         self.base().check_not_finished()?;
@@ -285,7 +285,7 @@ impl<'a> MonotonicBlockPackedWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `block_size` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `block_size` is not a
     /// power of two in `[MIN_BLOCK_SIZE, MAX_BLOCK_SIZE]`.
     pub fn new(out: &'a mut dyn DataOutput, block_size: usize) -> Result<Self> {
         Ok(Self {
@@ -452,9 +452,9 @@ impl MonotonicBlockPackedReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `block_size` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `block_size` is not a
     /// power of two in `[MIN_BLOCK_SIZE, MAX_BLOCK_SIZE]`,
-    /// [`LuceneError::CorruptIndex`] when a block declares more than 64 bits
+    /// [`LuceneErrorKind::CorruptIndex`] when a block declares more than 64 bits
     /// per value, or the I/O error raised by the input.
     pub fn of(
         input: &mut dyn DataInput,
@@ -475,7 +475,9 @@ impl MonotonicBlockPackedReader {
             let bits_per_value = input.read_v_int()?;
             sum_bpv += i64::from(bits_per_value);
             if !(0..=64).contains(&bits_per_value) {
-                return Err(LuceneError::CorruptIndex("Corrupted".to_string()));
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                    "Corrupted".to_string(),
+                )));
             }
             if bits_per_value == 0 {
                 sub_readers.push(MonotonicSubReader::Zeroes);

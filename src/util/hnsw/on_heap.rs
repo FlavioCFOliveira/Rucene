@@ -263,7 +263,7 @@ impl OnHeapHnswGraph {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] where [`add_node`](Self::add_node)
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) where [`add_node`](Self::add_node)
     /// would have to grow storage the other workers may be reading — the outer
     /// array, or the node's level array — and where the level was already
     /// added, which Java would overwrite under the other workers' feet.
@@ -493,7 +493,7 @@ impl HnswGraph for OnHeapHnswGraph {
         } else {
             let num_levels = self.num_levels()?;
             if level < 0 || level >= num_levels {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "level {} out of bounds (num_levels={})",
                     level, num_levels
                 )));

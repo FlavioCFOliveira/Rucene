@@ -426,7 +426,7 @@ mod tests {
         };
         assert_eq!(
             err.to_string(),
-            LuceneError::IllegalArgument("length needs to be >= 1".to_string()).to_string()
+            LuceneError::illegal_argument("length needs to be >= 1".to_string()).to_string()
         );
     }
 
@@ -1449,7 +1449,10 @@ mod tests {
         let charged = graph.ram_bytes_used();
         assert!(matches!(
             graph.add_node_shared(0, 0),
-            Err(crate::error::LuceneError::IllegalState { .. })
+            Err(crate::error::LuceneError {
+                kind: crate::error::LuceneErrorKind::IllegalState { .. },
+                ..
+            })
         ));
         assert_eq!(graph.ram_bytes_used(), charged);
         assert_eq!(HnswGraph::size(&graph), 1);

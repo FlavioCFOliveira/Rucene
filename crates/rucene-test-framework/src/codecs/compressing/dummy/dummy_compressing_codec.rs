@@ -61,7 +61,9 @@ impl Decompressor for DummyDecompressor {
         bytes: &mut BytesRef,
     ) -> Result<()> {
         if cfg!(debug_assertions) && offset + length > original_length {
-            return Err(rucene::error::LuceneError::AssertionError(String::new()));
+            return Err(rucene::error::LuceneError::from(
+                rucene::error::LuceneErrorKind::AssertionError(String::new()),
+            ));
         }
         if bytes.bytes.len() < original_length {
             bytes.bytes = vec![0; ArrayUtil::oversize(original_length, 1)];

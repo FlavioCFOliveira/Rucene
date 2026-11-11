@@ -190,7 +190,7 @@ pub trait Similarity: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the term count is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the term count is
     /// negative, matching the `IllegalArgumentException` Java's
     /// `SmallFloat.intToByte4` throws (`SmallFloat.java:148-150`). Only the
     /// public setters on [`FieldInvertState`] can produce such a state; the
@@ -398,7 +398,7 @@ impl<S: SimScorer + ?Sized> BulkSimScorer for DefaultBulkSimScorer<'_, S> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the resulting term count is
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the resulting term count is
 /// negative.
 pub fn compute_default_norm(state: &FieldInvertState, discount_overlaps: bool) -> Result<i64> {
     let num_terms = if state.index_options() == IndexOptions::DOCS {
@@ -502,17 +502,17 @@ impl BM25Similarity {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `k1` is not finite or is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `k1` is not finite or is
     /// negative, or if `b` is NaN or outside `[0, 1]` — the two
     /// `IllegalArgumentException`s Java's constructor throws.
     pub fn with_parameters_and_overlaps(k1: f32, b: f32, discount_overlaps: bool) -> Result<Self> {
         if !k1.is_finite() || k1 < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal k1 value: {k1}, must be a non-negative finite value"
             )));
         }
         if b.is_nan() || !(0.0..=1.0).contains(&b) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "illegal b value: {b}, must be between 0 and 1"
             )));
         }
@@ -838,6 +838,7 @@ impl fmt::Display for BM25Similarity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     fn state(options: IndexOptions, length: i32, overlap: i32, unique: i32) -> FieldInvertState {
         let mut state = FieldInvertState::new(10, "body".to_string(), options);
@@ -921,7 +922,7 @@ mod tests {
         let state = state(IndexOptions::DOCS_AND_FREQS, 2, 5, 0);
         let error = sim.compute_norm(&state).unwrap_err();
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m) if m.contains("positive")),
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. } if m.contains("positive")),
             "unexpected error: {error:?}"
         );
     }

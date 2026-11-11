@@ -366,9 +366,10 @@ impl TestRuleAdapter for TestRuleTemporaryFilesCleanup {
                     .and_then(|c| c.get_annotation::<SuppressTempFileChecks>())
                 {
                     let message = match &e {
-                        rucene::error::LuceneError::Io(io) => {
-                            java_message_of(io).unwrap_or_default()
-                        }
+                        rucene::error::LuceneError {
+                            kind: rucene::error::LuceneErrorKind::Io(io),
+                            ..
+                        } => java_message_of(io).unwrap_or_default(),
                         other => other.to_string(),
                     };
                     system::err_println(&format!(
@@ -378,7 +379,10 @@ impl TestRuleAdapter for TestRuleTemporaryFilesCleanup {
                     return;
                 }
                 let thrown = match &e {
-                    rucene::error::LuceneError::Io(io) => Throwable::new(
+                    rucene::error::LuceneError {
+                        kind: rucene::error::LuceneErrorKind::Io(io),
+                        ..
+                    } => Throwable::new(
                         java_class_of(io).to_string(),
                         java_message_of(io).unwrap_or_default(),
                     ),

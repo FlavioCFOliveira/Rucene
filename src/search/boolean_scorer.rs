@@ -118,7 +118,7 @@ impl BooleanScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `min_should_match` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `min_should_match` is
     /// outside `1..=scorers.len()` or when fewer than two scorers are supplied,
     /// which are the two `IllegalArgumentException`s Java throws, and
     /// propagates the priority-queue construction error of
@@ -129,12 +129,12 @@ impl BooleanScorer {
         needs_scores: bool,
     ) -> Result<Self> {
         if min_should_match < 1 || min_should_match > scorers.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minShouldMatch should be within 1..num_scorers. Got {min_should_match}"
             )));
         }
         if scorers.len() <= 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "This scorer can only be used with two scorers or more, got {}",
                 scorers.len()
             )));

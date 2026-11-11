@@ -169,7 +169,7 @@ struct FindNextValueVisitor<'a> {
 
 impl IntersectVisitor for FindNextValueVisitor<'_> {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "this visitor is only handed leaf values".to_string(),
         ))
     }
@@ -216,7 +216,7 @@ struct LastDocVisitor<'a> {
 
 impl IntersectVisitor for LastDocVisitor<'_> {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "this visitor is only handed leaf values".to_string(),
         ))
     }

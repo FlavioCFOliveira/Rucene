@@ -3,14 +3,23 @@
 //! This module maps the most important Java Lucene exceptions to a Rust
 //! [`Result`]-based error hierarchy. Where Java uses checked exceptions for
 //! recoverable I/O or index corruption, Rucene returns [`LuceneError`].
+//!
+//! A [`LuceneError`] stands for one Java `Throwable`: its [`kind`] is the
+//! exception class with that class's fields (message, cause, …), and it
+//! holds the exceptions `Throwable.addSuppressed` attached to it, which
+//! `getSuppressed()` returns. Suppressing an exception into an error never
+//! changes its kind, as `addSuppressed` never changes a throwable's class.
+//!
+//! [`kind`]: LuceneError::kind
 
 use std::sync::Arc;
 
 use thiserror::Error;
 
-/// The top-level error type for Rucene operations.
+/// The Java exception class a [`LuceneError`] stands for, with the fields
+/// of that class.
 #[derive(Error, Debug)]
-pub enum LuceneError {
+pub enum LuceneErrorKind {
     /// I/O failure analogous to `java.io.IOException`.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -73,38 +82,20 @@ pub enum LuceneError {
 
     /// An invalid argument was supplied.
     ///
-    /// Equivalent to `java.lang.IllegalArgumentException` built without a
-    /// cause, `new IllegalArgumentException(String)`; one built with a cause
-    /// is [`LuceneError::IllegalArgumentWithCause`].
-    #[error("illegal argument: {0}")]
-    IllegalArgument(String),
-
-    /// An invalid argument was supplied, and the failure that revealed it is
-    /// kept as its cause.
-    ///
-    /// Equivalent to `java.lang.IllegalArgumentException` built with a cause,
-    /// `new IllegalArgumentException(String, Throwable)` — for example the
-    /// stale-reader check `IndexWriter` runs on an `IndexCommit` it is opened
-    /// from (`IndexWriter.java:1059-1064`), whose cause is the `IOException`
-    /// reading the commit raised. `cause` is that cause, which
+    /// Equivalent to `java.lang.IllegalArgumentException`, whose optional
+    /// cause — for example the `IOException` reading the commit that the
+    /// stale-reader check `IndexWriter` runs on an `IndexCommit` raised
+    /// (`IndexWriter.java:1059-1064`) — is `cause`, which
     /// [`std::error::Error::source`] returns as Java's `getCause()` does.
-    /// Build one with [`LuceneError::illegal_argument_with_cause`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java has one class, and the cause is
-    /// an optional field of it. [`LuceneError::IllegalArgument`] is a tuple
-    /// variant built at about 1250 sites, none of which passes a cause, so the
-    /// cause cannot become a field of it without rewriting every one of them;
-    /// the ported sites that pass a cause build this variant instead. Both
-    /// report [`java_simple_name`](LuceneError::java_simple_name)
-    /// `IllegalArgumentException` and display alike, and every match the port
-    /// makes on Java's class names both.
+    /// Build one with [`LuceneError::illegal_argument`] or
+    /// [`LuceneError::illegal_argument_with_cause`].
     #[error("illegal argument: {message}")]
-    IllegalArgumentWithCause {
+    IllegalArgument {
         /// The message, Java's `getMessage()`.
         message: String,
         /// The cause, Java's `getCause()`.
         #[source]
-        cause: Arc<LuceneError>,
+        cause: Option<Arc<LuceneError>>,
     },
 
     /// An illegal state was encountered (e.g., writing to a closed writer).
@@ -124,6 +115,65 @@ pub enum LuceneError {
         #[source]
         cause: Option<Arc<LuceneError>>,
     },
+
+    /// A query has more clauses than `IndexSearcher.getMaxClauseCount()`.
+    ///
+    /// Equivalent to `org.apache.lucene.search.IndexSearcher.TooManyClauses`,
+    /// a `RuntimeException`. It displays exactly its message, Java's
+    /// `getMessage()`.
+    #[error("{0}")]
+    TooManyClauses(crate::search::TooManyClauses),
+
+    /// A query has more clauses than `IndexSearcher.getMaxClauseCount()`
+    /// cumulatively across its children.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.search.IndexSearcher.TooManyNestedClauses`, which
+    /// `extends TooManyClauses`; the Java class mapping keeps that
+    /// relationship. It displays exactly its message.
+    #[error("{0}")]
+    TooManyNestedClauses(crate::search::TooManyNestedClauses),
+
+    /// A `QueryTimeout` fired inside an `ExitableDirectoryReader`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.index.ExitableDirectoryReader.ExitingReaderException`,
+    /// a `RuntimeException`. It displays exactly its message.
+    #[error("{0}")]
+    ExitingReader(String),
+
+    /// `CheckIndex` detected an integrity failure.
+    ///
+    /// Equivalent to `org.apache.lucene.index.CheckIndex.CheckIndexException`,
+    /// a `RuntimeException` whose optional cause — the failure of a per-area
+    /// check, `new CheckIndexException("<area> test failed", cause)` — is
+    /// `cause`, which [`std::error::Error::source`] returns as Java's
+    /// `getCause()` does. It displays exactly its message.
+    #[error("{message}")]
+    CheckIndex {
+        /// The message, Java's `getMessage()`.
+        message: String,
+        /// The cause, Java's `getCause()`.
+        #[source]
+        cause: Option<Arc<LuceneError>>,
+    },
+
+    /// Determinizing an automaton would exceed its work limit.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.automaton.TooComplexToDeterminizeException`, a
+    /// `RuntimeException`. It displays exactly its message.
+    #[error("{0}")]
+    TooComplexToDeterminize(Box<crate::util::automaton::TooComplexToDeterminizeException>),
+
+    /// A value is longer than a `BytesRefHash` block can hold.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.BytesRefHash.MaxBytesLengthExceededException`,
+    /// a `RuntimeException` (`bytes can be at most 32766 in length; got N`).
+    /// It displays exactly its message.
+    #[error("{0}")]
+    MaxBytesLengthExceeded(String),
 
     /// A resource limit or security boundary was violated.
     #[error("resource limit exceeded: {0}")]
@@ -171,35 +221,22 @@ pub enum LuceneError {
     },
 
     /// An operation is not supported in the current context.
-    #[error("unsupported operation: {0}")]
-    UnsupportedOperation(String),
-
-    /// An operation is not supported, with the error that made it so.
     ///
-    /// Equivalent to `java.lang.UnsupportedOperationException` built with a
-    /// cause, `new UnsupportedOperationException(String, Throwable)` — for
-    /// example `AnalysisSPILoader.newFactoryClassInstance` for a factory
-    /// class without a `Map<String,String>` constructor
-    /// (`AnalysisSPILoader.java:206-211`), whose cause is the
-    /// `NoSuchMethodException` `getConstructor` threw. `cause` is that cause,
-    /// which [`std::error::Error::source`] returns as Java's `getCause()`
-    /// does. Build one with [`LuceneError::unsupported_operation_with_cause`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java has one class, and the cause is
-    /// an optional field of it; [`LuceneError::UnsupportedOperation`] is a
-    /// tuple variant built at several hundred sites, none of which passes a
-    /// cause, so the sites that pass one build this variant, as
-    /// [`LuceneError::IllegalArgumentWithCause`] does for
-    /// `IllegalArgumentException`. Both report
-    /// [`java_simple_name`](LuceneError::java_simple_name)
-    /// `UnsupportedOperationException` and display alike.
+    /// Equivalent to `java.lang.UnsupportedOperationException`, whose
+    /// optional cause — for example the `NoSuchMethodException`
+    /// `getConstructor` threw, which `AnalysisSPILoader.newFactoryClassInstance`
+    /// attaches for a factory class without a `Map<String,String>`
+    /// constructor (`AnalysisSPILoader.java:206-211`) — is `cause`, which
+    /// [`std::error::Error::source`] returns as Java's `getCause()` does.
+    /// Build one with [`LuceneError::unsupported_operation`] or
+    /// [`LuceneError::unsupported_operation_with_cause`].
     #[error("unsupported operation: {message}")]
-    UnsupportedOperationWithCause {
+    UnsupportedOperation {
         /// The message, Java's `getMessage()`.
         message: String,
         /// The cause, Java's `getCause()`.
         #[source]
-        cause: Arc<LuceneError>,
+        cause: Option<Arc<LuceneError>>,
     },
 
     /// An index into a string lies outside it.
@@ -296,50 +333,84 @@ pub enum LuceneError {
         #[source]
         cause: Option<Arc<LuceneError>>,
     },
-
-    /// An error carrying the exceptions `Throwable.addSuppressed` attached
-    /// to it, Java's `getSuppressed()`.
-    ///
-    /// Build it with [`LuceneError::add_suppressed`]; read the list with
-    /// [`LuceneError::get_suppressed`]. It stands for the wrapped error: its
-    /// display, source (Java's `getCause()`),
-    /// [`java_simple_name`](LuceneError::java_simple_name) and the other
-    /// accessors are the wrapped error's.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Every Java `Throwable` holds a
-    /// suppressed list. The other variants are built at thousands of sites,
-    /// so the list cannot become a field of each of them; an error gains
-    /// this wrapper only when something is suppressed into it, and a `match`
-    /// on the wrapped variant must look through it with
-    /// [`LuceneError::unwrap_suppressed`].
-    #[error(transparent)]
-    Suppressing(Box<SuppressingError>),
 }
 
-/// The payload of [`LuceneError::Suppressing`]: an error and the exceptions
-/// suppressed into it, in the order they were added.
-#[derive(Debug)]
-pub struct SuppressingError {
-    error: LuceneError,
+/// The top-level error type for Rucene operations: a Java `Throwable`.
+///
+/// [`kind`](Self::kind) is the Java exception class with its fields;
+/// [`get_suppressed`](Self::get_suppressed) lists the exceptions
+/// `Throwable.addSuppressed` attached to it. Build one from its kind with
+/// [`LuceneError::from`] or with a named constructor
+/// ([`LuceneError::illegal_state`], [`LuceneError::null_pointer`], …);
+/// match on its kind with [`kind`](Self::kind), [`into_kind`](Self::into_kind)
+/// or a struct pattern `LuceneError { kind: LuceneErrorKind::…, .. }`.
+pub struct LuceneError {
+    /// The Java exception class this error stands for, with its fields.
+    pub kind: LuceneErrorKind,
+    /// `getSuppressed()`, in the order the exceptions were added.
     suppressed: Vec<Arc<LuceneError>>,
 }
 
-impl std::fmt::Display for SuppressingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.error, f)
+impl From<LuceneErrorKind> for LuceneError {
+    fn from(kind: LuceneErrorKind) -> Self {
+        Self {
+            kind,
+            suppressed: Vec::new(),
+        }
     }
 }
 
-impl std::error::Error for SuppressingError {
-    /// The wrapped error's cause: suppression does not change `getCause()`.
+impl From<std::io::Error> for LuceneError {
+    /// The `java.io.IOException` an I/O failure stands for:
+    /// [`LuceneErrorKind::Io`].
+    fn from(error: std::io::Error) -> Self {
+        Self::from(LuceneErrorKind::Io(error))
+    }
+}
+
+impl std::fmt::Display for LuceneError {
+    /// The kind's display: suppressed exceptions do not change the message.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.kind, f)
+    }
+}
+
+impl std::fmt::Debug for LuceneError {
+    /// The kind's debug form, followed by the suppressed exceptions when
+    /// there are any.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.suppressed.is_empty() {
+            std::fmt::Debug::fmt(&self.kind, f)
+        } else {
+            f.debug_struct("LuceneError")
+                .field("kind", &self.kind)
+                .field("suppressed", &self.suppressed)
+                .finish()
+        }
+    }
+}
+
+impl std::error::Error for LuceneError {
+    /// The kind's cause, Java's `getCause()`: suppression does not change it.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        std::error::Error::source(&self.error)
+        std::error::Error::source(&self.kind)
     }
 }
 
 impl LuceneError {
+    /// The Java exception class this error stands for, with its fields.
+    pub fn kind(&self) -> &LuceneErrorKind {
+        &self.kind
+    }
+
+    /// The kind, by value; the suppressed exceptions are dropped.
+    pub fn into_kind(self) -> LuceneErrorKind {
+        self.kind
+    }
+
     /// `Throwable.addSuppressed(exception)`: appends `exception` to the
-    /// exceptions suppressed in order to deliver this one.
+    /// exceptions suppressed in order to deliver this one. The kind is
+    /// unchanged.
     ///
     /// Java refuses to suppress a throwable into itself
     /// (`IllegalArgumentException("Self-suppression not permitted")`); a
@@ -352,44 +423,17 @@ impl LuceneError {
     /// [`add_suppressed`](Self::add_suppressed) of an exception that is
     /// shared, as Java suppresses the same object it may also keep.
     pub fn add_suppressed_shared(&mut self, exception: Arc<LuceneError>) {
-        if let Self::Suppressing(inner) = self {
-            inner.suppressed.push(exception);
-            return;
-        }
-        let error = std::mem::replace(self, Self::Cancelled);
-        *self = Self::Suppressing(Box::new(SuppressingError {
-            error,
-            suppressed: vec![exception],
-        }));
-    }
-
-    /// `addSuppressed` by value: this error with `exception` suppressed.
-    #[must_use]
-    pub fn with_suppressed(mut self, exception: LuceneError) -> Self {
-        self.add_suppressed(exception);
-        self
+        self.suppressed.push(exception);
     }
 
     /// `Throwable.getSuppressed()`: the exceptions suppressed into this one,
     /// in the order they were added; empty when there are none.
     pub fn get_suppressed(&self) -> &[Arc<LuceneError>] {
-        match self {
-            Self::Suppressing(inner) => &inner.suppressed,
-            _ => &[],
-        }
-    }
-
-    /// The error itself, seen through a [`LuceneError::Suppressing`]
-    /// wrapper: what a `match` on Java's exception class inspects.
-    pub fn unwrap_suppressed(&self) -> &LuceneError {
-        match self {
-            Self::Suppressing(inner) => &inner.error,
-            other => other,
-        }
+        &self.suppressed
     }
 }
 
-/// `Throwable.toString()` of an [`LuceneError::Unchecked`].
+/// `Throwable.toString()` of an [`LuceneErrorKind::Unchecked`].
 fn unchecked_to_string(class: &str, message: &Option<String>) -> String {
     match message {
         Some(message) => format!("{class}: {message}"),
@@ -398,12 +442,119 @@ fn unchecked_to_string(class: &str, message: &Option<String>) -> String {
 }
 
 impl LuceneError {
+    /// The simple name of the Java exception class this error stands for:
+    /// [`LuceneErrorKind::java_simple_name`] of its kind.
+    pub fn java_simple_name(&self) -> &'static str {
+        self.kind.java_simple_name()
+    }
+
+    /// Whether the Java class this error stands for is a `java.io.IOException`:
+    /// [`LuceneErrorKind::is_io_exception`] of its kind.
+    pub fn is_io_exception(&self) -> bool {
+        self.kind.is_io_exception()
+    }
+
+    /// Returns an equal error: [`LuceneErrorKind::duplicate`] of its kind,
+    /// with the same suppressed exceptions.
+    pub fn duplicate(&self) -> Self {
+        Self {
+            kind: self.kind.duplicate(),
+            suppressed: self.suppressed.clone(),
+        }
+    }
+
+    /// `new IllegalStateException(String)`.
+    pub fn illegal_state(message: impl Into<String>) -> Self {
+        Self::from(LuceneErrorKind::IllegalState {
+            message: message.into(),
+            cause: None,
+        })
+    }
+
+    /// `new IllegalStateException(String, Throwable)`.
+    pub fn illegal_state_with_cause(message: impl Into<String>, cause: Arc<LuceneError>) -> Self {
+        Self::from(LuceneErrorKind::IllegalState {
+            message: message.into(),
+            cause: Some(cause),
+        })
+    }
+
+    /// `new IllegalArgumentException(String)`.
+    pub fn illegal_argument(message: impl Into<String>) -> Self {
+        Self::from(LuceneErrorKind::IllegalArgument {
+            message: message.into(),
+            cause: None,
+        })
+    }
+
+    /// `new IllegalArgumentException(String, Throwable)`.
+    pub fn illegal_argument_with_cause(
+        message: impl Into<String>,
+        cause: Arc<LuceneError>,
+    ) -> Self {
+        Self::from(LuceneErrorKind::IllegalArgument {
+            message: message.into(),
+            cause: Some(cause),
+        })
+    }
+
+    /// `new UnsupportedOperationException(String)`.
+    pub fn unsupported_operation(message: impl Into<String>) -> Self {
+        Self::from(LuceneErrorKind::UnsupportedOperation {
+            message: message.into(),
+            cause: None,
+        })
+    }
+
+    /// `new UnsupportedOperationException(String, Throwable)`.
+    pub fn unsupported_operation_with_cause(
+        message: impl Into<String>,
+        cause: Arc<LuceneError>,
+    ) -> Self {
+        Self::from(LuceneErrorKind::UnsupportedOperation {
+            message: message.into(),
+            cause: Some(cause),
+        })
+    }
+
+    /// `new ArithmeticException("integer overflow")`, what `Math.toIntExact`
+    /// throws for a `long` outside the `int` range.
+    pub fn integer_overflow() -> Self {
+        Self::from(LuceneErrorKind::Arithmetic("integer overflow".to_string()))
+    }
+
+    /// `new ThreadInterruptedException(ie)`, what Lucene's waits throw when
+    /// `Object.wait` throws `InterruptedException`.
+    pub fn thread_interrupted(ie: crate::util::InterruptedException) -> Self {
+        Self::from(LuceneErrorKind::ThreadInterrupted(
+            crate::util::ThreadInterruptedException::new(ie),
+        ))
+    }
+
+    /// `new AlreadyClosedException(String)`.
+    pub fn already_closed(message: impl Into<String>) -> Self {
+        Self::from(LuceneErrorKind::AlreadyClosed {
+            message: message.into(),
+            cause: None,
+        })
+    }
+
+    /// `new AlreadyClosedException(String, Throwable)`.
+    pub fn already_closed_with_cause(message: impl Into<String>, cause: Arc<LuceneError>) -> Self {
+        Self::from(LuceneErrorKind::AlreadyClosed {
+            message: message.into(),
+            cause: Some(cause),
+        })
+    }
+}
+
+impl LuceneErrorKind {
     /// The simple name of the Java exception class this error stands for, what
     /// `getClass().getSimpleName()` prints.
     ///
-    /// **Divergence from Lucene 10.5.0.** [`LuceneError::IndexFormatNotSupported`],
-    /// [`LuceneError::NotFound`], [`LuceneError::ResourceLimit`],
-    /// [`LuceneError::Cancelled`] and [`LuceneError::Other`] are this port's
+    /// **Divergence from Lucene 10.5.0.** [`LuceneErrorKind::IndexFormatNotSupported`],
+    /// [`LuceneErrorKind::NotFound`], [`LuceneErrorKind::ResourceLimit`],
+    /// [`LuceneErrorKind::Cancelled`] and [`LuceneErrorKind::Other`] are this port's
     /// own variants, each standing for several Java classes, so no single
     /// Java name exists for them; they report the variant's name.
     pub fn java_simple_name(&self) -> &'static str {
@@ -413,16 +564,12 @@ impl LuceneError {
             Self::IndexFormatTooOld { .. } => "IndexFormatTooOldException",
             Self::IndexFormatTooNew { .. } => "IndexFormatTooNewException",
             Self::IndexNotFound(_) => "IndexNotFoundException",
-            Self::IllegalArgument(_) | Self::IllegalArgumentWithCause { .. } => {
-                "IllegalArgumentException"
-            }
+            Self::IllegalArgument { .. } => "IllegalArgumentException",
             Self::IllegalState { .. } => "IllegalStateException",
             Self::LockObtainFailed { .. } => "LockObtainFailedException",
             Self::LockReleaseFailed { .. } => "LockReleaseFailedException",
             Self::AlreadyClosed { .. } => "AlreadyClosedException",
-            Self::UnsupportedOperation(_) | Self::UnsupportedOperationWithCause { .. } => {
-                "UnsupportedOperationException"
-            }
+            Self::UnsupportedOperation { .. } => "UnsupportedOperationException",
             Self::StringIndexOutOfBounds(_) => "StringIndexOutOfBoundsException",
             Self::NoSuchMethod(_) => "NoSuchMethodException",
             Self::Arithmetic(_) => "ArithmeticException",
@@ -433,26 +580,31 @@ impl LuceneError {
             Self::IndexFormatNotSupported(_) => "IndexFormatNotSupported",
             Self::NotFound(_) => "NotFound",
             Self::ResourceLimit(_) => "ResourceLimit",
+            Self::TooManyClauses(_) => "TooManyClauses",
+            Self::TooManyNestedClauses(_) => "TooManyNestedClauses",
+            Self::ExitingReader(_) => "ExitingReaderException",
+            Self::CheckIndex { .. } => "CheckIndexException",
+            Self::TooComplexToDeterminize(_) => "TooComplexToDeterminizeException",
+            Self::MaxBytesLengthExceeded(_) => "MaxBytesLengthExceededException",
             Self::Cancelled => "Cancelled",
             Self::Other(_) => "Other",
             Self::Unchecked { class, .. } => class.rsplit('.').next().unwrap_or(class),
-            Self::Suppressing(inner) => inner.error.java_simple_name(),
         }
     }
 
     /// Whether the Java class this error stands for is a `java.io.IOException`
     /// — what a `catch (IOException e)` clause catches.
     ///
-    /// True for [`LuceneError::Io`] and for the variants whose Java classes
+    /// True for [`LuceneErrorKind::Io`] and for the variants whose Java classes
     /// extend `IOException`: `CorruptIndexException` and its
     /// `IndexFormatTooOldException` and `IndexFormatTooNewException`,
     /// `IndexNotFoundException` (a `FileNotFoundException`),
-    /// [`LuceneError::NotFound`] (`FileNotFoundException`),
+    /// [`LuceneErrorKind::NotFound`] (`FileNotFoundException`),
     /// `LockObtainFailedException`, `LockReleaseFailedException` and
     /// `MergePolicy.MergeAbortedException`.
     pub fn is_io_exception(&self) -> bool {
         matches!(
-            self.unwrap_suppressed(),
+            self,
             Self::Io(_)
                 | Self::CorruptIndex(_)
                 | Self::IndexFormatTooOld { .. }
@@ -465,79 +617,13 @@ impl LuceneError {
         )
     }
 
-    /// `new IllegalStateException(String)`.
-    pub fn illegal_state(message: impl Into<String>) -> Self {
-        Self::IllegalState {
-            message: message.into(),
-            cause: None,
-        }
-    }
-
-    /// `new IllegalStateException(String, Throwable)`.
-    pub fn illegal_state_with_cause(message: impl Into<String>, cause: Arc<LuceneError>) -> Self {
-        Self::IllegalState {
-            message: message.into(),
-            cause: Some(cause),
-        }
-    }
-
-    /// `new IllegalArgumentException(String, Throwable)`.
-    pub fn illegal_argument_with_cause(
-        message: impl Into<String>,
-        cause: Arc<LuceneError>,
-    ) -> Self {
-        Self::IllegalArgumentWithCause {
-            message: message.into(),
-            cause,
-        }
-    }
-
-    /// `new UnsupportedOperationException(String, Throwable)`.
-    pub fn unsupported_operation_with_cause(
-        message: impl Into<String>,
-        cause: Arc<LuceneError>,
-    ) -> Self {
-        Self::UnsupportedOperationWithCause {
-            message: message.into(),
-            cause,
-        }
-    }
-
-    /// `new ArithmeticException("integer overflow")`, what `Math.toIntExact`
-    /// throws for a `long` outside the `int` range.
-    pub fn integer_overflow() -> Self {
-        Self::Arithmetic("integer overflow".to_string())
-    }
-
-    /// `new ThreadInterruptedException(ie)`, what Lucene's waits throw when
-    /// `Object.wait` throws `InterruptedException`.
-    pub fn thread_interrupted(ie: crate::util::InterruptedException) -> Self {
-        Self::ThreadInterrupted(crate::util::ThreadInterruptedException::new(ie))
-    }
-
-    /// `new AlreadyClosedException(String)`.
-    pub fn already_closed(message: impl Into<String>) -> Self {
-        Self::AlreadyClosed {
-            message: message.into(),
-            cause: None,
-        }
-    }
-
-    /// `new AlreadyClosedException(String, Throwable)`.
-    pub fn already_closed_with_cause(message: impl Into<String>, cause: Arc<LuceneError>) -> Self {
-        Self::AlreadyClosed {
-            message: message.into(),
-            cause: Some(cause),
-        }
-    }
-
     /// Returns an equal error: the same variant, message and fields, and the
     /// same cause.
     ///
     /// Used where Java keeps a reference to a `Throwable` that is also thrown,
     /// such as `IndexWriter.tragedy` (`IndexWriter.java:5847-5859`): a
     /// [`LuceneError`] has a single owner, so the writer keeps this copy.
-    /// [`LuceneError::Io`] and the lock variants' I/O sources are rebuilt from
+    /// [`LuceneErrorKind::Io`] and the lock variants' I/O sources are rebuilt from
     /// their kind and rendered message, which is all a `java.io.IOException`
     /// carries besides its own cause.
     pub fn duplicate(&self) -> Self {
@@ -574,16 +660,24 @@ impl LuceneError {
             },
             Self::IndexNotFound(m) => Self::IndexNotFound(m.clone()),
             Self::NotFound(m) => Self::NotFound(m.clone()),
-            Self::IllegalArgument(m) => Self::IllegalArgument(m.clone()),
-            Self::IllegalArgumentWithCause { message, cause } => Self::IllegalArgumentWithCause {
+            Self::IllegalArgument { message, cause } => Self::IllegalArgument {
                 message: message.clone(),
-                cause: Arc::clone(cause),
+                cause: cause.clone(),
             },
             Self::IllegalState { message, cause } => Self::IllegalState {
                 message: message.clone(),
                 cause: cause.clone(),
             },
             Self::ResourceLimit(m) => Self::ResourceLimit(m.clone()),
+            Self::TooManyClauses(e) => Self::TooManyClauses(e.clone()),
+            Self::TooManyNestedClauses(e) => Self::TooManyNestedClauses(e.clone()),
+            Self::ExitingReader(m) => Self::ExitingReader(m.clone()),
+            Self::CheckIndex { message, cause } => Self::CheckIndex {
+                message: message.clone(),
+                cause: cause.clone(),
+            },
+            Self::TooComplexToDeterminize(e) => Self::TooComplexToDeterminize(e.clone()),
+            Self::MaxBytesLengthExceeded(m) => Self::MaxBytesLengthExceeded(m.clone()),
             Self::Cancelled => Self::Cancelled,
             Self::LockObtainFailed { message, source } => Self::LockObtainFailed {
                 message: message.clone(),
@@ -597,13 +691,10 @@ impl LuceneError {
                 message: message.clone(),
                 cause: cause.clone(),
             },
-            Self::UnsupportedOperation(m) => Self::UnsupportedOperation(m.clone()),
-            Self::UnsupportedOperationWithCause { message, cause } => {
-                Self::UnsupportedOperationWithCause {
-                    message: message.clone(),
-                    cause: Arc::clone(cause),
-                }
-            }
+            Self::UnsupportedOperation { message, cause } => Self::UnsupportedOperation {
+                message: message.clone(),
+                cause: cause.clone(),
+            },
             Self::StringIndexOutOfBounds(m) => Self::StringIndexOutOfBounds(m.clone()),
             Self::NoSuchMethod(m) => Self::NoSuchMethod(m.clone()),
             Self::Arithmetic(m) => Self::Arithmetic(m.clone()),
@@ -621,10 +712,34 @@ impl LuceneError {
                 message: message.clone(),
                 cause: cause.clone(),
             },
-            Self::Suppressing(inner) => Self::Suppressing(Box::new(SuppressingError {
-                error: inner.error.duplicate(),
-                suppressed: inner.suppressed.clone(),
-            })),
+        }
+    }
+
+    /// `Throwable.toString()` of the `IOException` this error stands for.
+    fn io_exception_to_string(&self) -> String {
+        match self {
+            Self::Io(e) => crate::store::java_nio_file::java_to_string(e),
+            Self::CorruptIndex(m) => format!("org.apache.lucene.index.CorruptIndexException: {m}"),
+            Self::IndexFormatTooOld { .. } => {
+                format!("org.apache.lucene.index.IndexFormatTooOldException: {self}")
+            }
+            Self::IndexFormatTooNew { .. } => {
+                format!("org.apache.lucene.index.IndexFormatTooNewException: {self}")
+            }
+            Self::IndexNotFound(m) => {
+                format!("org.apache.lucene.index.IndexNotFoundException: {m}")
+            }
+            Self::LockObtainFailed { message, .. } => {
+                format!("org.apache.lucene.store.LockObtainFailedException: {message}")
+            }
+            Self::LockReleaseFailed { message, .. } => {
+                format!("org.apache.lucene.store.LockReleaseFailedException: {message}")
+            }
+            Self::MergeAborted(m) => {
+                format!("org.apache.lucene.index.MergePolicy$MergeAbortedException: {m}")
+            }
+            Self::Unchecked { class, message, .. } => unchecked_to_string(class, message),
+            other => format!("{}: {other}", other.java_simple_name()),
         }
     }
 }
@@ -657,7 +772,7 @@ fn format_too_old(
 }
 
 impl LuceneError {
-    /// `new RuntimeException(cause)`: an [`LuceneError::Unchecked`]
+    /// `new RuntimeException(cause)`: an [`LuceneErrorKind::Unchecked`]
     /// `java.lang.RuntimeException` whose message is the cause's
     /// `Throwable.toString()`, as `RuntimeException(Throwable)` sets it.
     ///
@@ -668,63 +783,48 @@ impl LuceneError {
     /// described by [`java_simple_name`](Self::java_simple_name) and its
     /// display.
     pub fn runtime_exception(cause: LuceneError) -> Self {
-        let message = cause.io_exception_to_string();
-        Self::Unchecked {
+        let message = cause.kind.io_exception_to_string();
+        Self::from(LuceneErrorKind::Unchecked {
             class: "java.lang.RuntimeException",
             message: Some(message),
             cause: Some(Arc::new(cause)),
-        }
-    }
-
-    /// `Throwable.toString()` of the `IOException` this error stands for.
-    fn io_exception_to_string(&self) -> String {
-        match self {
-            Self::Io(e) => crate::store::java_nio_file::java_to_string(e),
-            Self::CorruptIndex(m) => format!("org.apache.lucene.index.CorruptIndexException: {m}"),
-            Self::IndexFormatTooOld { .. } => {
-                format!("org.apache.lucene.index.IndexFormatTooOldException: {self}")
-            }
-            Self::IndexFormatTooNew { .. } => {
-                format!("org.apache.lucene.index.IndexFormatTooNewException: {self}")
-            }
-            Self::IndexNotFound(m) => {
-                format!("org.apache.lucene.index.IndexNotFoundException: {m}")
-            }
-            Self::LockObtainFailed { message, .. } => {
-                format!("org.apache.lucene.store.LockObtainFailedException: {message}")
-            }
-            Self::LockReleaseFailed { message, .. } => {
-                format!("org.apache.lucene.store.LockReleaseFailedException: {message}")
-            }
-            Self::MergeAborted(m) => {
-                format!("org.apache.lucene.index.MergePolicy$MergeAbortedException: {m}")
-            }
-            Self::Unchecked { class, message, .. } => unchecked_to_string(class, message),
-            Self::Suppressing(inner) => inner.error.io_exception_to_string(),
-            other => format!("{}: {other}", other.java_simple_name()),
-        }
+        })
     }
 
     /// The `NullPointerException` the JVM raises when Java code dereferences
     /// `null` (or `Objects.requireNonNull` rejects it): a
-    /// [`LuceneError::Unchecked`] of class `java.lang.NullPointerException`.
+    /// [`LuceneErrorKind::Unchecked`] of class `java.lang.NullPointerException`.
     /// The JVM computes a helpful message; the port keeps none.
     pub fn null_pointer() -> Self {
-        Self::Unchecked {
+        Self::from(LuceneErrorKind::Unchecked {
             class: "java.lang.NullPointerException",
             message: None,
             cause: None,
-        }
+        })
+    }
+
+    /// The `NullPointerException` the JVM raises with a message: its helpful
+    /// message for a dereference of `null` (`Cannot invoke "…" because "…" is
+    /// null`), or the message `Objects.requireNonNull(obj, message)` was
+    /// given. A [`LuceneErrorKind::Unchecked`] of class
+    /// `java.lang.NullPointerException`, the one representation of Java's
+    /// `NullPointerException` in this crate.
+    pub fn null_pointer_with_message(message: impl Into<String>) -> Self {
+        Self::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.NullPointerException",
+            message: Some(message.into()),
+            cause: None,
+        })
     }
 
     /// `new <class>(message)` for an unchecked Java exception no other
-    /// variant stands for: [`LuceneError::Unchecked`] without a cause.
+    /// variant stands for: [`LuceneErrorKind::Unchecked`] without a cause.
     pub fn unchecked(class: &'static str, message: impl Into<String>) -> Self {
-        Self::Unchecked {
+        Self::from(LuceneErrorKind::Unchecked {
             class,
             message: Some(message.into()),
             cause: None,
-        }
+        })
     }
 
     /// Creates a `CorruptIndex` error composing the message the way
@@ -736,7 +836,7 @@ impl LuceneError {
     /// `getOriginalMessage()` and `getResourceDescription()`
     /// (`CorruptIndexException.java:62-70`). This variant carries the composed
     /// string only, because 232 call sites in the crate construct
-    /// `LuceneError::CorruptIndex` directly with an already-composed message
+    /// `LuceneErrorKind::CorruptIndex` directly with an already-composed message
     /// (only 29 of them go through this constructor); splitting the variant
     /// into separate fields would require rewriting every one of those sites,
     /// most of which live outside this module. `getOriginalMessage()` and
@@ -745,11 +845,11 @@ impl LuceneError {
     /// never route through the `" (resource=...)"` suffix this constructor
     /// appends. The rendered message is identical to Java's.
     pub fn corrupt_index(message: impl AsRef<str>, resource_description: impl AsRef<str>) -> Self {
-        Self::CorruptIndex(format!(
+        Self::from(LuceneErrorKind::CorruptIndex(format!(
             "{} (resource={})",
             message.as_ref(),
             resource_description.as_ref()
-        ))
+        )))
     }
 
     /// Creates an `IndexFormatTooOld` error from a free-form reason, for when the
@@ -758,13 +858,13 @@ impl LuceneError {
         resource_description: impl Into<String>,
         reason: impl Into<String>,
     ) -> Self {
-        Self::IndexFormatTooOld {
+        Self::from(LuceneErrorKind::IndexFormatTooOld {
             resource_description: resource_description.into(),
             reason: Some(reason.into()),
             version: None,
             min_version: None,
             max_version: None,
-        }
+        })
     }
 
     /// Creates an `IndexFormatTooOld` error from the version triple read off the file.
@@ -774,13 +874,13 @@ impl LuceneError {
         min_version: i32,
         max_version: i32,
     ) -> Self {
-        Self::IndexFormatTooOld {
+        Self::from(LuceneErrorKind::IndexFormatTooOld {
             resource_description: resource_description.into(),
             reason: None,
             version: Some(version),
             min_version: Some(min_version),
             max_version: Some(max_version),
-        }
+        })
     }
 
     /// Creates an `IndexFormatTooNew` error.
@@ -790,12 +890,12 @@ impl LuceneError {
         min_version: i32,
         max_version: i32,
     ) -> Self {
-        Self::IndexFormatTooNew {
+        Self::from(LuceneErrorKind::IndexFormatTooNew {
             resource_description: resource_description.into(),
             version,
             min_version,
             max_version,
-        }
+        })
     }
 
     /// Returns a description of the file that was too old or too new, when
@@ -804,12 +904,12 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getResourceDescription`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getResourceDescription`.
     pub fn resource_description(&self) -> Option<&str> {
-        match self.unwrap_suppressed() {
-            Self::IndexFormatTooOld {
+        match &self.kind {
+            LuceneErrorKind::IndexFormatTooOld {
                 resource_description,
                 ..
             }
-            | Self::IndexFormatTooNew {
+            | LuceneErrorKind::IndexFormatTooNew {
                 resource_description,
                 ..
             } => Some(resource_description),
@@ -824,8 +924,8 @@ impl LuceneError {
     /// which returns `null` when the version *was* available; this returns
     /// `None` in that case, and `None` for every other error.
     pub fn reason(&self) -> Option<&str> {
-        match self.unwrap_suppressed() {
-            Self::IndexFormatTooOld { reason, .. } => reason.as_deref(),
+        match &self.kind {
+            LuceneErrorKind::IndexFormatTooOld { reason, .. } => reason.as_deref(),
             _ => None,
         }
     }
@@ -840,9 +940,9 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getVersion`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getVersion`.
     pub fn version(&self) -> Option<i32> {
-        match self.unwrap_suppressed() {
-            Self::IndexFormatTooOld { version, .. } => *version,
-            Self::IndexFormatTooNew { version, .. } => Some(*version),
+        match &self.kind {
+            LuceneErrorKind::IndexFormatTooOld { version, .. } => *version,
+            LuceneErrorKind::IndexFormatTooNew { version, .. } => Some(*version),
             _ => None,
         }
     }
@@ -855,9 +955,9 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getMinVersion`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getMinVersion`.
     pub fn min_version(&self) -> Option<i32> {
-        match self.unwrap_suppressed() {
-            Self::IndexFormatTooOld { min_version, .. } => *min_version,
-            Self::IndexFormatTooNew { min_version, .. } => Some(*min_version),
+        match &self.kind {
+            LuceneErrorKind::IndexFormatTooOld { min_version, .. } => *min_version,
+            LuceneErrorKind::IndexFormatTooNew { min_version, .. } => Some(*min_version),
             _ => None,
         }
     }
@@ -870,24 +970,24 @@ impl LuceneError {
     /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getMaxVersion`
     /// and `org.apache.lucene.index.IndexFormatTooNewException#getMaxVersion`.
     pub fn max_version(&self) -> Option<i32> {
-        match self.unwrap_suppressed() {
-            Self::IndexFormatTooOld { max_version, .. } => *max_version,
-            Self::IndexFormatTooNew { max_version, .. } => Some(*max_version),
+        match &self.kind {
+            LuceneErrorKind::IndexFormatTooOld { max_version, .. } => *max_version,
+            LuceneErrorKind::IndexFormatTooNew { max_version, .. } => Some(*max_version),
             _ => None,
         }
     }
 
     /// Creates an `IndexNotFound` error.
     pub fn index_not_found(message: impl Into<String>) -> Self {
-        Self::IndexNotFound(message.into())
+        Self::from(LuceneErrorKind::IndexNotFound(message.into()))
     }
 
     /// Creates a `LockObtainFailed` error without an underlying I/O cause.
     pub fn lock_obtain_failed(message: impl Into<String>) -> Self {
-        Self::LockObtainFailed {
+        Self::from(LuceneErrorKind::LockObtainFailed {
             message: message.into(),
             source: None,
-        }
+        })
     }
 
     /// Creates a `LockObtainFailed` error with an underlying I/O cause.
@@ -895,18 +995,18 @@ impl LuceneError {
         message: impl Into<String>,
         source: std::io::Error,
     ) -> Self {
-        Self::LockObtainFailed {
+        Self::from(LuceneErrorKind::LockObtainFailed {
             message: message.into(),
             source: Some(source),
-        }
+        })
     }
 
     /// Creates a `LockReleaseFailed` error without an underlying I/O cause.
     pub fn lock_release_failed(message: impl Into<String>) -> Self {
-        Self::LockReleaseFailed {
+        Self::from(LuceneErrorKind::LockReleaseFailed {
             message: message.into(),
             source: None,
-        }
+        })
     }
 
     /// Creates a `LockReleaseFailed` error with an underlying I/O cause.
@@ -914,10 +1014,10 @@ impl LuceneError {
         message: impl Into<String>,
         source: std::io::Error,
     ) -> Self {
-        Self::LockReleaseFailed {
+        Self::from(LuceneErrorKind::LockReleaseFailed {
             message: message.into(),
             source: Some(source),
-        }
+        })
     }
 }
 
@@ -931,7 +1031,7 @@ pub type Result<T> = std::result::Result<T, LuceneError>;
 ///
 /// # Errors
 ///
-/// [`LuceneError::Arithmetic`] with the message `integer overflow`, built by
+/// [`LuceneErrorKind::Arithmetic`] with the message `integer overflow`, built by
 /// [`LuceneError::integer_overflow`], when `value` is outside the `i32` range:
 /// Java's `ArithmeticException("integer overflow")`.
 pub fn to_int_exact(value: i64) -> Result<i32> {
@@ -940,7 +1040,7 @@ pub fn to_int_exact(value: i64) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::LuceneError;
+    use super::{LuceneError, LuceneErrorKind};
 
     /// `IndexFormatTooOldException.getReason()` returns the free-form reason
     /// when the version could not be read off the file, and `null` when the
@@ -961,7 +1061,10 @@ mod tests {
             LuceneError::index_format_too_new("_0.si", 12, 9, 10).reason(),
             None
         );
-        assert_eq!(LuceneError::CorruptIndex("x".to_string()).reason(), None);
+        assert_eq!(
+            LuceneError::from(LuceneErrorKind::CorruptIndex("x".to_string())).reason(),
+            None
+        );
     }
 
     /// `new AlreadyClosedException(String, Throwable)` keeps the cause apart
@@ -975,7 +1078,9 @@ mod tests {
         let plain = LuceneError::already_closed("this IndexWriter is closed");
         assert!(plain.source().is_none());
 
-        let tragedy = Arc::new(LuceneError::AssertionError("boom".to_string()));
+        let tragedy = Arc::new(LuceneError::from(LuceneErrorKind::AssertionError(
+            "boom".to_string(),
+        )));
         let closed = LuceneError::already_closed_with_cause(
             "this IndexWriter is closed",
             Arc::clone(&tragedy),
@@ -990,7 +1095,7 @@ mod tests {
             .expect("the cause is the source");
         assert!(Arc::ptr_eq(cause, &tragedy));
         assert!(
-            matches!(closed.duplicate(), LuceneError::AlreadyClosed { cause: Some(c), .. } if Arc::ptr_eq(&c, &tragedy))
+            matches!(closed.duplicate(), LuceneError { kind: LuceneErrorKind::AlreadyClosed { cause: Some(c), .. }, .. } if Arc::ptr_eq(&c, &tragedy))
         );
     }
 
@@ -1004,19 +1109,22 @@ mod tests {
 
         let error = to_int_exact(1i64 << 40).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
             "{error:?}"
         );
         assert_eq!(error.java_simple_name(), "ArithmeticException");
         assert!(matches!(
             to_int_exact(i64::from(i32::MIN) - 1),
-            Err(LuceneError::Arithmetic(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::Arithmetic(_),
+                ..
+            })
         ));
         assert_eq!(to_int_exact(i64::from(i32::MAX)).unwrap(), i32::MAX);
         assert_eq!(to_int_exact(i64::from(i32::MIN)).unwrap(), i32::MIN);
         assert!(matches!(
             LuceneError::integer_overflow().duplicate(),
-            LuceneError::Arithmetic(m) if m == "integer overflow"
+            LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"
         ));
     }
 
@@ -1036,7 +1144,7 @@ mod tests {
         assert_eq!(error.java_simple_name(), "IllegalArgumentException");
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument("too many tokens for field \"f\"".to_string()).to_string()
+            LuceneError::illegal_argument("too many tokens for field \"f\"").to_string()
         );
         let source = error
             .source()
@@ -1045,7 +1153,7 @@ mod tests {
         assert!(Arc::ptr_eq(source, &cause));
         assert!(matches!(
             error.duplicate(),
-            LuceneError::IllegalArgumentWithCause { cause: c, .. } if Arc::ptr_eq(&c, &cause)
+            LuceneError { kind: LuceneErrorKind::IllegalArgument { cause: Some(c), .. }, .. } if Arc::ptr_eq(&c, &cause)
         ));
     }
 }

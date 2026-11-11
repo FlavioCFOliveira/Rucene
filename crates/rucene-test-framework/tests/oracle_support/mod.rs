@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::store::java_nio_file::{java_class_of, java_message_of};
 
 /// The text of a fixture file of this crate.
@@ -68,7 +68,10 @@ pub fn mask(s: &str, dir: &str, rel: Option<&str>) -> String {
 /// `class\tmessage` of a Rust error as the oracles print a Java exception.
 pub fn lucene_error(e: &LuceneError) -> (String, String) {
     match e {
-        LuceneError::Io(io) => (
+        LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(|| "<null>".to_string()),
         ),

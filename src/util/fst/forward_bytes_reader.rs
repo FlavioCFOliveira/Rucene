@@ -1,6 +1,6 @@
 //! Port of `org.apache.lucene.util.fst.ForwardBytesReader`.
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::DataInput;
 
 use super::fst::BytesReader;
@@ -12,7 +12,7 @@ use super::fst::BytesReader;
 /// # Java to Rust adaptations
 ///
 /// * The position is an `i64` rather than an `int`, so that a position outside
-///   the slice is reported as [`LuceneError::CorruptIndex`] instead of the
+///   the slice is reported as [`LuceneErrorKind::CorruptIndex`] instead of the
 ///   `ArrayIndexOutOfBoundsException` Lucene raises.
 #[derive(Debug)]
 pub struct ForwardBytesReader<'a> {
@@ -29,10 +29,10 @@ impl<'a> ForwardBytesReader<'a> {
     }
 
     fn out_of_bounds(&self, pos: i64) -> LuceneError {
-        LuceneError::CorruptIndex(format!(
+        LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "FST read position {pos} is outside the {} available bytes",
             self.bytes.len()
-        ))
+        )))
     }
 }
 

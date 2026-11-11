@@ -286,7 +286,7 @@ impl NormsProducer for MergedNormsProducer<'_> {
     fn get_norms(&self, field_info: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = {
             if field_info.name != self.merge_field_info.name {
-                return Err(LuceneError::IllegalArgument("wrong fieldInfo".to_string()));
+                return Err(LuceneError::illegal_argument("wrong fieldInfo".to_string()));
             }
 
             let mut subs = Vec::new();
@@ -328,7 +328,7 @@ impl NormsProducer for MergedNormsProducer<'_> {
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the merged norms producer has no merge instance".to_string(),
         ))
     }

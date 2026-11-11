@@ -81,7 +81,7 @@ impl MockFixedLengthPayloadFilter {
     ) -> Result<TokenFilter<MockFixedLengthPayloadFilterLogic>> {
         let payload_att = Att::add(input.attribute_source_mut(), payload_id())?;
         if length < 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "length must be >= 0".to_string(),
             ));
         }

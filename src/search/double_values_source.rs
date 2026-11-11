@@ -84,7 +84,7 @@ pub trait DoubleValuesSource: SegmentCacheable + Debug + Send + Sync {
     /// # Errors
     ///
     /// Propagates any I/O error raised while opening the values, and returns
-    /// [`LuceneError::UnsupportedOperation`] for a source that must be
+    /// [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for a source that must be
     /// rewritten first.
     fn get_values<'a>(
         self: Arc<Self>,
@@ -535,7 +535,7 @@ impl DoubleValuesSource for QueryDoubleValuesSource {
         _ctx: &LeafReaderContext,
         _scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "This DoubleValuesSource must be rewritten".to_string(),
         ))
     }
@@ -1169,13 +1169,13 @@ impl crate::search::DocIdSetIterator for DoubleValuesAsNumericDocValues<'_> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DoubleValuesSource.asNumericDocValues does not iterate".to_string(),
         ))
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DoubleValuesSource.asNumericDocValues does not iterate".to_string(),
         ))
     }

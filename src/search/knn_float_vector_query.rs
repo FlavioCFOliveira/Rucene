@@ -90,7 +90,7 @@ impl KnnFloatVectorQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `k` is less than 1, or when `target` holds a non-finite value —
     /// which is `VectorUtil.checkFinite`.
     pub fn with_strategy(

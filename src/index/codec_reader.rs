@@ -235,7 +235,7 @@ pub mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the postings reader raises.
     pub fn terms<R: CodecReader + ?Sized>(
         reader: &R,
@@ -259,7 +259,7 @@ pub mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the doc-values producer raises.
     pub fn numeric_doc_values<R: CodecReader + ?Sized>(
         reader: &R,
@@ -382,7 +382,7 @@ pub mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the norms producer raises.
     pub fn norm_values<R: CodecReader + ?Sized>(
         reader: &R,
@@ -406,7 +406,7 @@ pub mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the points reader raises.
     pub fn point_values<R: CodecReader + ?Sized>(
         reader: &R,
@@ -443,7 +443,7 @@ pub mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the vectors reader raises.
     pub fn float_vector_values<R: CodecReader + ?Sized>(
         reader: &R,
@@ -484,7 +484,7 @@ pub mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates whatever the vectors reader's search raises.
     pub fn search_nearest_vectors<R: CodecReader + ?Sized>(
         reader: &R,
@@ -531,7 +531,7 @@ pub mod final_members {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the reader is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the reader is closed, and
     /// propagates the first integrity failure.
     pub fn check_integrity<R: CodecReader + ?Sized>(reader: &R) -> Result<()> {
         reader.core().ensure_open()?;
@@ -568,6 +568,7 @@ pub mod final_members {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::error::LuceneErrorKind;
 
         /// The `StoredFields` view over a null fields reader, measured against
         /// `lucene-core-10.5.0.jar` on JDK 25 (a `FilterCodecReader` whose
@@ -581,7 +582,10 @@ pub mod final_members {
                 max_doc: 2,
             };
             let class_message = |e: LuceneError| match e {
-                LuceneError::Unchecked { class, message, .. } => (class, message.unwrap()),
+                LuceneError {
+                    kind: LuceneErrorKind::Unchecked { class, message, .. },
+                    ..
+                } => (class, message.unwrap()),
                 other => panic!("expected an unchecked exception, got {other:?}"),
             };
             let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
@@ -618,11 +622,14 @@ pub mod final_members {
 #[cfg(test)]
 mod tests {
     use super::final_members::check_index;
-    use crate::error::LuceneError;
+    use crate::error::{LuceneError, LuceneErrorKind};
 
     fn unchecked(e: LuceneError) -> (String, Option<String>) {
         match e {
-            LuceneError::Unchecked { class, message, .. } => (class.to_string(), message),
+            LuceneError {
+                kind: LuceneErrorKind::Unchecked { class, message, .. },
+                ..
+            } => (class.to_string(), message),
             other => panic!("expected an unchecked exception, got {other:?}"),
         }
     }

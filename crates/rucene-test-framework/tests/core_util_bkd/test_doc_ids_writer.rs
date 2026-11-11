@@ -147,11 +147,11 @@ impl IntersectVisitor for RecordingVisitor<'_> {
     }
 
     fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 

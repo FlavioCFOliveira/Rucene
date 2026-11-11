@@ -1145,7 +1145,7 @@ impl fmt::Display for BlockReader {
 }
 
 fn unsupported() -> LuceneError {
-    LuceneError::UnsupportedOperation(String::new())
+    LuceneError::unsupported_operation(String::new())
 }
 
 impl TermsEnum for BlockReader {

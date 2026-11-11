@@ -49,12 +49,12 @@ impl Packed64 {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
     /// (Java's `NegativeArraySizeException`); the width is only asserted, as in
     /// Lucene's `MutableImpl` constructor.
     pub fn new(value_count: i32, bits_per_value: i32) -> Result<Self> {
         if value_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
@@ -435,16 +435,16 @@ impl Packed64SingleBlock {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
     /// or `bits_per_value` is not a supported width.
     pub fn create(value_count: i32, bits_per_value: i32) -> Result<Self> {
         if value_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
         if !Self::is_supported(bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Unsupported number of bits per value: {bits_per_value}"
             )));
         }
@@ -693,7 +693,7 @@ impl PackedInts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
     /// or the resulting width is not one the chosen format supports.
     pub fn get_mutable(
         value_count: i32,
@@ -715,7 +715,7 @@ impl PackedInts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value_count` is negative
     /// or `bits_per_value` is not a width `format` supports.
     pub fn get_mutable_with_format(
         value_count: i32,

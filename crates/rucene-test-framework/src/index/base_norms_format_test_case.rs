@@ -46,7 +46,7 @@ use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
 use rucene::analysis::Analyzer;
 use rucene::document::{Document, NumericDocValuesField, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::merge_policy::NoMergePolicy;
 use rucene::index::multi_doc_values::MultiDocValues;
@@ -328,14 +328,14 @@ impl Similarity for CannedNormSimilarity {
             // `norms[index++]`: one indexing thread at a time calls it.
             let index = self.index.fetch_add(1, Ordering::Relaxed);
             let Some(&norm) = self.norms.get(index) else {
-                return Err(LuceneError::Unchecked {
+                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                     class: "java.lang.ArrayIndexOutOfBoundsException",
                     message: Some(format!(
                         "Index {index} out of bounds for length {}",
                         self.norms.len()
                     )),
                     cause: None,
-                });
+                }));
             };
             if norm != 0 {
                 return Ok(norm);

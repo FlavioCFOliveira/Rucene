@@ -97,7 +97,7 @@ impl DenseConjunctionBulkScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when no clause is supplied,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when no clause is supplied,
     /// which is the `IllegalArgumentException` Java throws.
     pub fn new(
         mut members: Vec<ConjunctionMember>,
@@ -105,7 +105,7 @@ impl DenseConjunctionBulkScorer {
         constant_score: f32,
     ) -> Result<Self> {
         if members.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Expected one or more iterators, got 0".to_string(),
             ));
         }

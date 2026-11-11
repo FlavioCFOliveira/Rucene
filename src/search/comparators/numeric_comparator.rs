@@ -334,8 +334,8 @@ impl NumericComparator {
     /// # Errors
     ///
     /// Propagates any I/O error raised while opening the segment's values, and
-    /// returns [`LuceneError::IllegalState`] or
-    /// [`LuceneError::IllegalArgument`] for the field-info inconsistencies
+    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) or
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for the field-info inconsistencies
     /// Java rejects when building the points-backed iterator.
     pub fn new_leaf(
         &self,
@@ -383,13 +383,13 @@ impl NumericComparator {
                     )));
                 }
                 Some(info) if info.get_point_dimension_count() > 1 => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Field {} is indexed with multiple dimensions, sorting is not supported",
                         self.field
                     )));
                 }
                 Some(info) if info.get_point_num_bytes() != self.bytes_count => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Field {} is indexed with {} bytes per dimension, but {:?} expected {}",
                         self.field,
                         info.get_point_num_bytes(),

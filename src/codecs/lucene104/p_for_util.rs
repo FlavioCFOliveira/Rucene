@@ -45,7 +45,7 @@ impl PForUtil {
         let mut max_bits_required = 0;
         for &v in ints.iter() {
             if v < 0 {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "PForUtil cannot encode negative values".to_string(),
                 ));
             }

@@ -89,7 +89,7 @@ impl FilterLeafReader {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`](crate::error::LuceneError::AlreadyClosed)
+    /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed)
     /// when `inner` is closed: `registerParentReader` calls `ensureOpen()` on
     /// it (`IndexReader.java:162-165`).
     pub fn new(inner: Arc<dyn LeafReader>) -> Result<Self> {

@@ -671,7 +671,7 @@ impl RandomDocument {
         sample_term_bytes: &[BytesRef],
     ) -> Result<Self> {
         if field_count as usize > field_names.len() {
-            return Err(LuceneError::IllegalArgument(String::new()));
+            return Err(LuceneError::illegal_argument(String::new()));
         }
         let field_count = field_count as usize;
         let field_types = vec![field_type; field_count];

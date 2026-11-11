@@ -40,7 +40,7 @@ impl CollectionStatistics {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the same message text
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the same message text
     /// Java produces — when `max_doc`, `doc_count`, `sum_doc_freq` or
     /// `sum_total_term_freq` is not positive, when `doc_count` exceeds
     /// `max_doc`, when `sum_doc_freq` is below `doc_count`, or when
@@ -53,37 +53,37 @@ impl CollectionStatistics {
         sum_doc_freq: i64,
     ) -> Result<Self> {
         if max_doc <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxDoc must be positive, maxDoc: {max_doc}"
             )));
         }
         if doc_count <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "docCount must be positive, docCount: {doc_count}"
             )));
         }
         if doc_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "docCount must not exceed maxDoc, docCount: {doc_count}, maxDoc: {max_doc}"
             )));
         }
         if sum_doc_freq <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "sumDocFreq must be positive, sumDocFreq: {sum_doc_freq}"
             )));
         }
         if sum_doc_freq < doc_count {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "sumDocFreq must be at least docCount, sumDocFreq: {sum_doc_freq}, docCount: {doc_count}"
             )));
         }
         if sum_total_term_freq <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "sumTotalTermFreq must be positive, sumTotalTermFreq: {sum_total_term_freq}"
             )));
         }
         if sum_total_term_freq < sum_doc_freq {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "sumTotalTermFreq must be at least sumDocFreq, sumTotalTermFreq: {sum_total_term_freq}, sumDocFreq: {sum_doc_freq}"
             )));
         }
@@ -156,22 +156,22 @@ impl TermStatistics {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the same message text
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the same message text
     /// Java produces — when `doc_freq` or `total_term_freq` is not positive, or
     /// when `total_term_freq` is below `doc_freq`.
     pub fn new(term: BytesRef, doc_freq: i64, total_term_freq: i64) -> Result<Self> {
         if doc_freq <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "docFreq must be positive, docFreq: {doc_freq}"
             )));
         }
         if total_term_freq <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "totalTermFreq must be positive, totalTermFreq: {total_term_freq}"
             )));
         }
         if total_term_freq < doc_freq {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "totalTermFreq must be at least docFreq, totalTermFreq: {total_term_freq}, docFreq: {doc_freq}"
             )));
         }

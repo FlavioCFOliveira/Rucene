@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use rucene::codecs::Lucene104Codec;
 use rucene::document::{Document, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_reader::IndexReader;
 use rucene::index::index_writer::IndexWriter;
@@ -362,11 +362,17 @@ fn invalid_max_merge_count_and_threads_are_rejected() {
     let cms = ConcurrentMergeScheduler::new();
     assert!(matches!(
         cms.set_max_merges_and_threads(AUTO_DETECT_MERGES_AND_THREADS, 3),
-        Err(LuceneError::IllegalArgument(_))
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { .. },
+            ..
+        })
     ));
     assert!(matches!(
         cms.set_max_merges_and_threads(3, AUTO_DETECT_MERGES_AND_THREADS),
-        Err(LuceneError::IllegalArgument(_))
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { .. },
+            ..
+        })
     ));
 }
 
@@ -536,8 +542,8 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     }
     impl MergedSegmentWarmer for FailingWarmer {
         fn warm(&self, _reader: &Arc<dyn LeafReader>) -> Result<()> {
-            Err(LuceneError::Io(std::io::Error::other(
-                "warmer failed on purpose",
+            Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("warmer failed on purpose"),
             )))
         }
     }
@@ -573,8 +579,13 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     // the writer the tragedy closed.
     if let Err(error) = writer.commit() {
         assert!(
-            matches!(error, LuceneError::AlreadyClosed { .. })
-                || error.to_string().contains("unrecoverable"),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                }
+            ) || error.to_string().contains("unrecoverable"),
             "{error}"
         );
     }
@@ -600,7 +611,10 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
         // `new IllegalStateException("this writer hit an unrecoverable error;
         // cannot merge", tragedy.get())`: Java's message, and the tragedy as
         // the cause.
-        Err(LuceneError::IllegalState { message, cause }) => {
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, cause },
+            ..
+        }) => {
             assert_eq!(
                 message,
                 "this writer hit an unrecoverable error; cannot merge"
@@ -670,7 +684,9 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
 fn the_default_handle_merge_exception_throws_a_merge_exception() {
     let cms = ConcurrentMergeScheduler::new();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        cms.handle_merge_exception(LuceneError::Io(std::io::Error::other("disk full")))
+        cms.handle_merge_exception(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("disk full"),
+        )))
     }))
     .expect_err("the merge exception escapes");
     let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
@@ -1178,7 +1194,10 @@ fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
     let outcome = watchdog(60, move || force_merger.join().unwrap());
     rollback.join().unwrap().unwrap();
     match outcome {
-        Err(LuceneError::Io(error)) => assert!(
+        Err(LuceneError {
+            kind: LuceneErrorKind::Io(error),
+            ..
+        }) => assert!(
             error
                 .to_string()
                 .starts_with("background merge hit exception: "),
@@ -1235,7 +1254,10 @@ fn a_negative_merge_rate_is_rejected_as_lucene_does() {
     let limiter = MergeRateLimiter::new();
     limiter.set_mb_per_sec(5.0).unwrap();
     match limiter.set_mb_per_sec(-1.5) {
-        Err(LuceneError::IllegalArgument(message)) => {
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        }) => {
             assert_eq!(message, "mbPerSec must be positive; got: -1.5");
         }
         other => panic!("expected IllegalArgument, got {other:?}"),
@@ -1244,7 +1266,10 @@ fn a_negative_merge_rate_is_rejected_as_lucene_does() {
     let as_trait: &dyn rucene::store::RateLimiter = &limiter;
     assert!(matches!(
         as_trait.set_mb_per_sec(-0.5),
-        Err(LuceneError::IllegalArgument(_))
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { .. },
+            ..
+        })
     ));
     limiter.set_mb_per_sec(0.0).unwrap();
     assert_eq!(limiter.get_mb_per_sec(), 0.0);

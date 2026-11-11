@@ -36,7 +36,7 @@ use rucene::document::{
     SortedNumericDocValuesField, SortedSetDocValuesField, Store, StoredField, StringField,
     TextField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::{self, IndexWriter};
 use rucene::index::index_writer_config::IndexWriterConfig;
@@ -1603,7 +1603,15 @@ fn test_multi_valued_random1() -> Result<()> {
 fn rethrow_as_runtime(outcome: Result<()>) {
     if let Err(e) = outcome {
         let t = java_throwable(&e);
-        if e.is_io_exception() || matches!(e, LuceneError::ThreadInterrupted(_)) {
+        if e.is_io_exception()
+            || matches!(
+                e,
+                LuceneError {
+                    kind: LuceneErrorKind::ThreadInterrupted(_),
+                    ..
+                }
+            )
+        {
             Throwable::from_cause("java.lang.RuntimeException", t).throw()
         }
         t.throw()

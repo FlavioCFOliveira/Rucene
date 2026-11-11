@@ -42,9 +42,9 @@ use crate::internal::tests_hooks::{
 ///   lazily, by their owners, exactly once — the same moment and the same
 ///   registrar as Java's.
 /// * **`Result` instead of exceptions.** A missing accessor is
-///   [`LuceneError::IllegalState`] where Java throws `NullPointerException`
-///   from `Objects.requireNonNull`; a second registration is
-///   [`LuceneError::IllegalState`] where Java throws `IllegalCallerException`.
+///   Java's `NullPointerException` from `Objects.requireNonNull`
+///   ([`LuceneError::null_pointer`]); a second registration is
+///   [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) where Java throws `IllegalCallerException`.
 /// * **`Arc` instead of a bare reference.** The accessors are shared, immutable
 ///   singletons; `Arc` is how this crate shares them across threads.
 #[derive(Debug, Clone, Copy)]
@@ -62,11 +62,10 @@ static INDEX_WRITER_ACCESS: OnceLock<Arc<dyn IndexWriterAccess>> = OnceLock::new
 static FILTER_INDEX_INPUT_ACCESS: OnceLock<Arc<dyn FilterIndexInputAccess>> = OnceLock::new();
 
 /// Builds the error Java raises from `Objects.requireNonNull` when an accessor
-/// was never registered.
-fn missing(accessor: &str) -> LuceneError {
-    LuceneError::illegal_state(format!(
-        "{accessor} has not been registered with TestSecrets."
-    ))
+/// was never registered: a `NullPointerException` without a message
+/// (`TestSecrets.java:68`), so `accessor` is not part of it.
+fn missing(_accessor: &str) -> LuceneError {
+    LuceneError::null_pointer()
 }
 
 /// Builds the message Java uses in `ensureCallerForSetter`.
@@ -166,7 +165,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] — the crate's stand-in for Java's
+    /// Returns [`LuceneErrorKind::IllegalState`] — the crate's stand-in for Java's
     /// `IllegalCallerException` — when the call did not come from `owner`'s
     /// source file or when an accessor is already registered.
     #[track_caller]
@@ -188,7 +187,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] — the crate's stand-in for Java's
+    /// Returns [`LuceneErrorKind::IllegalState`] — the crate's stand-in for Java's
     /// `IllegalCallerException` — when the caller is outside the test
     /// framework.
     #[track_caller]
@@ -211,8 +210,8 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no accessor has been
-    /// registered.
+    /// Returns Java's `NullPointerException` ([`LuceneError::null_pointer`])
+    /// when no accessor has been registered.
     #[track_caller]
     pub fn get_index_package_access() -> Result<Arc<dyn IndexPackageAccess>> {
         Self::ensure_caller_for_getter()?;
@@ -232,8 +231,8 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no accessor has been
-    /// registered.
+    /// Returns Java's `NullPointerException` ([`LuceneError::null_pointer`])
+    /// when no accessor has been registered.
     #[track_caller]
     pub fn get_concurrent_merge_scheduler_access() -> Result<Arc<dyn ConcurrentMergeSchedulerAccess>>
     {
@@ -253,8 +252,8 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no accessor has been
-    /// registered.
+    /// Returns Java's `NullPointerException` ([`LuceneError::null_pointer`])
+    /// when no accessor has been registered.
     #[track_caller]
     pub fn get_segment_reader_access() -> Result<Arc<dyn SegmentReaderAccess>> {
         Self::ensure_caller_for_getter()?;
@@ -273,8 +272,8 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no accessor has been
-    /// registered.
+    /// Returns Java's `NullPointerException` ([`LuceneError::null_pointer`])
+    /// when no accessor has been registered.
     #[track_caller]
     pub fn get_index_writer_access() -> Result<Arc<dyn IndexWriterAccess>> {
         Self::ensure_caller_for_getter()?;
@@ -294,8 +293,8 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no accessor has been
-    /// registered.
+    /// Returns Java's `NullPointerException` ([`LuceneError::null_pointer`])
+    /// when no accessor has been registered.
     #[track_caller]
     pub fn get_filter_input_index_access() -> Result<Arc<dyn FilterIndexInputAccess>> {
         Self::ensure_caller_for_getter()?;
@@ -315,7 +314,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when an accessor is already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
     /// registered; Java allows exactly one registration too.
     #[track_caller]
     pub fn set_index_writer_access(access: Option<Arc<dyn IndexWriterAccess>>) -> Result<()> {
@@ -336,7 +335,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when an accessor is already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
     /// registered.
     #[track_caller]
     pub fn set_index_package_access(access: Option<Arc<dyn IndexPackageAccess>>) -> Result<()> {
@@ -357,7 +356,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when an accessor is already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
     /// registered.
     #[track_caller]
     pub fn set_concurrent_merge_scheduler_access(
@@ -380,7 +379,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when an accessor is already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
     /// registered.
     #[track_caller]
     pub fn set_segment_reader_access(access: Option<Arc<dyn SegmentReaderAccess>>) -> Result<()> {
@@ -402,7 +401,7 @@ impl TestSecrets {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when an accessor is already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an accessor is already
     /// registered.
     #[track_caller]
     pub fn set_filter_input_index_access(

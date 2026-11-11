@@ -55,7 +55,7 @@ impl BaseCompositeReader {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when a sub-reader is closed (its
+    /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) when a sub-reader is closed (its
     /// `registerParentReader` calls `ensureOpen()`), then the document-limit
     /// failures described above.
     pub fn new(
@@ -90,7 +90,7 @@ impl BaseCompositeReader {
                     .join(", ");
                 LuceneError::corrupt_index(message, format!("[{sub_readers}]"))
             } else {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "Too many documents: composite IndexReaders cannot exceed {actual_max_docs} but readers have total maxDoc={max_doc}"
                 ))
             });
@@ -122,7 +122,7 @@ impl BaseCompositeReader {
     /// Equivalent to `BaseCompositeReader.readerBase(int)`.
     pub fn reader_base(&self, reader_index: usize) -> Result<i32> {
         self.starts.get(reader_index).copied().ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("readerIndex {reader_index} is out of bounds"))
+            LuceneError::illegal_argument(format!("readerIndex {reader_index} is out of bounds"))
         })
     }
 
@@ -139,7 +139,7 @@ impl BaseCompositeReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` is outside
     /// `0..max_doc`.
     pub fn reader_index(&self, doc_id: i32) -> Result<usize> {
         Ok(crate::index::multi_reader::resolve_sub(doc_id, self.max_doc, &self.starts)?.0)
@@ -434,7 +434,7 @@ mod tests {
             BaseCompositeReader::new(stubs(&sizes), false, &IndexReaderCore::new()).unwrap_err();
         assert_eq!(
             composite.to_string(),
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "Too many documents: composite IndexReaders cannot exceed 2000000000 but readers \
                  have total maxDoc=2000000001"
                     .to_string()
@@ -509,7 +509,7 @@ mod tests {
         let error = base.reader_index(5).unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "docID must be >= 0 and < maxDoc=5 (got docID=5)".to_string()
             )
             .to_string()

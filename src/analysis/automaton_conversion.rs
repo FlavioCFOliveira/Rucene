@@ -184,7 +184,7 @@ impl TokenStreamToAutomaton {
     /// # Errors
     ///
     /// Propagates the stream's errors, and returns
-    /// [`LuceneError::IllegalState`] when the first token has a position
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the first token has a position
     /// increment of zero: Java's `assert pos > -1 || posInc > 0` (kept as a
     /// `debug_assert!`) fails first, and without assertions its
     /// `posData.leaving` then dereferences `null`.
@@ -479,7 +479,7 @@ impl AutomatonToTokenStream {
             }
         }
         if indegree.first().copied().unwrap_or(0) != 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Start node has incoming edges, creating cycle".to_string(),
             ));
         }
@@ -510,7 +510,7 @@ impl AutomatonToTokenStream {
         }
 
         if indegree.iter().any(|&d| d != 0) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cycle found in automaton".to_string(),
             ));
         }

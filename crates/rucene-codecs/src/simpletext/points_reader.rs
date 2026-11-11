@@ -276,12 +276,12 @@ impl PointsReader for SimpleTextPointsReader {
     /// Port of `SimpleTextPointsReader.getValues`.
     fn get_values(&self, field_name: &str) -> Result<Option<Box<dyn PointValues>>> {
         let Some(field_info) = self.field_infos.field_info(field_name) else {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field_name}\" is unrecognized"
             )));
         };
         if field_info.get_point_dimension_count() == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field_name}\" did not index points"
             )));
         }

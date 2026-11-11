@@ -121,7 +121,7 @@ impl LongsRef {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when an invariant is violated,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an invariant is violated,
     /// mirroring Java's `IllegalStateException` messages.
     pub fn is_valid(&self) -> Result<()> {
         if self.length > self.longs.len() {
@@ -493,7 +493,7 @@ impl IntsRefBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the bytes are not valid
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the bytes are not valid
     /// UTF-8.
     pub fn copy_utf8_bytes(&mut self, bytes: &BytesRef) -> Result<()> {
         self.grow_no_copy(bytes.length);

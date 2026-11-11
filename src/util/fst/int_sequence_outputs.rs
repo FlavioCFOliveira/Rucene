@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 use crate::util::{IntsRef, RamUsageEstimator};
 
@@ -106,8 +106,11 @@ impl Outputs for IntSequenceOutputs {
         if len == 0 {
             Ok(self.no_output())
         } else {
-            let len = usize::try_from(len)
-                .map_err(|_| LuceneError::CorruptIndex(format!("invalid output length {len}")))?;
+            let len = usize::try_from(len).map_err(|_| {
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "invalid output length {len}"
+                )))
+            })?;
             let mut ints = Vec::with_capacity(len);
             for _ in 0..len {
                 ints.push(input.read_v_int()?);

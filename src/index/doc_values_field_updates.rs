@@ -612,7 +612,7 @@ impl DocValuesFieldUpdates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the buffer is not finished.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the buffer is not finished.
     pub fn ensure_finished(&self) -> Result<()> {
         if !self.finished {
             return Err(LuceneError::illegal_state("call finish first".to_string()));
@@ -918,7 +918,7 @@ impl<'a> DocIdSetIterator for DocValuesFieldUpdatesIterator<'a> {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "advance not supported for DocValuesFieldUpdatesIterator".to_string(),
         ))
     }
@@ -1022,11 +1022,11 @@ impl<'a> MergedIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] for the merged view.
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for the merged view.
     pub fn del_gen(&self) -> Result<i64> {
         match self.subs.first() {
             Some(sub) if !self.merged => Ok(sub.it.del_gen()),
-            _ => Err(LuceneError::UnsupportedOperation(
+            _ => Err(LuceneError::unsupported_operation(
                 "delGen() of a merged DocValuesFieldUpdates iterator".to_string(),
             )),
         }
@@ -1126,7 +1126,7 @@ impl<'a> DocIdSetIterator for MergedIterator<'a> {
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "advance not supported for MergedIterator".to_string(),
         ))
     }
@@ -1139,6 +1139,7 @@ impl<'a> DocIdSetIterator for MergedIterator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     #[test]
     fn numeric_updates_finish_and_iterate() {
@@ -1262,7 +1263,10 @@ mod tests {
         // (`DocValuesFieldUpdates.java:231-234`).
         assert!(matches!(
             merged.del_gen(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert_eq!(merged.next_doc().unwrap(), 1);
         assert_eq!(merged.long_value(), 71);
@@ -1271,7 +1275,10 @@ mod tests {
         // (`DocValuesFieldUpdates.java:231-234`).
         assert!(matches!(
             merged.del_gen(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 

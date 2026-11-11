@@ -120,7 +120,7 @@ impl IntsRef {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when an invariant is violated,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an invariant is violated,
     /// mirroring Java's `IllegalStateException` messages.
     ///
     /// Equivalent to `org.apache.lucene.util.IntsRef#isValid`.
@@ -214,7 +214,7 @@ impl StringHelper {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `current_term` is not strictly
+    /// Returns `LuceneErrorKind::IllegalArgument` if `current_term` is not strictly
     /// after `prior_term` (i.e., they are equal or out of order).
     pub fn bytes_difference(
         prior_term: &BytesRef,
@@ -231,7 +231,7 @@ impl StringHelper {
             }
         }
         if mismatch == min_len && a.len() > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "terms out of order: priorTerm={:?}, currentTerm={:?}",
                 prior_term, current_term
             )));
@@ -703,13 +703,13 @@ impl StringHelper {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if any int is out of the byte range.
+    /// Returns `LuceneErrorKind::IllegalArgument` if any int is out of the byte range.
     pub fn ints_ref_to_bytes_ref(ints: &IntsRef) -> Result<BytesRef, LuceneError> {
         let slice = ints.slice();
         let mut bytes = Vec::with_capacity(slice.len());
         for (i, &x) in slice.iter().enumerate() {
             if !(0..=255).contains(&x) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "int at pos={} with value={} is out-of-bounds for byte",
                     i, x
                 )));

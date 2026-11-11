@@ -207,7 +207,7 @@ impl AutomatonProvider for QuickBrownProvider {
         if name == "quickBrown" {
             Ok(self.quick_brown_automaton.clone())
         } else {
-            Err(LuceneError::IllegalArgument(format!("'{name}' not found")))
+            Err(LuceneError::illegal_argument(format!("'{name}' not found")))
         }
     }
 }

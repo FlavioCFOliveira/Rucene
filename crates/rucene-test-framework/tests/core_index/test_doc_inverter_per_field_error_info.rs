@@ -13,7 +13,7 @@ use rucene::analysis::{
     TokenStreamComponents,
 };
 use rucene::document::{Document, FieldType, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::util::attribute::AttributeSource;
@@ -50,11 +50,11 @@ const BAD_NEWS: &str = "org.apache.lucene.index.TestDocInverterPerFieldErrorInfo
 
 /// `new BadNews(message)`.
 fn bad_news(message: &str) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: BAD_NEWS,
         message: Some(message.to_string()),
         cause: None,
-    }
+    })
 }
 
 /// The anonymous `TokenFilter` of `ThrowingAnalyzer`, whose

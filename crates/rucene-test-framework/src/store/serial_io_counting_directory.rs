@@ -300,7 +300,7 @@ impl DataInput for SerializedIOCountingIndexInput {
     /// `IndexInput.skipBytes`: `seek(getFilePointer() + numBytes)`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
@@ -346,7 +346,7 @@ impl IndexInput for SerializedIOCountingIndexInput {
         context: &dyn IOContext,
     ) -> Result<Box<dyn IndexInput>> {
         if (length | offset) < 0 || length > self.slice_length - offset {
-            return Err(LuceneError::IllegalArgument(String::new()));
+            return Err(LuceneError::illegal_argument(String::new()));
         }
         let mut clone = self.r#in.clone_input()?;
         clone.seek(self.slice_offset + offset)?;

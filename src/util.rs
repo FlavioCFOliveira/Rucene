@@ -179,7 +179,7 @@ use std::{
 
 use crate::store::java_nio_file as nio;
 
-use crate::error::LuceneError;
+use crate::error::{LuceneError, LuceneErrorKind};
 use crate::store::{DataInput, DataOutput};
 
 // ---------------------------------------------------------------------------
@@ -280,10 +280,10 @@ impl BytesRef {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the bytes are not valid UTF-8.
+    /// Returns `LuceneErrorKind::IllegalArgument` if the bytes are not valid UTF-8.
     pub fn utf8_to_string(&self) -> Result<String, LuceneError> {
         String::from_utf8(self.slice().to_vec())
-            .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8: {e}")))
+            .map_err(|e| LuceneError::illegal_argument(format!("invalid UTF-8: {e}")))
     }
 
     /// Returns a hex-encoded representation such as `[6c 75 63 65 6e 65]`.
@@ -304,7 +304,7 @@ impl BytesRef {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if any invariant is violated.
+    /// Returns `LuceneErrorKind::IllegalState` if any invariant is violated.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         if self.length > self.bytes.len() {
             return Err(LuceneError::illegal_state(format!(
@@ -634,7 +634,7 @@ impl NumericUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] `"a < b"` when `a < b`, the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] `"a < b"` when `a < b`, the
     /// `IllegalArgumentException` Java throws (`NumericUtils.java:124-126`).
     pub fn subtract(
         bytes_per_dim: usize,
@@ -670,7 +670,7 @@ impl NumericUtils {
         }
 
         if borrow != 0 {
-            return Err(LuceneError::IllegalArgument("a < b".to_string()));
+            return Err(LuceneError::illegal_argument("a < b".to_string()));
         }
         Ok(())
     }
@@ -682,7 +682,7 @@ impl NumericUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] on overflow, the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] on overflow, the
     /// `IllegalArgumentException` Java throws (`NumericUtils.java:165-167`).
     pub fn add(
         bytes_per_dim: usize,
@@ -716,7 +716,7 @@ impl NumericUtils {
         }
 
         if carry != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "a + b overflows bytesPerDim={bytes_per_dim}"
             )));
         }
@@ -1267,7 +1267,7 @@ impl GroupVIntUtil {
     /// # Errors
     ///
     /// Returns any error raised by the underlying output, and
-    /// [`LuceneError::Arithmetic`] with the message `integer overflow` when a
+    /// [`LuceneErrorKind::Arithmetic`] with the message `integer overflow` when a
     /// value does not fit in an unsigned 32-bit integer: the
     /// `ArithmeticException("integer overflow")` Lucene throws.
     pub fn write_group_vints_output_long<O: DataOutput + ?Sized>(
@@ -1580,7 +1580,7 @@ impl ArrayUtil {
         bytes_per_element: usize,
     ) -> Result<Vec<T>, LuceneError> {
         if min_length > max_length {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "requested minimum array length {min_length} is larger than requested maximum array length {max_length}"
             )));
         }
@@ -1657,10 +1657,10 @@ impl ArrayUtil {
         // Character.MIN_RADIX / Character.MAX_RADIX: `throw new
         // NumberFormatException()`, whose message is `null`.
         if !(2..=36).contains(&radix) {
-            return Err(LuceneError::IllegalArgument(String::new()));
+            return Err(LuceneError::illegal_argument(String::new()));
         }
         if len == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "chars length is 0".to_string(),
             ));
         }
@@ -1669,7 +1669,7 @@ impl ArrayUtil {
         if negative {
             i += 1;
             if i == len {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "can't convert to an int".to_string(),
                 ));
             }
@@ -1704,7 +1704,7 @@ impl ArrayUtil {
         radix: u32,
         negative: bool,
     ) -> Result<i32, LuceneError> {
-        let unparsable = || LuceneError::IllegalArgument("Unable to parse".to_string());
+        let unparsable = || LuceneError::illegal_argument("Unable to parse".to_string());
         let max = i32::MIN / radix as i32;
         let mut result: i32 = 0;
         for i in 0..len {
@@ -1962,7 +1962,13 @@ impl Thrown {
     /// as an `Error`, so it is rethrown and never swallowed.
     fn is_java_error(&self) -> bool {
         match self {
-            Self::Error(e) => matches!(e, LuceneError::AssertionError(_)),
+            Self::Error(e) => matches!(
+                e,
+                LuceneError {
+                    kind: LuceneErrorKind::AssertionError(_),
+                    ..
+                }
+            ),
             Self::Panic(_) => true,
         }
     }
@@ -2082,7 +2088,7 @@ impl IOUtils {
     /// `IOUtils.closeWhileHandlingException(Iterable)` (`IOUtils.java:103-136`).
     /// Java's method returns nothing and throws only the first `Error`, which
     /// is unchecked; the port models Java's `AssertionError` as
-    /// [`LuceneError::AssertionError`], so that one comes back as `Err`, and a
+    /// [`LuceneErrorKind::AssertionError`], so that one comes back as `Err`, and a
     /// panic is resumed (see [`Thrown::is_java_error`]). A caller propagates
     /// the `Err` with `?`, as the `Error` propagates out of the Java caller —
     /// out of a `finally` block too, where it replaces the exception in
@@ -2090,7 +2096,7 @@ impl IOUtils {
     ///
     /// # Errors
     ///
-    /// Returns the first [`LuceneError::AssertionError`] a closeable returned.
+    /// Returns the first [`LuceneErrorKind::AssertionError`] a closeable returned.
     pub fn close_while_handling_exception<I, C>(objects: I) -> Result<(), LuceneError>
     where
         I: IntoIterator<Item = Option<C>>,
@@ -2163,7 +2169,7 @@ impl IOUtils {
             }
         }
         match err {
-            Some(e) => Err(LuceneError::Io(e)),
+            Some(e) => Err(LuceneError::from(LuceneErrorKind::Io(e))),
             None => Ok(()),
         }
     }
@@ -2188,8 +2194,8 @@ impl IOUtils {
             // opening a directory on Windows fails, directories can not be fsynced there
             if !nio::Files::exists(&file_to_sync, &[]) {
                 // yet do not suppress trying to fsync directories that do not exist
-                return Err(LuceneError::Io(nio::no_such_file_exception(
-                    file_to_sync.to_string(),
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    nio::no_such_file_exception(file_to_sync.to_string()),
                 )));
             }
             return Ok(());
@@ -2215,7 +2221,7 @@ impl IOUtils {
                     Ok(())
                 } else {
                     // Throw original exception
-                    Err(LuceneError::Io(e))
+                    Err(LuceneError::from(LuceneErrorKind::Io(e)))
                 }
             }
             Ok(()) => Ok(()),
@@ -2250,7 +2256,7 @@ impl IOUtils {
     /// returns (`StandardDirectoryReader.java:103-105`): the return value is
     /// that `ex`, unchanged, or — when `ex` is not a Java `Error` and a
     /// closeable hits one — that first `Error`, which Java throws with `ex`
-    /// suppressed into it. Java's `Error` is [`LuceneError::AssertionError`],
+    /// suppressed into it. Java's `Error` is [`LuceneErrorKind::AssertionError`],
     /// or a panic, which is resumed once every closeable is closed (see
     /// [`Thrown::is_java_error`]). Every other failure is suppressed into
     /// `ex`.
@@ -2264,7 +2270,7 @@ impl IOUtils {
         I: IntoIterator<Item = Option<C>>,
         C: FnOnce() -> Result<(), LuceneError>,
     {
-        let ex_is_error = matches!(ex.unwrap_suppressed(), LuceneError::AssertionError(_));
+        let ex_is_error = matches!(ex.kind(), LuceneErrorKind::AssertionError(_));
         let mut first_error: Option<Thrown> = None;
         for object in objects.into_iter().flatten() {
             if let Some(e) = Self::close_one(object) {
@@ -2305,14 +2311,17 @@ impl IOUtils {
         char_set: &str,
     ) -> Result<io::Cursor<String>, LuceneError> {
         if !char_set.eq_ignore_ascii_case(Self::UTF_8) {
-            return Err(LuceneError::UnsupportedOperation(format!(
+            return Err(LuceneError::unsupported_operation(format!(
                 "unsupported charset: {char_set}"
             )));
         }
         let mut bytes = Vec::new();
         stream.read_to_end(&mut bytes)?;
-        let text = String::from_utf8(bytes)
-            .map_err(|e| LuceneError::Other(format!("MalformedInputException: {e}")))?;
+        let text = String::from_utf8(bytes).map_err(|e| {
+            LuceneError::from(LuceneErrorKind::Other(format!(
+                "MalformedInputException: {e}"
+            )))
+        })?;
         Ok(io::Cursor::new(text))
     }
 
@@ -2323,14 +2332,14 @@ impl IOUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::NotFound`] when `resource` is `None`, standing in
+    /// Returns [`LuceneErrorKind::NotFound`] when `resource` is `None`, standing in
     /// for Java's `FileNotFoundException`.
     pub fn require_resource_non_null<T>(resource: Option<T>, name: &str) -> Result<T, LuceneError> {
         match resource {
             Some(resource) => Ok(resource),
-            None => Err(LuceneError::NotFound(format!(
+            None => Err(LuceneError::from(LuceneErrorKind::NotFound(format!(
                 "The resource '{name}' was not found."
-            ))),
+            )))),
         }
     }
 
@@ -2365,7 +2374,7 @@ impl IOUtils {
                 nio::java_to_string(cause)
             ));
         }
-        Err(LuceneError::Io(nio::io_exception(b)))
+        Err(LuceneError::from(LuceneErrorKind::Io(nio::io_exception(b))))
     }
 
     /// Equivalent to the private `IOUtils.rm(LinkedHashMap, Path...)`
@@ -4039,7 +4048,7 @@ impl FixedBitSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Java's message — `The
+    /// Returns [`LuceneErrorKind::IllegalArgument`] with Java's message — `The
     /// given long array is too small  to hold <numBits> bits`, two spaces
     /// included (`FixedBitSet.java:162-167`) — when `stored_bits` holds fewer
     /// than `bits2words(num_bits)` words.
@@ -4054,7 +4063,7 @@ impl FixedBitSet {
     fn from_words(stored_bits: Words, num_bits: usize) -> Result<Self, LuceneError> {
         let num_words = Self::bits2words(num_bits);
         if num_words > stored_bits.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "The given long array is too small  to hold {num_bits} bits"
             )));
         }
@@ -4808,7 +4817,7 @@ impl FixedBitSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the iterator is already
+    /// Returns [`LuceneErrorKind::IllegalState`] when the iterator is already
     /// positioned, and propagates iteration errors.
     pub fn xor_iterator(
         &mut self,
@@ -4838,7 +4847,7 @@ impl FixedBitSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the iterator is already
+    /// Returns [`LuceneErrorKind::IllegalState`] when the iterator is already
     /// positioned, and propagates iteration errors.
     pub fn and_not_iterator(
         &mut self,
@@ -4988,7 +4997,7 @@ impl FixedBitSet {
         if length < bit_set.length()
             && BitSet::next_set_bit(bit_set, length as i32) != crate::search::NO_MORE_DOCS
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Some bits are set beyond the end of live docs".to_string(),
             ));
         }
@@ -5338,7 +5347,7 @@ impl<T> RefCount<T> {
     ///
     /// Returns whatever [`Self::release`] raised, having put the reference
     /// back exactly as Java's `finally` block does, or
-    /// [`LuceneError::IllegalState`] when the count went negative, which is
+    /// [`LuceneErrorKind::IllegalState`] when the count went negative, which is
     /// Java's `IllegalStateException`.
     ///
     /// Equivalent to `org.apache.lucene.util.RefCount#decRef`.
@@ -5394,7 +5403,7 @@ impl<T> RefCount<T> {
 /// Thrown by Lucene on detecting that `Thread.interrupt()` had been called.
 /// Unlike [`InterruptedException`], it is unchecked: Lucene's waits catch the
 /// former and throw this, which travels as
-/// [`LuceneError::ThreadInterrupted`].
+/// [`LuceneErrorKind::ThreadInterrupted`].
 ///
 /// Equivalent to `org.apache.lucene.util.ThreadInterruptedException`, a
 /// `RuntimeException` built over its cause; its message, Java's
@@ -5443,7 +5452,7 @@ mod tests {
     fn fixed_bit_set_from_too_few_words_is_lucenes_illegal_argument() {
         assert!(matches!(
             super::FixedBitSet::from_bits(vec![0u64], 65),
-            Err(super::LuceneError::IllegalArgument(ref message))
+            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. })
                 if message == "The given long array is too small  to hold 65 bits"
         ));
     }
@@ -5464,7 +5473,7 @@ mod tests {
         );
         assert!(matches!(
             super::ArrayUtil::parse_int_radix(&['1'], 0, 1, 1),
-            Err(super::LuceneError::IllegalArgument(ref message)) if message.is_empty()
+            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
         ));
     }
 
@@ -5476,7 +5485,7 @@ mod tests {
     fn unicode_util_new_string_refuses_an_invalid_code_point_without_a_message() {
         assert!(matches!(
             super::unicode_util::UnicodeUtil::new_string(&[0x11_0000], 0, 1),
-            Err(super::LuceneError::IllegalArgument(ref message)) if message.is_empty()
+            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
         ));
     }
 
@@ -5678,7 +5687,7 @@ mod tests {
                 )
                 .unwrap_err();
                 assert!(
-                    matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                    matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
                     "{error:?}"
                 );
             }
@@ -5688,7 +5697,9 @@ mod tests {
     #[test]
     fn ioutils_close_helpers() {
         fn failing_close() -> Result<(), LuceneError> {
-            Err(LuceneError::Io(io::Error::other("close failed")))
+            Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                "close failed",
+            ))))
         }
 
         let result = IOUtils::close([Some(failing_close), None]);
@@ -5930,12 +5941,12 @@ mod tests {
         let mut result = [0u8; 2];
         let error = NumericUtils::subtract(2, 0, &[0, 1], &[0, 2], &mut result).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(m) if m == "a < b"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "a < b"),
             "{error:?}"
         );
         let error = NumericUtils::add(2, 0, &[0xff, 0xff], &[0, 1], &mut result).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(m) if m == "a + b overflows bytesPerDim=2"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "a + b overflows bytesPerDim=2"),
             "{error:?}"
         );
         NumericUtils::subtract(2, 0, &[0x12, 0x05], &[0x10, 0x00], &mut result).unwrap();
@@ -5970,17 +5981,24 @@ mod tests {
     /// so `IOUtils.close` reports the first close failure.
     #[test]
     fn ioutils_close_reports_the_first_failure() {
-        let first = || Err(LuceneError::Io(io::Error::other("first close failed")));
+        let first = || {
+            Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                "first close failed",
+            ))))
+        };
         let second = || {
-            Err(LuceneError::Io(io::Error::new(
+            Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::NotFound,
                 "second close failed",
-            )))
+            ))))
         };
         let error =
             IOUtils::close([IOUtils::closeable(first), IOUtils::closeable(second)]).unwrap_err();
         match error {
-            LuceneError::Io(e) => {
+            LuceneError {
+                kind: LuceneErrorKind::Io(e),
+                ..
+            } => {
                 assert_eq!(e.to_string(), "first close failed");
                 assert_eq!(e.kind(), io::ErrorKind::Other);
             }
@@ -5999,9 +6017,13 @@ mod tests {
             log.borrow_mut().push(name.to_string());
             match outcome {
                 "ok" => Ok(()),
-                "io" => Err(LuceneError::Io(io::Error::other(name.to_string()))),
+                "io" => Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    name.to_string(),
+                )))),
                 "rte" => Err(LuceneError::illegal_state(name)),
-                "err" => Err(LuceneError::AssertionError(name.to_string())),
+                "err" => Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    name.to_string(),
+                ))),
                 "panic" => panic!("{name}"),
                 other => unreachable!("{other}"),
             }
@@ -6010,9 +6032,18 @@ mod tests {
 
     fn java_class_and_message(error: &LuceneError) -> String {
         let message = match error {
-            LuceneError::Io(e) => e.to_string(),
-            LuceneError::IllegalState { message, .. } => message.clone(),
-            LuceneError::AssertionError(m) => m.clone(),
+            LuceneError {
+                kind: LuceneErrorKind::Io(e),
+                ..
+            } => e.to_string(),
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            } => message.clone(),
+            LuceneError {
+                kind: LuceneErrorKind::AssertionError(m),
+                ..
+            } => m.clone(),
             other => panic!("{other:?}"),
         };
         format!("{}({message})", error.java_simple_name())
@@ -6108,7 +6139,7 @@ mod tests {
     #[test]
     fn ioutils_close_while_suppressing_exceptions_matches_the_java_oracle() {
         let log = std::cell::RefCell::new(Vec::new());
-        let ex = LuceneError::Io(io::Error::other("ex"));
+        let ex = LuceneError::from(LuceneErrorKind::Io(io::Error::other("ex")));
         let thrown = IOUtils::close_while_suppressing_exceptions(
             ex,
             vec![
@@ -6121,7 +6152,7 @@ mod tests {
         assert_eq!(log.borrow().join(","), "a,b");
 
         log.borrow_mut().clear();
-        let ex = LuceneError::Io(io::Error::other("ex"));
+        let ex = LuceneError::from(LuceneErrorKind::Io(io::Error::other("ex")));
         let thrown = IOUtils::close_while_suppressing_exceptions(
             ex,
             vec![
@@ -6133,7 +6164,7 @@ mod tests {
         assert_eq!(log.borrow().join(","), "a,b");
 
         log.borrow_mut().clear();
-        let ex = LuceneError::AssertionError("ex".to_string());
+        let ex = LuceneError::from(LuceneErrorKind::AssertionError("ex".to_string()));
         let thrown = IOUtils::close_while_suppressing_exceptions(
             ex,
             vec![
@@ -6154,7 +6185,9 @@ mod tests {
         let error = IOUtils::apply_to_all(vec![Some(1), None, Some(2), Some(3)], |i| {
             visited.push(format!("v{i}"));
             if i != 3 {
-                return Err(LuceneError::Io(io::Error::other(format!("fail{i}"))));
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    format!("fail{i}"),
+                ))));
             }
             Ok(())
         })
@@ -6220,12 +6253,12 @@ mod tests {
         fs::set_permissions(&file, permissions).unwrap();
         let error = IOUtils::fsync(&file, false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
         let error = IOUtils::fsync(tmp.path().join("missing"), false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::NotFound),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::NotFound),
             "{error:?}"
         );
         IOUtils::fsync(tmp.path(), true).unwrap();
@@ -6246,7 +6279,7 @@ mod tests {
         let dir = crate::store::FSDirectory::open(tmp.path()).unwrap();
         let error = dir.sync(&["ro".to_string()]).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
         dir.sync_metadata().unwrap();
@@ -6290,7 +6323,9 @@ mod tests {
             }
             fn try_get(&self, index: usize) -> Result<bool, LuceneError> {
                 if self.0 {
-                    Err(LuceneError::Other("exiting".to_string()))
+                    Err(LuceneError::from(LuceneErrorKind::Other(
+                        "exiting".to_string(),
+                    )))
                 } else {
                     Ok(self.get(index))
                 }
@@ -6309,7 +6344,7 @@ mod tests {
         );
         let error = EvenBits(true).apply_mask(&mut set, 0).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Other(m) if m == "exiting"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Other(m), .. } if m == "exiting"),
             "{error:?}"
         );
     }

@@ -75,7 +75,7 @@ impl TopFieldCollectorManager {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when `total_hits_threshold` is negative, when `num_hits` is
     /// not positive, when `sort` has no field, or when `after` does not carry
     /// exactly one sort value per sort field.
@@ -86,18 +86,18 @@ impl TopFieldCollectorManager {
         total_hits_threshold: i32,
     ) -> Result<Self> {
         if total_hits_threshold < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "totalHitsThreshold must be >= 0, got {total_hits_threshold}"
             )));
         }
         if num_hits <= 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "numHits must be > 0; please use TotalHitCountCollector if you just need the total hit count"
                     .to_string(),
             ));
         }
         if sort.fields().is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Sort must contain at least one field".to_string(),
             ));
         }
@@ -157,13 +157,13 @@ impl TopFieldCollectorManager {
     /// in `newCollector()`.
     fn check_after(after: &FieldDoc, sort: &Sort) -> Result<()> {
         let Some(fields) = after.fields.as_ref() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "after.fields wasn't set; you must pass fillFields=true for the previous search"
                     .to_string(),
             ));
         };
         if fields.len() != sort.fields().len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "after.fields has {} values but sort has {}",
                 fields.len(),
                 sort.fields().len()

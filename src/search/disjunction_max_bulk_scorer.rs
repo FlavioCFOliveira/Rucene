@@ -125,11 +125,11 @@ impl DisjunctionMaxBulkScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when fewer than two sub scorers
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two sub scorers
     /// are supplied, which is the bare `IllegalArgumentException` Java throws.
     pub fn new(scorers: Vec<Box<dyn BulkScorer>>) -> Result<Self> {
         if scorers.len() < 2 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Expected 2 or more bulk scorers, got {}",
                 scorers.len()
             )));

@@ -29,7 +29,7 @@ use rucene::codecs::{
     NormsFormat, PerFieldDocValuesFormat, PerFieldKnnVectorsFormat, PerFieldPostingsFormat,
     PointsFormat, PostingsFormat, SegmentInfoFormat, StoredFieldsFormat, TermVectorsFormat,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 
 use super::{
     AssertingDocValuesFormat, AssertingKnnVectorsFormat, AssertingLiveDocsFormat,
@@ -122,11 +122,11 @@ impl AssertingCodec {
     pub(crate) fn assert_thread(object: &str, creation_thread: &Thread) -> Result<()> {
         let current = Thread::current();
         if *creation_thread != current {
-            return Err(LuceneError::AssertionError(format!(
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "{object} are only supposed to be consumed in the thread in which they have \
                  been acquired. But was acquired in {creation_thread} and consumed in \
                  {current}."
-            )));
+            ))));
         }
         Ok(())
     }

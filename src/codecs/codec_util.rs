@@ -22,7 +22,7 @@ use crate::{
     },
     util::string_helper::{StringHelper, ID_LENGTH},
     util::BytesRef,
-    Result,
+    LuceneErrorKind, Result,
 };
 
 // -----------------------------------------------------------------------------
@@ -57,7 +57,7 @@ pub const fn footer_length() -> i32 {
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if `codec` is not simple ASCII or is
+/// Returns `LuceneErrorKind::IllegalArgument` if `codec` is not simple ASCII or is
 /// 128 characters or longer.
 ///
 /// Equivalent to `CodecUtil.writeHeader`.
@@ -75,7 +75,7 @@ pub fn write_header(out: &mut dyn DataOutput, codec: &str, version: i32) -> Resu
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if `codec` or `suffix` are not
+/// Returns `LuceneErrorKind::IllegalArgument` if `codec` or `suffix` are not
 /// simple ASCII, if `id` is not exactly 16 bytes, or if `suffix` is 256
 /// characters or longer.
 ///
@@ -88,7 +88,7 @@ pub fn write_index_header(
     suffix: &str,
 ) -> Result<()> {
     if id.len() != ID_LENGTH {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "invalid id length: expected {}, got {}",
             ID_LENGTH,
             id.len()
@@ -126,7 +126,7 @@ pub fn index_header_length(codec: &str, suffix: &str) -> i32 {
 fn validate_codec_name(codec: &str) -> Result<()> {
     let bytes = BytesRef::from_char_sequence(codec);
     if bytes.length != codec.encode_utf16().count() || bytes.length >= 128 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "codec must be simple ASCII, less than 128 characters in length [got {}]",
             codec
         )));
@@ -140,7 +140,7 @@ fn validate_codec_name(codec: &str) -> Result<()> {
 fn validate_suffix(suffix: &str) -> Result<BytesRef> {
     let suffix_bytes = BytesRef::from_char_sequence(suffix);
     if suffix_bytes.length != suffix.encode_utf16().count() || suffix_bytes.length >= 256 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "suffix must be simple ASCII, less than 256 characters in length [got {}]",
             suffix
         )));
@@ -156,8 +156,8 @@ fn validate_suffix(suffix: &str) -> Result<BytesRef> {
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::CorruptIndex` if the magic or codec name do not match,
-/// and `LuceneError::IndexFormatTooOld` or `LuceneError::IndexFormatTooNew` if
+/// Returns `LuceneErrorKind::CorruptIndex` if the magic or codec name do not match,
+/// and `LuceneErrorKind::IndexFormatTooOld` or `LuceneErrorKind::IndexFormatTooNew` if
 /// the version is outside the supported range.
 ///
 /// Equivalent to `CodecUtil.checkHeader` (`CodecUtil.java:182-194`): a magic
@@ -191,10 +191,10 @@ pub fn check_header(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the codec name differs from
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the codec name differs from
 /// `codec` (`CorruptIndexException(String, DataInput)`),
-/// [`LuceneError::IndexFormatTooOld`] when the version is below
-/// `min_version` and [`LuceneError::IndexFormatTooNew`] when it is above
+/// [`LuceneErrorKind::IndexFormatTooOld`] when the version is below
+/// `min_version` and [`LuceneErrorKind::IndexFormatTooNew`] when it is above
 /// `max_version` (their `(DataInput, int, int, int)` constructors), and
 /// propagates any I/O error.
 pub fn check_header_no_magic(
@@ -259,7 +259,7 @@ pub fn check_index_header(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when `input` is too small to hold a
+/// Returns [`LuceneErrorKind::CorruptIndex`] when `input` is too small to hold a
 /// header and a footer, when the first four bytes are not [`CODEC_MAGIC`], or
 /// when the object id does not match `expected_id`; propagates any I/O error.
 /// Each failure is Java's `CorruptIndexException(String, DataInput)`, whose
@@ -326,7 +326,7 @@ pub fn verify_and_copy_index_header(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the id differs from
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the id differs from
 /// `expected_id` (`CorruptIndexException(String, DataInput)`, whose resource
 /// is the input's `toString()`), and propagates any I/O error.
 pub fn check_index_header_id(input: &mut dyn DataInput, expected_id: &[u8]) -> Result<()> {
@@ -353,7 +353,7 @@ pub fn check_index_header_id(input: &mut dyn DataInput, expected_id: &[u8]) -> R
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the suffix differs from
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the suffix differs from
 /// `expected_suffix` (`CorruptIndexException(String, DataInput)`, whose
 /// resource is the input's `toString()`), and propagates any I/O error.
 pub fn check_index_header_suffix(input: &mut dyn DataInput, expected_suffix: &str) -> Result<()> {
@@ -391,7 +391,7 @@ pub fn write_footer(out: &mut dyn IndexOutput) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::CorruptIndex` if the footer is malformed or the
+/// Returns `LuceneErrorKind::CorruptIndex` if the footer is malformed or the
 /// checksum does not match.
 ///
 /// Equivalent to `CodecUtil.checkFooter(ChecksumIndexInput)`.
@@ -435,7 +435,7 @@ pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<i64> {
 /// indeterminate: unexpected exception") under the rethrown `prior`.
 ///
 /// The note's `CorruptIndexException(message, in, t)` carries no cause:
-/// [`LuceneError::CorruptIndex`] has no cause field (a limit of that variant,
+/// [`LuceneErrorKind::CorruptIndex`] has no cause field (a limit of that variant,
 /// not of this method).
 ///
 /// Returning the error rather than a `Result` mirrors the fact that this is
@@ -449,14 +449,15 @@ pub fn check_footer_with_prior(
         // corruption caused us to read into the checksum footer already: we can't proceed
         // (thrown inside the `try`, so `catch (CorruptIndexException)` suppresses
         // `priorException` into it).
-        return LuceneError::corrupt_index(
+        let mut corruption = LuceneError::corrupt_index(
             format!(
                 "checksum status indeterminate: remaining={remaining}; please run \
                  checkindex for more details"
             ),
             input.resource_description(),
-        )
-        .with_suppressed(prior);
+        );
+        corruption.add_suppressed(prior);
+        return corruption;
     }
     // Java skips the unread bytes rather than seeking, because the digest must
     // cover them; this input's `seek` is the forward-only, checksum-preserving
@@ -465,10 +466,7 @@ pub fn check_footer_with_prior(
     let checked = ChecksumIndexInput::seek(input, target).and_then(|()| check_footer(input));
     match checked {
         Ok(checksum) => {
-            if !matches!(
-                prior.unwrap_suppressed(),
-                LuceneError::IndexFormatTooOld { .. }
-            ) {
+            if !matches!(prior.kind(), LuceneErrorKind::IndexFormatTooOld { .. }) {
                 // If the index format is too old and no corruption, do not add checksums
                 // matching message since this may tend to unnecessarily alarm people who
                 // see "JVM bug" in their logs
@@ -483,10 +481,9 @@ pub fn check_footer_with_prior(
             prior
         }
         // `corruptException.addSuppressed(priorException); throw corruptException;`
-        Err(corruption)
-            if matches!(corruption.unwrap_suppressed(), LuceneError::CorruptIndex(_)) =>
-        {
-            corruption.with_suppressed(prior)
+        Err(mut corruption) if matches!(corruption.kind(), LuceneErrorKind::CorruptIndex(_)) => {
+            corruption.add_suppressed(prior);
+            corruption
         }
         // catch-all for things that shouldn't go wrong (e.g. OOM during readInt) but could...
         Err(_) => {
@@ -537,7 +534,7 @@ pub fn check_footer_after<T>(input: &mut dyn ChecksumIndexInput, result: Result<
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the magic does not match —
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the magic does not match —
 /// Java's `CorruptIndexException(String, DataInput)`, whose resource is the
 /// input's `toString()` (`CodecUtil.java:323-330`) — and propagates any I/O
 /// error.
@@ -570,7 +567,7 @@ pub fn read_index_header(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the file is too short to hold a
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the file is too short to hold a
 /// footer or the footer is not valid — Java's `CorruptIndexException(String,
 /// DataInput)`, whose resource is the input's `toString()` — and propagates
 /// any I/O error.
@@ -602,7 +599,7 @@ pub fn read_footer(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`], naming the input as its resource,
+/// Returns [`LuceneErrorKind::CorruptIndex`], naming the input as its resource,
 /// when the file is too short to hold a footer or the footer is not valid, and
 /// propagates any I/O error.
 pub fn retrieve_checksum(input: &mut dyn IndexInput) -> Result<i64> {
@@ -629,8 +626,8 @@ pub fn retrieve_checksum(input: &mut dyn IndexInput) -> Result<i64> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `expected_length` is below the
-/// footer length, [`LuceneError::CorruptIndex`], naming the input as its
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `expected_length` is below the
+/// footer length, [`LuceneErrorKind::CorruptIndex`], naming the input as its
 /// resource, when the file is not `expected_length` bytes long, and whatever
 /// [`retrieve_checksum`] returns.
 pub fn retrieve_checksum_expected_length(
@@ -638,7 +635,7 @@ pub fn retrieve_checksum_expected_length(
     expected_length: i64,
 ) -> Result<i64> {
     if expected_length < footer_length() as i64 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "expectedLength cannot be less than the footer length".to_string(),
         ));
     }
@@ -672,7 +669,7 @@ pub fn retrieve_checksum_expected_length(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the file is too short to hold a
+/// Returns [`LuceneErrorKind::CorruptIndex`] when the file is too short to hold a
 /// footer — naming `input` itself, not its clone, as Java does — or when the
 /// footer or the checksum is not valid, and propagates any I/O error.
 pub fn checksum_entire_file(input: &mut dyn IndexInput) -> Result<i64> {
@@ -953,7 +950,13 @@ mod tests {
         bytes.copy_from_slice(&0i32.to_be_bytes());
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 1).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
         assert!(err.to_string().contains("codec header mismatch"));
     }
 
@@ -968,7 +971,11 @@ mod tests {
 
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "WrongCodec", 1, 10).unwrap_err();
-        let LuceneError::CorruptIndex(message) = &err else {
+        let LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(message),
+            ..
+        } = &err
+        else {
             panic!("{err:?}");
         };
         assert!(
@@ -992,7 +999,13 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 6, 10).unwrap_err();
         assert!(
-            matches!(err, LuceneError::IndexFormatTooOld { .. }),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
+                    ..
+                }
+            ),
             "{err:?}"
         );
         assert_eq!(
@@ -1012,7 +1025,13 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 4).unwrap_err();
         assert!(
-            matches!(err, LuceneError::IndexFormatTooNew { .. }),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::IndexFormatTooNew { .. },
+                    ..
+                }
+            ),
             "{err:?}"
         );
         assert_eq!(
@@ -1062,14 +1081,14 @@ mod tests {
             write_footer(&mut out).unwrap();
             out.into_inner()
         }
-        let prior = || LuceneError::IllegalArgument("bad entry".to_string());
+        let prior = || LuceneError::illegal_argument("bad entry".to_string());
 
         // Checksum passes: the prior error, unchanged.
         let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(file(), "t")));
         input.read_int().unwrap();
         let err = check_footer_with_prior(&mut input, prior());
         assert!(
-            matches!(&err, LuceneError::IllegalArgument(m) if m == "bad entry"),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "bad entry"),
             "{err:?}"
         );
 
@@ -1080,7 +1099,10 @@ mod tests {
         let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(bytes, "t")));
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
-            LuceneError::CorruptIndex(m) => {
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(m),
+                ..
+            } => {
                 assert!(m.starts_with("checksum failed"), "{m}");
                 assert!(!m.contains("bad entry"), "{m}");
             }
@@ -1095,7 +1117,10 @@ mod tests {
         input.read_bytes(Some(&mut skip), 0, len - 8).unwrap();
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
-            LuceneError::CorruptIndex(m) => {
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(m),
+                ..
+            } => {
                 assert_eq!(
                     m,
                     &format!(
@@ -1125,7 +1150,13 @@ mod tests {
         let footer_start = checksum_input.length() - footer_length() as i64;
         ChecksumIndexInput::seek(&mut checksum_input, footer_start).unwrap();
         let err = check_footer(&mut checksum_input).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
         assert!(err.to_string().contains("codec footer mismatch"));
     }
 
@@ -1145,7 +1176,13 @@ mod tests {
         let footer_start = checksum_input.length() - footer_length() as i64;
         ChecksumIndexInput::seek(&mut checksum_input, footer_start).unwrap();
         let err = check_footer(&mut checksum_input).unwrap_err();
-        assert!(matches!(err, LuceneError::CorruptIndex(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1203,11 +1240,23 @@ mod tests {
     fn codec_name_validation() {
         let mut out = MockIndexOutput::new("test", "test.bin");
         let err = write_header(&mut out, "Bad\u{00E9}Codec", 1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
 
         let mut out = MockIndexOutput::new("test", "test.bin");
         let long = "a".repeat(128);
         let err = write_header(&mut out, &long, 1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 }

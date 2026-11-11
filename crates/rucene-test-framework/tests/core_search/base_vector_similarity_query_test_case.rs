@@ -18,7 +18,7 @@ use rucene::codecs::lucene99::hnsw_vectors_format::{
     DEFAULT_NUM_MERGE_WORKER,
 };
 use rucene::document::{Document, IntField, Store};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::filter_reader::FilterLeafReader;
 use rucene::index::index_writer::IndexWriter;
@@ -583,7 +583,9 @@ fn graph_is_rooted(reader: &Arc<dyn DirectoryReader>, vector_field: &str) -> Res
 fn class_cast(what: &str) -> LuceneError {
     // `ClassCastException` has no `LuceneError` variant; the failed cast is
     // reported as an unchecked error naming it.
-    LuceneError::Other(format!("java.lang.ClassCastException: {what}"))
+    LuceneError::from(LuceneErrorKind::Other(format!(
+        "java.lang.ClassCastException: {what}"
+    )))
 }
 
 fn hnsw_graph_of_leaf(ctx: &LeafReaderContext, vector_field: &str) -> Result<Box<dyn HnswGraph>> {

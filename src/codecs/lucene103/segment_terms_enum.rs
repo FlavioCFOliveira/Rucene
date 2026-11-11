@@ -1484,7 +1484,7 @@ impl SegmentTermsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a frame no longer matches the
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a frame no longer matches the
     /// index, and whatever error writing to `out` or reading the index raised.
     #[allow(dead_code)]
     pub fn print_seek_state(&mut self, out: &mut dyn std::io::Write) -> Result<()> {
@@ -1917,7 +1917,7 @@ impl TermsEnum for SegmentTermsEnum {
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the block-tree terms dictionary does not support seeking by ordinal".to_string(),
         ))
     }
@@ -1928,7 +1928,7 @@ impl TermsEnum for SegmentTermsEnum {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the block-tree terms dictionary does not track term ordinals".to_string(),
         ))
     }

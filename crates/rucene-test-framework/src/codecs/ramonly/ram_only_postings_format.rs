@@ -30,7 +30,7 @@ use rucene::codecs::{
     FieldsConsumer, FieldsProducer, NormsProducer, PostingsFormat, SegmentReadState,
     SegmentWriteState, TermStats,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::index_reader::java_object_to_string;
 use rucene::index::{
@@ -534,7 +534,7 @@ impl FieldsConsumer for RAMFieldsConsumer<'_> {
                 .get_index_options()
                 .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
             {
-                return Err(LuceneError::UnsupportedOperation(
+                return Err(LuceneError::unsupported_operation(
                     "this codec cannot index offsets".to_string(),
                 ));
             }
@@ -769,11 +769,11 @@ impl TermsEnum for RAMTermsEnum {
         } else {
             let Some((last_key, _)) = self.ram_field.term_to_docs.last_key_value() else {
                 // `TreeMap.lastKey()` of an empty map.
-                return Err(LuceneError::Unchecked {
+                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                     class: "java.util.NoSuchElementException",
                     message: None,
                     cause: None,
-                });
+                }));
             };
             if key.cmp(last_key) == Ordering::Greater {
                 Ok(SeekStatus::END)
@@ -784,11 +784,11 @@ impl TermsEnum for RAMTermsEnum {
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn term(&self) -> Result<BytesRef> {
@@ -887,7 +887,10 @@ impl RAMDocsEnum {
 /// The message of an unchecked Java error.
 fn java_message(e: &LuceneError) -> Option<String> {
     match e {
-        LuceneError::Unchecked { message, .. } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { message, .. },
+            ..
+        } => message.clone(),
         _ => None,
     }
 }

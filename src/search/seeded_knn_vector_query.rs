@@ -53,7 +53,7 @@ impl SeededKnnVectorQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `k` is less than 1.
     pub fn new(
         knn_query: Arc<dyn AbstractKnnVectorQueryImpl>,

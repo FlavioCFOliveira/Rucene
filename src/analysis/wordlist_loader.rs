@@ -244,7 +244,7 @@ pub fn get_lines<R: std::io::Read>(stream: R, char_set: &str) -> Result<Vec<Stri
 /// # Errors
 ///
 /// Returns whatever the reader returns, or
-/// [`LuceneError::IllegalArgument`] when a line carries no tab.
+/// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a line carries no tab.
 ///
 /// Equivalent to `org.apache.lucene.analysis.WordlistLoader#getStemDict`.
 pub fn get_stem_dict(reader: &mut dyn CharReader, result: &mut CharArrayMap<String>) -> Result<()> {
@@ -252,7 +252,7 @@ pub fn get_stem_dict(reader: &mut dyn CharReader, result: &mut CharArrayMap<Stri
         let mut fields = line.splitn(2, '\t');
         let word = fields.next().unwrap_or_default();
         let stem = fields.next().ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "stem dictionary line has no tab separating word and stem: {line}"
             ))
         })?;

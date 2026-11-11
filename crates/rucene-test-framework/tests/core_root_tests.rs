@@ -17,8 +17,8 @@ use randomizedtesting::junit::{After, Assert};
 use rucene::analysis::standard::StandardAnalyzer;
 use rucene::analysis::{Analyzer, TokenStream};
 use rucene::document::{Document, Field, NumericDocValuesField, Store, StoredField};
-use rucene::error::LuceneError;
 use rucene::error::Result;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
@@ -471,7 +471,9 @@ struct FailOnlyOnMerge {
 impl Failure for FailOnlyOnMerge {
     fn eval(&self, _dir: &MockDirectoryWrapper) -> Result<()> {
         if LuceneTestCase::call_stack_contains_any_of(&["do_merge"]) {
-            let ioe = LuceneError::Io(std::io::Error::other("now failing during merge"));
+            let ioe = LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(
+                "now failing during merge",
+            )));
             // `ioe.printStackTrace(pw)`: the throwable's `toString()` line;
             // Rust records no Java stack frames to follow it.
             let sw = "java.io.IOException: now failing during merge\n";

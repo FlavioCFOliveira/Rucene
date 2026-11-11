@@ -1000,10 +1000,12 @@ impl OneMerge {
     /// long merge to finish.
     pub fn check_aborted(&self) -> Result<()> {
         if self.is_aborted() {
-            return Err(crate::error::LuceneError::MergeAborted(format!(
-                "merge is aborted: {}",
-                self.seg_string()
-            )));
+            return Err(crate::error::LuceneError::from(
+                crate::error::LuceneErrorKind::MergeAborted(format!(
+                    "merge is aborted: {}",
+                    self.seg_string()
+                )),
+            ));
         }
         Ok(())
     }
@@ -1062,7 +1064,7 @@ impl OneMerge {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState)
     /// ("merge has already finished") when the merge was already complete;
     /// otherwise the first failure of the hook or of the consumer.
     pub fn close(
@@ -1537,11 +1539,11 @@ impl CfsSettings {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `no_cfs_ratio` is outside `[0.0, 1.0]`.
     pub fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
         if !(0.0..=1.0).contains(&no_cfs_ratio) {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "noCFSRatio must be 0.0 to 1.0 inclusive; got {no_cfs_ratio}"
             )));
         }
@@ -1571,11 +1573,11 @@ impl CfsSettings {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `v` is negative.
     pub fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
         if v < 0.0 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "maxCFSSegmentSizeMB must be >=0 (got {v})"
             )));
         }
@@ -1835,13 +1837,13 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the ratio is outside `[0.0, 1.0]`, and
-    /// [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation)
     /// when the policy holds no compound-file settings.
     fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
         let _ = no_cfs_ratio;
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "this merge policy has no compound-file settings to set".to_string(),
         ))
     }
@@ -1853,13 +1855,13 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `v` is negative, and
-    /// [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation)
     /// when the policy holds no compound-file settings.
     fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
         let _ = v;
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "this merge policy has no compound-file settings to set".to_string(),
         ))
     }
@@ -2661,7 +2663,7 @@ impl TieredMergePolicy {
     /// Returns `IllegalArgument` when `v` is below 2.
     pub fn set_max_merge_at_once(&self, v: i32) -> Result<&Self> {
         if v < 2 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "maxMergeAtOnce must be > 1 (got {v})"
             )));
         }
@@ -2672,7 +2674,7 @@ impl TieredMergePolicy {
     /// Sets the largest merged segment, in megabytes.
     pub fn set_max_merged_segment_mb(&self, v: f64) -> Result<&Self> {
         if v < 0.0 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "maxMergedSegmentMB must be >= 0.0 (got {v})"
             )));
         }
@@ -2684,7 +2686,7 @@ impl TieredMergePolicy {
     /// Sets the size below which segments are treated as equally small.
     pub fn set_floor_segment_mb(&self, v: f64) -> Result<&Self> {
         if v <= 0.0 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "floorSegmentMB must be > 0.0 (got {v})"
             )));
         }
@@ -2719,7 +2721,7 @@ impl TieredMergePolicy {
     /// Returns `IllegalArgument` when `v` is below 2.0.
     pub fn set_segments_per_tier(&self, v: f64) -> Result<&Self> {
         if v < 2.0 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "segmentsPerTier must be >= 2.0 (got {v})"
             )));
         }
@@ -2731,7 +2733,7 @@ impl TieredMergePolicy {
     /// policy starts merging to reclaim them.
     pub fn set_deletes_pct_allowed(&self, v: f64) -> Result<&Self> {
         if v <= 0.0 || v > 50.0 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "indexPctDeletedTarget must be > 0 and <= 50 (got {v})"
             )));
         }
@@ -2758,7 +2760,7 @@ impl TieredMergePolicy {
     /// when `v` is outside `[0.0, 100.0]`.
     pub fn set_force_merge_deletes_pct_allowed(&self, v: f64) -> Result<&Self> {
         if !(0.0..=100.0).contains(&v) {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got {v})"
             )));
         }
@@ -2777,7 +2779,7 @@ impl TieredMergePolicy {
     /// Sets how many search-concurrency slices the policy aims for.
     pub fn set_target_search_concurrency(&mut self, v: i32) -> Result<&mut Self> {
         if v < 1 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "targetSearchConcurrency must be >= 1 (got {v})"
             )));
         }
@@ -3810,7 +3812,7 @@ impl LogMergePolicy {
     /// Returns `IllegalArgument` when `v` is below 2.
     pub fn set_merge_factor(&self, v: i32) -> Result<&Self> {
         if v < 2 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "mergeFactor cannot be less than 2 (got {v})"
             )));
         }
@@ -3878,7 +3880,7 @@ impl LogMergePolicy {
     /// when `v` is below 1.
     pub fn set_target_search_concurrency(&mut self, v: i32) -> Result<&mut Self> {
         if v < 1 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "targetSearchConcurrency must be >= 1 (got {v})"
             )));
         }
@@ -4892,13 +4894,13 @@ impl TemporalMergePolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the name is blank — empty or made only of the characters Java's
     /// `String.isBlank()` treats as white space ([`is_java_whitespace`]).
     pub fn set_temporal_field(&mut self, field: impl Into<String>) -> Result<&mut Self> {
         let field = field.into();
         if field.chars().all(is_java_whitespace) {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "temporalField cannot be blank".to_string(),
             ));
         }
@@ -4913,11 +4915,11 @@ impl TemporalMergePolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the value is not positive.
     pub fn set_base_time_in_seconds(&mut self, v: i64) -> Result<&mut Self> {
         if v <= 0 {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "baseTimeSeconds must be positive".to_string(),
             ));
         }
@@ -4932,16 +4934,16 @@ impl TemporalMergePolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the value is below 2 or above the maximum threshold.
     pub fn set_min_threshold(&mut self, v: usize) -> Result<&mut Self> {
         if v < 2 {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "minThreshold must be at least 2".to_string(),
             ));
         }
         if v > self.max_threshold {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "minThreshold cannot exceed maxThreshold ({})",
                 self.max_threshold
             )));
@@ -4957,11 +4959,11 @@ impl TemporalMergePolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the value is below the minimum threshold.
     pub fn set_max_threshold(&mut self, v: usize) -> Result<&mut Self> {
         if v < self.min_threshold {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "maxThreshold must be >= minThreshold ({})",
                 self.min_threshold
             )));
@@ -4983,11 +4985,11 @@ impl TemporalMergePolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the ratio is below `1.0`. As in Java, `NaN` passes the check.
     pub fn set_compaction_ratio(&mut self, v: f64) -> Result<&mut Self> {
         if v < 1.0 {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "compactionRatio must be >= 1.0".to_string(),
             ));
         }
@@ -5002,11 +5004,11 @@ impl TemporalMergePolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the value is not positive.
     pub fn set_max_age_seconds(&mut self, v: i64) -> Result<&mut Self> {
         if v <= 0 {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "maxAgeSeconds must be positive".to_string(),
             ));
         }
@@ -5069,11 +5071,11 @@ impl TemporalMergePolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the value is not positive.
     pub fn set_max_window_size_seconds(&mut self, seconds: i64) -> Result<&mut Self> {
         if seconds <= 0 {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "maxWindowSizeSeconds must be positive".to_string(),
             ));
         }
@@ -5096,11 +5098,11 @@ impl TemporalMergePolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the value is negative.
     pub fn set_force_merge_deletes_pct_allowed(&mut self, pct: f64) -> Result<&mut Self> {
         if pct < 0.0 {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "forceMergeDeletesPctAllowed must be >= 0".to_string(),
             ));
         }
@@ -5600,7 +5602,7 @@ impl MergePolicy for TemporalMergePolicy {
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
         if max_segment_count < 1 {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "maxSegmentCount must be >= 1".to_string(),
             ));
         }
@@ -6373,7 +6375,10 @@ mod merge_policy_setting_tests {
     fn temporal_setters_reject_what_java_rejects() {
         fn message(result: Result<&mut TemporalMergePolicy>) -> String {
             match result {
-                Err(crate::error::LuceneError::IllegalArgument(message)) => message,
+                Err(crate::error::LuceneError {
+                    kind: crate::error::LuceneErrorKind::IllegalArgument { message, .. },
+                    ..
+                }) => message,
                 other => panic!(
                     "expected IllegalArgumentException, got {:?}",
                     other.map(|_| ())

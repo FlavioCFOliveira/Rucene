@@ -44,7 +44,7 @@ use randomizedtesting::jdk::random::{JdkRandom, Random, RandomFields};
 use rucene::codecs::lucene104::Lucene104Codec;
 use rucene::codecs::Codec;
 use rucene::document::IntPoint;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::merge_policy::{MergePolicy, TieredMergePolicy};
 use rucene::index::{
@@ -323,7 +323,10 @@ fn outcome(f: impl FnOnce() -> Result<()>) -> (String, String) {
     };
     match result {
         Ok(Ok(())) => ("none".to_string(), "-".to_string()),
-        Ok(Err(LuceneError::AssertionError(m))) => (
+        Ok(Err(LuceneError {
+            kind: LuceneErrorKind::AssertionError(m),
+            ..
+        })) => (
             "java.lang.AssertionError".to_string(),
             if m.is_empty() { "null".to_string() } else { m },
         ),
@@ -481,7 +484,10 @@ fn misuses(nocfs: &Path, scratch: &Path) -> Vec<(String, (String, String))> {
         let terms = leaf.terms("body")?.unwrap();
         let thrown = std::thread::scope(|s| {
             s.spawn(|| match terms.iterator() {
-                Err(LuceneError::AssertionError(m)) => Some(m),
+                Err(LuceneError {
+                    kind: LuceneErrorKind::AssertionError(m),
+                    ..
+                }) => Some(m),
                 Err(e) => Some(e.to_string()),
                 Ok(_) => None,
             })
@@ -491,7 +497,9 @@ fn misuses(nocfs: &Path, scratch: &Path) -> Vec<(String, (String, String))> {
         match thrown {
             Some(m) => {
                 let cut = m.find(" But was acquired in").unwrap_or(m.len());
-                Err(LuceneError::AssertionError(m[..cut].to_string()))
+                Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    m[..cut].to_string(),
+                )))
             }
             None => Ok(()),
         }
@@ -769,7 +777,10 @@ fn root_cause(e: &LuceneError) -> (String, String) {
         current = next;
     }
     match deepest_lucene {
-        LuceneError::Io(io) => (
+        LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(|| "null".to_string()),
         ),
@@ -1483,11 +1494,17 @@ fn java_root_cause(e: &LuceneError) -> (String, String) {
         current = next;
     }
     match deepest {
-        LuceneError::UnsupportedOperation(m) => (
+        LuceneError {
+            kind: LuceneErrorKind::UnsupportedOperation { message: m, .. },
+            ..
+        } => (
             "java.lang.UnsupportedOperationException".to_string(),
             m.clone(),
         ),
-        LuceneError::AssertionError(m) => (
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(m),
+            ..
+        } => (
             "java.lang.AssertionError".to_string(),
             if m.is_empty() {
                 "null".to_string()

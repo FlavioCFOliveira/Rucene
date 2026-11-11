@@ -58,10 +58,12 @@ pub fn class_def() -> Arc<Class> {
 /// `Polygon.fromGeoJSON(geojson)`, whose `java.text.ParseException` is a
 /// checked exception the test methods declare (`throws Exception`).
 fn from_geo_json(geojson: &str) -> Result<Vec<Polygon>> {
-    Polygon::from_geojson(geojson).map_err(|e| rucene::error::LuceneError::Unchecked {
-        class: rucene::util::extra::PARSE_EXCEPTION,
-        message: Some(e.message().to_string()),
-        cause: None,
+    Polygon::from_geojson(geojson).map_err(|e| {
+        rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::Unchecked {
+            class: rucene::util::extra::PARSE_EXCEPTION,
+            message: Some(e.message().to_string()),
+            cause: None,
+        })
     })
 }
 

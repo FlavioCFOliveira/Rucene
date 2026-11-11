@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::random::Random;
 use rucene::analysis::CharReader;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 
 use crate::util::TestUtil;
 
@@ -78,7 +78,7 @@ impl MockReaderWrapper {
     /// `isMyEvilException(Throwable)`: a `RuntimeException` with the
     /// message this wrapper throws.
     pub fn is_my_evil_exception(t: &LuceneError) -> bool {
-        matches!(t, LuceneError::Unchecked { class, message: Some(m), .. }
+        matches!(t, LuceneError { kind: LuceneErrorKind::Unchecked { class, message: Some(m), .. }, .. }
             if *class == "java.lang.RuntimeException" && m == FAKE_EXCEPTION)
     }
 }

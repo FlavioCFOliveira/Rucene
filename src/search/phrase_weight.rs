@@ -37,7 +37,7 @@ pub trait PhraseWeightImpl: Send + Sync + Debug {
     /// # Errors
     ///
     /// Propagates any I/O error raised while reading the statistics, and the
-    /// [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState)
     /// a phrase of fewer than two terms reports.
     fn get_stats(&self, searcher: &IndexSearcher) -> Result<Option<SharedSimScorer>>;
 

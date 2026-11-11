@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::document::{Document, Store};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::terms::Term;
 use rucene::search::TermQuery;
@@ -147,11 +147,11 @@ const CRASHING_EXCEPTION: &str =
 
 /// `new CrashingException(msg)`.
 fn crashing_exception(msg: String) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: CRASHING_EXCEPTION,
         message: Some(msg),
         cause: None,
-    }
+    })
 }
 
 /// This test class provides direct access to "simulating" a crash right

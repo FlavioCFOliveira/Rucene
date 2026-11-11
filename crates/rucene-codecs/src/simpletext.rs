@@ -60,7 +60,7 @@
 //! `ArrayIndexOutOfBoundsException`, `NullPointerException`,
 //! `NegativeArraySizeException` and a plain `RuntimeException`, including the
 //! `new RuntimeException(ioe)` of the doc-values value functions — are
-//! [`LuceneError::Unchecked`](rucene::error::LuceneError::Unchecked), with
+//! [`LuceneErrorKind::Unchecked`](rucene::error::LuceneErrorKind::Unchecked), with
 //! Java's class, message and cause; `crates/rucene-codecs/tests/simpletext_oracle.rs`
 //! compares them with what Lucene 10.5.0 throws. Where a Java `assert` decides
 //! the outcome, debug builds behave as a JVM with `-ea` and release builds as

@@ -613,7 +613,7 @@ impl SortingTermVectorsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when `vectors` names a field that
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when `vectors` names a field that
     /// `field_infos` does not know, and propagates any error raised while
     /// reading the vectors or writing them.
     pub fn write_term_vectors(

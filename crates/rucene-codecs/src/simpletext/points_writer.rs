@@ -114,12 +114,11 @@ impl PointsWriter for SimpleTextPointsWriter {
     /// Port of `SimpleTextPointsWriter.writeField`.
     fn write_field(&mut self, field_info: &FieldInfo, reader: &dyn PointsReader) -> Result<()> {
         let point_values = reader.get_values(&field_info.name)?.ok_or_else(|| {
-            LuceneError::illegal_state(format!(
+            LuceneError::null_pointer_with_message(
                 "Cannot invoke \"org.apache.lucene.index.PointValues.getPointTree()\" because the \
                  return value of \"org.apache.lucene.codecs.PointsReader.getValues(String)\" is \
-                 null (field={})",
-                field_info.name
-            ))
+                 null",
+            )
         })?;
         let mut values = point_values.point_tree()?;
 

@@ -6,7 +6,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 
 // -----------------------------------------------------------------------------
@@ -244,10 +244,10 @@ impl Lz4HashTable for FastCompressionHashTable {
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
         if off
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?
             > bytes.len()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "offset or length out of bounds".to_string(),
             ));
         }
@@ -380,10 +380,10 @@ impl Lz4HashTable for HighCompressionHashTable {
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
         if off
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?
             > bytes.len()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "offset or length out of bounds".to_string(),
             ));
         }
@@ -519,10 +519,10 @@ impl Lz4 {
         ht: &mut dyn Lz4HashTable,
     ) -> Result<()> {
         if dict_off.checked_add(dict_len).ok_or_else(|| {
-            LuceneError::IllegalArgument("dictOff + dictLen overflowed".to_string())
+            LuceneError::illegal_argument("dictOff + dictLen overflowed".to_string())
         })? > bytes.len()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "dictOff or dictLen out of bounds".to_string(),
             ));
         }
@@ -530,16 +530,16 @@ impl Lz4 {
             .checked_add(dict_len)
             .and_then(|x| x.checked_add(len))
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("dictOff + dictLen + len overflowed".to_string())
+                LuceneError::illegal_argument("dictOff + dictLen + len overflowed".to_string())
             })?
             > bytes.len()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "dictOff + dictLen + len out of bounds".to_string(),
             ));
         }
         if dict_len > LZ4_MAX_DISTANCE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "dictLen must not be greater than 64kB, but got {dict_len}"
             )));
         }
@@ -629,7 +629,7 @@ impl Lz4 {
     ) -> Result<usize> {
         let dest_end = d_off + decompressed_len;
         if dest_end > dest.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "destination buffer too small".to_string(),
             ));
         }
@@ -657,11 +657,11 @@ impl Lz4 {
                 // of a block legitimately writes a few bytes past it, which is
                 // why callers pass a padded destination.
                 if literal_len > dest.len() - d_off {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "LZ4 literal run of {literal_len} bytes overruns the buffer \
                          ({} bytes left)",
                         dest.len() - d_off
-                    )));
+                    ))));
                 }
                 input.read_bytes(Some(dest), d_off, literal_len)?;
                 d_off += literal_len;
@@ -674,10 +674,10 @@ impl Lz4 {
             // Match.
             let match_dec = input.read_short()? as u16 as usize;
             if match_dec == 0 {
-                return Err(LuceneError::Io(std::io::Error::new(
+                return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "offset 0 is invalid",
-                )));
+                ))));
             }
 
             let mut match_len = token & 0x0F;
@@ -695,15 +695,15 @@ impl Lz4 {
             // Both copies below index `d_off - match_dec`, and the match may
             // not reach behind the start of the block.
             if match_dec > d_off {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "LZ4 match reaches {match_dec} bytes back from offset {d_off}"
-                )));
+                ))));
             }
             if match_len > dest.len() - d_off {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "LZ4 match of {match_len} bytes overruns the buffer ({} bytes left)",
                     dest.len() - d_off
-                )));
+                ))));
             }
 
             let fast_len = (match_len + 7) & !7;
@@ -765,7 +765,7 @@ impl LowercaseAsciiCompression {
             return Ok(false);
         }
         if len > tmp.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "tmp buffer is smaller than len".to_string(),
             ));
         }
@@ -854,7 +854,7 @@ impl LowercaseAsciiCompression {
     /// Equivalent to `org.apache.lucene.util.compress.LowercaseAsciiCompression.decompress`.
     pub fn decompress(input: &mut dyn DataInput, out: &mut [u8], len: usize) -> Result<()> {
         if len > out.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "output buffer too small".to_string(),
             ));
         }
@@ -1138,7 +1138,7 @@ mod tests {
     ///
     /// Java's `LZ4.decompress` raises `ArrayIndexOutOfBoundsException` for a
     /// truncated or hostile stream; this port returns
-    /// `LuceneError::CorruptIndex`. Before the bounds checks these inputs
+    /// `LuceneErrorKind::CorruptIndex`. Before the bounds checks these inputs
     /// aborted the process in a debug build ("attempt to subtract with
     /// overflow") and produced a wild slice index in a release build.
     #[test]

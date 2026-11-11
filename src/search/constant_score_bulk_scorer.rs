@@ -101,7 +101,7 @@ impl ConstantScoreBulkScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `score_mode` needs scores,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `score_mode` needs scores,
     /// which is the `IllegalArgumentException` Java throws.
     pub fn from_iterator(
         score: f32,
@@ -112,7 +112,7 @@ impl ConstantScoreBulkScorer {
         // `twoPhase == null && TwoPhaseIterator.unwrap(iterator) != null`
         // (`ConstantScoreBulkScorer.java:54-56`).
         if iterator.wraps_two_phase_iterator() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Iterator must not wrap a TwoPhaseIterator".to_string(),
             ));
         }
@@ -154,7 +154,7 @@ impl ConstantScoreBulkScorer {
 
     fn check_score_mode(score_mode: ScoreMode) -> Result<()> {
         if score_mode.needs_scores() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "ScoreMode must not need scores: {score_mode:?}"
             )));
         }

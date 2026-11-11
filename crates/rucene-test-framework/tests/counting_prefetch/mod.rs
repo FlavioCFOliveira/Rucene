@@ -137,7 +137,7 @@ impl DataInput for CountingPrefetchIndexInput {
     /// a seek past the bytes.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }

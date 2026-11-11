@@ -132,7 +132,7 @@ impl Lucene104PostingsFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `min_block_size` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `min_block_size` or
     /// `max_block_size` are invalid.
     pub fn with_block_sizes(min_term_block_size: i32, max_term_block_size: i32) -> Self {
         Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)
@@ -148,7 +148,7 @@ impl Lucene104PostingsFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `version` is out of range.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `version` is out of range.
     pub fn with_version(
         min_term_block_size: i32,
         max_term_block_size: i32,
@@ -156,7 +156,7 @@ impl Lucene104PostingsFormat {
     ) -> Result<Self> {
         Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)?;
         if version < VERSION_START || version > VERSION_CURRENT {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Lucene104PostingsFormat version out of range: {version}"
             )));
         }
@@ -245,6 +245,7 @@ impl PostingsFormat for Lucene104PostingsFormat {
 mod tests {
     use super::*;
     use crate::codecs::stub::FieldInfos;
+    use crate::error::LuceneErrorKind;
     use crate::index::SegmentInfo;
     use crate::store::ByteBuffersDirectory;
     use crate::util::{StringHelper, Version};
@@ -350,7 +351,13 @@ mod tests {
     #[test]
     fn with_version_rejects_out_of_range() {
         let err = Lucene104PostingsFormat::with_version(25, 48, -1).expect_err("bad version");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

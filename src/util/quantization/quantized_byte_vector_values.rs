@@ -95,7 +95,7 @@ impl ScalarEncoding {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when no encoding has that
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when no encoding has that
     /// width, as Java throws `IllegalArgumentException`.
     ///
     /// Equivalent to `ScalarEncoding.fromNumBits(int)`.
@@ -103,7 +103,7 @@ impl ScalarEncoding {
         Self::VALUES
             .into_iter()
             .find(|encoding| i32::from(encoding.get_bits()) == bits)
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("No encoding for {bits} bits")))
+            .ok_or_else(|| LuceneError::illegal_argument(format!("No encoding for {bits} bits")))
     }
 
     /// Returns the encoding a wire number names, or `None` when no encoding
@@ -333,7 +333,7 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// The default returns [`LuceneError::UnsupportedOperation`]; an
+    /// The default returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation); an
     /// implementation that overrides it propagates its own I/O errors.
     fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
         BaseQuantizedByteVectorValues::new(self.dimension(), self.size()).scorer(query)
@@ -346,11 +346,11 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// The default reports [`LuceneError::UnsupportedOperation`], which is what
+    /// The default reports [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), which is what
     /// an implementation that cannot be duplicated should keep; every
     /// file-backed implementation overrides it.
     fn copy(&self) -> Result<Box<dyn QuantizedByteVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "these quantized vector values cannot be copied".to_string(),
         ))
     }
@@ -394,14 +394,14 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method — Java declares it abstract, which Rust cannot do
     /// without breaking implementors that predate it — or an I/O error raised
     /// while reading the terms.
     ///
     /// Equivalent to `QuantizedByteVectorValues.getCorrectiveTerms(int)`.
     fn get_corrective_terms(&mut self, _ord: i32) -> Result<QuantizationResult> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "QuantizedByteVectorValues::get_corrective_terms".to_string(),
         ))
     }
@@ -426,14 +426,14 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) unless the implementation
     /// overrides this method, which is what `KnnVectorValues.iterator()` does
     /// in Java, or an I/O error raised while opening the doc-id encoding.
     ///
     /// Equivalent to `KnnVectorValues.iterator()`, which
     /// `QuantizedByteVectorValues` inherits.
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "QuantizedByteVectorValues::iterator".to_string(),
         ))
     }
@@ -476,11 +476,11 @@ impl BaseQuantizedByteVectorValues {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`], which is the
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), which is the
     /// exception Java throws.
     pub fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
         let _ = query;
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "BaseQuantizedByteVectorValues does not score float queries".to_string(),
         ))
     }
@@ -604,6 +604,7 @@ pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
 #[cfg(test)]
 mod scorer_tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::index::VectorSimilarityFunction;
     use crate::search::DocIdSetIterator;
 
@@ -760,7 +761,13 @@ mod scorer_tests {
             Ok(_) => panic!("the base must not produce a scorer"),
         };
         assert!(
-            matches!(err, LuceneError::UnsupportedOperation(_)),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                }
+            ),
             "expected UnsupportedOperation, got {err:?}"
         );
         // The base also has no slice, the other thing Java's base answers.
@@ -781,7 +788,13 @@ mod scorer_tests {
             Ok(_) => panic!("an implementation that does not override must not score"),
         };
         assert!(
-            matches!(err, LuceneError::UnsupportedOperation(_)),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                }
+            ),
             "expected UnsupportedOperation, got {err:?}"
         );
     }

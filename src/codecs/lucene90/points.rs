@@ -37,7 +37,7 @@ use crate::codecs::points::{
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{segment_file_name, FieldInfos};
 use crate::store::{DataInput, Directory, IndexInput, IndexOutput};
 use crate::util::bkd::{BKDConfig, BKDFinalizer, BKDReader, BKDSplitOverride, BKDWriter};
@@ -97,7 +97,7 @@ impl Lucene90PointsFormat {
     /// compatibility tests.
     pub fn with_version(version: i32) -> Result<Self> {
         if ![VERSION_START, VERSION_BKD_VECTORIZED_BPV24].contains(&version) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid Lucene90PointsFormat version: {version}"
             )));
         }
@@ -198,7 +198,7 @@ impl Lucene90PointsWriter {
         version: i32,
     ) -> Result<Self> {
         if ![VERSION_START, VERSION_BKD_VECTORIZED_BPV24].contains(&version) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid Lucene90PointsFormat version: {version}"
             )));
         }
@@ -743,9 +743,9 @@ impl Lucene90PointsReader {
                     break;
                 }
                 if field_number < 0 {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "illegal field number in points meta file: {field_number}"
-                    )));
+                    ))));
                 }
                 let reader = BKDReader::new(meta_in.as_mut(), index_in.as_mut(), data_in.as_mut())?;
                 readers.insert(field_number, BkdPointValues::new(reader));
@@ -786,10 +786,10 @@ impl PointsReader for Lucene90PointsReader {
     /// field that indexes points but has no tree in this segment.
     fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
         let field_info = self.field_infos.field_info(field).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field=\"{field}\" is unrecognized"))
+            LuceneError::illegal_argument(format!("field=\"{field}\" is unrecognized"))
         })?;
         if field_info.point_dimension_count == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" did not index point values"
             )));
         }
@@ -1743,7 +1743,13 @@ mod tests {
                 .check_integrity()
                 .expect_err("a corrupted file fails its checksum");
             assert!(
-                matches!(err, LuceneError::CorruptIndex(_)),
+                matches!(
+                    err,
+                    LuceneError {
+                        kind: LuceneErrorKind::CorruptIndex(_),
+                        ..
+                    }
+                ),
                 "{ext}: {err:?}"
             );
             assert!(err.to_string().contains("checksum failed"), "{ext}: {err}");

@@ -345,7 +345,7 @@ impl TermsEnum for SimpleTextTermsEnum {
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -371,7 +371,7 @@ impl TermsEnum for SimpleTextTermsEnum {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {

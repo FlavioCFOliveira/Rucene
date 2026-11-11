@@ -18,7 +18,7 @@ impl MathUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `base <= 1`, which is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `base <= 1`, which is
     /// Java's `IllegalArgumentException`.
     pub fn log(x: i64, base: i32) -> Result<i32> {
         if base == 2 {
@@ -29,7 +29,9 @@ impl MathUtil {
                 63 - x.leading_zeros() as i32
             });
         } else if base <= 1 {
-            return Err(LuceneError::IllegalArgument("base must be > 1".to_string()));
+            return Err(LuceneError::illegal_argument(
+                "base must be > 1".to_string(),
+            ));
         }
         let mut x = x;
         let mut ret = 0i32;

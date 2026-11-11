@@ -61,11 +61,11 @@ fn two_pow(exponent: i32) -> f64 {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] for a negative value, matching
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a negative value, matching
 /// Java's `IllegalArgumentException`.
 pub fn scaling_factor(value: f32) -> Result<i32> {
     if value < 0.0 {
-        Err(LuceneError::IllegalArgument(
+        Err(LuceneError::illegal_argument(
             "Scores must be positive or null".to_string(),
         ))
     } else if value == 0.0 {
@@ -744,7 +744,7 @@ impl WANDScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `min_should_match` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `min_should_match` is not
     /// strictly less than the number of clauses, and propagates any I/O error
     /// raised while priming the score bounds.
     pub fn new(
@@ -754,7 +754,7 @@ impl WANDScorer {
         lead_cost: i64,
     ) -> Result<Self> {
         if min_should_match >= scorers.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minShouldMatch should be < the number of scorers".to_string(),
             ));
         }

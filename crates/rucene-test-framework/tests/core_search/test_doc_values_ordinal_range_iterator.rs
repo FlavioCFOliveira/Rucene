@@ -172,7 +172,7 @@ fn fake_advance(target: i32) -> i32 {
 }
 
 fn unsupported<T>() -> Result<T> {
-    Err(LuceneError::UnsupportedOperation(String::new()))
+    Err(LuceneError::unsupported_operation(String::new()))
 }
 
 // ==========================================================================

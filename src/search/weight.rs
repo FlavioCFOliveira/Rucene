@@ -208,7 +208,7 @@ pub trait Weight: SegmentCacheable + Send + Sync + Debug {
 /// hands out the same reference on every `get(long)` call, relying on the
 /// documented "must be called at most once" contract to keep that safe. Rust
 /// cannot hand out an owned scorer twice, so the second call fails with
-/// [`LuceneError::IllegalState`] — turning a documented misuse into a reported
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — turning a documented misuse into a reported
 /// one. For the same reason the cost is computed once, at construction, rather
 /// than on every `cost()` call; the value is identical because a scorer's
 /// iterator cost is stable.

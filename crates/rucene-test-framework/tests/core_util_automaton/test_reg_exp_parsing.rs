@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::{Class, Method};
 use randomizedtesting::junit::Assert;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::util::automaton::{
     Automata, Automaton, AutomatonProvider, Operations, RegExp, DEFAULT_DETERMINIZE_WORK_LIMIT,
 };
@@ -902,7 +902,9 @@ struct IOExceptionProvider;
 
 impl AutomatonProvider for IOExceptionProvider {
     fn get_automaton(&self, _name: &str) -> Result<Automaton> {
-        Err(LuceneError::Io(std::io::Error::other("fake ioexception")))
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("fake ioexception"),
+        )))
     }
 }
 

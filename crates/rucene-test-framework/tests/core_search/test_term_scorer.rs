@@ -7,7 +7,7 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::analysis::Analyzer;
 use rucene::document::{Document, Store, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::filter_reader::FilterLeafReader;
 use rucene::index::index_reader::CacheHelper;
@@ -500,9 +500,9 @@ impl LeafReader for ForbiddenNormsLeafReader {
     ) -> Result<Option<Box<dyn rucene::index::NumericDocValues>>> {
         // `fail("Norms should not be loaded")`: the `AssertionError` it
         // throws.
-        Err(LuceneError::AssertionError(
+        Err(LuceneError::from(LuceneErrorKind::AssertionError(
             "Norms should not be loaded".to_string(),
-        ))
+        )))
     }
     fn get_doc_values_skipper(
         &self,

@@ -57,7 +57,7 @@ impl Similarity for MultiSimilarity {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when there is no
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when there is no
     /// sub-similarity to delegate to. Java indexes `sims[0]` unconditionally
     /// and throws `ArrayIndexOutOfBoundsException` in that case; the failure is
     /// reported rather than hidden, and no bound Lucene lacks is added to the
@@ -65,7 +65,7 @@ impl Similarity for MultiSimilarity {
     fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
         match self.sims.first() {
             Some(first) => first.compute_norm(state),
-            None => Err(LuceneError::IllegalArgument(
+            None => Err(LuceneError::illegal_argument(
                 "MultiSimilarity has no sub-similarity to compute a norm with".to_string(),
             )),
         }

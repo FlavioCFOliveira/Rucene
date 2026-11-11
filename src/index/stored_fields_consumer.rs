@@ -65,7 +65,7 @@
 //!   `IndexingChain.flush` having called `finish(maxDoc)` first, which for a
 //!   segment with at least one document always creates the writer. Rust makes
 //!   the absence explicit and reports it as
-//!   [`LuceneError::IllegalState`] instead of dereferencing null.
+//!   [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) instead of dereferencing null.
 //! * **Segment attributes are synchronised at flush.** Java's consumer holds a
 //!   reference to the very `SegmentInfo` that ends up committed, so when
 //!   `Lucene90StoredFieldsFormat.fieldsWriter` records its
@@ -85,7 +85,7 @@
 //!   *second* set of stored-fields files for a segment that was already
 //!   discarded. This port records the abort instead and
 //!   [`StoredFieldsConsumer::init_stored_fields_writer`] reports
-//!   [`LuceneError::AlreadyClosed`]. The `DocumentsWriterPerThread` contract
+//!   [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed). The `DocumentsWriterPerThread` contract
 //!   never reaches this state, so no behaviour Lucene relies on changes.
 //! * **The `accountable` field is the writer itself.** Lucene keeps the
 //!   writer in an `Accountable` field that starts as
@@ -298,7 +298,7 @@ impl StoredFieldsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when `doc_id` does not advance —
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when `doc_id` does not advance —
     /// Lucene asserts `lastDoc < docID` — and propagates any I/O error.
     pub fn start_document(&mut self, doc_id: i32) -> Result<()> {
         match self.overrides.clone() {
@@ -351,7 +351,7 @@ impl StoredFieldsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no document frame is open,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when no document frame is open,
     /// and propagates any I/O error.
     pub fn write_field(&mut self, info: &FieldInfo, value: StoredValue) -> Result<()> {
         let writer = self.writer_mut()?;
@@ -363,7 +363,7 @@ impl StoredFieldsConsumer {
             StoredValue::Binary(value) => writer.write_field_bytes(info, value.slice()),
             StoredValue::DataInput(value) => {
                 let length = i32::try_from(value.length).map_err(|_| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "stored field \"{}\" is too large to store: {} bytes",
                         info.name, value.length
                     ))
@@ -382,7 +382,7 @@ impl StoredFieldsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no document frame was ever
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when no document frame was ever
     /// opened, and propagates any I/O error.
     pub fn finish_document(&mut self) -> Result<()> {
         match self.overrides.clone() {
@@ -433,14 +433,14 @@ impl StoredFieldsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no document was ever written
-    /// — Lucene would raise a `NullPointerException` here — or when the segment
+    /// Returns Java's `NullPointerException` when no document was ever
+    /// written, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the segment
     /// already carries a conflicting value for a codec attribute. Propagates
     /// any I/O error.
     pub fn flush(&mut self, segment_info: &SegmentInfo) -> Result<()> {
         let max_doc = segment_info.max_doc()?;
         let Some(mut writer) = self.writer.take() else {
-            return Err(LuceneError::illegal_state(format!(
+            return Err(LuceneError::null_pointer_with_message(format!(
                 "no stored-fields writer was created for segment {}: \
                  finish(maxDoc) must run before flush",
                 self.info.name
@@ -461,7 +461,7 @@ impl StoredFieldsConsumer {
     ///
     /// # Errors
     ///
-    /// Returns the [`LuceneError::AssertionError`] closing the writer raised:
+    /// Returns the [`LuceneErrorKind::AssertionError`](crate::error::LuceneErrorKind::AssertionError) closing the writer raised:
     /// the `Error` Java's `closeWhileHandlingException` rethrows, unchecked,
     /// through the callers' `finally` blocks up to
     /// `DocumentsWriterPerThread.abort()`, which declares `throws IOException`.
@@ -510,6 +510,7 @@ impl StoredFieldsConsumer {
 
 #[cfg(test)]
 mod tests {
+    use crate::error::LuceneErrorKind;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -678,12 +679,16 @@ mod tests {
             Ok(())
         }
         fn finish(&mut self, _num_docs: i32) -> Result<()> {
-            Err(LuceneError::Other("finish blew up".to_string()))
+            Err(LuceneError::from(LuceneErrorKind::Other(
+                "finish blew up".to_string(),
+            )))
         }
         fn close(&mut self) -> Result<()> {
             *self.log.closes.lock().expect("log mutex") += 1;
             if self.fail_close {
-                return Err(LuceneError::Other("close blew up".to_string()));
+                return Err(LuceneError::from(LuceneErrorKind::Other(
+                    "close blew up".to_string(),
+                )));
             }
             Ok(())
         }
@@ -709,7 +714,7 @@ mod tests {
             _field_infos: &FieldInfos,
             _context: &dyn IOContext,
         ) -> Result<Box<dyn StoredFieldsReader>> {
-            Err(LuceneError::UnsupportedOperation(
+            Err(LuceneError::unsupported_operation(
                 "the logging format does not read".to_string(),
             ))
         }
@@ -983,14 +988,26 @@ mod tests {
             .start_document(2)
             .expect_err("a document may not be revisited");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         let error = consumer
             .start_document(1)
             .expect_err("doc ids may not go backwards");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -1047,7 +1064,13 @@ mod tests {
             .flush(&flushed)
             .expect_err("Java would raise a NullPointerException here");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error.kind(),
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -1078,7 +1101,13 @@ mod tests {
             .start_document(1)
             .expect_err("an aborted consumer must not write again");
         assert!(
-            matches!(error, LuceneError::AlreadyClosed { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(
@@ -1092,7 +1121,13 @@ mod tests {
             .flush(&flushed)
             .expect_err("an aborted segment has nothing to flush");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -1139,7 +1174,13 @@ mod tests {
             .write_field(&field("f", 0), StoredValue::Integer(1))
             .expect_err("no document frame is open");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -1372,7 +1413,13 @@ mod tests {
         );
         let error = consumer.flush(&flushed).expect_err("conflicting attribute");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }

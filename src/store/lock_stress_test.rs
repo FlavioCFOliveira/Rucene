@@ -13,7 +13,7 @@ use super::exceptions::LockObtainFailedException;
 use super::lock_verify_server::START_GUN_SIGNAL;
 use super::verifying_lock_factory::VerifyingLockFactory;
 use super::{LockFactory, NIOFSDirectory, NativeFSLockFactory, NoLockFactory, SimpleFSLockFactory};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Name of the lock file the stress test contends on.
 ///
@@ -107,7 +107,7 @@ impl LockStressTest {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if a numeric argument cannot be
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if a numeric argument cannot be
     /// parsed, and propagates any failure from [`run`](Self::run).
     pub fn main(args: &[String]) -> Result<i32> {
         if args.len() != 7 {
@@ -134,7 +134,7 @@ impl LockStressTest {
         let my_id = Self::parse(&args[0], "myID")?;
         let verifier_host = &args[1];
         let verifier_port: u16 = args[2].parse().map_err(|_| {
-            LuceneError::IllegalArgument(format!("verifierPort is not a port: {}", args[2]))
+            LuceneError::illegal_argument(format!("verifierPort is not a port: {}", args[2]))
         })?;
         let lock_factory_class_name = &args[3];
         let lock_dir_path = Path::new(&args[4]);
@@ -155,7 +155,7 @@ impl LockStressTest {
     fn parse(value: &str, name: &str) -> Result<i64> {
         value
             .parse()
-            .map_err(|_| LuceneError::IllegalArgument(format!("{name} is not a number: {value}")))
+            .map_err(|_| LuceneError::illegal_argument(format!("{name} is not a number: {value}")))
     }
 
     /// Runs the stress loop: connects to the verification server, waits for the
@@ -171,7 +171,7 @@ impl LockStressTest {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the connection cannot be made, if the
+    /// Returns [`LuceneErrorKind::Io`] if the connection cannot be made, if the
     /// server does not fire the starting gun, or if a lock is obtained twice
     /// (`Double obtain`), and propagates any failure from the lock factory.
     #[allow(clippy::too_many_arguments)]
@@ -199,7 +199,7 @@ impl LockStressTest {
             .to_socket_addrs()?
             .next()
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "cannot resolve verifier address {verifier_host}:{verifier_port}"
                 ))
             })?;
@@ -222,7 +222,9 @@ impl LockStressTest {
         // Wait for the starting gun.
         let mut byte = [0u8; 1];
         if control_input.read(&mut byte)? == 0 || byte[0] != START_GUN_SIGNAL {
-            return Err(LuceneError::Io(std::io::Error::other("Protocol violation")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("Protocol violation"),
+            )));
         }
 
         for i in 0..count {
@@ -288,7 +290,9 @@ impl LockStressTest {
                     // IOException("Double obtain"); }` — the resource is closed
                     // and the exception from the body propagates.
                     let _ = second_lock.close();
-                    return Err(LuceneError::Io(std::io::Error::other("Double obtain")));
+                    return Err(LuceneError::from(LuceneErrorKind::Io(
+                        std::io::Error::other("Double obtain"),
+                    )));
                 }
                 Err(error) if LockObtainFailedException::is(&error) => {
                     // Pass: obtaining the lock twice must fail.
@@ -319,7 +323,7 @@ impl LockStressTest {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] for an unknown name, exactly as Java throws
+    /// Returns [`LuceneErrorKind::Io`] for an unknown name, exactly as Java throws
     /// `IOException("Cannot get lock factory singleton of …")`.
     pub fn get_new_lock_factory(lock_factory_class_name: &str) -> Result<Box<dyn LockFactory>> {
         let simple_name = lock_factory_class_name
@@ -329,9 +333,11 @@ impl LockStressTest {
         match simple_name {
             "NativeFSLockFactory" => Ok(Box::new(NativeFSLockFactory)),
             "SimpleFSLockFactory" => Ok(Box::new(SimpleFSLockFactory)),
-            _ => Err(LuceneError::Io(std::io::Error::other(format!(
-                "Cannot get lock factory singleton of {lock_factory_class_name}"
-            )))),
+            _ => Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!(
+                    "Cannot get lock factory singleton of {lock_factory_class_name}"
+                )),
+            ))),
         }
     }
 }

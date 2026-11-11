@@ -99,11 +99,11 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the term is on another
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the term is on another
     /// field, and the errors of [`add_bytes`](Self::add_bytes).
     pub fn add_term_with_boost(&mut self, term: &Term, boost: f32) -> Result<&mut Self> {
         if self.field != term.field() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Synonyms must be across the same field".to_string(),
             ));
         }
@@ -117,12 +117,12 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `boost` is not in
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `boost` is not in
     /// `(0, 1]`, and [`TooManyClauses`] once
     /// [`IndexSearcher::get_max_clause_count`] terms have been added.
     pub fn add_bytes(&mut self, term: BytesRef, boost: f32) -> Result<&mut Self> {
         if boost.is_nan() || boost <= 0.0 || boost > 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "boost must be a positive float between 0 (exclusive) and 1 (inclusive)"
                     .to_string(),
             ));
@@ -921,7 +921,7 @@ impl FreqBoostTermScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `boost` is not in
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `boost` is not in
     /// `[0, 1]`, which is the `IllegalArgumentException` Java throws.
     pub fn new(
         boost: f32,
@@ -935,7 +935,7 @@ impl FreqBoostTermScorer {
         #[allow(clippy::manual_range_contains)]
         let out_of_range = boost < 0.0 || boost > 1.0;
         if boost.is_nan() || out_of_range {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "boost must be a positive float between 0 (exclusive) and 1 (inclusive)"
                     .to_string(),
             ));

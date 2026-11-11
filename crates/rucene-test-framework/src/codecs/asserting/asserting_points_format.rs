@@ -180,7 +180,7 @@ struct AssertingPointsWriter {
 impl PointsWriter for AssertingPointsWriter {
     fn write_field(&mut self, field_info: &FieldInfo, values: &dyn PointsReader) -> Result<()> {
         if field_info.get_point_dimension_count() == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "writing field=\"{}\" but pointDimensionalCount is 0",
                 field_info.name
             )));

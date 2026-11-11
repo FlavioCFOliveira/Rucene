@@ -267,9 +267,9 @@ impl CodecRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `name` is empty, contains
     /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
-    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
     pub fn register<C>(&self, name: impl Into<String>, codec: C) -> Result<()>
     where
         C: Codec + 'static,
@@ -309,9 +309,9 @@ impl CodecRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with the loader's message,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
     /// listing the available names, when no codec is registered under `name`,
-    /// and [`LuceneError::IllegalState`] when the registry lock is poisoned.
+    /// and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is poisoned.
     pub fn lookup(&self, name: &str) -> Result<Arc<dyn Codec>> {
         self.codecs
             .read()
@@ -346,18 +346,18 @@ impl CodecRegistry {
 /// and is between 1 and 127 bytes long.
 pub(crate) fn validate_service_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "codec name must not be empty".to_string(),
         ));
     }
     if name.len() > 127 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "codec name too long ({} > 127 bytes): {name}",
             name.len()
         )));
     }
     if !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "codec name must be ASCII alphanumeric: {name}"
         )));
     }
@@ -406,7 +406,7 @@ pub fn for_name(name: &str) -> Option<Arc<dyn Codec>> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] with the loader's message when no
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message when no
 /// codec is registered under `name`.
 pub fn lookup(name: &str) -> Result<Arc<dyn Codec>> {
     GLOBAL_REGISTRY.lookup(name)
@@ -482,7 +482,7 @@ pub fn get_default() -> Option<Arc<dyn Codec>> {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
 /// poisoned.
 pub fn reload_codecs(classloader: &Arc<crate::util::resource_loader::ClassLoader>) -> Result<()> {
     GLOBAL_REGISTRY
@@ -499,8 +499,8 @@ pub fn reload_codecs(classloader: &Arc<crate::util::resource_loader::ClassLoader
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] if the name is invalid, or
-/// [`LuceneError::IllegalState`] if the name is already registered.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the name is invalid, or
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
 pub fn register_codec(name: impl Into<String>, codec: impl Codec + 'static) -> Result<()> {
     GLOBAL_REGISTRY.register(name, codec)
 }
@@ -703,6 +703,7 @@ impl Codec for FilterCodec {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::error::LuceneErrorKind;
     use std::collections::HashMap;
 
     use super::doc_values::EmptyDocValuesConsumer;
@@ -1185,7 +1186,7 @@ pub(crate) mod tests {
         }
 
         /// Makes every later `close()` of `name` fail with an
-        /// [`AssertionError`](crate::error::LuceneError::AssertionError), the
+        /// [`AssertionError`](crate::error::LuceneErrorKind::AssertionError), the
         /// port's `java.lang.AssertionError`, after delegating it.
         pub(crate) fn assertion_close(&self, name: &str) {
             self.assertion_close
@@ -1219,9 +1220,11 @@ pub(crate) mod tests {
 
         fn check_write(&self, name: &str) -> Result<()> {
             if self.fail_write.lock().unwrap().contains(name) {
-                return Err(crate::error::LuceneError::Io(std::io::Error::other(
-                    format!("write failed: {name}"),
-                )));
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "write failed: {name}"
+                    ))),
+                ));
             }
             Ok(())
         }
@@ -1238,14 +1241,16 @@ pub(crate) mod tests {
                 panic!("close panicked: {name}");
             }
             if self.assertion_close.lock().unwrap().contains(name) {
-                return Err(crate::error::LuceneError::AssertionError(format!(
-                    "close failed: {name}"
-                )));
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::AssertionError(format!("close failed: {name}")),
+                ));
             }
             if self.fail_close.lock().unwrap().contains(name) {
-                return Err(crate::error::LuceneError::Io(std::io::Error::other(
-                    format!("close failed: {name}"),
-                )));
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "close failed: {name}"
+                    ))),
+                ));
             }
             Ok(())
         }
@@ -1255,9 +1260,11 @@ pub(crate) mod tests {
                 panic!("open panicked: {name}");
             }
             if self.fail_open.lock().unwrap().contains(name) {
-                return Err(crate::error::LuceneError::Io(std::io::Error::other(
-                    format!("open failed: {name}"),
-                )));
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "open failed: {name}"
+                    ))),
+                ));
             }
             Ok(())
         }
@@ -1412,9 +1419,11 @@ pub(crate) mod tests {
 
         fn sync(&self, names: &[String]) -> Result<()> {
             if self.log.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(crate::error::LuceneError::Io(std::io::Error::other(
-                    format!("sync failed: {names:?}"),
-                )));
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "sync failed: {names:?}"
+                    ))),
+                ));
             }
             self.inner.sync(names)
         }
@@ -1623,7 +1632,13 @@ pub(crate) mod tests {
         let err = registry
             .register("Dummy", DummyCodec::new("Dummy2"))
             .expect_err("duplicate registration should fail");
-        assert!(matches!(err, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1632,12 +1647,24 @@ pub(crate) mod tests {
         let err = registry
             .register("", DummyCodec::new("Empty"))
             .expect_err("empty name should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
 
         let err = registry
             .register("Bad Name", DummyCodec::new("Bad"))
             .expect_err("name with space should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

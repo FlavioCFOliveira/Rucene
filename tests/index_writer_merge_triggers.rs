@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use rucene::codecs::Lucene104Codec;
 use rucene::document::{Document, NumericDocValuesField, Store, StringField};
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::index_reader::IndexReader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
@@ -688,7 +688,10 @@ fn an_aborted_merge_stops_at_the_next_check_as_lucene_does() {
         }
         let (outcome, message) = match writer.force_merge(1) {
             Ok(()) => ("ok".to_string(), String::new()),
-            Err(LuceneError::Io(error)) => ("IOException".to_string(), error.to_string()),
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            }) => ("IOException".to_string(), error.to_string()),
             Err(error) => (error.java_simple_name().to_string(), error.to_string()),
         };
         let rollback = hook.rollback_thread.lock().unwrap().take().unwrap();

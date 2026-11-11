@@ -89,9 +89,9 @@ impl DataOutput for SkipBuffer {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
@@ -135,7 +135,7 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::Arithmetic`] when `skip_interval * skip_multiplier` does
+    /// [`LuceneErrorKind::Arithmetic`](crate::error::LuceneErrorKind::Arithmetic) when `skip_interval * skip_multiplier` does
     /// not fit an `int`: Java's `Math.toIntExact(skipInterval * (long)
     /// skipMultiplier)` (`MultiLevelSkipListWriter.java:83`) throwing
     /// `ArithmeticException("integer overflow")`.
@@ -604,6 +604,7 @@ fn log(x: i32, base: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::store::{MockIndexInput, MockIndexOutput};
 
     /// Test skip codec that stores the per-level skip interval as the doc delta.
@@ -787,14 +788,23 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
             "{error:?}"
         );
         let error = match MultiLevelSkipListWriter::new_same_multiplier(codec, 1 << 16, 10, 1) {
             Ok(_) => panic!("the window length does not fit an int"),
             Err(error) => error,
         };
-        assert!(matches!(&error, LuceneError::Arithmetic(_)), "{error:?}");
+        assert!(
+            matches!(
+                &error,
+                LuceneError {
+                    kind: LuceneErrorKind::Arithmetic(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::random::{JdkRandom, Random};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::LeafReaderContext;
 use rucene::search::similarities::Explanation;
 use rucene::search::{
@@ -97,9 +97,9 @@ impl Weight for AssertingWeight {
         let count = self.inner.count(context)?;
         let num_docs = context.leaf_reader().num_docs();
         if count < -1 || count > num_docs {
-            return Err(LuceneError::AssertionError(format!(
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "count={count}, numDocs={num_docs}"
-            )));
+            ))));
         }
         Ok(count)
     }

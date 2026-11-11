@@ -119,7 +119,7 @@ impl SortedNumericSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field's numeric type
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field's numeric type
     /// is not one Lucene can sort an index by — the same cases its `switch`
     /// falls through on.
     pub fn get_index_sorter(
@@ -132,7 +132,7 @@ impl SortedNumericSortField {
             SortFieldType::Float => NumericSortKind::Float,
             SortFieldType::Double => NumericSortKind::Double,
             other => {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "cannot sort an index by a SortedNumericSortField of type {other:?}"
                 )))
             }
@@ -147,7 +147,7 @@ impl SortedNumericSortField {
         let field = self
             .get_field()
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("a sort field must name a field".to_string())
+                LuceneError::illegal_argument("a sort field must name a field".to_string())
             })?
             .to_string();
         let selector = self.get_selector();
@@ -191,11 +191,11 @@ impl SortedNumericSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sort field is not one
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sort field is not one
     /// of this kind.
     pub fn from_sort_field(sort_field: SortField) -> Result<Self> {
         if !matches!(sort_field.kind(), SortFieldKind::SortedNumeric { .. }) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "expected a SortedNumericSortField, got {sort_field}"
             )));
         }
@@ -240,7 +240,7 @@ impl SortedNumericSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the numeric type or the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the numeric type or the
     /// missing value cannot be serialised — the cases Java reports with an
     /// `AssertionError` — and propagates any I/O error.
     pub fn serialize(&self, output: &mut dyn DataOutput) -> Result<()> {
@@ -263,7 +263,7 @@ impl SortedNumericSortField {
                         output.write_long(NumericUtils::double_to_sortable_long(value))?
                     }
                     _ => {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                         "Cannot serialize missing value {missing} for numeric type {numeric_type}"
                     )))
                     }
@@ -280,12 +280,12 @@ impl SortedNumericSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector, and
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an unknown selector, and
     /// propagates any I/O error.
     fn read_selector_type(input: &mut dyn DataInput) -> Result<SortedNumericSelectorType> {
         let selector_ordinal = input.read_int()?;
         SortedNumericSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "Can't deserialize SortedNumericSortField - unknown selector type {selector_ordinal}"
             ))
         })
@@ -297,7 +297,7 @@ impl SortedNumericSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector or a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an unknown selector or a
     /// numeric type that cannot carry a missing value, and propagates any I/O
     /// error.
     pub fn read_sort_field(input: &mut dyn DataInput) -> Result<Self> {
@@ -316,7 +316,7 @@ impl SortedNumericSortField {
                     MissingValue::Double(NumericUtils::sortable_long_to_double(input.read_long()?))
                 }
                 other => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Cannot deserialize a missing value for numeric type {other}"
                     )))
                 }

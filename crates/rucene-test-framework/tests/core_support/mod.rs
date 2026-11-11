@@ -18,7 +18,7 @@ use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
 use randomizedtesting::junit::Assert;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene_test_framework::util::java_exceptions::rethrow_java;
 use rucene_test_framework::util::lucene_test_case::VERBOSE;
 use rucene_test_framework::util::LuceneTestCase;
@@ -177,7 +177,7 @@ pub fn assert_equals_delta(expected: f64, actual: f64, delta: f64) {
 /// `throw new AssertionError(message)` as a `Result` error, for bodies that
 /// `return` it.
 pub fn assertion_error(message: impl Into<String>) -> LuceneError {
-    LuceneError::AssertionError(message.into())
+    LuceneError::from(LuceneErrorKind::AssertionError(message.into()))
 }
 
 /// `RamUsageTester.ramUsed(object)` over a Rucene type that has no

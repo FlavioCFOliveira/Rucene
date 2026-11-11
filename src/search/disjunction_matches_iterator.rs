@@ -27,7 +27,7 @@ const NON_EMPTY: &str =
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when a term does not belong to
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a term does not belong to
 /// `field`, and propagates any I/O error raised while reading the postings.
 pub fn from_terms(
     context: &LeafReaderContext,
@@ -38,7 +38,7 @@ pub fn from_terms(
 ) -> Result<Option<Box<dyn MatchesIterator>>> {
     for term in terms {
         if term.field() != field {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Tried to generate iterator from terms in multiple fields: expected [{}] but got [{}]",
                 field,
                 term.field()

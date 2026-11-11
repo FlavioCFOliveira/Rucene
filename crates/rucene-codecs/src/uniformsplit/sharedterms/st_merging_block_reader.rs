@@ -206,7 +206,7 @@ impl fmt::Display for STMergingBlockReader {
 }
 
 fn unsupported() -> LuceneError {
-    LuceneError::UnsupportedOperation(String::new())
+    LuceneError::unsupported_operation(String::new())
 }
 
 /// Java's `readTermStateIfNotRead()` override throws

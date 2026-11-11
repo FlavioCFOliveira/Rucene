@@ -286,7 +286,7 @@ impl TopFieldCollector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when there is evidence that the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when there is evidence that the
     /// hits were computed against a different searcher or a different query,
     /// and propagates any I/O error raised while scoring.
     pub fn populate_scores(
@@ -315,7 +315,7 @@ impl TopFieldCollector {
             };
             if needs_new_context {
                 if doc < 0 || doc >= max_doc {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Index {doc} out of bounds for length {max_doc}"
                     )));
                 }
@@ -323,7 +323,7 @@ impl TopFieldCollector {
                 let context = Arc::clone(&contexts[new_context_index as usize]);
                 let scorer_supplier = weight.scorer_supplier(&context)?;
                 let Some(mut scorer_supplier) = scorer_supplier else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Doc id {doc} doesn't match the query"
                     )));
                 };
@@ -341,7 +341,7 @@ impl TopFieldCollector {
             debug_assert!(leaf_doc >= 0);
             let advanced = scorer.iterator().advance(leaf_doc)?;
             if leaf_doc != advanced {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Doc id {doc} doesn't match the query"
                 )));
             }

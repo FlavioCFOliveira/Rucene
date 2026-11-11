@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::{Class, Method};
 use randomizedtesting::junit::Assert;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::geo::tessellator::Monitor;
 use rucene::geo::{
     ParseException, Point, Polygon, SimpleWKTShapeParser, Tessellator, Triangle, WktGeometry,
@@ -126,11 +126,11 @@ pub fn class_def() -> Arc<Class> {
 
 /// `java.text.ParseException`, which the test methods declare.
 fn checked(e: ParseException) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: rucene::util::extra::PARSE_EXCEPTION,
         message: Some(e.message().to_string()),
         cause: None,
-    }
+    })
 }
 
 /// `Polygon.fromGeoJSON(geoJson)`.

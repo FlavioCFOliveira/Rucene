@@ -162,7 +162,7 @@ impl StrictStringTokenizer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once the input is exhausted, which
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) once the input is exhausted, which
     /// is Java's `IllegalStateException("no more tokens")`.
     pub fn next_token(&mut self) -> Result<String> {
         let Some(pos) = self.pos else {

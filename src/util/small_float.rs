@@ -77,10 +77,10 @@ impl SmallFloat {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `i` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `i` is negative.
     pub fn long_to_int4(i: i64) -> Result<i32, LuceneError> {
         if i < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Only supports positive values, got {}",
                 i
             )));
@@ -124,10 +124,10 @@ impl SmallFloat {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `i` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `i` is negative.
     pub fn int_to_byte4(i: i32) -> Result<u8, LuceneError> {
         if i < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Only supports positive values, got {}",
                 i
             )));

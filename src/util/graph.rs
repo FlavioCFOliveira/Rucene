@@ -147,7 +147,7 @@ impl GraphTokenStreamFiniteStrings {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] for a malformed token stream whose
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) for a malformed token stream whose
     /// first token has a position increment below one, and a resource-limit error
     /// if determinizing the graph exceeds
     /// [`DEFAULT_DETERMINIZE_WORK_LIMIT`].
@@ -235,7 +235,7 @@ impl GraphTokenStreamFiniteStrings {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the graph is deeper than the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the graph is deeper than the
     /// maximum recursion level Lucene allows (1000).
     pub fn articulation_points(&self) -> Result<Vec<i32>> {
         if self.det.get_num_states() == 0 {
@@ -401,7 +401,7 @@ impl GraphTokenStreamFiniteStrings {
                         points,
                     )?;
                 } else {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Exceeded maximum recursion level during graph analysis".to_string(),
                     ));
                 }

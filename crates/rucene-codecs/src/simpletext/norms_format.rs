@@ -165,7 +165,7 @@ impl std::fmt::Debug for NormsAsDocValues<'_> {
 }
 
 fn unsupported(method: &str) -> LuceneError {
-    LuceneError::UnsupportedOperation(format!("EmptyDocValuesProducer.{method}"))
+    LuceneError::unsupported_operation(format!("EmptyDocValuesProducer.{method}"))
 }
 
 impl DocValuesProducer for NormsAsDocValues<'_> {

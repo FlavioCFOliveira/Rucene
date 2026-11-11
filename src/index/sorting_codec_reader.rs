@@ -108,7 +108,7 @@ impl SortingCodecReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `inner.max_doc()` differs from `doc_map.size()`, and propagates
     /// whatever building the new metadata raises.
     pub fn wrap(
@@ -124,7 +124,7 @@ impl SortingCodecReader {
             meta_data.has_blocks(),
         )?;
         if inner.max_doc() != doc_map.size() {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "reader.maxDoc() should be equal to docMap.size(), got {} != {}",
                 inner.max_doc(),
                 doc_map.size()
@@ -159,7 +159,7 @@ impl SortingCodecReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `sort` refers to the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `sort` refers to the
     /// relevance score or names a field that cannot sort an index, and
     /// propagates whatever reading the sort values or building the metadata
     /// raises.
@@ -824,7 +824,7 @@ impl DocIdSetIterator for SortingValuesIterator {
     /// Equivalent to `SortingValuesIterator.advance(int)`, which throws
     /// `UnsupportedOperationException`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingValuesIterator::advance".to_string(),
         ))
     }
@@ -931,14 +931,14 @@ impl SortingCodecReaderState {
     /// slot ever held another type for the same key. This port stores an
     /// `Arc<dyn Any + Send + Sync>` and downcasts it, turning that same
     /// impossible case into an
-    /// [`IllegalState`](crate::error::LuceneError::IllegalState) error rather
+    /// [`IllegalState`](crate::error::LuceneErrorKind::IllegalState) error rather
     /// than a panic. It cannot happen for either caller: a field has exactly
     /// one doc-values type, and norms are cached under a distinct key.
     ///
     /// # Errors
     ///
     /// Propagates whatever `supplier` raises, and returns
-    /// [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState)
     /// if the cached view is not of the requested type.
     fn get_or_create<T, F>(&self, field: &str, norms: bool, supplier: F) -> Result<Arc<T>>
     where
@@ -1228,12 +1228,12 @@ impl SlowCompositeCodecReaderWrapper {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `readers` is empty or the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `readers` is empty or the
     /// readers were created by different major versions, and propagates
     /// whatever merging the readers' field infos raises.
     pub fn wrap(readers: Vec<Arc<dyn CodecReader>>) -> Result<Arc<dyn CodecReader>> {
         match readers.len() {
-            0 => Err(LuceneError::IllegalArgument(
+            0 => Err(LuceneError::illegal_argument(
                 "Must take at least one reader, got 0".to_string(),
             )),
             1 => Ok(Arc::clone(&readers[0])),
@@ -1259,7 +1259,7 @@ impl SlowCompositeCodecReaderWrapper {
             if major_version == -1 {
                 major_version = reader_meta.created_version_major();
             } else if major_version != reader_meta.created_version_major() {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "Cannot combine leaf readers created with different major versions".to_string(),
                 ));
             }
@@ -1319,12 +1319,12 @@ impl SlowCompositeCodecReaderWrapper {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `doc` is outside
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `doc` is outside
 /// `[0, maxDoc)`, as `Objects.checkIndex` throws.
 fn doc_id_to_reader_id(doc_starts: &[i32], doc: i32) -> Result<usize> {
     let max_doc = doc_starts[doc_starts.len() - 1];
     if doc < 0 || doc >= max_doc {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Index {doc} out of bounds for length {max_doc}"
         )));
     }
@@ -1344,7 +1344,7 @@ fn doc_id_to_reader_id(doc_starts: &[i32], doc: i32) -> Result<usize> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] when the merged field infos lack the
+/// Returns [`LuceneErrorKind::IllegalState`] when the merged field infos lack the
 /// name, where Java would hand the visitor `null`; every field a wrapped
 /// reader reports was merged into them, so this cannot happen.
 fn remap(field_infos: &FieldInfos, info: &FieldInfo) -> Result<FieldInfo> {
@@ -2034,9 +2034,9 @@ impl DocValuesProducer for SlowCompositeDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "This method is for searching not for merging".to_string(),
         ))
     }
@@ -2543,7 +2543,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn search(
         &self,
         _field: &str,
@@ -2551,7 +2551,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "SlowCompositeKnnVectorsReaderWrapper.search".to_string(),
         ))
     }
@@ -2561,7 +2561,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn search_byte(
         &self,
         _field: &str,
@@ -2569,7 +2569,7 @@ impl KnnVectorsReader for SlowCompositeKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "SlowCompositeKnnVectorsReaderWrapper.search".to_string(),
         ))
     }
@@ -2680,7 +2680,7 @@ impl<T: ?Sized + KnnVectorValues> DocIdSetIterator for MergedDocIterator<T> {
     /// Equivalent to `MergedDocIterator.advance(int)`, which throws
     /// `UnsupportedOperationException`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MergedDocIterator.advance".to_string(),
         ))
     }
@@ -3103,7 +3103,7 @@ impl DocIdSetIterator for SortingNumericDocValues {
     /// Equivalent to `NumericDocValuesWriter.SortingNumericDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc() instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc() instead".to_string(),
         ))
     }
@@ -3194,7 +3194,7 @@ impl DocIdSetIterator for SortingBinaryDocValues {
     /// Equivalent to `BinaryDocValuesWriter.SortingBinaryDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3208,7 +3208,7 @@ impl DocValuesIterator for SortingBinaryDocValues {
     /// Equivalent to `BinaryDocValuesWriter.SortingBinaryDocValues.advanceExact(int)`,
     /// which throws `UnsupportedOperationException("use nextDoc instead")`.
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3304,7 +3304,7 @@ impl DocIdSetIterator for SortingSortedDocValues {
     /// Equivalent to `SortedDocValuesWriter.SortingSortedDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3421,7 +3421,7 @@ impl DocIdSetIterator for SortingSortedNumericDocValues {
     /// Equivalent to `SortedNumericDocValuesWriter.SortingSortedNumericDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -3539,7 +3539,7 @@ impl DocIdSetIterator for SortingSortedSetDocValues {
     /// Equivalent to `SortedSetDocValuesWriter.SortingSortedSetDocValues.advance(int)`, which throws
     /// `UnsupportedOperationException("use nextDoc instead")`.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "use nextDoc instead".to_string(),
         ))
     }
@@ -4188,7 +4188,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation).
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn search(
         &self,
         _field: &str,
@@ -4196,7 +4196,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingCodecReader's vectors reader does not search".to_string(),
         ))
     }
@@ -4206,7 +4206,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation).
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn search_byte(
         &self,
         _field: &str,
@@ -4214,7 +4214,7 @@ impl KnnVectorsReader for SortingKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingCodecReader's vectors reader does not search".to_string(),
         ))
     }
@@ -4274,7 +4274,7 @@ impl KnnVectorValues for SortingFloatVectorValues {
     /// Equivalent to `SortingFloatVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingFloatVectorValues.copy".to_string(),
         ))
     }
@@ -4297,7 +4297,7 @@ impl FloatVectorValues for SortingFloatVectorValues {
     /// Equivalent to `SortingFloatVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingFloatVectorValues.copy".to_string(),
         ))
     }
@@ -4337,7 +4337,7 @@ impl KnnVectorValues for SortingByteVectorValues {
     /// Equivalent to `SortingByteVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingByteVectorValues.copy".to_string(),
         ))
     }
@@ -4359,7 +4359,7 @@ impl ByteVectorValues for SortingByteVectorValues {
     /// Equivalent to `SortingByteVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "SortingByteVectorValues.copy".to_string(),
         ))
     }
@@ -4372,6 +4372,7 @@ mod tests {
         Document, IntPoint, KnnFloatVectorField, NumericDocValuesField, SortedDocValuesField,
         Store, StoredField, StringField,
     };
+    use crate::error::LuceneErrorKind;
     use crate::index::index_sorter::Sorter;
     use crate::index::index_writer::IndexWriter;
     use crate::index::index_writer_config::IndexWriterConfig;
@@ -4691,7 +4692,10 @@ mod tests {
         let mut accept_docs = crate::search::from_live_docs(None, 5).unwrap();
         assert!(matches!(
             sorted.search_nearest_vectors("v", &[0.0, 1.0], &mut collector, &mut accept_docs),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 
@@ -4704,7 +4708,10 @@ mod tests {
         let doc_map = Arc::new(Sorter::sort(4, &reverse).unwrap());
         assert!(matches!(
             SortingCodecReader::wrap(composite, doc_map, None),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -4804,12 +4811,18 @@ mod tests {
         let mut numeric = sorted.get_numeric_doc_values("n").unwrap().unwrap();
         assert!(matches!(
             numeric.advance(1),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         let mut values = sorted.get_sorted_doc_values("s").unwrap().unwrap();
         assert!(matches!(
             values.advance(1),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 

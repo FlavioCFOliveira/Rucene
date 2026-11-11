@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Store, StringField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{
@@ -892,7 +892,9 @@ impl TwoPhaseCommit for Recorder {
     fn prepare_commit(&self) -> Result<i64> {
         self.record("prepare");
         if self.fail_at == Some("prepare") {
-            return Err(LuceneError::Io(std::io::Error::other("prepare exploded")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("prepare exploded"),
+            )));
         }
         Ok(1)
     }
@@ -900,7 +902,9 @@ impl TwoPhaseCommit for Recorder {
     fn commit(&self) -> Result<i64> {
         self.record("commit");
         if self.fail_at == Some("commit") {
-            return Err(LuceneError::Io(std::io::Error::other("commit exploded")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("commit exploded"),
+            )));
         }
         Ok(2)
     }
@@ -991,8 +995,8 @@ impl DataOutput for FailingCloseOutput {
 impl IndexOutput for FailingCloseOutput {
     fn close(&mut self) -> Result<()> {
         self.inner.close()?;
-        Err(LuceneError::Io(std::io::Error::other(
-            "no space left on device",
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("no space left on device"),
         )))
     }
 
@@ -1137,7 +1141,7 @@ fn persist_close_failure_recovers_as_lucene_does() {
         .snapshot()
         .expect_err("the failing close must be reported, exactly as in Java");
     assert!(
-        matches!(&err, LuceneError::Io(io) if io.to_string().contains("no space left")),
+        matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string().contains("no space left")),
         "unexpected error: {err:?}"
     );
     assert_eq!(policy.get_snapshot_count(), 0);
@@ -1153,7 +1157,7 @@ fn persist_close_failure_recovers_as_lucene_does() {
         .snapshot()
         .expect_err("the leftover blocks the very next attempt, as in Lucene");
     assert!(
-        matches!(&err, LuceneError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+        matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::AlreadyExists),
         "unexpected error: {err:?}"
     );
     assert_eq!(

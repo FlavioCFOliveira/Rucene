@@ -125,8 +125,11 @@ struct FakeScorer {
 impl FakeScorer {
     fn new(cost: i64) -> Result<FakeScorer> {
         // `Math.toIntExact(cost)`
-        let cost = i32::try_from(cost)
-            .map_err(|_| rucene::error::LuceneError::Arithmetic("integer overflow".to_string()))?;
+        let cost = i32::try_from(cost).map_err(|_| {
+            rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::Arithmetic(
+                "integer overflow".to_string(),
+            ))
+        })?;
         Ok(FakeScorer {
             it: Box::new(all(cost)?),
         })

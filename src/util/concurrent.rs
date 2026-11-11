@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, LockResult, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 // ---------------------------------------------------------------------------
 // Counter
@@ -105,7 +105,7 @@ impl Default for Counter {
 /// Port of `org.apache.lucene.util.SetOnce`, which Lucene 10.5.0 marks
 /// `@lucene.experimental`. Java's nested `AlreadySetException` extends
 /// `IllegalStateException`; the Rust equivalent is a
-/// [`LuceneError::Unchecked`] of class [`ALREADY_SET_EXCEPTION`] carrying the
+/// [`LuceneErrorKind::Unchecked`] of class [`ALREADY_SET_EXCEPTION`] carrying the
 /// same message.
 #[derive(Debug)]
 pub struct SetOnce<T> {
@@ -214,7 +214,7 @@ impl SameThreadExecutorService {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once the executor is shut down,
+    /// Returns [`LuceneErrorKind::IllegalState`] once the executor is shut down,
     /// which is Java's `RejectedExecutionException("Executor is shut down.")`.
     pub fn execute<R, F: FnOnce() -> R>(&self, command: F) -> Result<R> {
         self.check_shutdown()?;
@@ -335,7 +335,7 @@ impl NamedThreadFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] when the thread cannot be spawned.
+    /// Returns [`LuceneErrorKind::Io`] when the thread cannot be spawned.
     pub fn new_thread<F>(&self, r: F) -> Result<std::thread::JoinHandle<()>>
     where
         F: FnOnce() + Send + 'static,
@@ -344,7 +344,7 @@ impl NamedThreadFactory {
         std::thread::Builder::new()
             .name(name)
             .spawn(with_thread_start_context(r))
-            .map_err(LuceneError::Io)
+            .map_err(LuceneError::from)
     }
 }
 
@@ -526,7 +526,7 @@ fn is_java_class_name(s: &str) -> bool {
     parts >= 2
 }
 
-/// A class name with a `'static` lifetime, as [`LuceneError::Unchecked`]
+/// A class name with a `'static` lifetime, as [`LuceneErrorKind::Unchecked`]
 /// holds one: each distinct name is leaked once and reused.
 fn intern_class_name(class: &str) -> &'static str {
     static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
@@ -545,9 +545,9 @@ fn intern_class_name(class: &str) -> &'static str {
 /// A panic is this crate's carrier of Java's unchecked throwables. Its text
 /// ([`panic_text`]) is the throwable's `Throwable.toString()` — the class,
 /// then `": "` and the message — when it names a Java class: a
-/// `java.lang.AssertionError` becomes [`LuceneError::AssertionError`], this
+/// `java.lang.AssertionError` becomes [`LuceneErrorKind::AssertionError`], this
 /// crate's counterpart of Java's `Error`, and any other class a
-/// [`LuceneError::Unchecked`] of that class. Any other text (a plain Rust
+/// [`LuceneErrorKind::Unchecked`] of that class. Any other text (a plain Rust
 /// panic) is an `AssertionError` with that message, as randomizedtesting
 /// reads a string panic.
 pub fn panic_to_error(payload: &(dyn std::any::Any + Send)) -> LuceneError {
@@ -556,29 +556,33 @@ pub fn panic_to_error(payload: &(dyn std::any::Any + Send)) -> LuceneError {
     let (class, message) = match text.split_once(": ") {
         Some((class, message)) if is_java_class_name(class) => (class, Some(message.to_string())),
         _ if is_java_class_name(&text) => (text.as_str(), None),
-        _ => return LuceneError::AssertionError(text.clone()),
+        _ => return LuceneError::from(LuceneErrorKind::AssertionError(text.clone())),
     };
     if class == ASSERTION_ERROR {
-        return LuceneError::AssertionError(message.unwrap_or_default());
+        return LuceneError::from(LuceneErrorKind::AssertionError(message.unwrap_or_default()));
     }
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: intern_class_name(class),
         message,
         cause: None,
-    }
+    })
 }
 
 /// `Throwable.toString()` of the Java throwable `error` stands for, as a
 /// wrapping exception's message (`new MergeException(exc)`) renders it: the
-/// class and message of a [`LuceneError::AssertionError`] (no message when
+/// class and message of a [`LuceneErrorKind::AssertionError`] (no message when
 /// it is empty, as `new AssertionError()` has none) or of a
-/// [`LuceneError::Unchecked`], and the error's own rendering otherwise.
+/// [`LuceneErrorKind::Unchecked`], and the error's own rendering otherwise.
 pub fn throwable_to_string(error: &LuceneError) -> String {
     match error {
-        LuceneError::AssertionError(message) if message.is_empty() => {
-            "java.lang.AssertionError".to_string()
-        }
-        LuceneError::AssertionError(message) => format!("java.lang.AssertionError: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(message),
+            ..
+        } if message.is_empty() => "java.lang.AssertionError".to_string(),
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(message),
+            ..
+        } => format!("java.lang.AssertionError: {message}"),
         other => other.to_string(),
     }
 }
@@ -1021,7 +1025,7 @@ mod interrupt_tests {
         let error = panic_to_error(&String::from("java.lang.IllegalStateException: boom"));
         assert!(matches!(
             &error,
-            LuceneError::Unchecked { class: "java.lang.IllegalStateException", message: Some(m), .. }
+            LuceneError { kind: LuceneErrorKind::Unchecked { class: "java.lang.IllegalStateException", message: Some(m), .. }, .. }
                 if m == "boom"
         ));
         assert_eq!(
@@ -1029,19 +1033,26 @@ mod interrupt_tests {
             "java.lang.IllegalStateException: boom"
         );
         let error = panic_to_error(&"java.lang.AssertionError: boom");
-        assert!(matches!(&error, LuceneError::AssertionError(m) if m == "boom"));
+        assert!(
+            matches!(&error, LuceneError { kind: LuceneErrorKind::AssertionError(m), .. } if m == "boom")
+        );
         assert_eq!(
             throwable_to_string(&error),
             "java.lang.AssertionError: boom"
         );
         let error = panic_to_error(&String::from("index out of bounds: 3"));
-        assert!(matches!(&error, LuceneError::AssertionError(m) if m == "index out of bounds: 3"));
+        assert!(
+            matches!(&error, LuceneError { kind: LuceneErrorKind::AssertionError(m), .. } if m == "index out of bounds: 3")
+        );
         let error = panic_to_error(&String::from("java.lang.NullPointerException"));
         assert!(matches!(
             &error,
-            LuceneError::Unchecked {
-                class: "java.lang.NullPointerException",
-                message: None,
+            LuceneError {
+                kind: LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    message: None,
+                    ..
+                },
                 ..
             }
         ));

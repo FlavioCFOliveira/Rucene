@@ -739,7 +739,7 @@ static NEXT_MULTI_TERMS_ENUM_ID: AtomicU64 = AtomicU64::new(0);
 /// against `lucene-core-10.5.0.jar` by setting the field to `null` through
 /// reflection.
 fn null_sub_terms_enum(method: &str, expression: &str) -> LuceneError {
-    LuceneError::illegal_state(format!(
+    LuceneError::null_pointer_with_message(format!(
         "Cannot invoke \"org.apache.lucene.index.TermsEnum.{method}\" because \"{expression}\" is null"
     ))
 }
@@ -995,7 +995,7 @@ impl MultiTermsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `slices` is too large for
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `slices` is too large for
     /// a `PriorityQueue`, as Java's constructor throws.
     pub fn new(slices: &[ReaderSlice]) -> Result<Self> {
         let n = slices.len();
@@ -1052,7 +1052,7 @@ impl MultiTermsEnum {
     /// # Errors
     ///
     /// Propagates whatever advancing a sub-enum raises, and returns
-    /// [`LuceneError::IllegalArgument`] — Java's
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — Java's
     /// `ArrayIndexOutOfBoundsException` — for a sub index this enum has no
     /// slice for.
     pub fn reset(&mut self, terms_enums_index: Vec<TermsEnumIndex>) -> Result<Option<&mut Self>> {
@@ -1066,7 +1066,7 @@ impl MultiTermsEnum {
             if has_term {
                 let sub_index = terms_enum_index.sub_index();
                 let entry = self.queue.subs_mut().get_mut(sub_index).ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "Index {sub_index} out of bounds for length {num_slices}"
                     ))
                 })?;
@@ -1116,7 +1116,7 @@ impl MultiTermsEnum {
         // call next() on each top, and reorder queue
         for _ in 0..self.top.len() {
             let top = self.queue.top().ok_or_else(|| {
-                LuceneError::illegal_state(
+                LuceneError::null_pointer_with_message(
                     "Cannot invoke \"org.apache.lucene.index.MultiTermsEnum$TermsEnumWithSlice.next()\" because \"top\" is null"
                         .to_string(),
                 )
@@ -1272,7 +1272,7 @@ impl TermsEnum for MultiTermsEnum {
     /// Equivalent to `MultiTermsEnum.seekExact(long)`, which throws
     /// `UnsupportedOperationException`.
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MultiTermsEnum does not support seekOrd".to_string(),
         ))
     }
@@ -1292,7 +1292,7 @@ impl TermsEnum for MultiTermsEnum {
     /// Equivalent to `MultiTermsEnum.ord()`, which throws
     /// `UnsupportedOperationException`.
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MultiTermsEnum does not support ord".to_string(),
         ))
     }
@@ -1439,8 +1439,7 @@ impl TermsEnum for MultiTermsEnum {
     /// Propagates any error raised while moving a sub-enum. After a
     /// [`seek_exact`](TermsEnum::seek_exact) that found nothing on an enum that
     /// never had a term, Java re-seeks to its `null` `current` and throws
-    /// `NullPointerException`; that is reported as
-    /// [`LuceneError::IllegalState`] with the JDK's message.
+    /// `NullPointerException` with the JDK's message.
     fn next(&mut self) -> Result<Option<BytesRef>> {
         if self.last_seek_exact {
             // Must seekCeil at this point, so those subs that didn't have the
@@ -1454,7 +1453,7 @@ impl TermsEnum for MultiTermsEnum {
                 self.queue.clear();
                 self.top.clear();
                 self.last_seek_exact = false;
-                return Err(LuceneError::illegal_state(
+                return Err(LuceneError::null_pointer_with_message(
                     "Cannot read field \"bytes\" because \"ref\" is null".to_string(),
                 ));
             };
@@ -1539,7 +1538,7 @@ impl std::fmt::Debug for EnumWithSlice {
 /// The `NullPointerException` Java raises when `MultiPostingsEnum` reaches a
 /// sub whose `postingsEnum` is `null`.
 fn null_current_postings(method: &str) -> LuceneError {
-    LuceneError::illegal_state(null_current_postings_message(method))
+    LuceneError::null_pointer_with_message(null_current_postings_message(method))
 }
 
 /// The JVM's helpful message for the `NullPointerException` of
@@ -2796,7 +2795,7 @@ mod tests {
             self.max_doc
         }
         fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-            Err(LuceneError::UnsupportedOperation("stub".to_string()))
+            Err(LuceneError::unsupported_operation("stub".to_string()))
         }
         fn do_close(&self) -> Result<()> {
             Ok(())
@@ -3605,7 +3604,7 @@ mod tests {
     /// which nulls `top[0].termsEnum` and clears the queue by reflection).
     #[test]
     fn null_sub_enums_and_an_empty_queue_report_javas_npe_texts() {
-        let npe = |message: &str| LuceneError::illegal_state(message.to_string()).to_string();
+        let npe = |message: &str| LuceneError::null_pointer_with_message(message).to_string();
         let mt = two_leaves_with_a_shared_trailing_term();
 
         let mut te = mt.multi_iterator().unwrap().unwrap();

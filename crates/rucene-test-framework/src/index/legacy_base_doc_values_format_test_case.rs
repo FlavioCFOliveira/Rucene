@@ -61,7 +61,7 @@ use rucene::document::{
     NumericValue, SortedDocValuesField, SortedNumericDocValuesField, SortedSetDocValuesField,
     Store, StoredField, StringField, TextField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::doc_values::{DocValues, SortedNumericDocValues, SortedSetDocValues};
 use rucene::index::index_writer::IndexWriter;
@@ -543,7 +543,7 @@ fn compiled(regex: &str, determinize: bool) -> Result<CompiledAutomaton> {
     let mut automaton = RegExp::new(regex)?.to_automaton()?;
     if determinize {
         automaton = Operations::determinize(&automaton, DEFAULT_DETERMINIZE_WORK_LIMIT)
-            .map_err(|e| LuceneError::IllegalArgument(e.to_string()))?;
+            .map_err(|e| LuceneError::illegal_argument(e.to_string()))?;
     }
     CompiledAutomaton::from_automaton(automaton)
 }
@@ -4047,13 +4047,15 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                         starting_gun.wait();
                         let run = (|| -> Result<()> {
                             for leaf in Arc::clone(&r).leaves()? {
-                                let codec_reader = leaf
-                                    .leaf_reader()
-                                    .as_codec_reader()
-                                    .ok_or_else(|| LuceneError::Unchecked {
-                                        class: "java.lang.ClassCastException",
-                                        message: Some("the leaf is not a CodecReader".to_string()),
-                                        cause: None,
+                                let codec_reader =
+                                    leaf.leaf_reader().as_codec_reader().ok_or_else(|| {
+                                        LuceneError::from(LuceneErrorKind::Unchecked {
+                                            class: "java.lang.ClassCastException",
+                                            message: Some(
+                                                "the leaf is not a CodecReader".to_string(),
+                                            ),
+                                            cause: None,
+                                        })
                                     })?;
                                 let status = rucene::index::check_index::test_doc_values(
                                     &*codec_reader,

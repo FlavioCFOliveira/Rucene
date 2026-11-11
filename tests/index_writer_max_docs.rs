@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Store, StringField};
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::filter_directory_reader::SlowCodecReaderWrapper;
 use rucene::index::index_reader::IndexReader;
@@ -100,7 +100,10 @@ fn index_with(count: usize) -> Arc<dyn Directory> {
 
 fn corrupt_message(error: &LuceneError) -> &str {
     match error {
-        LuceneError::CorruptIndex(message) => message,
+        LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(message),
+            ..
+        } => message,
         other => panic!("a CorruptIndexException, got {other:?}"),
     }
 }
@@ -252,7 +255,10 @@ fn add_indexes_codec_readers_refuses_readers_over_the_limit() {
 
     let error = dest_writer.add_indexes_codec_readers(&leaves).unwrap_err();
     match &error {
-        LuceneError::IllegalArgument(message) => assert!(
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => assert!(
             message.contains(&format!(
                 "number of documents in the index cannot exceed {writer_max_docs}"
             )),

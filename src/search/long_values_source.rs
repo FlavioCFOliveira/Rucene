@@ -288,13 +288,13 @@ impl crate::search::DocIdSetIterator for LongValuesAsNumericDocValues<'_> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "LongValuesSource.asNumericDocValues does not iterate".to_string(),
         ))
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "LongValuesSource.asNumericDocValues does not iterate".to_string(),
         ))
     }
@@ -312,7 +312,7 @@ impl crate::index::DocValuesIterator for LongValuesAsNumericDocValues<'_> {
 
 impl crate::index::NumericDocValues for LongValuesAsNumericDocValues<'_> {
     fn long_value(&self) -> Result<i64> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "LongValuesSource.asNumericDocValues reads through long_value_mut".to_string(),
         ))
     }

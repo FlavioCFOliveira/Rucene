@@ -376,7 +376,7 @@ impl ScalarQuantizer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the quantile computation
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the quantile computation
     /// produces a non-finite value, and propagates any error raised while
     /// reading the vectors.
     pub fn from_vectors_auto_interval(

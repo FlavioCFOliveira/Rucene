@@ -1052,7 +1052,7 @@ impl TermsEnum for SegmentTermsEnum {
 
     fn ord(&self) -> Result<i64> {
         if !self.do_ord {
-            return Err(LuceneError::UnsupportedOperation(String::new()));
+            return Err(LuceneError::unsupported_operation(String::new()));
         }
         Ok(self.state.ord)
     }

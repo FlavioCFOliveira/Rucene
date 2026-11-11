@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::RandomizedContext;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::geo::{Circle, GeoUtils, Line, Point, Polygon, Rectangle};
 use rucene::util::java_fmt::double_to_string;
 use rucene::util::sloppy_math::SloppyMath;
@@ -540,7 +540,10 @@ pub fn next_polygon() -> Polygon {
             let lon = next_longitude();
             match create_regular_polygon(lat, lon, radius_meters, gons) {
                 Ok(p) => return p,
-                Err(LuceneError::IllegalArgument(_)) => {
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }) => {
                     // we tried to cross dateline or pole ... try again
                 }
                 Err(e) => rethrow(e),
@@ -710,7 +713,7 @@ pub fn to_svg(objects: &[SvgObject<'_>]) -> Result<String> {
     }
     if !min_lat.is_finite() || !max_lat.is_finite() || !min_lon.is_finite() || !max_lon.is_finite()
     {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "you must pass at least one polygon".to_string(),
         ));
     }
@@ -811,7 +814,7 @@ pub fn to_svg(objects: &[SvgObject<'_>]) -> Result<String> {
 /// `UnsupportedOperationException` for a polygon with holes.
 pub fn contains_slowly(polygon: &Polygon, latitude: f64, longitude: f64) -> Result<bool> {
     if !polygon.get_holes().is_empty() {
-        return Err(LuceneError::UnsupportedOperation(
+        return Err(LuceneError::unsupported_operation(
             "this testing method does not support holes".to_string(),
         ));
     }
@@ -961,13 +964,13 @@ pub fn read_shape(name: &str) -> Result<String> {
         .find(|(n, _)| *n == name)
         .map(|(_, b)| *b)
         .ok_or_else(|| {
-            LuceneError::Io(
+            LuceneError::from(LuceneErrorKind::Io(
                 rucene::store::java_nio_file::JavaIoException::new(
                     "java.io.FileNotFoundException",
                     Some(format!("classpath resource not found: {name}")),
                 )
                 .into_io_error(),
-            )
+            ))
         })?;
     let mut data = Vec::new();
     if name.ends_with(".gz") {

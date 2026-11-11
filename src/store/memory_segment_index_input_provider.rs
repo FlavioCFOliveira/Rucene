@@ -13,7 +13,7 @@ use super::memory_segment::{
 use super::memory_segment_index_input::{MemorySegmentIndexInput, ToReadAdvice};
 use super::native_access;
 use super::{IOContext, ReadAdvice};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Name of the setting that caps how many files may share one arena.
 ///
@@ -113,8 +113,8 @@ impl MemorySegmentIndexInputProvider {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the file needs more chunks
-    /// than can be addressed, and [`LuceneError::Io`] if the file cannot be
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the file needs more chunks
+    /// than can be addressed, and [`LuceneErrorKind::Io`] if the file cannot be
     /// opened or mapped. A mapping failure is reported with the same diagnostic
     /// advice Lucene attaches in `convertMapFailedIOException`.
     #[allow(clippy::too_many_arguments)]
@@ -197,7 +197,7 @@ impl MemorySegmentIndexInputProvider {
         length: i64,
     ) -> Result<Vec<MemorySegment>> {
         if (length >> chunk_size_power) >= i32::MAX as i64 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "File too big for chunk size: {resource_description}"
             )));
         }
@@ -376,11 +376,11 @@ impl MemorySegmentIndexInputProvider {
         } else {
             "Please review 'ulimit -v', 'ulimit -m' (both should return 'unlimited'). "
         };
-        LuceneError::Io(std::io::Error::other(format!(
+        LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(format!(
             "{error}: {resource_description} [this may be caused by lack of enough unfragmented \
              virtual address space or too restrictive virtual memory limits enforced by the \
              operating system, preventing us to map a chunk of {buf_size} bytes. {more_info}More \
              information: https://blog.thetaphi.de/2012/07/use-lucenes-mmapdirectory-on-64bit.html]"
-        )))
+        ))))
     }
 }

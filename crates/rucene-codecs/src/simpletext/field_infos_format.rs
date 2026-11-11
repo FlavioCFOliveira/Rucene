@@ -160,7 +160,7 @@ pub(crate) fn index_options_value_of(s: &str) -> Result<IndexOptions> {
 /// `Enum.valueOf`'s `IllegalArgumentException`:
 /// `No enum constant org.apache.lucene.index.<Type>.<name>`.
 pub(crate) fn no_enum_constant(type_name: &str, name: &str) -> LuceneError {
-    LuceneError::IllegalArgument(format!(
+    LuceneError::illegal_argument(format!(
         "No enum constant org.apache.lucene.index.{type_name}.{name}"
     ))
 }

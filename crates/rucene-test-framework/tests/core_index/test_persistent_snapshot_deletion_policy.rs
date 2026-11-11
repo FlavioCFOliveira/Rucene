@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
 use rucene::document::Document;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_deletion_policy::{
     IndexDeletionPolicy, KeepOnlyLastCommitDeletionPolicy, PersistentSnapshotDeletionPolicy,
@@ -182,8 +182,8 @@ impl Failure for FailOnPersist {
     fn eval(&self, _dir: &MockDirectoryWrapper) -> Result<()> {
         if LuceneTestCase::call_stack_contains_method::<PersistentSnapshotDeletionPolicy>("persist")
         {
-            return Err(LuceneError::Io(std::io::Error::other(
-                "now fail on purpose",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("now fail on purpose"),
             )));
         }
         Ok(())

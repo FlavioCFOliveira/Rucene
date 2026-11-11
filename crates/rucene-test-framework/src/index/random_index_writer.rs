@@ -469,7 +469,7 @@ impl RandomIndexWriter {
         let name = self
             .config
             .soft_deletes_field()
-            .ok_or_else(|| LuceneError::IllegalArgument("name must not be null".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("name must not be null".to_string()))?;
         let field_type = FieldType::new();
         field_type.set_doc_values_type(DocValuesType::NUMERIC)?;
         field_type.freeze();

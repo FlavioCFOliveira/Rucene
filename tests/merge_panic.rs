@@ -27,7 +27,7 @@ use std::time::Duration;
 use rucene::codecs::stored_fields::{StoredFieldsFormat, StoredFieldsReader, StoredFieldsWriter};
 use rucene::codecs::{Codec, FilterCodec, Lucene104Codec};
 use rucene::document::{Document, StoredField};
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::field_infos::FieldInfos;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
@@ -138,7 +138,10 @@ fn force_merge_with(
 fn tragedy(writer: &IndexWriter) -> String {
     let tragedy = writer.get_tragic_exception().expect("a tragic exception");
     match &*tragedy {
-        LuceneError::AssertionError(message) => format!("java.lang.AssertionError: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(message),
+            ..
+        } => format!("java.lang.AssertionError: {message}"),
         other => other.to_string(),
     }
 }
@@ -154,14 +157,20 @@ fn a_panicking_merge_fails_force_merge_under_concurrent_merge_scheduler() {
             panic!("forceMerge panicked instead of failing");
         };
         match &error {
-            LuceneError::IllegalState { message, cause } => {
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, cause },
+                ..
+            } => {
                 assert_eq!(
                     message,
                     "this writer hit an unrecoverable error; cannot complete forceMerge"
                 );
                 let cause = cause.as_ref().expect("the tragedy as the cause");
                 let cause = match &**cause {
-                    LuceneError::AssertionError(m) => format!("java.lang.AssertionError: {m}"),
+                    LuceneError {
+                        kind: LuceneErrorKind::AssertionError(m),
+                        ..
+                    } => format!("java.lang.AssertionError: {m}"),
                     other => other.to_string(),
                 };
                 assert_eq!(cause, thrown);

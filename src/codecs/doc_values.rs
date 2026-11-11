@@ -110,7 +110,7 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] from producers that
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) from producers that
     /// mirror Java's `EmptyDocValuesProducer`, whose `getSkipper` throws
     /// `UnsupportedOperationException` (`index/EmptyDocValuesProducer.java:54-57`),
     /// and any I/O error from opening the skip index.
@@ -131,15 +131,15 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
 // -----------------------------------------------------------------------------
 
 /// Dereferences the values a producer returned, as Java's callers dereference
-/// them without a check: a `null` there raises `NullPointerException`, which
-/// is reported as [`LuceneError::IllegalState`].
+/// them without a check: a `null` there raises `NullPointerException`
+/// ([`LuceneError::null_pointer_with_message`]).
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] when `values` is `None`.
+/// Returns Java's `NullPointerException` when `values` is `None`.
 pub(crate) fn non_null<T>(values: Option<T>, field: &FieldInfo) -> Result<T> {
     values.ok_or_else(|| {
-        LuceneError::illegal_state(format!(
+        LuceneError::null_pointer_with_message(format!(
             "the producer has no values for field \"{}\"",
             field.name
         ))
@@ -359,9 +359,9 @@ impl DocValuesFormatRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `name` is empty, contains
     /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
-    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
     pub fn register<F>(&self, name: impl Into<String>, format: F) -> Result<()>
     where
         F: DocValuesFormat + 'static,
@@ -425,7 +425,7 @@ impl DocValuesFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
 /// poisoned.
 pub fn reload_doc_values_formats(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,
@@ -484,8 +484,8 @@ pub fn available_doc_values_formats() -> Vec<String> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] if the name is invalid, or
-/// [`LuceneError::IllegalState`] if the name is already registered.
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the name is invalid, or
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
 pub fn register_doc_values_format(
     name: impl Into<String>,
     format: impl DocValuesFormat + 'static,
@@ -596,6 +596,7 @@ impl DocValuesFormat for EmptyDocValuesFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use std::sync::Arc;
 
@@ -646,7 +647,10 @@ mod tests {
         let producer = EmptyDocValuesProducer;
         let field = FieldInfo::default();
         match producer.get_skipper(&field) {
-            Err(LuceneError::UnsupportedOperation(_)) => {}
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            }) => {}
             Err(other) => panic!("expected UnsupportedOperation, got {other:?}"),
             Ok(_) => panic!("expected UnsupportedOperation, got a skipper"),
         }
@@ -880,7 +884,7 @@ fn sub_field_info<'a>(
 /// from `advance` and `advanceExact`, because a merge only ever walks the
 /// merged doc-id space once, in order.
 fn merge_iterator_is_forward_only() -> LuceneError {
-    LuceneError::UnsupportedOperation(
+    LuceneError::unsupported_operation(
         "a merged doc-values iterator can only be advanced with next_doc".to_string(),
     )
 }
@@ -1728,7 +1732,7 @@ impl<'a> MergedDocValuesProducer<'a> {
     /// Fails when asked for a field other than the one being merged.
     fn check_field(&self, field: &FieldInfo) -> Result<()> {
         if field.name != self.field.name {
-            return Err(LuceneError::IllegalArgument("wrong fieldInfo".to_string()));
+            return Err(LuceneError::illegal_argument("wrong fieldInfo".to_string()));
         }
         Ok(())
     }
@@ -1743,7 +1747,7 @@ impl<'a> MergedDocValuesProducer<'a> {
     }
 
     fn unsupported(&self, kind: &str) -> LuceneError {
-        LuceneError::UnsupportedOperation(format!(
+        LuceneError::unsupported_operation(format!(
             "the merged view of field '{}' does not provide {kind} doc values",
             self.field.name
         ))

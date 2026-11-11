@@ -1071,7 +1071,7 @@ impl ArrayDictionaryColumn {
     ) -> Result<Self> {
         let column = column(name, Arc::clone(&field_type), Density::Sparse)?;
         if dictionary.is_empty() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "DictionaryColumn \"{name}\": dictionary must not be empty"
             )));
         }
@@ -1080,12 +1080,12 @@ impl ArrayDictionaryColumn {
         for (i, entry) in dictionary.into_iter().enumerate() {
             match entry {
                 None => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "DictionaryColumn \"{name}\": dictionary entry at index {i} is null"
                     )))
                 }
                 Some(e) if e.length > max => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "DictionaryColumn \"{name}\": dictionary entry at index {i} is too long: {} > {max}",
                         e.length
                     )))

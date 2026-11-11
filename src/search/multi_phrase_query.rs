@@ -72,11 +72,11 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a negative slop, which is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a negative slop, which is
     /// the `IllegalArgumentException` Java throws.
     pub fn set_slop(&mut self, s: i32) -> Result<&mut Self> {
         if s < 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "slop value cannot be negative".to_string(),
             ));
         }
@@ -117,14 +117,14 @@ impl Builder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a term is not on the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a term is not on the
     /// phrase's field, which is the `IllegalArgumentException` Java throws, and
     /// when the term list is empty, which Java reports as an
     /// `ArrayIndexOutOfBoundsException` while reading `terms[0].field()`.
     pub fn add_at(&mut self, terms: Vec<Term>, position: i32) -> Result<&mut Self> {
         if self.term_arrays.is_empty() {
             let first = terms.first().ok_or_else(|| {
-                LuceneError::IllegalArgument(
+                LuceneError::illegal_argument(
                     "the first term array of a MultiPhraseQuery must not be empty".to_string(),
                 )
             })?;
@@ -133,7 +133,7 @@ impl Builder {
 
         for term in &terms {
             if Some(term.field()) != self.field.as_deref() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "All phrase terms must be in the same field ({}): {term}",
                     self.field.as_deref().unwrap_or("null")
                 )));

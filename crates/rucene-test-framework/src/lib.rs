@@ -22,7 +22,7 @@
 /// Java's `assert condition [: message];` under `-ea` in a method that
 /// returns [`rucene::error::Result`] (or a result whose error converts from
 /// [`rucene::error::LuceneError`], such as `CollectionResult`): a failed
-/// assertion returns `Err(LuceneError::AssertionError(message).into())` from
+/// assertion returns `Err(LuceneErrorKind::AssertionError(message).into())` from
 /// the enclosing function,
 /// the error a Java `AssertionError` stands for in this port (the message is
 /// empty for an `assert` without one, Java's `null`).
@@ -32,12 +32,12 @@
 macro_rules! java_assert {
     ($cond:expr) => {
         if cfg!(debug_assertions) && !($cond) {
-            return Err(rucene::error::LuceneError::AssertionError(String::new()).into());
+            return Err(rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::AssertionError(String::new())).into());
         }
     };
     ($cond:expr, $($msg:tt)+) => {
         if cfg!(debug_assertions) && !($cond) {
-            return Err(rucene::error::LuceneError::AssertionError(format!($($msg)+)).into());
+            return Err(rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::AssertionError(format!($($msg)+))).into());
         }
     };
 }

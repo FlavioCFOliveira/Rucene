@@ -91,7 +91,7 @@ impl CompressionAlgorithm {
             0 => Ok(Self::NoCompression),
             1 => Ok(Self::LowercaseAscii),
             2 => Ok(Self::Lz4),
-            _ => Err(LuceneError::IllegalArgument(format!(
+            _ => Err(LuceneError::illegal_argument(format!(
                 "illegal compression algorithm code: {code}"
             ))),
         }
@@ -2068,7 +2068,7 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
         Self::validate_settings(min_items_in_block, max_items_in_block)?;
 
         if !(VERSION_START..=VERSION_CURRENT).contains(&version) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Expected version in range [{}, {}], but got {}",
                 VERSION_START, VERSION_CURRENT, version
             )));
@@ -2106,17 +2106,17 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
     /// Validates the min/max block size settings, matching the Java checks.
     pub fn validate_settings(min_items_in_block: i32, max_items_in_block: i32) -> Result<()> {
         if min_items_in_block <= 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minItemsInBlock must be >= 2; got {min_items_in_block}"
             )));
         }
         if min_items_in_block > max_items_in_block {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxItemsInBlock must be >= minItemsInBlock; got maxItemsInBlock={max_items_in_block} minItemsInBlock={min_items_in_block}"
             )));
         }
         if 2 * (min_items_in_block - 1) > max_items_in_block {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxItemsInBlock must be at least 2*(minItemsInBlock-1); got maxItemsInBlock={max_items_in_block} minItemsInBlock={min_items_in_block}"
             )));
         }
@@ -2160,14 +2160,14 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
             // `FieldInfos` does not know is a `null` `FieldInfo`, which the
             // `TermsWriter` constructor dereferences
             // (`fieldInfo.getIndexOptions()`, line 975) and throws
-            // `NullPointerException`, this crate's `IllegalState`.
+            // `NullPointerException`.
             let field_info = self
                 .field_infos
                 .field_info(&field)
                 .cloned()
                 .ok_or_else(|| {
-                    LuceneError::illegal_state(format!(
-                        "java.lang.NullPointerException: no FieldInfo for field \"{field}\""
+                    LuceneError::null_pointer_with_message(format!(
+                        "no FieldInfo for field \"{field}\""
                     ))
                 })?;
             let postings_writer: &mut dyn PostingsWriterBase = self.postings_writer.as_mut();
@@ -2678,6 +2678,7 @@ mod tests {
     };
     use crate::codecs::postings::FieldsConsumer;
     use crate::codecs::term_state::BlockTermState;
+    use crate::error::LuceneErrorKind;
     use crate::index::terms::EmptyFields;
     use crate::index::{PostingsEnum, SeekStatus, SegmentInfo, TermState};
     use crate::store::{ByteBuffersDirectory, Directory, IndexInput, IndexOutput};
@@ -3169,8 +3170,13 @@ mod tests {
             .write(&fields, None)
             .expect_err("no FieldInfo for the field");
         assert!(
-            matches!(&error, LuceneError::IllegalState { message, .. }
-                if message.contains("NullPointerException")),
+            matches!(
+                error.kind(),
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ),
             "{error:?}"
         );
         let _ = writer.close();
@@ -3330,7 +3336,7 @@ mod tests {
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(LuceneError::UnsupportedOperation(
+            Err(LuceneError::unsupported_operation(
                 "impacts not supported".to_string(),
             ))
         }
@@ -3468,7 +3474,7 @@ mod tests {
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
         ) -> Result<Box<dyn PostingsEnum>> {
-            Err(LuceneError::UnsupportedOperation(
+            Err(LuceneError::unsupported_operation(
                 "stub postings reader".to_string(),
             ))
         }
@@ -3479,7 +3485,7 @@ mod tests {
             _state: &BlockTermState,
             _flags: i32,
         ) -> Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(LuceneError::UnsupportedOperation(
+            Err(LuceneError::unsupported_operation(
                 "stub postings reader".to_string(),
             ))
         }
@@ -3800,7 +3806,13 @@ mod close_family_tests {
             panic!("a .tim longer than recorded is refused");
         };
         assert!(
-            matches!(error, crate::error::LuceneError::CorruptIndex(_)),
+            matches!(
+                error,
+                crate::error::LuceneError {
+                    kind: crate::error::LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
             "{error:?}"
         );
         let count = |name: &str| log.closed()[before..].iter().filter(|n| *n == name).count();

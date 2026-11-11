@@ -79,7 +79,7 @@ use rucene::codecs::postings::MergeState;
 use rucene::codecs::state::{OwnedSegmentWriteState, SegmentReadState};
 use rucene::codecs::{get_default, Codec, FilterCodec};
 use rucene::document::{Document, KnnFloatVectorField, Store};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::field_infos::FieldInfo;
 use rucene::index::index_writer::IndexWriter;
@@ -219,14 +219,14 @@ impl BaseKnnVectorsFormatTestCase for KnnSuite {
 
     fn simulate_empty_raw_vectors(&self, dir: &dyn Directory) -> Result<()> {
         if !self.scalar_quantized {
-            return Err(LuceneError::Unchecked {
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.Exception",
                 message: Some(
                     "simulateEmptyRawVectors must be implemented by codecs that support FloatVector fallback"
                         .to_string(),
                 ),
                 cause: None,
-            });
+            }));
         }
         let index_files = dir.list_all()?;
         let raw_vector_extension = "vec";
@@ -424,7 +424,7 @@ impl<T: PagedElement> KnnFieldVectorsWriter<T> for PagedFieldVectorsWriter<T> {
             ));
         }
         if doc_id == self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "VectorValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
                 self.field_info.name
             )));

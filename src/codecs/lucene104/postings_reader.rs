@@ -29,7 +29,7 @@ use crate::codecs::lucene104::{
 use crate::codecs::postings::{ImpactsEnum, PostingsEnum, PostingsReaderBase};
 use crate::codecs::state::SegmentReadState;
 use crate::codecs::term_state::BlockTermState;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{FieldInfo, IndexOptions};
 use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
@@ -352,10 +352,10 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         )?;
         let index_block_size = terms_in.read_v_int()?;
         if index_block_size != BS_I32 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "index-time BLOCK_SIZE ({}) != read-time BLOCK_SIZE ({BS_I32})",
                 index_block_size
-            )));
+            ))));
         }
         Ok(())
     }
@@ -1856,10 +1856,10 @@ impl PostingsEnum for BlockPostingsEnum {
         }
         let upto = self.doc_buffer_upto;
         if !(1..=BS_I32).contains(&upto) {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "postings block position {} is outside the {BS}-document block",
                 upto - 1
-            )));
+            ))));
         }
         Ok(self.freq_buffer.borrow()[upto as usize - 1])
     }
@@ -2435,7 +2435,10 @@ mod tests {
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
             .expect("postings exist");
         match it.next_doc() {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "Index 40 out of bounds for length 32")
             }
             other => panic!("expected Java's index-out-of-bounds failure, got {other:?}"),

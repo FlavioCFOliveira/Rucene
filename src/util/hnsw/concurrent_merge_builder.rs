@@ -267,13 +267,13 @@ impl HnswBuilder for HnswConcurrentMergeBuilder {
     }
 
     fn add_graph_node(&mut self, _node: i32) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "This builder is for merge only".to_string(),
         ))
     }
 
     fn add_graph_node_with_eps(&mut self, _node: i32, _eps: &IntHashSet) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "This builder is for merge only".to_string(),
         ))
     }

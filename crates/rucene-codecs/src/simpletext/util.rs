@@ -18,7 +18,7 @@
 //! Port of `org.apache.lucene.codecs.simpletext.SimpleTextUtil`, plus the
 //! small JDK and Lucene helpers every `SimpleText` reader shares.
 
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::{ChecksumIndexInput, DataInput, DataOutput, IndexOutput};
 use rucene::util::java_fmt::java_utf8_to_string;
 use rucene::util::{ArrayUtil, BytesRef};
@@ -118,7 +118,7 @@ pub fn write_checksum(out: &mut dyn IndexOutput) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] with Lucene's message when the line
+/// Returns [`LuceneErrorKind::CorruptIndex`] with Lucene's message when the line
 /// is not a checksum line, when the checksum does not match, or when bytes
 /// follow it.
 pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<()> {
@@ -156,13 +156,13 @@ pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] with Lucene's message when `s`
+/// Returns [`LuceneErrorKind::IllegalArgument`] with Lucene's message when `s`
 /// is not bracketed, and with `Integer.parseInt`'s `NumberFormatException`
 /// message when a byte is not hexadecimal.
 pub fn from_bytes_ref_string(s: &str) -> Result<BytesRef> {
     let units: Vec<u16> = s.encode_utf16().collect();
     let not_created = || {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "string {s} was not created from BytesRef.toString?"
         ))
     };
@@ -191,9 +191,9 @@ pub fn from_bytes_ref_string(s: &str) -> Result<BytesRef> {
 fn parse_int_radix16(s: &str) -> Result<i32> {
     let chars: Vec<char> = s.chars().collect();
     let failure =
-        || LuceneError::IllegalArgument(format!("For input string: \"{s}\" under radix 16"));
+        || LuceneError::illegal_argument(format!("For input string: \"{s}\" under radix 16"));
     if chars.is_empty() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "For input string: \"{s}\" under radix 16"
         )));
     }
@@ -240,7 +240,7 @@ pub(crate) fn read_string(scratch: &[u8], offset: usize) -> String {
 /// # Errors
 ///
 /// Returns `ArrayUtil.parseInt`'s `NumberFormatException` as
-/// [`LuceneError::IllegalArgument`].
+/// [`LuceneErrorKind::IllegalArgument`].
 pub(crate) fn parse_int_at(scratch: &[u8], offset: usize) -> Result<i32> {
     let chars: Vec<char> = read_string(scratch, offset).chars().collect();
     ArrayUtil::parse_int(&chars, 0, chars.len())
@@ -251,10 +251,10 @@ pub(crate) fn parse_int_at(scratch: &[u8], offset: usize) -> Result<i32> {
 /// # Errors
 ///
 /// Returns the `NumberFormatException` message as
-/// [`LuceneError::IllegalArgument`].
+/// [`LuceneErrorKind::IllegalArgument`].
 pub(crate) fn parse_int(s: &str) -> Result<i32> {
     rucene::util::extra::java_parse_int(s)
-        .ok_or_else(|| LuceneError::IllegalArgument(number_format_message(s)))
+        .ok_or_else(|| LuceneError::illegal_argument(number_format_message(s)))
 }
 
 /// `Long.parseLong(String)`.
@@ -262,17 +262,17 @@ pub(crate) fn parse_int(s: &str) -> Result<i32> {
 /// # Errors
 ///
 /// Returns the `NumberFormatException` message as
-/// [`LuceneError::IllegalArgument`].
+/// [`LuceneErrorKind::IllegalArgument`].
 pub(crate) fn parse_long(s: &str) -> Result<i64> {
     rucene::util::extra::java_parse_long(s)
-        .ok_or_else(|| LuceneError::IllegalArgument(number_format_message(s)))
+        .ok_or_else(|| LuceneError::illegal_argument(number_format_message(s)))
 }
 
 /// `Float.parseFloat(String)`.
 ///
 /// # Errors
 ///
-/// Returns the `NumberFormatException` as [`LuceneError::IllegalArgument`].
+/// Returns the `NumberFormatException` as [`LuceneErrorKind::IllegalArgument`].
 pub(crate) fn parse_float(s: &str) -> Result<f32> {
     rucene::util::java_fmt::parse_float(s).ok_or_else(|| float_format_error(s))
 }
@@ -281,7 +281,7 @@ pub(crate) fn parse_float(s: &str) -> Result<f32> {
 ///
 /// # Errors
 ///
-/// Returns the `NumberFormatException` as [`LuceneError::IllegalArgument`].
+/// Returns the `NumberFormatException` as [`LuceneErrorKind::IllegalArgument`].
 pub(crate) fn parse_double(s: &str) -> Result<f64> {
     rucene::util::java_fmt::parse_double(s).ok_or_else(|| float_format_error(s))
 }
@@ -307,9 +307,9 @@ fn number_format_message(s: &str) -> String {
 /// otherwise.
 fn float_format_error(s: &str) -> LuceneError {
     if s.trim_matches(|c: char| c <= '\u{20}').is_empty() {
-        LuceneError::IllegalArgument("empty String".to_string())
+        LuceneError::illegal_argument("empty String".to_string())
     } else {
-        LuceneError::IllegalArgument(format!("For input string: \"{s}\""))
+        LuceneError::illegal_argument(format!("For input string: \"{s}\""))
     }
 }
 
@@ -326,10 +326,22 @@ pub(crate) fn bool_str(b: bool) -> &'static str {
 /// variant carries, without the port's `Display` prefix.
 pub(crate) fn java_message(e: &LuceneError) -> String {
     match e {
-        LuceneError::IllegalArgument(m) | LuceneError::CorruptIndex(m) => m.clone(),
-        LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
-        LuceneError::IllegalState { message, .. } => message.clone(),
-        LuceneError::UnsupportedOperation(m) => m.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message: m, .. },
+            ..
+        }
+        | LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(m),
+            ..
+        } => m.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::UnsupportedOperation { message: m, .. },
+            ..
+        } => m.clone(),
         other => other.to_string(),
     }
 }

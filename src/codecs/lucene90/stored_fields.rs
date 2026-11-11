@@ -71,7 +71,7 @@ use crate::codecs::stored_fields::{
 use crate::codecs::stub::{
     FieldInfo, FieldInfos, SegmentInfo, StoredFieldVisitor, StoredFieldVisitorStatus,
 };
-use crate::error::{to_int_exact, LuceneError, Result};
+use crate::error::{to_int_exact, LuceneError, LuceneErrorKind, Result};
 use crate::index::{
     segment_file_name, DocIDMerger, DocIDMergerSub, DocMap, MergeState, StoredFieldDataInput,
 };
@@ -313,9 +313,9 @@ impl StoredFieldsInts {
             16 => Self::read_ints16(input, count, values, offset)?,
             32 => Self::read_ints32(input, count, values, offset)?,
             _ => {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "Unsupported number of bits per value: {bpv}"
-                )))
+                ))))
             }
         }
         Ok(())
@@ -427,7 +427,7 @@ pub(crate) trait FieldsIndex: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the index holds no such
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the index holds no such
     /// block, where Java's monotonic reader throws an unchecked
     /// `ArrayIndexOutOfBoundsException`.
     fn get_block_start_pointer(&self, block_id: i64) -> Result<i64>;
@@ -632,13 +632,13 @@ impl FieldsIndex for FieldsIndexReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`], this crate's carrier for an
+    /// Returns [`LuceneErrorKind::IllegalArgument`], this crate's carrier for an
     /// `IndexOutOfBoundsException`, with the JDK's message `Index <docID> out
     /// of bounds for length <maxDoc>`, for a document outside the segment; and
     /// the errors of reading the index.
     fn get_block_id(&self, doc_id: i32) -> Result<i64> {
         if doc_id < 0 || doc_id >= self.max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Index {doc_id} out of bounds for length {}",
                 self.max_doc
             )));
@@ -923,8 +923,8 @@ impl FieldsIndexWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when `num_docs` is not the number
-    /// of documents indexed, [`LuceneError::CorruptIndex`] when a temporary
+    /// Returns [`LuceneErrorKind::IllegalState`] when `num_docs` is not the number
+    /// of documents indexed, [`LuceneErrorKind::CorruptIndex`] when a temporary
     /// file does not read back as written, and propagates I/O failures.
     pub(crate) fn finish(
         &mut self,
@@ -1009,9 +1009,9 @@ impl FieldsIndexWriter {
                     }
                     docs.finish()?;
                     if doc != i64::from(self.total_docs) {
-                        return Err(LuceneError::CorruptIndex(format!(
+                        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                             "Docs don't add up (resource={docs_name})"
-                        )));
+                        ))));
                     }
                     Ok(())
                 })();
@@ -1052,9 +1052,9 @@ impl FieldsIndexWriter {
                         file_pointers.add(fp)?;
                     }
                     if max_pointer < fp {
-                        return Err(LuceneError::CorruptIndex(format!(
+                        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                             "File pointers don't add up (resource={file_pointers_name})"
-                        )));
+                        ))));
                     }
                     file_pointers.add(max_pointer)?;
                     file_pointers.finish()?;
@@ -1491,7 +1491,7 @@ impl Lucene90CompressingStoredFieldsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the source chunk is
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the source chunk is
     /// inconsistent, and propagates any I/O error.
     ///
     /// Equivalent to
@@ -1524,7 +1524,7 @@ impl Lucene90CompressingStoredFieldsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when a chunk header disagrees with
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when a chunk header disagrees with
     /// the stored-fields index, and propagates any I/O error.
     ///
     /// Equivalent to
@@ -1582,9 +1582,9 @@ impl Lucene90CompressingStoredFieldsWriter {
                 let code = raw_docs.read_v_int()?;
                 let buffered_docs = ((code as u32) >> 2) as i32;
                 if base != doc_id {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "invalid state: base={base}, docID={doc_id}"
-                    )));
+                    ))));
                 }
                 // write a new index entry and new header for this chunk.
                 self.index_writer
@@ -1594,9 +1594,9 @@ impl Lucene90CompressingStoredFieldsWriter {
                 doc_id += buffered_docs;
                 self.doc_base += buffered_docs;
                 if doc_id > to_doc_id {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
-                    )));
+                    ))));
                 }
                 // copy bytes until the next chunk boundary (or end of chunk data).
                 // using the stored fields index for this isn't the most efficient, but fast
@@ -1804,7 +1804,7 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
     ) -> Result<()> {
         let length = value.length();
         if length < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "stored binary field \"{}\" has a negative length: {length}",
                 info.name
             )));
@@ -1867,7 +1867,7 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a segment of the merge has no
+    /// Returns [`LuceneErrorKind::IllegalState`] when a segment of the merge has no
     /// stored-fields reader, or when a strategy that needs this format's own
     /// reader is handed another one, and propagates every I/O and corruption
     /// error raised while reading the source segments.
@@ -2141,10 +2141,10 @@ impl BlockState {
         self.sliced = (token & 1) != 0;
 
         if !self.contains(doc_id) || self.doc_base + self.chunk_docs > num_docs {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Corrupted: doc_id={doc_id}, doc_base={}, chunk_docs={}, num_docs={num_docs}",
                 self.doc_base, self.chunk_docs
-            )));
+            ))));
         }
 
         self.offsets.resize(self.chunk_docs as usize + 1, 0);
@@ -2173,9 +2173,9 @@ impl BlockState {
                 let len = self.offsets[i + 1] - self.offsets[i];
                 let stored = self.num_stored_fields[i];
                 if (len == 0) != (stored == 0) {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "length={len}, num_stored_fields={stored}"
-                    )));
+                    ))));
                 }
             }
         }
@@ -2249,7 +2249,7 @@ impl BlockState {
         merging: bool,
     ) -> Result<SerializedDocument> {
         if !self.contains(doc_id) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "doc_id {doc_id} is not in the current block"
             )));
         }
@@ -2268,11 +2268,11 @@ impl BlockState {
         // further down; both surface as an exception, so both are reported
         // here rather than turning into a wild slice index.
         if offset < 0 || length < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "document {doc_id} spans [{}, {}) inside its chunk",
                 self.offsets[index],
                 self.offsets[index + 1]
-            )));
+            ))));
         }
         let offset = offset as usize;
         let length = length as usize;
@@ -2450,19 +2450,19 @@ impl Lucene90CompressingStoredFieldsReader {
             let num_dirty_docs = meta_in.read_v_long()?;
 
             if num_chunks < num_dirty_chunks {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, numDirtyChunks={num_dirty_chunks}"
-            )));
+            ))));
             }
             if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
-                return Err(LuceneError::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                     "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
-                ));
+                )));
             }
             if num_dirty_docs < num_dirty_chunks {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Cannot have more dirty chunks than documents within dirty chunks: numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
-            )));
+            ))));
             }
 
             check_footer(meta_in.as_mut())?;
@@ -2568,7 +2568,9 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
                 .field_infos
                 .field_info_by_number(field_number)
                 .ok_or_else(|| {
-                    LuceneError::CorruptIndex(format!("field number {field_number} not found"))
+                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                        "field number {field_number} not found"
+                    )))
                 })?;
 
             match visitor.needs_field(field_info)? {
@@ -2810,7 +2812,7 @@ impl Lucene90CompressingStoredFieldsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] with Java's message when this is
+    /// Returns [`LuceneErrorKind::IllegalState`] with Java's message when this is
     /// not a merge instance, or when the reader is not on the current version.
     fn is_loaded(&self, doc_id: i32) -> Result<bool> {
         if !self.merging {
@@ -2832,7 +2834,7 @@ impl Lucene90CompressingStoredFieldsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the chunk header or the
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the chunk header or the
     /// document offsets are inconsistent, and propagates any I/O error.
     ///
     /// Equivalent to
@@ -2896,9 +2898,9 @@ impl Lucene90CompressingStoredFieldsReader {
             TYPE_NUMERIC_FLOAT => visitor.float_field(info, Self::read_z_float(input)?),
             TYPE_NUMERIC_LONG => visitor.long_field(info, Self::read_t_long(input)?),
             TYPE_NUMERIC_DOUBLE => visitor.double_field(info, Self::read_z_double(input)?),
-            _ => Err(LuceneError::CorruptIndex(format!(
+            _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Unknown type flag: 0x{bits:x}"
-            ))),
+            )))),
         }
     }
 
@@ -2924,9 +2926,9 @@ impl Lucene90CompressingStoredFieldsReader {
                 Self::read_z_double(input)?;
                 Ok(())
             }
-            _ => Err(LuceneError::CorruptIndex(format!(
+            _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Unknown type flag: 0x{bits:x}"
-            ))),
+            )))),
         }
     }
 
@@ -2992,9 +2994,9 @@ impl Lucene90CompressingStoredFieldsReader {
             DAY_ENCODING => l = l.wrapping_mul(DAY_MS),
             0 => {}
             _ => {
-                return Err(LuceneError::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                     "Invalid TLong encoding".to_string(),
-                ))
+                )))
             }
         }
         Ok(l)
@@ -3060,19 +3062,19 @@ impl Lucene90CompressingStoredFieldsFormat {
         block_shift: i32,
     ) -> Result<Self> {
         if chunk_size < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "chunkSize must be >= 1".to_string(),
             ));
         }
         if max_docs_per_chunk < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxDocsPerChunk must be >= 1".to_string(),
             ));
         }
         if !(DirectMonotonicWriter::MIN_BLOCK_SHIFT..=DirectMonotonicWriter::MAX_BLOCK_SHIFT)
             .contains(&block_shift)
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "blockSize must be in {}-{}, got {block_shift}",
                 DirectMonotonicWriter::MIN_BLOCK_SHIFT,
                 DirectMonotonicWriter::MAX_BLOCK_SHIFT
@@ -3210,11 +3212,11 @@ impl Lucene90StoredFieldsFormat {
     /// `NullPointerException` (an unchecked error) when `mode` is `None`.
     pub fn with_mode(mode: Option<Mode>) -> Result<Self> {
         let Some(mode) = mode else {
-            return Err(LuceneError::Unchecked {
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.NullPointerException",
                 message: None,
                 cause: None,
-            });
+            }));
         };
         Ok(Self { mode })
     }
@@ -3271,7 +3273,7 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
                 "BEST_SPEED" => Mode::BestSpeed,
                 "BEST_COMPRESSION" => Mode::BestCompression,
                 _ => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "unknown mode {v} for {}",
                         Self::MODE_KEY
                     )))
@@ -3393,7 +3395,10 @@ mod tests {
             .unwrap();
         let mut visitor = DocumentStoredFieldVisitor::new();
         match merge.document(0, &mut visitor) {
-            Err(LuceneError::CorruptIndex(message)) => assert!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(message),
+                ..
+            }) => assert!(
                 message.starts_with("Corrupted: expected chunk size = -5, got 0 (resource="),
                 "{message}"
             ),
@@ -4480,7 +4485,16 @@ mod tests {
             Ok(_) => panic!("a document cannot have a negative length"),
             Err(error) => error,
         };
-        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
 
         // An offset past the range an `int` can hold is Java's
         // `Math.toIntExact(offsets[index + 1])`
@@ -4503,7 +4517,7 @@ mod tests {
                 Err(error) => error,
             };
             assert!(
-                matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
                 "{offsets:?}: {error:?}"
             );
         }
@@ -4521,7 +4535,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
             "{error:?}"
         );
 
@@ -5432,7 +5446,10 @@ mod tests {
         );
 
         match search.is_loaded(0) {
-            Err(LuceneError::IllegalState { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "isLoaded should only ever get called on a merge instance"
             ),
@@ -5443,7 +5460,10 @@ mod tests {
         old_version.merging = true;
         old_version.version = DATA_VERSION_CURRENT - 1;
         match old_version.is_loaded(0) {
-            Err(LuceneError::IllegalState { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "isLoaded should only ever get called when the reader is on the current version"
             ),
@@ -5552,16 +5572,25 @@ mod tests {
         assert_eq!(index.get_block_id(0).unwrap(), -1);
         assert!(matches!(
             index.get_block_start_pointer(-1),
-            Err(LuceneError::CorruptIndex(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            })
         ));
         assert!(matches!(
             index.get_block_length(-1),
-            Err(LuceneError::CorruptIndex(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            })
         ));
         reader.prefetch(0).unwrap();
         assert!(matches!(
             reader.serialized_document(0),
-            Err(LuceneError::CorruptIndex(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            })
         ));
     }
 
@@ -5620,7 +5649,10 @@ mod tests {
 
         for doc in [11, -1] {
             match index.get_block_id(doc) {
-                Err(LuceneError::IllegalArgument(message)) => {
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    ..
+                }) => {
                     assert_eq!(message, format!("Index {doc} out of bounds for length 11"));
                 }
                 other => panic!("expected Java's IndexOutOfBoundsException, got {other:?}"),
@@ -5828,7 +5860,13 @@ mod close_family_tests {
         let before = log.closed().len();
         let error = format.fields_reader(&*dir, &info, &fis, ctx).unwrap_err();
         assert!(
-            matches!(error, crate::error::LuceneError::CorruptIndex(_)),
+            matches!(
+                error,
+                crate::error::LuceneError {
+                    kind: crate::error::LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(log.closed()[before..], ["_0.fdx", "_0.fdt", "_0.fdm"]);

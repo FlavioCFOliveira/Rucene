@@ -241,7 +241,7 @@ impl UnicodeUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the bytes are not valid
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the bytes are not valid
     /// UTF-8, which is Java's bare `IllegalArgumentException`.
     pub fn code_point_count(utf8: &BytesRef) -> Result<usize> {
         let mut pos = utf8.offset;
@@ -262,12 +262,12 @@ impl UnicodeUtil {
                     pos += 4;
                 } else {
                     // 5- and 6-byte sequences are invalid.
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "invalid UTF-8 lead byte".to_string(),
                     ));
                 }
             } else {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "invalid UTF-8 lead byte".to_string(),
                 ));
             }
@@ -276,7 +276,7 @@ impl UnicodeUtil {
 
         // Check we did not go over the limit on the last character.
         if pos > limit {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "truncated UTF-8 sequence".to_string(),
             ));
         }
@@ -291,7 +291,7 @@ impl UnicodeUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] on an invalid lead byte.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) on an invalid lead byte.
     pub fn utf8_to_utf32(utf8: &BytesRef, ints: &mut [i32]) -> Result<usize> {
         let mut utf32_count = 0usize;
         let mut utf8_upto = utf8.offset;
@@ -314,7 +314,7 @@ impl UnicodeUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the lead byte cannot start
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the lead byte cannot start
     /// a UTF-8 sequence.
     pub fn code_point_at(utf8: &[u8], pos: usize) -> Result<UTF8CodePoint> {
         let lead_byte = utf8[pos] as usize;
@@ -330,7 +330,7 @@ impl UnicodeUtil {
             3 => (lead_byte & 15) as u32, // 4 useful bits
             4 => (lead_byte & 7) as u32,  // 3 useful bits
             _ => {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Invalid UTF8 header byte: 0x{lead_byte:x}"
                 )))
             }
@@ -355,7 +355,7 @@ impl UnicodeUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a value is negative, above
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a value is negative, above
     /// `0x10FFFF`, or is an unpaired surrogate — the last of which Java accepts
     /// because a Java `String` may hold lone surrogates and a Rust `String` may
     /// not. That is the only behavioural difference. Java's `new
@@ -367,12 +367,12 @@ impl UnicodeUtil {
         let mut out = String::with_capacity(count);
         for &cp in &code_points[offset..offset + count] {
             if !(0..=0x10FFFF).contains(&cp) {
-                return Err(LuceneError::IllegalArgument(String::new()));
+                return Err(LuceneError::illegal_argument(String::new()));
             }
             match char::from_u32(cp as u32) {
                 Some(c) => out.push(c),
                 None => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "unpaired surrogate code point: {cp}"
                     )))
                 }

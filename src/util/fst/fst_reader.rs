@@ -53,7 +53,7 @@ pub trait FSTReader: Accountable + Send + Sync {
     /// # Errors
     ///
     /// Propagates write errors, and returns
-    /// [`crate::error::LuceneError::UnsupportedOperation`] for stores that
+    /// [`crate::error::LuceneErrorKind::UnsupportedOperation`] for stores that
     /// cannot reproduce their bytes.
     fn write_to(&self, out: &mut dyn DataOutput) -> Result<()>;
 }

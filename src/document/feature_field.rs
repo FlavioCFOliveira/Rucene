@@ -194,7 +194,7 @@ pub const MAX_WEIGHT: f32 = 64.0;
 /// The check every `FeatureField.new*Query` factory runs first.
 fn check_weight(weight: f32) -> Result<()> {
     if weight <= 0.0 || weight > MAX_WEIGHT {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "weight must be in (0, {MAX_WEIGHT}], got: {weight}"
         )));
     }
@@ -220,7 +220,7 @@ impl FeatureField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `weight` is outside
     /// `(0, 64]`.
     pub fn new_linear_query(
         field_name: &str,
@@ -245,7 +245,7 @@ impl FeatureField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `weight` is outside
     /// `(0, 64]` or `scaling_factor` is below one or not finite.
     pub fn new_log_query(
         field_name: &str,
@@ -255,7 +255,7 @@ impl FeatureField {
     ) -> Result<Arc<dyn Query>> {
         check_weight(weight)?;
         if scaling_factor < 1.0 || !scaling_factor.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "scalingFactor must be >= 1, got: {scaling_factor}"
             )));
         }
@@ -303,7 +303,7 @@ impl FeatureField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `weight` is outside
     /// `(0, 64]` or `pivot` is not positive and finite.
     pub fn new_saturation_query(
         field_name: &str,
@@ -313,7 +313,7 @@ impl FeatureField {
     ) -> Result<Arc<dyn Query>> {
         check_weight(weight)?;
         if pivot <= 0.0 || !pivot.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pivot must be > 0, got: {pivot}"
             )));
         }
@@ -335,7 +335,7 @@ impl FeatureField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `weight` is outside
     /// `(0, 64]`, or `pivot` or `exp` is not positive and finite.
     pub fn new_sigmoid_query(
         field_name: &str,
@@ -346,12 +346,12 @@ impl FeatureField {
     ) -> Result<Arc<dyn Query>> {
         check_weight(weight)?;
         if pivot <= 0.0 || !pivot.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pivot must be > 0, got: {pivot}"
             )));
         }
         if exp <= 0.0 || !exp.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "exp must be > 0, got: {exp}"
             )));
         }
@@ -530,13 +530,13 @@ impl FeatureField {
     /// Equivalent to `FeatureField.setFeatureValue(float)`.
     pub fn set_feature_value(&self, feature_value: f32) -> Result<()> {
         if !feature_value.is_finite() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "featureValue must be finite, got: {feature_value} for feature {} on field {}",
                 self.feature_name, self.name
             )));
         }
         if feature_value < MIN_NORMAL {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "featureValue must be a positive normal float, got: {feature_value} for feature \
                  {} on field {} which is less than the minimum positive normal float: {MIN_NORMAL}",
                 self.feature_name, self.name

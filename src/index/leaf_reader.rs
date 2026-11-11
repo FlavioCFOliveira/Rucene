@@ -47,7 +47,7 @@ impl LeafMetaData {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `created_version_major` is out
+    /// Returns `LuceneErrorKind::IllegalArgument` if `created_version_major` is out
     /// of range or if `min_version` is required but missing.
     pub fn new(
         created_version_major: i32,
@@ -56,18 +56,18 @@ impl LeafMetaData {
         has_blocks: bool,
     ) -> Result<Self> {
         if created_version_major > Version::LATEST.major as i32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "createdVersionMajor is in the future: {created_version_major}"
             )));
         }
         if created_version_major < Self::MIN_CREATED_VERSION_MAJOR {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "createdVersionMajor must be >= {}, got: {created_version_major}",
                 Self::MIN_CREATED_VERSION_MAJOR
             )));
         }
         if created_version_major >= 7 && min_version.is_none() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minVersion must be set when createdVersionMajor is >= 7".to_string(),
             ));
         }

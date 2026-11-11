@@ -54,16 +54,16 @@ use rucene::store::{ByteArrayDataInput, DataInput, IndexInput};
 
 /// Java's `assert cond;` (`assert cond : message;`) under `-ea`: an
 /// `AssertionError`, raised in builds with `debug_assertions` (see
-/// [`LuceneError::AssertionError`]).
+/// [`LuceneErrorKind::AssertionError`]).
 macro_rules! java_assert {
     ($cond:expr) => {
         if cfg!(debug_assertions) && !($cond) {
-            return Err(rucene::error::LuceneError::AssertionError(String::new()));
+            return Err(rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::AssertionError(String::new())));
         }
     };
     ($cond:expr, $($msg:tt)+) => {
         if cfg!(debug_assertions) && !($cond) {
-            return Err(rucene::error::LuceneError::AssertionError(format!($($msg)+)));
+            return Err(rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::AssertionError(format!($($msg)+))));
         }
     };
 }

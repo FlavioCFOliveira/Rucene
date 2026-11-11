@@ -1879,7 +1879,7 @@ struct ThrowingGetBitSet;
 
 impl BitSetIteratorOverrides for ThrowingGetBitSet {
     fn get_bit_set<'a>(&'a self, _iterator: &'a BitSetIterator) -> &'a Arc<dyn BitSet> {
-        rethrow_java(LuceneError::UnsupportedOperation(
+        rethrow_java(LuceneError::unsupported_operation(
             "reusing BitSet is not supported".to_string(),
         ))
     }

@@ -294,8 +294,11 @@ pub fn new_term(random: &dyn Random, corpus: &CollectionStatistics) -> Result<Te
 
 /// `Math.toIntExact(value)`.
 fn to_int_exact(value: i64) -> Result<i32> {
-    i32::try_from(value)
-        .map_err(|_| rucene::error::LuceneError::Arithmetic("integer overflow".to_string()))
+    i32::try_from(value).map_err(|_| {
+        rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::Arithmetic(
+            "integer overflow".to_string(),
+        ))
+    })
 }
 
 /// `Explanation.match(freq, "freq, occurrences of term within document")`.

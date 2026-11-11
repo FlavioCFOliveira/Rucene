@@ -103,7 +103,7 @@ impl CorruptingIndexOutput {
         let byte_to_corrupt = self.byte_to_corrupt;
         let body = (|| -> Result<()> {
             if byte_to_corrupt >= r#in.length() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "byteToCorrupt={byte_to_corrupt} but file \"{name}\" is only length={}",
                     r#in.length()
                 )));

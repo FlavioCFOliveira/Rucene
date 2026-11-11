@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::merge_policy::{MergeTrigger, OneMerge};
 use crate::search::Executor;
 use crate::store::{
@@ -41,7 +41,7 @@ pub trait MergeSource: Any + Send + Sync + fmt::Display {
     ///
     /// # Errors
     ///
-    /// `IndexWriter`'s source returns [`LuceneError::IllegalState`] once the
+    /// `IndexWriter`'s source returns [`LuceneErrorKind::IllegalState`] once the
     /// writer hit a tragedy, where Java throws `IllegalStateException`
     /// (`IndexWriter.java:2498-2502`).
     fn get_next_merge(&self) -> Result<Option<OneMerge>>;
@@ -57,7 +57,7 @@ pub trait MergeSource: Any + Send + Sync + fmt::Display {
     ///
     /// # Errors
     ///
-    /// `IndexWriter`'s source returns [`LuceneError::IllegalState`] once the
+    /// `IndexWriter`'s source returns [`LuceneErrorKind::IllegalState`] once the
     /// writer hit a tragedy, where Java throws `IllegalStateException`
     /// (`IndexWriter.java:2519-2524`).
     fn has_pending_merges(&self) -> Result<bool>;
@@ -124,7 +124,7 @@ pub trait MergeScheduler: Send + Sync + fmt::Display {
     /// # Errors
     ///
     /// [`NoMergeScheduler`] fails with
-    /// [`LuceneError::UnsupportedOperation`], as Java's throws
+    /// [`LuceneErrorKind::UnsupportedOperation`], as Java's throws
     /// `UnsupportedOperationException`.
     fn get_intra_merge_executor(&self, merge: &OneMerge) -> Result<Option<Arc<dyn Executor>>> {
         let _ = merge;
@@ -342,7 +342,7 @@ impl MergeScheduler for NoMergeScheduler {
     /// Equivalent to `NoMergeScheduler.getIntraMergeExecutor(OneMerge)`
     /// (`NoMergeScheduler.java:57-60`), which throws.
     fn get_intra_merge_executor(&self, _merge: &OneMerge) -> Result<Option<Arc<dyn Executor>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "NoMergeScheduler does not support merges".to_string(),
         ))
     }
@@ -982,7 +982,7 @@ impl ConcurrentMergeScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when only one argument is the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when only one argument is the
     /// auto-detect sentinel, when either count is below 1, or when
     /// `max_thread_count` exceeds `max_merge_count`.
     pub fn set_max_merges_and_threads(
@@ -1000,23 +1000,23 @@ impl ConcurrentMergeScheduler {
         } else if max_merge_count == AUTO_DETECT_MERGES_AND_THREADS
             || max_thread_count == AUTO_DETECT_MERGES_AND_THREADS
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "both maxMergeCount and maxThreadCount must be AUTO_DETECT_MERGES_AND_THREADS"
                     .to_string(),
             ));
         } else {
             if max_thread_count < 1 {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "maxThreadCount should be at least 1".to_string(),
                 ));
             }
             if max_merge_count < 1 {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "maxMergeCount should be at least 1".to_string(),
                 ));
             }
             if max_thread_count > max_merge_count {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "maxThreadCount should be <= maxMergeCount (= {max_merge_count})"
                 )));
             }
@@ -1062,7 +1062,7 @@ impl ConcurrentMergeScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a negative `v` reaches
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a negative `v` reaches
     /// the rate limiter of a running forced merge, as Java's
     /// `MergeRateLimiter.setMBPerSec` throws from `updateMergeThreads`; `v` is
     /// recorded all the same.
@@ -1201,7 +1201,7 @@ impl ConcurrentMergeScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the rate a merge is given
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the rate a merge is given
     /// is negative — only a negative forced-merge rate can be — as Java's
     /// `MergeRateLimiter.setMBPerSec` throws.
     pub fn update_merge_threads(&self) -> Result<()> {
@@ -1374,7 +1374,7 @@ impl ConcurrentMergeScheduler {
     ///
     /// Propagates what `merge_source.has_pending_merges()` raises — Java's
     /// `IllegalStateException` once the writer hit a tragedy — and returns
-    /// [`LuceneError::ThreadInterrupted`] when the thread is interrupted while
+    /// [`LuceneErrorKind::ThreadInterrupted`] when the thread is interrupted while
     /// it stalls, as `doStall()` throws `ThreadInterruptedException`.
     pub fn maybe_stall(&self, merge_source: &Arc<dyn MergeSource>) -> Result<bool> {
         let state = self.lock();
@@ -1451,7 +1451,7 @@ impl ConcurrentMergeScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// Returns [`LuceneErrorKind::ThreadInterrupted`] when the thread is
     /// interrupted ([`InterruptHandle::interrupt`](crate::util::InterruptHandle::interrupt))
     /// before or while it waits.
     fn do_stall_locked<'a>(
@@ -1618,7 +1618,7 @@ impl ConcurrentMergeScheduler {
             }
             Err(error) => {
                 thread.set_life(ThreadLife::Terminated);
-                Err(LuceneError::Io(error))
+                Err(LuceneError::from(LuceneErrorKind::Io(error)))
             }
         }
     }
@@ -1683,7 +1683,13 @@ impl ConcurrentMergeScheduler {
 
         drop(merge_source);
         if let Err(exc) = result {
-            if matches!(exc, LuceneError::MergeAborted(_)) {
+            if matches!(
+                exc,
+                LuceneError {
+                    kind: LuceneErrorKind::MergeAborted(_),
+                    ..
+                }
+            ) {
                 // OK to ignore.
             } else if !self.shared.suppress_exceptions.load(Ordering::Acquire) {
                 // suppressExceptions is normally only set during testing.
@@ -1721,7 +1727,10 @@ impl ConcurrentMergeScheduler {
         let (mut state, outcome) =
             self.merge_locked(state, Arc::clone(merge_source), MergeTrigger::MergeFinished);
         let outcome = match outcome {
-            Err(LuceneError::AlreadyClosed { .. }) => Ok(()),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            }) => Ok(()),
             other => other,
         };
         Self::remove_merge_thread_locked(&mut state);
@@ -2546,7 +2555,7 @@ impl CachedThreadPool {
 /// **Divergence from Lucene 10.5.0.** A Java command fails by throwing a
 /// `Throwable`, which `CachedExecutor` catches and hands to
 /// `handleMergeException`; a Rust command fails by panicking, so the panic is
-/// caught and handed on as a [`LuceneError::Merge`] carrying its message.
+/// caught and handed on as a [`LuceneErrorKind::Merge`] carrying its message.
 /// Rust has no other way for an infallible command to fail.
 struct CachedExecutor {
     /// Equivalent to `CachedExecutor.activeCount`.
@@ -2662,7 +2671,8 @@ impl Executor for CachedExecutor {
                         .unwrap_or_else(|| "intra-merge task panicked".to_string());
                     // Panics as Java's `handleMergeException` throws, ending
                     // this pool thread.
-                    scheduler.handle_merge_exception(LuceneError::Merge(message));
+                    scheduler
+                        .handle_merge_exception(LuceneError::from(LuceneErrorKind::Merge(message)));
                 }
             }
         });
@@ -2954,13 +2964,13 @@ impl MergeRateLimiter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a negative rate, as Java's
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for a negative rate, as Java's
     /// `IllegalArgumentException("mbPerSec must be positive; got: …")`
     /// (`MergeRateLimiter.java:58-62`); the rate is left unchanged.
     pub fn set_mb_per_sec(&self, mb_per_sec: f64) -> Result<()> {
         // 0.0 is allowed: it means the merge is paused.
         if mb_per_sec < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "mbPerSec must be positive; got: {}",
                 crate::util::java_fmt::double_to_string(mb_per_sec)
             )));
@@ -3063,7 +3073,7 @@ impl MergeRateLimiter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::MergeAborted`] once the merge has been aborted,
+    /// Returns [`LuceneErrorKind::MergeAborted`] once the merge has been aborted,
     /// which is Java's `MergePolicy.MergeAbortedException`.
     pub fn pause(&self, bytes: i64) -> Result<i64> {
         self.total_bytes_written.fetch_add(bytes, Ordering::Relaxed);
@@ -3090,12 +3100,14 @@ impl MergeRateLimiter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::MergeAborted`] when the merge has been aborted,
+    /// Returns [`LuceneErrorKind::MergeAborted`] when the merge has been aborted,
     /// which is where Java throws `MergePolicy.MergeAbortedException`.
     fn maybe_pause(&self, bytes: i64) -> Result<i64> {
         // Now is a good time to abort the merge:
         if self.is_aborted() {
-            return Err(LuceneError::MergeAborted("Merge aborted.".to_string()));
+            return Err(LuceneError::from(LuceneErrorKind::MergeAborted(
+                "Merge aborted.".to_string(),
+            )));
         }
 
         // Read from the volatile rate once.
@@ -3424,7 +3436,7 @@ impl CombinedMergeScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when called more often than
+    /// Returns [`LuceneErrorKind::IllegalState`] when called more often than
     /// [`acquire_singleton`](Self::acquire_singleton).
     fn release_singleton() -> Result<()> {
         let closing = {

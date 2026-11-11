@@ -107,7 +107,7 @@ impl<I: ConstantScoreIteratorSupplier> ConstantScoreScorerSupplier<I> {
 /// **Divergence from Lucene 10.5.0.** Java's lambda captures the iterator and
 /// returns the same reference on every call. Rust cannot hand out an owned
 /// iterator twice, so a second call fails with
-/// [`LuceneError::IllegalState`] — turning `ScorerSupplier`'s documented
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — turning `ScorerSupplier`'s documented
 /// "must be called at most once" contract into a reported one. The cost is
 /// captured at construction for the same reason.
 #[derive(Debug)]
@@ -149,7 +149,7 @@ impl ConstantScoreScorerSupplier<SingleIteratorSupplier> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `max_doc` is negative,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `max_doc` is negative,
     /// which is what `DocIdSetIterator.all(int)` rejects.
     pub fn match_all(score: f32, score_mode: ScoreMode, max_doc: i32) -> Result<Self> {
         let iterator: Box<dyn DocIdSetIterator> = Box::new(doc_id_set_iterator::all(max_doc)?);

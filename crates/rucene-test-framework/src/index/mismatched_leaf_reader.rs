@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::util::shuffle;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_reader::{CacheHelper, StoredFields};
 use rucene::index::{
     FieldInfo, FieldInfos, LeafReader, StoredFieldVisitor, StoredFieldVisitorStatus,
@@ -216,7 +216,9 @@ impl<'a> MismatchedVisitor<'a> {
     /// `AssertionError` (thrown, not asserted) when there is none.
     fn renumber(&self, original: &FieldInfo) -> Result<&'a FieldInfo> {
         self.shuffled.field_info(&original.name).ok_or_else(|| {
-            LuceneError::AssertionError("stored fields sending bogus infos!".to_string())
+            LuceneError::from(LuceneErrorKind::AssertionError(
+                "stored fields sending bogus infos!".to_string(),
+            ))
         })
     }
 }

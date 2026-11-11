@@ -59,7 +59,7 @@ impl RangeBulkScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `min_doc_id` is not less than `max_doc_id`.
     pub fn new(
         iterator: Box<dyn DocIdSetIterator>,
@@ -68,7 +68,7 @@ impl RangeBulkScorer {
         max_doc_id: i32,
     ) -> Result<Self> {
         if min_doc_id >= max_doc_id {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "minDocID must be less than maxDocID".to_string(),
             ));
         }

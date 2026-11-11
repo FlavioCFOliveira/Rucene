@@ -164,7 +164,7 @@ fn unsigned(value: u8) -> i32 {
 #[inline]
 fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
     if a.len() != b.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             a.len(),
             b.len()
@@ -178,7 +178,7 @@ fn check_same_dimensions(a: &[u8], b: &[u8]) -> Result<()> {
 #[inline]
 fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
     if unpacked.len() < packed.len() * 2 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector dimensions differ: {}!={}",
             unpacked.len(),
             packed.len() * 2
@@ -486,7 +486,7 @@ impl VectorUtilSupport for DefaultVectorUtilSupport {
         max_quantile: f32,
     ) -> Result<f32> {
         if vector.len() != dest.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector dimensions differ: {}!={}",
                 vector.len(),
                 dest.len()

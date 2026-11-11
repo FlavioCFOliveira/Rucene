@@ -58,15 +58,18 @@ impl BitsSlice {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `slice.start` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `slice.start` or
     /// `slice.length` is negative.
     pub fn new(parent: Box<dyn Bits>, slice: ReaderSlice) -> Result<Self> {
         debug_assert!(slice.length >= 0, "length={}", slice.length);
         let start = usize::try_from(slice.start).map_err(|_| {
-            LuceneError::IllegalArgument(format!("slice start must be >= 0; got {}", slice.start))
+            LuceneError::illegal_argument(format!("slice start must be >= 0; got {}", slice.start))
         })?;
         let length = usize::try_from(slice.length).map_err(|_| {
-            LuceneError::IllegalArgument(format!("slice length must be >= 0; got {}", slice.length))
+            LuceneError::illegal_argument(format!(
+                "slice length must be >= 0; got {}",
+                slice.length
+            ))
         })?;
         Ok(Self {
             parent,
@@ -184,7 +187,7 @@ impl MultiBits {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`]
+    /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed)
     /// when `reader` has deletions and is closed, as Java's `reader.leaves()`
     /// fails.
     pub fn get_live_docs(reader: &Arc<dyn IndexReader>) -> Result<Option<Box<dyn Bits>>> {
@@ -338,6 +341,7 @@ impl Debug for MultiBits {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use std::collections::HashSet;
 
     use crate::codecs::stub::StoredFieldVisitor;
@@ -726,13 +730,19 @@ mod tests {
         let negative_length = BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(0, -1, 0));
         assert!(matches!(
             negative_length,
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
 
         let negative_start = BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(-1, 1, 0));
         assert!(matches!(
             negative_start,
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 

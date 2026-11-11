@@ -89,7 +89,7 @@ impl SegmentMerger {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `context` is not a merge
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a merge
     /// context, as Java does, and whatever building the merge state raises.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -110,7 +110,7 @@ impl SegmentMerger {
                 Context::Flush => "FLUSH",
                 Context::Default => "DEFAULT",
             };
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "IOContext.context should be MERGE; got: {got}"
             )));
         }
@@ -548,6 +548,7 @@ mod tests {
         Document, IntPoint, KnnFloatVectorField, NumericDocValuesField, SortedDocValuesField,
         Store, StoredField, StringField,
     };
+    use crate::error::LuceneErrorKind;
     use crate::index::index_writer::IndexWriter;
     use crate::index::index_writer_config::IndexWriterConfig;
     use crate::index::leaf_reader::LeafReader;
@@ -713,7 +714,10 @@ mod tests {
             Sort::new(),
             no_output(),
         ) {
-            Err(LuceneError::IllegalArgument(message)) => message,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => message,
             other => panic!("expected an IllegalArgument, got {:?}", other.map(|_| ())),
         };
         assert_eq!(
@@ -768,7 +772,10 @@ mod tests {
             None,
             None,
         ) {
-            Err(LuceneError::IllegalState { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "maxDoc was already set: this.maxDoc=3 vs maxDoc=3")
             }
             other => panic!("expected an IllegalState, got {:?}", other.map(|_| ())),
@@ -841,7 +848,10 @@ mod tests {
             id_sort(),
             Arc::new(crate::util::NoOutputInfoStream),
         ) {
-            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "index sort mismatch: merged segment has sort=<string: \"id\"> but \
                  to-be-merged segment has sort=null"
@@ -911,7 +921,13 @@ mod tests {
             for outcome in [compared, provided] {
                 match (outcome, &expected) {
                     (Ok(()), None) => {}
-                    (Err(LuceneError::IllegalState { message, .. }), Some(expected)) => {
+                    (
+                        Err(LuceneError {
+                            kind: LuceneErrorKind::IllegalState { message, .. },
+                            ..
+                        }),
+                        Some(expected),
+                    ) => {
                         assert_eq!(&message, expected)
                     }
                     (other, _) => panic!("{field}: {other:?}"),

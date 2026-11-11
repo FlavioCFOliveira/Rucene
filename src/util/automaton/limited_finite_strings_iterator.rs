@@ -25,11 +25,11 @@ impl<'a> LimitedFiniteStringsIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `limit` is neither `-1` nor
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `limit` is neither `-1` nor
     /// positive.
     pub fn new(a: &'a Automaton, limit: i32) -> Result<Self> {
         if limit != -1 && limit <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "limit must be -1 (which means no limit), or > 0; got: {}",
                 limit
             )));
@@ -47,7 +47,7 @@ impl<'a> LimitedFiniteStringsIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if a cycle is detected.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if a cycle is detected.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<IntsRef>> {
         if self.count >= self.limit {

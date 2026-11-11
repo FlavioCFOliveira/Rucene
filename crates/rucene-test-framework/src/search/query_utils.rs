@@ -65,13 +65,17 @@ use crate::util::lucene_test_case::{LuceneTestCase, VERBOSE};
 /// assertion error carried as an error propagates as itself.
 pub(crate) fn runtime_exception(e: rucene::error::LuceneError) -> ! {
     match e {
-        rucene::error::LuceneError::Unchecked { class, message, .. } => match message {
+        rucene::error::LuceneError {
+            kind: rucene::error::LuceneErrorKind::Unchecked { class, message, .. },
+            ..
+        } => match message {
             Some(message) => throw(class, message),
             None => throw_without_message(class),
         },
-        rucene::error::LuceneError::AssertionError(message) => {
-            throw(randomizedtesting::jdk::exception::ASSERTION_ERROR, message)
-        }
+        rucene::error::LuceneError {
+            kind: rucene::error::LuceneErrorKind::AssertionError(message),
+            ..
+        } => throw(randomizedtesting::jdk::exception::ASSERTION_ERROR, message),
         other => throw(RUNTIME_EXCEPTION, other),
     }
 }

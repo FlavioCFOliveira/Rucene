@@ -257,7 +257,7 @@ impl Automata {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when an open-ended bound is marked
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when an open-ended bound is marked
     /// exclusive.
     pub fn make_binary_interval(
         min: Option<&BytesRef>,
@@ -266,13 +266,13 @@ impl Automata {
         max_inclusive: bool,
     ) -> Result<Automaton> {
         if min.is_none() && !min_inclusive {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minInclusive must be true when min is null (open ended)".to_string(),
             ));
         }
 
         if max.is_none() && !max_inclusive {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxInclusive must be true when max is null (open ended)".to_string(),
             ));
         }
@@ -487,13 +487,13 @@ impl Automata {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `min > max` or if numbers in the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `min > max` or if numbers in the
     /// interval cannot be expressed with the given fixed number of digits.
     pub fn make_decimal_interval(min: i32, max: i32, digits: i32) -> Result<Automaton> {
         let mut x = min.to_string();
         let mut y = max.to_string();
         if min > max || (digits > 0 && y.len() as i32 > digits) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid decimal interval: min={} max={} digits={}",
                 min, max, digits
             )));

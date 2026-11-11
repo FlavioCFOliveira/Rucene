@@ -82,7 +82,7 @@ impl PackedLongValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_PAGE_SIZE, MAX_PAGE_SIZE]`.
     pub fn packed_builder(
         page_size: usize,
@@ -732,7 +732,7 @@ pub trait PackedLongValuesBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the builder was already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the builder was already
     /// consumed by `build`, or the error the packed array constructor raises.
     fn pack_block(&mut self, num_values: usize, block: usize) -> Result<()>;
 
@@ -822,7 +822,7 @@ pub trait PackedLongValuesBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the builder was already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the builder was already
     /// consumed by `build`, or the error [`Self::pack_block`] raises.
     fn add(&mut self, l: i64) -> Result<()> {
         if self.state().pending.is_none() {
@@ -848,7 +848,7 @@ pub trait PackedLongValuesBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the builder was already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the builder was already
     /// consumed by `build`, or the error [`Self::pack_block`] raises.
     fn add_repeated(&mut self, value: i64, count: i32) -> Result<()> {
         if self.state().pending.is_none() {
@@ -881,7 +881,7 @@ pub trait PackedLongValuesBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the builder was already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the builder was already
     /// consumed by `build`, the error [`Self::pack_block`] raises, or the error
     /// the cursor raises.
     fn add_cursor(&mut self, cursor: &mut dyn LongValuesCursor) -> Result<()> {
@@ -941,7 +941,7 @@ impl PackedLongValuesBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_PAGE_SIZE, MAX_PAGE_SIZE]`.
     pub fn new(page_size: usize, acceptable_overhead_ratio: f32) -> Result<Self> {
         Ok(Self {
@@ -1016,7 +1016,7 @@ impl DeltaPackedLongValuesBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_PAGE_SIZE, MAX_PAGE_SIZE]`.
     pub fn new(page_size: usize, acceptable_overhead_ratio: f32) -> Result<Self> {
         let mut state = PackedLongValuesBuilderState::new(
@@ -1102,7 +1102,7 @@ impl MonotonicLongValuesBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `page_size` is not a power
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `page_size` is not a power
     /// of two in `[MIN_PAGE_SIZE, MAX_PAGE_SIZE]`.
     pub fn new(page_size: usize, acceptable_overhead_ratio: f32) -> Result<Self> {
         let mut state = PackedLongValuesBuilderState::new(

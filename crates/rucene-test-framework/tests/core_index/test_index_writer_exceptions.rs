@@ -35,7 +35,7 @@ use rucene::document::{
     SortedDocValuesField, SortedNumericDocValuesField, SortedSetDocValuesField, Store, StoredField,
     StringField, TextField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_file_names::{file_name_from_generation, SEGMENTS};
 use rucene::index::index_writer::IndexWriter;
@@ -225,12 +225,16 @@ fn current_thread_name() -> String {
 
 /// `new IOException(message)`.
 fn io_exception(message: &str) -> LuceneError {
-    LuceneError::Io(std::io::Error::other(message.to_string()))
+    LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(
+        message.to_string(),
+    )))
 }
 
 /// `new IOException()` (`getMessage()` is `null`).
 fn io_exception_no_message() -> LuceneError {
-    LuceneError::Io(JavaIoException::new(IOE, None).into_io_error())
+    LuceneError::from(LuceneErrorKind::Io(
+        JavaIoException::new(IOE, None).into_io_error(),
+    ))
 }
 
 /// `new RuntimeException(message)`, returned from a `Failure.eval`.
@@ -2533,7 +2537,7 @@ impl Directory for UoeDirectory {
             && name.starts_with("segments_")
             && LuceneTestCase::call_stack_contains_any_of(&["read_commit", "read_latest_commit"])
         {
-            return Err(LuceneError::UnsupportedOperation(
+            return Err(LuceneError::unsupported_operation(
                 "expected UOE".to_string(),
             ));
         }
@@ -2592,9 +2596,9 @@ impl Failure for TooManyOpenFilesFailure {
 
     fn eval(&self, _dir: &MockDirectoryWrapper) -> Result<()> {
         if self.do_fail() && random().next_boolean() {
-            return Err(LuceneError::NotFound(
+            return Err(LuceneError::from(LuceneErrorKind::NotFound(
                 "some/file/name.ext (Too many open files)".to_string(),
-            ));
+            )));
         }
         Ok(())
     }

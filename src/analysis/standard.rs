@@ -103,16 +103,16 @@ impl StandardTokenizerLogic {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Lucene's messages,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with Lucene's messages,
     /// `maxTokenLength must be greater than zero` and
     /// `maxTokenLength may not exceed 1048576`.
     pub fn set_max_token_length(&mut self, length: i32) -> Result<()> {
         if length < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxTokenLength must be greater than zero".to_string(),
             ));
         } else if length as usize > MAX_TOKEN_LENGTH_LIMIT {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxTokenLength may not exceed {MAX_TOKEN_LENGTH_LIMIT}"
             )));
         }
@@ -342,7 +342,7 @@ impl StopwordAnalyzerBase {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] when the file cannot be read or is not valid
+    /// Returns [`LuceneErrorKind::Io`](crate::error::LuceneErrorKind::Io) when the file cannot be read or is not valid
     /// UTF-8.
     ///
     /// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase#loadStopwordSet(Path)`.
@@ -485,6 +485,7 @@ impl Analyzer for StandardAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// `CharTermAttribute.toString()`: the term text.
     trait TermText {
@@ -513,17 +514,21 @@ mod tests {
         }
         impl crate::analysis::CharReader for FailingReader {
             fn read(&mut self, _buf: &mut [u16]) -> Result<usize> {
-                Err(LuceneError::Io(std::io::Error::other("read failed")))
+                Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other("read failed"),
+                )))
             }
             fn close(&mut self) -> Result<()> {
                 self.closes += 1;
-                Err(LuceneError::Io(std::io::Error::other("close failed")))
+                Err(LuceneError::from(LuceneErrorKind::Io(
+                    std::io::Error::other("close failed"),
+                )))
             }
         }
         let mut reader = FailingReader { closes: 0 };
         let error = StopwordAnalyzerBase::load_stopword_set(&mut reader).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(e) if e.to_string() == "close failed"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.to_string() == "close failed"),
             "{error:?}"
         );
         assert_eq!(reader.closes, 1);
@@ -836,7 +841,10 @@ mod tests {
         analyzer.set_max_token_length(0);
         assert_eq!(analyzer.max_token_length(), 0);
         match tokens(&analyzer, "abcdefgh ij") {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "maxTokenLength must be greater than zero")
             }
             other => panic!("expected the tokenizer's refusal, got {other:?}"),
@@ -860,7 +868,10 @@ mod tests {
         let mut analyzer = StandardAnalyzer::new();
         analyzer.set_max_token_length(0);
         match tokens(&analyzer, "abc") {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "maxTokenLength must be greater than zero")
             }
             other => panic!("expected the tokenizer's refusal, got {other:?}"),
@@ -977,7 +988,7 @@ impl StandardTokenizerFactory {
     ///
     /// Returns what [`AbstractAnalysisFactory::new`] and
     /// [`AbstractAnalysisFactory::get_int`] return, and
-    /// [`LuceneError::IllegalArgument`] for a leftover argument.
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a leftover argument.
     ///
     /// **Divergence from Lucene 10.5.0.** Java prints the caller's `HashMap`,
     /// in that map's iteration order. The leftovers are rendered here in the
@@ -1007,7 +1018,7 @@ impl StandardTokenizerFactory {
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "Unknown parameters: {{{rendered}}}"
             )));
         }

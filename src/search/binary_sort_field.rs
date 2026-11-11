@@ -102,7 +102,7 @@ impl BinarySortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with the message text Java
     /// produces — when the missing value is neither of the two string
     /// sentinels, and propagates the [`SortField`] construction error, which
     /// cannot trigger for a named field.
@@ -137,7 +137,7 @@ impl BinarySortField {
             missing_value,
             None | Some(MissingValue::StringFirst) | Some(MissingValue::StringLast)
         ) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "missing value for BinarySortField must be null, STRING_FIRST or STRING_LAST"
                     .to_string(),
             ));
@@ -171,11 +171,11 @@ impl BinarySortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sort field is not one
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sort field is not one
     /// of this kind.
     pub fn from_sort_field(sort_field: SortField) -> Result<Self> {
         if !matches!(sort_field.kind(), SortFieldKind::Binary { .. }) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "expected a BinarySortField, got {sort_field}"
             )));
         }
@@ -216,7 +216,7 @@ impl BinarySortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_sort_key_doc_values(
         &self,

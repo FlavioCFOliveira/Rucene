@@ -312,7 +312,7 @@ impl BooleanQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a clause is not a
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a clause is not a
     /// [`TermQuery`] — the caller must check
     /// [`is_two_clause_pure_disjunction_with_terms`](Self::is_two_clause_pure_disjunction_with_terms)
     /// first, which is what Java's cast asserts — and propagates any I/O error

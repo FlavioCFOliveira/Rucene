@@ -4,7 +4,7 @@
 //! index corruption is ever created.
 //!
 //! * A fake `Error` thrown by a `Failure` is the
-//!   [`LuceneError::Unchecked`] of its Java class, returned from `eval`;
+//!   [`LuceneErrorKind::Unchecked`] of its Java class, returned from `eval`;
 //!   `catch (Error | AlreadyClosedException disaster)` catches the error a
 //!   writer call returns. `Rethrow.rethrow(t)` returns the error.
 //! * `continue STARTOVER` returns from the iteration's body.
@@ -24,7 +24,7 @@ use rucene::document::{
     SortedDocValuesField, SortedNumericDocValuesField, SortedSetDocValuesField, Store, StoredField,
     TextField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_file_deleter::IndexFileDeleter;
 use rucene::index::index_writer::IndexWriter;
@@ -377,11 +377,11 @@ fn get_tragedy(disaster: LuceneError, writer: &IndexWriter, log: &ExceptionLog) 
 
 /// `new <class>(message)` for a fake Java `Error`.
 fn fake_error(class: &'static str, message: &str) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class,
         message: Some(message.to_string()),
         cause: None,
-    }
+    })
 }
 
 /// What a [`RandomVmFailure`] throws.
@@ -404,14 +404,14 @@ impl FakeError {
             FakeError::Linkage => fake_error("java.lang.LinkageError", "Fake LinkageError"),
             // new IOError(new RuntimeException("Fake IOError")): the message is the
             // cause's toString().
-            FakeError::Io => LuceneError::Unchecked {
+            FakeError::Io => LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.io.IOError",
                 message: Some("java.lang.RuntimeException: Fake IOError".to_string()),
                 cause: Some(Arc::new(fake_error(
                     "java.lang.RuntimeException",
                     "Fake IOError",
                 ))),
-            },
+            }),
         }
     }
 }

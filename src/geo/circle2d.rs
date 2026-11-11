@@ -461,7 +461,7 @@ impl Circle2D {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the circle's
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the circle's
     /// bounding box is not a valid rectangle.
     pub fn create_from_circle(circle: &Circle) -> Result<Arc<dyn Component2D>> {
         let calculator =

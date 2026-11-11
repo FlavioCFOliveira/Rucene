@@ -327,19 +327,19 @@ impl DataInput for InterceptingIndexInput {
     }
 
     fn read_byte(&mut self) -> Result<u8> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn read_bytes(&mut self, _b: Option<&mut [u8]>, _offset: usize, _len: usize) -> Result<()> {
         let _b = rucene::store::require_array(_b)?;
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// The inherited `IndexInput.skipBytes(numBytes)`: `seek(getFilePointer()
     /// + numBytes)` after the argument check.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
@@ -373,7 +373,7 @@ impl IndexInput for InterceptingIndexInput {
         _offset: i64,
         _length: i64,
     ) -> Result<Box<dyn IndexInput>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     /// `IndexInput.clone()` is `super.clone()`: a copy of the fields.

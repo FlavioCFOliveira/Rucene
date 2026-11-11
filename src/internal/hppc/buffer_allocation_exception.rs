@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt::{self, Arguments, Display, Formatter};
 
-use crate::error::LuceneError;
+use crate::error::{LuceneError, LuceneErrorKind};
 
 /// Port of `org.apache.lucene.internal.hppc.BufferAllocationException`.
 ///
@@ -99,6 +99,6 @@ impl Error for BufferAllocationException {}
 
 impl From<BufferAllocationException> for LuceneError {
     fn from(value: BufferAllocationException) -> Self {
-        LuceneError::ResourceLimit(value.message)
+        LuceneError::from(LuceneErrorKind::ResourceLimit(value.message))
     }
 }

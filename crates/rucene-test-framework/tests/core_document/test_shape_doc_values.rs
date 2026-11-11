@@ -325,7 +325,7 @@ fn java_max(a: f64, b: f64) -> f64 {
 fn test_explicit_lat_lon_polygon_centroid() -> Result<()> {
     let mp = "POLYGON((-80 -10, -40 -10, -40 10, -80 10, -80 -10))";
     let p = match SimpleWKTShapeParser::parse(mp)
-        .map_err(|e| LuceneError::IllegalArgument(format!("{e:?}")))?
+        .map_err(|e| LuceneError::illegal_argument(format!("{e:?}")))?
     {
         Some(WktGeometry::Polygon(p)) => p,
         other => panic!("ClassCastException: {other:?} cannot be cast to Polygon"),

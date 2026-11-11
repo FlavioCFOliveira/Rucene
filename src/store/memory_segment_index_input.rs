@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::memory_segment::{Arena, MemorySegment, Scope};
 use super::native_access;
 use super::{DataInput, IOContext, IndexInput, RandomAccessInput, ReadAdvice};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::BitUtil;
 
 /// Provides access to the backing memory segment of an input.
@@ -36,7 +36,7 @@ pub trait MemorySegmentAccessInput: RandomAccessInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the input has been closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the input has been closed.
     fn clone_access_input(&self) -> Result<Box<dyn MemorySegmentAccessInput>>;
 
     /// `getClass().getSimpleName()` of this input: which implementation class
@@ -91,7 +91,7 @@ enum Layout {
 ///   conditions producing them, are unchanged.
 /// * **Closing releases the mapping when the last clone is dropped**, not at
 ///   the instant `close` is called; every clone reports
-///   [`LuceneError::AlreadyClosed`] from that instant, as in Java. See the
+///   [`LuceneErrorKind::AlreadyClosed`] from that instant, as in Java. See the
 ///   [`memory_segment`](super::memory_segment) module documentation.
 /// * **[`file_pointer`](IndexInput::file_pointer) cannot report a closed
 ///   input.** Java's `getFilePointer` calls `ensureOpen()` and throws
@@ -137,7 +137,7 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `segments` is empty.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `segments` is empty.
     pub fn new_instance(
         resource_description: impl Into<String>,
         arena: Arc<dyn Arena>,
@@ -180,7 +180,7 @@ impl MemorySegmentIndexInput {
         layout: Layout,
     ) -> Result<Self> {
         let first = segments.first().ok_or_else(|| {
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "MemorySegmentIndexInput requires at least one segment".to_string(),
             )
         })?;
@@ -243,22 +243,22 @@ impl MemorySegmentIndexInput {
     /// already-adjusted position.
     fn positional_error(&self, action: &str, pos: i64) -> LuceneError {
         if pos < 0 {
-            LuceneError::IllegalArgument(format!("{action} negative position (pos={pos}): {self}"))
+            LuceneError::illegal_argument(format!("{action} negative position (pos={pos}): {self}"))
         } else {
-            LuceneError::Io(std::io::Error::new(
+            LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 format!("{action} past EOF (pos={pos}): {self}"),
-            ))
+            )))
         }
     }
 
     /// Returns the `EOFException("read past EOF: …")` Java raises from the
     /// sequential read path.
     fn read_past_eof(&self) -> LuceneError {
-        LuceneError::Io(std::io::Error::new(
+        LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             format!("read past EOF: {self}"),
-        ))
+        )))
     }
 
     /// Fails if this input, or the arena backing it, has been closed.
@@ -468,8 +468,8 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the input has been closed, or
-    /// [`LuceneError::Io`] if the advice call fails.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the input has been closed, or
+    /// [`LuceneErrorKind::Io`] if the advice call fails.
     pub fn update_io_context(&self, context: &dyn IOContext) -> Result<()> {
         self.update_read_advice((self.to_read_advice)(context))
     }
@@ -498,8 +498,8 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the range is out of bounds,
-    /// and [`LuceneError::AlreadyClosed`] if the input has been closed.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the range is out of bounds,
+    /// and [`LuceneErrorKind::AlreadyClosed`] if the input has been closed.
     pub fn slice_with_context(
         &self,
         slice_description: &str,
@@ -532,11 +532,11 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the range is out of bounds,
-    /// and [`LuceneError::AlreadyClosed`] if the input has been closed.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the range is out of bounds,
+    /// and [`LuceneErrorKind::AlreadyClosed`] if the input has been closed.
     pub fn slice_impl(&self, slice_description: &str, offset: i64, length: i64) -> Result<Self> {
         if (length | offset) < 0 || length > self.length - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice() {slice_description} out of bounds: offset={offset},length={length},fileLength={}: {self}",
                 self.length
             )));
@@ -621,7 +621,7 @@ impl MemorySegmentIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the input has been closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the input has been closed.
     pub fn clone_impl(&self) -> Result<Self> {
         self.ensure_open()?;
         self.ensure_accessible()?;
@@ -655,7 +655,7 @@ impl MemorySegmentIndexInput {
 /// Equivalent to `Objects.checkFromIndexSize(long, long, long)`.
 fn check_from_index_size(offset: i64, length: i64, size: i64) -> Result<()> {
     if offset < 0 || length < 0 || offset > size - length {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Range [{offset}, {offset} + {length}) out of bounds for length {size}"
         )));
     }
@@ -667,9 +667,9 @@ fn check_from_index_size(offset: i64, length: i64, size: i64) -> Result<()> {
 fn check_dst(offset: usize, length: usize, len: usize) -> Result<()> {
     let end = offset
         .checked_add(length)
-        .ok_or_else(|| LuceneError::IllegalArgument("offset + length overflowed".to_string()))?;
+        .ok_or_else(|| LuceneError::illegal_argument("offset + length overflowed".to_string()))?;
     if end > len {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "offset {offset} + length {length} exceeds array length {len}"
         )));
     }
@@ -718,7 +718,7 @@ impl DataInput for MemorySegmentIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }

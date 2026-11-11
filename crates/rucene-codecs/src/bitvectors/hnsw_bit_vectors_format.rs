@@ -121,19 +121,19 @@ impl HnswBitVectorsFormat {
         merge_exec: Option<Arc<dyn Executor>>,
     ) -> Result<Self> {
         if max_conn <= 0 || max_conn > MAXIMUM_MAX_CONN {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxConn must be positive and less than or equal to {MAXIMUM_MAX_CONN}; \
                  maxConn={max_conn}"
             )));
         }
         if beam_width <= 0 || beam_width > MAXIMUM_BEAM_WIDTH {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "beamWidth must be positive and less than or equal to {MAXIMUM_BEAM_WIDTH}; \
                  beamWidth={beam_width}"
             )));
         }
         if num_merge_workers == 1 && merge_exec.is_some() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "No executor service is needed as we'll use single thread to merge".to_string(),
             ));
         }
@@ -222,7 +222,7 @@ impl KnnVectorsWriter for FlatBitVectorsWriter {
 
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         if field_info.vector_encoding != VectorEncoding::BYTE {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "HnswBitVectorsFormat only supports BYTE encoding".to_string(),
             ));
         }

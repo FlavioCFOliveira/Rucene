@@ -34,7 +34,7 @@ use crate::codecs::doc_values::{
 };
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::doc_values::DocValuesIterator;
 use crate::index::index_file_names::segment_file_name;
 use crate::search::{DocIdSetIterator, SortedSetSelector, SortedSetSelectorType, NO_MORE_DOCS};
@@ -643,7 +643,7 @@ impl NumericStats {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] with Java's messages when
+    /// Returns [`LuceneErrorKind::IllegalState`] with Java's messages when
     /// ordinals do not start at zero or share a GCD other than one
     /// (`Lucene90DocValuesConsumer.java:421-430`).
     fn compute(values: &[i64], ords: bool) -> Result<Self> {
@@ -1644,15 +1644,17 @@ impl Lucene90DocValuesConsumer<'_> {
 /// outcome without introducing a bound Lucene does not have.
 fn try_zeroed(length: usize) -> Result<Vec<u8>> {
     let mut buffer: Vec<u8> = Vec::new();
-    buffer
-        .try_reserve_exact(length)
-        .map_err(|_| LuceneError::CorruptIndex(format!("cannot allocate {length} bytes")))?;
+    buffer.try_reserve_exact(length).map_err(|_| {
+        LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+            "cannot allocate {length} bytes"
+        )))
+    })?;
     buffer.resize(length, 0);
     Ok(buffer)
 }
 
 fn corrupt<T>(message: String) -> Result<T> {
-    Err(LuceneError::CorruptIndex(message))
+    Err(LuceneError::from(LuceneErrorKind::CorruptIndex(message)))
 }
 
 /// The largest table `readNumeric` accepts, verbatim from
@@ -3163,12 +3165,12 @@ impl LazyNumericDocValues {
     ) -> Result<()> {
         let size = size as usize;
         if docs.len() < docs_offset as usize + size {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "docs buffer too small for requested size/offset".to_string(),
             ));
         }
         if values.len() < values_offset as usize + size {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "values buffer too small for requested size/offset".to_string(),
             ));
         }
@@ -3226,7 +3228,7 @@ impl NumericDocValues for LazyNumericDocValues {
         default_value: i64,
     ) -> Result<()> {
         if size < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "size must be >= 0, got {size}"
             )));
         }
@@ -3785,7 +3787,9 @@ impl TermsDict {
 
     fn block_byte(&mut self) -> Result<u8> {
         let byte = *self.block.get(self.block_pos).ok_or_else(|| {
-            LuceneError::CorruptIndex("a terms block ended before its terms did".to_string())
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
+                "a terms block ended before its terms did".to_string(),
+            ))
         })?;
         self.block_pos += 1;
         Ok(byte)
@@ -3884,11 +3888,11 @@ impl TermsDict {
     /// Equivalent to `TermsDict.seekExact(long)`
     /// (`Lucene90DocValuesProducer.java:1637-1656`), whose out-of-range
     /// ordinal is `throw new IndexOutOfBoundsException()`: no message, carried
-    /// by [`LuceneError::IllegalArgument`] as this crate carries every
+    /// by [`LuceneErrorKind::IllegalArgument`] as this crate carries every
     /// `IndexOutOfBoundsException`.
     fn seek_exact(&mut self, ord: i64) -> Result<&[u8]> {
         if ord < 0 || ord >= self.size {
-            return Err(LuceneError::IllegalArgument(String::new()));
+            return Err(LuceneError::illegal_argument(String::new()));
         }
         // Signed shift, because `ord` is -1 while the cursor is unpositioned.
         let current_block = self.ord >> TERMS_DICT_BLOCK_LZ4_SHIFT;
@@ -3941,7 +3945,7 @@ impl crate::index::TermsEnum for TermsDict {
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
@@ -3953,11 +3957,11 @@ impl crate::index::TermsEnum for TermsDict {
         _reuse: Option<Box<dyn crate::index::PostingsEnum>>,
         _flags: i32,
     ) -> Result<Box<dyn crate::index::PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -3979,7 +3983,7 @@ impl crate::index::TermsEnum for TermsDict {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] with Java's message.
+/// Returns [`LuceneErrorKind::IllegalState`] with Java's message.
 fn check_ordinals_entry(ords: &NumericEntry) -> Result<()> {
     if ords.block_shift < 0
         && ords.bits_per_value > 0
@@ -4603,7 +4607,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     ///
     /// # Errors
     ///
-    /// A field with no skip-index entry returns [`LuceneError::IllegalState`].
+    /// A field with no skip-index entry returns Java's `NullPointerException`.
     /// Java reads `skippers.get(field.number)` and dereferences the result
     /// unchecked (`Lucene90DocValuesProducer.java:2370-2373`), so it throws
     /// `NullPointerException`; its callers never reach that case, because
@@ -4612,7 +4616,7 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
     /// The port fails the same call, with an error instead of a panic.
     fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         let Some(entry) = self.skippers.get(&field.number).copied() else {
-            return Err(LuceneError::illegal_state(format!(
+            return Err(LuceneError::null_pointer_with_message(format!(
                 "field \"{}\" has no doc-values skip-index entry",
                 field.name
             )));
@@ -4699,7 +4703,10 @@ mod tests {
         ];
         for entry in refused {
             match super::check_ordinals_entry(&entry) {
-                Err(LuceneError::IllegalState { message, .. }) => assert_eq!(
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalState { message, .. },
+                    ..
+                }) => assert_eq!(
                     message,
                     "Ordinals shouldn't use GCD, offset or table compression"
                 ),
@@ -4874,7 +4881,7 @@ mod tests {
         assert_eq!(terms.total_term_freq().unwrap(), -1);
         assert!(matches!(
             terms.doc_freq(),
-            Err(LuceneError::UnsupportedOperation(ref message)) if message.is_empty()
+            Err(LuceneError { kind: LuceneErrorKind::UnsupportedOperation { ref message, .. }, .. }) if message.is_empty()
         ));
         let mut seeks = Vec::new();
         for key in ["t15005", "t1024", "a", "z", "t0064"] {
@@ -4992,12 +4999,12 @@ mod tests {
             .unwrap();
         assert!(matches!(
             values.lookup_ord(3000),
-            Err(LuceneError::IllegalArgument(ref message)) if message.is_empty()
+            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
         ));
         let mut terms = values.terms_enum().unwrap();
         assert!(matches!(
             terms.seek_ord(-1),
-            Err(LuceneError::IllegalArgument(ref message)) if message.is_empty()
+            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
         ));
         drop(leaves);
         drop(reader);
@@ -5065,7 +5072,10 @@ mod tests {
         assert!(
             matches!(
                 producer.get_numeric(field),
-                Err(LuceneError::IllegalArgument(_))
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                })
             ),
             "the plain reader refuses a width of 3"
         );
@@ -5153,7 +5163,13 @@ mod tests {
         let mut plain = producer.get_numeric(field).unwrap().unwrap();
         plain.next_doc().unwrap();
         assert!(
-            matches!(plain.long_value(), Err(LuceneError::IllegalArgument(_))),
+            matches!(
+                plain.long_value(),
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                })
+            ),
             "the plain reader refuses a width of 3"
         );
 
@@ -5517,7 +5533,7 @@ mod tests {
         }
 
         fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-            Err(LuceneError::UnsupportedOperation(
+            Err(LuceneError::unsupported_operation(
                 "the test producer does not provide a doc-values skipper".to_string(),
             ))
         }
@@ -5951,7 +5967,10 @@ mod tests {
             };
             let mut skipper = Lucene90DocValuesSkipper::new(entry, input);
             match skipper.advance(0) {
-                Err(LuceneError::CorruptIndex(message)) => assert!(
+                Err(LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex(message),
+                    ..
+                }) => assert!(
                     message.contains(&format!("level out of range [{}]", level as i8)),
                     "{message}"
                 ),
@@ -6011,7 +6030,7 @@ impl DocValuesProducer for SingletonNumericProducer<'_> {
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "a singleton numeric producer does not provide a doc-values skipper".to_string(),
         ))
     }
@@ -6083,7 +6102,7 @@ impl DocValuesProducer for OrdinalsAsSortedNumericProducer<'_> {
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "an ordinals producer does not provide a doc-values skipper".to_string(),
         ))
     }
@@ -6158,7 +6177,7 @@ impl DocValuesProducer for SortedOrdinalsProducer<'_> {
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "a sorted-ordinals producer does not provide a doc-values skipper".to_string(),
         ))
     }
@@ -6266,7 +6285,7 @@ impl DocValuesProducer for MinOrdinalOfSortedSetProducer<'_> {
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
     /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "a minimum-ordinal producer does not provide a doc-values skipper".to_string(),
         ))
     }
@@ -6395,7 +6414,13 @@ mod close_family_tests {
         rewrite_file(&tracking, "_0.dvs", |bytes| bytes[6] ^= 0xff);
         let error = Lucene90DocValuesProducer::new(&read_state(&*dir, &info, &fis)).unwrap_err();
         assert!(
-            matches!(error, crate::error::LuceneError::CorruptIndex(_)),
+            matches!(
+                error,
+                crate::error::LuceneError {
+                    kind: crate::error::LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
             "{error:?}"
         );
         // The metadata input is closed first, by its try-with-resources.

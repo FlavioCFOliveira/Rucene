@@ -411,6 +411,7 @@ mod tests {
     use super::*;
     use crate::analysis::default_token_attribute_factory;
     use crate::analysis::tokenattributes::CharTermAttribute;
+    use crate::error::LuceneErrorKind;
     use crate::util::attribute::AttributeSource;
 
     /// One token of the graph syntax: term, start and end offsets, position
@@ -665,7 +666,10 @@ mod tests {
             }
         };
         match err {
-            LuceneError::IllegalState { message, .. } => {
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            } => {
                 assert_eq!(message, "Too many cached tokens (> 100)")
             }
             other => panic!("expected IllegalStateException, got {other:?}"),

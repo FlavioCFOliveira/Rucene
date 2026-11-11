@@ -39,7 +39,7 @@ use rucene::document::{
     NumericValue, SharedReader, SortedDocValuesField, SortedNumericDocValuesField,
     SortedSetDocValuesField, Store, StoredField, StoredValue, StringField, TextField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::check_index::{CheckIndex, Level};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
@@ -1632,7 +1632,10 @@ impl IndexerThreadInterrupt {
             }));
             match outcome {
                 Ok(Ok(())) => {}
-                Ok(Err(LuceneError::ThreadInterrupted(re))) => {
+                Ok(Err(LuceneError {
+                    kind: LuceneErrorKind::ThreadInterrupted(re),
+                    ..
+                })) => {
                     // NOTE: important to leave this verbosity/noise on!!
                     // This test doesn't repro easily so when Jenkins hits a fail
                     // we need to study where the interrupts struck!
@@ -1775,11 +1778,11 @@ fn test_thread_interrupt_deadlock() -> Result<()> {
 
 /// `new RuntimeException(message, cause)`.
 fn runtime_exception_msg(message: &str, cause: LuceneError) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.RuntimeException",
         message: Some(message.to_string()),
         cause: Some(Arc::new(cause)),
-    }
+    })
 }
 
 /// The anonymous `Field` subclasses of `testIndexStoreCombos`: a field whose
@@ -3270,11 +3273,11 @@ fn test_null_documents() -> Result<()> {
 
 /// `new RuntimeException("boom")`.
 fn boom() -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.RuntimeException",
         message: Some("boom".to_string()),
         cause: None,
-    }
+    })
 }
 
 /// `private static class RandomFailingIterable<T> implements Iterable<T>`,
@@ -4413,11 +4416,11 @@ fn index_docs_for_multiple_dwpts(w: &Arc<IndexWriter>) -> Result<i32> {
 
 /// `new AssertionError(e)`.
 fn assertion_error_of(e: LuceneError) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.AssertionError",
         message: Some(e.to_string()),
         cause: Some(Arc::new(e)),
-    }
+    })
 }
 
 /// `t.join()`, rethrowing what the thread threw.

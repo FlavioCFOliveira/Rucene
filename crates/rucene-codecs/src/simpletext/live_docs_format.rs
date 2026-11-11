@@ -51,7 +51,7 @@ impl SimpleTextLiveDocsFormat {
 /// generation `-1`; the Java callers then fail on the `null` name.
 fn generation_file_name(base: &str, gen: i64) -> Result<String> {
     file_name_from_generation(base, LIVEDOCS_EXTENSION, gen).ok_or_else(|| {
-        LuceneError::IllegalArgument(format!("no live-docs file for generation {gen}"))
+        LuceneError::illegal_argument(format!("no live-docs file for generation {gen}"))
     })
 }
 

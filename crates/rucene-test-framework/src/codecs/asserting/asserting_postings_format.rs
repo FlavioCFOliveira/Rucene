@@ -176,11 +176,13 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
             let Some(field_info) = field_info else {
                 // Only reachable with assertions disabled: Java's next line
                 // dereferences the null field info.
-                return Err(rucene::error::LuceneError::Unchecked {
-                    class: "java.lang.NullPointerException",
-                    message: None,
-                    cause: None,
-                });
+                return Err(rucene::error::LuceneError::from(
+                    rucene::error::LuceneErrorKind::Unchecked {
+                        class: "java.lang.NullPointerException",
+                        message: None,
+                        cause: None,
+                    },
+                ));
             };
 
             let mut terms_enum = terms.iterator()?;

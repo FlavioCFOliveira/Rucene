@@ -25,7 +25,7 @@ use rucene::document::{
     Document, Field, FieldType, IntPoint, NumericDocValuesField, NumericValue, Store, StringField,
     TextField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::filter_directory_reader::{
@@ -230,12 +230,23 @@ fn codec_leaves(reader: &Arc<dyn DirectoryReader>) -> Result<Vec<Arc<dyn CodecRe
 fn cause_is_merge_aborted(e: &LuceneError) -> bool {
     use std::error::Error;
     let cause: Option<&(dyn Error + 'static)> = match e {
-        LuceneError::Io(io) => io.get_ref().map(|c| c as &(dyn Error + 'static)),
+        LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } => io.get_ref().map(|c| c as &(dyn Error + 'static)),
         other => other.source(),
     };
     cause
         .and_then(|c| c.downcast_ref::<LuceneError>())
-        .is_some_and(|c| matches!(c, LuceneError::MergeAborted(_)))
+        .is_some_and(|c| {
+            matches!(
+                c,
+                LuceneError {
+                    kind: LuceneErrorKind::MergeAborted(_),
+                    ..
+                }
+            )
+        })
 }
 
 /// `private IndexWriter newWriter(Directory dir, IndexWriterConfig conf)`.

@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::directory_reader::StandardDirectoryReader;
 use crate::store::Directory;
 
@@ -99,7 +99,7 @@ pub trait IndexCommit: Send + Sync + Debug + std::fmt::Display {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] for commit points that do
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] for commit points that do
     /// not support deletion, mirroring the `UnsupportedOperationException`
     /// thrown by the corresponding Java implementations.
     fn delete(&self) -> Result<()>;
@@ -162,12 +162,12 @@ pub trait IndexCommit: Send + Sync + Debug + std::fmt::Display {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] when the two commits come
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] when the two commits come
     /// from different `Directory` instances, mirroring the
     /// `UnsupportedOperationException` thrown by Java.
     fn compare_to(&self, other: &dyn IndexCommit) -> Result<Ordering> {
         if directory_identity(&self.get_directory()) != directory_identity(&other.get_directory()) {
-            return Err(LuceneError::UnsupportedOperation(
+            return Err(LuceneError::unsupported_operation(
                 "cannot compare IndexCommits from different Directory instances".to_string(),
             ));
         }
@@ -236,7 +236,7 @@ pub trait TwoPhaseCommit: Debug {
 /// Equivalent to the two nested exceptions of
 /// `org.apache.lucene.index.TwoPhaseCommitTool`:
 /// `PrepareCommitFailException` and `CommitFailException`. Both extend
-/// `IOException` in Java, which is why [`LuceneError::Io`] is the target of the
+/// `IOException` in Java, which is why [`LuceneErrorKind::Io`] is the target of the
 /// [`From`] conversion below.
 #[derive(Debug, Error)]
 pub enum TwoPhaseCommitError {
@@ -287,7 +287,7 @@ impl From<TwoPhaseCommitError> for LuceneError {
     fn from(error: TwoPhaseCommitError) -> Self {
         // Both Java exceptions extend IOException; wrapping preserves the whole
         // cause chain through `std::error::Error::source`.
-        LuceneError::Io(io::Error::other(error))
+        LuceneError::from(LuceneErrorKind::Io(io::Error::other(error)))
     }
 }
 
@@ -554,7 +554,7 @@ mod tests {
 
         let err = a.compare_to(b.as_ref()).unwrap_err();
         assert!(
-            matches!(err, LuceneError::UnsupportedOperation(ref msg)
+            matches!(err, LuceneError { kind: LuceneErrorKind::UnsupportedOperation { message: ref msg, .. }, .. }
                 if msg.contains("different Directory instances")),
             "unexpected error: {err}"
         );
@@ -649,7 +649,9 @@ mod tests {
         fn prepare_commit(&self) -> Result<i64> {
             self.log.borrow_mut().push("prepare".to_string());
             if self.fail_prepare {
-                return Err(LuceneError::Io(io::Error::other("prepare boom")));
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    "prepare boom",
+                ))));
             }
             Ok(1)
         }
@@ -657,7 +659,9 @@ mod tests {
         fn commit(&self) -> Result<i64> {
             self.log.borrow_mut().push("commit".to_string());
             if self.fail_commit {
-                return Err(LuceneError::Io(io::Error::other("commit boom")));
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    "commit boom",
+                ))));
             }
             Ok(2)
         }
@@ -744,11 +748,15 @@ mod tests {
             }
 
             fn commit(&self) -> Result<i64> {
-                Err(LuceneError::Io(io::Error::other("commit boom")))
+                Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    "commit boom",
+                ))))
             }
 
             fn rollback(&self) -> Result<()> {
-                Err(LuceneError::Io(io::Error::other("rollback boom")))
+                Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    "rollback boom",
+                ))))
             }
         }
 
@@ -767,7 +775,16 @@ mod tests {
         let err = execute(&[Some(&b as &dyn TwoPhaseCommit)]).unwrap_err();
 
         let lucene: LuceneError = err.into();
-        assert!(matches!(lucene, LuceneError::Io(_)), "{lucene}");
+        assert!(
+            matches!(
+                lucene,
+                LuceneError {
+                    kind: LuceneErrorKind::Io(_),
+                    ..
+                }
+            ),
+            "{lucene}"
+        );
         assert!(lucene.to_string().contains("prepareCommit() failed on"));
     }
 }

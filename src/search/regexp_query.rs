@@ -37,7 +37,7 @@ pub struct DefaultProvider;
 
 impl AutomatonProvider for DefaultProvider {
     fn get_automaton(&self, name: &str) -> Result<Automaton> {
-        Err(crate::error::LuceneError::IllegalArgument(format!(
+        Err(crate::error::LuceneError::illegal_argument(format!(
             "'{name}' not found"
         )))
     }

@@ -42,7 +42,7 @@ use rucene::analysis::factories::{
     char_filter_lookup_class, token_filter_lookup_class, tokenizer_lookup_class,
     AnalysisFactoryClass, CharFilterFactory, TokenFilterFactory, TokenizerFactory,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::util::extra::Version;
 use rucene::util::resource_loader::{ClasspathResourceLoader, ResourceLoader, ResourceLoaderAware};
 
@@ -86,7 +86,7 @@ impl BaseTokenStreamFactoryTestCase {
     /// the `InvocationTargetException` wrapping it.
     ///
     /// **Divergence.** [`LuceneError`] has no reflective exception: the
-    /// `InvocationTargetException` is a [`LuceneError::Unchecked`] of that
+    /// `InvocationTargetException` is a [`LuceneErrorKind::Unchecked`] of that
     /// class, without a message and with the constructor's error as its
     /// cause.
     ///
@@ -102,7 +102,7 @@ impl BaseTokenStreamFactoryTestCase {
         keys_and_values: &[&str],
     ) -> Result<Arc<T>> {
         if keys_and_values.len() % 2 == 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "invalid keysAndValues map".to_string(),
             ));
         }
@@ -121,15 +121,17 @@ impl BaseTokenStreamFactoryTestCase {
             Ok(factory) => factory,
             // to simplify tests that check for illegal parameters
             Err(
-                e
-                @ (LuceneError::IllegalArgument(_) | LuceneError::IllegalArgumentWithCause { .. }),
+                e @ LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                },
             ) => return Err(e),
             Err(e) => {
-                return Err(LuceneError::Unchecked {
+                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                     class: "java.lang.reflect.InvocationTargetException",
                     message: None,
                     cause: Some(Arc::new(e)),
-                })
+                }))
             }
         };
         let fresh = Arc::get_mut(&mut factory)

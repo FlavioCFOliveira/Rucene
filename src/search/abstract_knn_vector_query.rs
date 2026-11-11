@@ -72,7 +72,7 @@ impl AbstractKnnVectorQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's message — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's message — when
     /// `k` is less than 1.
     pub fn new(
         field: impl Into<String>,
@@ -81,7 +81,7 @@ impl AbstractKnnVectorQuery {
         search_strategy: Option<KnnSearchStrategy>,
     ) -> Result<Self> {
         if k < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "k must be at least 1, got: {k}"
             )));
         }
@@ -282,7 +282,7 @@ pub trait AbstractKnnVectorQueryImpl: Query {
 /// # Errors
 ///
 /// Propagates any I/O error raised while scoring, and
-/// [`LuceneError::Arithmetic`] when the accept iterator's cost does not fit in
+/// [`LuceneErrorKind::Arithmetic`](crate::error::LuceneErrorKind::Arithmetic) when the accept iterator's cost does not fit in
 /// an `i32`: Java's `Math.toIntExact(acceptIterator.cost())`
 /// (`AbstractKnnVectorQuery.java:313`) throwing
 /// `ArithmeticException("integer overflow")`.
@@ -836,6 +836,7 @@ pub fn knn_vector_query_visit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// An iterator over no document whose cost is past an `int`.
     struct CostlyIterator;
@@ -892,7 +893,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
             "{error:?}"
         );
     }

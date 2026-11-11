@@ -29,7 +29,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use randomizedtesting::jdk::reflect::{modifier, Class};
 use randomizedtesting::junit::Assert;
 use rucene::document::{Document, FieldType, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::check_index::{CheckIndex, Level};
 use rucene::index::index_writer::{IndexWriter, MAX_TERM_LENGTH};
 use rucene::index::terms::Term;
@@ -224,7 +224,15 @@ pub fn test_obtains_lock(dir: Arc<dyn Directory>) -> Result<()> {
     // keep IW open... should not be able to obtain write lock
     expect_throws_lucene(
         "org.apache.lucene.store.LockObtainFailedException",
-        |e| matches!(e, LuceneError::LockObtainFailed { .. }),
+        |e| {
+            matches!(
+                e,
+                LuceneError {
+                    kind: LuceneErrorKind::LockObtainFailed { .. },
+                    ..
+                }
+            )
+        },
         || CheckIndex::new(Arc::clone(&dir)),
     );
 

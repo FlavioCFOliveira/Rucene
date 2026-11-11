@@ -17,7 +17,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_commit::IndexCommit;
 use crate::index::index_file_names::SEGMENTS;
 use crate::index::index_reader::{
@@ -588,16 +588,16 @@ impl StandardDirectoryReader {
                 }
                 // `firstException = new RuntimeException(e)`, `e` the
                 // `ExecutionException` whose cause the task raised.
-                let execution = LuceneError::Unchecked {
+                let execution = LuceneError::from(LuceneErrorKind::Unchecked {
                     class: "java.util.concurrent.ExecutionException",
                     message: Some(crate::util::concurrent::throwable_to_string(&cause)),
                     cause: Some(Arc::new(cause)),
-                };
-                let first_exception = LuceneError::Unchecked {
+                });
+                let first_exception = LuceneError::from(LuceneErrorKind::Unchecked {
                     class: "java.lang.RuntimeException",
                     message: Some(crate::util::concurrent::throwable_to_string(&execution)),
                     cause: Some(Arc::new(execution)),
-                };
+                });
                 return Err(Self::dec_ref_while_suppressing_exception(
                     first_exception,
                     &readers,
@@ -661,10 +661,10 @@ impl StandardDirectoryReader {
         if suppressed.is_empty() {
             error
         } else {
-            LuceneError::Other(format!(
+            LuceneError::from(LuceneErrorKind::Other(format!(
                 "{error} (suppressed while releasing readers: {})",
                 suppressed.join("; ")
-            ))
+            )))
         }
     }
 
@@ -925,7 +925,10 @@ impl IndexReader for StandardDirectoryReader {
                 // before we were, and this may leave some un-referenced files
                 // in the index, which is harmless. The next time IW is opened
                 // on the index, it will delete them.
-                Err(LuceneError::AlreadyClosed { .. }) => Ok(()),
+                Err(LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                }) => Ok(()),
                 other => other,
             },
             None => Ok(()),
@@ -1353,7 +1356,7 @@ impl StandardDirectoryReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] when `commit` names a different directory,
+    /// Returns [`LuceneErrorKind::Io`] when `commit` names a different directory,
     /// and otherwise propagates whatever [`Self::do_open_from_commit`] raises.
     fn do_open_no_writer(
         &self,
@@ -1368,10 +1371,10 @@ impl StandardDirectoryReader {
             }
             Some(commit) => {
                 if !Arc::ptr_eq(&commit.get_directory(), &self.directory) {
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "the specified commit does not match the specified Directory",
-                    )));
+                    ))));
                 }
                 if let Some(ref segments_file) = self.segment_infos.segments_file_name() {
                     if segments_file == &commit.get_segments_file_name() {
@@ -1539,7 +1542,7 @@ impl IndexCommit for ReaderCommit {
     }
 
     fn delete(&self) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "This IndexCommit does not support deletions".to_string(),
         ))
     }
@@ -1670,7 +1673,7 @@ fn open_standard(
 ) -> Result<Arc<dyn DirectoryReader>> {
     let latest_major = crate::util::Version::LATEST.major as i32;
     if min_supported_major_version > latest_major || min_supported_major_version < 0 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "minSupportedMajorVersion must be positive and <= {latest_major} but was: \
              {min_supported_major_version}"
         )));
@@ -2053,7 +2056,10 @@ pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Arc<dyn IndexCo
                             Arc::clone(&directory),
                         )?));
                     }
-                    Err(LuceneError::Io(err)) if err.kind() == io::ErrorKind::NotFound => {
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::Io(err),
+                        ..
+                    }) if err.kind() == io::ErrorKind::NotFound => {
                         // Stale directory listing; ignore this file.
                     }
                     Err(err) => return Err(err),
@@ -2154,7 +2160,7 @@ mod tests {
         reader.close().unwrap();
         assert!(matches!(
             reader.doc_freq(&a),
-            Err(LuceneError::AlreadyClosed { ref message, .. }) if message == "this IndexReader is closed"
+            Err(LuceneError { kind: LuceneErrorKind::AlreadyClosed { ref message, .. }, .. }) if message == "this IndexReader is closed"
         ));
     }
 
@@ -2192,7 +2198,7 @@ mod tests {
         reader.close().unwrap();
         assert!(matches!(
             reader.get_sum_total_term_freq("body"),
-            Err(LuceneError::AlreadyClosed { ref message, .. }) if message == "this IndexReader is closed"
+            Err(LuceneError { kind: LuceneErrorKind::AlreadyClosed { ref message, .. }, .. }) if message == "this IndexReader is closed"
         ));
     }
     use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
@@ -2306,7 +2312,7 @@ mod tests {
     fn a_closed_reader_refuses_its_context_and_leaves() {
         let closed = |error: LuceneError| {
             assert!(
-                matches!(&error, LuceneError::AlreadyClosed { message, .. }
+                matches!(&error, LuceneError { kind: LuceneErrorKind::AlreadyClosed { message, .. }, .. }
                     if message == "this IndexReader is closed"),
                 "{error:?}"
             );
@@ -2433,7 +2439,10 @@ mod tests {
         assert!(!commit.is_deleted());
         assert!(matches!(
             commit.delete(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 
@@ -2483,7 +2492,7 @@ mod tests {
         let err = list_commits(Arc::clone(&dir))
             .expect_err("a segments.gen file must be reported, not skipped");
         assert!(
-            matches!(&err, LuceneError::IllegalArgument(msg)
+            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: msg, .. }, .. }
                 if msg.contains("segments.gen") && msg.contains("not a valid segment file name")),
             "unexpected error: {err:?}"
         );
@@ -2779,7 +2788,7 @@ mod tests {
             _apply_all_deletes: bool,
             _write_all_deletes: bool,
         ) -> Result<Arc<dyn DirectoryReader>> {
-            Err(LuceneError::UnsupportedOperation(
+            Err(LuceneError::unsupported_operation(
                 "not used by these tests".to_string(),
             ))
         }
@@ -2813,7 +2822,9 @@ mod tests {
                 DeleterOutcome::AlreadyClosed => Err(LuceneError::already_closed(
                     "this IndexWriter is closed".to_string(),
                 )),
-                DeleterOutcome::Failed => Err(LuceneError::Io(io::Error::other("decRef failed"))),
+                DeleterOutcome::Failed => Err(LuceneError::from(LuceneErrorKind::Io(
+                    io::Error::other("decRef failed"),
+                ))),
             }
         }
     }
@@ -2885,7 +2896,7 @@ mod tests {
         let (_writer, reader, _segment_reader) = reader_with_deleter(DeleterOutcome::Failed);
         let error = IndexReader::close(reader.as_ref()).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Io(io) if io.to_string() == "decRef failed"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string() == "decRef failed"),
             "{error:?}"
         );
     }
@@ -2899,7 +2910,7 @@ mod tests {
         segment_reader.dec_ref().unwrap();
         let error = IndexReader::close(reader.as_ref()).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::AlreadyClosed { message, .. }
+            matches!(&error, LuceneError { kind: LuceneErrorKind::AlreadyClosed { message, .. }, .. }
                 if message == "this IndexReader is closed"),
             "{error:?}"
         );

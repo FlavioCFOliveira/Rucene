@@ -289,11 +289,11 @@ impl LongDistanceFeatureQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `pivot_distance` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `pivot_distance` is not
     /// positive.
     pub fn new(field: impl Into<String>, origin: i64, pivot_distance: i64) -> Result<Self> {
         if pivot_distance <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pivotDistance must be > 0, got {pivot_distance}"
             )));
         }
@@ -727,7 +727,7 @@ impl LatLonPointDistanceFeatureQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an invalid latitude or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an invalid latitude or
     /// longitude, and when `pivot_distance` is not positive.
     pub fn new(
         field: impl Into<String>,
@@ -738,7 +738,7 @@ impl LatLonPointDistanceFeatureQuery {
         GeoUtils::check_latitude(origin_lat)?;
         GeoUtils::check_longitude(origin_lon)?;
         if pivot_distance <= 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pivotDistance must be > 0, got {pivot_distance}"
             )));
         }

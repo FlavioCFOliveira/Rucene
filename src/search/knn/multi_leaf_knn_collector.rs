@@ -85,7 +85,7 @@ impl MultiLeafKnnCollector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
     /// `greediness` is outside `[0, 1]` or `interval` is not positive.
     pub fn with_greediness(
         k: i32,
@@ -95,12 +95,12 @@ impl MultiLeafKnnCollector {
         sub_collector: Box<dyn AbstractKnnCollector>,
     ) -> Result<Self> {
         if !(0.0..=1.0).contains(&greediness) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "greediness must be in [0,1]".to_string(),
             ));
         }
         if interval <= 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "interval must be positive".to_string(),
             ));
         }

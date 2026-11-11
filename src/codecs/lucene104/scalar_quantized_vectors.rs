@@ -434,7 +434,7 @@ impl OffHeapScalarQuantizedVectorValues {
             return Ok(());
         }
         if ord < 0 || ord >= self.entry.size {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector ordinal {ord} is out of range for {} vectors",
                 self.entry.size
             )));
@@ -801,7 +801,7 @@ impl FloatVectorValues for OffHeapScalarQuantizedFloatVectorValues {
     /// components each, and `deQuantize` needs one component per byte.
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         if ord < 0 || ord >= self.size {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector ordinal {ord} is out of range for {} vectors",
                 self.size
             )));
@@ -929,7 +929,7 @@ impl Lucene104ScalarQuantizedVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the query and the stored
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the query and the stored
     /// vector have different lengths, and whatever reading the stored vector
     /// and its corrections raises.
     ///
@@ -1035,8 +1035,8 @@ impl Lucene104ScalarQuantizedVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the target's length is not
-    /// the field's dimension, [`LuceneError::IllegalState`] when the field
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the target's length is not
+    /// the field's dimension, [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field
     /// stored no centroid, and whatever quantizing raises.
     pub fn get_random_vector_scorer_quantized(
         similarity_function: VectorSimilarityFunction,
@@ -1727,7 +1727,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when either file's header, footer
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when either file's header, footer
     /// or version disagrees with what the format writes, and whatever reading
     /// the metadata raises.
     ///
@@ -1912,7 +1912,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field is not encoded
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the field is not encoded
     /// as `FLOAT32`, and whatever opening the values raises.
     fn quantized_float_vector_values(
         &self,
@@ -1920,7 +1920,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
         entry: &FieldEntry,
     ) -> Result<Box<dyn FloatVectorValues>> {
         if entry.vector_encoding != VectorEncoding::FLOAT32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as: {:?} expected: FLOAT32",
                 entry.vector_encoding
             )));
@@ -1975,8 +1975,8 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the encoding or similarity
-    /// ordinal is not one Lucene writes, [`LuceneError::IllegalState`] when the
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when the encoding or similarity
+    /// ordinal is not one Lucene writes, [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the
     /// similarity disagrees with the field info, and whatever reading the entry
     /// raises.
     ///
@@ -2022,7 +2022,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when either check fails, which is
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when either check fails, which is
     /// Java's `IllegalStateException`.
     ///
     /// Equivalent to
@@ -2064,7 +2064,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the header or the version
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when the header or the version
     /// disagrees with the metadata, and an I/O error when the file cannot be
     /// opened.
     ///
@@ -2126,7 +2126,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
             return Ok(None);
         };
         if entry.vector_encoding != VectorEncoding::FLOAT32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as {:?}, expected FLOAT32",
                 entry.vector_encoding
             )));
@@ -2276,8 +2276,8 @@ impl Lucene104ScalarQuantizedVectorsReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `encoding` is symmetric,
-    /// [`LuceneError::IllegalState`] when the field stores no centroid, and
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `encoding` is symmetric,
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field stores no centroid, and
     /// whatever reading the vectors or writing the output raises.
     ///
     /// Equivalent to
@@ -2290,7 +2290,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
         binary_quantizer: &OptimizedScalarQuantizer,
     ) -> Result<DocsWithFieldSet> {
         if !encoding.is_asymmetric() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "encoding and queryEncoding must be different".to_string(),
             ));
         }
@@ -2372,7 +2372,7 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
             return Ok(None);
         };
         if entry.vector_encoding != VectorEncoding::FLOAT32 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as: {:?} expected: FLOAT32",
                 entry.vector_encoding
             )));
@@ -2539,7 +2539,7 @@ impl FlatVectorsReader for Lucene104ScalarQuantizedVectorsReader {
     ) -> Result<Box<dyn RandomVectorScorer>> {
         self.random_vector_scorer_float(field, target)?
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!("field=\"{field}\" has no vector values"))
+                LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
             })
     }
 
@@ -2838,7 +2838,7 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `max_conn` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `max_conn` or
     /// `beam_width` is out of range, or when `num_merge_workers` is `1` and a
     /// `merge_exec` is given, as Java throws `IllegalArgumentException`.
     pub fn with_merge_exec(
@@ -2852,7 +2852,7 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
         let mut format = Self::with_params(max_conn, beam_width, encoding)?;
         format.tiny_segments_threshold = tiny_segments_threshold;
         if num_merge_workers == 1 && merge_exec.is_some() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "No executor service is needed as we'll use single thread to merge".to_string(),
             ));
         }
@@ -2865,12 +2865,12 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
     /// Creates the format with explicit graph parameters and encoding.
     pub fn with_params(max_conn: i32, beam_width: i32, encoding: ScalarEncoding) -> Result<Self> {
         if max_conn <= 0 || max_conn > 512 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxConn must be in [1, 512], got {max_conn}"
             )));
         }
         if beam_width <= 0 || beam_width > 3200 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "beamWidth must be in [1, 3200], got {beam_width}"
             )));
         }
@@ -3247,7 +3247,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the writer is already closed,
+    /// Returns [`LuceneErrorKind::IllegalState`] when the writer is already closed,
     /// and whatever quantizing or writing raises.
     fn write_field(
         &mut self,
@@ -3296,7 +3296,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the writer is already closed,
+    /// Returns [`LuceneErrorKind::IllegalState`] when the writer is already closed,
     /// and whatever `write` returns.
     fn with_outputs<R>(
         &mut self,
@@ -3387,7 +3387,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when an entry of `ord_map` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when an entry of `ord_map` is
     /// out of range, and whatever quantizing or writing raises.
     ///
     /// Equivalent to
@@ -3416,7 +3416,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
         for &ordinal in ord_map {
             let index = usize::try_from(ordinal).unwrap_or(usize::MAX);
             if index >= count {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "ordinal {ordinal} is out of range for {count} vectors"
                 )));
             }
@@ -3644,7 +3644,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     /// # Errors
     ///
     /// Returns whatever reading a segment's vectors raises, and
-    /// [`LuceneError::IllegalArgument`] when the field's vectors are all zero
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field's vectors are all zero
     /// and the similarity is cosine.
     ///
     /// Equivalent to
@@ -3707,7 +3707,7 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     /// # Errors
     ///
     /// Returns whatever reading a segment's vectors raises, and
-    /// [`LuceneError::IllegalArgument`] when the vectors sum to zero and the
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the vectors sum to zero and the
     /// similarity is cosine.
     ///
     /// Equivalent to
@@ -3934,7 +3934,7 @@ impl FlatVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
     /// # Errors
     ///
     /// Whatever the delegate's `add_field` raises, and
-    /// [`LuceneError::IllegalState`] — Java's `ClassCastException` — when the
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — Java's `ClassCastException` — when the
     /// delegate answers a float field with a writer of byte vectors.
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FlatFieldVectorWriter> {
         let raw_vector_delegate = FlatVectorsWriter::add_field(self.delegate()?, field_info)?;
@@ -4389,6 +4389,7 @@ impl std::fmt::Display for Lucene104HnswScalarQuantizedVectorsFormat {
 mod tests {
     use super::*;
     use crate::codecs::knn_vectors::MergedFloat32VectorValues;
+    use crate::error::LuceneErrorKind;
     use crate::index::vector_values::from_floats;
 
     /// Writes `max_doc` documents of one three-dimensional field through this
@@ -4801,11 +4802,17 @@ mod tests {
         };
         assert!(matches!(
             NormalizedFloatVectorValues::new(empty()),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(matches!(
             quantize(empty()),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
 
         // Positive control: one vector of two dimensions.
@@ -4836,7 +4843,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "No executor service is needed as we'll use single thread to merge".to_string()
             )
             .to_string()

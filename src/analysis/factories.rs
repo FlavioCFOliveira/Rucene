@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock, RwLock};
 use crate::analysis::{
     default_token_attribute_factory, CharFilter, TokenFilterLogic, Tokenizer, TokenizerLogic,
 };
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::attribute::AttributeFactory;
 use crate::util::automaton::case_folding;
 use crate::util::extra::Version;
@@ -65,11 +65,13 @@ impl AbstractAnalysisFactory {
             // (`AbstractAnalysisFactory.java:101-105`): the message is the
             // `ParseException`'s `toString()`, and it is the cause.
             // `parse_leniently` reports the `ParseException` as an
-            // `IllegalArgumentWithCause` carrying its message.
+            // `IllegalArgument` with a cause, carrying its message.
             Some(version) => Version::parse_leniently(&version).map_err(|pe| {
                 let message = match &pe {
-                    LuceneError::IllegalArgument(message)
-                    | LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
+                    LuceneError {
+                        kind: LuceneErrorKind::IllegalArgument { message, .. },
+                        ..
+                    } => message.clone(),
                     other => other.to_string(),
                 };
                 LuceneError::illegal_argument_with_cause(
@@ -123,7 +125,7 @@ impl AbstractAnalysisFactory {
     /// every subclass's no-argument constructor throws: a factory is only ever
     /// built from its argument map.
     pub fn default_ctor_exception() -> LuceneError {
-        LuceneError::UnsupportedOperation(
+        LuceneError::unsupported_operation(
             "Analysis factories cannot be instantiated without arguments. Use applicable factory \
              methods of TokenizerFactory, CharFilterFactory, or TokenFilterFactory."
                 .to_string(),
@@ -139,7 +141,7 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the value is not exactly
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the value is not exactly
     /// one UTF-16 code unit long.
     pub fn get_char(
         args: &mut HashMap<String, String>,
@@ -150,7 +152,7 @@ impl AbstractAnalysisFactory {
             None => Ok(default_value),
             Some(s) => match s.chars().next() {
                 Some(c) if s.encode_utf16().count() == 1 => Ok(c),
-                _ => Err(LuceneError::IllegalArgument(format!(
+                _ => Err(LuceneError::illegal_argument(format!(
                     "{name} should be a char. \"{s}\" is invalid"
                 ))),
             },
@@ -167,13 +169,15 @@ impl AbstractAnalysisFactory {
     /// # Errors
     ///
     /// Returns what [`require`](Self::require) returns for a missing
-    /// argument, and, for an empty one, [`LuceneError::StringIndexOutOfBounds`]
+    /// argument, and, for an empty one, [`LuceneErrorKind::StringIndexOutOfBounds`]
     /// with the message of the `StringIndexOutOfBoundsException` `charAt(0)`
     /// throws on JDK 25.0.4, `Index 0 out of bounds for length 0`.
     pub fn require_char(args: &mut HashMap<String, String>, name: &str) -> Result<u16> {
         let value = Self::require(args, name)?;
         value.encode_utf16().next().ok_or_else(|| {
-            LuceneError::StringIndexOutOfBounds("Index 0 out of bounds for length 0".to_string())
+            LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+                "Index 0 out of bounds for length 0".to_string(),
+            ))
         })
     }
 
@@ -329,7 +333,9 @@ impl AbstractAnalysisFactory {
     /// Equivalent to `require(Map, String)`.
     pub fn require(args: &mut HashMap<String, String>, name: &str) -> Result<String> {
         args.remove(name).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("Configuration Error: missing parameter '{name}'"))
+            LuceneError::illegal_argument(format!(
+                "Configuration Error: missing parameter '{name}'"
+            ))
         })
     }
 
@@ -346,7 +352,7 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`], with the messages above.
+    /// Returns [`LuceneErrorKind::IllegalArgument`], with the messages above.
     ///
     /// The pattern is written in Java's dialect, and Rust has no
     /// `java.util.regex`: the port parses it as the JDK 25 that runs Lucene
@@ -480,7 +486,7 @@ impl AbstractAnalysisFactory {
     ///   `PatternSyntaxException` as the cause of the
     ///   `IllegalArgumentException` (`AbstractAnalysisFactory.java:266-276`).
     ///   The message is Java's, and the cause is
-    ///   [`LuceneError::IllegalArgument`] — `PatternSyntaxException` extends
+    ///   [`LuceneErrorKind::IllegalArgument`] — `PatternSyntaxException` extends
     ///   `IllegalArgumentException` — carrying the port parser's description,
     ///   index and pattern laid out as `PatternSyntaxException.getMessage()`
     ///   lays them out, or the engine's own diagnostic for a pattern it
@@ -494,7 +500,7 @@ impl AbstractAnalysisFactory {
         let can_not_be_parsed = |cause: String| {
             LuceneError::illegal_argument_with_cause(
                 format!("Configuration Error: '{name}' can not be parsed in {factory_simple_name}"),
-                std::sync::Arc::new(LuceneError::IllegalArgument(cause)),
+                std::sync::Arc::new(LuceneError::illegal_argument(cause)),
             )
         };
         let translation = crate::analysis::java_regex::translate_for_engine(&value, false)
@@ -534,7 +540,7 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the argument is missing
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the argument is missing
     /// or matches none of `allowed_values`.
     pub fn require_one_of(
         args: &mut HashMap<String, String>,
@@ -553,7 +559,7 @@ impl AbstractAnalysisFactory {
         if matches {
             Ok(value)
         } else {
-            Err(LuceneError::IllegalArgument(format!(
+            Err(LuceneError::illegal_argument(format!(
                 "Configuration Error: '{name}' value must be one of [{}]",
                 allowed_values.join(", ")
             )))
@@ -581,7 +587,7 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the argument is missing,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the argument is missing,
     /// and, standing in for the `NumberFormatException` (an
     /// `IllegalArgumentException`) `Integer.parseInt` throws, with its
     /// message `For input string: "<value>"` when it is not an `int`.
@@ -617,7 +623,7 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the argument is missing.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the argument is missing.
     pub fn require_boolean(args: &mut HashMap<String, String>, name: &str) -> Result<bool> {
         let value = Self::require(args, name)?;
         Ok(parse_boolean(&value))
@@ -643,7 +649,7 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the argument is missing
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the argument is missing
     /// or is not a float.
     pub fn require_float(args: &mut HashMap<String, String>, name: &str) -> Result<f32> {
         let value = Self::require(args, name)?;
@@ -660,7 +666,7 @@ impl AbstractAnalysisFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`], standing in for the
+    /// Returns [`LuceneErrorKind::IllegalArgument`], standing in for the
     /// `NumberFormatException` (an `IllegalArgumentException`) Java throws,
     /// with its message: `empty String` for a value that trims to nothing,
     /// `For input string: "<value>"` otherwise.
@@ -699,7 +705,7 @@ impl AbstractAnalysisFactory {
 /// message `For input string: "<s>"`.
 fn parse_int(s: &str) -> Result<i32> {
     crate::util::extra::java_parse_int(s)
-        .ok_or_else(|| LuceneError::IllegalArgument(format!("For input string: \"{s}\"")))
+        .ok_or_else(|| LuceneError::illegal_argument(format!("For input string: \"{s}\"")))
 }
 
 /// `Boolean.parseBoolean(String)`: `"true".equalsIgnoreCase(s)`. No character
@@ -743,11 +749,11 @@ fn java_equals_ignore_case(a: &str, b: &str) -> bool {
 
 /// `Float.parseFloat(String)`: see [`AbstractAnalysisFactory::get_float`].
 fn parse_float(input: &str) -> Result<f32> {
-    let not_a_float = || LuceneError::IllegalArgument(format!("For input string: \"{input}\""));
+    let not_a_float = || LuceneError::illegal_argument(format!("For input string: \"{input}\""));
     // `in = in.trim()`: the characters up to U+0020.
     let trimmed = input.trim_matches(|c: char| c <= '\u{20}');
     if trimmed.is_empty() {
-        return Err(LuceneError::IllegalArgument("empty String".to_string()));
+        return Err(LuceneError::illegal_argument("empty String".to_string()));
     }
     let (negative, rest) = match trimmed.as_bytes()[0] {
         b'-' => (true, &trimmed[1..]),
@@ -1097,11 +1103,14 @@ impl<T: ?Sized> AnalysisFactoryClass<T> {
     /// # Errors
     ///
     /// Returns, for a class without one, the `NoSuchMethodException` Java
-    /// throws, as [`LuceneError::NoSuchMethod`] with its message
+    /// throws, as [`LuceneErrorKind::NoSuchMethod`] with its message
     /// `<class>.<init>(java.util.Map)`.
     pub fn get_constructor(&self) -> Result<AnalysisFactoryConstructor<T>> {
         self.map_constructor.ok_or_else(|| {
-            LuceneError::NoSuchMethod(format!("{}.<init>(java.util.Map)", self.name))
+            LuceneError::from(LuceneErrorKind::NoSuchMethod(format!(
+                "{}.<init>(java.util.Map)",
+                self.name
+            )))
         })
     }
 
@@ -1145,8 +1154,8 @@ impl<T: ?Sized> std::fmt::Debug for AnalysisFactoryClass<T> {
 ///
 /// **Divergence from Lucene 10.5.0.** Java's `ServiceConfigurationError` has
 /// no [`LuceneError`] counterpart; the errors Java raises as one are
-/// [`LuceneError::IllegalArgument`] here (with Java's message, and its cause
-/// as [`LuceneError::IllegalArgumentWithCause`]). And Java keeps the original
+/// [`LuceneErrorKind::IllegalArgument`] here (with Java's message, and its cause
+/// as [`LuceneErrorKind::IllegalArgument`]). And Java keeps the original
 /// names in `Set.copyOf(originalNames)`, an immutable set whose iteration
 /// order is unspecified (it varies from one JVM run to the next); this port
 /// keeps them in registration order, which
@@ -1223,10 +1232,10 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
     /// # Errors
     ///
     /// Returns, standing in for Java's `ServiceConfigurationError` and with
-    /// its message, [`LuceneError::IllegalArgumentWithCause`] when a class has
+    /// its message, [`LuceneErrorKind::IllegalArgument`] when a class has
     /// no usable `NAME` field (the cause is what
     /// [`lookup_spi_name`](Self::lookup_spi_name) returned), and
-    /// [`LuceneError::IllegalArgument`] when a name is not a valid SPI name,
+    /// [`LuceneErrorKind::IllegalArgument`] when a name is not a valid SPI name,
     /// when the scan reaches a class that is not of this factory type, or
     /// when the lookup keys and the original names disagree in number.
     pub fn reload(&mut self, classloader: &Arc<ClassLoader>) -> Result<()> {
@@ -1248,7 +1257,7 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
             })?;
             let name = original_name.to_lowercase();
             if !Self::is_valid_name(original_name) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "The name {original_name} for {} is invalid: Allowed characters are (English) \
                      alphabet, digits, and underscore. It should be started with an alphabet.",
                     service.get_name()
@@ -1266,7 +1275,7 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
         // make sure that the number of lookup keys is same to the number of
         // original names
         if services.len() != original_names.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Service lookup key set is inconsistent with original name set!".to_string(),
             ));
         }
@@ -1319,14 +1328,14 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Java's message, naming the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] with Java's message, naming the
     /// available services as `[a, b]`.
     pub fn lookup_class(&self, name: &str) -> Result<Arc<AnalysisFactoryClass<T>>> {
         self.services
             .get(&name.to_lowercase())
             .map(Arc::clone)
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "A SPI class of type {} with name '{name}' does not exist. You need to add \
                      the corresponding JAR file supporting this SPI to your classpath. The \
                      current classpath supports the following names: [{}]",
@@ -1354,15 +1363,17 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
     /// # Errors
     ///
     /// Returns, for a class without a public `NAME` field, the
-    /// `NoSuchFieldException("NAME")` Java throws, as [`LuceneError::Other`]
+    /// `NoSuchFieldException("NAME")` Java throws, as [`LuceneErrorKind::Other`]
     /// with its message `NAME` ([`LuceneError`] has no reflective exception,
     /// as for `CommandLineUtil`'s), and for a field that does not qualify
-    /// [`LuceneError::IllegalState`] with `No SPI name defined.`.
+    /// [`LuceneErrorKind::IllegalState`] with `No SPI name defined.`.
     pub fn lookup_spi_name(service: &AnalysisFactoryClass<T>) -> Result<&'static str> {
         match service.spi_name_field() {
             SPINameField::Declared(name) => Ok(name),
             SPINameField::Unsuitable => Err(LuceneError::illegal_state("No SPI name defined.")),
-            SPINameField::Missing => Err(LuceneError::Other("NAME".to_string())),
+            SPINameField::Missing => Err(LuceneError::from(LuceneErrorKind::Other(
+                "NAME".to_string(),
+            ))),
         }
     }
 
@@ -1376,10 +1387,10 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
     /// # Errors
     ///
     /// Returns whatever the constructor returns, and, for a class without such
-    /// a constructor, [`LuceneError::UnsupportedOperationWithCause`] with
+    /// a constructor, [`LuceneErrorKind::UnsupportedOperation`] with
     /// Java's message `Factory <class> cannot be instantiated. This is likely
     /// due to missing Map<String,String> constructor.` and, as its cause, the
-    /// [`LuceneError::NoSuchMethod`] `getConstructor(Map.class)` throws, whose
+    /// [`LuceneErrorKind::NoSuchMethod`] `getConstructor(Map.class)` throws, whose
     /// message is `<class>.<init>(java.util.Map)`.
     ///
     /// **Divergence from Lucene 10.5.0.** Java wraps a checked exception the
@@ -1398,10 +1409,10 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
                      Map<String,String> constructor.",
                     clazz.name
                 ),
-                Arc::new(LuceneError::NoSuchMethod(format!(
+                Arc::new(LuceneError::from(LuceneErrorKind::NoSuchMethod(format!(
                     "{}.<init>(java.util.Map)",
                     clazz.name
-                ))),
+                )))),
             )),
         }
     }
@@ -1412,10 +1423,16 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
 /// `e.toString()`, and `e` is its cause.
 fn find_spi_name_failure(cause: LuceneError) -> LuceneError {
     let message = match &cause {
-        LuceneError::IllegalState { message, .. } => {
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => {
             format!("java.lang.IllegalStateException: {message}")
         }
-        LuceneError::Other(message) => format!("java.lang.NoSuchFieldException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::Other(message),
+            ..
+        } => format!("java.lang.NoSuchFieldException: {message}"),
         other => other.to_string(),
     };
     LuceneError::illegal_state_with_cause(message, Arc::new(cause))
@@ -1542,7 +1559,7 @@ pub fn available_tokenizers() -> Vec<String> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] whose message is the failure's
+/// Returns [`LuceneErrorKind::IllegalState`] whose message is the failure's
 /// `toString()` and whose cause is the failure, as Java's
 /// `new IllegalStateException(e)`.
 pub fn find_tokenizer_spi_name(
@@ -1785,11 +1802,18 @@ mod parse_exception_tests {
         let expected = "failed to parse lenient version string \"x.y\": Failed to parse major \
                         version from \"X\" (got: X.Y)";
         match AbstractAnalysisFactory::new(&mut args) {
-            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+            Err(LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            }) => {
                 assert_eq!(message, format!("java.text.ParseException: {expected}"));
                 assert!(matches!(
                     cause.as_ref(),
-                    LuceneError::IllegalArgumentWithCause { message, .. } if message == expected
+                    LuceneError { kind: LuceneErrorKind::IllegalArgument { message, cause: Some(_), .. }, .. } if message == expected
                 ));
             }
             other => panic!("expected the wrapped ParseException, got {other:?}"),
@@ -1885,7 +1909,10 @@ mod spi_tests {
             ("zap".to_string(), "1".to_string()),
         ]);
         match tokenizer_for_name("Standard", &mut leftovers) {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "Unknown parameters: {foo=bar, zap=1}")
             }
             other => panic!("expected the leftover-argument error, got {other:?}"),
@@ -1897,7 +1924,10 @@ mod spi_tests {
     #[test]
     fn an_unregistered_name_fails_with_the_loaders_message() {
         match token_filter_for_name("lowercase", &mut HashMap::new()) {
-            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "A SPI class of type org.apache.lucene.analysis.TokenFilterFactory with name \
                  'lowercase' does not exist. You need to add the corresponding JAR file \
@@ -1959,7 +1989,9 @@ mod spi_tests {
                 SPINameField::Missing,
                 "The class name org.example.Refused has no service name field: [public static \
                  final String NAME]",
-                Some(LuceneError::Other("NAME".to_string())),
+                Some(LuceneError::from(LuceneErrorKind::Other(
+                    "NAME".to_string(),
+                ))),
             ),
             (
                 SPINameField::Unsuitable,
@@ -1993,8 +2025,24 @@ mod spi_tests {
             );
             let error = loader.reload(&refused).unwrap_err();
             match (&error, &expected_cause) {
-                (LuceneError::IllegalArgument(message), None) => assert_eq!(message, expected),
-                (LuceneError::IllegalArgumentWithCause { message, cause }, Some(want)) => {
+                (
+                    LuceneError {
+                        kind: LuceneErrorKind::IllegalArgument { message, .. },
+                        ..
+                    },
+                    None,
+                ) => assert_eq!(message, expected),
+                (
+                    LuceneError {
+                        kind:
+                            LuceneErrorKind::IllegalArgument {
+                                message,
+                                cause: Some(cause),
+                            },
+                        ..
+                    },
+                    Some(want),
+                ) => {
                     assert_eq!(message, expected);
                     assert_eq!(cause.to_string(), want.to_string());
                     assert_eq!(cause.java_simple_name(), want.java_simple_name());
@@ -2036,14 +2084,27 @@ mod spi_tests {
         // `AnalysisOracle` (pass I): the `UnsupportedOperationException`'s
         // cause is `java.lang.NoSuchMethodException: <class>.<init>(java.util.Map)`.
         match loader.new_instance("NOMAP", &mut HashMap::new()) {
-            Err(error @ LuceneError::UnsupportedOperationWithCause { .. }) => {
+            Err(
+                error @ LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { cause: Some(_), .. },
+                    ..
+                },
+            ) => {
                 assert_eq!(error.java_simple_name(), "UnsupportedOperationException");
                 // `getCause()`.
                 assert_eq!(
                     std::error::Error::source(&error).map(ToString::to_string),
                     Some("no such method: org.example.NoMapCtor.<init>(java.util.Map)".to_string())
                 );
-                let LuceneError::UnsupportedOperationWithCause { message, cause } = error else {
+                let LuceneError {
+                    kind:
+                        LuceneErrorKind::UnsupportedOperation {
+                            message,
+                            cause: Some(cause),
+                        },
+                    ..
+                } = error
+                else {
                     unreachable!()
                 };
                 assert_eq!(
@@ -2053,7 +2114,7 @@ mod spi_tests {
                 );
                 assert_eq!(cause.java_simple_name(), "NoSuchMethodException");
                 assert!(
-                    matches!(&*cause, LuceneError::NoSuchMethod(m)
+                    matches!(&*cause, LuceneError { kind: LuceneErrorKind::NoSuchMethod(m), .. }
                         if m == "org.example.NoMapCtor.<init>(java.util.Map)"),
                     "{cause:?}"
                 );
@@ -2084,7 +2145,10 @@ mod spi_tests {
             ),
         ] {
             match find_tokenizer_spi_name(class) {
-                Err(LuceneError::IllegalState { message, cause }) => {
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalState { message, cause },
+                    ..
+                }) => {
                     assert_eq!(message, expected);
                     assert!(cause.is_some(), "the failure is the cause");
                 }
@@ -2105,7 +2169,10 @@ mod spi_tests {
     /// The scan's refusal of [`wrong_loader`]'s class.
     fn assert_not_a_subtype(service: &str, result: Result<()>) {
         match result {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(
                     message,
                     format!("{service}: org.example.Wrong not a subtype")
@@ -2143,7 +2210,10 @@ mod spi_tests {
     #[test]
     fn the_no_argument_constructor_throws_the_default_ctor_exception() {
         match crate::analysis::standard::StandardTokenizerFactory::new_without_args() {
-            Err(LuceneError::UnsupportedOperation(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "Analysis factories cannot be instantiated without arguments. Use applicable \
                  factory methods of TokenizerFactory, CharFilterFactory, or TokenFilterFactory."
@@ -2163,7 +2233,10 @@ mod accessor_tests {
 
     fn message(error: LuceneError) -> String {
         match error {
-            LuceneError::IllegalArgument(message) => message,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            } => message,
             other => panic!("expected an IllegalArgumentException, got {other:?}"),
         }
     }
@@ -2237,9 +2310,18 @@ mod accessor_tests {
         // `java.lang.StringIndexOutOfBoundsException: Index 0 out of bounds
         // for length 0`.
         match AbstractAnalysisFactory::require_char(&mut one("c", ""), "c") {
-            Err(error @ LuceneError::StringIndexOutOfBounds(_)) => {
+            Err(
+                error @ LuceneError {
+                    kind: LuceneErrorKind::StringIndexOutOfBounds(_),
+                    ..
+                },
+            ) => {
                 assert_eq!(error.java_simple_name(), "StringIndexOutOfBoundsException");
-                let LuceneError::StringIndexOutOfBounds(message) = error else {
+                let LuceneError {
+                    kind: LuceneErrorKind::StringIndexOutOfBounds(message),
+                    ..
+                } = error
+                else {
                     unreachable!()
                 };
                 assert_eq!(message, "Index 0 out of bounds for length 0");
@@ -2681,7 +2763,7 @@ mod get_pattern_tests {
                 "{count} of a body that can match the empty string, with {construct}"
             );
             match compile(pattern) {
-                Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { message, cause: Some(cause) }, .. }) => {
                     assert_eq!(
                         message,
                         "Configuration Error: 'pattern' can not be parsed in ProbeFactory"

@@ -16,7 +16,7 @@ use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
 use randomizedtesting::junit::Assert;
 use rucene::codecs::state::SegmentReadState;
 use rucene::codecs::{BlockTermState, PostingsReaderBase};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, ImpactsEnum, IndexOptions,
     PostingsEnum, SeekStatus, TermsEnum, VectorEncoding, VectorSimilarityFunction,
@@ -361,11 +361,11 @@ fn mock_term_state() -> BlockTermState {
 /// The `java.lang.NullPointerException` a dereference of Java's `null`
 /// throws.
 fn npe() -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.NullPointerException",
         message: None,
         cause: None,
-    }
+    })
 }
 
 /// The anonymous `PostingsReaderBase` of `createMockPostingReaderBase()`

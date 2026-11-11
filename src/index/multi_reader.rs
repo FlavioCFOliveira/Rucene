@@ -424,7 +424,7 @@ impl MultiReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sub-readers' total
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sub-readers' total
     /// `maxDoc` exceeds the index-wide document limit.
     pub fn new_sorted(
         mut sub_readers: Vec<Arc<dyn IndexReader>>,
@@ -461,7 +461,7 @@ impl MultiReader {
         // (`BaseCompositeReader.java:90-109`).
         let actual_max_docs = i64::from(crate::index::index_writer::get_actual_max_docs());
         if max_doc > actual_max_docs {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Too many documents: composite IndexReaders cannot exceed {actual_max_docs} \
                  but readers have total maxDoc={max_doc}"
             )));
@@ -681,7 +681,7 @@ impl CompositeReader for MultiReader {
 /// and [`MultiReader::reader_index`] answer through this function too.
 pub(crate) fn resolve_sub(doc_id: i32, max_doc: i32, starts: &[i32]) -> Result<(usize, i32)> {
     if doc_id < 0 || doc_id >= max_doc {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "docID must be >= 0 and < maxDoc={max_doc} (got docID={doc_id})"
         )));
     }
@@ -817,6 +817,7 @@ impl StoredFields for MultiStoredFields {
 mod tests {
     use super::*;
     use crate::codecs::stub::StoredFieldVisitor;
+    use crate::error::LuceneErrorKind;
     use crate::index::index_reader::IndexReader;
     use crate::index::leaf_reader::{LeafMetaData, LeafReader};
     use crate::index::{
@@ -1419,7 +1420,13 @@ mod tests {
         let other = leaf(i32::MAX / 2, i32::MAX / 2);
         let res = MultiReader::new(vec![big, other], true);
         assert!(
-            matches!(res, Err(LuceneError::IllegalArgument(_))),
+            matches!(
+                res,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                })
+            ),
             "expected IllegalArgument for exceeding MAX_DOCS"
         );
     }
@@ -1451,7 +1458,13 @@ mod tests {
         assert!(mr.core().is_closed_by_child());
         let err = mr.ensure_open().unwrap_err();
         assert!(
-            matches!(err, LuceneError::AlreadyClosed { .. }),
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                }
+            ),
             "expected AlreadyClosed, got {err:?}"
         );
         // The poisoning reaches the public API, not just ensure_open().

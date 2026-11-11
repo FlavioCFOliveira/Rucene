@@ -1181,7 +1181,7 @@ impl DummyImpactsEnum {
 }
 
 fn uoe() -> LuceneError {
-    LuceneError::UnsupportedOperation(String::new())
+    LuceneError::unsupported_operation(String::new())
 }
 
 fn throw_uoe() -> ! {

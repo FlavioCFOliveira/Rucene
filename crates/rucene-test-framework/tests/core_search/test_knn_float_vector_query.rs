@@ -471,7 +471,7 @@ impl ThrowingKnnVectorQuery {
 
 /// `exactSearch` of `ThrowingKnnVectorQuery`.
 fn throwing_exact_search() -> Result<TopDocs> {
-    Err(LuceneError::UnsupportedOperation(
+    Err(LuceneError::unsupported_operation(
         "exact search is not supported".to_string(),
     ))
 }

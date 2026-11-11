@@ -1262,7 +1262,7 @@ fn to_utf8(s: &str) -> Vec<u8> {
 fn to_utf8_len(s: &str, length: usize) -> Result<Vec<u8>> {
     let bytes = s.as_bytes();
     if length < bytes.len() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "length={length} but string's UTF8 bytes has length={}",
             bytes.len()
         )));
@@ -1885,7 +1885,7 @@ fn new_multi_dim_int_set_query(
     values_in: &[i32],
 ) -> Result<Arc<dyn Query>> {
     if values_in.len() % num_dims != 0 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "incongruent number of values: valuesIn.length={} but numDims={num_dims}",
             values_in.len()
         )));

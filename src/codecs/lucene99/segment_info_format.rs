@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::codecs::codec_util;
 use crate::codecs::segment_info::SegmentInfoFormat;
 use crate::codecs::stub::SegmentInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{
     parse_segment_name, segment_file_name, SEGMENT_INFO_EXTENSION,
 };
@@ -111,7 +111,7 @@ fn parse_segment_info(
         input.read_int()? as u8,
     )?;
     if version.major < 7 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "invalid major version: should be >= 7 but got: {} segment={segment_name}",
             version.major
         )));
@@ -126,17 +126,17 @@ fn parse_segment_info(
             input.read_int()? as u8,
         )?),
         _ => {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "illegal boolean value {has_min_version}"
-            )))
+            ))))
         }
     };
 
     let doc_count = input.read_int()?;
     if doc_count < 0 {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid docCount: {doc_count}"
-        )));
+        ))));
     }
 
     let is_compound_file = input.read_byte()? == SegmentInfo::YES as u8;
@@ -149,7 +149,7 @@ fn parse_segment_info(
 
     let id: [u8; 16] = segment_id
         .try_into()
-        .map_err(|_| LuceneError::IllegalArgument("segment id must be 16 bytes".to_string()))?;
+        .map_err(|_| LuceneError::illegal_argument("segment id must be 16 bytes".to_string()))?;
 
     let info = SegmentInfo::new_without_codec(
         directory,
@@ -183,7 +183,7 @@ fn read_segment_sort(input: &mut dyn DataInput) -> Result<Option<crate::search::
 fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Result<()> {
     let version = info.version();
     if version.major < 7 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "invalid major version: should be >= 7 but got: {} segment={}",
             version.major, info.name
         )));
@@ -220,7 +220,7 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
     let files = info.files_ordered()?;
     for file in files.iter() {
         if parse_segment_name(file) != info.name {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid files: expected segment={}, got={file}",
                 info.name
             )));
@@ -291,7 +291,7 @@ mod tests {
             .write(dir.as_ref(), &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap_err();
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(m) if m.contains("invalid major version")),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m.contains("invalid major version")),
             "{error:?}"
         );
         assert_eq!(log.close_count("_0.si"), 1);

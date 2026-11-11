@@ -183,7 +183,7 @@ impl AbstractVectorSimilarityQueryImpl for ThrowingFloatVectorSimilarityQuery {
         _context: &LeafReaderContext,
     ) -> Result<Option<Box<dyn VectorScorer>>> {
         // `throw new UnsupportedOperationException()` (no message).
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn approximate_search(

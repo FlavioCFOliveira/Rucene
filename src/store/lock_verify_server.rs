@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::verifying_lock_factory::{MSG_LOCK_ACQUIRED, MSG_LOCK_RELEASED};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Byte the server writes to every client once all of them have connected, to
 /// release them simultaneously.
@@ -111,8 +111,8 @@ impl LockVerifyServer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the listener cannot be bound or a client
-    /// does not connect within 30 seconds, and [`LuceneError::IllegalState`]
+    /// Returns [`LuceneErrorKind::Io`] if the listener cannot be bound or a client
+    /// does not connect within 30 seconds, and [`LuceneErrorKind::IllegalState`]
     /// when a client acquires a lock another client already holds, or releases
     /// one it does not hold.
     ///
@@ -201,7 +201,7 @@ impl LockVerifyServer {
             return Ok(1);
         }
         let clients: usize = args[1].parse().map_err(|_| {
-            LuceneError::IllegalArgument(format!("clients is not a number: {}", args[1]))
+            LuceneError::illegal_argument(format!("clients is not a number: {}", args[1]))
         })?;
         Self::run(&args[0], clients, |_| {})?;
         Ok(0)
@@ -214,10 +214,10 @@ impl LockVerifyServer {
                 Ok((client, _)) => return Ok(client),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
-                        return Err(LuceneError::Io(io::Error::new(
+                        return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                             io::ErrorKind::TimedOut,
                             "Timed out waiting for clients to connect.",
-                        )));
+                        ))));
                     }
                     thread::sleep(ACCEPT_POLL_INTERVAL);
                 }
@@ -259,8 +259,8 @@ impl LockVerifyServer {
 
         let mut byte = [0u8; 1];
         if input.read(&mut byte)? == 0 {
-            return Err(LuceneError::Io(std::io::Error::other(
-                "Client closed connection before communication started.",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("Client closed connection before communication started."),
             )));
         }
         let id = i32::from(byte[0]);
@@ -303,7 +303,9 @@ impl LockVerifyServer {
                     *holder = NO_HOLDER;
                 }
                 other => {
-                    return Err(LuceneError::Other(format!("Unrecognized command: {other}")));
+                    return Err(LuceneError::from(LuceneErrorKind::Other(format!(
+                        "Unrecognized command: {other}"
+                    ))));
                 }
             }
             output.write_all(&[command])?;

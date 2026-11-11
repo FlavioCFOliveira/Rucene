@@ -357,7 +357,7 @@ impl DummyPointsReader {
 }
 
 fn unsupported<T>() -> Result<T> {
-    Err(LuceneError::UnsupportedOperation(String::new()))
+    Err(LuceneError::unsupported_operation(String::new()))
 }
 
 impl PointTree for DummyPointsReader {

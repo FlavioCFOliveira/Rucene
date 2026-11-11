@@ -31,7 +31,7 @@ impl SeededHnswGraphSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `num_eps` is not positive, or if
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `num_eps` is not positive, or if
     /// `eps` yields fewer than `num_eps` entry points.
     pub fn from_entry_points(
         delegate: Box<dyn AbstractHnswGraphSearcher>,
@@ -40,7 +40,7 @@ impl SeededHnswGraphSearcher {
         graph_size: i32,
     ) -> Result<Self> {
         if num_eps <= 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "The number of entry points must be > 0".to_string(),
             ));
         }
@@ -49,7 +49,7 @@ impl SeededHnswGraphSearcher {
         while idx < entry_points.len() {
             let entry_point_ord = eps.next_doc()?;
             if entry_point_ord == NO_MORE_DOCS {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "The number of entry points provided is less than the number of entry points requested"
                         .to_string(),
                 ));

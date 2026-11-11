@@ -18,7 +18,7 @@ impl CharacterRunAutomaton {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// if the automaton is not deterministic.
     pub fn new(a: Automaton) -> Result<Self> {
         Ok(Self {

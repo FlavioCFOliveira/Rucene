@@ -235,10 +235,10 @@ impl<C: Collector> CachingCollector<C> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when this collector is not cached,
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when this collector is not cached,
     /// that is, when the RAM limits were too low for the number of documents
     /// and scores to cache; that is the `IllegalStateException` Java throws.
-    /// Returns [`LuceneError::IllegalArgument`] when `leaves` does not hold a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `leaves` does not hold a
     /// leaf that was collected. Propagates whatever the replayed collector
     /// fails with, including its early-termination signal.
     pub fn replay(
@@ -267,7 +267,7 @@ impl<C: Collector> CachingCollector<C> {
         for i in 0..ords.len() {
             let ord = ords[i];
             let context = leaves.get(ord as usize).ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "leaf ordinal {ord} was collected but is absent from the leaves given to replay"
                 ))
             })?;

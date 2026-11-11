@@ -87,7 +87,7 @@ impl FixedGapTermsIndexWriter {
     /// errors of creating the file and writing its header.
     pub fn with_interval(state: &SegmentWriteState<'_>, term_index_interval: i32) -> Result<Self> {
         if term_index_interval <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid termIndexInterval: {term_index_interval}"
             )));
         }

@@ -256,7 +256,7 @@ impl BooleanScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for each of the four
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for each of the four
     /// `IllegalArgumentException`s Java throws: a negative minimum-should-match,
     /// one that is not strictly below the number of `SHOULD` clauses, purely
     /// optional clauses when scores are not needed, and the absence of any
@@ -268,13 +268,13 @@ impl BooleanScorerSupplier {
         max_doc: i32,
     ) -> Result<Self> {
         if min_should_match < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minShouldMatch must be positive, but got: {min_should_match}"
             )));
         }
         let min_should_match = min_should_match as usize;
         if min_should_match != 0 && min_should_match >= subs.should.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "minShouldMatch must be strictly less than the number of SHOULD clauses"
                     .to_string(),
             ));
@@ -284,12 +284,12 @@ impl BooleanScorerSupplier {
             && !subs.should.is_empty()
             && subs.must.len() + subs.filter.len() > 0
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot pass purely optional clauses if scores are not needed".to_string(),
             ));
         }
         if subs.should.len() + subs.must.len() + subs.filter.len() == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There should be at least one positive clause".to_string(),
             ));
         }

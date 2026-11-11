@@ -53,7 +53,7 @@ impl PatienceKnnVectorQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the wrapped query's `k` is less than 1.
     pub fn new(
         knn_query: Arc<dyn AbstractKnnVectorQueryImpl>,

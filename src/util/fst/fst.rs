@@ -21,7 +21,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use crate::codecs::{check_header, write_header};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{
     ByteBuffersDataOutput, DataInput, DataOutput, InputStreamDataInput, OutputStreamDataOutput,
 };
@@ -730,7 +730,7 @@ impl<O: Outputs> FST<O> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the input type byte is not
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the input type byte is not
     /// one of `0`, `1` or `2`, and propagates header and I/O errors.
     pub fn read_metadata(meta_in: &mut dyn DataInput, outputs: O) -> Result<FSTMetadata<O>> {
         let version = check_header(meta_in, FILE_FORMAT_NAME, VERSION_START, VERSION_CURRENT)?;
@@ -739,9 +739,9 @@ impl<O: Outputs> FST<O> {
             let mut empty_bytes = get_on_heap_reader_writer(10)?;
             let num_bytes = meta_in.read_v_int()?;
             if num_bytes < 0 {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "invalid empty output length {num_bytes}"
-                )));
+                ))));
             }
             empty_bytes.copy_bytes(meta_in, num_bytes as i64)?;
             empty_bytes.freeze();
@@ -762,7 +762,9 @@ impl<O: Outputs> FST<O> {
             1 => InputType::Byte2,
             2 => InputType::Byte4,
             _ => {
-                return Err(LuceneError::CorruptIndex(format!("invalid input type {t}")));
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "invalid input type {t}"
+                ))));
             }
         };
         let start_node = meta_in.read_v_long()?;
@@ -813,7 +815,7 @@ impl<O: Outputs> FST<O> {
     /// # Errors
     ///
     /// Propagates any error raised by the underlying outputs, including the
-    /// [`LuceneError::UnsupportedOperation`] raised by stores that cannot write
+    /// [`LuceneErrorKind::UnsupportedOperation`] raised by stores that cannot write
     /// themselves back, such as `OffHeapFSTStore`.
     pub fn save(&self, meta_out: &mut dyn DataOutput, out: &mut dyn DataOutput) -> Result<()> {
         self.metadata.save(meta_out)?;
@@ -1170,7 +1172,7 @@ impl<O: Outputs> FST<O> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when called on the last arc,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when called on the last arc,
     /// and propagates reader errors.
     pub fn read_next_arc(
         &self,
@@ -1180,7 +1182,7 @@ impl<O: Outputs> FST<O> {
         if arc.label == END_LABEL {
             // This was a fake inserted "final" arc.
             if arc.next_arc <= 0 {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "cannot readNextArc when arc.isLast()=true".to_string(),
                 ));
             }

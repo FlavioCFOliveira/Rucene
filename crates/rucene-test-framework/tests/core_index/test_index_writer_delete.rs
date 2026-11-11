@@ -18,7 +18,7 @@ use rucene::analysis::{Analyzer, AnalyzerState, GlobalReuseStrategy, TokenStream
 use rucene::document::{
     Document, FieldType, NumericDocValuesField, Store, StoredField, StringField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::check_index::CheckIndex;
 use rucene::index::directory_reader;
 use rucene::index::index_writer::{IndexWriter, IndexWriterOverrides};
@@ -767,8 +767,12 @@ fn test_updates_on_disk_full() -> Result<()> {
 /// `(IOException) ise.getCause()`.
 fn io_cause(ise: &LuceneError) -> LuceneError {
     match ise {
-        LuceneError::IllegalState {
-            cause: Some(cause), ..
+        LuceneError {
+            kind:
+                LuceneErrorKind::IllegalState {
+                    cause: Some(cause), ..
+                },
+            ..
         } => {
             if cause.is_io_exception() {
                 cause.duplicate()
@@ -1227,7 +1231,9 @@ impl Failure for DocsWriterAddFailure {
     fn eval(&self, _dir: &MockDirectoryWrapper) -> Result<()> {
         if !self.failed.load(Ordering::SeqCst) {
             self.failed.store(true, Ordering::SeqCst);
-            return Err(LuceneError::Io(std::io::Error::other("fail in add doc")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("fail in add doc"),
+            )));
         }
         Ok(())
     }

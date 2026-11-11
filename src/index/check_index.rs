@@ -22,7 +22,7 @@ use crate::codecs::doc_values::DocValuesProducer;
 use crate::codecs::knn_vectors::KnnVectorsReader;
 use crate::codecs::norms::NormsProducer;
 use crate::codecs::Codec;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::doc_values::{
     BinaryDocValues, DocValuesIterator, DocValuesSkipper, NumericDocValues, SortedDocValues,
@@ -60,22 +60,23 @@ use crate::util::{
 // CheckIndexException
 // ---------------------------------------------------------------------------
 
-/// Builds the error `CheckIndex` raises when it detects an integrity failure.
-///
-/// Equivalent to `CheckIndex.CheckIndexException`. Java has a dedicated
-/// `RuntimeException` subclass used as a marker; this port folds it into the
-/// crate-wide [`LuceneError::CorruptIndex`], because that is the variant the
-/// rest of the crate already raises for "the bytes on disk disagree with
-/// themselves" and a second, parallel error type would not be observable
-/// through [`Result`].
+/// Builds the error `CheckIndex` raises when it detects an integrity failure:
+/// `new CheckIndexException(message)`, [`LuceneErrorKind::CheckIndex`].
 fn check_index_error(message: impl Into<String>) -> LuceneError {
-    LuceneError::CorruptIndex(message.into())
+    LuceneError::from(LuceneErrorKind::CheckIndex {
+        message: message.into(),
+        cause: None,
+    })
 }
 
 /// Wraps a failure reported by one of the per-area checks, the way Java's
-/// `new CheckIndexException("<area> test failed", cause)` does.
+/// `new CheckIndexException("<area> test failed", cause)` does: the message
+/// is `message`, and the cause is kept as the error's source.
 fn check_index_error_with_cause(message: &str, cause: &LuceneError) -> LuceneError {
-    LuceneError::CorruptIndex(format!("{message}: {cause}"))
+    LuceneError::from(LuceneErrorKind::CheckIndex {
+        message: message.to_string(),
+        cause: Some(Arc::new(cause.duplicate())),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -108,11 +109,11 @@ impl Level {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the value is out of range,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the value is out of range,
     /// which is Java's `IllegalArgumentException`.
     pub fn check_if_level_in_bounds(level_val: i32) -> Result<()> {
         if !(Self::MIN_VALUE..=Self::MAX_VALUE).contains(&level_val) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "ERROR: given value: '{}' for -level option is out of bounds. Please use a value from '{}'->'{}'",
                 level_val,
                 Self::MIN_VALUE,
@@ -457,7 +458,7 @@ impl CheckIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::LockObtainFailed`] when a writer already holds
+    /// Returns [`LuceneErrorKind::LockObtainFailed`] when a writer already holds
     /// the lock.
     pub fn new(dir: Arc<dyn Directory>) -> Result<Self> {
         let write_lock = dir.obtain_lock(WRITE_LOCK_NAME)?;
@@ -517,7 +518,7 @@ impl CheckIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `v` is out of range.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `v` is out of range.
     pub fn set_level(&mut self, v: i32) -> Result<&mut Self> {
         Level::check_if_level_in_bounds(v)?;
         self.level = v;
@@ -549,10 +550,10 @@ impl CheckIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `tc` is not positive.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `tc` is not positive.
     pub fn set_thread_count(&mut self, tc: i32) -> Result<&mut Self> {
         if tc <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "setThreadCount requires a number larger than 0, but got: {tc}"
             )));
         }
@@ -756,7 +757,7 @@ impl<'scope, 'env> SegmentCheckPool<'scope, 'env> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] when the worker thread cannot be spawned.
+    /// Returns [`LuceneErrorKind::Io`] when the worker thread cannot be spawned.
     fn execute(&self, task: PoolTask<'scope>) -> Result<()> {
         let mut state = self
             .shared
@@ -772,7 +773,7 @@ impl<'scope, 'env> SegmentCheckPool<'scope, 'env> {
                     let _ = started_tx.send(InterruptHandle::current());
                     Self::run_worker(&shared, task);
                 })
-                .map_err(LuceneError::Io)?;
+                .map_err(LuceneError::from)?;
             let handle = started_rx.recv().map_err(|_| {
                 LuceneError::illegal_state("a segment check worker exited before it started")
             })?;
@@ -968,7 +969,7 @@ impl SegmentCheckFuture {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::Io`] when the pool cannot spawn a worker.
+/// Returns [`LuceneErrorKind::Io`] when the pool cannot spawn a worker.
 fn run_async_segment_check<'scope, F>(
     async_callable: F,
     pool: &SegmentCheckPool<'scope, '_>,
@@ -1023,7 +1024,7 @@ impl CheckIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IndexNotFound`] when the directory holds no
+    /// Returns [`LuceneErrorKind::IndexNotFound`] when the directory holds no
     /// commit, and propagates the first corruption found when
     /// [`set_fail_fast`](CheckIndex::set_fail_fast) is set; otherwise a
     /// corruption is recorded in the returned status.
@@ -1119,9 +1120,9 @@ impl CheckIndex {
         else {
             // Java names the directory in the message; `dyn Directory` has no
             // `Display` in this crate, so only the file listing is reported.
-            return Err(LuceneError::IndexNotFound(format!(
+            return Err(LuceneError::from(LuceneErrorKind::IndexNotFound(format!(
                 "no segments* file found in the directory: files: {files:?}"
-            )));
+            ))));
         };
 
         // https://github.com/apache/lucene/issues/7820: also attempt to open any
@@ -1525,15 +1526,15 @@ impl CheckIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the segment name is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the segment name is not a
     /// leading `_` followed by a base-36 number, which is Java's
     /// `NumberFormatException`.
     fn update_max_segment_name(&self, result: &mut Status, info: &SegmentCommitInfo) -> Result<()> {
         let digits = info.info.name.get(1..).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("invalid segment name: {}", info.info.name))
+            LuceneError::illegal_argument(format!("invalid segment name: {}", info.info.name))
         })?;
         let segment_name = i64::from_str_radix(digits, 36).map_err(|error| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "invalid segment name \"{}\": {error}",
                 info.info.name
             ))
@@ -1578,7 +1579,7 @@ impl CheckIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the segment claims a
+    /// Returns [`LuceneErrorKind::CheckIndex`] when the segment claims a
     /// non-positive document count, and propagates the first corruption found
     /// when [`set_fail_fast`](CheckIndex::set_fail_fast) is set; otherwise the
     /// corruption is recorded in the returned status.
@@ -1956,14 +1957,14 @@ impl CheckIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `result` covers only a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `result` covers only a
     /// subset of the segments, or when it carries no repaired `SegmentInfos`
     /// because the check never got as far as reading the commit. Propagates the
     /// failure of writing the new segments file.
     pub fn exorcise_index(&self, result: &mut Status) -> Result<()> {
         self.ensure_open()?;
         if result.partial {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "can only exorcise an index that was fully checked (this status checked a subset \
                  of segments)"
                     .to_string(),
@@ -1973,7 +1974,7 @@ impl CheckIndex {
         // a `NullPointerException` for a status whose check returned before the
         // commit was read; this port reports that as an illegal argument.
         let Some(new_segments) = result.new_segments.as_mut() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "this status carries no segments to write; the index was never fully checked"
                     .to_string(),
             ));
@@ -1995,7 +1996,7 @@ impl CheckIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `opts` holds an out of
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `opts` holds an out of
     /// range level or thread count, and propagates whatever
     /// [`CheckIndex::check_index_segments`] and [`CheckIndex::exorcise_index`]
     /// raise.
@@ -2221,7 +2222,7 @@ pub fn test_field_infos(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first disagreement.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
 fn check_doc_id_runs<I: DocIdSetIterator + ?Sized>(iterator: &mut I) -> Result<()> {
     let mut prev_doc = -1i32;
     let mut run_end = 0i32;
@@ -2259,7 +2260,7 @@ fn check_doc_id_runs<I: DocIdSetIterator + ?Sized>(iterator: &mut I) -> Result<(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] when the impacts are missing, out of
+/// Returns [`LuceneErrorKind::CheckIndex`] when the impacts are missing, out of
 /// order, duplicated, or fail to dominate the level below.
 pub fn check_impacts(impacts: &dyn Impacts, last_target: i32) -> Result<()> {
     let num_levels = impacts.num_levels();
@@ -2384,7 +2385,7 @@ pub fn check_impacts(impacts: &dyn Impacts, last_target: i32) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first disagreement.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
 fn check_dv_iterator<I, F>(fi: &FieldInfo, producer: F) -> Result<()>
 where
     I: DocValuesIterator + ?Sized,
@@ -2498,7 +2499,7 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first inconsistency.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency.
 fn check_doc_value_skipper(fi: &FieldInfo, skipper: &mut dyn DocValuesSkipper) -> Result<()> {
     let field_name = fi.get_name();
     if skipper.max_doc_id(0) != -1 {
@@ -2589,7 +2590,7 @@ fn check_doc_value_skipper(fi: &FieldInfo, skipper: &mut dyn DocValuesSkipper) -
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first disagreement.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
 pub fn check_numeric_doc_values(
     field_name: &str,
     ndv: &mut dyn NumericDocValues,
@@ -2626,7 +2627,7 @@ pub fn check_numeric_doc_values(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first disagreement.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
 pub fn check_bulk_fetch_numeric_doc_values(
     ndv: &mut dyn NumericDocValues,
     ndv2: &mut dyn NumericDocValues,
@@ -2676,7 +2677,7 @@ pub fn check_bulk_fetch_numeric_doc_values(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first disagreement.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
 pub fn check_binary_doc_values(
     field_name: &str,
     bdv: &mut dyn BinaryDocValues,
@@ -2718,7 +2719,7 @@ pub fn check_binary_doc_values(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first inconsistency.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency.
 pub fn check_sorted_doc_values(
     field_name: &str,
     dv: &mut dyn SortedDocValues,
@@ -2798,7 +2799,7 @@ pub fn check_sorted_doc_values(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first inconsistency.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency.
 pub fn check_sorted_set_doc_values(
     field_name: &str,
     dv: &mut dyn SortedSetDocValues,
@@ -2908,7 +2909,7 @@ pub fn check_sorted_set_doc_values(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first disagreement.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
 pub fn check_sorted_numeric_doc_values(
     field_name: &str,
     ndv: &mut dyn SortedNumericDocValues,
@@ -2967,8 +2968,8 @@ pub fn check_sorted_numeric_doc_values(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first inconsistency, or
-/// [`LuceneError::IllegalState`] when the field claims no doc values type,
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency, or
+/// [`LuceneErrorKind::IllegalState`] when the field claims no doc values type,
 /// which is Java's `AssertionError`.
 fn check_doc_values(
     fi: &FieldInfo,
@@ -2981,7 +2982,7 @@ fn check_doc_values(
         // Java dereferences the result unchecked (`CheckIndex.java:3910-3912`,
         // `:3397-3400`), so a missing skipper is Java's `NullPointerException`.
         let mut skipper = dv_reader.get_skipper(fi)?.ok_or_else(|| {
-            LuceneError::illegal_state(format!(
+            LuceneError::null_pointer_with_message(format!(
                 "field \"{}\" declares a skip index but its producer returned none",
                 fi.name
             ))
@@ -3194,7 +3195,7 @@ pub fn test_field_norms(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first mismatch.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first mismatch.
 fn check_terms_intersect(
     terms: &dyn Terms,
     automaton: &Automaton,
@@ -3270,7 +3271,7 @@ fn check_terms_intersect(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] on the first inconsistency.
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency.
 #[allow(clippy::too_many_arguments)]
 fn check_fields(
     fields: &dyn Fields,
@@ -3494,7 +3495,10 @@ fn check_fields(
             if has_ord {
                 let ord = match terms_enum.ord() {
                     Ok(ord) => Some(ord),
-                    Err(LuceneError::UnsupportedOperation(_)) => {
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::UnsupportedOperation { .. },
+                        ..
+                    }) => {
                         has_ord = false;
                         None
                     }
@@ -4405,7 +4409,7 @@ pub const USAGE: &str = concat!(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] for any invalid argument, which is
+/// Returns [`LuceneErrorKind::IllegalArgument`] for any invalid argument, which is
 /// Java's `IllegalArgumentException`.
 pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
     let mut opts = Options::new();
@@ -4416,13 +4420,13 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
         match arg {
             "-level" => {
                 if i == args.len() - 1 {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "ERROR: missing value for -level option".to_string(),
                     ));
                 }
                 i += 1;
                 let level: i32 = args[i].as_ref().parse().map_err(|_| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "ERROR: could not parse -level value '{}'",
                         args[i].as_ref()
                     ))
@@ -4449,7 +4453,7 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
             "-verbose" => opts.verbose = true,
             "-segment" => {
                 if i == args.len() - 1 {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "ERROR: missing name for -segment option".to_string(),
                     ));
                 }
@@ -4458,7 +4462,7 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
             }
             "-dir-impl" => {
                 if i == args.len() - 1 {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "ERROR: missing value for -dir-impl option".to_string(),
                     ));
                 }
@@ -4467,19 +4471,19 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
             }
             "-threadCount" => {
                 if i == args.len() - 1 {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "-threadCount requires a following number".to_string(),
                     ));
                 }
                 i += 1;
                 let thread_count: i32 = args[i].as_ref().parse().map_err(|_| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "-threadCount requires a following number, but got: {}",
                         args[i].as_ref()
                     ))
                 })?;
                 if thread_count <= 0 {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "-threadCount requires a number larger than 0, but got: {thread_count}"
                     )));
                 }
@@ -4487,7 +4491,7 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
             }
             other => {
                 if opts.index_path.is_some() {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "ERROR: unexpected extra argument '{other}'"
                     )));
                 }
@@ -4498,11 +4502,11 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
     }
 
     if opts.index_path.is_none() {
-        return Err(LuceneError::IllegalArgument(USAGE.to_string()));
+        return Err(LuceneError::illegal_argument(USAGE.to_string()));
     }
 
     if !opts.only_segments.is_empty() && opts.do_exorcise {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "ERROR: cannot specify both -exorcise and -segment".to_string(),
         ));
     }
@@ -4681,12 +4685,12 @@ impl IndexUpgrader {
     ///   binary wraps, and it is public.
     /// * Java prints the usage text and calls `System.exit(1)` on a bad command
     ///   line. This port prints the same text and returns
-    ///   [`LuceneError::IllegalArgument`], because a library must not terminate
+    ///   [`LuceneErrorKind::IllegalArgument`], because a library must not terminate
     ///   its host process.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when an option is missing its
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when an option is missing its
     /// value, when an extra argument follows the index directory, or when no
     /// index directory is given. Propagates the failure of opening the
     /// directory.
@@ -4708,7 +4712,7 @@ impl IndexUpgrader {
             } else if arg == "-dir-impl" {
                 if i == args.len() - 1 {
                     println!("ERROR: missing value for -dir-impl option");
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "ERROR: missing value for -dir-impl option".to_string(),
                     ));
                 }
@@ -4718,7 +4722,7 @@ impl IndexUpgrader {
                 path = Some(arg);
             } else {
                 Self::print_usage();
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "ERROR: unexpected extra argument '{arg}'"
                 )));
             }
@@ -4727,7 +4731,7 @@ impl IndexUpgrader {
 
         let Some(path) = path else {
             Self::print_usage();
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "ERROR: index directory not specified".to_string(),
             ));
         };
@@ -4789,20 +4793,20 @@ impl IndexUpgrader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IndexNotFound`] when `dir` holds no index, and
-    /// [`LuceneError::IllegalArgument`] when the index holds more than one
+    /// Returns [`LuceneErrorKind::IndexNotFound`] when `dir` holds no index, and
+    /// [`LuceneErrorKind::IllegalArgument`] when the index holds more than one
     /// commit and the upgrader was told not to delete prior commits.
     pub fn upgrade(self) -> Result<()> {
         if !crate::index::directory_reader::index_exists(self.dir.as_ref())? {
-            return Err(LuceneError::IndexNotFound(
+            return Err(LuceneError::from(LuceneErrorKind::IndexNotFound(
                 "no segments file found in the directory".to_string(),
-            ));
+            )));
         }
 
         if !self.delete_prior_commits {
             let commits = crate::index::directory_reader::list_commits(Arc::clone(&self.dir))?;
             if commits.len() > 1 {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "This tool was invoked to not delete prior commit points, but the following commits were found: {} commits",
                     commits.len()
                 )));
@@ -4984,13 +4988,13 @@ struct ConstantRelationIntersectVisitor {
 
 impl crate::index::point_values::IntersectVisitor for ConstantRelationIntersectVisitor {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "a constant-relation visitor never visits a document".to_string(),
         ))
     }
 
     fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "a constant-relation visitor never visits a document".to_string(),
         ))
     }

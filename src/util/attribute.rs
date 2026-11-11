@@ -333,7 +333,7 @@ pub trait AttributeFactory: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the factory does not know how
+    /// Returns `LuceneErrorKind::IllegalArgument` if the factory does not know how
     /// to create the requested attribute.
     fn create_attribute_instance(
         &self,
@@ -434,7 +434,7 @@ impl AttributeFactory for DefaultAttributeFactory {
             .get(&attribute_type)
             .map(|ctor| ctor())
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "no AttributeImpl registered for TypeId {:?}",
                     attribute_type
                 ))
@@ -852,7 +852,7 @@ impl AttributeSource {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the factory cannot create the
+    /// Returns `LuceneErrorKind::IllegalArgument` if the factory cannot create the
     /// attribute.
     pub fn add_attribute<A: Attribute>(&mut self) -> Result<AtomicRef<'_, A>, LuceneError> {
         let id = TypeId::of::<A>();
@@ -877,7 +877,7 @@ impl AttributeSource {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the factory cannot create the
+    /// Returns `LuceneErrorKind::IllegalArgument` if the factory cannot create the
     /// attribute.
     pub fn add_attribute_by_id(
         &mut self,
@@ -890,7 +890,7 @@ impl AttributeSource {
         }
         Ok(Arc::clone(
             self.attributes.get(&attribute_type).ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "the factory's implementation does not provide TypeId {:?}",
                     attribute_type
                 ))
@@ -1098,7 +1098,7 @@ impl AttributeSource {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `state` contains an
+    /// Returns `LuceneErrorKind::IllegalArgument` if `state` contains an
     /// implementation not present in this source.
     pub fn restore_state(&self, state: &CapturedState) -> Result<(), LuceneError> {
         for (type_id, captured) in &state.attributes {
@@ -1108,7 +1108,7 @@ impl AttributeSource {
                 .impl_of(*type_id)
                 .map(Arc::clone)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "State contains AttributeImpl of type {:?} that is not in in this AttributeSource",
                         type_id
                     ))
@@ -1122,7 +1122,7 @@ impl AttributeSource {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `target` lacks a matching
+    /// Returns `LuceneErrorKind::IllegalArgument` if `target` lacks a matching
     /// implementation.
     pub fn copy_to(&self, target: &AttributeSource) -> Result<(), LuceneError> {
         for cell in self.impl_cells() {
@@ -1133,7 +1133,7 @@ impl AttributeSource {
                 .impl_of(type_id)
                 .map(Arc::clone)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "This AttributeSource contains AttributeImpl of type {:?} that is not in the target",
                         type_id
                     ))

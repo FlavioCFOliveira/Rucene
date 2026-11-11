@@ -54,7 +54,7 @@ use rucene::document::{
     BinaryPoint, Document, FieldType, IntPoint, LongPoint, NumericDocValuesField, Store,
     StringField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
@@ -450,7 +450,7 @@ struct FixedSizeTree {
 
 impl PointTree for FixedSizeTree {
     fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn move_to_child(&mut self) -> Result<bool> {
@@ -478,11 +478,11 @@ impl PointTree for FixedSizeTree {
     }
 
     fn visit_doc_ids(&mut self, _visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn visit_doc_values(&mut self, _visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -510,23 +510,23 @@ impl PointValues for FixedPointValues {
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn num_dimensions(&self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn num_index_dimensions(&self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn bytes_per_dimension(&self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 
@@ -549,7 +549,7 @@ impl IntersectVisitor for ExpectedValueVisitor {
     }
 
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
@@ -859,7 +859,10 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                 }));
                 match outcome {
                     Ok(Ok(())) => {}
-                    Ok(Err(LuceneError::IllegalArgument(message))) => {
+                    Ok(Err(LuceneError {
+                        kind: LuceneErrorKind::IllegalArgument { message, .. },
+                        ..
+                    })) => {
                         // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
                         // retry w/ more heap
                         Assert::assert_true(message.contains(
@@ -1195,7 +1198,10 @@ pub trait BasePointsFormatTestCase: BaseIndexFileFormatTestCase {
                     false,
                 ) {
                     Ok(()) => break,
-                    Err(LuceneError::IllegalArgument(message)) => {
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::IllegalArgument { message, .. },
+                        ..
+                    }) => {
                         println!("java.lang.IllegalArgumentException: {message}");
                         // This just means we got a too-small maxMB for the maxPointsInLeafNode; just
                         // retry

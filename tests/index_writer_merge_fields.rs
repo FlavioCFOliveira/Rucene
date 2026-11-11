@@ -968,13 +968,25 @@ fn a_corrupt_bit_set_postings_block_is_an_error_not_a_panic() {
         }
     };
     assert!(
-        matches!(error, rucene::error::LuceneError::CorruptIndex(_)),
+        matches!(
+            error,
+            rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ),
         "{error:?}"
     );
     let mut postings = postings_of_no(&cleared, rucene::index::POSTINGS_ENUM_FREQS);
     let error = postings.advance(100).unwrap_err();
     assert!(
-        matches!(error, rucene::error::LuceneError::CorruptIndex(_)),
+        matches!(
+            error,
+            rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ),
         "{error:?}"
     );
 
@@ -993,7 +1005,13 @@ fn a_corrupt_bit_set_postings_block_is_an_error_not_a_panic() {
         }
     };
     assert!(
-        matches!(error, rucene::error::LuceneError::CorruptIndex(_)),
+        matches!(
+            error,
+            rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                ..
+            }
+        ),
         "{error:?}"
     );
 }

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{
     BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock,
 };
@@ -47,7 +47,7 @@ pub trait CompoundFormat: Send + Sync + fmt::Debug {
 /// A minimal no-op compound directory.
 ///
 /// The mutating operations required by [`Directory`] return
-/// [`LuceneError::UnsupportedOperation`], matching Lucene's
+/// [`LuceneErrorKind::UnsupportedOperation`], matching Lucene's
 /// `UnsupportedOperationException`.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct EmptyCompoundDirectory;
@@ -64,20 +64,20 @@ impl Directory for EmptyCompoundDirectory {
     }
 
     fn delete_file(&self, _name: &str) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "deleteFile is not supported by CompoundDirectory".to_string(),
         ))
     }
 
     fn file_length(&self, name: &str) -> Result<i64> {
-        Err(LuceneError::Io(std::io::Error::new(
+        Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("file not found in compound directory: {name}"),
-        )))
+        ))))
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "createOutput is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -88,13 +88,13 @@ impl Directory for EmptyCompoundDirectory {
         _suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "createTempOutput is not supported by CompoundDirectory".to_string(),
         ))
     }
 
     fn sync(&self, _names: &[String]) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "sync is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -104,27 +104,27 @@ impl Directory for EmptyCompoundDirectory {
     }
 
     fn rename(&self, _source: &str, _dest: &str) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "rename is not supported by CompoundDirectory".to_string(),
         ))
     }
 
     fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
-        Err(LuceneError::Io(std::io::Error::new(
+        Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("file not found in compound directory: {name}"),
-        )))
+        ))))
     }
 
     fn open_checksum_input(&self, name: &str) -> Result<Box<BufferedChecksumIndexInput>> {
-        Err(LuceneError::Io(std::io::Error::new(
+        Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("file not found in compound directory: {name}"),
-        )))
+        ))))
     }
 
     fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "obtainLock is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -164,27 +164,45 @@ mod tests {
         assert!(dir.list_all().unwrap().is_empty());
         assert!(matches!(
             dir.delete_file("x"),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             dir.create_output("x", &*crate::store::DEFAULT_IO_CONTEXT),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             dir.create_temp_output("p", "s", &*crate::store::DEFAULT_IO_CONTEXT),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             dir.sync(&[]),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             dir.rename("a", "b"),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             dir.obtain_lock("x"),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(dir.sync_metadata().is_ok());
         assert!(dir.get_pending_deletions().unwrap().is_empty());
@@ -196,7 +214,10 @@ mod tests {
         let dir = EmptyCompoundDirectory;
         assert!(matches!(
             dir.open_input("x", &*crate::store::DEFAULT_IO_CONTEXT),
-            Err(LuceneError::Io(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(_),
+                ..
+            })
         ));
     }
 

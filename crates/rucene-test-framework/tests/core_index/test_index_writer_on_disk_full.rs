@@ -14,7 +14,7 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::codecs::LiveDocsFormat;
 use rucene::document::{Document, FieldType, IntPoint, NumericDocValuesField, Store, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
@@ -597,16 +597,16 @@ impl Failure for FailTwiceDuringMerge {
             && !self.did_fail1.load(Ordering::SeqCst)
         {
             self.did_fail1.store(true, Ordering::SeqCst);
-            return Err(LuceneError::Io(std::io::Error::other(
-                "fake disk full during mergeTerms",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("fake disk full during mergeTerms"),
             )));
         }
         if LuceneTestCase::call_stack_contains_method::<dyn LiveDocsFormat>("write_live_docs")
             && !self.did_fail2.load(Ordering::SeqCst)
         {
             self.did_fail2.store(true, Ordering::SeqCst);
-            return Err(LuceneError::Io(std::io::Error::other(
-                "fake disk full while writing LiveDocs",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("fake disk full while writing LiveDocs"),
             )));
         }
         Ok(())

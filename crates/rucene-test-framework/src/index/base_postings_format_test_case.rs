@@ -60,7 +60,7 @@ use rucene::codecs::postings::{FieldsConsumer, FieldsProducer, PostingsFormat};
 use rucene::codecs::state::{SegmentReadState, SegmentWriteState};
 use rucene::codecs::{Codec, FilterCodec};
 use rucene::document::{Document, Field, FieldType, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
@@ -993,8 +993,8 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             iwc,
         )?;
 
-        let docs =
-            LineFileDocs::with_default_file(&*LuceneTestCase::random()).map_err(LuceneError::Io)?;
+        let docs = LineFileDocs::with_default_file(&*LuceneTestCase::random())
+            .map_err(LuceneError::from)?;
         let bytes_to_index = i64::from(LuceneTestCase::at_least(100)) * 1024;
         let mut bytes_indexed: i64 = 0;
         while bytes_indexed < bytes_to_index {
@@ -1041,7 +1041,10 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             if supports_ords {
                 let ord = match terms_enum.ord() {
                     Ok(ord) => ord,
-                    Err(LuceneError::UnsupportedOperation(_)) => {
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::UnsupportedOperation { .. },
+                        ..
+                    }) => {
                         supports_ords = false;
                         -1
                     }
@@ -1346,7 +1349,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut dir = LuceneTestCase::new_fs_directory(&LuceneTestCase::create_temp_dir());
         {
             let docs = LineFileDocs::with_default_file(&*LuceneTestCase::random())
-                .map_err(LuceneError::Io)?;
+                .map_err(LuceneError::from)?;
             let w = IndexWriter::new(dir.as_directory(), IndexWriterConfig::new())?;
             let num_docs = LuceneTestCase::at_least(10_000);
             for _ in 0..num_docs {

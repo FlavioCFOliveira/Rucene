@@ -550,7 +550,7 @@ impl<T: TokenizerLogic> Tokenizer<T> {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalState` if the previous input has not been
+    /// Returns `LuceneErrorKind::IllegalState` if the previous input has not been
     /// closed.
     pub fn set_reader(&mut self, reader: Box<dyn CharReader>) -> Result<()> {
         if self.input.is_some() {
@@ -1759,6 +1759,7 @@ mod tests {
     use std::any::TypeId;
 
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// `CharTermAttribute.toString()`: the term text.
     trait TermText {
@@ -1974,7 +1975,13 @@ mod tests {
         tokenizer.reset().unwrap();
         // Without close, set_reader must be rejected.
         let result = tokenizer.set_reader(Box::new(StringCharReader::new("b")));
-        assert!(matches!(result, Err(LuceneError::IllegalState { .. })));
+        assert!(matches!(
+            result,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            })
+        ));
     }
 
     /// Java's `Tokenizer.reset()` cannot fail: without a reader it installs
@@ -1987,12 +1994,15 @@ mod tests {
         let reset = tokenizer.reset();
         assert!(matches!(
             reset,
-            Err(LuceneError::IllegalState { ref message, .. }) if message == ILLEGAL_STATE_READER_MESSAGE
+            Err(LuceneError { kind: LuceneErrorKind::IllegalState { ref message, .. }, .. }) if message == ILLEGAL_STATE_READER_MESSAGE
         ));
         let mut tokenizer = Tokenizer::new(CountingLogic::default());
         tokenizer.reset().unwrap();
         match tokenizer.increment_token() {
-            Err(LuceneError::IllegalState { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, ILLEGAL_STATE_READER_MESSAGE)
             }
             other => panic!("{other:?}"),

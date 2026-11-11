@@ -83,7 +83,7 @@ use crate::document::column::{
     Density, DictionaryColumn, LongColumn, NumericKind, TypedColumn, VectorColumn,
 };
 use crate::document::{InvertableType, NumericDocValuesField, StoredValueType};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::doc_values_writer::DocValuesWriter;
 use crate::index::documents_writer::{
     IndexingChain, SharedIndexingScratch, MAX_STORED_STRING_LENGTH,
@@ -781,7 +781,7 @@ impl FieldSchema {
         expected: &dyn std::fmt::Debug,
         given: &dyn std::fmt::Debug,
     ) -> LuceneError {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "Inconsistency of field data structures across documents for field [{}] of doc \
              [{}]. {label}: expected '{expected:?}', but it has '{given:?}'.",
             self.name, self.doc_id
@@ -1031,7 +1031,7 @@ fn read_token(source: &AttributeSource, layout: &TokenAttributeLayout) -> Result
             .expect("INVARIANT: presence checked in TokenAttributeLayout::resolve")
             .get_bytes_ref()
     } else {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "token stream carries no term attribute".to_string(),
         ));
     };
@@ -1286,7 +1286,7 @@ impl DefaultIndexingChain {
         })?;
         let Some(value) = value else {
             // Lucene reaches this when `Field.storedValue()` returns null.
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot store a null value".to_string(),
             ));
         };
@@ -1301,7 +1301,7 @@ impl DefaultIndexingChain {
             if text.len() > MAX_STORED_STRING_LENGTH {
                 let length = text.encode_utf16().count();
                 if length > MAX_STORED_STRING_LENGTH {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "stored field \"{}\" is too large ({length} characters) to store",
                         field.name()
                     )));
@@ -1382,8 +1382,8 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a sort field cannot sort an
-    /// index at all, and [`LuceneError::IllegalArgument`] when it names this
+    /// Returns [`LuceneErrorKind::IllegalState`] when a sort field cannot sort an
+    /// index at all, and [`LuceneErrorKind::IllegalArgument`] when it names this
     /// field with the wrong doc-values type.
     fn validate_index_sort_dv_type(
         index_sort: &crate::search::Sort,
@@ -1415,7 +1415,7 @@ impl DefaultIndexingChain {
                 _ => continue,
             };
             if dv_type != expected {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "SortField {sort_field} expected field [{field_to_validate}] to be \
                      {expected:?} but it is [{dv_type:?}]"
                 )));
@@ -1523,9 +1523,9 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] when the sort names a
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] when the sort names a
     /// field no [`IndexSorter`](crate::index::index_sorter::IndexSorter) can
-    /// read, and [`LuceneError::CorruptIndex`] when the parent field has no
+    /// read, and [`LuceneErrorKind::CorruptIndex`] when the parent field has no
     /// doc values or a blocked segment declares no parent field.
     fn maybe_sort_segment(
         &mut self,
@@ -1595,7 +1595,7 @@ impl DefaultIndexingChain {
         let mut comparators: Vec<DocComparator> = Vec::with_capacity(index_sort.fields().len());
         for sort_field in index_sort.fields() {
             let sorter = sort_field.get_index_sorter().ok_or_else(|| {
-                LuceneError::UnsupportedOperation(format!(
+                LuceneError::unsupported_operation(format!(
                     "Cannot sort index using sort field {sort_field}"
                 ))
             })?;
@@ -1672,7 +1672,7 @@ impl DefaultIndexingChain {
     /// # Errors
     ///
     /// Propagates whatever initializing a field raises, and returns
-    /// [`LuceneError::IllegalArgument`] when a schema differs from the field's
+    /// [`LuceneErrorKind::IllegalArgument`] when a schema differs from the field's
     /// `FieldInfo`.
     fn init_and_validate_fields(
         &mut self,
@@ -1703,7 +1703,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the index sort or the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the index sort or the
     /// codec refuses the schema, and propagates whatever registering the
     /// `FieldInfo` or creating the vectors writer raises.
     fn initialize_field_info(
@@ -1913,7 +1913,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the instance contradicts
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the instance contradicts
     /// another instance of the same field in the document, asks for term
     /// vectors without being indexed, or asks for a doc-values skip index
     /// without doc values.
@@ -1939,7 +1939,7 @@ impl DefaultIndexingChain {
         } else if field_type.doc_values_skip_index_type()
             != crate::index::DocValuesSkipIndexType::NONE
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field '{}' cannot have docValuesSkipIndexType={:?} without doc values",
                 schema.name,
                 field_type.doc_values_skip_index_type()
@@ -1979,12 +1979,12 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `field_name` is the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `field_name` is the
     /// configured parent field.
     fn reject_reserved_parent_field(&self, field_name: &str) -> Result<()> {
         if let Some(parent_field) = self.parent_field.as_ref() {
             if parent_field.name() == field_name {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "\"{field_name}\" is a reserved field and should not be added to any document"
                 )));
             }
@@ -2040,7 +2040,7 @@ impl DefaultIndexingChain {
                     )
                     .add_packed_value(doc_id, &value)?,
                 None => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{}\": point value must not be null",
                         field.name()
                     )))
@@ -2106,7 +2106,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `vector_dim` exceeds
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `vector_dim` exceeds
     /// `max_vector_dim`.
     fn validate_max_vector_dimension(
         field_name: &str,
@@ -2114,7 +2114,7 @@ impl DefaultIndexingChain {
         max_vector_dim: i32,
     ) -> Result<()> {
         if vector_dim > max_vector_dim {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Field [{field_name}] vector's dimensions must be <= [{max_vector_dim}]; got {vector_dim}"
             )));
         }
@@ -2145,7 +2145,7 @@ impl DefaultIndexingChain {
             ),
         ] {
             if requested {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "cannot store {what} for a field that is not indexed (field=\"{name}\")"
                 )));
             }
@@ -2198,7 +2198,7 @@ impl DefaultIndexingChain {
                 first,
                 aborting_error,
             ),
-            None => Err(LuceneError::IllegalArgument(format!(
+            None => Err(LuceneError::illegal_argument(format!(
                 "field \"{}\" is not indexed but reached the inverter",
                 field.name()
             ))),
@@ -2219,7 +2219,7 @@ impl DefaultIndexingChain {
         first: bool,
     ) -> Result<()> {
         let binary_value = field.binary_value().ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "Field {} returns TERM for invertableType() and null for binaryValue(), which is illegal",
                 field.name()
             ))
@@ -2233,7 +2233,7 @@ impl DefaultIndexingChain {
             || field_type.store_term_vector_offsets()
             || field_type.store_term_vector_payloads()
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Fields that are tokenized or index proximity data must produce a non-null TokenStream, but {} did not",
                 field.name()
             )));
@@ -2312,8 +2312,10 @@ impl DefaultIndexingChain {
         // so the carried string is used directly to keep the two messages
         // identical.
         let original_message = match &original {
-            LuceneError::IllegalArgument(message)
-            | LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
+            LuceneError {
+                kind: LuceneErrorKind::MaxBytesLengthExceeded(message),
+                ..
+            } => message.clone(),
             other => other.to_string(),
         };
         let prefix: Vec<String> = term
@@ -2519,7 +2521,7 @@ impl DefaultIndexingChain {
                 let position_increment = token.position_increment;
                 state.position += position_increment;
                 if state.position < state.last_position {
-                    return Err(LuceneError::IllegalArgument(if position_increment == 0 {
+                    return Err(LuceneError::illegal_argument(if position_increment == 0 {
                         format!(
                             "first position increment must be > 0 (got 0) for field '{}'",
                             field.name()
@@ -2539,7 +2541,7 @@ impl DefaultIndexingChain {
                     }));
                 }
                 if state.position > MAX_POSITION {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "position {} is too large for field '{}': max allowed position is {MAX_POSITION}",
                         state.position,
                         field.name()
@@ -2553,7 +2555,7 @@ impl DefaultIndexingChain {
                 let start_offset = state.offset + token.start_offset;
                 let end_offset = state.offset + token.end_offset;
                 if start_offset < state.last_start_offset || end_offset < start_offset {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "startOffset must be non-negative, and endOffset must be >= startOffset, and offsets must not go backwards startOffset={start_offset},endOffset={end_offset},lastStartOffset={} for field '{}'",
                         state.last_start_offset,
                         field.name()
@@ -2662,7 +2664,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a field that should have
+    /// Returns [`LuceneErrorKind::IllegalState`] when a field that should have
     /// norms has no buffer, which would mean the chain never saw the field.
     fn write_norms(
         &mut self,
@@ -2740,7 +2742,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] for a per-field state that
+    /// Returns [`LuceneErrorKind::IllegalState`] for a per-field state that
     /// disagrees with the segment's field infos, and propagates whatever the
     /// format's consumer raises while writing the fields.
     fn write_doc_values(
@@ -2858,7 +2860,7 @@ impl DefaultIndexingChain {
     /// (`IndexingChain.java:409-415`). That state cannot exist here:
     /// `Codec::points_format` returns `&dyn PointsFormat`, not an `Option`,
     /// so every codec this crate can hold has one. The check is therefore not
-    /// ported, and no [`LuceneError::IllegalState`] can come from this method.
+    /// ported, and no [`LuceneErrorKind::IllegalState`] can come from this method.
     ///
     /// # Errors
     ///
@@ -2920,7 +2922,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field carries no
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the field carries no
     /// vector of the encoding its type declares — the state Java reaches as a
     /// `ClassCastException` — and propagates whatever the codec's field writer
     /// raises, which is how a document that repeats a vector field, or that
@@ -2939,7 +2941,7 @@ impl DefaultIndexingChain {
         match writer {
             FieldVectorWriter::Float(writer) => {
                 let Some(value) = field.float_vector_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{name}\" is indexed with FLOAT32 vectors but carries no float vector value"
                     )));
                 };
@@ -2948,7 +2950,7 @@ impl DefaultIndexingChain {
             }
             FieldVectorWriter::Byte(writer) => {
                 let Some(value) = field.byte_vector_value() else {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "field=\"{name}\" is indexed with BYTE vectors but carries no byte vector value"
                     )));
                 };
@@ -2972,7 +2974,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the similarity returns `0`
+    /// Returns [`LuceneErrorKind::IllegalState`] when the similarity returns `0`
     /// for a non-empty field, and propagates whatever
     /// [`Similarity::compute_norm`] and [`NormValuesWriter::add_value`] raise.
     fn finish_norms(
@@ -3011,7 +3013,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a cursor returns a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a cursor returns a
     /// document id out of order or outside the batch, and propagates whatever
     /// inverting or storing a value raises.
     fn process_row_columns(
@@ -3080,7 +3082,7 @@ impl DefaultIndexingChain {
             'columns: for i in 0..num_row_cols {
                 let mut head = heads[i];
                 if head < batch_doc_id {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Row column \"{}\" returned out-of-order batch doc-id {head}",
                         adapters[i].name()
                     )));
@@ -3174,7 +3176,7 @@ impl DefaultIndexingChain {
         // the end of the batch.
         for i in 0..num_row_cols {
             if heads[i] != NO_MORE_DOCS {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Row column \"{}\" returned batch doc-id {} which is out of range [0, \
                      {num_docs})",
                     adapters[i].name(),
@@ -3236,7 +3238,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a doc-values type a numeric
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for a doc-values type a numeric
     /// column cannot fill, and propagates whatever reading the column or
     /// writing a buffer raises.
     fn process_long_column(
@@ -3348,7 +3350,7 @@ impl DefaultIndexingChain {
     /// The error Lucene raises for a column whose field declares a doc-values
     /// type that column cannot fill.
     fn incompatible_dv(kind: &str, name: &str, dv_type: DocValuesType) -> LuceneError {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "{kind} \"{name}\" has incompatible docValuesType: {dv_type:?}"
         ))
     }
@@ -3635,7 +3637,7 @@ impl DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a document id repeats or
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a document id repeats or
     /// goes backwards, when a vector has the wrong dimension, or when the
     /// column names a document outside the batch.
     fn process_vector_column_float(
@@ -3995,7 +3997,7 @@ impl IndexingChain for DefaultIndexingChain {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a column is invalid, when
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a column is invalid, when
     /// two columns of one field claim the same indexing feature, or when a
     /// cursor names a document outside the batch; and propagates whatever
     /// reading a column or writing a buffer raises.
@@ -4080,7 +4082,7 @@ impl IndexingChain for DefaultIndexingChain {
                 // given field name.
                 let overlap = i32::from(self.per_fields[index].column_features) & column_features;
                 if overlap != 0 {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "ColumnBatch has multiple columns for field \"{field_name}\" claiming the \
                          same indexing feature {}; each feature may appear in at most one column.",
                         ColumnValidation::feature_names(overlap)
@@ -4172,7 +4174,7 @@ impl IndexingChain for DefaultIndexingChain {
                     )?;
                 }
                 TypedColumn::TokenStream(tsc) => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Unknown column type: token-stream column \"{}\" has no column-oriented \
                          feature",
                         tsc.column().name()
@@ -4429,7 +4431,7 @@ impl IndexingChain for DefaultIndexingChain {
                             "INVARIANT: every field with point dimensions gets a writer in get_or_add_per_field",
                         )
                         .add_packed_value(doc_id, &value),
-                    None => Err(LuceneError::IllegalArgument(format!(
+                    None => Err(LuceneError::illegal_argument(format!(
                         "field=\"{}\": point value must not be null",
                         field.name()
                     ))),
@@ -5218,10 +5220,17 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
-            LuceneError::IllegalArgumentWithCause { message, cause } => {
+            LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            } => {
                 assert_eq!(message, "too many tokens for field \"body\"");
                 assert!(
-                    matches!(&**cause, LuceneError::Arithmetic(m) if m == "integer overflow"),
+                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
                     "{cause:?}"
                 );
             }
@@ -5252,7 +5261,14 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
-            LuceneError::IllegalArgumentWithCause { message, cause } => {
+            LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            } => {
                 assert!(
                     message.starts_with(
                         "Document contains at least one immense term in field=\"body\""
@@ -5262,7 +5278,7 @@ mod tests {
                     "{message}"
                 );
                 assert!(
-                    matches!(&**cause, LuceneError::IllegalArgument(m)
+                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::MaxBytesLengthExceeded(m), .. }
                         if m == "bytes can be at most 32766 in length; got 40000"),
                     "{cause:?}"
                 );
@@ -5560,7 +5576,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a repeated vector field must be rejected");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message.contains("appears more than once in this document")
                     && message.contains('v')),
             "unexpected error: {error:?}"
@@ -5586,7 +5602,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an over-wide vector field must be rejected");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message == "Field [v] vector's dimensions must be <= [1024]; got 1025"),
             "unexpected error: {error:?}"
         );
@@ -5625,7 +5641,7 @@ mod tests {
                 .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("a vector field with no value must be rejected");
             assert!(
-                matches!(&error, LuceneError::IllegalArgument(message)
+                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                     if message.contains("carries no")),
                 "unexpected error for {encoding:?}: {error:?}"
             );
@@ -5648,7 +5664,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an unbound chain must refuse a vector field");
         assert!(
-            matches!(&error, LuceneError::IllegalState { message, .. }
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalState { message, .. }, .. }
                 if message.contains("not bound to a segment")),
             "unexpected error: {error:?}"
         );
@@ -5850,14 +5866,18 @@ mod tests {
             &self,
             _state: &SegmentWriteState<'a>,
         ) -> Result<Box<dyn crate::codecs::doc_values::DocValuesConsumer + 'a>> {
-            Err(LuceneError::Other("consumer refused".to_string()))
+            Err(LuceneError::from(LuceneErrorKind::Other(
+                "consumer refused".to_string(),
+            )))
         }
 
         fn fields_producer<'a>(
             &self,
             _state: &crate::codecs::state::SegmentReadState<'a>,
         ) -> Result<Box<dyn crate::codecs::doc_values::DocValuesProducer>> {
-            Err(LuceneError::Other("producer refused".to_string()))
+            Err(LuceneError::from(LuceneErrorKind::Other(
+                "producer refused".to_string(),
+            )))
         }
     }
 
@@ -6044,7 +6064,7 @@ mod tests {
             .process_document(1, Some(&second), true, &mut field_infos)
             .expect_err("the schema change must be refused");
         assert!(
-            matches!(error, LuceneError::IllegalArgument(ref m)
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("index options")),
             "unexpected error: {error:?}"
         );
@@ -6273,7 +6293,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a zero norm for a non-empty field must be refused");
         assert!(
-            matches!(error, LuceneError::IllegalState { message: ref m, .. }
+            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
                 if m.contains("return 0 for non-empty field")),
             "unexpected error: {error:?}"
         );
@@ -6691,7 +6711,13 @@ mod tests {
         let error = IndexingChain::bind_segment(&mut chain, tracking, &info)
             .expect_err("a chain writes exactly one segment");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -6706,7 +6732,13 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping stored data would corrupt the segment");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -7434,7 +7466,13 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("the two instances disagree on storeTermVectorPositions");
         assert!(
-            matches!(error, LuceneError::IllegalArgument(_)),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -7457,7 +7495,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("payloads need positions");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message.contains("cannot index term vector payloads without term vector positions")),
             "{error:?}"
         );
@@ -7486,7 +7524,7 @@ mod tests {
                 .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("term vectors were not requested");
             assert!(
-                matches!(&error, LuceneError::IllegalArgument(message)
+                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                     if message.contains(&format!("cannot index term vector {expected} when term vectors are not indexed"))),
                 "{error:?}"
             );
@@ -7511,7 +7549,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a non-indexed field cannot store term vectors");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message.contains("cannot store term vectors for a field that is not indexed")),
             "{error:?}"
         );
@@ -7602,7 +7640,13 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping term vectors would corrupt the segment");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -7695,10 +7739,9 @@ impl BufferedDocValuesReader {
     > {
         if self.without_field_info.contains(field) {
             // `pf.fieldInfo.getDocValuesType()` on a `PerField` without a
-            // `FieldInfo` throws `NullPointerException`, which this port
-            // reports as `IllegalState` with the JVM's message; the flush that
-            // asked fails, and `DocumentsWriterPerThread.flush` aborts on it.
-            return Err(LuceneError::illegal_state(
+            // `FieldInfo` throws `NullPointerException` with the JVM's
+            // message; the flush that asked fails, and `DocumentsWriterPerThread.flush` aborts on it.
+            return Err(LuceneError::null_pointer_with_message(
                 "Cannot invoke \"org.apache.lucene.index.FieldInfo.getDocValuesType()\" \
                  because \"pf.fieldInfo\" is null"
                     .to_string(),
@@ -7756,7 +7799,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn crate::index::TermVectors>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the buffered doc-values reader has no term vectors".to_string(),
         ))
     }
@@ -7770,13 +7813,13 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn stored_fields(&self) -> Result<Box<dyn crate::index::StoredFields>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the buffered doc-values reader has no stored fields".to_string(),
         ))
     }
 
     fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the buffered doc-values reader has no terms".to_string(),
         ))
     }

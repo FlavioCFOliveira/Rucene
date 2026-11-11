@@ -29,7 +29,7 @@
 //!   character differs, and both implementations classify it as alphabetic.
 //! * **`ShapeType::for_name` returns a `Result`.** Java throws the unchecked
 //!   `IllegalArgumentException`; Rust has no unchecked exceptions, so the same
-//!   message travels in [`crate::error::LuceneError::IllegalArgument`]. Inside
+//!   message travels in [`crate::error::LuceneErrorKind::IllegalArgument`]. Inside
 //!   the parser it is converted to a [`ParseException`] at the current line, so
 //!   a malformed WKT string is still one error channel for the caller.
 //! * **There is no `IOException`.** Java reads through a `StringReader`, whose
@@ -147,7 +147,7 @@ impl ShapeType {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the name matches no shape.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the name matches no shape.
     pub fn for_name(shapename: &str) -> Result<ShapeType, LuceneError> {
         let typename = shapename.to_lowercase();
         const ALL: [ShapeType; 8] = [
@@ -169,7 +169,7 @@ impl ShapeType {
         if typename == ShapeType::Envelope.wkt_name().to_lowercase() {
             return Ok(ShapeType::Envelope);
         }
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "unknown geo_shape [{shapename}]"
         )))
     }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::reflect::Method;
 use randomizedtesting::junit::Assert;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::{execute_two_phase_commit, TwoPhaseCommit};
 use rucene_test_framework::util::LuceneTestCase;
 
@@ -59,7 +59,9 @@ impl TwoPhaseCommitImpl {
             ));
         }
         if self.fail_on_prepare {
-            return Err(LuceneError::Io(std::io::Error::other("failOnPrepare")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("failOnPrepare"),
+            )));
         }
         Ok(1)
     }

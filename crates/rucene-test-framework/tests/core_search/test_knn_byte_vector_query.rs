@@ -15,7 +15,7 @@ use std::sync::Arc;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::document::KnnByteVectorField;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::{
     FieldInfo, IndexableField, LeafReaderContext, QueryTimeout, VectorSimilarityFunction,
@@ -201,11 +201,14 @@ impl KnnByteMMapCase {
             "TestKnnByteVectorQueryMMap",
         ))
         .map_err(|e| match e {
-            LuceneError::Io(_) => LuceneError::Unchecked {
+            LuceneError {
+                kind: LuceneErrorKind::Io(_),
+                ..
+            } => LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.io.UncheckedIOException",
                 message: Some(e.to_string()),
                 cause: Some(Arc::new(e)),
-            },
+            }),
             other => other,
         })?;
         Ok(TestDirectory::Mock(MockDirectoryWrapper::new(
@@ -319,7 +322,7 @@ impl ThrowingKnnVectorQuery {
 
 /// `exactSearch` of `ThrowingKnnVectorQuery`.
 fn throwing_exact_search() -> Result<TopDocs> {
-    Err(LuceneError::UnsupportedOperation(
+    Err(LuceneError::unsupported_operation(
         "exact search is not supported".to_string(),
     ))
 }

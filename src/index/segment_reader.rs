@@ -491,7 +491,7 @@ impl SegmentDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the segment carries no codec,
+    /// Returns [`LuceneErrorKind::IllegalState`] when the segment carries no codec,
     /// and propagates whatever the doc-values format raises while opening the
     /// generation's files.
     fn new_doc_values_producer(
@@ -842,7 +842,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -857,7 +857,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -872,7 +872,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -890,7 +890,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -905,7 +905,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             self.dv_producers_by_field
                 .get(&field.number)
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "no doc-values producer for field {}",
                         field.name
                     ))
@@ -922,7 +922,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "no doc-values producer for field {}",
                     field.name
                 ))
@@ -1002,7 +1002,7 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DocValuesLeafReader does not support term vectors".to_string(),
         ))
     }
@@ -1016,13 +1016,13 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DocValuesLeafReader does not support stored fields".to_string(),
         ))
     }
 
     fn do_close(&self) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DocValuesLeafReader does not support close".to_string(),
         ))
     }
@@ -1036,7 +1036,7 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "DocValuesLeafReader does not support terms".to_string(),
         ))
     }
@@ -1371,13 +1371,13 @@ impl SegmentReader {
     ) -> Result<Self> {
         let max_doc = segment_info.info.max_doc()?;
         if num_docs > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numDocs={num_docs} but maxDoc={max_doc}"
             )));
         }
         if let Some(ref bits) = live_docs {
             if bits.length() != max_doc as usize {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "maxDoc={max_doc} but liveDocs.size()={}",
                     bits.length()
                 )));
@@ -2394,6 +2394,7 @@ pub(crate) fn register_test_secrets() {
 #[cfg(test)]
 mod shared_bits_tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::util::FixedBitSet;
 
     /// A segment's live docs answer `applyMask` with `FixedBitSet.applyMask`,
@@ -2410,7 +2411,7 @@ mod shared_bits_tests {
         mask.set(20);
         assert!(matches!(
             shared.apply_mask(&mut mask, 0),
-            Err(LuceneError::IllegalArgument(ref message))
+            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. })
                 if message == "Some bits are set beyond the end of live docs"
         ));
     }
@@ -3923,6 +3924,7 @@ mod core_close_order_tests {
     use super::*;
     use crate::codecs::tests::{CloseLog, CloseTrackingDirectory};
     use crate::document::{Document, Store, TextField};
+    use crate::error::LuceneErrorKind;
     use crate::index::index_reader::{CacheHelper, CacheKey, ClosedListener};
     use crate::index::index_writer::IndexWriter;
     use crate::index::index_writer_config::IndexWriterConfig;
@@ -4035,7 +4037,10 @@ mod core_close_order_tests {
     /// The `AlreadyClosedException` message of `error`, or a panic.
     fn already_closed_message(error: LuceneError) -> String {
         match error {
-            LuceneError::AlreadyClosed { message, .. } => message,
+            LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            } => message,
             other => panic!("expected an AlreadyClosedException, got {other:?}"),
         }
     }

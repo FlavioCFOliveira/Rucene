@@ -33,7 +33,7 @@ use rucene::analysis::{
     StringCharReader, TokenStream,
 };
 use rucene::document::{Document, Field, FieldType, SharedReader, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::{IndexOptions, IndexableFieldType};
 use rucene::util::attribute::{Attribute, AttributeFactory, AttributeImpl, AttributeReflector};
 use rucene::util::fst::Util;
@@ -134,39 +134,54 @@ impl AttributeImpl for CheckClearAttributesAttributeImpl {
 /// `Throwable.toString()` of an error, as Java's `"" + exception` prints it.
 pub fn java_to_string(e: &LuceneError) -> String {
     match e {
-        LuceneError::IllegalState { message, .. } => {
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => {
             format!("java.lang.IllegalStateException: {message}")
         }
-        LuceneError::IllegalArgument(message) => {
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => {
             format!("java.lang.IllegalArgumentException: {message}")
         }
-        LuceneError::Io(io) => rucene::store::java_nio_file::java_to_string(io),
-        LuceneError::Unchecked { .. } => e.to_string(),
+        LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } => rucene::store::java_nio_file::java_to_string(io),
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { .. },
+            ..
+        } => e.to_string(),
         other => format!("{}: {}", other.java_simple_name(), other),
     }
 }
 
 /// The binary name of the Java class an error stands for, and its message.
 pub fn java_class_and_message(e: &LuceneError) -> (String, String) {
-    match e.unwrap_suppressed() {
-        LuceneError::IllegalState { message, .. } => (
+    match e.kind() {
+        LuceneErrorKind::IllegalState { message, .. } => (
             "java.lang.IllegalStateException".to_string(),
             message.clone(),
         ),
-        LuceneError::IllegalArgument(message) => (
+        LuceneErrorKind::IllegalArgument { message, .. } => (
             "java.lang.IllegalArgumentException".to_string(),
             message.clone(),
         ),
-        LuceneError::Io(io) => (
+        LuceneErrorKind::Io(io) => (
             rucene::store::java_nio_file::java_class_of(io).to_string(),
             rucene::store::java_nio_file::java_message_of(io)
                 .unwrap_or_else(|| "<null>".to_string()),
         ),
-        LuceneError::Unchecked { class, message, .. } => (
+        LuceneErrorKind::Unchecked { class, message, .. } => (
             class.to_string(),
             message.clone().unwrap_or_else(|| "<null>".to_string()),
         ),
-        other => (other.java_simple_name().to_string(), other.to_string()),
+        other => (
+            crate::util::java_exceptions::java_class_name(e),
+            other.to_string(),
+        ),
     }
 }
 
@@ -177,7 +192,13 @@ fn is_runtime_exception(e: &LuceneError) -> bool {
 
 /// Whether Java's `catch (IllegalStateException e)` catches the error.
 fn is_illegal_state(e: &LuceneError) -> bool {
-    matches!(e, LuceneError::IllegalState { .. })
+    matches!(
+        e,
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { .. },
+            ..
+        }
+    )
 }
 
 /// Rethrows an error inside a thread, as `Rethrow.rethrow(e)` does: the
@@ -2197,9 +2218,10 @@ impl BaseTokenStreamTestCase {
                         // Catch & ignore MockTokenizer's
                         // anger...
                         match &ise {
-                            LuceneError::IllegalState { message, .. }
-                                if message.contains("end() called in wrong state=") =>
-                            {
+                            LuceneError {
+                                kind: LuceneErrorKind::IllegalState { message, .. },
+                                ..
+                            } if message.contains("end() called in wrong state=") => {
                                 // OK
                             }
                             _ => return Err(ise),
@@ -2230,9 +2252,10 @@ impl BaseTokenStreamTestCase {
                         // Catch & ignore MockTokenizer's
                         // anger...
                         match &ise {
-                            LuceneError::IllegalState { message, .. }
-                                if message.contains("end() called in wrong state=") =>
-                            {
+                            LuceneError {
+                                kind: LuceneErrorKind::IllegalState { message, .. },
+                                ..
+                            } if message.contains("end() called in wrong state=") => {
                                 // OK
                             }
                             _ => return Err(ise),

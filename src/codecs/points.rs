@@ -175,7 +175,7 @@ impl fmt::Debug for MergedPointsReader {
 
 /// What Java throws `UnsupportedOperationException` for in the merged view.
 fn unsupported(method: &str) -> LuceneError {
-    LuceneError::UnsupportedOperation(format!(
+    LuceneError::unsupported_operation(format!(
         "{method} is not supported by the merged points view"
     ))
 }
@@ -188,7 +188,7 @@ impl PointsReader for MergedPointsReader {
 
     fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
         if field != self.field_name {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "field name must match the field being merged".to_string(),
             ));
         }
@@ -412,9 +412,9 @@ impl PointsReader for EmptyPointsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::IllegalArgument`].
+    /// Always returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument).
     fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "field=\"{field}\" was not indexed with points"
         )))
     }
@@ -439,9 +439,9 @@ pub struct EmptyPointsWriter;
 impl PointsWriter for EmptyPointsWriter {
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn write_field(&mut self, _field_info: &FieldInfo, _values: &dyn PointsReader) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyPointsWriter indexes no points".to_string(),
         ))
     }
@@ -480,9 +480,9 @@ impl PointsFormat for EmptyPointsFormat {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn fields_writer(&self, _state: &SegmentWriteState) -> Result<Box<dyn PointsWriter>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "PointsFormat.EMPTY has no writer".to_string(),
         ))
     }
@@ -500,6 +500,7 @@ impl PointsFormat for EmptyPointsFormat {
 mod tests {
     use super::*;
     use crate::codecs::stub::BufferedUpdates;
+    use crate::error::LuceneErrorKind;
     use crate::index::FieldInfos;
     use std::sync::Arc;
 
@@ -509,7 +510,10 @@ mod tests {
     fn empty_points_reader_rejects_every_field() {
         let mut reader = EmptyPointsReader;
         match reader.get_values("field") {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "field=\"field\" was not indexed with points");
             }
             Err(other) => panic!("expected IllegalArgument, got {other:?}"),
@@ -527,7 +531,10 @@ mod tests {
         let field = FieldInfo::default();
         assert!(matches!(
             writer.write_field(&field, &reader),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         writer.finish().unwrap();
         writer.close().unwrap();
@@ -555,7 +562,10 @@ mod tests {
         // `PointsFormat.EMPTY` has no writer (`codecs/PointsFormat.java:49-52`).
         assert!(matches!(
             format.fields_writer(&write_state),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
 
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);

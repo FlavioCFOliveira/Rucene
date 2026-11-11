@@ -56,12 +56,12 @@ impl FilteredHnswGraphSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `filter_size` is not in
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `filter_size` is not in
     /// `(0, graph size)`.
     pub fn create(k: i32, graph: &dyn HnswGraph, filter_size: i32) -> Result<Self> {
         let graph_size = graph.max_node_id() + 1;
         if filter_size <= 0 || filter_size >= graph_size {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "filterSize must be > 0 and < graph size".to_string(),
             ));
         }
@@ -145,7 +145,7 @@ impl AbstractHnswGraphSearcher for FilteredHnswGraphSearcher {
     ) -> Result<()> {
         debug_assert!(level == 0, "Filtered search only works on the base level");
         let accept_ords = accept_ords.ok_or_else(|| {
-            LuceneError::IllegalArgument(
+            LuceneError::illegal_argument(
                 "acceptOrds must not be null to used filtered search".to_string(),
             )
         })?;

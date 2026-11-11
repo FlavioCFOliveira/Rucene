@@ -57,7 +57,7 @@ impl Lucene99ScalarQuantizedVectorScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the query and the field
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the query and the field
     /// disagree on dimension.
     ///
     /// Equivalent to

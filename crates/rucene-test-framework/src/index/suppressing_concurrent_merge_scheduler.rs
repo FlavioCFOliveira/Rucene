@@ -76,12 +76,16 @@ impl SuppressingConcurrentMergeScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rucene::error::LuceneErrorKind;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn is_already_closed(t: &(dyn Error + 'static)) -> bool {
         matches!(
             t.downcast_ref::<LuceneError>(),
-            Some(LuceneError::AlreadyClosed { .. })
+            Some(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            })
         )
     }
 

@@ -25,7 +25,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::check_index::Level;
 use rucene::index::directory_reader::index_exists;
 use rucene::store::{Directory, IOContext, IndexInput, IndexOutput, Lock};
@@ -174,10 +174,13 @@ impl Directory for BaseDirectoryWrapper {
             )?;
         }
         Arc::get_mut(&mut self.delegate)
-            .ok_or_else(|| LuceneError::IllegalState {
-                message: "BaseDirectoryWrapper: the delegate is still shared and cannot be closed"
-                    .to_string(),
-                cause: None,
+            .ok_or_else(|| {
+                LuceneError::from(LuceneErrorKind::IllegalState {
+                    message:
+                        "BaseDirectoryWrapper: the delegate is still shared and cannot be closed"
+                            .to_string(),
+                    cause: None,
+                })
             })?
             .close()
     }

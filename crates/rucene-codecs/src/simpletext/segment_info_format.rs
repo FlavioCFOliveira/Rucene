@@ -224,7 +224,7 @@ impl SegmentInfoFormat for SimpleTextSegmentInfoFormat {
 
             let mut id_array = [0u8; rucene::util::string_helper::ID_LENGTH];
             if id.len() != id_array.len() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "invalid id: {}",
                     StringHelper::id_to_string(Some(&id))
                 )));

@@ -1530,7 +1530,7 @@ impl LuceneTestCase {
         dir: &dyn rucene::store::Directory,
         file_name: &str,
     ) -> rucene::error::Result<bool> {
-        use rucene::error::LuceneError;
+        use rucene::error::{LuceneError, LuceneErrorKind};
         use rucene::store::java_nio_file::{java_class_of, NO_SUCH_FILE_EXCEPTION};
         match dir.open_input(file_name, &*rucene::store::READONCE_IO_CONTEXT) {
             Ok(mut input) => {
@@ -1539,17 +1539,22 @@ impl LuceneTestCase {
             }
             // An `io::Error` of kind `NotFound` that carries no Java class
             // stands for one of the two (an OS error the port did not name).
-            Err(LuceneError::Io(e))
-                if matches!(
-                    java_class_of(&e),
-                    NO_SUCH_FILE_EXCEPTION | "java.io.FileNotFoundException"
-                ) || (e.kind() == std::io::ErrorKind::NotFound
-                    && rucene::store::java_nio_file::java_exception_of(&e).is_none()) =>
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(e),
+                ..
+            }) if matches!(
+                java_class_of(&e),
+                NO_SUCH_FILE_EXCEPTION | "java.io.FileNotFoundException"
+            ) || (e.kind() == std::io::ErrorKind::NotFound
+                && rucene::store::java_nio_file::java_exception_of(&e).is_none()) =>
             {
                 Ok(false)
             }
             // `IndexNotFoundException extends FileNotFoundException`.
-            Err(LuceneError::IndexNotFound(_)) => Ok(false),
+            Err(LuceneError {
+                kind: LuceneErrorKind::IndexNotFound(_),
+                ..
+            }) => Ok(false),
             Err(e) => Err(e),
         }
     }
@@ -2764,7 +2769,7 @@ impl LuceneTestCase {
     ) -> rucene::error::Result<Arc<dyn rucene::index::LeafReader>> {
         let sub_readers = Arc::clone(&reader).leaves()?;
         if sub_readers.len() != 1 {
-            return Err(rucene::error::LuceneError::IllegalArgument(format!(
+            return Err(rucene::error::LuceneError::illegal_argument(format!(
                 "{} has {} segments instead of exactly one",
                 reader,
                 sub_readers.len()
@@ -3301,9 +3306,10 @@ impl LuceneTestCase {
             // TEST_DIRECTORY is not a sub-class of FSDirectory, so draw one at random
             // (`CommandLineUtil.loadFSDirectoryClass`'s `ClassCastException`
             // carries `Class.toString()`, `class <name>` or `interface <name>`).
-            Err(rucene::error::LuceneError::Other(message))
-                if message.starts_with("class ") || message.starts_with("interface ") =>
-            {
+            Err(rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::Other(message),
+                ..
+            }) if message.starts_with("class ") || message.starts_with("interface ") => {
                 fsdir_class = RandomPicks::random_from(&*random, &FS_DIRECTORIES).to_string();
                 CommandLineUtil::load_fs_directory_class(&fsdir_class)
                     .unwrap_or_else(|e| rethrow_lucene_error(&e))
@@ -4278,7 +4284,7 @@ impl LuceneTestCase {
                 .iter()
                 .map(|name| {
                     knn_vectors_for_name(name).unwrap_or_else(|| {
-                        rethrow_lucene_error(&rucene::error::LuceneError::IllegalArgument(
+                        rethrow_lucene_error(&rucene::error::LuceneError::illegal_argument(
                             format!("An SPI class of type org.apache.lucene.codecs.KnnVectorsFormat with name '{name}' does not exist."),
                         ))
                     })
@@ -4366,7 +4372,7 @@ struct UninvertVisitor<'a> {
 
 impl rucene::index::point_values::IntersectVisitor for UninvertVisitor<'_> {
     fn visit(&mut self, _doc_id: i32) -> rucene::error::Result<()> {
-        Err(rucene::error::LuceneError::UnsupportedOperation(
+        Err(rucene::error::LuceneError::unsupported_operation(
             String::new(),
         ))
     }

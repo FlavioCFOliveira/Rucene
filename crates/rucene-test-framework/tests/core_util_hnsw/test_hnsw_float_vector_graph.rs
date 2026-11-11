@@ -75,7 +75,7 @@ impl HnswCase for FloatCase {
     ) -> Result<Arc<MockVectorValues>> {
         let vector_values = reader
             .get_float_vector_values(field_name)?
-            .ok_or_else(|| LuceneError::illegal_state("null FloatVectorValues".to_string()))?;
+            .ok_or_else(|| LuceneError::null_pointer_with_message("null FloatVectorValues"))?;
         let mut vectors: Vec<Option<Vec<f32>>> = vec![None; reader.max_doc() as usize];
         for i in 0..vector_values.size() {
             let value = vector_values.vector_value(i)?;
@@ -260,7 +260,7 @@ impl FloatVectorValues for CircularFloatVectorValues {
     }
 
     fn scorer(&self, _target: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 

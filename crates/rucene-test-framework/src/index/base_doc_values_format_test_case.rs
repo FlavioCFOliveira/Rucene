@@ -42,7 +42,7 @@ use rucene::document::{
     BinaryDocValuesField, Document, NumericDocValuesField, SortedDocValuesField,
     SortedNumericDocValuesField, SortedSetDocValuesField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::doc_values::DocValuesSkipper;
 use rucene::index::index_writer::IndexWriter;
@@ -565,25 +565,24 @@ fn assert_doc_values_with_skipper(
         for reader_context in Arc::clone(&r).leaves()? {
             let reader = reader_context.leaf_reader();
             let info_stream = rucene::util::PrintStreamInfoStream::new(Box::new(Vec::<u8>::new()));
-            let codec_reader =
-                Arc::clone(&reader)
-                    .as_codec_reader()
-                    .ok_or_else(|| LuceneError::Unchecked {
-                        class: "java.lang.ClassCastException",
-                        message: Some("the leaf is not a CodecReader".to_string()),
-                        cause: None,
-                    })?;
+            let codec_reader = Arc::clone(&reader).as_codec_reader().ok_or_else(|| {
+                LuceneError::from(LuceneErrorKind::Unchecked {
+                    class: "java.lang.ClassCastException",
+                    message: Some("the leaf is not a CodecReader".to_string()),
+                    cause: None,
+                })
+            })?;
             let status = rucene::index::check_index::test_doc_values(
                 &*codec_reader,
                 Some(&info_stream),
                 true,
             )?;
             if let Some(error) = status.error {
-                return Err(LuceneError::Unchecked {
+                return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                     class: "java.lang.Exception",
                     message: Some(error.to_string()),
                     cause: Some(Arc::new(error)),
-                });
+                }));
             }
             read_docs += assert_doc_values_skip_sequential(
                 (test_doc_value_skipper.doc_values_wrapper)(&*reader)?,
@@ -1035,13 +1034,13 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 w1.close()?;
                 drop(w1);
                 let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as _)?;
-                let codec_reader =
-                    leaf.as_codec_reader()
-                        .ok_or_else(|| LuceneError::Unchecked {
-                            class: "java.lang.ClassCastException",
-                            message: Some("the leaf is not a CodecReader".to_string()),
-                            cause: None,
-                        })?;
+                let codec_reader = leaf.as_codec_reader().ok_or_else(|| {
+                    LuceneError::from(LuceneErrorKind::Unchecked {
+                        class: "java.lang.ClassCastException",
+                        message: Some("the leaf is not a CodecReader".to_string()),
+                        cause: None,
+                    })
+                })?;
                 let mismatched = MismatchedCodecReader::new(codec_reader, &*random())?;
                 w2.add_indexes_codec_readers(&[Arc::new(mismatched)])?;
                 reader.close()?;

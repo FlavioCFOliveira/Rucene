@@ -223,12 +223,12 @@ impl MultiCollectorManager {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
     /// no manager is supplied or when one of them is absent, which is the
     /// `IllegalArgumentException` Java throws.
     pub fn new(collector_managers: Vec<Option<Box<dyn ErasedCollectorManager>>>) -> Result<Self> {
         if collector_managers.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least one collector manager".to_string(),
             ));
         }
@@ -237,7 +237,7 @@ impl MultiCollectorManager {
             match collector_manager {
                 Some(collector_manager) => present.push(collector_manager),
                 None => {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Collector managers should all be non-null".to_string(),
                     ))
                 }

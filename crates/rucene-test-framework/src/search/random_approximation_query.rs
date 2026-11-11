@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use randomizedtesting::generators::RandomNumbers;
 use randomizedtesting::jdk::random::{JdkRandom, Random};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::LeafReaderContext;
 use rucene::search::similarities::Explanation;
 use rucene::search::{
@@ -307,14 +307,14 @@ impl<D: ApproximatedIterator> TwoPhaseIterator for RandomTwoPhaseView<D> {
     fn matches(&mut self) -> Result<bool> {
         let doc = self.approximation.doc;
         if doc == -1 || doc == NO_MORE_DOCS {
-            return Err(LuceneError::AssertionError(format!(
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "matches() should not be called on doc ID {doc}"
-            )));
+            ))));
         }
         if self.last_doc == doc {
-            return Err(LuceneError::AssertionError(format!(
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "matches() has been called twice on doc ID {doc}"
-            )));
+            ))));
         }
         self.last_doc = doc;
         Ok(doc == self.approximation.disi.disi_doc_id())

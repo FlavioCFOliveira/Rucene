@@ -51,7 +51,7 @@ impl MockCharFilter {
         // TODO: instead of fixed remainder... maybe a fixed
         // random seed?
         if !(0..10).contains(&remainder) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid remainder parameter (must be 0..10): {}",
                 remainder
             )));

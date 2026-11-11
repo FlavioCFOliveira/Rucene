@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::index::filter_directory_reader::{
     DirectoryReaderWrapper, FilterDirectoryReader, SubReaderWrapper,
@@ -43,11 +43,11 @@ impl SubReaderWrapper for MergingSubReaderWrapper {
     fn wrap(&self, reader: Arc<dyn LeafReader>) -> Result<Arc<dyn LeafReader>> {
         match reader.as_codec_reader() {
             Some(reader) => Ok(Arc::new(MergingCodecReader::new(reader))),
-            None => Err(LuceneError::Unchecked {
+            None => Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.ClassCastException",
                 message: None,
                 cause: None,
-            }),
+            })),
         }
     }
 }

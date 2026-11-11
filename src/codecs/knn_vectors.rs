@@ -158,7 +158,7 @@ pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when
     /// [`add_field`](Self::add_field) answers a writer of the other encoding,
     /// where Java's unchecked cast of `addField`'s result would fail, and
     /// propagates whatever building the merged view, reading a vector or
@@ -482,7 +482,7 @@ impl MergedVectorValues {
         debug_assert!(field_info.has_vector_values());
         let field_encoding = field_info.vector_encoding;
         if field_encoding != expected {
-            return Err(LuceneError::UnsupportedOperation(format!(
+            return Err(LuceneError::unsupported_operation(format!(
                 "Cannot merge vectors encoded as [{field_encoding:?}] as {expected:?}"
             )));
         }
@@ -537,7 +537,7 @@ impl MergedVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] when the field is not
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) when the field is not
     /// encoded as `FLOAT32`, and propagates whatever reading a segment's
     /// values raises.
     pub fn merge_float_vector_values(
@@ -562,7 +562,7 @@ impl MergedVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] when the field is not
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) when the field is not
     /// encoded as `BYTE`, and propagates whatever reading a segment's values
     /// raises.
     pub fn merge_byte_vector_values(
@@ -656,7 +656,7 @@ impl<S: DocIDMergerSub> DocIdSetIterator for MergedDocIndexIterator<S> {
     /// Java throws `UnsupportedOperationException`: a merged view only walks
     /// forward one document at a time.
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MergedVectorValues iterator does not support advance".to_string(),
         ))
     }
@@ -733,7 +733,7 @@ impl KnnVectorValues for MergedFloat32VectorValues {
     /// reader answered `null` for the field, which only a corrupt index can
     /// make happen — Java's `subs.get(0)` throws `IndexOutOfBoundsException`,
     /// which `IndexWriter` reports as the merge's failure. Rust has no
-    /// exception to throw, so this returns [`LuceneError::IllegalArgument`],
+    /// exception to throw, so this returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument),
     /// the variant the crate maps `IndexOutOfBoundsException` to, with Java's
     /// message.
     fn try_dimension(&self) -> Result<i32> {
@@ -743,7 +743,7 @@ impl KnnVectorValues for MergedFloat32VectorValues {
         };
         match state.doc_id_merger.subs().first() {
             Some(sub) => Ok(sub.values.dimension()),
-            None => Err(LuceneError::IllegalArgument(
+            None => Err(LuceneError::illegal_argument(
                 "Index 0 out of bounds for length 0".to_string(),
             )),
         }
@@ -780,7 +780,7 @@ impl KnnVectorValues for MergedFloat32VectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MergedFloat32VectorValues::copy".to_string(),
         ))
     }
@@ -803,10 +803,10 @@ impl FloatVectorValues for MergedFloat32VectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] with Java's message when `ord` is
-    /// not the ordinal of that document, and when the iteration has not
-    /// started or is over — where Java dereferences a `null` `current` and
-    /// throws `NullPointerException`.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) with Java's message when `ord` is
+    /// not the ordinal of that document, and Java's `NullPointerException`
+    /// when the iteration has not started or is over — where Java
+    /// dereferences a `null` `current`.
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         let state = lock_merged(&self.state)?;
         if ord != state.last_ord {
@@ -816,7 +816,7 @@ impl FloatVectorValues for MergedFloat32VectorValues {
             )));
         }
         let current = state.current.ok_or_else(|| {
-            LuceneError::illegal_state(
+            LuceneError::null_pointer_with_message(
                 "MergedFloat32VectorValues is not positioned on a document".to_string(),
             )
         })?;
@@ -826,7 +826,7 @@ impl FloatVectorValues for MergedFloat32VectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MergedFloat32VectorValues::copy".to_string(),
         ))
     }
@@ -893,7 +893,7 @@ impl KnnVectorValues for MergedByteVectorValues {
     /// reader answered `null` for the field, which only a corrupt index can
     /// make happen — Java's `subs.get(0)` throws `IndexOutOfBoundsException`,
     /// which `IndexWriter` reports as the merge's failure. Rust has no
-    /// exception to throw, so this returns [`LuceneError::IllegalArgument`],
+    /// exception to throw, so this returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument),
     /// the variant the crate maps `IndexOutOfBoundsException` to, with Java's
     /// message.
     fn try_dimension(&self) -> Result<i32> {
@@ -903,7 +903,7 @@ impl KnnVectorValues for MergedByteVectorValues {
         };
         match state.doc_id_merger.subs().first() {
             Some(sub) => Ok(sub.values.dimension()),
-            None => Err(LuceneError::IllegalArgument(
+            None => Err(LuceneError::illegal_argument(
                 "Index 0 out of bounds for length 0".to_string(),
             )),
         }
@@ -940,7 +940,7 @@ impl KnnVectorValues for MergedByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MergedByteVectorValues::copy".to_string(),
         ))
     }
@@ -963,10 +963,10 @@ impl ByteVectorValues for MergedByteVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] with Java's message when `ord` is
-    /// not the ordinal of that document, and when the iteration has not
-    /// started or is over — where Java dereferences a `null` `current` and
-    /// throws `NullPointerException`.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) with Java's message when `ord` is
+    /// not the ordinal of that document, and Java's `NullPointerException`
+    /// when the iteration has not started or is over — where Java
+    /// dereferences a `null` `current`.
     fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
         let state = lock_merged(&self.state)?;
         if ord != state.last_ord {
@@ -976,7 +976,7 @@ impl ByteVectorValues for MergedByteVectorValues {
             )));
         }
         let current = state.current.ok_or_else(|| {
-            LuceneError::illegal_state(
+            LuceneError::null_pointer_with_message(
                 "MergedByteVectorValues is not positioned on a document".to_string(),
             )
         })?;
@@ -986,7 +986,7 @@ impl ByteVectorValues for MergedByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MergedByteVectorValues::copy".to_string(),
         ))
     }
@@ -1224,8 +1224,8 @@ impl<I: BufferingKnnVectorsWriterImpl> KnnVectorsWriter for BufferingKnnVectorsW
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] — Java's `NullPointerException`
-    /// — when the merge state has no segment info, and propagates whatever
+    /// Returns Java's `NullPointerException` when the merge state has no
+    /// segment info, and propagates whatever
     /// building the merged view or writing the field raises.
     fn merge_one_field<'m>(
         &mut self,
@@ -1237,7 +1237,7 @@ impl<I: BufferingKnnVectorsWriterImpl> KnnVectorsWriter for BufferingKnnVectorsW
                 .segment_info
                 .as_ref()
                 .ok_or_else(|| {
-                    LuceneError::illegal_state(
+                    LuceneError::null_pointer_with_message(
                         "Cannot invoke \"org.apache.lucene.index.SegmentInfo.maxDoc()\" because \"mergeState.segmentInfo\" is null"
                             .to_string(),
                     )
@@ -1366,7 +1366,7 @@ impl<T: BufferedVector> KnnFieldVectorsWriter<T> for FieldWriter<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Java's message when the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] with Java's message when the
     /// document already has a value for the field, or when `doc_id` is out of
     /// order — the `DocsWithFieldSet.add` failure — and, after recording the
     /// document as Java does, Java's `ArrayIndexOutOfBoundsException` from
@@ -1374,7 +1374,7 @@ impl<T: BufferedVector> KnnFieldVectorsWriter<T> for FieldWriter<T> {
     /// dimension.
     fn add_value(&mut self, doc_id: i32, value: T) -> Result<()> {
         if doc_id == self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "VectorValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
                 self.field_info.name
             )));
@@ -1384,7 +1384,7 @@ impl<T: BufferedVector> KnnFieldVectorsWriter<T> for FieldWriter<T> {
         let dim = self.dim.max(0) as usize;
         if value.len() < dim {
             // `System.arraycopy` inside `ArrayUtil.copyOfSubArray`.
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "arraycopy: last source index {dim} out of bounds for {}[{}]",
                 T::JAVA_ARRAY,
                 value.len()
@@ -1513,7 +1513,7 @@ fn buffered_vector<T: Clone>(vectors: &[T], ord: i32) -> Result<T> {
         .and_then(|ord| vectors.get(ord))
         .cloned()
         .ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "Index {ord} out of bounds for length {}",
                 vectors.len()
             ))
@@ -1718,7 +1718,7 @@ impl KnnVectorValues for SortingFloatVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "SortingFloatVectorValues::copy".to_string(),
         ))
     }
@@ -1739,7 +1739,7 @@ impl FloatVectorValues for SortingFloatVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "SortingFloatVectorValues::copy".to_string(),
         ))
     }
@@ -1784,7 +1784,7 @@ impl KnnVectorValues for SortingByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "SortingByteVectorValues::copy".to_string(),
         ))
     }
@@ -1805,7 +1805,7 @@ impl ByteVectorValues for SortingByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "SortingByteVectorValues::copy".to_string(),
         ))
     }
@@ -2049,9 +2049,9 @@ impl KnnVectorsFormatRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `name` is empty, contains
     /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
-    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
     pub fn register<F>(&self, name: impl Into<String>, format: F) -> Result<()>
     where
         F: KnnVectorsFormat + 'static,
@@ -2115,7 +2115,7 @@ impl KnnVectorsFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
 /// poisoned.
 pub fn reload_knn_vectors_format(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,
@@ -2256,9 +2256,9 @@ pub struct EmptyKnnVectorsWriter;
 impl KnnVectorsWriter for EmptyKnnVectorsWriter {
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn add_field(&mut self, _field_info: &FieldInfo) -> Result<FieldVectorWriter> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "Attempt to write EMPTY vector values".to_string(),
         ))
     }
@@ -2318,9 +2318,9 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_float_vector_values(&self, _field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyKnnVectorsReader has no float vector values".to_string(),
         ))
     }
@@ -2330,9 +2330,9 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_byte_vector_values(&self, _field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyKnnVectorsReader has no byte vector values".to_string(),
         ))
     }
@@ -2346,7 +2346,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     ) -> Result<()> {
         // `KnnVectorsFormat.EMPTY`'s reader throws from both searches
         // (`codecs/KnnVectorsFormat.java:142-153`).
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyKnnVectorsReader does not search".to_string(),
         ))
     }
@@ -2360,7 +2360,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     ) -> Result<()> {
         // `KnnVectorsFormat.EMPTY`'s reader throws from both searches
         // (`codecs/KnnVectorsFormat.java:142-153`).
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyKnnVectorsReader does not search".to_string(),
         ))
     }
@@ -2400,9 +2400,9 @@ impl KnnVectorsFormat for EmptyKnnVectorsFormat {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn fields_writer(&self, _state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "Attempt to write EMPTY vector values".to_string(),
         ))
     }
@@ -2429,6 +2429,7 @@ impl KnnVectorsFormat for EmptyKnnVectorsFormat {
 mod tests {
     use super::*;
     use crate::codecs::stub::{BufferedUpdates, FieldInfos};
+    use crate::error::LuceneErrorKind;
     use crate::search::from_live_docs;
 
     #[test]
@@ -2456,7 +2457,10 @@ mod tests {
         let field = FieldInfo::default();
         assert!(matches!(
             writer.add_field(&field),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         writer.flush(10, None).unwrap();
         writer.finish().unwrap();
@@ -2470,22 +2474,34 @@ mod tests {
         // (`codecs/KnnVectorsFormat.java:130-138`).
         assert!(matches!(
             reader.get_float_vector_values("f"),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             reader.get_byte_vector_values("f"),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         let mut collector = EmptyKnnCollector;
         let mut accept_docs = from_live_docs(None, 10).unwrap();
         // Both searches throw (`codecs/KnnVectorsFormat.java:142-153`).
         assert!(matches!(
             reader.search("f", &[1.0, 2.0], &mut collector, &mut accept_docs),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             reader.search_byte("f", &[1, 2], &mut collector, &mut accept_docs),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         // `getOffHeapByteSize` is `Map.of()` and `checkIntegrity` does
         // nothing (`codecs/KnnVectorsFormat.java:128-129, 153-156`) — rmp #231.
@@ -2521,7 +2537,10 @@ mod tests {
         // (`codecs/KnnVectorsFormat.java:120-123`).
         assert!(matches!(
             format.fields_writer(&write_state),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
 
         let dir_ref: &dyn crate::store::Directory = &*dir;
@@ -2566,7 +2585,10 @@ mod tests {
         let bytes = MergedByteVectorValues::new(Vec::new(), &state).unwrap();
         for result in [floats.try_dimension(), bytes.try_dimension()] {
             match result {
-                Err(LuceneError::IllegalArgument(message)) => {
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    ..
+                }) => {
                     assert_eq!(message, "Index 0 out of bounds for length 0")
                 }
                 other => panic!("expected an IllegalArgument, got {other:?}"),
@@ -2625,11 +2647,17 @@ mod tests {
         assert_eq!(iterator.doc_id(), -1);
         assert!(matches!(
             iterator.advance(1),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert_eq!(iterator.next_doc().unwrap(), 0);
         match floats.vector_value(1) {
-            Err(LuceneError::IllegalState { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "only supports forward iteration with a single iterator: ord=1, lastOrd=0"
             ),
@@ -2637,11 +2665,17 @@ mod tests {
         }
         assert!(matches!(
             floats.copy(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             floats.copy_float(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert_eq!(iterator.next_doc().unwrap(), 1);
         assert_eq!(iterator.next_doc().unwrap(), NO_MORE_DOCS);
@@ -2660,7 +2694,10 @@ mod tests {
         let bytes = MergedByteVectorValues::new(vec![byte_sub], &state).unwrap();
         bytes.iterator().unwrap().next_doc().unwrap();
         match bytes.vector_value(1) {
-            Err(LuceneError::IllegalState { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "only supports forward iteration: ord=1, lastOrd=0")
             }
             other => panic!("expected the forward-only refusal, got {other:?}"),
@@ -2723,7 +2760,7 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
-            Err(LuceneError::UnsupportedOperation(
+            Err(LuceneError::unsupported_operation(
                 "not needed by these tests".to_string(),
             ))
         }
@@ -2876,7 +2913,10 @@ mod tests {
             false,
         );
         match MergedVectorValues::merge_float_vector_values(&field, &state) {
-            Err(LuceneError::UnsupportedOperation(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "Cannot merge vectors encoded as [BYTE] as FLOAT32")
             }
             other => panic!(
@@ -3329,7 +3369,10 @@ mod tests {
         for (doc, len) in [(0, 2), (0, 3), (1, 3), (1, 3)] {
             out.push(match fw.add_value(doc, vec![0.0; len]) {
                 Ok(()) => format!("add {doc} ok"),
-                Err(LuceneError::IllegalArgument(message)) => format!("add {doc} {message}"),
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    ..
+                }) => format!("add {doc} {message}"),
                 Err(other) => panic!("unexpected error {other:?}"),
             });
         }

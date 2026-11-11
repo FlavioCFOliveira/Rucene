@@ -1374,7 +1374,7 @@ mod sm {
     use randomizedtesting::jdk::thread::Thread;
     use randomizedtesting::junit::Assert;
     use rucene::document::{Document, Store};
-    use rucene::error::{LuceneError, Result};
+    use rucene::error::{LuceneError, LuceneErrorKind, Result};
     use rucene::index::directory_reader::{self, DirectoryReader};
     use rucene::index::filter_directory_reader::{
         DirectoryReaderWrapper, FilterDirectoryReader, SubReaderWrapper,
@@ -2136,11 +2136,11 @@ mod sm {
 
     /// `catch (IOException ioe) { throw new RuntimeException(ioe); }`.
     fn runtime(e: LuceneError) -> ! {
-        rethrow_java(LuceneError::Unchecked {
+        rethrow_java(LuceneError::from(LuceneErrorKind::Unchecked {
             class: "java.lang.RuntimeException",
             message: Some(e.to_string()),
             cause: Some(Arc::new(e)),
-        })
+        }))
     }
 
     /// Port of `TestSearcherManager.testConcurrentIndexCloseSearchAndRefresh`.

@@ -26,7 +26,7 @@ use std::sync::Arc;
 use randomizedtesting::generators::BiasedNumbers;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::RandomizedContext;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::geo::{GeoUtils, XYCircle, XYEncodingUtils, XYLine, XYPoint, XYPolygon, XYRectangle};
 
 use crate::util::lucene_test_case::TEST_NIGHTLY;
@@ -62,7 +62,10 @@ pub fn next_polygon() -> XYPolygon {
             let center_y = f64::from(next_float(&*random));
             match create_regular_polygon(center_x, center_y, radius, gons) {
                 Ok(p) => return p,
-                Err(LuceneError::IllegalArgument(_)) => {
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }) => {
                     // we tried to cross dateline or pole ... try again
                 }
                 Err(e) => rethrow(e),
@@ -256,7 +259,7 @@ pub fn next_float(random: &dyn Random) -> f32 {
 /// `UnsupportedOperationException` for a polygon with holes.
 pub fn contains_slowly(polygon: &XYPolygon, x: f64, y: f64) -> Result<bool> {
     if !polygon.get_holes().is_empty() {
-        return Err(LuceneError::UnsupportedOperation(
+        return Err(LuceneError::unsupported_operation(
             "this testing method does not support holes".to_string(),
         ));
     }

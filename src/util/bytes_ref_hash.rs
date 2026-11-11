@@ -570,9 +570,9 @@ impl BytesRefHash {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when `bytes`
-    /// exceeds [`crate::util::byte_block_pool::MAX_TERM_LENGTH`], and
-    /// [`crate::error::LuceneError::ResourceLimit`] when the pool runs out of
+    /// Returns [`crate::error::LuceneErrorKind::MaxBytesLengthExceeded`] when
+    /// `bytes` exceeds [`crate::util::byte_block_pool::MAX_TERM_LENGTH`], and
+    /// [`crate::error::LuceneErrorKind::ResourceLimit`] when the pool runs out of
     /// addressable space.
     pub fn add(&mut self, pool: &mut ByteBlockPool, bytes: &[u8]) -> Result<i32> {
         debug_assert!(

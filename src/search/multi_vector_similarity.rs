@@ -34,7 +34,7 @@ pub trait MultiVectorSimilarity: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when the token vectors do not have the same dimension.
     fn compare(
         &self,

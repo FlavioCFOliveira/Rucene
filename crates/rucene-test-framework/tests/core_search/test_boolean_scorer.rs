@@ -217,7 +217,7 @@ impl Weight for CrazyWeight {
     }
 
     fn explain(&self, _context: &LeafReaderContext, _doc: i32) -> Result<Explanation> {
-        Err(rucene::error::LuceneError::UnsupportedOperation(
+        Err(rucene::error::LuceneError::unsupported_operation(
             String::new(),
         ))
     }
@@ -235,7 +235,7 @@ struct CrazyScorerSupplier;
 
 impl ScorerSupplier for CrazyScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
-        Err(rucene::error::LuceneError::UnsupportedOperation(
+        Err(rucene::error::LuceneError::unsupported_operation(
             String::new(),
         ))
     }

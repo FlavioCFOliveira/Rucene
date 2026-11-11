@@ -75,7 +75,7 @@ const NOT_COMPILED: i64 = -2;
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `block_bits` is outside
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `block_bits` is outside
 /// `1 ..= 31`.
 pub fn get_on_heap_reader_writer(block_bits: i32) -> Result<ReadWriteDataOutput> {
     ReadWriteDataOutput::new(block_bits)
@@ -159,19 +159,19 @@ impl Accountable for NullFSTReader {
 
 impl FSTReader for NullFSTReader {
     fn get_reverse_bytes_reader(&self) -> Result<Box<dyn BytesReader + '_>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FST was not constructed with get_on_heap_reader_writer()".to_string(),
         ))
     }
 
     fn get_owned_reverse_bytes_reader(self: std::sync::Arc<Self>) -> Result<Box<dyn BytesReader>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FST was not constructed with get_on_heap_reader_writer()".to_string(),
         ))
     }
 
     fn write_to(&self, _out: &mut dyn DataOutput) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FST was not constructed with get_on_heap_reader_writer()".to_string(),
         ))
     }
@@ -514,10 +514,10 @@ impl<'a, O: Outputs> Builder<'a, O> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `mb` is negative.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `mb` is negative.
     pub fn suffix_ram_limit_mb(mut self, mb: f64) -> Result<Self> {
         if mb < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "suffixRAMLimitMB must be >= 0; got: {mb}"
             )));
         }
@@ -563,11 +563,11 @@ impl<'a, O: Outputs> Builder<'a, O> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `version` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `version` is outside
     /// `VERSION_90 ..= VERSION_CURRENT`.
     pub fn set_version(mut self, version: i32) -> Result<Self> {
         if !(VERSION_90..=VERSION_CURRENT).contains(&version) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Expected version in range [{VERSION_90}, {VERSION_CURRENT}], got {version}"
             )));
         }
@@ -729,7 +729,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the sink is not the on-heap
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sink is not the on-heap
     /// one and therefore cannot be read back.
     pub fn fst_reader(&self) -> Result<&dyn FSTReader> {
         match &self.data_output {
@@ -749,7 +749,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the sink is not the on-heap
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sink is not the on-heap
     /// one.
     pub fn into_fst_reader(self) -> Result<Box<dyn FSTReader>> {
         match self.data_output {
@@ -1393,7 +1393,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     ///
     /// # Errors
     ///
-    /// Propagates write errors and the [`LuceneError::UnsupportedOperation`] of
+    /// Propagates write errors and the [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) of
     /// [`Outputs::merge`] when the same input is added twice.
     pub fn add(&mut self, input: &IntsRef, output: O::Output) -> Result<()> {
         let outputs = self.fst.metadata.outputs.clone();
@@ -1493,7 +1493,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     ///
     /// # Errors
     ///
-    /// Propagates the [`LuceneError::UnsupportedOperation`] of
+    /// Propagates the [`LuceneErrorKind::UnsupportedOperation`] of
     /// [`Outputs::merge`] when the empty string is added twice.
     pub(crate) fn set_empty_output(&mut self, v: O::Output) -> Result<()> {
         let merged = match &self.fst.metadata.empty_output {
@@ -1515,7 +1515,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::IllegalState`] (`already finished`).
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) (`already finished`).
     pub fn finish(&mut self, new_start_node: i64) -> Result<()> {
         debug_assert!(new_start_node <= self.num_bytes_written);
         if self.fst.metadata.start_node != -1 {

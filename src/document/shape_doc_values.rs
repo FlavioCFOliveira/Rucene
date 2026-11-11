@@ -64,7 +64,7 @@ impl ShapeCoordinateSystem {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a coordinate outside the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a coordinate outside the
     /// system's valid range, exactly as the Java encoders do.
     pub fn encode_x(self, x: f64) -> Result<i32> {
         match self {
@@ -172,10 +172,10 @@ impl<'a> SliceDataInput<'a> {
     /// (`ByteArrayDataInput.java:134-137`), so the JVM's
     /// `ArrayIndexOutOfBoundsException` — `Index <pos> out of bounds for
     /// length <length>` — carried, like every `IndexOutOfBoundsException` of
-    /// this crate, by [`LuceneError::IllegalArgument`]. It is not an
+    /// this crate, by [`LuceneErrorKind::IllegalArgument`]. It is not an
     /// `IOException`, so no `catch (IOException e)` wraps it.
     fn eof(&self) -> LuceneError {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "Index {} out of bounds for length {}",
             self.pos,
             self.bytes.len()
@@ -235,7 +235,7 @@ impl DataInput for SliceDataInput<'_> {
         if self.pos + len > self.bytes.len() {
             // `System.arraycopy(bytes, pos, b, offset, len)`
             // (`ByteArrayDataInput.java:140-144`).
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "arraycopy: last source index {} out of bounds for byte[{}]",
                 self.pos + len,
                 self.bytes.len()
@@ -352,7 +352,7 @@ impl TreeNode {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a triangle whose type was
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for a triangle whose type was
     /// never resolved, which Java reports as `invalid type [...] found`.
     fn new(t: DecodedTriangle, encoder: ShapeCoordinateSystem) -> Result<Self> {
         let min_x = t.a_x.min(t.b_x).min(t.c_x);
@@ -464,7 +464,7 @@ fn build_tree(
     encoder: ShapeCoordinateSystem,
 ) -> Result<(Vec<TreeNode>, Vec<usize>)> {
     if tessellation.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "the tessellation must not be empty".to_string(),
         ));
     }
@@ -889,7 +889,7 @@ impl ShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty tessellation or a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an empty tessellation or a
     /// centroid that falls outside the coordinate system, and the errors of
     /// [`Self::from_binary_value`] when the bytes just written cannot be read
     /// back — the same `ShapeComparator` construction and `catch`
@@ -913,13 +913,13 @@ impl ShapeDocValues {
     /// value field. ", e); }` (`ShapeDocValues.java:83-92`), and any
     /// `IOException` they raise would be wrapped so, with it as the cause; but
     /// none of the failures they can raise is one, and each escapes unwrapped:
-    /// [`LuceneError::IllegalArgument`] — the JVM's
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — the JVM's
     /// `ArrayIndexOutOfBoundsException` — when the value ends before its
-    /// header does, [`LuceneError::Arithmetic`] when a coordinate read back
+    /// header does, [`LuceneErrorKind::Arithmetic`](crate::error::LuceneErrorKind::Arithmetic) when a coordinate read back
     /// does not fit an `int`: Java's `Math.toIntExact(data.readVLong() +
     /// Integer.MIN_VALUE)` (`ShapeDocValues.java:601-605, 692-693`) throwing
     /// `ArithmeticException("integer overflow")`, and
-    /// [`LuceneError::CorruptIndex`] for a dimension ordinal past the triangle
+    /// [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) for a dimension ordinal past the triangle
     /// types, where Java's `TYPE.values()[...]` throws
     /// `ArrayIndexOutOfBoundsException`.
     pub fn from_binary_value(data: BytesRef, encoder: ShapeCoordinateSystem) -> Result<Self> {
@@ -1042,7 +1042,7 @@ impl ShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the decoded centroid is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the decoded centroid is
     /// not a valid point of its coordinate system, which the Java constructors
     /// also reject.
     pub fn compute_centroid(&self) -> Result<Box<dyn Geometry>> {
@@ -1068,7 +1068,7 @@ impl ShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the decoded bounds are not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the decoded bounds are not
     /// a valid rectangle of their coordinate system.
     pub fn compute_bounding_box(&self) -> Result<Box<dyn Geometry>> {
         let encoder = self.coordinate_system();
@@ -1096,7 +1096,7 @@ impl ShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the serialised tree is
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when the serialised tree is
     /// malformed.
     pub fn relate(&self, component: &dyn Component2D) -> Result<Relation> {
         let mut reader = SliceDataInput::new(self.data.slice());
@@ -1380,7 +1380,7 @@ impl LatLonShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the decoded centroid is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the decoded centroid is
     /// not a valid latitude/longitude pair, which `new Point(...)` rejects.
     pub fn compute_centroid(&self) -> Result<Point> {
         let encoder = self.coordinate_system();
@@ -1408,7 +1408,7 @@ impl LatLonShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the decoded bounds are not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the decoded bounds are not
     /// a valid rectangle, which `new Rectangle(...)` rejects.
     pub fn compute_bounding_box(&self) -> Result<Rectangle> {
         let encoder = self.coordinate_system();
@@ -1495,7 +1495,7 @@ impl XYShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the decoded centroid is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the decoded centroid is
     /// not finite, which `new XYPoint(...)` rejects.
     pub fn compute_centroid(&self) -> Result<XYPoint> {
         let encoder = self.coordinate_system();
@@ -1523,7 +1523,7 @@ impl XYShapeDocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the decoded bounds are not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the decoded bounds are not
     /// a valid rectangle, which `new XYRectangle(...)` rejects.
     pub fn compute_bounding_box(&self) -> Result<XYRectangle> {
         let encoder = self.coordinate_system();
@@ -1662,7 +1662,7 @@ impl ShapeDocValuesField {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::IllegalState`].
+    /// Always returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState).
     pub fn new_geometry_query(field: &str) -> Result<()> {
         Err(LuceneError::illegal_state(format!(
             "geometry queries not yet supported on shape doc values for field [{field}]"
@@ -1959,6 +1959,7 @@ shape_doc_values_field_delegates!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// A value that ends inside its header fails as `ByteArrayDataInput`'s
     /// `bytes[pos++]` does, with an `ArrayIndexOutOfBoundsException` that
@@ -1973,7 +1974,10 @@ mod tests {
     fn a_truncated_shape_doc_value_escapes_unwrapped_as_in_lucene() {
         let data = BytesRef::new(vec![VERSION, 1]);
         match ShapeDocValues::from_binary_value(data, ShapeCoordinateSystem::Geographic) {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "Index 2 out of bounds for length 2");
             }
             other => panic!("expected the unwrapped index failure, got {other:?}"),
@@ -2024,7 +2028,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
             "{error:?}"
         );
     }

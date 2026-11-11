@@ -13,7 +13,7 @@ use crate::codecs::points::PointsReader;
 use crate::codecs::postings::FieldsProducer;
 use crate::codecs::stored_fields::StoredFieldsReader;
 use crate::codecs::term_vectors::TermVectorsReader;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::base_composite_reader::BaseCompositeReader;
 use crate::index::codec_reader::{final_members, CodecReader};
 use crate::index::directory_reader::DirectoryReader;
@@ -669,7 +669,9 @@ pub fn exiting_reader_error(what: &str) -> LuceneError {
 /// and the object it was iterating — `DocValues=`, `TermsEnum=`, `PointValues=`
 /// and so on. This port's message names the action only.
 fn exiting_reader_action_error(action: &str) -> LuceneError {
-    LuceneError::Other(format!("The request took too long to {action}"))
+    LuceneError::from(LuceneErrorKind::ExitingReader(format!(
+        "The request took too long to {action}"
+    )))
 }
 
 /// How many documents an [`ExitableFilterLeafReader`]-family iterator lets
@@ -884,7 +886,7 @@ impl ExitableFilterLeafReader {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when `reader` is closed, from the
+    /// [`LuceneErrorKind::AlreadyClosed`] when `reader` is closed, from the
     /// `registerParentReader` of the `FilterLeafReader` constructor.
     pub fn new(reader: Arc<dyn LeafReader>, query_timeout: Arc<dyn QueryTimeout>) -> Result<Self> {
         Ok(Self {
@@ -1931,9 +1933,9 @@ impl KnnVectorValues for ExitableFloatVectorValues {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "ExitableFloatVectorValues::copy".to_string(),
         ))
     }
@@ -1966,9 +1968,9 @@ impl FloatVectorValues for ExitableFloatVectorValues {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "ExitableFloatVectorValues::copy".to_string(),
         ))
     }
@@ -2028,9 +2030,9 @@ impl KnnVectorValues for ExitableByteVectorValues {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "ExitableByteVectorValues::copy".to_string(),
         ))
     }
@@ -2063,9 +2065,9 @@ impl ByteVectorValues for ExitableByteVectorValues {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`].
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "ExitableByteVectorValues::copy".to_string(),
         ))
     }

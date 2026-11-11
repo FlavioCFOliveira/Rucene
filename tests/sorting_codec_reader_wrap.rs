@@ -36,7 +36,7 @@ use rucene::search::{
 };
 use rucene::store::{ByteBuffersDirectory, Directory, DEFAULT_IO_CONTEXT};
 use rucene::util::BytesRef;
-use rucene::LuceneError;
+use rucene::{LuceneError, LuceneErrorKind};
 
 /// `SortingCodecReaderWrapFixture.LS`.
 const LS: [i64; 5] = [5, 3, 9, 3, 1];
@@ -190,8 +190,14 @@ fn sorts() -> Vec<Sort> {
 
 fn java_exception(error: &LuceneError) -> String {
     let message = match error {
-        LuceneError::IllegalArgument(message) => message.clone(),
-        LuceneError::IllegalState { message, .. } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => message.clone(),
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())
@@ -248,7 +254,10 @@ fn rucene_report() -> String {
                     .collect();
                 out.push_str(&format!("{label} -> {}\n", ids.join(" ")));
             }
-            Err(LuceneError::CorruptIndex(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(message),
+                ..
+            }) => {
                 out.push_str(&format!("{label} -> CorruptIndexException: {message}\n"));
             }
             Err(error) => out.push_str(&format!("{label} -> {}\n", java_exception(&error))),

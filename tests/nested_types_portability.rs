@@ -528,7 +528,7 @@ fn binary_index_sort_is_accepted_and_feature_sort_refused() {
         .expect_err("a feature sort cannot sort an index");
     assert_eq!(
         error.to_string(),
-        rucene::error::LuceneError::IllegalArgument(
+        rucene::error::LuceneError::illegal_argument(
             "Cannot sort index with sort field <feature:\"features\" featureName=pagerank>"
                 .to_string()
         )
@@ -574,7 +574,7 @@ fn binary_sorter_has_no_comparable_providers() {
         .err()
         .expect("BinarySorter does not implement getComparableProviders");
     assert!(
-        matches!(error, rucene::error::LuceneError::UnsupportedOperation(ref message)
+        matches!(error, rucene::error::LuceneError { kind: rucene::error::LuceneErrorKind::UnsupportedOperation { ref message, .. }, .. }
             if message == "org.apache.lucene.index.IndexSorter$BinarySorter does not implement \
                            getComparableProviders"),
         "{error:?}"

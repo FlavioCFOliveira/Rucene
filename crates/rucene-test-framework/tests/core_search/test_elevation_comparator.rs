@@ -339,7 +339,7 @@ impl SlotComparator for ElevationSlots {
         _doc: i32,
         _scorer: &mut dyn Scorable,
     ) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn compare_bottom(

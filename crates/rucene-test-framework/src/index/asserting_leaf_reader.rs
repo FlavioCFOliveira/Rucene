@@ -44,7 +44,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::{self, ASSERTION_ERROR};
 use randomizedtesting::jdk::thread::Thread;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::DocAndFloatFeatureBuffer;
 use rucene::index::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, Fields, FreqAndNormBuffer,
@@ -72,10 +72,8 @@ fn thread_message(object: &str, creation_thread: &Thread, current: &Thread) -> S
 pub(crate) fn assert_thread(object: &str, creation_thread: &Thread) -> Result<()> {
     let current = Thread::current();
     if *creation_thread != current {
-        return Err(LuceneError::AssertionError(thread_message(
-            object,
-            creation_thread,
-            &current,
+        return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+            thread_message(object, creation_thread, &current),
         )));
     }
     Ok(())
@@ -106,11 +104,11 @@ pub(crate) fn assert_valid(b: &BytesRef) -> Result<()> {
 /// The `NullPointerException` (no message) Java throws where it dereferences
 /// a `null` the Rust signature returns as `None`.
 pub(crate) fn npe() -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.NullPointerException",
         message: None,
         cause: None,
-    }
+    })
 }
 
 /// `Objects.checkIndex(index, length)`: `IndexOutOfBoundsException` ("Index

@@ -157,25 +157,25 @@ impl Terms for MappedMultiTerms {
     }
 
     fn size(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappedMultiTerms.size".to_string(),
         ))
     }
 
     fn sum_total_term_freq(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappedMultiTerms.getSumTotalTermFreq".to_string(),
         ))
     }
 
     fn sum_doc_freq(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappedMultiTerms.getSumDocFreq".to_string(),
         ))
     }
 
     fn doc_count(&self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "MappedMultiTerms.getDocCount".to_string(),
         ))
     }
@@ -225,7 +225,7 @@ impl MappedMultiTermsEnum {
     }
 
     fn unsupported(&self, what: &str) -> LuceneError {
-        LuceneError::UnsupportedOperation(format!(
+        LuceneError::unsupported_operation(format!(
             "{what} is not available while merging field '{}': it would ignore deleted \
              documents; derive it from the postings instead",
             self.field
@@ -296,7 +296,7 @@ impl TermsEnum for MappedMultiTermsEnum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] — Java's `ClassCastException` —
+    /// Returns [`LuceneErrorKind::IllegalState`] — Java's `ClassCastException` —
     /// when the wrapped enum answers anything but a `MultiPostingsEnum`, and
     /// propagates whatever building or resetting the postings raises.
     fn postings(
@@ -376,6 +376,7 @@ impl TermsEnum for MappedMultiTermsEnum {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::util::automaton::CompiledAutomaton;
 
     use std::collections::{BTreeMap, HashMap};
@@ -546,7 +547,7 @@ mod tests {
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-            Err(LuceneError::UnsupportedOperation("not used".to_string()))
+            Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
         fn next(&mut self) -> Result<Option<BytesRef>> {
@@ -882,8 +883,15 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         // Java throws UnsupportedOperationException from all four
         // (MappedMultiFields.java:74-92).
-        let unsupported =
-            |e: Option<LuceneError>| matches!(e, Some(LuceneError::UnsupportedOperation(_)));
+        let unsupported = |e: Option<LuceneError>| {
+            matches!(
+                e,
+                Some(LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                })
+            )
+        };
         assert!(unsupported(terms.size().err()));
         assert!(unsupported(terms.sum_total_term_freq().err()));
         assert!(unsupported(terms.sum_doc_freq().err()));
@@ -898,11 +906,17 @@ mod tests {
         assert!(enumerator.seek_exact(&term("apple")).unwrap());
         assert!(matches!(
             enumerator.doc_freq(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
         assert!(matches!(
             enumerator.total_term_freq(),
-            Err(LuceneError::UnsupportedOperation(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
         ));
     }
 
@@ -1053,7 +1067,10 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         assert!(matches!(
             terms.intersect(&compiled, None),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 

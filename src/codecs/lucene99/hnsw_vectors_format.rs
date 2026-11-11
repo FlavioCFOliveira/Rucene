@@ -30,7 +30,7 @@ use crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::vector_values::{
     ByteVectorValues, DocIndexIterator, FloatVectorValues, KnnVectorValues,
 };
@@ -907,7 +907,7 @@ impl HnswWriterState {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when this writer is already
+    /// Returns [`LuceneErrorKind::IllegalState`] when this writer is already
     /// closed, and whatever merging or writing the graph raises.
     ///
     /// Equivalent to
@@ -1688,9 +1688,9 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
     match ordinal {
         0 => Ok(VectorEncoding::BYTE),
         1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid VectorEncoding ordinal: {ordinal}"
-        ))),
+        )))),
     }
 }
 
@@ -1705,12 +1705,12 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the ordinal names no
+/// Returns [`LuceneErrorKind::IllegalArgument`] when the ordinal names no
 /// similarity function, which is the `IllegalArgumentException` Java raises.
 fn read_similarity_function(input: &mut dyn DataInput) -> Result<VectorSimilarityFunction> {
     let i = input.read_int()?;
     read_vector_similarity(i)
-        .map_err(|_| LuceneError::IllegalArgument(format!("invalid distance function: {i}")))
+        .map_err(|_| LuceneError::illegal_argument(format!("invalid distance function: {i}")))
 }
 
 fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
@@ -1719,9 +1719,9 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
         1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
         2 => Ok(VectorSimilarityFunction::COSINE),
         3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid VectorSimilarityFunction ordinal: {ordinal}"
-        ))),
+        )))),
     }
 }
 
@@ -1805,7 +1805,7 @@ impl FloatVectorValues for BufferedFloatVectorValues {
         self.vectors
             .get(ord as usize)
             .cloned()
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("ord {ord} out of range")))
+            .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
     }
 }
 
@@ -1885,7 +1885,7 @@ impl ByteVectorValues for BufferedByteVectorValues {
         self.vectors
             .get(ord as usize)
             .cloned()
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("ord {ord} out of range")))
+            .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
     }
 }
 
@@ -2122,9 +2122,9 @@ impl Lucene99HnswVectorsReader {
                 &state.segment_suffix,
             )?;
             if version_meta != version_vector_data {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-                )));
+                ))));
             }
             retrieve_checksum(input.as_mut())?;
             Ok(())
@@ -2226,9 +2226,9 @@ impl Lucene99HnswVectorsReader {
         let info = self
             .field_infos
             .field_info(field)
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("field=\"{field}\" not found")))?;
+            .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))?;
         self.fields.get(&info.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field=\"{field}\" has no vector values"))
+            LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
         })
     }
 
@@ -2239,7 +2239,7 @@ impl Lucene99HnswVectorsReader {
     ) -> Result<&FieldEntry> {
         let entry = self.get_field_entry_or_throw(field)?;
         if entry.vector_encoding != expected_encoding {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as {entry_vector_encoding:?}, expected {expected_encoding:?}",
                 entry_vector_encoding = entry.vector_encoding,
             )));
@@ -2602,7 +2602,9 @@ fn read_fields(
         let info = field_infos
             .field_info_by_number(field_number)
             .ok_or_else(|| {
-                LuceneError::CorruptIndex(format!("invalid field number: {field_number}"))
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "invalid field number: {field_number}"
+                )))
             })?;
         let entry = read_field(input, info)?;
         validate_field_entry(info, &entry)?;
@@ -2625,10 +2627,10 @@ fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry>
     let vector_encoding = read_vector_encoding(input.read_int()?)?;
     let similarity_function = read_similarity_function(input)?;
     if similarity_function != info.vector_similarity_function {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "inconsistent vector similarity function for field=\"{}\"",
             info.name
-        )));
+        ))));
     }
     FieldEntry::create(input, vector_encoding, similarity_function, info)
 }
@@ -2639,10 +2641,10 @@ fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry>
 /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#validateFieldEntry`.
 fn validate_field_entry(info: &FieldInfo, field_entry: &FieldEntry) -> Result<()> {
     if info.vector_dimension != field_entry.dimension {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "inconsistent vector dimension for field=\"{}\"",
             info.name
-        )));
+        ))));
     }
     Ok(())
 }
@@ -2671,10 +2673,10 @@ impl FieldEntry {
         // is catchable, whereas `vec![None; negative as usize]` asks for an
         // allocation of about 2^64 entries and aborts the process.
         if num_levels < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "field \"{}\" declares {num_levels} graph levels",
                 field_info.name
-            )));
+            ))));
         }
         // Grown as the levels are read rather than sized up front: one level
         // costs at least one byte of input, so a hostile count runs out of file
@@ -2687,10 +2689,10 @@ impl FieldEntry {
             if level > 0 {
                 let num_nodes = input.read_v_int()?;
                 if num_nodes < 0 {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "level {level} of field \"{}\" declares {num_nodes} nodes",
                         field_info.name
-                    )));
+                    ))));
                 }
                 number_of_offsets += i64::from(num_nodes);
                 // Java reads `nodesByLevel[level][0]` unconditionally and hits
@@ -2699,10 +2701,10 @@ impl FieldEntry {
                 // level is refused here, exactly as `OffHeapHnswGraph::seek`
                 // below refuses a level outside the graph for the same reason.
                 if num_nodes == 0 {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "level {level} of field \"{}\" declares no nodes",
                         field_info.name
-                    )));
+                    ))));
                 }
 
                 // Again grown, not pre-sized: each node is at least one byte,
@@ -2864,10 +2866,10 @@ impl HnswGraph for OffHeapHnswGraph {
         // `ArrayIndexOutOfBoundsException`, which is catchable. A Rust panic is
         // not the same thing, so the bound is checked.
         if level < 0 || level as usize >= self.nodes_by_level.len() {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "level {level} is outside the {} levels of the graph",
                 self.nodes_by_level.len()
-            )));
+            ))));
         }
         let target_index = if level == 0 {
             target
@@ -2875,7 +2877,9 @@ impl HnswGraph for OffHeapHnswGraph {
             let nodes = self.nodes_by_level[level as usize]
                 .as_ref()
                 .ok_or_else(|| {
-                    LuceneError::CorruptIndex(format!("missing nodes for level {level}"))
+                    LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                        "missing nodes for level {level}"
+                    )))
                 })?;
             let found = nodes.binary_search(&target);
             debug_assert!(
@@ -2888,18 +2892,18 @@ impl HnswGraph for OffHeapHnswGraph {
             match found {
                 Ok(idx) => idx as i32,
                 Err(_) => {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "node {target} not found on level {level}"
-                    )));
+                    ))));
                 }
             }
         };
         let offset_index =
             target_index as i64 + self.graph_level_node_index_offsets[level as usize];
         let offsets = self.offsets.as_ref().ok_or_else(|| {
-            LuceneError::CorruptIndex(
+            LuceneError::from(LuceneErrorKind::CorruptIndex(
                 "the graph has no node offsets, so no node can be sought".to_string(),
-            )
+            ))
         })?;
         // `get_checked` rather than `LongValues::get`: every term of
         // `offset_index` came off disk, and the infallible accessor answers an
@@ -2928,11 +2932,11 @@ impl HnswGraph for OffHeapHnswGraph {
             self.arc_count
         );
         if self.arc_count > max_arcs.min(self.current_neighbors_buffer.len()) {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "node {target} on level {level} claims {} neighbours, more than the {} a graph \
                  with maxConn {} can have",
                 self.arc_count, max_arcs, self.max_conn
-            )));
+            ))));
         }
         if self.arc_count > 0 {
             if self.version >= VERSION_GROUPVARINT {
@@ -2962,11 +2966,11 @@ impl HnswGraph for OffHeapHnswGraph {
                 // where it is used, so no consumer of this graph can be handed
                 // an ordinal it would index an array with.
                 if sum < 0 || sum >= self.size {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "neighbour {sum} of node {target} on level {level} is outside the {} \
                          nodes of the graph",
                         self.size
-                    )));
+                    ))));
                 }
             }
         }
@@ -3008,7 +3012,9 @@ impl HnswGraph for OffHeapHnswGraph {
             Ok(Box::new(DenseNodesIterator::new(self.size)))
         } else {
             let nodes = self.nodes_by_level[level as usize].clone().ok_or_else(|| {
-                LuceneError::CorruptIndex(format!("missing nodes for level {level}"))
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "missing nodes for level {level}"
+                )))
             })?;
             Ok(Box::new(ArrayNodesIterator::new(nodes)))
         }
@@ -3180,7 +3186,10 @@ mod tests {
         float_writer.add_value(1, vec![0.0, 1.0])?;
         float_writer.add_value(2, vec![1.0, 1.0])?;
         match writer.flush(3, None) {
-            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!(
                     "initialCapacity must be > 0 and < {}; got: 0",
@@ -3740,7 +3749,7 @@ mod tests {
             .search("float_field", &[0.0, 0.0, 0.0], &mut one, &mut all)
             .expect_err("the scorer rejects the target");
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message == "vector query dimension: 3 differs from field dimension: 2"),
             "{error:?}"
         );

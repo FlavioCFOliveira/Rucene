@@ -1061,11 +1061,11 @@ pub fn dump(path: &Path) -> Vec<String> {
 /// The `NullPointerException` Java throws where the dump dereferences a
 /// `null` the Rust signature returns as `None`.
 pub fn null_value() -> rucene::error::LuceneError {
-    rucene::error::LuceneError::Unchecked {
+    rucene::error::LuceneError::from(rucene::error::LuceneErrorKind::Unchecked {
         class: "java.lang.NullPointerException",
         message: None,
         cause: None,
-    }
+    })
 }
 
 pub fn positions(pe: &mut dyn PostingsEnum, sb: &mut String) -> rucene::error::Result<()> {
@@ -1879,27 +1879,40 @@ pub fn first_difference(a: &[u8], b: &[u8]) -> usize {
 
 /// Java's `getClass().getName()` and `getMessage()` of `e`.
 pub fn java_error_of(e: &rucene::error::LuceneError) -> (String, String) {
-    use rucene::error::LuceneError;
+    use rucene::error::{LuceneError, LuceneErrorKind};
     match e {
-        LuceneError::Unchecked { class, message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { class, message, .. },
+            ..
+        } => (
             class.to_string(),
             message.clone().unwrap_or_else(|| "null".to_string()),
         ),
-        LuceneError::CorruptIndex(m) => (
+        LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(m),
+            ..
+        } => (
             "org.apache.lucene.index.CorruptIndexException".to_string(),
             m.clone(),
         ),
-        LuceneError::AlreadyClosed { message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        } => (
             "org.apache.lucene.store.AlreadyClosedException".to_string(),
             message.clone(),
         ),
-        LuceneError::IllegalState { message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => (
             "java.lang.IllegalStateException".to_string(),
             message.clone(),
         ),
-        LuceneError::IllegalArgument(m) => {
-            ("java.lang.IllegalArgumentException".to_string(), m.clone())
-        }
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message: m, .. },
+            ..
+        } => ("java.lang.IllegalArgumentException".to_string(), m.clone()),
         other => (
             format!("rucene::{}", other.java_simple_name()),
             other.to_string(),
@@ -2140,7 +2153,9 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                                         std::panic::resume_unwind(payload);
                                     }
                                     *panics += 1;
-                                    Err(rucene::error::LuceneError::AssertionError(message))
+                                    Err(rucene::error::LuceneError::from(
+                                        rucene::error::LuceneErrorKind::AssertionError(message),
+                                    ))
                                 }
                             }
                         }

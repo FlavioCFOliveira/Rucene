@@ -23,7 +23,7 @@
 
 use std::fmt;
 
-use crate::error::LuceneError;
+use crate::error::{LuceneError, LuceneErrorKind};
 
 /// Signals that collection of the current leaf must stop early.
 ///
@@ -150,7 +150,7 @@ impl From<TimeExceededException> for CollectionError {
 
 impl From<std::io::Error> for CollectionError {
     fn from(err: std::io::Error) -> Self {
-        Self::Lucene(LuceneError::Io(err))
+        Self::Lucene(LuceneError::from(LuceneErrorKind::Io(err)))
     }
 }
 

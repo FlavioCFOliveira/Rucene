@@ -409,7 +409,7 @@ pub(crate) fn field_info_by_number(
     number: i32,
 ) -> Result<Option<&FieldInfo>> {
     if number < 0 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Illegal field number: {number}"
         )));
     }
@@ -418,6 +418,7 @@ pub(crate) fn field_info_by_number(
 
 #[cfg(test)]
 mod tests {
+    use rucene::error::LuceneErrorKind;
     use rucene::store::{ByteArrayDataInput, ByteBuffersDataOutput};
 
     use super::*;
@@ -433,14 +434,23 @@ mod tests {
     #[test]
     fn read_rejects_unknown_and_negative_field_ids() {
         let e = read(&[3]).unwrap_err();
-        assert!(matches!(&e, LuceneError::CorruptIndex { .. }), "{e:?}");
+        assert!(
+            matches!(
+                &e,
+                LuceneError {
+                    kind: LuceneErrorKind::CorruptIndex { .. },
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
         assert!(e.to_string().contains("Illegal field id= 3"), "{e}");
 
         let mut out = ByteBuffersDataOutput::new();
         out.write_v_int(-2).unwrap();
         let e = read(&out.to_array_copy().unwrap()).unwrap_err();
         assert!(
-            matches!(&e, LuceneError::IllegalArgument(m) if m == "Illegal field number: -2"),
+            matches!(&e, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "Illegal field number: -2"),
             "{e:?}"
         );
     }

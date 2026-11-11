@@ -68,7 +68,7 @@ use rucene::document::{
     Document, KnnByteVectorField, KnnFloatVectorField, NumericDocValuesField, Store, StoredField,
     StringField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::check_index::Level;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::documents_writer::BufferedUpdates;
@@ -381,7 +381,15 @@ fn assert_float_equals(expected: f32, actual: f32, delta: f32) {
 fn expect_illegal_argument<T>(runnable: impl FnOnce() -> Result<T>) -> String {
     let e = expect_throws_lucene(
         "java.lang.IllegalArgumentException",
-        |e| matches!(e, LuceneError::IllegalArgument(_)),
+        |e| {
+            matches!(
+                e,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }
+            )
+        },
         runnable,
     );
     exception_message(&e)
@@ -422,7 +430,16 @@ impl MergeScheduler for TestMergeScheduler {
             };
             match merge_source.merge(merge) {
                 Ok(()) => {}
-                Err(e @ (LuceneError::IllegalState { .. } | LuceneError::IllegalArgument(_))) => {
+                Err(
+                    e @ (LuceneError {
+                        kind: LuceneErrorKind::IllegalState { .. },
+                        ..
+                    }
+                    | LuceneError {
+                        kind: LuceneErrorKind::IllegalArgument { .. },
+                        ..
+                    }),
+                ) => {
                     *self.ex.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
                     break;
                 }
@@ -775,14 +792,14 @@ pub trait BaseKnnVectorsFormatTestCase: BaseIndexFileFormatTestCase {
     ///
     /// The base throws `Exception`.
     fn simulate_empty_raw_vectors(&self, _dir: &dyn Directory) -> Result<()> {
-        Err(LuceneError::Unchecked {
+        Err(LuceneError::from(LuceneErrorKind::Unchecked {
             class: "java.lang.Exception",
             message: Some(
                 "simulateEmptyRawVectors must be implemented by codecs that support FloatVector fallback"
                     .to_string(),
             ),
             cause: None,
-        })
+        }))
     }
 
     /// `@Before init()`.
@@ -3222,7 +3239,7 @@ pub enum AddIndexesHow {
 /// `Codec.forName(name)`.
 fn codec_for_name(name: &str) -> Result<Arc<dyn Codec>> {
     rucene::codecs::for_name(name).ok_or_else(|| {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "An SPI class of type org.apache.lucene.codecs.Codec with name '{name}' does not exist."
         ))
     })

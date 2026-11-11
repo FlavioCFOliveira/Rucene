@@ -34,7 +34,7 @@ use crate::codecs::compressing::{
 use crate::codecs::lucene90::stored_fields::{FieldsIndex, FieldsIndexReader, FieldsIndexWriter};
 use crate::codecs::stub::{FieldInfo, FieldInfos, SegmentInfo};
 use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVectorsWriter};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::leaf_reader::TermVectors;
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::terms::{Fields, SeekStatus, TermState, Terms, TermsEnum};
@@ -188,14 +188,14 @@ impl Lucene90CompressingTermVectorsFormat {
         block_shift: i32,
     ) -> Result<Self> {
         if chunk_size < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "chunkSize must be >= 1".to_string(),
             ));
         }
         // Java checks no lower bound on `maxDocsPerChunk`
         // (`Lucene90CompressingTermVectorsFormat.java:81-89`).
         if block_shift < 1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "blockSize must be >= 1".to_string(),
             ));
         }
@@ -774,7 +774,7 @@ impl Lucene90CompressingTermVectorsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when a chunk header disagrees with
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when a chunk header disagrees with
     /// the term-vectors index, and propagates any I/O error.
     ///
     /// Equivalent to
@@ -839,9 +839,9 @@ impl Lucene90CompressingTermVectorsWriter {
                 // read header
                 let base = raw_docs.read_v_int()?;
                 if base != doc_id {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "invalid state: base={base}, docID={doc_id}"
-                    )));
+                    ))));
                 }
 
                 let code = raw_docs.read_v_int()?;
@@ -855,9 +855,9 @@ impl Lucene90CompressingTermVectorsWriter {
                 doc_id += buffered_docs;
                 self.num_docs += buffered_docs;
                 if doc_id > to_doc_id {
-                    return Err(LuceneError::CorruptIndex(format!(
+                    return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                         "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
-                    )));
+                    ))));
                 }
 
                 // copy bytes until the next chunk boundary (or end of chunk data).
@@ -1625,9 +1625,9 @@ fn remaining(input: &dyn IndexInput) -> i64 {
 fn checked_block_len(what: &str, length: i64, input: &dyn IndexInput) -> Result<usize> {
     let available = remaining(input);
     if length < 0 || length > available {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "{what} claims {length} bytes, but only {available} remain in the term-vectors stream"
-        )));
+        ))));
     }
     Ok(length as usize)
 }
@@ -1643,10 +1643,10 @@ fn checked_count(what: &str, count: i64, available: i64) -> Result<usize> {
         .saturating_mul(MAX_VALUES_PER_BYTE)
         .min(i64::from(i32::MAX));
     if count < 0 || count > ceiling {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "{what} claims {count} values, which the {available} remaining bytes of the \
              term-vectors stream cannot encode"
-        )));
+        ))));
     }
     Ok(count as usize)
 }
@@ -1678,10 +1678,10 @@ fn at(what: &str, values: &[i32], index: i32) -> Result<i32> {
         .ok()
         .and_then(|index| values.get(index).copied())
         .ok_or_else(|| {
-            LuceneError::CorruptIndex(format!(
+            LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "{what} index {index} is outside the {} values the chunk holds",
                 values.len()
-            ))
+            )))
         })
 }
 
@@ -1840,19 +1840,19 @@ impl Lucene90CompressingTermVectorsReader {
             let num_dirty_docs = meta_in.read_v_long()?;
 
             if num_chunks < num_dirty_chunks {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Cannot have more dirty chunks than chunks: numChunks={num_chunks}, numDirtyChunks={num_dirty_chunks}"
-            )));
+            ))));
             }
             if (num_dirty_chunks == 0) != (num_dirty_docs == 0) {
-                return Err(LuceneError::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                     "Cannot have dirty chunks without dirty docs or vice-versa".to_string(),
-                ));
+                )));
             }
             if num_dirty_docs < num_dirty_chunks {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Cannot have more dirty chunks than documents within dirty chunks: numDirtyChunks={num_dirty_chunks}, numDirtyDocs={num_dirty_docs}"
-            )));
+            ))));
             }
 
             check_footer(meta_in.as_mut())?;
@@ -2076,10 +2076,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             || i64::from(doc) >= chunk_end
             || chunk_end > i64::from(self.num_docs)
         {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "docBase={doc_base}, chunkDocs={chunk_docs}, doc={doc}, numDocs={}",
                 self.num_docs
-            )));
+            ))));
         }
         let chunk_docs = chunk_docs as i32;
         *self.block_state.lock().unwrap() = BlockState {
@@ -2134,10 +2134,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             return Ok(None);
         }
         if num_fields < 0 || skip < 0 || total_fields < skip + num_fields {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "the chunk claims {total_fields} fields but the document at {doc} needs \
                  {skip} + {num_fields}"
-            )));
+            ))));
         }
 
         // Read field numbers.
@@ -2171,9 +2171,9 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             field_nums.push(it.next()? as i32);
         }
         if field_nums.is_empty() {
-            return Err(LuceneError::CorruptIndex(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                 "a term-vector chunk with fields must name at least one of them".to_string(),
-            ));
+            )));
         }
 
         // Read field num offsets and flags.
@@ -2228,9 +2228,9 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                 }
             }
             _ => {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "Invalid flags mode: {flags_mode}"
-                )))
+                ))))
             }
         };
         let flags = |idx: i32| -> i32 {
@@ -2249,9 +2249,9 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         for i in 0..total_fields as i64 {
             let count = num_terms_reader.get_checked(i)?;
             if count < 0 || count > i64::from(i32::MAX) {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "field {i} of the chunk claims {count} terms"
-                )));
+                ))));
             }
             num_terms_per_field.push(count as i32);
             total_terms = total_terms.saturating_add(count);
@@ -2324,9 +2324,9 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                 for &value in next {
                     let freq = value.saturating_add(1);
                     if freq < 1 {
-                        return Err(LuceneError::CorruptIndex(format!(
+                        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                             "term {i} of the chunk claims a frequency of {freq}"
-                        )));
+                        ))));
                     }
                     total_freqs = total_freqs.saturating_add(freq);
                     term_freqs[i] = checked_count("a term frequency", freq, available)? as i32;
@@ -2571,10 +2571,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             || payload_len < 0
             || block_offset + block_length > original_length
         {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "the chunk claims {doc_len} term bytes at {doc_off} and {payload_len} payload \
                  bytes at {payload_off} of a {original_length}-byte block"
-            )));
+            ))));
         }
         // `doc_len` is a wrapping sum of `field_lengths`, so checking it alone
         // is not enough: a negative entry hidden by a positive sibling keeps the
@@ -2582,10 +2582,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
         // per-field prefix sum to place each field's window inside the
         // decompressed block. The same masking pattern, one level down.
         if let Some(bad) = field_lengths.iter().position(|length| *length < 0) {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "field {bad} of the document claims {} term bytes",
                 field_lengths[bad]
-            )));
+            ))));
         }
         let mut suffix_bytes = BytesRef::default();
         let mut decompressor = self.decompressor.lock().unwrap();
@@ -2972,10 +2972,10 @@ impl Fields for TVFields {
         debug_assert!(field_len >= 0);
         let block_len = self.suffix_bytes.length as i64;
         if field_off < 0 || field_len < 0 || field_off + field_len > block_len {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "field {field} claims {field_len} term bytes at {field_off} of a \
                  {block_len}-byte block"
-            )));
+            ))));
         }
         Ok(Some(Box::new(TVTerms {
             num_terms: self.field_num_terms[idx],
@@ -3133,12 +3133,12 @@ impl TVTermsEnum {
             .checked_add(term_bytes.length)
             .filter(|end| *end <= term_bytes.bytes.len())
             .ok_or_else(|| {
-                LuceneError::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "a field window of {} bytes at {} is outside the {}-byte decompressed block",
                     term_bytes.length,
                     term_bytes.offset,
                     term_bytes.bytes.len()
-                ))
+                )))
             })?;
         let start_pos = term_bytes.offset;
         Ok(Self {
@@ -3226,13 +3226,13 @@ impl TermsEnum for TVTermsEnum {
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "seek_ord not supported by TVTermsEnum".to_string(),
         ))
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "seek_term_state not supported by TVTermsEnum".to_string(),
         ))
     }
@@ -3242,7 +3242,7 @@ impl TermsEnum for TVTermsEnum {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "ord not supported by TVTermsEnum".to_string(),
         ))
     }
@@ -3293,7 +3293,7 @@ impl TermsEnum for TVTermsEnum {
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "term_state not supported by TVTermsEnum".to_string(),
         ))
     }
@@ -3313,10 +3313,10 @@ impl TermsEnum for TVTermsEnum {
         let prefix = self.prefix_lengths[self.ord as usize];
         let suffix = self.suffix_lengths[self.ord as usize];
         if prefix < 0 || suffix < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "term {} of the field has a prefix of {prefix} and a suffix of {suffix}",
                 self.ord
-            )));
+            ))));
         }
         let prefix = prefix as usize;
         let suffix = suffix as usize;
@@ -3325,17 +3325,17 @@ impl TermsEnum for TVTermsEnum {
         // term can be longer than what is left of it.
         let available = self.input_limit.saturating_sub(self.input_pos);
         if suffix > available {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "term {} of the field claims a {suffix}-byte suffix, but only {available} bytes \
                  of the decompressed block remain",
                 self.ord
-            )));
+            ))));
         }
         if new_len > MAX_TERM_LENGTH {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "term {} of the field is {new_len} bytes, above the {MAX_TERM_LENGTH}-byte maximum",
                 self.ord
-            )));
+            ))));
         }
         if self.term.bytes.len() < new_len {
             self.term.bytes.resize(new_len, 0);
@@ -3489,10 +3489,10 @@ impl PostingsEnum for TVPostingsEnum {
             // reported.
             let slot = (self.position_index + self.i) as usize;
             let (Some(&from), Some(&to)) = (idx.get(slot), idx.get(slot + 1)) else {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "payload {slot} is outside the {} entries of the payload index",
                     idx.len()
-                )));
+                ))));
             };
             let base = self.payload_bytes.offset;
             let end = self.payload_bytes.offset + self.payload_bytes.length;
@@ -3501,10 +3501,10 @@ impl PostingsEnum for TVPostingsEnum {
                 || base + to as usize > end
                 || end > self.payload_bytes.bytes.len()
             {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "payload {slot} spans [{from}, {to}) of a {}-byte payload buffer",
                     self.payload_bytes.length
-                )));
+                ))));
             }
             self.payload.offset = base + from as usize;
             self.payload.length = (to - from) as usize;
@@ -5604,7 +5604,13 @@ mod tests {
         let mut reader = concrete_tv_merge_source(&dir, &source);
         assert_eq!(reader.index_reader.get_block_id(0).unwrap(), -1);
         reader.prefetch(0).unwrap();
-        assert!(matches!(reader.get(0), Err(LuceneError::CorruptIndex(_))));
+        assert!(matches!(
+            reader.get(0),
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(_),
+                ..
+            })
+        ));
     }
 
     /// `prefetch` asks the `.tvd` input for the whole block that holds the
@@ -5746,7 +5752,13 @@ mod close_family_tests {
         let before = log.closed().len();
         let error = format.vectors_reader(&*dir, &info, &fis, ctx).unwrap_err();
         assert!(
-            matches!(error, crate::error::LuceneError::CorruptIndex(_)),
+            matches!(
+                error,
+                crate::error::LuceneError {
+                    kind: crate::error::LuceneErrorKind::CorruptIndex(_),
+                    ..
+                }
+            ),
             "{error:?}"
         );
         assert_eq!(log.closed()[before..], ["_0.tvx", "_0.tvd", "_0.tvm"]);

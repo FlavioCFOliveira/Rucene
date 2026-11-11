@@ -628,7 +628,7 @@ impl NeighborQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] with Java's message when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with Java's message when
     /// `initial_size` is not in `1..ArrayUtil.MAX_ARRAY_LENGTH`, where the
     /// `TernaryLongHeap` constructor throws `IllegalArgumentException`
     /// (`TernaryLongHeap.java:55-63`).
@@ -636,7 +636,7 @@ impl NeighborQueue {
         // `TernaryLongHeap::new` takes a `usize`; a negative size is rejected
         // here with the message Java's heap gives for it.
         if initial_size < 1 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "initialCapacity must be > 0 and < {}; got: {initial_size}",
                 crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
             )));
@@ -776,6 +776,7 @@ impl NeighborQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     #[test]
     fn neighbor_queue_min_heap_ordering() {
@@ -865,7 +866,10 @@ mod tests {
     #[test]
     fn neighbor_queue_rejects_a_zero_initial_size() {
         match NeighborQueue::new(0, false) {
-            Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!(
                     "initialCapacity must be > 0 and < {}; got: 0",

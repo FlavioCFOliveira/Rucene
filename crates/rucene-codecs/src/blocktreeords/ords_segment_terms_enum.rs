@@ -1001,7 +1001,7 @@ impl TermsEnum for OrdsSegmentTermsEnum {
     /// Port of `seekExact(long)`.
     fn seek_ord(&mut self, target_ord: i64) -> Result<()> {
         if target_ord < 0 || target_ord >= self.fr.data.num_terms {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "targetOrd out of bounds (got: {target_ord}, numTerms={})",
                 self.fr.data.num_terms
             )));

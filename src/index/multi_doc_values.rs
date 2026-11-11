@@ -266,7 +266,7 @@ impl MultiDocValues {
     /// # Errors
     ///
     /// Propagates any error raised while reading a leaf's doc values, and
-    /// returns [`LuceneError::IllegalState`] if a leaf reports the field on one
+    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if a leaf reports the field on one
     /// call and not on the next.
     pub fn get_sorted_values(
         reader: &Arc<dyn IndexReader>,
@@ -378,7 +378,7 @@ impl MultiDocValues {
     /// # Errors
     ///
     /// Propagates any error raised while reading a leaf's doc values, and
-    /// returns [`LuceneError::IllegalState`] if a leaf reports the field on one
+    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if a leaf reports the field on one
     /// call and not on the next.
     pub fn get_sorted_set_values(
         reader: &Arc<dyn IndexReader>,
@@ -1330,7 +1330,7 @@ impl SortedSetDocValues for MultiSortedSetDocValues {
 /// Equivalent to the `IllegalArgumentException("can only advance beyond current
 /// document: ...")` raised by every `MultiDocValues` iterator.
 fn advance_backwards(doc_id: i32, target: i32) -> LuceneError {
-    LuceneError::IllegalArgument(format!(
+    LuceneError::illegal_argument(format!(
         "can only advance beyond current document: on docID={doc_id} but targetDocID={target}"
     ))
 }
@@ -1339,7 +1339,7 @@ fn advance_backwards(doc_id: i32, target: i32) -> LuceneError {
 ///
 /// Equivalent to `IllegalArgumentException("Out of range: " + targetDocID)`.
 fn out_of_range(target: i32) -> LuceneError {
-    LuceneError::IllegalArgument(format!("Out of range: {target}"))
+    LuceneError::illegal_argument(format!("Out of range: {target}"))
 }
 
 /// Message used when a per-document accessor is called while unpositioned.
@@ -1360,6 +1360,7 @@ fn no_current(kind: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
@@ -1636,7 +1637,7 @@ mod tests {
             self.terms
                 .get(ord as usize)
                 .map(|t| BytesRef::new(t.as_bytes().to_vec()))
-                .ok_or_else(|| LuceneError::IllegalArgument(format!("ord {ord} out of range")))
+                .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
         }
     }
 
@@ -1699,7 +1700,7 @@ mod tests {
             self.terms
                 .get(ord as usize)
                 .map(|t| BytesRef::new(t.as_bytes().to_vec()))
-                .ok_or_else(|| LuceneError::IllegalArgument(format!("ord {ord} out of range")))
+                .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
         }
 
         fn get_value_count(&self) -> Result<i64> {
@@ -2314,11 +2315,17 @@ mod tests {
         assert_eq!(values.advance(2).unwrap(), 2);
         assert!(matches!(
             values.advance(2),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(matches!(
             values.advance(1),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -2400,7 +2407,10 @@ mod tests {
         assert!(values.advance_exact(2).unwrap());
         assert!(matches!(
             values.advance_exact(1),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(
             values.advance_exact(2).is_ok(),
@@ -2417,7 +2427,10 @@ mod tests {
         assert_eq!(values.doc_id(), -1);
         assert!(matches!(
             values.long_value(),
-            Err(LuceneError::IllegalState { .. })
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            })
         ));
     }
 
@@ -2572,7 +2585,10 @@ mod tests {
         assert_eq!(text(&values.binary_value().unwrap()), "c");
         assert!(matches!(
             values.advance(5),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -2855,7 +2871,7 @@ mod tests {
             .unwrap();
         let err = values.advance_exact(4).unwrap_err();
         assert!(
-            matches!(&err, LuceneError::IllegalArgument(m) if m.contains("Out of range")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m.contains("Out of range")),
             "unexpected error: {err:?}"
         );
     }
@@ -2869,7 +2885,10 @@ mod tests {
         assert_eq!(values.next_doc().unwrap(), 0);
         assert!(matches!(
             values.advance(0),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -3026,7 +3045,7 @@ mod tests {
             .unwrap();
         let err = values.advance_exact(4).unwrap_err();
         assert!(
-            matches!(&err, LuceneError::IllegalArgument(m) if m.contains("Out of range")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m.contains("Out of range")),
             "unexpected error: {err:?}"
         );
     }
@@ -3116,7 +3135,10 @@ mod tests {
         // advance-backwards guard fires afterwards, exactly as in Java.
         assert!(matches!(
             values.advance_exact(11),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 

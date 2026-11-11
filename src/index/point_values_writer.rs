@@ -86,7 +86,7 @@
 //!   `IndexingChain::write_points`), so the same two calls would silently
 //!   write a second `.kdm` entry for one field, or append values that no
 //!   segment will ever carry. [`PointValuesWriter`] therefore holds a
-//!   `flushed` flag and answers both with [`LuceneError::IllegalState`]. It is
+//!   `flushed` flag and answers both with [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState). It is
 //!   a divergence in the *error surface* only: no caller that follows Lucene's
 //!   own lifecycle can reach it, and the states it refuses are exactly the
 //!   states Java makes unreachable.
@@ -271,10 +271,10 @@ impl PointValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value` is not exactly
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `value` is not exactly
     /// `pointDimensionCount * pointNumBytes` bytes long — Lucene's
     /// `IllegalArgumentException` for the same case — and
-    /// [`LuceneError::IllegalState`] when the field has already been flushed.
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been flushed.
     pub fn add_packed_value(&mut self, doc_id: i32, value: &BytesRef) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::illegal_state(format!(
@@ -283,7 +283,7 @@ impl PointValuesWriter {
             )));
         }
         if value.length != self.packed_bytes_length {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{}\": this field's value has length={} but should be {}",
                 self.field_info.name, value.length, self.packed_bytes_length
             )));
@@ -318,7 +318,7 @@ impl PointValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field is not a
     /// single-dimension four-byte point field, and whatever reading the cursor
     /// raises.
     pub fn add_dense_1d_int_values(
@@ -356,7 +356,7 @@ impl PointValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field is not a
     /// single-dimension eight-byte point field, and whatever reading the cursor
     /// raises.
     pub fn add_dense_1d_long_values(
@@ -433,7 +433,7 @@ impl PointValuesWriter {
         if self.field_info.point_dimension_count != 1
             || self.field_info.point_num_bytes != byte_width
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field={}: 1D dense path requires pointDimensionCount=1 and pointNumBytes={} , \
                  got pointDimensionCount={} pointNumBytes={}",
                 self.field_info.name,
@@ -455,8 +455,8 @@ impl PointValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
-    /// flushed, and [`LuceneError::IllegalArgument`] when the range does not
+    /// Returns [`LuceneErrorKind::IllegalState`] when the field has already been
+    /// flushed, and [`LuceneErrorKind::IllegalArgument`] when the range does not
     /// start after the last document written.
     fn reserve_dense_range(&mut self, first_doc_id: i32, size: i32) -> Result<i64> {
         debug_assert!(
@@ -471,7 +471,7 @@ impl PointValuesWriter {
             )));
         }
         if first_doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{}\": firstDocID={first_doc_id} must be > lastDocID={}",
                 self.field_info.name, self.last_doc_id
             )));
@@ -568,7 +568,7 @@ impl PointValuesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field has already been
     /// flushed — writing it twice would put two entries for one field into the
     /// same `.kdm`. Otherwise propagates whatever the codec raises while
     /// writing the field.
@@ -722,7 +722,7 @@ impl PointsReader for BufferedPointsReader {
     /// whose message Java words as "fieldName must be the same".
     fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
         if field != self.field_name {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "fieldName must be the same: asked for \"{field}\" but this reader serves \"{}\"",
                 self.field_name
             )));
@@ -980,6 +980,7 @@ impl IntersectVisitor for CollectingPointVisitor {
 mod tests {
     use super::*;
     use crate::codecs::points::PointsReader;
+    use crate::error::LuceneErrorKind;
 
     /// A points writer that accepts every field and writes nothing.
     #[derive(Debug)]
@@ -1162,7 +1163,10 @@ mod tests {
             .add_packed_value(0, &packed(&[0, 0, 0]))
             .expect_err("a short value would shift every later value");
         match error {
-            LuceneError::IllegalArgument(message) => {
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            } => {
                 assert!(message.contains("has length=3"), "{message}");
                 assert!(message.contains("should be 4"), "{message}");
             }
@@ -1347,14 +1351,26 @@ mod tests {
             .flush(&mut points_writer, None)
             .expect_err("two entries for one field would corrupt the .kdm");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
         let error = writer
             .add_packed_value(1, &packed(&[0, 0, 0, 2]))
             .expect_err("a value added after the flush would be lost");
         assert!(
-            matches!(error, LuceneError::IllegalState { .. }),
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }
@@ -1405,7 +1421,10 @@ mod tests {
         assert_eq!(values.num_dimensions().unwrap(), 1);
         assert_eq!(values.bytes_per_dimension().unwrap(), 4);
         match reader.get_values("other") {
-            Err(LuceneError::IllegalArgument(_)) => {}
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }) => {}
             Err(other) => panic!("expected IllegalArgument, got {other:?}"),
             Ok(_) => panic!("Lucene refuses any other field name"),
         }

@@ -104,7 +104,7 @@ pub trait NumericDocValues: DocValuesIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `size` is negative or if the
+    /// Returns `LuceneErrorKind::IllegalArgument` if `size` is negative or if the
     /// provided slices are too short for the requested offsets and size.
     fn long_values(
         &mut self,
@@ -116,18 +116,18 @@ pub trait NumericDocValues: DocValuesIterator {
         default_value: i64,
     ) -> Result<()> {
         if size < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "size must be >= 0, got {size}"
             )));
         }
         let size = size as usize;
         if docs.len() < docs_offset as usize + size {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "docs buffer too small for requested size/offset".to_string(),
             ));
         }
         if values.len() < values_offset as usize + size {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "values buffer too small for requested size/offset".to_string(),
             ));
         }
@@ -625,7 +625,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] naming the actual and the expected
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) naming the actual and the expected
     /// types, as Java's `IllegalStateException` does.
     pub fn check_field(
         reader: &dyn LeafReader,
@@ -655,7 +655,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_numeric(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn NumericDocValues>> {
         match reader.get_numeric_doc_values(field)? {
@@ -674,7 +674,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_binary(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn BinaryDocValues>> {
         match reader.get_binary_doc_values(field)? {
@@ -693,7 +693,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_sorted(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn SortedDocValues>> {
         match reader.get_sorted_doc_values(field)? {
@@ -713,7 +713,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_sorted_numeric(
         reader: &dyn LeafReader,
@@ -742,7 +742,7 @@ impl DocValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the field exists with another
     /// doc-values type, and propagates any I/O error.
     pub fn get_sorted_set(
         reader: &dyn LeafReader,
@@ -1643,7 +1643,7 @@ impl SortedSetDocValues for FilterSortedSetDocValues {
 /// (`index/EmptyDocValuesProducer.java:22-70`). Every member throws
 /// `UnsupportedOperationException` there: the class only exists so that an
 /// anonymous subclass overrides the one getter it serves. Here every member
-/// returns [`LuceneError::UnsupportedOperation`] for the same reason; a Rust
+/// returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for the same reason; a Rust
 /// producer that serves one kind of values implements [`DocValuesProducer`]
 /// itself.
 #[derive(Debug, Default, Clone, Copy)]
@@ -1652,7 +1652,7 @@ pub struct EmptyDocValuesProducer;
 impl EmptyDocValuesProducer {
     /// The `UnsupportedOperationException` every member throws.
     fn unsupported(method: &str) -> LuceneError {
-        LuceneError::UnsupportedOperation(format!("EmptyDocValuesProducer.{method}"))
+        LuceneError::unsupported_operation(format!("EmptyDocValuesProducer.{method}"))
     }
 }
 
@@ -1662,7 +1662,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         let values: Result<Box<dyn NumericDocValues>> = { Err(Self::unsupported("getNumeric")) };
         Ok(Some(values?))
@@ -1673,7 +1673,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
         let values: Result<Box<dyn BinaryDocValues>> = { Err(Self::unsupported("getBinary")) };
         Ok(Some(values?))
@@ -1684,7 +1684,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         let values: Result<Box<dyn SortedDocValues>> = { Err(Self::unsupported("getSorted")) };
         Ok(Some(values?))
@@ -1695,7 +1695,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_sorted_numeric(
         &self,
         _field: &FieldInfo,
@@ -1710,7 +1710,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         let values: Result<Box<dyn SortedSetDocValues>> =
             { Err(Self::unsupported("getSortedSet")) };
@@ -1722,7 +1722,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         Err(Self::unsupported("getSkipper"))
     }
@@ -1732,7 +1732,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn check_integrity(&self) -> Result<()> {
         Err(Self::unsupported("checkIntegrity"))
     }
@@ -1748,7 +1748,7 @@ impl DocValuesProducer for EmptyDocValuesProducer {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`].
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     fn close(&mut self) -> Result<()> {
         Err(Self::unsupported("close"))
     }
@@ -1847,7 +1847,7 @@ impl OrdinalMap {
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
         if subs.len() != weights.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "subs and weights must have the same length".to_string(),
             ));
         }
@@ -2347,7 +2347,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         let value_count = self.values.get_value_count()? as i64;
         debug_assert!(ord >= 0 && ord < value_count);
         if ord < 0 || ord >= value_count {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "ord {ord} out of range [0, {value_count})"
             )));
         }
@@ -2366,13 +2366,13 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "docFreq not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "totalTermFreq not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
@@ -2382,13 +2382,13 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "postings not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "impacts not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
@@ -2399,7 +2399,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
             .as_any()
             .downcast_ref::<OrdTermState>()
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("state must be an OrdTermState".to_string())
+                LuceneError::illegal_argument("state must be an OrdTermState".to_string())
             })?;
         self.seek_ord(state.ord)
     }
@@ -2500,7 +2500,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         let value_count = self.values.get_value_count()?;
         debug_assert!(ord >= 0 && ord < value_count);
         if ord < 0 || ord >= value_count {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "ord {ord} out of range [0, {value_count})"
             )));
         }
@@ -2519,13 +2519,13 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "docFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "totalTermFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
@@ -2535,13 +2535,13 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "postings not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "impacts not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
@@ -2552,7 +2552,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
             .as_any()
             .downcast_ref::<OrdTermState>()
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("state must be an OrdTermState".to_string())
+                LuceneError::illegal_argument("state must be an OrdTermState".to_string())
             })?;
         self.seek_ord(state.ord)
     }
@@ -2805,7 +2805,7 @@ mod tests {
 
         fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
             if ord < 0 || ord as usize >= self.dictionary.len() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "ordinal {ord} out of range [0, {})",
                     self.dictionary.len()
                 )));
@@ -2999,7 +2999,7 @@ mod tests {
 
         fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
             if ord < 0 || ord as usize >= self.dictionary.len() {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "ordinal {ord} out of range [0, {})",
                     self.dictionary.len()
                 )));
@@ -3252,10 +3252,16 @@ mod tests {
     /// none hands out values.
     fn empty_doc_values_producer_is_unsupported_throughout() {
         use crate::codecs::doc_values::DocValuesProducer;
-        use crate::error::LuceneError;
+        use crate::error::{LuceneError, LuceneErrorKind};
 
         fn unsupported<T>(result: Result<T>) -> bool {
-            matches!(result, Err(LuceneError::UnsupportedOperation(_)))
+            matches!(
+                result,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                })
+            )
         }
 
         let producer = EmptyDocValuesProducer;

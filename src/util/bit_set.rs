@@ -96,7 +96,7 @@ pub trait BitSet: Bits + Accountable + std::fmt::Display {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the iterator is already
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the iterator is already
     /// positioned, and propagates iteration errors.
     fn or(&mut self, iter: &mut dyn DocIdSetIterator) -> Result<()> {
         check_unpositioned(iter)?;
@@ -143,7 +143,7 @@ pub trait BitSet: Bits + Accountable + std::fmt::Display {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalState`] when `iter.doc_id() != -1`, which is
+/// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when `iter.doc_id() != -1`, which is
 /// Java's `IllegalStateException`.
 pub fn check_unpositioned(iter: &dyn DocIdSetIterator) -> Result<()> {
     if iter.doc_id() != -1 {
@@ -531,10 +531,10 @@ impl BitSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `cost` is negative.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `cost` is negative.
     pub fn new(bits: Arc<dyn BitSet>, cost: i64) -> Result<Self> {
         if cost < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cost must be >= 0, got {cost}"
             )));
         }
@@ -683,16 +683,16 @@ impl DocBaseBitSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `cost` is negative or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `cost` is negative or
     /// `doc_base` is not a multiple of 64.
     pub fn new(bits: Arc<FixedBitSet>, cost: i64, doc_base: i32) -> Result<Self> {
         if cost < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cost must be >= 0, got {cost}"
             )));
         }
         if (doc_base & 63) != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "docBase need to be a multiple of 64, got {doc_base}"
             )));
         }
@@ -776,7 +776,7 @@ impl FixedBits {
     ///
     /// # Errors
     ///
-    /// Returns the [`LuceneError::IllegalArgument`] of
+    /// Returns the [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) of
     /// [`FixedBitSet::from_bits`] when `bits` is too short for `length`.
     pub fn new(bits: Vec<u64>, length: usize) -> Result<Self> {
         Ok(Self::from_bit_set(FixedBitSet::from_bits(bits, length)?))

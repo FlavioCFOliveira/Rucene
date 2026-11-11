@@ -1,6 +1,6 @@
 //! Port of `org.apache.lucene.util.fst.ReverseBytesReader`.
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::DataInput;
 
 use super::fst::BytesReader;
@@ -14,7 +14,7 @@ use super::fst::BytesReader;
 ///
 /// * The position is an `i64` rather than an `int`. Reading the byte at
 ///   position `0` leaves the position at `-1`, which is legal; reading again
-///   reports [`LuceneError::CorruptIndex`] where Lucene raises an
+///   reports [`LuceneErrorKind::CorruptIndex`] where Lucene raises an
 ///   `ArrayIndexOutOfBoundsException`.
 pub struct ReverseBytesReader<B> {
     bytes: B,
@@ -41,10 +41,10 @@ impl<B: AsRef<[u8]>> ReverseBytesReader<B> {
     }
 
     fn out_of_bounds(&self, pos: i64) -> LuceneError {
-        LuceneError::CorruptIndex(format!(
+        LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "FST read position {pos} is outside the {} available bytes",
             self.bytes.as_ref().len()
-        ))
+        )))
     }
 
     fn next(&mut self) -> Result<u8> {

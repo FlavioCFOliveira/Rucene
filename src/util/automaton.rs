@@ -285,7 +285,7 @@ mod tests {
             &mut self,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(crate::error::LuceneError::UnsupportedOperation(
+            Err(crate::error::LuceneError::unsupported_operation(
                 "impacts not supported".to_string(),
             ))
         }
@@ -385,7 +385,7 @@ mod tests {
             &mut self,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(crate::error::LuceneError::UnsupportedOperation(
+            Err(crate::error::LuceneError::unsupported_operation(
                 "impacts not supported".to_string(),
             ))
         }

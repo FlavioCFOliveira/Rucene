@@ -16,6 +16,7 @@ use std::{
 use crate::{
     error::LuceneError,
     util::{Accountable, ArrayUtil, StrictStringTokenizer},
+    LuceneErrorKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -104,11 +105,11 @@ impl LongBitSet {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `num_bits` is negative or
+    /// Returns `LuceneErrorKind::IllegalArgument` if `num_bits` is negative or
     /// exceeds [`Self::MAX_NUM_BITS`].
     pub fn bits2words(num_bits: i64) -> Result<i32, LuceneError> {
         if !(0..=Self::MAX_NUM_BITS).contains(&num_bits) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBits must be 0 .. {}; got: {}",
                 Self::MAX_NUM_BITS,
                 num_bits
@@ -121,7 +122,7 @@ impl LongBitSet {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `num_bits` is out of range.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `num_bits` is out of range.
     pub fn new(num_bits: i64) -> Result<Self, LuceneError> {
         let num_words = Self::bits2words(num_bits)?;
         Ok(Self {
@@ -150,7 +151,7 @@ impl LongBitSet {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` when `num_bits` is out of the
+    /// Returns `LuceneErrorKind::IllegalArgument` when `num_bits` is out of the
     /// range [`bits2words`](Self::bits2words) accepts.
     pub fn ensure_capacity(bits: LongBitSet, num_bits: i64) -> Result<LongBitSet, LuceneError> {
         if num_bits < bits.num_bits {
@@ -173,11 +174,11 @@ impl LongBitSet {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the buffer is too small.
+    /// Returns `LuceneErrorKind::IllegalArgument` if the buffer is too small.
     pub fn from_bits(stored_bits: Vec<i64>, num_bits: i64) -> Result<Self, LuceneError> {
         let num_words = Self::bits2words(num_bits)?;
         if (num_words as usize) > stored_bits.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "The given long array is too small to hold {} bits",
                 num_bits
             )));
@@ -628,7 +629,7 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
     /// Creates an empty priority queue of the configured size.
     pub fn new(max_size: usize, comparator: C) -> Result<Self, LuceneError> {
         if max_size >= ArrayUtil::MAX_ARRAY_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxSize must be >= 0 and < {}; got: {}",
                 ArrayUtil::MAX_ARRAY_LENGTH,
                 max_size
@@ -1219,27 +1220,27 @@ impl Version {
         // NOTE: do not enforce major version so we remain future proof, except to
         // make sure it fits in the 8 bits we encode it into:
         if !(0..=255).contains(&major) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal major version: {major}"
             )));
         }
         if !(0..=255).contains(&minor) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal minor version: {minor}"
             )));
         }
         if !(0..=255).contains(&bugfix) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal bugfix version: {bugfix}"
             )));
         }
         if !(0..=2).contains(&prerelease) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Illegal prerelease version: {prerelease}"
             )));
         }
         if prerelease != 0 && (minor != 0 || bugfix != 0) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Prerelease version only supported with major release (got prerelease: {}, minor: {}, bugfix: {})",
                 prerelease, minor, bugfix
             )));
@@ -1291,7 +1292,7 @@ impl Version {
     /// # Errors
     ///
     /// Java's `java.text.ParseException` ([`PARSE_EXCEPTION`]), as a
-    /// [`LuceneError::Unchecked`] of that class with Java's message; the
+    /// [`LuceneErrorKind::Unchecked`] of that class with Java's message; the
     /// `NumberFormatException` or `IllegalArgumentException` Java attaches
     /// with `initCause` is its [`source`](std::error::Error::source).
     pub fn parse(version: &str) -> Result<Self, LuceneError> {
@@ -1439,10 +1440,16 @@ impl Ord for Version {
 /// `Version.parse` chains, which [`Display`] would prefix with the variant.
 fn java_message(error: &LuceneError) -> String {
     match error {
-        LuceneError::IllegalArgument(message) => message.clone(),
-        LuceneError::IllegalArgumentWithCause { message, .. } => message.clone(),
-        LuceneError::Unchecked {
-            message: Some(message),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => message.clone(),
+        LuceneError {
+            kind:
+                LuceneErrorKind::Unchecked {
+                    message: Some(message),
+                    ..
+                },
             ..
         } => message.clone(),
         other => other.to_string(),
@@ -1460,11 +1467,11 @@ const NUMBER_FORMAT_EXCEPTION: &str = "java.lang.NumberFormatException";
 /// `new ParseException(message, 0)`, with `initCause(cause)` when `cause` is
 /// given.
 fn parse_exception(message: String, cause: Option<LuceneError>) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: PARSE_EXCEPTION,
         message: Some(message),
         cause: cause.map(std::sync::Arc::new),
-    }
+    })
 }
 
 /// Reads one component with `Integer.parseInt`, wrapping its failure as
@@ -1610,10 +1617,14 @@ mod tests {
             "9.1.0"
         );
         match Version::parse("+.1.0") {
-            Err(LuceneError::Unchecked {
-                class: PARSE_EXCEPTION,
-                message: Some(message),
-                cause: Some(cause),
+            Err(LuceneError {
+                kind:
+                    LuceneErrorKind::Unchecked {
+                        class: PARSE_EXCEPTION,
+                        message: Some(message),
+                        cause: Some(cause),
+                    },
+                ..
             }) => {
                 assert_eq!(
                     message,
@@ -1621,11 +1632,11 @@ mod tests {
                 );
                 assert!(matches!(
                     cause.as_ref(),
-                    LuceneError::Unchecked {
+                    LuceneError { kind: LuceneErrorKind::Unchecked {
                         class: NUMBER_FORMAT_EXCEPTION,
                         message: Some(m),
                         ..
-                    } if m == "For input string: \"+\""
+                    }, .. } if m == "For input string: \"+\""
                 ));
             }
             other => panic!("expected the major-version failure, got {other:?}"),
@@ -1867,10 +1878,14 @@ mod tests {
             ),
         ] {
             let error = Version::parse_leniently(input).unwrap_err();
-            let LuceneError::Unchecked {
-                class: PARSE_EXCEPTION,
-                message: Some(message),
-                cause: Some(source),
+            let LuceneError {
+                kind:
+                    LuceneErrorKind::Unchecked {
+                        class: PARSE_EXCEPTION,
+                        message: Some(message),
+                        cause: Some(source),
+                    },
+                ..
             } = &error
             else {
                 panic!("{error:?}");

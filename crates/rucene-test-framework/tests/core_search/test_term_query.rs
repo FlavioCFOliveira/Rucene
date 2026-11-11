@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::Class;
 use rucene::document::{Document, Store, StringField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::index::filter_directory_reader::{
     DirectoryReaderWrapper, FilterDirectoryReader, SubReaderWrapper,
@@ -423,7 +423,7 @@ impl DirectoryReaderWrapper for NoSeekDirectoryReaderWrapper {
 
 /// `throw new AssertionError("no seek")`.
 fn no_seek() -> LuceneError {
-    LuceneError::AssertionError("no seek".to_string())
+    LuceneError::from(LuceneErrorKind::AssertionError("no seek".to_string()))
 }
 
 /// The anonymous `FilterTerms` of `NoSeekLeafReader.terms`.

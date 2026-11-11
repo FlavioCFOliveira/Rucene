@@ -70,11 +70,11 @@ impl CharacterBuffer {
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` with Lucene's message,
+/// Returns `LuceneErrorKind::IllegalArgument` with Lucene's message,
 /// `buffersize must be >= 2`, if `buffer_size` is less than 2.
 pub fn new_character_buffer(buffer_size: usize) -> Result<CharacterBuffer> {
     if buffer_size < 2 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "buffersize must be >= 2".to_string(),
         ));
     }
@@ -264,7 +264,7 @@ pub fn to_code_points(
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` with the JDK's message, `Not a
+/// Returns `LuceneErrorKind::IllegalArgument` with the JDK's message, `Not a
 /// valid Unicode code point: 0x…`, for a value outside `0..=0x10FFFF`.
 ///
 /// # Panics
@@ -290,7 +290,7 @@ pub fn to_chars(
             dest[dest_off + written + 1] = (0xDC00 + (v & 0x3FF)) as u16;
             written += 2;
         } else {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Not a valid Unicode code point: 0x{:X}",
                 cp as u32
             )));
@@ -311,7 +311,7 @@ pub fn to_chars(
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` with Lucene's message,
+/// Returns `LuceneErrorKind::IllegalArgument` with Lucene's message,
 /// `numChars must be >= 2 and <= the buffer size`, if `num_chars` is out of
 /// range, and any error of `reader`.
 pub fn fill(
@@ -321,7 +321,7 @@ pub fn fill(
 ) -> Result<bool> {
     debug_assert!(buffer.buffer.len() >= 2);
     if num_chars < 2 || num_chars > buffer.buffer.len() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "numChars must be >= 2 and <= the buffer size".to_string(),
         ));
     }
@@ -386,12 +386,16 @@ pub fn fill_buffer(buffer: &mut CharacterBuffer, reader: &mut dyn CharReader) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     #[test]
     fn new_character_buffer_rejects_small_size() {
         assert!(matches!(
             new_character_buffer(1),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -449,7 +453,10 @@ mod tests {
     #[test]
     fn buffer_errors_carry_javas_messages() {
         match new_character_buffer(1) {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "buffersize must be >= 2")
             }
             other => panic!("expected the size error, got {other:?}"),
@@ -457,7 +464,10 @@ mod tests {
         let mut buffer = new_character_buffer(4).unwrap();
         let mut reader = crate::analysis::StringCharReader::new("x");
         match fill(&mut buffer, &mut reader, 5) {
-            Err(LuceneError::IllegalArgument(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "numChars must be >= 2 and <= the buffer size")
             }
             other => panic!("expected the count error, got {other:?}"),

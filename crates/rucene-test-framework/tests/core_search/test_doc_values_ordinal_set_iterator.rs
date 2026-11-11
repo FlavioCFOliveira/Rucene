@@ -138,7 +138,7 @@ pub fn class_def() -> Arc<Class> {
 }
 
 fn unsupported<T>() -> Result<T> {
-    Err(LuceneError::UnsupportedOperation(String::new()))
+    Err(LuceneError::unsupported_operation(String::new()))
 }
 
 /// Fake TermsEnum that iterates over a fixed array of ordinals. Only

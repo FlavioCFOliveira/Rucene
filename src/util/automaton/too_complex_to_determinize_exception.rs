@@ -1,6 +1,6 @@
 //! Port of `org.apache.lucene.util.automaton.TooComplexToDeterminizeException`.
 
-use crate::error::LuceneError;
+use crate::error::{LuceneError, LuceneErrorKind};
 
 use super::automaton::Automaton;
 use super::reg_exp::RegExp;
@@ -10,12 +10,9 @@ use super::reg_exp::RegExp;
 ///
 /// Equivalent to `org.apache.lucene.util.automaton.TooComplexToDeterminizeException`.
 ///
-/// # Divergence from Lucene 10.5.0
-///
-/// Lucene models this as an unchecked `RuntimeException`. Rucene has no exceptions,
-/// so this is a plain error type that converts into [`LuceneError::ResourceLimit`]
-/// (the crate's "a resource limit was violated" variant) so it can flow through
-/// `Result` chains with `?`.
+/// Lucene throws it as an unchecked `RuntimeException`; here it converts into
+/// [`LuceneErrorKind::TooComplexToDeterminize`] so it flows through `Result`
+/// chains with `?`.
 #[derive(Clone, Debug)]
 pub struct TooComplexToDeterminizeException {
     message: String,
@@ -82,6 +79,6 @@ impl std::error::Error for TooComplexToDeterminizeException {}
 
 impl From<TooComplexToDeterminizeException> for LuceneError {
     fn from(value: TooComplexToDeterminizeException) -> Self {
-        LuceneError::ResourceLimit(value.message)
+        LuceneError::from(LuceneErrorKind::TooComplexToDeterminize(Box::new(value)))
     }
 }

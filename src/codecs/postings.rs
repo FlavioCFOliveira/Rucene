@@ -145,31 +145,31 @@ impl TermsEnum for SingleTermsEnum {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "ord not supported by SingleTermsEnum".to_string(),
         ))
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "doc_freq not supported by SingleTermsEnum".to_string(),
         ))
     }
 
     fn total_term_freq(&mut self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "total_term_freq not supported by SingleTermsEnum".to_string(),
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "impacts not supported by SingleTermsEnum".to_string(),
         ))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "term_state not supported by SingleTermsEnum".to_string(),
         ))
     }
@@ -434,7 +434,7 @@ impl PostingsFormatRegistry {
 /// # Errors
 ///
 /// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
-/// returns, and [`LuceneError::IllegalState`] when the registry lock is
+/// returns, and [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the registry lock is
 /// poisoned.
 pub fn reload_postings_formats(
     classloader: &Arc<crate::util::resource_loader::ClassLoader>,

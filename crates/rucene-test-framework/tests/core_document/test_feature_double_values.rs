@@ -198,7 +198,7 @@ impl DoubleValuesSource for OtherImpl {
         _ctx: &LeafReaderContext,
         _scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "getValues returns null".to_string(),
         ))
     }
@@ -209,7 +209,7 @@ impl DoubleValuesSource for OtherImpl {
 
     /// Java returns `null`; see [`get_values`](Self::get_values).
     fn rewrite(self: Arc<Self>, _searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "rewrite returns null".to_string(),
         ))
     }

@@ -98,7 +98,10 @@ that establishes it.
 * Test functions return `rucene::error::Result<()>`; an `Err` is rethrown as
   its Java exception (`crates/rucene-test-framework/tests/core_support/mod.rs:35`,
   `crates/rucene-test-framework/src/util/java_exceptions.rs:198`).
-* A Java exception class maps to a `LuceneError` variant (`src/error.rs`);
+* A Java exception class maps to a `LuceneErrorKind` variant (`src/error.rs`), the `kind` of a
+  `LuceneError`, which also holds `getSuppressed()`; a Java
+  `NullPointerException` is always `LuceneError::null_pointer()` or
+  `LuceneError::null_pointer_with_message(..)`;
   `java_class_name`/`is_instance` (`crates/rucene-test-framework/src/util/java_exceptions.rs:130,203`) give
   the Java class.
 * `expectThrows(X.class, () -> …)`:

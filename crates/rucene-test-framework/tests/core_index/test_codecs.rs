@@ -731,7 +731,7 @@ impl Verify {
 }
 
 fn unsupported() -> LuceneError {
-    LuceneError::UnsupportedOperation(String::new())
+    LuceneError::unsupported_operation(String::new())
 }
 
 /// `private static class DataFields extends Fields`.

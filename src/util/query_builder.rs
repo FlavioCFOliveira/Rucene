@@ -29,7 +29,7 @@
 //! * **Java's unchecked exceptions become `Result`.** `createFieldQuery` wraps
 //!   an `IOException` from the analysis chain in a `RuntimeException`; here it
 //!   propagates as [`LuceneError`]. The argument checks that Java raises as
-//!   `IllegalArgumentException` return [`LuceneError::IllegalArgument`].
+//!   `IllegalArgumentException` return [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument).
 
 use std::sync::Arc;
 
@@ -213,7 +213,7 @@ pub trait QueryBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] unless `operator` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) unless `operator` is
     /// [`Occur::SHOULD`] or [`Occur::MUST`], and propagates any error from the
     /// analysis chain.
     fn create_boolean_query_with_operator(
@@ -223,7 +223,7 @@ pub trait QueryBuilderOps {
         operator: Occur,
     ) -> Result<Option<Arc<dyn Query>>> {
         if operator != Occur::SHOULD && operator != Occur::MUST {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "invalid operator: only SHOULD or MUST are allowed".to_string(),
             ));
         }
@@ -266,7 +266,7 @@ pub trait QueryBuilderOps {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] unless `fraction` is in
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) unless `fraction` is in
     /// `[0, 1]`, and propagates any error from the analysis chain.
     fn create_min_should_match_query(
         &self,
@@ -275,7 +275,7 @@ pub trait QueryBuilderOps {
         fraction: f32,
     ) -> Result<Option<Arc<dyn Query>>> {
         if fraction.is_nan() || fraction < 0.0 || fraction > 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "fraction should be >= 0 and <= 1".to_string(),
             ));
         }

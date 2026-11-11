@@ -47,7 +47,7 @@ impl SortRescorer {
     /// # Errors
     ///
     /// Propagates any I/O error raised while collecting, and
-    /// [`LuceneError::IllegalState`] when a first-pass hit falls outside every
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a first-pass hit falls outside every
     /// leaf of the searcher — which is Java's `IndexOutOfBoundsException`.
     pub fn rescore_sorted(
         &self,

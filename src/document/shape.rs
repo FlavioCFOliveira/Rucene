@@ -302,7 +302,7 @@ impl LatLonShape {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when a field carries no packed triangle, and propagates whatever
     /// decoding raises.
     pub fn create_doc_value_field_from_indexable_fields(
@@ -1046,7 +1046,7 @@ fn decode_indexable_fields(indexable_fields: &[Triangle]) -> Result<Vec<DecodedT
     let mut tessellation = Vec::with_capacity(indexable_fields.len());
     for f in indexable_fields {
         let packed = f.packed_value().ok_or_else(|| {
-            crate::error::LuceneError::IllegalArgument(
+            crate::error::LuceneError::illegal_argument(
                 "a shape indexable field must carry a packed triangle".to_string(),
             )
         })?;

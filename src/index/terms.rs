@@ -332,7 +332,7 @@ pub trait TermsEnum: std::fmt::Display {
     /// Default implementation seeks the exact term and then applies the state.
     fn seek_term_state(&mut self, text: &BytesRef, _state: &dyn TermState) -> Result<()> {
         if !self.seek_exact(text)? {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "term={text:?} does not exist"
             )));
         }
@@ -557,7 +557,7 @@ impl TermsEnum for FilteredTermsEnum {
         &'a mut self,
         _text: &BytesRef,
     ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "FilteredTermsEnum does not support seeking".to_string(),
         ))
     }
@@ -694,7 +694,7 @@ pub trait Terms: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `compiled` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `compiled` is not a
     /// normal automaton, and propagates whatever [`Terms::iterator`] raises.
     fn intersect(
         &self,
@@ -824,7 +824,7 @@ pub trait Terms: Send + Sync {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `compiled` is not a normal
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `compiled` is not a normal
 /// automaton, and propagates whatever `terms.iterator()` raises.
 pub(crate) fn default_intersect<T: Terms + ?Sized>(
     terms: &T,
@@ -833,7 +833,7 @@ pub(crate) fn default_intersect<T: Terms + ?Sized>(
 ) -> Result<Box<dyn TermsEnum>> {
     let terms_enum = terms.iterator()?;
     if compiled.automaton_type != crate::util::automaton::AutomatonType::Normal {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "please use CompiledAutomaton.getTermsEnum instead".to_string(),
         ));
     }
@@ -1146,7 +1146,7 @@ impl TermStates {
     fn with_term(term: Option<Term>, context: &Arc<dyn IndexReaderContext>) -> Result<Self> {
         debug_assert!(context.is_top_level());
         if !context.is_top_level() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "TermStates must be built from a top-level IndexReaderContext".to_string(),
             ));
         }
@@ -1166,7 +1166,7 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `context` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a
     /// top-level context, which is the condition Java asserts.
     pub fn new(context: &Arc<dyn IndexReaderContext>) -> Result<Self> {
         Self::with_term(None, context)
@@ -1179,7 +1179,7 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `context` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a
     /// top-level context.
     pub fn with_state(
         context: &Arc<dyn IndexReaderContext>,
@@ -1361,13 +1361,13 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the leaf ordinal is out of
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the leaf ordinal is out of
     /// range, which is the condition Java asserts.
     pub fn get(&self, ctx: &LeafReaderContext) -> Result<Option<Box<dyn TermState>>> {
         let ord = ctx.ord();
         debug_assert!(ord >= 0 && (ord as usize) < self.states.len());
         if ord < 0 || ord as usize >= self.states.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "leaf ordinal {ord} is out of range for a TermStates over {} leaves",
                 self.states.len()
             )));
@@ -1384,7 +1384,7 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when this instance was built with
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when this instance was built with
     /// `needs_stats = false`, which is the `IllegalStateException` Java throws.
     pub fn doc_freq(&self) -> Result<i32> {
         if self.term.is_some() {
@@ -1402,7 +1402,7 @@ impl TermStates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when this instance was built with
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when this instance was built with
     /// `needs_stats = false`, which is the `IllegalStateException` Java throws.
     pub fn total_term_freq(&self) -> Result<i64> {
         if self.term.is_some() {

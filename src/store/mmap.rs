@@ -159,7 +159,7 @@ impl MMapDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a chunk size of zero or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a chunk size of zero or
     /// beyond a Java `long`, and propagates any I/O error creating or
     /// canonicalizing the directory.
     pub fn with_options(
@@ -169,14 +169,14 @@ impl MMapDirectory {
     ) -> Result<Self> {
         let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
         if max_chunk_size == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Maximum chunk size for mmap must be >0".to_string(),
             ));
         }
         // Java's `long maxChunkSize` cannot exceed `Long.MAX_VALUE`; a `usize`
         // can, and its power would not be one Java can hold.
         if i64::try_from(max_chunk_size).is_err() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Maximum chunk size for mmap must be <= {} (a Java long)",
                 i64::MAX
             )));
@@ -198,7 +198,7 @@ impl MMapDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the directory is closed.
     pub fn get_directory(&self) -> Result<&crate::store::java_nio_file::Path> {
         self.inner.get_directory()
     }
@@ -509,6 +509,7 @@ impl std::fmt::Debug for MMapDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::store::DEFAULT_IO_CONTEXT;
     use tempfile::TempDir;
 
@@ -689,11 +690,17 @@ mod tests {
         let temp = TempDir::new().unwrap();
         assert!(matches!(
             MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), usize::MAX),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert!(matches!(
             MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 0),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert_eq!(
             MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), i64::MAX as usize)

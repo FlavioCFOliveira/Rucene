@@ -73,7 +73,7 @@ const fn mask_of(bits_per_value: usize) -> u64 {
 }
 
 fn too_small(what: &str, need: usize, have: usize) -> LuceneError {
-    LuceneError::IllegalArgument(format!(
+    LuceneError::illegal_argument(format!(
         "{what} buffer is too small: {need} entries needed, {have} available"
     ))
 }
@@ -81,7 +81,7 @@ fn too_small(what: &str, need: usize, have: usize) -> LuceneError {
 fn check_capacity(what: &str, offset: usize, needed: usize, available: usize) -> Result<()> {
     let end = offset
         .checked_add(needed)
-        .ok_or_else(|| LuceneError::IllegalArgument(format!("{what} range overflows")))?;
+        .ok_or_else(|| LuceneError::illegal_argument(format!("{what} range overflows")))?;
     if end > available {
         return Err(too_small(what, end, available));
     }
@@ -139,7 +139,7 @@ pub trait PackedIntsDecoder: PackedIntsBlockCounts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when either buffer is too
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when either buffer is too
     /// small for the requested number of iterations.
     fn decode_long_blocks_to_longs(
         &self,
@@ -157,7 +157,7 @@ pub trait PackedIntsDecoder: PackedIntsBlockCounts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when either buffer is too
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when either buffer is too
     /// small for the requested number of iterations.
     fn decode_byte_blocks_to_longs(
         &self,
@@ -175,9 +175,9 @@ pub trait PackedIntsDecoder: PackedIntsBlockCounts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] when the width exceeds 32
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) when the width exceeds 32
     /// bits, which is the `UnsupportedOperationException` Lucene throws, and
-    /// [`LuceneError::IllegalArgument`] when either buffer is too small.
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when either buffer is too small.
     fn decode_long_blocks_to_ints(
         &self,
         blocks: &[i64],
@@ -194,8 +194,8 @@ pub trait PackedIntsDecoder: PackedIntsBlockCounts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] when the implementation
-    /// rejects the width, and [`LuceneError::IllegalArgument`] when either
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) when the implementation
+    /// rejects the width, and [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when either
     /// buffer is too small.
     fn decode_byte_blocks_to_ints(
         &self,
@@ -219,7 +219,7 @@ pub trait PackedIntsEncoder: PackedIntsBlockCounts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when either buffer is too
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when either buffer is too
     /// small for the requested number of iterations.
     fn encode_longs_to_long_blocks(
         &self,
@@ -237,7 +237,7 @@ pub trait PackedIntsEncoder: PackedIntsBlockCounts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when either buffer is too
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when either buffer is too
     /// small for the requested number of iterations.
     fn encode_longs_to_byte_blocks(
         &self,
@@ -255,7 +255,7 @@ pub trait PackedIntsEncoder: PackedIntsBlockCounts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when either buffer is too
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when either buffer is too
     /// small for the requested number of iterations.
     fn encode_ints_to_long_blocks(
         &self,
@@ -273,7 +273,7 @@ pub trait PackedIntsEncoder: PackedIntsBlockCounts {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when either buffer is too
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when either buffer is too
     /// small for the requested number of iterations.
     fn encode_ints_to_byte_blocks(
         &self,
@@ -432,7 +432,7 @@ fn packed_decode_long_blocks_to_ints(
     iterations: usize,
 ) -> Result<()> {
     if bits_per_value > 32 {
-        return Err(LuceneError::UnsupportedOperation(format!(
+        return Err(LuceneError::unsupported_operation(format!(
             "Cannot decode {bits_per_value}-bits values into an int[]"
         )));
     }
@@ -1418,12 +1418,12 @@ impl BulkOperationPackedSingleBlock {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `bits_per_value` is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is
     /// outside `[1, 32]`. Lucene never constructs one outside that range, since
     /// `Packed64SingleBlock.MAX_SUPPORTED_BITS_PER_VALUE` is 32.
     pub fn new(bits_per_value: usize) -> Result<Self> {
         if !(1..=32).contains(&bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bitsPerValue must be in [1, 32] for the single-block format, got {bits_per_value}"
             )));
         }
@@ -1560,7 +1560,7 @@ impl PackedIntsDecoder for BulkOperationPackedSingleBlock {
         iterations: usize,
     ) -> Result<()> {
         if self.bits_per_value > 32 {
-            return Err(LuceneError::UnsupportedOperation(format!(
+            return Err(LuceneError::unsupported_operation(format!(
                 "Cannot decode {}-bits values into an int[]",
                 self.bits_per_value
             )));
@@ -1589,7 +1589,7 @@ impl PackedIntsDecoder for BulkOperationPackedSingleBlock {
         iterations: usize,
     ) -> Result<()> {
         if self.bits_per_value > 32 {
-            return Err(LuceneError::UnsupportedOperation(format!(
+            return Err(LuceneError::unsupported_operation(format!(
                 "Cannot decode {}-bits values into an int[]",
                 self.bits_per_value
             )));
@@ -1764,14 +1764,14 @@ static PACKED_SINGLE_BLOCK_BULK_OPS: LazyLock<Vec<Option<Box<dyn BulkOperation +
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `bits_per_value` is outside
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `bits_per_value` is outside
 /// the range the format supports. Lucene asserts the table entry is non-null
 /// and would otherwise fail with an index or null-pointer error.
 pub fn bulk_operation_of(format: Format, bits_per_value: i32) -> Result<SharedBulkOperation> {
     match format {
         Format::Packed => {
             if !(1..=64).contains(&bits_per_value) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "bitsPerValue must be in [1, 64], got {bits_per_value}"
                 )));
             }
@@ -1779,7 +1779,7 @@ pub fn bulk_operation_of(format: Format, bits_per_value: i32) -> Result<SharedBu
         }
         Format::PackedSingleBlock => {
             if !(1..=32).contains(&bits_per_value) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "bitsPerValue must be in [1, 32] for the single-block format, \
                      got {bits_per_value}"
                 )));
@@ -1788,7 +1788,7 @@ pub fn bulk_operation_of(format: Format, bits_per_value: i32) -> Result<SharedBu
             PACKED_SINGLE_BLOCK_BULK_OPS[bits_per_value as usize - 1]
                 .as_deref()
                 .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "the single-block format does not support {bits_per_value} bits per value"
                     ))
                 })
@@ -1802,8 +1802,8 @@ pub fn bulk_operation_of(format: Format, bits_per_value: i32) -> Result<SharedBu
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IndexFormatNotSupported`] when `version` is outside
-/// the supported range, and [`LuceneError::IllegalArgument`] when the width is
+/// Returns [`LuceneErrorKind::IndexFormatNotSupported`](crate::error::LuceneErrorKind::IndexFormatNotSupported) when `version` is outside
+/// the supported range, and [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the width is
 /// not one the format supports.
 pub fn get_decoder(
     format: Format,
@@ -1820,8 +1820,8 @@ pub fn get_decoder(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IndexFormatNotSupported`] when `version` is outside
-/// the supported range, and [`LuceneError::IllegalArgument`] when the width is
+/// Returns [`LuceneErrorKind::IndexFormatNotSupported`](crate::error::LuceneErrorKind::IndexFormatNotSupported) when `version` is outside
+/// the supported range, and [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the width is
 /// not one the format supports.
 pub fn get_encoder(
     format: Format,

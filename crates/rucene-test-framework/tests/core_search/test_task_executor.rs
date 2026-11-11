@@ -2,10 +2,10 @@
 //!
 //! A Java `Callable` that throws becomes a Rust callable returning the
 //! `LuceneError` of the thrown class: an `IOException` is
-//! [`LuceneError::Io`], an `IllegalStateException`
-//! [`LuceneError::IllegalState`], and any other throwable (`RuntimeException`,
+//! [`LuceneErrorKind::Io`], an `IllegalStateException`
+//! [`LuceneErrorKind::IllegalState`], and any other throwable (`RuntimeException`,
 //! `Exception`, `OutOfMemoryError`, `AssertionError`) the
-//! [`LuceneError::Unchecked`] or [`LuceneError::AssertionError`] carrying its
+//! [`LuceneErrorKind::Unchecked`] or [`LuceneErrorKind::AssertionError`] carrying its
 //! class, which is what `FutureTask` captures and `invokeAll` rethrows.
 //! `Runnable::run` is [`DirectExecutor`].
 
@@ -16,7 +16,7 @@ use std::time::Duration;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::{AfterClass, BeforeClass};
 use rucene::document::Document;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::{IndexReader, LeafReaderContext};
 use rucene::search::index_searcher::{IndexSearcher, IndexSearcherOverrides, LeafSlice};
 use rucene::search::scorable::Scorable;
@@ -132,11 +132,11 @@ impl Executor for DirectExecutor {
 /// `throw new <class>(message)` for a throwable without a dedicated
 /// `LuceneError` variant.
 fn throwable(class: &'static str, message: Option<&str>) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class,
         message: message.map(str::to_string),
         cause: None,
-    }
+    })
 }
 
 /// A Java `Callable<Void>`.
@@ -147,7 +147,9 @@ fn test_unwrap_io_exception_from_execution_exception() -> Result<()> {
     let task_executor = TaskExecutor::new(Arc::new(executor_service()));
     let io_exception = expect_throws("java.io.IOException", || {
         let callables: Vec<VoidCallable> = vec![Box::new(|| {
-            Err(LuceneError::Io(std::io::Error::other("io exception")))
+            Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("io exception"),
+            )))
         })];
         task_executor.invoke_all(callables)
     });
@@ -423,10 +425,10 @@ fn test_invoke_all_does_not_leave_tasks_behind() -> Result<()> {
     let tasks_with_normal_exit = 99;
     for _i in 0..tasks_with_normal_exit {
         callables.push(Box::new(|| {
-            Err(LuceneError::AssertionError(
+            Err(LuceneError::from(LuceneErrorKind::AssertionError(
                 "must not be called since the first task failing cancels all subsequent tasks"
                     .to_string(),
-            ))
+            )))
         }));
     }
     expect_throws(RUNTIME_EXCEPTION, || task_executor.invoke_all(callables));
@@ -509,9 +511,9 @@ fn test_cancel_tasks_on_exception() -> Result<()> {
             if index > throwing_task {
                 // with a single thread we are sure that the last task to run is the one that throws,
                 // following ones must not run
-                return Err(LuceneError::AssertionError(
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(
                     "task should not have started".to_string(),
-                ));
+                )));
             }
             executed_tasks.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -552,7 +554,7 @@ fn test_task_rejection_does_not_fail_execution() -> Result<()> {
     thread_pool_executor.shutdown();
     while !thread_pool_executor
         .await_termination(Duration::from_secs(86400))
-        .map_err(|e| LuceneError::Other(e.to_string()))?
+        .map_err(|e| LuceneError::from(LuceneErrorKind::Other(e.to_string())))?
     {}
     result
 }

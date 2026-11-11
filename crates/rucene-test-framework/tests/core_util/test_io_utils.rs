@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::java_nio_file::{
     access_denied_exception, FileChannel, FileSystem, Files, OpenOption, Path,
 };
@@ -215,11 +215,11 @@ fn test_apply_to_all() -> Result<()> {
     let runtime_exception = expect_throws("java.lang.RuntimeException", || {
         IOUtils::apply_to_all(vec![Some(1), Some(2)], |i| {
             closed.lock().unwrap_or_else(|e| e.into_inner()).push(i);
-            Err(LuceneError::Unchecked {
+            Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.RuntimeException",
                 message: Some(format!("{i}")),
                 cause: None,
-            })
+            }))
         })
     });
     assert_equals(&Some("1"), &runtime_exception.message());

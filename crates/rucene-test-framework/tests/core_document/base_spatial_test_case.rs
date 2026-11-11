@@ -39,7 +39,7 @@ use rucene::document::spatial_query::{LatLonGeometryValue, XYGeometryValue};
 use rucene::document::{
     Document, LatLonShape, NumericDocValuesField, ShapeDocValuesField, Store, StringField, XYShape,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::geo::component2d::{Component2D, WithinRelation};
 use rucene::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
 use rucene::geo::geometry::{
@@ -723,7 +723,10 @@ impl ShapeType {
                     Ok(_) => break Shape::Polygon(p),
                     // if we can't tessellate; then random polygon generator
                     // created a malformed shape
-                    Err(LuceneError::IllegalArgument(_)) => {}
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::IllegalArgument { .. },
+                        ..
+                    }) => {}
                     Err(e) => return Err(e),
                 }
             },
@@ -744,7 +747,10 @@ impl ShapeType {
                     Ok(_) => break Shape::XYPolygon(p),
                     // if we can't tessellate; then random polygon generator
                     // created a malformed shape
-                    Err(LuceneError::IllegalArgument(_)) => {}
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::IllegalArgument { .. },
+                        ..
+                    }) => {}
                     Err(e) => return Err(e),
                 }
             },

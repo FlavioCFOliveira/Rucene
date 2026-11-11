@@ -88,11 +88,11 @@ impl PruneByAge {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's message — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's message — when
     /// `max_age_sec` is negative.
     pub fn new(max_age_sec: f64) -> Result<Self> {
         if max_age_sec < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxAgeSec must be > 0 (got {max_age_sec})"
             )));
         }
@@ -179,8 +179,8 @@ impl SearcherLifetimeManager {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] when the manager is closed, and
-    /// [`LuceneError::IllegalArgument`] — with Java's message — when a
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) when the manager is closed, and
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's message — when a
     /// different searcher instance is recorded under a version that is already
     /// tracked.
     pub fn record(&self, searcher: &Arc<ManagedSearcher>) -> Result<i64> {
@@ -197,7 +197,7 @@ impl SearcherLifetimeManager {
             }
             Some(tracker) => {
                 if !Arc::ptr_eq(&tracker.searcher, searcher) {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "the provided searcher has the same underlying reader version yet the \
                          searcher instance differs from before (new={searcher:?} vs old={:?}",
                         tracker.searcher
@@ -219,7 +219,7 @@ impl SearcherLifetimeManager {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] when the manager is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) when the manager is closed.
     pub fn acquire(&self, version: i64) -> Result<Option<Arc<ManagedSearcher>>> {
         self.ensure_open()?;
         let searchers = self
@@ -308,7 +308,7 @@ impl SearcherLifetimeManager {
     /// # Errors
     ///
     /// Propagates any I/O error raised while closing a searcher, and returns
-    /// [`LuceneError::IllegalState`] — with Java's message — when another
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) — with Java's message — when another
     /// thread recorded a searcher during the close.
     pub fn close(&self) -> Result<()> {
         let _guard = self

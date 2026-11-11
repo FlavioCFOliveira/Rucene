@@ -80,7 +80,7 @@ impl FSTReader for OffHeapFSTStore {
     }
 
     fn write_to(&self, _out: &mut dyn DataOutput) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "writeToOutput operation is not supported for OffHeapFSTStore".to_string(),
         ))
     }

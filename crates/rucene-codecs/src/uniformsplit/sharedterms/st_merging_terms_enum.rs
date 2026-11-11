@@ -61,7 +61,7 @@ pub(crate) struct STMergingTermsEnum {
 }
 
 fn unsupported() -> LuceneError {
-    LuceneError::UnsupportedOperation(String::new())
+    LuceneError::unsupported_operation(String::new())
 }
 
 impl STMergingTermsEnum {

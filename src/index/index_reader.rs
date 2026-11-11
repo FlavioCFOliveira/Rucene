@@ -15,7 +15,7 @@ use std::{
     },
 };
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
 use crate::index::TermVectors;
 
@@ -200,7 +200,7 @@ pub trait StoredFields: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] if the index is corrupt, and
+    /// Returns [`LuceneErrorKind::CorruptIndex`] if the index is corrupt, and
     /// propagates any low-level I/O error.
     fn document(&self, doc_id: i32) -> Result<crate::document::Document> {
         let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
@@ -216,7 +216,7 @@ pub trait StoredFields: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] if the index is corrupt, and
+    /// Returns [`LuceneErrorKind::CorruptIndex`] if the index is corrupt, and
     /// propagates any low-level I/O error.
     fn document_fields(
         &self,
@@ -355,7 +355,11 @@ impl EnsureOpen {
 /// Throws the `AlreadyClosedException` of a failed `ensureOpen()` from a
 /// signature that cannot fail.
 fn throw_if_closed(result: Result<()>) {
-    if let Err(LuceneError::AlreadyClosed { message, .. }) = result {
+    if let Err(LuceneError {
+        kind: LuceneErrorKind::AlreadyClosed { message, .. },
+        ..
+    }) = result
+    {
         crate::store::java_nio_file::throw_unchecked(
             "org.apache.lucene.store.AlreadyClosedException",
             Some(&message),
@@ -473,8 +477,8 @@ impl IndexReaderCore {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the count is already zero, and
-    /// [`LuceneError::IllegalState`] if it would drop below zero.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the count is already zero, and
+    /// [`LuceneErrorKind::IllegalState`] if it would drop below zero.
     pub fn dec_ref_with_close<F>(&self, on_zero: F) -> Result<()>
     where
         F: FnOnce() -> Result<()>,
@@ -518,7 +522,7 @@ impl IndexReaderCore {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] from the `ensureOpen()` Java calls on
+    /// [`LuceneErrorKind::AlreadyClosed`] from the `ensureOpen()` Java calls on
     /// this (child) reader first (`IndexReader.java:162-165`).
     pub fn register_parent_reader(&self, parent: Arc<dyn IndexReader>) -> Result<()> {
         self.register_parent_core(parent.core())
@@ -537,7 +541,7 @@ impl IndexReaderCore {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when this (child) reader is closed:
+    /// [`LuceneErrorKind::AlreadyClosed`] when this (child) reader is closed:
     /// `registerParentReader` calls `ensureOpen()` before it records the
     /// parent (`IndexReader.java:162-165`).
     pub fn register_parent_core(&self, parent: &IndexReaderCore) -> Result<()> {
@@ -719,7 +723,7 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] when this reader is closed
+    /// [`LuceneErrorKind::AlreadyClosed`] when this reader is closed
     /// (`IndexReader.java:162-165`).
     fn register_parent_reader(&self, parent: Arc<dyn IndexReader>) -> Result<()> {
         self.core().register_parent_reader(parent)
@@ -787,7 +791,7 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     ///
     /// # Errors
     ///
-    /// [`LuceneError::AlreadyClosed`] from `ensureOpen()`, which both Java
+    /// [`LuceneErrorKind::AlreadyClosed`] from `ensureOpen()`, which both Java
     /// implementations call first (`CompositeReader.java:93-94`,
     /// `LeafReader.java:59-60`): `this IndexReader is closed` when this reader
     /// is closed, and `this IndexReader cannot be used anymore as one of its
@@ -811,7 +815,7 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     /// # Errors
     ///
     /// As [`get_context`](Self::get_context): a closed reader fails with
-    /// [`LuceneError::AlreadyClosed`].
+    /// [`LuceneErrorKind::AlreadyClosed`].
     fn leaves(self: Arc<Self>) -> Result<Vec<Arc<LeafReaderContext>>> {
         Ok(self.get_context()?.leaves())
     }
@@ -960,7 +964,10 @@ mod tests {
             "this IndexReader cannot be used anymore as one of its child readers was closed";
         for core in [&parent, &grand_parent] {
             match core.ensure_open() {
-                Err(LuceneError::AlreadyClosed { message, .. }) => {
+                Err(LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                    ..
+                }) => {
                     assert_eq!(message, closed_by_child)
                 }
                 other => panic!("expected AlreadyClosed, got {other:?}"),
@@ -969,7 +976,10 @@ mod tests {
         assert!(handle.ensure_open().is_err());
 
         match child.register_parent_core(&IndexReaderCore::new()) {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this IndexReader is closed")
             }
             other => panic!("expected AlreadyClosed, got {other:?}"),

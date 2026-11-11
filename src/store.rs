@@ -60,7 +60,7 @@ use crc32fast;
 use self::java_nio_file as nio;
 use self::java_nio_file::file_time_to_string;
 use crate::{
-    error::{LuceneError, Result},
+    error::{LuceneError, LuceneErrorKind, Result},
     util::java_collections::{
         JavaHashSet, JavaOrderedMap, JavaOrderedSet, JavaStringMap, JavaStringSet,
     },
@@ -269,7 +269,7 @@ pub trait DataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the length is negative: Java
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the length is negative: Java
     /// reaches `new byte[length]` with it and throws
     /// `NegativeArraySizeException` (`DataInput.java:230-234`), which is a
     /// failure, not a value, so this port reports one too.
@@ -287,9 +287,9 @@ pub trait DataInput {
         const CHUNK: usize = 16 * 1024;
         let length = self.read_v_int()?;
         if length < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "invalid string length: {length}"
-            )));
+            ))));
         }
         let mut remaining = length as usize;
         let mut bytes: Vec<u8> = Vec::new();
@@ -447,15 +447,15 @@ pub trait DataOutput {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `i` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `i` is negative.
     /// Writes an `i64` in variable-length format.
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `i` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `i` is negative.
     fn write_v_long(&mut self, i: i64) -> Result<()> {
         if i < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cannot write negative vLong (got: {i})"
             )));
         }
@@ -614,7 +614,7 @@ pub trait DataOutput {
     /// # Errors
     ///
     /// Returns any error raised while writing, and
-    /// `LuceneError::IllegalArgument` when a value does not fit in an unsigned
+    /// `LuceneErrorKind::IllegalArgument` when a value does not fit in an unsigned
     /// 32-bit integer.
     #[deprecated(note = "preserved only for backwards codecs")]
     fn write_group_vints_long(&mut self, values: &[i64], limit: usize) -> Result<()> {
@@ -628,12 +628,12 @@ pub trait DataOutput {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` when `num_bytes` is negative, and
+    /// Returns `LuceneErrorKind::IllegalArgument` when `num_bytes` is negative, and
     /// propagates whatever reading or writing raises.
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
         debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -1067,7 +1067,7 @@ impl DataInput for FilterIndexInput {
     /// `IndexInput.skipBytes` (`IndexInput.java:86-92`): a seek on this input.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
@@ -1169,7 +1169,7 @@ impl BufferedIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `buffer_size` is smaller
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `buffer_size` is smaller
     /// than [`MIN_BUFFER_SIZE`].
     pub fn new(source: Box<dyn IndexInput>, buffer_size: usize) -> Result<Self> {
         Self::check_buffer_size(buffer_size)?;
@@ -1236,12 +1236,12 @@ impl BufferedIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `buffer_size` is smaller
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `buffer_size` is smaller
     /// than [`MIN_BUFFER_SIZE`], which is the `IllegalArgumentException` Java
     /// throws.
     fn check_buffer_size(buffer_size: usize) -> Result<()> {
         if buffer_size < MIN_BUFFER_SIZE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bufferSize must be at least MIN_BUFFER_SIZE (got {buffer_size})"
             )));
         }
@@ -1262,10 +1262,10 @@ impl BufferedIndexInput {
             .min(self.source.length());
         let new_length = end.wrapping_sub(start);
         if new_length <= 0 {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
-            )));
+            ))));
         }
         let new_length = new_length as usize;
         if self.buffer.capacity() < self.buffer_size {
@@ -1342,10 +1342,10 @@ impl BufferedIndexInput {
         self.refill()?;
         let result = pos.wrapping_sub(self.buffer_start);
         if result < 0 || result.wrapping_add(width_i64) > self.buffer_limit as i64 {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
-            )));
+            ))));
         }
         Ok(result as usize)
     }
@@ -1365,7 +1365,7 @@ impl BufferedIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the slice is out of
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the slice is out of
     /// bounds, which is the `IllegalArgumentException` the Java constructor
     /// throws.
     pub fn wrap(
@@ -1430,10 +1430,10 @@ impl DataInput for BufferedIndexInput {
                     b[offset..offset + remaining].copy_from_slice(
                         &self.buffer[self.buffer_position..self.buffer_position + remaining],
                     );
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
-                    )));
+                    ))));
                 } else {
                     b[offset..offset + len].copy_from_slice(
                         &self.buffer[self.buffer_position..self.buffer_position + len],
@@ -1443,10 +1443,10 @@ impl DataInput for BufferedIndexInput {
             } else {
                 let after = self.file_pointer() + len as i64;
                 if after > self.source.length() {
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
-                    )));
+                    ))));
                 }
                 self.source.seek(self.file_pointer())?;
                 self.source.read_bytes(Some(b), offset, len)?;
@@ -1460,7 +1460,7 @@ impl DataInput for BufferedIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -1616,15 +1616,15 @@ impl IndexInput for BufferedIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         if pos > self.source.length() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "seek past EOF",
-            )));
+            ))));
         }
         let end = self.buffer_start + self.buffer_limit as i64;
         if pos >= self.buffer_start && pos < end {
@@ -1688,9 +1688,9 @@ impl RandomAccessInput for BufferedIndexInput {
     ) -> Result<()> {
         let dst_end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if dst_end > bytes.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 bytes.len()
             )));
@@ -1755,7 +1755,7 @@ impl SlicedIndexInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the slice is out of bounds.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the slice is out of bounds.
     pub fn new(
         slice_description: &str,
         base: Box<dyn IndexInput>,
@@ -1763,7 +1763,7 @@ impl SlicedIndexInput {
         length: i64,
     ) -> Result<Self> {
         if offset < 0 || length < 0 || length > base.length() - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice() {slice_description} out of bounds: {}",
                 base.resource_description()
             )));
@@ -1803,10 +1803,10 @@ impl SlicedIndexInput {
         let end = start.wrapping_add(self.buffer_size as i64).min(self.length);
         let new_length = end.wrapping_sub(start);
         if new_length <= 0 {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
-            )));
+            ))));
         }
         let new_length = new_length as usize;
         if self.buffer.capacity() < self.buffer_size {
@@ -1843,10 +1843,10 @@ impl SlicedIndexInput {
         self.refill()?;
         let result = pos.wrapping_sub(self.buffer_start);
         if result < 0 || result.wrapping_add(width_i64) > self.buffer_limit as i64 {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
-            )));
+            ))));
         }
         Ok(result as usize)
     }
@@ -1904,10 +1904,10 @@ impl DataInput for SlicedIndexInput {
                     b[offset..offset + remaining].copy_from_slice(
                         &self.buffer[self.buffer_position..self.buffer_position + remaining],
                     );
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
-                    )));
+                    ))));
                 } else {
                     b[offset..offset + len].copy_from_slice(
                         &self.buffer[self.buffer_position..self.buffer_position + len],
@@ -1917,10 +1917,10 @@ impl DataInput for SlicedIndexInput {
             } else {
                 let after = self.file_pointer() + len as i64;
                 if after > self.length {
-                    return Err(LuceneError::Io(io::Error::new(
+                    return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "read past EOF",
-                    )));
+                    ))));
                 }
                 self.base.seek(self.file_offset + self.file_pointer())?;
                 self.base.read_bytes(Some(b), offset, len)?;
@@ -1934,7 +1934,7 @@ impl DataInput for SlicedIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -1996,15 +1996,15 @@ impl IndexInput for SlicedIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         if pos > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "seek past EOF",
-            )));
+            ))));
         }
         let end = self.buffer_start + self.buffer_limit as i64;
         if pos >= self.buffer_start && pos < end {
@@ -2078,9 +2078,9 @@ impl RandomAccessInput for SlicedIndexInput {
     ) -> Result<()> {
         let dst_end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if dst_end > bytes.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 bytes.len()
             )));
@@ -2174,7 +2174,7 @@ pub trait IndexOutput: DataOutput + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the alignment is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the alignment is not a
     /// positive power of two, and propagates whatever writing a byte raises.
     fn align_file_pointer(&mut self, alignment_bytes: i32) -> Result<i64> {
         let offset = self.file_pointer();
@@ -2194,24 +2194,24 @@ pub trait IndexOutput: DataOutput + Send + Sync {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `offset` is negative or the
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `offset` is negative or the
 /// alignment is not a positive power of two — the two
 /// `IllegalArgumentException`s Java raises.
 pub fn align_offset(offset: i64, alignment_bytes: i32) -> Result<i64> {
     if offset < 0 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "Offset must be positive".to_string(),
         ));
     }
     if alignment_bytes < 0 || alignment_bytes.count_ones() != 1 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "Alignment must be a power of 2".to_string(),
         ));
     }
     let alignment = i64::from(alignment_bytes);
     match (offset - 1).checked_add(alignment) {
         Some(sum) => Ok(sum & -alignment),
-        None => Err(LuceneError::IllegalArgument(
+        None => Err(LuceneError::illegal_argument(
             "Offset overflows when aligned".to_string(),
         )),
     }
@@ -2332,9 +2332,9 @@ impl std::fmt::Debug for FilterIndexOutput {
 fn check_from_index_size(offset: usize, length: usize, len: usize) -> Result<()> {
     let end = offset
         .checked_add(length)
-        .ok_or_else(|| LuceneError::IllegalArgument("offset + length overflowed".to_string()))?;
+        .ok_or_else(|| LuceneError::illegal_argument("offset + length overflowed".to_string()))?;
     if end > len {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "offset {offset} + length {length} exceeds array length {len}"
         )));
     }
@@ -2383,7 +2383,7 @@ fn check_from_index_size(offset: usize, length: usize, len: usize) -> Result<()>
 /// many words, "NOTE: AIOOBE not EOF if you read too much"
 /// (`ByteArrayDataInput.java:133`, `:139`) — which is an unchecked exception,
 /// so the literal Rust analogue would be a panic on a slice bound. This port
-/// returns [`LuceneError::Io`] with [`io::ErrorKind::UnexpectedEof`] instead.
+/// returns [`LuceneErrorKind::Io`] with [`io::ErrorKind::UnexpectedEof`] instead.
 /// Both are failures and neither is a value, so no caller can tell the two
 /// apart except by how it catches them; but the index bytes that drive `pos`
 /// are attacker-controlled, and this crate's readers are required to answer
@@ -2522,14 +2522,14 @@ impl<'a> ByteArrayDataInput<'a> {
             .checked_add(WIDTH)
             .filter(|end| *end <= self.bytes.len())
             .ok_or_else(|| {
-                LuceneError::Io(io::Error::new(
+                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!(
                         "unexpected EOF reading {WIDTH} bytes at pos {} (buffer {})",
                         self.pos,
                         self.bytes.len()
                     ),
-                ))
+                )))
             })?;
         let mut value = [0u8; WIDTH];
         value.copy_from_slice(&self.bytes[self.pos..end]);
@@ -2549,10 +2549,10 @@ impl DataInput for ByteArrayDataInput<'_> {
 
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.bytes.len() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "unexpected EOF reading byte",
-            )));
+            ))));
         }
         let b = self.bytes[self.pos];
         self.pos += 1;
@@ -2563,22 +2563,22 @@ impl DataInput for ByteArrayDataInput<'_> {
         let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
         }
         if self.pos + len > self.bytes.len() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!(
                     "unexpected EOF reading {len} bytes at pos {} (buffer {})",
                     self.pos,
                     self.bytes.len()
                 ),
-            )));
+            ))));
         }
         b[offset..end].copy_from_slice(&self.bytes[self.pos..self.pos + len]);
         self.pos += len;
@@ -2587,16 +2587,16 @@ impl DataInput for ByteArrayDataInput<'_> {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let num_bytes = num_bytes as usize;
         if self.pos + num_bytes > self.bytes.len() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "skip past EOF",
-            )));
+            ))));
         }
         self.pos += num_bytes;
         Ok(())
@@ -2692,9 +2692,9 @@ impl DataOutput for VecDataOutput {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
@@ -2943,10 +2943,10 @@ impl<R: Read> DataInput for InputStreamDataInput<R> {
     fn read_byte(&mut self) -> Result<u8> {
         let mut buf = [0u8; 1];
         self.input.read_exact(&mut buf).map_err(|e| {
-            LuceneError::Io(io::Error::new(
+            LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("read past EOF: {e}"),
-            ))
+            )))
         })?;
         Ok(buf[0])
     }
@@ -2955,25 +2955,25 @@ impl<R: Read> DataInput for InputStreamDataInput<R> {
         let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
         }
         self.input.read_exact(&mut b[offset..end]).map_err(|e| {
-            LuceneError::Io(io::Error::new(
+            LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("read past EOF: {e}"),
-            ))
+            )))
         })?;
         Ok(())
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -3033,7 +3033,7 @@ impl<W: Write> OutputStreamDataOutput<W> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the buffered bytes cannot be written out.
+    /// Returns [`LuceneErrorKind::Io`] if the buffered bytes cannot be written out.
     pub fn close(mut self) -> Result<()> {
         self.output.flush().map_err(LuceneError::from)
     }
@@ -3047,9 +3047,9 @@ impl<W: Write> DataOutput for OutputStreamDataOutput<W> {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
@@ -3177,16 +3177,16 @@ impl IndexInput for MockIndexInput {
     fn seek(&mut self, pos: i64) -> Result<()> {
         self.ensure_open()?;
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         let pos = pos as usize;
         if pos > self.data.len() {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("seek past EOF: position={pos}, length={}", self.data.len()),
-            )));
+            ))));
         }
         self.pos = pos;
         Ok(())
@@ -3199,17 +3199,17 @@ impl IndexInput for MockIndexInput {
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
         if offset < 0 || length < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice offset ({offset}) and length ({length}) must be non-negative"
             )));
         }
         let offset = offset as usize;
         let length = length as usize;
         let end = offset.checked_add(length).ok_or_else(|| {
-            LuceneError::IllegalArgument("slice offset + length overflowed".to_string())
+            LuceneError::illegal_argument("slice offset + length overflowed".to_string())
         })?;
         if end > self.data.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice(offset={offset}, length={length}) out of bounds, input length={}",
                 self.data.len()
             )));
@@ -3611,13 +3611,13 @@ impl DefaultIOContext {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if more than one hint of the
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if more than one hint of the
     /// same concrete type is supplied.
     pub fn new(hints: Vec<Arc<dyn FileOpenHint>>) -> Result<Self> {
         for i in 0..hints.len() {
             for j in (i + 1)..hints.len() {
                 if hints[i].same_type(hints[j].as_ref()) {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "multiple hints of type {:?} specified",
                         hints[i]
                     )));
@@ -3797,14 +3797,14 @@ pub trait Lock: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the lock could not be released cleanly.
+    /// Returns [`LuceneErrorKind::Io`] if the lock could not be released cleanly.
     fn close(&self) -> Result<()>;
 
     /// Best-effort check that this lock is still valid.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the lock is no longer valid.
+    /// Returns [`LuceneErrorKind::Io`] if the lock is no longer valid.
     fn ensure_valid(&self) -> Result<()>;
 
     /// This lock as `&dyn Any`, for the callers that narrow a lock to its
@@ -3858,7 +3858,7 @@ pub trait LockFactory: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::LockObtainFailed`] if the lock cannot be acquired.
+    /// Returns [`LuceneErrorKind::LockObtainFailed`] if the lock cannot be acquired.
     fn obtain_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>>;
 
     /// Returns the concrete type name of this lock factory implementation.
@@ -3905,13 +3905,13 @@ pub trait LockFactory: Send + Sync {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::UnsupportedOperation`] when `dir` is not an
+/// Returns [`LuceneErrorKind::UnsupportedOperation`] when `dir` is not an
 /// `FSDirectory` subclass ([`Directory::as_fs_directory`] answers `None`).
 fn fs_directory_of<F: ?Sized>(dir: &dyn Directory) -> Result<&FSDirectory> {
     dir.as_fs_directory().ok_or_else(|| {
         let full_name = std::any::type_name::<F>();
         let simple_name = full_name.split("::").last().unwrap_or("FSLockFactory");
-        LuceneError::UnsupportedOperation(format!(
+        LuceneError::unsupported_operation(format!(
             "{simple_name} can only be used with FSDirectory subclasses, got: {}",
             dir.directory_to_string()
         ))
@@ -3943,7 +3943,7 @@ pub trait FSLockFactory: LockFactory {
     /// typed `FSDirectory`; this one is a `&dyn Directory` that the
     /// implementations narrow themselves, so a directory that is not an
     /// `FSDirectory` subclass is refused with the
-    /// [`LuceneError::UnsupportedOperation`] that
+    /// [`LuceneErrorKind::UnsupportedOperation`] that
     /// [`LockFactory::obtain_lock`] raises for it. The lock directory is
     /// [`FSDirectory::get_directory`].
     fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>>;
@@ -4149,7 +4149,7 @@ impl NativeFSLockFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] when the path was not held.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] when the path was not held.
     fn clear_lock_held(path: &str) -> Result<()> {
         let removed = NATIVE_HELD_LOCKS
             .lock()
@@ -4402,7 +4402,8 @@ mod channel_lock {
             assert_eq!(error.to_string(), expected);
             assert_eq!(error.kind(), io::Error::from(Errno::BADF).kind());
             assert_eq!(
-                crate::error::LuceneError::Io(error).to_string(),
+                crate::error::LuceneError::from(crate::error::LuceneErrorKind::Io(error))
+                    .to_string(),
                 format!("I/O error: {expected}")
             );
         }
@@ -4841,7 +4842,7 @@ impl BufferedChecksum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `offset + len` exceeds
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `offset + len` exceeds
     /// `bytes.len()`.
     pub fn update_bytes(&mut self, bytes: &[u8], offset: usize, len: usize) -> Result<()> {
         check_from_index_size(offset, len, bytes.len())?;
@@ -4913,7 +4914,7 @@ impl BufferedChecksum {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `offset + len` exceeds
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `offset + len` exceeds
     /// `vals.len()`, as [`update_bytes`](Self::update_bytes) does for bytes.
     /// The range is checked before anything is checksummed; Java raises its
     /// `IndexOutOfBoundsException` from the array access itself, after it may
@@ -5044,7 +5045,7 @@ pub trait ChecksumIndexInput: IndexInput {
     /// Forward-only seek that updates the checksum over skipped bytes.
     ///
     /// Equivalent to `ChecksumIndexInput.seek` in Lucene 10.5.0. Backward seeks
-    /// are rejected with [`LuceneError::IllegalState`]. Forward seeks advance the
+    /// are rejected with [`LuceneErrorKind::IllegalState`]. Forward seeks advance the
     /// file pointer by reading the skipped bytes through the per-instance skip
     /// buffer, so the digest remains correct.
     fn seek(&mut self, pos: i64) -> Result<()> {
@@ -5188,7 +5189,7 @@ impl DataInput for BufferedChecksumIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -5263,21 +5264,21 @@ pub trait Directory: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    /// Returns [`LuceneErrorKind::Io`] with `NotFound` if the file does not exist.
     fn delete_file(&self, name: &str) -> Result<()>;
 
     /// Returns the byte length of the named file.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    /// Returns [`LuceneErrorKind::Io`] with `NotFound` if the file does not exist.
     fn file_length(&self, name: &str) -> Result<i64>;
 
     /// Creates a new file and returns an output stream for appending to it.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `AlreadyExists` if the file exists.
+    /// Returns [`LuceneErrorKind::Io`] with `AlreadyExists` if the file exists.
     fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>>;
 
     /// Creates a new temporary file and returns an output stream for it.
@@ -5301,14 +5302,14 @@ pub trait Directory: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `AlreadyExists` if `dest` exists.
+    /// Returns [`LuceneErrorKind::Io`] with `AlreadyExists` if `dest` exists.
     fn rename(&self, source: &str, dest: &str) -> Result<()>;
 
     /// Opens an existing file for reading.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    /// Returns [`LuceneErrorKind::Io`] with `NotFound` if the file does not exist.
     fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>>;
 
     /// Opens a checksum-computing input for an existing file.
@@ -5468,7 +5469,7 @@ pub trait Directory: Send + Sync {
     /// Default validation that this directory is still open.
     ///
     /// Concrete directories may override this to throw
-    /// [`LuceneError::IllegalState`] when closed.
+    /// [`LuceneErrorKind::IllegalState`] when closed.
     fn ensure_open(&self) -> Result<()> {
         Ok(())
     }
@@ -5593,7 +5594,7 @@ impl BaseDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] "this Directory is closed".
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] "this Directory is closed".
     pub fn ensure_open(&self) -> Result<()> {
         if !self.is_open() {
             return Err(LuceneError::already_closed(
@@ -6084,7 +6085,7 @@ impl FileSwitchDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `primary_extensions` contains
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `primary_extensions` contains
     /// `"tmp"`, which is reserved for temporary files.
     pub fn new(
         primary_extensions: HashSet<String>,
@@ -6093,7 +6094,7 @@ impl FileSwitchDirectory {
         do_close: bool,
     ) -> Result<Self> {
         if primary_extensions.contains("tmp") {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "tmp is a reserved extension".to_string(),
             ));
         }
@@ -6143,7 +6144,7 @@ impl FileSwitchDirectory {
     }
 
     fn is_not_found(err: &LuceneError) -> bool {
-        matches!(err, LuceneError::Io(io_err) if io_err.kind() == io::ErrorKind::NotFound)
+        matches!(err, LuceneError { kind: LuceneErrorKind::Io(io_err), .. } if io_err.kind() == io::ErrorKind::NotFound)
     }
 }
 
@@ -6252,8 +6253,8 @@ impl Directory for FileSwitchDirectory {
         let source_dir = self.get_directory(source);
         let dest_dir = self.get_directory(dest);
         if !std::ptr::eq(source_dir, dest_dir) {
-            return Err(LuceneError::Io(io::Error::other(format!(
-                "source and dest are in different directories: {source} -> {dest}"
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                format!("source and dest are in different directories: {source} -> {dest}"),
             ))));
         }
         source_dir.rename(source, dest)
@@ -6468,7 +6469,7 @@ impl NRTCachingDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the cache directory is
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] once the cache directory is
     /// closed, as `fileExists` throws `AlreadyClosedException`.
     fn is_cached_file(
         shared: &NrtCacheShared,
@@ -6558,7 +6559,7 @@ impl NRTCachingDirectory {
     /// `NRTCachingDirectory.slowFileExists(Directory, String)`
     /// (`NRTCachingDirectory.java:294-305`): `dir.fileLength(fileName)`, where
     /// only `NoSuchFileException` and `FileNotFoundException` — this port's
-    /// [`LuceneError::Io`] of kind [`io::ErrorKind::NotFound`] — mean `false`.
+    /// [`LuceneErrorKind::Io`] of kind [`io::ErrorKind::NotFound`] — mean `false`.
     ///
     /// # Errors
     ///
@@ -6566,7 +6567,10 @@ impl NRTCachingDirectory {
     fn slow_file_exists(dir: &dyn Directory, name: &str) -> Result<bool> {
         match dir.file_length(name) {
             Ok(_) => Ok(true),
-            Err(LuceneError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            }) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
     }
@@ -6720,7 +6724,7 @@ impl Directory for NRTCachingDirectory {
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.un_cache(source)?;
         if self.cache.file_exists(dest)? {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "target file {dest} already exists"
             )));
         }
@@ -6889,7 +6893,7 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the buffer layout assumptions
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout assumptions
     /// are violated.
     pub fn new(buffers: Vec<Vec<u8>>) -> Result<Self> {
         ensure_assumptions(&buffers)?;
@@ -6927,14 +6931,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if `position` exceeds
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if `position` exceeds
     /// the stream length.
     pub fn seek(&mut self, position: usize) -> Result<()> {
         if position > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("seek past EOF: position={position}, length={}", self.length),
-            )));
+            ))));
         }
         self.pos = position;
         Ok(())
@@ -6944,14 +6948,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if `pos` is out of
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if `pos` is out of
     /// bounds.
     pub fn read_byte_at(&self, pos: usize) -> Result<u8> {
         if pos >= self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("readByte pos={pos} past EOF (length={})", self.length),
-            )));
+            ))));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -6963,14 +6967,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
     /// extend past the stream length.
     pub fn read_short_at(&self, pos: usize) -> Result<i16> {
         if pos + 2 > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("readShort pos={pos} past EOF (length={})", self.length),
-            )));
+            ))));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -6989,14 +6993,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
     /// extend past the stream length.
     pub fn read_int_at(&self, pos: usize) -> Result<i32> {
         if pos + 4 > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("readInt pos={pos} past EOF (length={})", self.length),
-            )));
+            ))));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -7017,14 +7021,14 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// Returns [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
     /// extend past the stream length.
     pub fn read_long_at(&self, pos: usize) -> Result<i64> {
         if pos + 8 > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("readLong pos={pos} past EOF (length={})", self.length),
-            )));
+            ))));
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
@@ -7043,8 +7047,8 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the destination slice is too
-    /// small, or [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the destination slice is too
+    /// small, or [`LuceneErrorKind::Io`] with `UnexpectedEof` if the read would
     /// extend past the stream length.
     pub fn read_bytes_at(
         &self,
@@ -7055,21 +7059,21 @@ impl ByteBuffersDataInput {
     ) -> Result<()> {
         let dst_end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if dst_end > bytes.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 bytes.len()
             )));
         }
         if pos + len > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!(
                     "readBytes pos={pos} len={len} past EOF (length={})",
                     self.length
                 ),
-            )));
+            ))));
         }
         let mut src_pos = pos;
         let mut dst_pos = offset;
@@ -7091,13 +7095,13 @@ impl ByteBuffersDataInput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the slice is out of bounds.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the slice is out of bounds.
     pub fn slice(&self, offset: usize, length: usize) -> Result<Self> {
         let end = offset.checked_add(length).ok_or_else(|| {
-            LuceneError::IllegalArgument("offset + length overflowed".to_string())
+            LuceneError::illegal_argument("offset + length overflowed".to_string())
         })?;
         if end > self.length {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice(offset={offset}, length={length}) out of bounds, input length={}",
                 self.length
             )));
@@ -7212,10 +7216,10 @@ impl DataInput for ByteBuffersDataInput {
 
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "unexpected EOF reading byte",
-            )));
+            ))));
         }
         let idx = self.block_index(self.pos);
         let off = self.block_offset(self.pos);
@@ -7228,9 +7232,9 @@ impl DataInput for ByteBuffersDataInput {
         let b = crate::store::require_array(b)?;
         let dst_end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if dst_end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
@@ -7239,22 +7243,22 @@ impl DataInput for ByteBuffersDataInput {
         let mut remaining = len;
         while remaining > 0 {
             if self.pos >= self.length {
-                return Err(LuceneError::Io(io::Error::new(
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!(
                         "unexpected EOF reading {len} bytes at pos {} (length {})",
                         self.pos, self.length
                     ),
-                )));
+                ))));
             }
             let idx = self.block_index(self.pos);
             let off = self.block_offset(self.pos);
             let available = self.blocks[idx].len() - off;
             if available == 0 {
-                return Err(LuceneError::Io(io::Error::new(
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "unexpected EOF reading bytes",
-                )));
+                ))));
             }
             let chunk = remaining.min(available);
             b[dst_pos..dst_pos + chunk].copy_from_slice(&self.blocks[idx][off..off + chunk]);
@@ -7267,17 +7271,17 @@ impl DataInput for ByteBuffersDataInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let num_bytes = num_bytes as usize;
         let target = self.pos + num_bytes;
         if target > self.length {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "skip past EOF",
-            )));
+            ))));
         }
         self.pos = target;
         Ok(())
@@ -7452,7 +7456,7 @@ fn determine_block_page(buffers: &[Vec<u8>]) -> usize {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when `buffers` violates the block
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `buffers` violates the block
 /// layout assumptions.
 fn slice_buffer_list(buffers: &[Vec<u8>], offset: usize, length: usize) -> Result<Vec<&[u8]>> {
     ensure_assumptions(buffers)?;
@@ -7494,7 +7498,7 @@ fn slice_buffer_list(buffers: &[Vec<u8>], offset: usize, length: usize) -> Resul
 /// Validates the assumptions required by [`ByteBuffersDataInput`].
 fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
     if buffers.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "Buffer list must not be empty.".to_string(),
         ));
     }
@@ -7503,13 +7507,13 @@ fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
     }
     let block_page = determine_block_page(buffers);
     if !is_power_of_two(block_page) {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "The first buffer must have a power-of-two length: {block_page}"
         )));
     }
     for (i, buffer) in buffers.iter().enumerate().skip(1) {
         if i != buffers.len() - 1 && buffer.len() != block_page {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Intermediate buffers must share an identical power-of-two block size: {block_page}"
             )));
         }
@@ -7700,7 +7704,7 @@ impl ByteBuffersDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the bit parameters are
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the bit parameters are
     /// inconsistent or out of range.
     pub fn with_config(min_bits: usize, max_bits: usize, reuse: bool) -> Result<Self> {
         if reuse {
@@ -7739,7 +7743,7 @@ impl ByteBuffersDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the bit parameters are
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the bit parameters are
     /// inconsistent or out of range, and a `java.lang.NullPointerException`
     /// ("Block allocator must not be null." / "Block reuse must not be
     /// null.") for a `None` argument, as `Objects.requireNonNull` throws
@@ -7778,17 +7782,17 @@ impl ByteBuffersDataOutput {
         block_reuse: Option<BlockReuse>,
     ) -> Result<Self> {
         if min_bits < LIMIT_MIN_BITS_PER_BLOCK {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minBitsPerBlock ({min_bits}) too small, must be at least {LIMIT_MIN_BITS_PER_BLOCK}"
             )));
         }
         if max_bits > LIMIT_MAX_BITS_PER_BLOCK {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxBitsPerBlock ({max_bits}) too large, must not exceed {LIMIT_MAX_BITS_PER_BLOCK}"
             )));
         }
         if min_bits > max_bits {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minBitsPerBlock ({min_bits}) cannot exceed maxBitsPerBlock ({max_bits})"
             )));
         }
@@ -7888,7 +7892,7 @@ impl ByteBuffersDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the resulting buffer layout
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the resulting buffer layout
     /// violates the input assumptions (should not happen for normal output).
     pub fn to_data_input(&self) -> Result<ByteBuffersDataInput> {
         let mut buffers: Vec<Vec<u8>> = self.completed.to_vec();
@@ -7907,7 +7911,7 @@ impl ByteBuffersDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Other`] — Java's plain `RuntimeException`, for
+    /// Returns [`LuceneErrorKind::Other`] — Java's plain `RuntimeException`, for
     /// which this port has no dedicated variant — with Java's message `Data
     /// exceeds maximum size of a single byte array: <size>` when the content
     /// is larger than `Integer.MAX_VALUE` bytes, the largest Java array
@@ -7915,9 +7919,9 @@ impl ByteBuffersDataOutput {
     pub fn to_array_copy(&self) -> Result<Vec<u8>> {
         let size = self.size();
         if size as u64 > i32::MAX as u64 {
-            return Err(LuceneError::Other(format!(
+            return Err(LuceneError::from(LuceneErrorKind::Other(format!(
                 "Data exceeds maximum size of a single byte array: {size}"
-            )));
+            ))));
         }
         let mut result = Vec::with_capacity(size);
         for block in &self.completed {
@@ -8077,9 +8081,9 @@ impl DataOutput for ByteBuffersDataOutput {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len()={}",
                 b.len()
             )));
@@ -8159,7 +8163,7 @@ impl DataOutput for ByteBuffersDataOutput {
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
         debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
@@ -8295,10 +8299,10 @@ impl FileEntry {
         let input = content.as_ref().ok_or_else(|| {
             // `new AccessDeniedException("Can't open a file still open for
             // writing: " + fileName)` (`ByteBuffersDirectory.java:244`).
-            LuceneError::Io(nio::access_denied_exception(format!(
+            LuceneError::from(LuceneErrorKind::Io(nio::access_denied_exception(format!(
                 "Can't open a file still open for writing: {}",
                 self.file_name
-            )))
+            ))))
         })?;
         input.clone_input()
     }
@@ -8388,7 +8392,9 @@ impl Directory for ByteBuffersDirectory {
         let mut files = self.files.lock().expect("files mutex poisoned");
         if files.remove(name).is_none() {
             // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:134`).
-            return Err(LuceneError::Io(nio::no_such_file_exception(name)));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(name),
+            )));
         }
         Ok(())
     }
@@ -8397,9 +8403,9 @@ impl Directory for ByteBuffersDirectory {
         self.ensure_open()?;
         let files = self.files.lock().expect("files mutex poisoned");
         // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:143`).
-        let entry = files
-            .get(name)
-            .ok_or_else(|| LuceneError::Io(nio::no_such_file_exception(name)))?;
+        let entry = files.get(name).ok_or_else(|| {
+            LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(name)))
+        })?;
         Ok(entry.length())
     }
 
@@ -8411,8 +8417,8 @@ impl Directory for ByteBuffersDirectory {
             if files.contains_key(name) {
                 // `new FileAlreadyExistsException("File already exists: " +
                 // name)` (`ByteBuffersDirectory.java:159`).
-                return Err(LuceneError::Io(nio::file_already_exists_exception(
-                    format!("File already exists: {name}"),
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    nio::file_already_exists_exception(format!("File already exists: {name}")),
                 )));
             }
             files.insert(name.to_string(), Arc::clone(&entry));
@@ -8461,12 +8467,13 @@ impl Directory for ByteBuffersDirectory {
         let mut files = self.files.lock().expect("files mutex poisoned");
         // `new NoSuchFileException(source)` and `new
         // FileAlreadyExistsException(dest)` (`ByteBuffersDirectory.java:183-186`).
-        let source_entry = files
-            .get(source)
-            .cloned()
-            .ok_or_else(|| LuceneError::Io(nio::no_such_file_exception(source)))?;
+        let source_entry = files.get(source).cloned().ok_or_else(|| {
+            LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(source)))
+        })?;
         if files.contains_key(dest) {
-            return Err(LuceneError::Io(nio::file_already_exists_exception(dest)));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::file_already_exists_exception(dest),
+            )));
         }
         files.insert(dest.to_string(), source_entry);
         if files.remove(source).is_none() {
@@ -8481,9 +8488,9 @@ impl Directory for ByteBuffersDirectory {
         self.ensure_open()?;
         let files = self.files.lock().expect("files mutex poisoned");
         // `new NoSuchFileException(name)` (`ByteBuffersDirectory.java:209`).
-        let entry = files
-            .get(name)
-            .ok_or_else(|| LuceneError::Io(nio::no_such_file_exception(name)))?;
+        let entry = files.get(name).ok_or_else(|| {
+            LuceneError::from(LuceneErrorKind::Io(nio::no_such_file_exception(name)))
+        })?;
         entry.open_input()
     }
 
@@ -8716,7 +8723,7 @@ impl IndexInput for ByteBuffersIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8732,7 +8739,7 @@ impl IndexInput for ByteBuffersIndexInput {
     ) -> Result<Box<dyn IndexInput>> {
         self.ensure_open()?;
         if offset < 0 || length < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice offset ({offset}) and length ({length}) must be non-negative"
             )));
         }
@@ -8764,7 +8771,7 @@ impl IndexInput for ByteBuffersIndexInput {
     fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
         self.ensure_open()?;
         if offset < 0 || length < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice offset ({offset}) and length ({length}) must be non-negative"
             )));
         }
@@ -8781,7 +8788,7 @@ impl IndexInput for ByteBuffersIndexInput {
 impl RandomAccessInput for ByteBuffersIndexInput {
     fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8796,7 +8803,7 @@ impl RandomAccessInput for ByteBuffersIndexInput {
         len: usize,
     ) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8806,7 +8813,7 @@ impl RandomAccessInput for ByteBuffersIndexInput {
 
     fn read_short_at(&mut self, pos: i64) -> Result<i16> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8815,7 +8822,7 @@ impl RandomAccessInput for ByteBuffersIndexInput {
 
     fn read_int_at(&mut self, pos: i64) -> Result<i32> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -8824,7 +8831,7 @@ impl RandomAccessInput for ByteBuffersIndexInput {
 
     fn read_long_at(&mut self, pos: i64) -> Result<i64> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
@@ -9019,9 +9026,9 @@ impl IndexOutput for ByteBuffersIndexOutput {
 
     fn checksum(&self) -> Result<i64> {
         let hasher = self.checksum.as_ref().ok_or_else(|| {
-            LuceneError::Io(io::Error::other(
+            LuceneError::from(LuceneErrorKind::Io(io::Error::other(
                 "This index output has no checksum computing ability",
-            ))
+            )))
         })?;
         let delegate = self.delegate()?;
         let current_size = delegate.size() as i64;
@@ -9128,7 +9135,7 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `buffer_size` is smaller than
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if `buffer_size` is smaller than
     /// [`OUTPUT_STREAM_MIN_BUFFER_SIZE`].
     pub fn new(
         resource_description: impl Into<String>,
@@ -9137,7 +9144,7 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
         buffer_size: usize,
     ) -> Result<Self> {
         if buffer_size < OUTPUT_STREAM_MIN_BUFFER_SIZE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Buffer size too small, need: {OUTPUT_STREAM_MIN_BUFFER_SIZE}"
             )));
         }
@@ -9163,9 +9170,9 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "source buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
@@ -9541,7 +9548,7 @@ impl FSDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] "this Directory is closed" once
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] "this Directory is closed" once
     /// the directory is closed.
     pub fn get_directory(&self) -> Result<&nio::Path> {
         self.base.ensure_open()?;
@@ -9594,9 +9601,11 @@ impl FSDirectory {
     /// Equivalent to `FSDirectory.ensureCanRead(String)` (`FSDirectory.java:229-234`).
     fn ensure_can_read(&self, name: &str) -> Result<()> {
         if self.is_pending(name) {
-            return Err(LuceneError::Io(nio::no_such_file_exception(format!(
-                "file \"{name}\" is pending delete and cannot be opened for read"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(format!(
+                    "file \"{name}\" is pending delete and cannot be opened for read"
+                )),
+            )));
         }
         Ok(())
     }
@@ -9637,7 +9646,7 @@ impl FSDirectory {
                     // LUCENE-6684: we suppress this check for Windows.
                     Ok(())
                 } else {
-                    Err(LuceneError::Io(e))
+                    Err(LuceneError::from(LuceneErrorKind::Io(e)))
                 }
             }
             // `catch (IOException ioe) { pendingDeletes.add(name); }`
@@ -9721,9 +9730,9 @@ impl Directory for FSDirectory {
     fn delete_file(&self, name: &str) -> Result<()> {
         self.check_open()?;
         if self.is_pending(name) {
-            return Err(LuceneError::Io(nio::no_such_file_exception(format!(
-                "file \"{name}\" is already pending delete"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(format!("file \"{name}\" is already pending delete")),
+            )));
         }
         self.private_delete_file(name, false)?;
         self.maybe_delete_pending_files()?;
@@ -9735,9 +9744,9 @@ impl Directory for FSDirectory {
     fn file_length(&self, name: &str) -> Result<i64> {
         self.check_open()?;
         if self.is_pending(name) {
-            return Err(LuceneError::Io(nio::no_such_file_exception(format!(
-                "file \"{name}\" is pending delete"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(format!("file \"{name}\" is pending delete")),
+            )));
         }
         Ok(nio::Files::size(&self.file_path(name))?)
     }
@@ -9780,9 +9789,11 @@ impl Directory for FSDirectory {
             ) {
                 Ok(out) => return Ok(Box::new(out)),
                 // Retry with next incremented name
-                Err(LuceneError::Io(e))
-                    if nio::java_class_of(&e) == nio::FILE_ALREADY_EXISTS_EXCEPTION
-                        || e.kind() == io::ErrorKind::AlreadyExists =>
+                Err(LuceneError {
+                    kind: LuceneErrorKind::Io(e),
+                    ..
+                }) if nio::java_class_of(&e) == nio::FILE_ALREADY_EXISTS_EXCEPTION
+                    || e.kind() == io::ErrorKind::AlreadyExists =>
                 {
                     continue;
                 }
@@ -9814,9 +9825,11 @@ impl Directory for FSDirectory {
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         self.check_open()?;
         if self.is_pending(source) {
-            return Err(LuceneError::Io(nio::no_such_file_exception(format!(
-                "file \"{source}\" is pending delete and cannot be moved"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                nio::no_such_file_exception(format!(
+                    "file \"{source}\" is pending delete and cannot be moved"
+                )),
+            )));
         }
         self.maybe_delete_pending_files()?;
         if self.remove_pending(dest) {
@@ -9935,10 +9948,10 @@ impl FileIndexInput {
                 .channel
                 .read_at(&mut buf[done..], self.pos as i64 + done as i64)?;
             if n < 0 {
-                return Err(LuceneError::Io(io::Error::new(
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "failed to fill whole buffer",
-                )));
+                ))));
             }
             done += n as usize;
         }
@@ -9963,9 +9976,9 @@ impl DataInput for FileIndexInput {
         let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
@@ -9975,16 +9988,16 @@ impl DataInput for FileIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let target = self.pos as i64 + num_bytes;
         if target > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "skip past EOF",
-            )));
+            ))));
         }
         self.pos = target as u64;
         Ok(())
@@ -10007,15 +10020,15 @@ impl IndexInput for FileIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         if pos > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "seek past EOF",
-            )));
+            ))));
         }
         self.pos = pos as u64;
         Ok(())
@@ -10028,7 +10041,7 @@ impl IndexInput for FileIndexInput {
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
         if offset < 0 || length < 0 || length > self.len - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice({slice_description}) out of bounds"
             )));
         }
@@ -10091,7 +10104,7 @@ impl NIOFSDirectory {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the directory is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] once the directory is closed.
     pub fn get_directory(&self) -> Result<&nio::Path> {
         self.inner.get_directory()
     }
@@ -10311,10 +10324,10 @@ impl RawNioFsIndexInput {
     fn read_internal(&mut self, buf: &mut [u8]) -> Result<()> {
         // `if (pos + b.remaining() > end) throw new EOFException("read past EOF: " + this)`
         if self.pos as i64 + buf.len() as i64 > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!("read past EOF: {}", self.resource_description),
-            )));
+            ))));
         }
         read_channel_at(&*self.channel, buf, self.off + self.pos).map_err(|e| {
             if nio::java_class_of(&e) == nio::CLOSED_CHANNEL_EXCEPTION {
@@ -10323,15 +10336,15 @@ impl RawNioFsIndexInput {
                     self.resource_description
                 ))
             } else if e.kind() == io::ErrorKind::UnexpectedEof {
-                LuceneError::Io(io::Error::new(
+                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!("read past EOF: {}", self.resource_description),
-                ))
+                )))
             } else {
-                LuceneError::Io(io::Error::new(
+                LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                     e.kind(),
                     format!("{}: {e}", self.resource_description),
-                ))
+                )))
             }
         })?;
         self.pos += buf.len() as u64;
@@ -10355,9 +10368,9 @@ impl DataInput for RawNioFsIndexInput {
         let b = crate::store::require_array(b)?;
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+            .ok_or_else(|| LuceneError::illegal_argument("offset + len overflowed".to_string()))?;
         if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "destination buffer too small: offset={offset}, len={len}, buf.len={}",
                 b.len()
             )));
@@ -10367,16 +10380,16 @@ impl DataInput for RawNioFsIndexInput {
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be non-negative (got: {num_bytes})"
             )));
         }
         let target = self.pos as i64 + num_bytes;
         if target > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "skip past EOF",
-            )));
+            ))));
         }
         self.pos = target as u64;
         Ok(())
@@ -10402,15 +10415,15 @@ impl IndexInput for RawNioFsIndexInput {
 
     fn seek(&mut self, pos: i64) -> Result<()> {
         if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "position must be non-negative (got: {pos})"
             )));
         }
         if pos > self.len {
-            return Err(LuceneError::Io(io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "seek past EOF",
-            )));
+            ))));
         }
         self.pos = pos as u64;
         Ok(())
@@ -10423,7 +10436,7 @@ impl IndexInput for RawNioFsIndexInput {
         length: i64,
     ) -> Result<Box<dyn IndexInput>> {
         if offset < 0 || length < 0 || length > self.len - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice({slice_description}) out of bounds"
             )));
         }
@@ -10535,7 +10548,7 @@ impl NIOFSIndexInput {
     /// starting at `off + offset`, buffered with `getBufferSize()`.
     fn slice_nio(&self, slice_description: &str, offset: i64, length: i64) -> Result<Self> {
         if (length | offset) < 0 || length > self.length() - offset {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "slice() {slice_description} out of bounds: offset={offset},length={length},fileLength={}: {}",
                 self.length(),
                 self.resource_description()
@@ -10773,7 +10786,7 @@ mod tests {
         output.completed = vec![vec![0u8; 1 << 30], vec![0u8; 1 << 30]];
         assert!(matches!(
             output.to_array_copy(),
-            Err(LuceneError::Other(ref message))
+            Err(LuceneError { kind: LuceneErrorKind::Other(ref message), .. })
                 if message == "Data exceeds maximum size of a single byte array: 2147483648"
         ));
     }
@@ -12306,7 +12319,7 @@ mod tests {
         // deleted (here, the file that was already there).
         let err = dst.copy_from(&src, "a.bin", "b.bin", ctx).unwrap_err();
         assert!(
-            matches!(&err, LuceneError::Io(e) if e.kind() == io::ErrorKind::AlreadyExists),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::AlreadyExists),
             "{err}"
         );
         assert_eq!(
@@ -12328,7 +12341,10 @@ mod tests {
         let dir = ByteBuffersDirectory::new();
         let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
         let class_and_message = |e: LuceneError| match e {
-            LuceneError::Io(io) => (
+            LuceneError {
+                kind: LuceneErrorKind::Io(io),
+                ..
+            } => (
                 nio::java_class_of(&io).to_string(),
                 nio::java_message_of(&io).unwrap(),
                 io.kind(),
@@ -12526,7 +12542,10 @@ mod tests {
         let mut dir = ByteBuffersDirectory::new();
         let lock = dir.obtain_lock("x").unwrap();
         match dir.obtain_lock("x") {
-            Err(LuceneError::LockObtainFailed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { message, .. },
+                ..
+            }) => {
                 assert_eq!(
                     message,
                     format!(
@@ -12550,7 +12569,10 @@ mod tests {
 
         dir.close().unwrap();
         match dir.ensure_open() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
@@ -12573,7 +12595,10 @@ mod tests {
         let mut native = NIOFSDirectory::open(tmp.path().join("closed")).unwrap();
         native.close().unwrap();
         match native.obtain_lock("y") {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {:?}", other.err()),
@@ -12606,7 +12631,10 @@ mod tests {
         .unwrap();
         let lock = dir.obtain_lock("x").unwrap();
         match dir.obtain_lock("x") {
-            Err(LuceneError::LockObtainFailed { message, .. }) => assert!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { message, .. },
+                ..
+            }) => assert!(
                 matches_java_text(
                     &message,
                     &format!(
@@ -12725,7 +12753,10 @@ mod tests {
         ));
 
         match NativeFSLockFactory.obtain_lock(&bb, "x") {
-            Err(LuceneError::UnsupportedOperation(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!(
                     "NativeFSLockFactory can only be used with FSDirectory subclasses, got: {}",
@@ -12818,7 +12849,10 @@ mod tests {
         dir.delete_file("pending").unwrap();
         assert!(dir.get_pending_deletions().unwrap().contains("pending"));
         match dir.rename("pending", "moved") {
-            Err(LuceneError::Io(error)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            }) => {
                 assert_eq!(error.kind(), io::ErrorKind::NotFound);
                 assert_eq!(
                     error.to_string(),
@@ -12918,7 +12952,10 @@ mod tests {
             file.write_all(b"x").unwrap();
         }
         match lock.ensure_valid() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!("Unexpected lock file size: 1, (lock={})", rendered("valid"))
             ),
@@ -12930,7 +12967,10 @@ mod tests {
 
         lock.close().unwrap();
         match lock.ensure_valid() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!("Lock instance already released: {}", rendered("invalid"))
             ),
@@ -12985,7 +13025,10 @@ mod tests {
             file_time_to_string(original)
         );
         match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(message, expected),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert_eq!(message, expected),
             other => panic!("an AlreadyClosedException, got {other:?}"),
         }
     }
@@ -13040,7 +13083,10 @@ mod tests {
             file_time_to_string(original)
         );
         match lock.ensure_valid() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(message, expected),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert_eq!(message, expected),
             other => panic!("an AlreadyClosedException, got {other:?}"),
         }
     }
@@ -13091,7 +13137,7 @@ mod tests {
         .unwrap();
         let released = |lock: &dyn Lock, path: &Path, creation_time: &str| {
             match lock.ensure_valid() {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert_eq!(
+            Err(LuceneError { kind: LuceneErrorKind::AlreadyClosed { message, .. }, .. }) => assert_eq!(
                 message,
                 format!(
                     "Lock instance already released: SimpleFSLock(path={},creationTime={creation_time})",
@@ -13117,7 +13163,10 @@ mod tests {
         let b_created = creation_time(&b_path);
         std::fs::remove_file(&b_path).unwrap();
         match b.close() {
-            Err(LuceneError::LockReleaseFailed { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockReleaseFailed { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 "Lock file cannot be safely removed. Manual intervention is recommended."
             ),
@@ -13182,7 +13231,10 @@ mod tests {
                 println!("child obtain: ok");
                 lock.close().unwrap();
             }
-            Err(LuceneError::LockObtainFailed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { message, .. },
+                ..
+            }) => {
                 println!("child obtain: LockObtainFailedException: {message}")
             }
             Err(other) => println!("child obtain: {other:?}"),
@@ -13285,7 +13337,10 @@ mod tests {
         let a = dir.obtain_lock("a.lock").unwrap();
         let a_path = dir.get_directory().unwrap().as_std_path().join("a.lock");
         match dir.obtain_lock("a.lock") {
-            Err(LuceneError::LockObtainFailed { message, .. }) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::LockObtainFailed { message, .. },
+                ..
+            }) => assert_eq!(
                 message,
                 format!("Lock held by this virtual machine: {}", a_path.display())
             ),
@@ -13302,7 +13357,10 @@ mod tests {
         let b_path = dir.get_directory().unwrap().as_std_path().join("b.lock");
         std::fs::remove_file(&b_path).unwrap();
         match b.ensure_valid() {
-            Err(LuceneError::Io(error)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            }) => {
                 assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
                 assert_eq!(error.to_string(), b_path.display().to_string());
             }
@@ -13334,7 +13392,10 @@ mod tests {
         let result = c.ensure_valid();
         c.close().unwrap();
         match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => assert!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => assert!(
                 message.starts_with(&format!(
                     "Underlying file changed by an external force at {}, (lock=NativeFSLock(",
                     file_time_to_string(ctime)
@@ -13401,7 +13462,10 @@ mod tests {
             )
         };
         let refused = |result: Result<Box<dyn Lock>>| match result {
-            Err(LuceneError::UnsupportedOperation(message)) => message,
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
+                ..
+            }) => message,
             other => panic!(
                 "expected UnsupportedOperationException, got {:?}",
                 other.err()
@@ -13431,7 +13495,10 @@ mod tests {
     fn get_directory_refuses_a_closed_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let closed = |result: Result<&nio::Path>| match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
@@ -13500,7 +13567,10 @@ mod tests {
         let rendered =
             "org.apache.lucene.store.SingleInstanceLockFactory$SingleInstanceLock@{hash}: x";
         let message = |result: Result<()>| match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => message,
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => message,
             other => panic!("expected AlreadyClosedException, got {other:?}"),
         };
         factory.locks.lock().unwrap().clear();
@@ -13627,8 +13697,8 @@ mod tests {
 
         fn file_length(&self, name: &str) -> Result<i64> {
             if self.fault == "length" {
-                return Err(LuceneError::Io(io::Error::other(format!(
-                    "fileLength refused: {name}"
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    format!("fileLength refused: {name}"),
                 ))));
             }
             self.inner.file_length(name)
@@ -13640,8 +13710,8 @@ mod tests {
             context: &dyn IOContext,
         ) -> Result<Box<dyn IndexOutput>> {
             if self.fault == "create" {
-                return Err(LuceneError::Io(io::Error::other(format!(
-                    "createOutput refused: {name}"
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    format!("createOutput refused: {name}"),
                 ))));
             }
             self.inner.create_output(name, context)
@@ -13678,7 +13748,9 @@ mod tests {
 
         fn close(&mut self) -> Result<()> {
             if self.fault == "close" {
-                return Err(LuceneError::Io(io::Error::other("close refused")));
+                return Err(LuceneError::from(LuceneErrorKind::Io(io::Error::other(
+                    "close refused",
+                ))));
             }
             self.inner.close()
         }
@@ -13719,13 +13791,19 @@ mod tests {
     #[test]
     fn nrt_caching_directory_closes_and_names_temp_files_as_lucene() {
         let closed_dir = |result: Result<Vec<String>>| match result {
-            Err(LuceneError::AlreadyClosed { message, .. }) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { message, .. },
+                ..
+            }) => {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
         };
         let io_message = |error: LuceneError| match error {
-            LuceneError::Io(error) if error.kind() == io::ErrorKind::Other => error.to_string(),
+            LuceneError {
+                kind: LuceneErrorKind::Io(error),
+                ..
+            } if error.kind() == io::ErrorKind::Other => error.to_string(),
             other => panic!("expected an IOException, got {other:?}"),
         };
         let flush = flush_io_context(FlushInfo::new(1, 10));
@@ -13906,7 +13984,13 @@ mod tests {
 
         IndexInput::seek(&mut input, 16).unwrap();
         let err = IndexInput::seek(&mut input, 8).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
         assert!(err.to_string().contains("cannot seek backwards"));
         assert!(err.to_string().contains("BufferedChecksumIndexInput"));
     }
@@ -13922,7 +14006,13 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("expected clone to be unsupported"),
         };
-        assert!(matches!(err, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
     }
 
     /// Verifies that `BufferedChecksumIndexInput` does not support slicing.
@@ -13936,7 +14026,13 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("expected slice to be unsupported"),
         };
-        assert!(matches!(err, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
     }
 
     // -------------------------------------------------------------------------
@@ -14461,7 +14557,10 @@ mod tests {
         let default = dir.open_input("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
         assert!(matches!(
             default.slice("u", 500, 100),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
     }
 
@@ -14790,7 +14889,10 @@ mod tests {
         log.push(format!("temp name: {}", tmp.name()));
         state(&dir, "temp", &mut log);
         match dir.rename("g", "t_x_0.tmp") {
-            Err(LuceneError::IllegalArgument(message)) => log.push(format!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => log.push(format!(
                 "rename onto cached: IllegalArgumentException: {message}"
             )),
             other => panic!("expected IllegalArgumentException, got {other:?}"),
@@ -15014,7 +15116,13 @@ mod tests {
                 .read_string()
                 .expect_err("a negative length is not a string");
             assert!(
-                matches!(error, LuceneError::CorruptIndex(_)),
+                matches!(
+                    error,
+                    LuceneError {
+                        kind: LuceneErrorKind::CorruptIndex(_),
+                        ..
+                    }
+                ),
                 "length={length}: {error:?}"
             );
         }
@@ -15501,7 +15609,10 @@ mod tests {
         assert!(
             matches!(
                 fsd.secondary_dir().ensure_open(),
-                Err(LuceneError::AlreadyClosed { .. })
+                Err(LuceneError {
+                    kind: LuceneErrorKind::AlreadyClosed { .. },
+                    ..
+                })
             ),
             "the secondary directory is closed"
         );

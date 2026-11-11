@@ -145,7 +145,7 @@ impl Terms for OrdsFieldReader {
         start_term: Option<&BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
         if compiled.automaton_type != AutomatonType::Normal {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "please use CompiledAutomaton.getTermsEnum instead".to_string(),
             ));
         }

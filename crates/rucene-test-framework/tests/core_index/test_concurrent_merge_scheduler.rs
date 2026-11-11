@@ -19,7 +19,7 @@ use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
 use rucene::analysis::TokenStream;
 use rucene::document::{Document, Field, KnnFloatVectorField, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
@@ -153,10 +153,12 @@ impl Failure for FailOnlyOnFlush {
             && random().next_boolean()
         {
             self.hit_exc.store(true, Ordering::SeqCst);
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "{}: now failing during flush",
-                Thread::current().name()
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!(
+                    "{}: now failing during flush",
+                    Thread::current().name()
+                )),
+            )));
         }
         Ok(())
     }

@@ -42,11 +42,11 @@ impl ReadWriteDataOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when `block_bits`
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when `block_bits`
     /// is outside `1 ..= 31`, the range `ByteBuffersDataOutput` accepts.
     pub fn new(block_bits: i32) -> Result<Self> {
         if !(1..=31).contains(&block_bits) {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "blockBits must be 1 .. 31; got {block_bits}"
             )));
         }
@@ -214,10 +214,12 @@ impl<B: AsRef<[Vec<u8>]>> BlockReverseBytesReader<B> {
             let index = self.next_buffer;
             self.next_buffer = index - 1;
             if index < 0 || index as usize >= self.blocks.as_ref().len() {
-                return Err(crate::error::LuceneError::CorruptIndex(format!(
-                    "FST block index {index} is outside the {} available blocks",
-                    self.blocks.as_ref().len()
-                )));
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::CorruptIndex(format!(
+                        "FST block index {index} is outside the {} available blocks",
+                        self.blocks.as_ref().len()
+                    )),
+                ));
             }
             self.current = index as usize;
             self.next_read = self.block_size as i64 - 1;
@@ -226,11 +228,13 @@ impl<B: AsRef<[Vec<u8>]>> BlockReverseBytesReader<B> {
         self.next_read = pos - 1;
         let block = &self.blocks.as_ref()[self.current];
         if pos < 0 || pos as usize >= block.len() {
-            return Err(crate::error::LuceneError::CorruptIndex(format!(
-                "FST read position {pos} is outside the {} bytes of block {}",
-                block.len(),
-                self.current
-            )));
+            return Err(crate::error::LuceneError::from(
+                crate::error::LuceneErrorKind::CorruptIndex(format!(
+                    "FST read position {pos} is outside the {} bytes of block {}",
+                    block.len(),
+                    self.current
+                )),
+            ));
         }
         Ok(block[pos as usize])
     }

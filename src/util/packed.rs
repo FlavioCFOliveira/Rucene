@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{
     ByteBuffersDataInput, ByteBuffersIndexInput, DataInput, DataOutput, IndexOutput,
     RandomAccessInput,
@@ -143,15 +143,19 @@ impl PackedInts {
 
     pub fn check_version(version: i32) -> Result<()> {
         if version < Self::VERSION_START {
-            return Err(LuceneError::IndexFormatNotSupported(format!(
-                "PackedInts version {version} is too old, expected at least {}",
-                Self::VERSION_START
+            return Err(LuceneError::from(LuceneErrorKind::IndexFormatNotSupported(
+                format!(
+                    "PackedInts version {version} is too old, expected at least {}",
+                    Self::VERSION_START
+                ),
             )));
         }
         if version > Self::VERSION_CURRENT {
-            return Err(LuceneError::IndexFormatNotSupported(format!(
-                "PackedInts version {version} is too new, expected at most {}",
-                Self::VERSION_CURRENT
+            return Err(LuceneError::from(LuceneErrorKind::IndexFormatNotSupported(
+                format!(
+                    "PackedInts version {version} is too new, expected at most {}",
+                    Self::VERSION_CURRENT
+                ),
             )));
         }
         Ok(())
@@ -159,7 +163,7 @@ impl PackedInts {
 
     pub fn bits_required(max_value: i64) -> Result<i32> {
         if max_value < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxValue must be non-negative, got {max_value}"
             )));
         }
@@ -168,7 +172,7 @@ impl PackedInts {
 
     pub fn bits_required_i32(max_value: i32) -> Result<i32> {
         if max_value < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxValue must be non-negative, got {max_value}"
             )));
         }
@@ -197,12 +201,12 @@ impl PackedInts {
         max_block_size: usize,
     ) -> Result<i32> {
         if block_size < min_block_size || block_size > max_block_size {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "blockSize must be >= {min_block_size} and <= {max_block_size}, got {block_size}"
             )));
         }
         if (block_size & (block_size - 1)) != 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "blockSize must be a power of two, got {block_size}"
             )));
         }
@@ -211,19 +215,19 @@ impl PackedInts {
 
     pub fn num_blocks(size: i64, block_size: usize) -> Result<usize> {
         if size < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "size must be non-negative, got {size}"
             )));
         }
         if block_size == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "blockSize must be non-zero".to_string(),
             ));
         }
         let blocks = (size as u64)
             .div_ceil(block_size as u64)
             .try_into()
-            .map_err(|_| LuceneError::IllegalArgument("size is too large".to_string()))?;
+            .map_err(|_| LuceneError::illegal_argument("size is too large".to_string()))?;
         Ok(blocks)
     }
 }
@@ -254,12 +258,12 @@ impl Format {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when no format has that id.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when no format has that id.
     pub fn by_id(id: i32) -> Result<Self> {
         match id {
             0 => Ok(Format::Packed),
             1 => Ok(Format::PackedSingleBlock),
-            _ => Err(LuceneError::IllegalArgument(format!(
+            _ => Err(LuceneError::illegal_argument(format!(
                 "Unknown format id: {id}"
             ))),
         }
@@ -282,11 +286,11 @@ impl Format {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `value_count` is negative.
     /// The width is only asserted, as in Lucene's base `byteCount`.
     pub fn byte_count(&self, version: i32, value_count: i32, bits_per_value: i32) -> Result<i64> {
         if value_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
@@ -307,7 +311,7 @@ impl Format {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `value_count` is negative
     /// or `bits_per_value` is outside `[0, 64]`, and, for
     /// [`Format::PackedSingleBlock`], when `bits_per_value` is zero.
     pub fn long_count(&self, version: i32, value_count: i32, bits_per_value: i32) -> Result<i32> {
@@ -320,12 +324,12 @@ impl Format {
             }
             Format::PackedSingleBlock => {
                 if value_count < 0 {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "valueCount must be non-negative, got {value_count}"
                     )));
                 }
                 if !(1..=64).contains(&bits_per_value) {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "bitsPerValue must be in [1, 64] for the single-block format, \
                          got {bits_per_value}"
                     )));
@@ -410,7 +414,7 @@ impl<'a> DirectWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `num_values` is negative
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `num_values` is negative
     /// or `bits_per_value` is not one of the supported widths.
     pub fn new(
         output: &'a mut dyn DataOutput,
@@ -418,7 +422,7 @@ impl<'a> DirectWriter<'a> {
         bits_per_value: i32,
     ) -> Result<Self> {
         if num_values < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numValues must be non-negative, got {num_values}"
             )));
         }
@@ -450,7 +454,7 @@ impl<'a> DirectWriter<'a> {
             .binary_search(&bits_per_value)
             .is_err()
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Unsupported bitsPerValue {bits_per_value}; use bitsRequired()"
             )));
         }
@@ -481,7 +485,7 @@ impl<'a> DirectWriter<'a> {
     pub fn bytes_required(num_values: i64, bits_per_value: i32) -> Result<i64> {
         Self::check_bits_per_value(bits_per_value)?;
         if num_values < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numValues must be non-negative, got {num_values}"
             )));
         }
@@ -514,10 +518,10 @@ impl<'a> DirectWriter<'a> {
         );
         debug_assert!(!self.finished);
         if self.count >= self.num_values {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "writing past end of stream",
-            )));
+            ))));
         }
 
         self.next_values[self.off] = value;
@@ -1030,7 +1034,7 @@ impl<'a> DirectMonotonicWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `block_shift` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `block_shift` is outside
     /// [`Self::MIN_BLOCK_SHIFT`]..=[`Self::MAX_BLOCK_SHIFT`], when `num_values`
     /// is negative, or when the resulting block count cannot be held.
     pub fn new(
@@ -1040,14 +1044,14 @@ impl<'a> DirectMonotonicWriter<'a> {
         block_shift: i32,
     ) -> Result<Self> {
         if !(Self::MIN_BLOCK_SHIFT..=Self::MAX_BLOCK_SHIFT).contains(&block_shift) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "blockShift must be in [{}, {}], got {block_shift}",
                 Self::MIN_BLOCK_SHIFT,
                 Self::MAX_BLOCK_SHIFT
             )));
         }
         if num_values < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numValues must be non-negative, got {num_values}"
             )));
         }
@@ -1071,7 +1075,7 @@ impl<'a> DirectMonotonicWriter<'a> {
 
     pub fn add(&mut self, v: i64) -> Result<()> {
         if v < self.previous {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "values are not monotonic: {} before {}",
                 self.previous, v
             )));
@@ -1166,21 +1170,21 @@ impl DirectMonotonicMeta {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `block_shift` is outside
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `block_shift` is outside
     /// the writer's range or `num_values` is negative, and the I/O error raised
     /// when the metadata stream ends early.
     pub fn load(input: &mut dyn DataInput, num_values: i64, block_shift: i32) -> Result<Self> {
         if !(DirectMonotonicWriter::MIN_BLOCK_SHIFT..=DirectMonotonicWriter::MAX_BLOCK_SHIFT)
             .contains(&block_shift)
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "blockShift must be in [{}, {}], got {block_shift}",
                 DirectMonotonicWriter::MIN_BLOCK_SHIFT,
                 DirectMonotonicWriter::MAX_BLOCK_SHIFT
             )));
         }
         if num_values < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numValues must be non-negative, got {num_values}"
             )));
         }
@@ -1288,19 +1292,19 @@ struct SliceRandomAccess<'a>(&'a [u8]);
 impl SliceRandomAccess<'_> {
     fn window(&self, pos: i64, len: usize) -> Result<&[u8]> {
         let start = usize::try_from(pos).map_err(|_| {
-            LuceneError::IllegalArgument(format!("position must be non-negative (got: {pos})"))
+            LuceneError::illegal_argument(format!("position must be non-negative (got: {pos})"))
         })?;
         self.0
             .get(start..start.saturating_add(len))
             .filter(|window| window.len() == len)
             .ok_or_else(|| {
-                LuceneError::Io(std::io::Error::new(
+                LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     format!(
                         "read of {len} bytes at pos={pos} past EOF (length={})",
                         self.0.len()
                     ),
-                ))
+                )))
             })
     }
 }
@@ -1385,7 +1389,7 @@ impl SharedDirectMonotonicReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a block's width is not one
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a block's width is not one
     /// `DirectWriter` can produce, as [`DirectMonotonicReader`] does.
     pub fn new(meta: DirectMonotonicMeta, data: Arc<[u8]>) -> Result<Self> {
         count_monotonic_reader_construction();
@@ -1415,16 +1419,16 @@ impl SharedDirectMonotonicReader {
     /// As [`DirectMonotonicReader::get_checked`].
     pub fn get_checked(&self, index: i64) -> Result<i64> {
         if index < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "negative index {index} into a monotonic block"
-            )));
+            ))));
         }
         let block = (index >> self.block_shift) as usize;
         if block >= self.bpvs.len() {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "index {index} falls in block {block} of {}",
                 self.bpvs.len()
-            )));
+            ))));
         }
         let block_index = index & self.block_mask;
         let delta = if self.bpvs[block] == 0 {
@@ -1515,7 +1519,7 @@ impl DirectMonotonicReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when a block's width is not one
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when a block's width is not one
     /// [`DirectWriter`] can produce.
     pub fn with_random_access_merging(
         meta: DirectMonotonicMeta,
@@ -1573,21 +1577,21 @@ impl DirectMonotonicReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when `index` falls outside the
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when `index` falls outside the
     /// blocks the metadata describes, and the I/O error when the encoded block
     /// is shorter than the index it is asked for.
     pub fn get_checked(&self, index: i64) -> Result<i64> {
         if index < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "negative index {index} into a monotonic block"
-            )));
+            ))));
         }
         let block = (index >> self.block_shift) as usize;
         if block >= self.readers.len() {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "index {index} falls in block {block} of {}",
                 self.readers.len()
-            )));
+            ))));
         }
         let block_index = index & self.block_mask;
         let delta = self.readers[block].get_checked(block_index)?;
@@ -1608,11 +1612,11 @@ impl DirectMonotonicReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Arithmetic`] when the block number
+    /// Returns [`LuceneErrorKind::Arithmetic`] when the block number
     /// `index >>> blockShift` does not fit an `int` — Java's
     /// `Math.toIntExact(index >>> blockShift)` (`DirectMonotonicReader.java:144`),
     /// which a negative `index` reaches through the unsigned shift — and
-    /// [`LuceneError::CorruptIndex`] when the block falls outside the blocks
+    /// [`LuceneErrorKind::CorruptIndex`] when the block falls outside the blocks
     /// the metadata describes. Java throws `ArrayIndexOutOfBoundsException`
     /// there, which a caller can catch; a Rust panic could not be.
     fn get_bounds(&self, index: i64) -> Result<[i64; 2]> {
@@ -1622,10 +1626,10 @@ impl DirectMonotonicReader {
             (index as u64).wrapping_shr(self.block_shift as u32) as i64,
         )? as usize;
         if block >= self.readers.len() {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "index {index} falls in block {block} of {}",
                 self.readers.len()
-            )));
+            ))));
         }
         let block_index = index & self.block_mask;
         // Java composes both bounds with plain `long` arithmetic, which wraps;
@@ -1655,15 +1659,15 @@ impl DirectMonotonicReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `from_index` is negative
-    /// or greater than `to_index`; [`LuceneError::Arithmetic`] when a probed
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `from_index` is negative
+    /// or greater than `to_index`; [`LuceneErrorKind::Arithmetic`] when a probed
     /// index lies in a block whose number does not fit an `int`, as Java's
     /// `getBounds` throws `ArithmeticException("integer overflow")`; and
-    /// [`LuceneError::CorruptIndex`] or the underlying I/O error when the range
+    /// [`LuceneErrorKind::CorruptIndex`] or the underlying I/O error when the range
     /// addresses values the encoded blocks do not hold.
     pub fn binary_search(&self, from_index: i64, to_index: i64, key: i64) -> Result<i64> {
         if from_index < 0 || from_index > to_index {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "fromIndex={from_index},toIndex={to_index}"
             )));
         }
@@ -1741,7 +1745,7 @@ impl<'a> BlockPackedWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `block_size` is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `block_size` is not a
     /// power of two in `[64, 1 << 27]`.
     pub fn new(out: &'a mut dyn DataOutput, block_size: usize) -> Result<Self> {
         Ok(Self {
@@ -1755,7 +1759,7 @@ impl<'a> BlockPackedWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once the writer is finished, or
+    /// Returns [`LuceneErrorKind::IllegalState`] once the writer is finished, or
     /// the I/O error raised while flushing a full block.
     pub fn add(&mut self, value: i64) -> Result<()> {
         AbstractBlockPackedWriterOps::add(self, value)
@@ -1767,7 +1771,7 @@ impl<'a> BlockPackedWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when already finished, or the I/O
+    /// Returns [`LuceneErrorKind::IllegalState`] when already finished, or the I/O
     /// error raised while flushing.
     pub fn finish(&mut self) -> Result<()> {
         AbstractBlockPackedWriterOps::finish(self)
@@ -1910,7 +1914,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a block size or a version
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for a block size or a version
     /// Java refuses, or a negative value count.
     pub fn new(
         input: &'a mut I,
@@ -1920,7 +1924,7 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
     ) -> Result<Self> {
         PackedInts::check_block_size(block_size, MIN_BLOCK_SIZE, MAX_BLOCK_SIZE)?;
         if value_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueCount must be non-negative, got {value_count}"
             )));
         }
@@ -1968,10 +1972,10 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<i64> {
         if self.ord == self.value_count {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "read past end of block-packed stream",
-            )));
+            ))));
         }
         if self.off == self.block_size {
             self.refill()?;
@@ -1997,10 +2001,10 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         trace_block_packed(|| format!("next_batch({count})"));
         debug_assert!(count > 0);
         if self.ord == self.value_count {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "read past end of block-packed stream",
-            )));
+            ))));
         }
         if self.off == self.block_size {
             self.refill()?;
@@ -2028,10 +2032,10 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         trace_block_packed(|| format!("skip({count})"));
         debug_assert!(count >= 0);
         if self.ord + count > self.value_count || self.ord + count < 0 {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "skip past end of block-packed stream",
-            )));
+            ))));
         }
 
         let skip_buffer = cmp::min(count, (self.block_size - self.off) as i64);
@@ -2047,9 +2051,9 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
             let token = self.input.read_byte()? as i32;
             let bits_per_value = token >> BPV_SHIFT;
             if !(0..=64).contains(&bits_per_value) {
-                return Err(LuceneError::CorruptIndex(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                     "invalid bitsPerValue in block-packed stream".to_string(),
-                ));
+                )));
             }
             if (token & MIN_VALUE_EQUALS_0) == 0 {
                 read_block_packed_v_long(self.input)?;
@@ -2093,9 +2097,9 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
         let min_equals_0 = (token & MIN_VALUE_EQUALS_0) != 0;
         let bits_per_value = token >> BPV_SHIFT;
         if !(0..=64).contains(&bits_per_value) {
-            return Err(LuceneError::CorruptIndex(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
                 "invalid bitsPerValue in block-packed stream".to_string(),
-            ));
+            )));
         }
 
         let min_value = if min_equals_0 {
@@ -2328,7 +2332,7 @@ mod tests {
         assert_eq!(reader.binary_search(0, 10, 9).unwrap(), 3);
         let error = reader.binary_search(0, i64::MAX, 9).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::Arithmetic(m) if m == "integer overflow"),
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
             "{error:?}"
         );
     }

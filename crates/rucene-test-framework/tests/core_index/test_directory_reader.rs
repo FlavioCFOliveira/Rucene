@@ -17,7 +17,7 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::{Assert, Assume};
 use rucene::document::{Document, Field, FieldType, Store, StoredField, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader, StandardDirectoryReader};
 use rucene::index::field_infos::FieldInfos;
 use rucene::index::index_deletion_policy::{
@@ -1858,7 +1858,9 @@ impl Executor for FailsOneTask {
         if *task_count == 2 {
             // Second task fails
             Ok(Future::failed(LuceneError::runtime_exception(
-                LuceneError::Io(std::io::Error::other("Simulated failure on segment")),
+                LuceneError::from(LuceneErrorKind::Io(std::io::Error::other(
+                    "Simulated failure on segment",
+                ))),
             )))
         } else {
             drop(task_count);

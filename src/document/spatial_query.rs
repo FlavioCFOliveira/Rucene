@@ -97,10 +97,10 @@ impl LatLonGeometryValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `geometries` is empty.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `geometries` is empty.
     pub fn create(geometries: &[Self]) -> Result<Arc<dyn Component2D>> {
         if geometries.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "geometries must not be empty".to_string(),
             ));
         }
@@ -158,10 +158,10 @@ impl XYGeometryValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `geometries` is empty.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `geometries` is empty.
     pub fn create(geometries: &[Self]) -> Result<Arc<dyn Component2D>> {
         if geometries.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "geometries must not be empty".to_string(),
             ));
         }
@@ -238,7 +238,7 @@ pub trait SpatialVisitor {
     /// # Errors
     ///
     /// Propagates a decoding failure, and returns
-    /// [`LuceneError::IllegalArgument`] when the query cannot answer a contains
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the query cannot answer a contains
     /// question at all — which is what
     /// `LatLonShapeBoundingBoxQuery.contains()` throws for a rectangle crossing
     /// the dateline.
@@ -875,7 +875,7 @@ impl SpatialQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry list is
     /// empty.
     pub fn create_component_2d(geometries: &[LatLonGeometryValue]) -> Result<Arc<dyn Component2D>> {
         LatLonGeometryValue::create(geometries)
@@ -888,7 +888,7 @@ impl SpatialQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry list is
     /// empty.
     pub fn create_component_2d_xy(geometries: &[XYGeometryValue]) -> Result<Arc<dyn Component2D>> {
         XYGeometryValue::create(geometries)
@@ -1199,13 +1199,13 @@ struct EstimateVisitor<'a> {
 
 impl crate::index::point_values::IntersectVisitor for EstimateVisitor<'_> {
     fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the estimate visitor never visits a document".to_string(),
         ))
     }
 
     fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "the estimate visitor never visits a document".to_string(),
         ))
     }
@@ -1842,7 +1842,7 @@ impl LatLonShapeQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry list is
     /// empty.
     pub fn create_component_2d(geometries: &[LatLonGeometryValue]) -> Result<Arc<dyn Component2D>> {
         SpatialQuery::create_component_2d(geometries)
@@ -1855,7 +1855,7 @@ impl LatLonShapeQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a `WITHIN` query over a
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a `WITHIN` query over a
     /// line geometry, which Lucene does not support, and for an empty geometry
     /// list.
     pub fn new(
@@ -1929,7 +1929,7 @@ fn validate_geometries(
     if query_relation == QueryRelation::Within {
         for geometry in geometries {
             if matches!(geometry, LatLonGeometryValue::Line(_)) {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "LatLonShapeQuery does not support Within queries with line geometries"
                         .to_string(),
                 ));
@@ -2063,7 +2063,7 @@ impl XYShapeQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry list is
     /// empty.
     pub fn create_component_2d(geometries: &[XYGeometryValue]) -> Result<Arc<dyn Component2D>> {
         SpatialQuery::create_component_2d_xy(geometries)
@@ -2075,7 +2075,7 @@ impl XYShapeQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty geometry list.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an empty geometry list.
     pub fn new(
         field: impl Into<String>,
         query_relation: QueryRelation,
@@ -2474,7 +2474,7 @@ impl SpatialVisitor for LatLonShapeBoundingBoxVisitor {
 
     fn contains(&self, triangle: &[u8]) -> Result<WithinRelation> {
         if self.encoded_rectangle.crosses_dateline() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "withinTriangle is not supported for rectangles crossing the date line".to_string(),
             ));
         }
@@ -2521,7 +2521,7 @@ impl LatLonShapeBoundingBoxQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry list is
     /// empty.
     pub fn create_component_2d(geometries: &[LatLonGeometryValue]) -> Result<Arc<dyn Component2D>> {
         SpatialQuery::create_component_2d(geometries)
@@ -2656,7 +2656,7 @@ impl BaseShapeDocValuesQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a `CONTAINS` relation,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a `CONTAINS` relation,
     /// which Lucene does not support here.
     pub fn new(
         field: impl Into<String>,
@@ -2678,7 +2678,7 @@ impl BaseShapeDocValuesQuery {
     /// `BaseShapeDocValuesQuery.validateRelation(QueryRelation)`.
     fn validate_relation(query_relation: QueryRelation) -> Result<QueryRelation> {
         if query_relation == QueryRelation::Contains {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "ShapeDocValuesBoundingBoxQuery does not yet support CONTAINS queries".to_string(),
             ));
         }
@@ -2918,7 +2918,7 @@ impl LatLonShapeDocValuesQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry list is
     /// empty.
     pub fn create_component_2d(geometries: &[LatLonGeometryValue]) -> Result<Arc<dyn Component2D>> {
         SpatialQuery::create_component_2d(geometries)
@@ -2931,7 +2931,7 @@ impl LatLonShapeDocValuesQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a `CONTAINS` relation and
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a `CONTAINS` relation and
     /// for an empty geometry list.
     pub fn new(
         field: impl Into<String>,
@@ -3039,7 +3039,7 @@ impl XYShapeDocValuesQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry list is
     /// empty.
     pub fn create_component_2d(geometries: &[XYGeometryValue]) -> Result<Arc<dyn Component2D>> {
         SpatialQuery::create_component_2d_xy(geometries)
@@ -3052,7 +3052,7 @@ impl XYShapeDocValuesQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for a `CONTAINS` relation and
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a `CONTAINS` relation and
     /// for an empty geometry list.
     pub fn new(
         field: impl Into<String>,

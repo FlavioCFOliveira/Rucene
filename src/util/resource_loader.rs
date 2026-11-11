@@ -48,7 +48,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 // ---------------------------------------------------------------------------
 // ResourceLoader
@@ -62,7 +62,7 @@ pub trait ResourceLoader: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] when the resource cannot be found or read.
+    /// Returns [`LuceneErrorKind::Io`] when the resource cannot be found or read.
     fn open_resource(&self, resource: &str) -> Result<Box<dyn Read + Send>>;
 }
 
@@ -133,12 +133,12 @@ impl<T> ClassRegistry<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when nothing is registered
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when nothing is registered
     /// under that name, which is the `RuntimeException("Cannot load class: ")`
     /// Java's implementations raise.
     pub fn find_class(&self, cname: &str) -> Result<&ClassFactory<T>> {
         self.factories.get(cname).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "Cannot load class: {cname} (expected type {})",
                 self.expected_type
             ))
@@ -151,13 +151,13 @@ impl<T> ClassRegistry<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when nothing is registered
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when nothing is registered
     /// under that name, which is Java's
     /// `RuntimeException("Cannot create instance: ")`.
     pub fn new_instance(&self, cname: &str) -> Result<T> {
         match self.factories.get(cname) {
             Some(factory) => Ok(factory()),
-            None => Err(LuceneError::IllegalArgument(format!(
+            None => Err(LuceneError::illegal_argument(format!(
                 "Cannot create instance: {cname} (expected type {})",
                 self.expected_type
             ))),
@@ -215,10 +215,10 @@ impl ResourceLoader for ClasspathResourceLoader {
         };
         match self.resources.get(&key) {
             Some(bytes) => Ok(Box::new(Cursor::new(bytes.as_ref().clone()))),
-            None => Err(LuceneError::Io(std::io::Error::new(
+            None => Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("Resource not found: {resource}"),
-            ))),
+            )))),
         }
     }
 }
@@ -253,17 +253,17 @@ impl ResourceLoader for ModuleResourceLoader {
         // Reject any attempt to escape the root, which a JVM module lookup
         // cannot do either.
         if relative.split('/').any(|c| c == "..") {
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("Resource path escapes the module root: {resource}"),
-            )));
+            ))));
         }
         match std::fs::File::open(&path) {
             Ok(file) => Ok(Box::new(file)),
-            Err(e) => Err(LuceneError::Io(std::io::Error::new(
+            Err(e) => Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 e.kind(),
                 format!("Resource not found: {resource}"),
-            ))),
+            )))),
         }
     }
 }

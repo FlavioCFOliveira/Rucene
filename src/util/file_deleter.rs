@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::SEGMENTS;
 use crate::store::Directory;
 
@@ -373,7 +373,10 @@ impl FileDeleter {
     fn delete_one(&self, file_name: &str) -> Result<()> {
         match self.directory.delete_file(file_name) {
             Ok(()) => Ok(()),
-            Err(LuceneError::Io(e)) if e.kind() == io::ErrorKind::NotFound && cfg!(windows) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(e),
+                ..
+            }) if e.kind() == io::ErrorKind::NotFound && cfg!(windows) => {
                 // LUCENE-6684: on Windows a file can sit in a "pending delete"
                 // state where it still shows up in directory listings but a
                 // second delete reports it as missing. Lucene suppresses that

@@ -26,7 +26,7 @@
 use std::sync::Once;
 
 use randomizedtesting::jdk::exception::{register_class, Throwable};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::java_nio_file;
 
 use crate::util::LuceneTestCase;
@@ -115,6 +115,46 @@ const HIERARCHY: &[(&str, &str)] = &[
         "java.lang.RuntimeException",
     ),
     (
+        "org.apache.lucene.search.IndexSearcher$TooManyNestedClauses",
+        "org.apache.lucene.search.IndexSearcher$TooManyClauses",
+    ),
+    (
+        "org.apache.lucene.index.ExitableDirectoryReader$ExitingReaderException",
+        "java.lang.RuntimeException",
+    ),
+    (
+        "org.apache.lucene.index.CheckIndex$CheckIndexException",
+        "java.lang.RuntimeException",
+    ),
+    (
+        "org.apache.lucene.util.automaton.TooComplexToDeterminizeException",
+        "java.lang.RuntimeException",
+    ),
+    (
+        "org.apache.lucene.util.BytesRefHash$MaxBytesLengthExceededException",
+        "java.lang.RuntimeException",
+    ),
+    (
+        "org.apache.lucene.index.MergePolicy$MergeException",
+        "java.lang.RuntimeException",
+    ),
+    (
+        "org.apache.lucene.index.MergePolicy$MergeAbortedException",
+        "java.io.IOException",
+    ),
+    (
+        "org.apache.lucene.util.ThreadInterruptedException",
+        "java.lang.RuntimeException",
+    ),
+    (
+        "java.lang.ReflectiveOperationException",
+        "java.lang.Exception",
+    ),
+    (
+        "java.lang.NoSuchMethodException",
+        "java.lang.ReflectiveOperationException",
+    ),
+    (
         "java.util.concurrent.RejectedExecutionException",
         "java.lang.RuntimeException",
     ),
@@ -136,40 +176,65 @@ fn register_hierarchy() {
 
 /// The binary name of the Java class `e` stands for.
 pub fn java_class_name(e: &LuceneError) -> String {
-    match e.unwrap_suppressed() {
-        LuceneError::Io(io) => java_nio_file::java_class_of(io).to_string(),
-        LuceneError::CorruptIndex(_) => "org.apache.lucene.index.CorruptIndexException".into(),
-        LuceneError::IndexFormatTooOld { .. } => {
+    match e.kind() {
+        LuceneErrorKind::Io(io) => java_nio_file::java_class_of(io).to_string(),
+        LuceneErrorKind::CorruptIndex(_) => "org.apache.lucene.index.CorruptIndexException".into(),
+        LuceneErrorKind::IndexFormatTooOld { .. } => {
             "org.apache.lucene.index.IndexFormatTooOldException".into()
         }
-        LuceneError::IndexFormatTooNew { .. } => {
+        LuceneErrorKind::IndexFormatTooNew { .. } => {
             "org.apache.lucene.index.IndexFormatTooNewException".into()
         }
-        LuceneError::IndexNotFound(_) => "org.apache.lucene.index.IndexNotFoundException".into(),
-        LuceneError::NotFound(_) => "java.io.FileNotFoundException".into(),
-        LuceneError::IllegalArgument(_) | LuceneError::IllegalArgumentWithCause { .. } => {
-            "java.lang.IllegalArgumentException".into()
+        LuceneErrorKind::IndexNotFound(_) => {
+            "org.apache.lucene.index.IndexNotFoundException".into()
         }
-        LuceneError::IllegalState { .. } => "java.lang.IllegalStateException".into(),
-        LuceneError::LockObtainFailed { .. } => {
+        LuceneErrorKind::NotFound(_) => "java.io.FileNotFoundException".into(),
+        LuceneErrorKind::IllegalArgument { .. } => "java.lang.IllegalArgumentException".into(),
+        LuceneErrorKind::IllegalState { .. } => "java.lang.IllegalStateException".into(),
+        LuceneErrorKind::LockObtainFailed { .. } => {
             "org.apache.lucene.store.LockObtainFailedException".into()
         }
-        LuceneError::LockReleaseFailed { .. } => {
+        LuceneErrorKind::LockReleaseFailed { .. } => {
             "org.apache.lucene.store.LockReleaseFailedException".into()
         }
-        LuceneError::AlreadyClosed { .. } => {
+        LuceneErrorKind::AlreadyClosed { .. } => {
             "org.apache.lucene.store.AlreadyClosedException".into()
         }
-        LuceneError::UnsupportedOperation(_)
-        | LuceneError::UnsupportedOperationWithCause { .. } => {
+        LuceneErrorKind::UnsupportedOperation { .. } => {
             "java.lang.UnsupportedOperationException".into()
         }
-        LuceneError::StringIndexOutOfBounds(_) => {
+        LuceneErrorKind::StringIndexOutOfBounds(_) => {
             "java.lang.StringIndexOutOfBoundsException".into()
         }
-        LuceneError::Arithmetic(_) => "java.lang.ArithmeticException".into(),
-        LuceneError::AssertionError(_) => "java.lang.AssertionError".into(),
-        LuceneError::Unchecked { class, .. } => class.to_string(),
+        LuceneErrorKind::Arithmetic(_) => "java.lang.ArithmeticException".into(),
+        LuceneErrorKind::AssertionError(_) => "java.lang.AssertionError".into(),
+        LuceneErrorKind::Unchecked { class, .. } => class.to_string(),
+        LuceneErrorKind::TooManyClauses(_) => {
+            "org.apache.lucene.search.IndexSearcher$TooManyClauses".into()
+        }
+        LuceneErrorKind::TooManyNestedClauses(_) => {
+            "org.apache.lucene.search.IndexSearcher$TooManyNestedClauses".into()
+        }
+        LuceneErrorKind::ExitingReader(_) => {
+            "org.apache.lucene.index.ExitableDirectoryReader$ExitingReaderException".into()
+        }
+        LuceneErrorKind::CheckIndex { .. } => {
+            "org.apache.lucene.index.CheckIndex$CheckIndexException".into()
+        }
+        LuceneErrorKind::TooComplexToDeterminize(_) => {
+            "org.apache.lucene.util.automaton.TooComplexToDeterminizeException".into()
+        }
+        LuceneErrorKind::MaxBytesLengthExceeded(_) => {
+            "org.apache.lucene.util.BytesRefHash$MaxBytesLengthExceededException".into()
+        }
+        LuceneErrorKind::Merge(_) => "org.apache.lucene.index.MergePolicy$MergeException".into(),
+        LuceneErrorKind::MergeAborted(_) => {
+            "org.apache.lucene.index.MergePolicy$MergeAbortedException".into()
+        }
+        LuceneErrorKind::NoSuchMethod(_) => "java.lang.NoSuchMethodException".into(),
+        LuceneErrorKind::ThreadInterrupted(_) => {
+            "org.apache.lucene.util.ThreadInterruptedException".into()
+        }
         other => other.java_simple_name().to_string(),
     }
 }
@@ -185,7 +250,7 @@ pub fn java_throwable(e: &LuceneError) -> Throwable {
         throwable.add_suppressed(java_throwable(suppressed));
     }
     // `getSuppressed()` of an `IOException` that carries suppressed ones.
-    if let LuceneError::Io(io) = e.unwrap_suppressed() {
+    if let LuceneErrorKind::Io(io) = e.kind() {
         if let Some(exception) = rucene::store::java_nio_file::java_exception_of(io) {
             for suppressed in exception.get_suppressed() {
                 throwable.add_suppressed(java_io_throwable(suppressed));

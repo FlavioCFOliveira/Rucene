@@ -180,11 +180,11 @@ impl KeepLastNCommitsDeletionPolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `num_commits_to_keep` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `num_commits_to_keep` is not
     /// positive, mirroring the Java `IllegalArgumentException`.
     pub fn new(num_commits_to_keep: i32) -> Result<Self> {
         if num_commits_to_keep <= 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "number of recent commits to keep must be positive".to_string(),
             ));
         }
@@ -438,7 +438,7 @@ impl SnapshotDeletionPolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if this instance is not being used
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if this instance is not being used
     /// by an `IndexWriter` (i.e. [`IndexDeletionPolicy::on_init`] was never
     /// called), or if the index does not have any commit yet.
     pub fn snapshot(&self) -> Result<Arc<dyn IndexCommit>> {
@@ -473,9 +473,9 @@ impl SnapshotDeletionPolicy {
     ///
     /// # Errors
     ///
-    /// - [`LuceneError::IllegalState`] if this instance is not being used by an
+    /// - [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if this instance is not being used by an
     ///   `IndexWriter`.
-    /// - [`LuceneError::IllegalArgument`] if the commit's generation is not
+    /// - [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the commit's generation is not
     ///   currently snapshotted.
     pub fn release(&self, commit: &dyn IndexCommit) -> Result<()> {
         // Java's `release(IndexCommit)` is `synchronized` and delegates to the
@@ -499,9 +499,9 @@ impl SnapshotDeletionPolicy {
     ///
     /// # Errors
     ///
-    /// - [`LuceneError::IllegalState`] if this instance is not being used by an
+    /// - [`LuceneErrorKind::IllegalState`] if this instance is not being used by an
     ///   `IndexWriter`.
-    /// - [`LuceneError::IllegalArgument`] if `gen` is not currently snapshotted.
+    /// - [`LuceneErrorKind::IllegalArgument`] if `gen` is not currently snapshotted.
     pub(crate) fn release_gen(&self, gen: i64) -> Result<()> {
         let _operation = self.lock_operation();
         self.release_gen_locked(gen)
@@ -513,7 +513,7 @@ impl SnapshotDeletionPolicy {
         let mut state = self.lock();
         Self::check_init_called(&state)?;
         let Some(ref_count) = state.ref_counts.get(gen).copied() else {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "commit gen={gen} is not currently snapshotted"
             )));
         };
@@ -696,7 +696,7 @@ impl SnapshotDeletionPolicy {
         // misuse as a recoverable error, after the primary policy has run, so
         // the observable side effects stay identical.
         let Some(last) = commits.last() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "on_commit was called with no commits".to_string(),
             ));
         };
@@ -912,9 +912,9 @@ impl PersistentSnapshotDeletionPolicy {
     ///
     /// # Errors
     ///
-    /// - [`LuceneError::IllegalState`] if `mode` is [`OpenMode::APPEND`] and no
+    /// - [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if `mode` is [`OpenMode::APPEND`] and no
     ///   snapshots are stored in `dir`.
-    /// - [`LuceneError::IllegalArgument`] if `dir` holds a file whose name
+    /// - [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `dir` holds a file whose name
     ///   starts with `snapshots_` but does not end in a valid generation,
     ///   mirroring the Java `NumberFormatException`.
     /// - Any I/O error raised while listing, deleting or reading files.
@@ -1008,9 +1008,9 @@ impl PersistentSnapshotDeletionPolicy {
     ///
     /// # Errors
     ///
-    /// - [`LuceneError::IllegalState`] if this instance is not being used by an
+    /// - [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if this instance is not being used by an
     ///   `IndexWriter`.
-    /// - [`LuceneError::IllegalArgument`] if `gen` is not currently snapshotted.
+    /// - [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `gen` is not currently snapshotted.
     /// - Any I/O error raised while persisting. Java does not restore the
     ///   reference count when persisting fails here, and neither does Rucene.
     pub fn release_gen(&self, gen: i64) -> Result<()> {
@@ -1163,7 +1163,7 @@ impl PersistentSnapshotDeletionPolicy {
                 continue;
             }
             let gen: i64 = file[SNAPSHOTS_PREFIX.len()..].parse().map_err(|_| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "not a valid snapshots file name: {file}; expected {SNAPSHOTS_PREFIX}<generation>"
                 ))
             })?;
@@ -1262,6 +1262,7 @@ impl IndexDeletionPolicy for PersistentSnapshotDeletionPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::index::index_commit::test_support::TestCommit;
     use crate::store::ByteBuffersDirectory;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -1375,7 +1376,7 @@ mod tests {
                 Arc::clone(&self.0)
             }
             fn delete(&self) -> Result<()> {
-                Err(LuceneError::UnsupportedOperation(
+                Err(LuceneError::unsupported_operation(
                     "This IndexCommit does not support deletions".to_string(),
                 ))
             }
@@ -1402,7 +1403,16 @@ mod tests {
         let err = KeepOnlyLastCommitDeletionPolicy::new()
             .on_commit(&commits)
             .unwrap_err();
-        assert!(matches!(err, LuceneError::UnsupportedOperation(_)), "{err}");
+        assert!(
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                }
+            ),
+            "{err}"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -1460,7 +1470,7 @@ mod tests {
         for n in [0, -1, i32::MIN] {
             let err = KeepLastNCommitsDeletionPolicy::new(n).unwrap_err();
             assert!(
-                matches!(err, LuceneError::IllegalArgument(ref m)
+                matches!(err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                     if m.contains("must be positive")),
                 "unexpected error for n={n}: {err}"
             );
@@ -1517,7 +1527,7 @@ mod tests {
         // `IndexWriterConfig::index_deletion_policy` returns, so — unlike Java —
         // the message must point at keeping the concrete `Arc`.
         assert!(
-            matches!(err, LuceneError::IllegalState { message: ref m, .. }
+            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
                 if m.contains("not being used by IndexWriter")
                     && m.contains("Arc<SnapshotDeletionPolicy>")
                     && m.contains("set_index_deletion_policy")),
@@ -1525,7 +1535,16 @@ mod tests {
         );
 
         let err = policy.release_gen(1).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalState { .. }), "{err}");
+        assert!(
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1535,7 +1554,7 @@ mod tests {
 
         let err = policy.snapshot().unwrap_err();
         assert!(
-            matches!(err, LuceneError::IllegalState { message: ref m, .. }
+            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
                 if m == "No index commit to snapshot"),
             "{err}"
         );
@@ -1619,7 +1638,7 @@ mod tests {
 
         let err = policy.release(snapshotted.as_ref()).unwrap_err();
         assert!(
-            matches!(err, LuceneError::IllegalArgument(ref m)
+            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m == "commit gen=1 is not currently snapshotted"),
             "{err}"
         );
@@ -1633,7 +1652,16 @@ mod tests {
 
         let stranger = TestCommit::at_generation(Arc::clone(&dir), 42);
         let err = policy.release(stranger.as_ref()).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)), "{err}");
+        assert!(
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }
+            ),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1683,7 +1711,16 @@ mod tests {
         policy.on_init(&[]).unwrap();
 
         let err = policy.on_commit(&[]).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)), "{err}");
+        assert!(
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }
+            ),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2356,7 +2393,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, LuceneError::IllegalArgument(ref m)
+            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
                 if m.contains("not a valid snapshots file name")),
             "{err}"
         );
@@ -2373,7 +2410,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, LuceneError::IllegalState { message: ref m, .. }
+            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
                 if m == "no snapshots stored in this directory"),
             "{err}"
         );
@@ -2462,10 +2499,10 @@ mod tests {
         fn close(&mut self) -> Result<()> {
             // Flush what we can, exactly as a real output would, and then fail.
             self.inner.close()?;
-            Err(LuceneError::Io(std::io::Error::new(
+            Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::StorageFull,
                 "no space left on device",
-            )))
+            ))))
         }
 
         fn file_pointer(&self) -> i64 {
@@ -2515,8 +2552,8 @@ mod tests {
     impl crate::store::IndexInput for FailingCloseInput {
         fn close(&mut self) -> Result<()> {
             self.inner.close()?;
-            Err(LuceneError::Io(std::io::Error::other(
-                "the save file could not be closed",
+            Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("the save file could not be closed"),
             )))
         }
 
@@ -2677,7 +2714,7 @@ mod tests {
         )
         .expect_err("a save file that cannot be closed must not be silently ignored");
         assert!(
-            matches!(&err, LuceneError::Io(io) if io.to_string().contains("could not be closed")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string().contains("could not be closed")),
             "unexpected error: {err:?}"
         );
 
@@ -2784,7 +2821,7 @@ mod tests {
             .snapshot()
             .expect_err("snapshot must report the I/O failure");
         assert!(
-            matches!(&err, LuceneError::Io(io) if io.to_string().contains("no space left")),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string().contains("no space left")),
             "unexpected error: {err:?}"
         );
 
@@ -2804,7 +2841,7 @@ mod tests {
             .snapshot()
             .expect_err("the leftover save file must block the next attempt");
         assert!(
-            matches!(&err, LuceneError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::AlreadyExists),
             "unexpected error: {err:?}"
         );
         assert_eq!(policy.get_snapshot_count(), 0);
@@ -2827,7 +2864,16 @@ mod tests {
         let before = snapshot_files(dir.as_ref());
 
         let err = policy.release_gen(99).unwrap_err();
-        assert!(matches!(err, LuceneError::IllegalArgument(_)), "{err}");
+        assert!(
+            matches!(
+                err,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }
+            ),
+            "{err}"
+        );
         assert_eq!(snapshot_files(dir.as_ref()), before);
         assert_eq!(policy.get_snapshot_count(), 1);
     }

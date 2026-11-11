@@ -245,7 +245,7 @@ impl CharsRef {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when a check fails.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when a check fails.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         // `chars` cannot be null, and the `usize` fields cannot be negative, so
         // Java's four checks for those have no Rust counterpart.

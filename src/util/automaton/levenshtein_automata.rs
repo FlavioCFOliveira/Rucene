@@ -119,7 +119,7 @@ impl LevenshteinAutomata {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the word contains a symbol above
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the word contains a symbol above
     /// `Character.MAX_CODE_POINT`.
     pub fn from_str(input: &str, with_transpositions: bool) -> Result<Self> {
         Self::new(
@@ -148,14 +148,14 @@ impl LevenshteinAutomata {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the word contains a symbol above
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the word contains a symbol above
     /// `alpha_max`.
     pub fn new(word: Vec<i32>, alpha_max: i32, with_transpositions: bool) -> Result<Self> {
         // calculate the alphabet
         let mut set: HashSet<i32> = HashSet::new();
         for &v in &word {
             if v > alpha_max {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "alphaMax exceeded by symbol {} in word",
                     v
                 )));

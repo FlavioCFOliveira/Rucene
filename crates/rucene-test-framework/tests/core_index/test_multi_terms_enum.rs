@@ -352,7 +352,7 @@ impl FilteredTermsEnumFilter for ValueFilter {
 
 /// `throw new UnsupportedOperationException()`.
 fn unsupported<T>() -> Result<T> {
-    Err(rucene::error::LuceneError::UnsupportedOperation(
+    Err(rucene::error::LuceneError::unsupported_operation(
         String::new(),
     ))
 }

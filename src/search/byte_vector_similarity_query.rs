@@ -43,7 +43,7 @@ impl ByteVectorSimilarityQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `result_similarity` or `decay` is `NaN`, or when `decay` is
     /// outside `[0, 1]`.
     pub fn with_strategy(

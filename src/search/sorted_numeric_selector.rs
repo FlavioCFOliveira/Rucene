@@ -82,7 +82,7 @@ impl SortedNumericSelector {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `numeric_type` is not one
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `numeric_type` is not one
     /// of [`SortFieldType::Int`], [`SortFieldType::Long`],
     /// [`SortFieldType::Float`] or [`SortFieldType::Double`].
     pub fn wrap(
@@ -95,7 +95,7 @@ impl SortedNumericSelector {
             && numeric_type != SortFieldType::Float
             && numeric_type != SortFieldType::Double
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "numericType must be a numeric type".to_string(),
             ));
         }

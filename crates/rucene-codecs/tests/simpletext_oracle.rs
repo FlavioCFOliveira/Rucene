@@ -109,7 +109,7 @@ impl ArrayTree {
 
 impl rucene::index::PointTree for ArrayTree {
     fn clone_tree(&self) -> rucene::error::Result<Box<dyn rucene::index::PointTree>> {
-        Err(rucene::error::LuceneError::UnsupportedOperation(
+        Err(rucene::error::LuceneError::unsupported_operation(
             String::new(),
         ))
     }
@@ -127,13 +127,13 @@ impl rucene::index::PointTree for ArrayTree {
     }
 
     fn min_packed_value(&self) -> rucene::error::Result<&[u8]> {
-        Err(rucene::error::LuceneError::UnsupportedOperation(
+        Err(rucene::error::LuceneError::unsupported_operation(
             String::new(),
         ))
     }
 
     fn max_packed_value(&self) -> rucene::error::Result<&[u8]> {
-        Err(rucene::error::LuceneError::UnsupportedOperation(
+        Err(rucene::error::LuceneError::unsupported_operation(
             String::new(),
         ))
     }
@@ -146,7 +146,7 @@ impl rucene::index::PointTree for ArrayTree {
         &mut self,
         _visitor: &mut dyn rucene::index::IntersectVisitor,
     ) -> rucene::error::Result<()> {
-        Err(rucene::error::LuceneError::UnsupportedOperation(
+        Err(rucene::error::LuceneError::unsupported_operation(
             String::new(),
         ))
     }
@@ -694,13 +694,17 @@ fn corrupted_files_raise_lucenes_errors() {
             Ok(_) => ("none".to_string(), "-".to_string()),
             Err(e) => {
                 let class = match &e {
-                    rucene::error::LuceneError::CorruptIndex(_) => {
-                        "org.apache.lucene.index.CorruptIndexException".to_string()
-                    }
+                    rucene::error::LuceneError {
+                        kind: rucene::error::LuceneErrorKind::CorruptIndex(_),
+                        ..
+                    } => "org.apache.lucene.index.CorruptIndexException".to_string(),
                     other => format!("rucene::{}", other.java_simple_name()),
                 };
                 let message = match &e {
-                    rucene::error::LuceneError::CorruptIndex(m) => m.clone(),
+                    rucene::error::LuceneError {
+                        kind: rucene::error::LuceneErrorKind::CorruptIndex(m),
+                        ..
+                    } => m.clone(),
                     other => other.to_string(),
                 };
                 (
@@ -859,21 +863,33 @@ fn with_read_state<T>(
 
 /// Java's `getClass().getName()` and `getMessage()` of `e`.
 fn java_class_and_message(e: &rucene::error::LuceneError) -> (String, String) {
-    use rucene::error::LuceneError;
+    use rucene::error::{LuceneError, LuceneErrorKind};
     match e {
-        LuceneError::Unchecked { class, message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { class, message, .. },
+            ..
+        } => (
             class.to_string(),
             message.clone().unwrap_or_else(|| "null".to_string()),
         ),
-        LuceneError::CorruptIndex(m) => (
+        LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(m),
+            ..
+        } => (
             "org.apache.lucene.index.CorruptIndexException".to_string(),
             m.clone(),
         ),
-        LuceneError::AlreadyClosed { message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        } => (
             "org.apache.lucene.store.AlreadyClosedException".to_string(),
             message.clone(),
         ),
-        LuceneError::IllegalState { message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => (
             "java.lang.IllegalStateException".to_string(),
             message.clone(),
         ),

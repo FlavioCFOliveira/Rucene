@@ -88,7 +88,7 @@ impl AbstractVectorSimilarityQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
     /// `result_similarity` or `decay` is `NaN`, or when `decay` is outside
     /// `[DECAY_MAX_APPROXIMATION, DECAY_MAX_QUALITY]`.
     pub fn new(
@@ -99,17 +99,17 @@ impl AbstractVectorSimilarityQuery {
         search_strategy: Option<KnnSearchStrategy>,
     ) -> Result<Self> {
         if result_similarity.is_nan() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "resultSimilarity must have a valid value; got {result_similarity}"
             )));
         }
         if decay.is_nan() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "decay must have a valid value; got {decay}"
             )));
         }
         if !(DECAY_MAX_APPROXIMATION..=DECAY_MAX_QUALITY).contains(&decay) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "decay must lie in range [DECAY_MAX_APPROXIMATION = 0, DECAY_MAX_QUALITY = 1]; got {decay}"
             )));
         }

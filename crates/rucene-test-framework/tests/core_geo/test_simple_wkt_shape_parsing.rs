@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::geo::simple_wkt_shape_parser::{EMPTY, SPACE};
 use rucene::geo::{ParseException, Polygon, ShapeType, SimpleWKTShapeParser, WktGeometry};
 
@@ -45,11 +45,11 @@ pub fn class_def() -> Arc<Class> {
 /// `java.text.ParseException` as the checked exception the test methods
 /// declare.
 fn checked(e: ParseException) -> LuceneError {
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: rucene::util::extra::PARSE_EXCEPTION,
         message: Some(e.message().to_string()),
         cause: None,
-    }
+    })
 }
 
 /// `SimpleWKTShapeParser.parse(wkt)`.

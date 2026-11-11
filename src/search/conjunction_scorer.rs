@@ -45,7 +45,7 @@ impl ConjunctionScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when fewer than two clauses are supplied or when they are not all on the
     /// same document.
     pub fn new(required: Vec<Box<dyn Scorer>>, scoring: Vec<usize>) -> Result<Self> {

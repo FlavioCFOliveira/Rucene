@@ -27,7 +27,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::java_nio_file::io_exception;
 use rucene::store::{DataInput, DataOutput, IndexOutput};
 
@@ -141,9 +141,11 @@ impl MockIndexOutputWrapper {
     /// anything.
     fn check_crashed(&self) -> Result<()> {
         if self.dir().is_crashed() {
-            return Err(LuceneError::Io(io_exception(format!(
-                "MockDirectoryWrapper has crashed; cannot write to {}",
-                self.cell.name
+            return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
+                format!(
+                    "MockDirectoryWrapper has crashed; cannot write to {}",
+                    self.cell.name
+                ),
             ))));
         }
         Ok(())
@@ -212,7 +214,9 @@ impl MockIndexOutputWrapper {
                 );
                 println!("java.lang.Throwable");
             }
-            return Err(LuceneError::Io(io_exception(message)));
+            return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
+                message,
+            ))));
         }
         Ok(())
     }

@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::exception::Throwable;
 use rucene::analysis::Analyzer;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 
 use crate::analysis::BaseTokenStreamTestCase;
 
@@ -72,11 +72,11 @@ impl EmojiTokenizationTestUnicode_12_1 {
             })) {
                 Ok(Ok(())) => {}
                 Ok(Err(t)) => {
-                    return Err(LuceneError::Unchecked {
+                    return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                         class: "java.lang.Exception",
                         message: Some(message),
                         cause: Some(Arc::new(t)),
-                    })
+                    }))
                 }
                 Err(payload) => Throwable::with_cause(
                     "java.lang.Exception",

@@ -28,7 +28,7 @@ use rucene::codecs::{
     Lucene104PostingsReader, Lucene104PostingsWriter, PostingsFormat, PostingsReaderBase,
     PostingsWriterBase, SegmentReadState, SegmentWriteState, TermStats,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::FieldInfo;
 use rucene::store::{DataInput, IndexInput};
@@ -296,7 +296,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
             )?)
         } else {
             // BUG!
-            return Err(LuceneError::AssertionError(String::new()));
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                String::new(),
+            )));
         };
 
         Ok(fields)
@@ -394,7 +396,9 @@ impl PostingsFormat for MockRandomPostingsFormat {
             Box::new(OrdsBlockTreeTermsReader::new(postings_reader, state)?)
         } else {
             // BUG!
-            return Err(LuceneError::AssertionError(String::new()));
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                String::new(),
+            )));
         };
 
         Ok(fields)

@@ -25,7 +25,7 @@ use rucene::codecs::{
     available_postings_formats, postings_for_name, FieldsConsumer, FieldsProducer, PostingsFormat,
     SegmentReadState, SegmentWriteState,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_reader::java_object_to_string;
 use rucene::index::{
     feature_requested, Fields, ImpactsEnum, IndexOptions, OrdTermState, PostingsEnum, SeekStatus,
@@ -41,16 +41,16 @@ use rucene::util::{Accountable, ArrayUtil, BytesRef, RamUsageEstimator};
 
 /// Java's `assert cond;` (`assert cond : message;`) under `-ea`: an
 /// `AssertionError`, raised in builds with `debug_assertions` (see
-/// [`LuceneError::AssertionError`]).
+/// [`LuceneErrorKind::AssertionError`]).
 macro_rules! java_assert {
     ($cond:expr) => {
         if cfg!(debug_assertions) && !($cond) {
-            return Err(LuceneError::AssertionError(String::new()));
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(String::new())));
         }
     };
     ($cond:expr, $($msg:tt)+) => {
         if cfg!(debug_assertions) && !($cond) {
-            return Err(LuceneError::AssertionError(format!($($msg)+)));
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!($($msg)+))));
         }
     };
 }
@@ -115,7 +115,7 @@ impl DirectPostingsFormat {
 /// `NamedSPILoader.java:102-114`).
 pub(crate) fn postings_format_for_name(name: &str) -> Result<Arc<dyn PostingsFormat>> {
     postings_for_name(name).ok_or_else(|| {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "An SPI class of type org.apache.lucene.codecs.PostingsFormat with name '{name}' \
              does not exist.  You need to add the corresponding JAR file supporting this SPI to \
              your classpath.  The current classpath supports the following names: [{}]",
@@ -519,7 +519,7 @@ impl DirectField {
 
         let num_terms = terms_in.size()? as i32;
         if num_terms == -1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "codec does not provide Terms.size()".to_string(),
             ));
         }
@@ -818,7 +818,7 @@ impl Terms for DirectTerms {
         start_term: Option<&BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
         if compiled.automaton_type != AutomatonType::Normal {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "please use CompiledAutomaton.getTermsEnum instead".to_string(),
             ));
         }
@@ -1659,7 +1659,7 @@ fn grow(states: &mut Vec<State>, state_upto: i32) {
 }
 
 fn unsupported() -> LuceneError {
-    LuceneError::UnsupportedOperation(String::new())
+    LuceneError::unsupported_operation(String::new())
 }
 
 impl TermsEnum for DirectIntersectTermsEnum {

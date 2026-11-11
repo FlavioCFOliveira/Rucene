@@ -78,13 +78,13 @@ pub struct BufferSize {
 impl BufferSize {
     fn new(bytes: i64) -> Result<Self> {
         if bytes > i32::MAX as i64 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Buffer too large for Java ({}MB max): {bytes}",
                 i32::MAX as i64 / MB
             )));
         }
         if bytes < ABSOLUTE_MIN_SORT_BUFFER_SIZE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "{MIN_BUFFER_SIZE_MSG}: {bytes}"
             )));
         }
@@ -97,7 +97,7 @@ impl BufferSize {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the size is below
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the size is below
     /// [`ABSOLUTE_MIN_SORT_BUFFER_SIZE`] or above `i32::MAX`.
     pub fn megabytes(mb: i64) -> Result<Self> {
         Self::new(mb * MB)
@@ -195,11 +195,11 @@ impl ByteSequencesWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the value is longer than
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the value is longer than
     /// `i16::MAX`, and propagates write errors.
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
         if bytes.len() > i16::MAX as usize {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "len must be <= {}; got {}",
                 i16::MAX,
                 bytes.len()
@@ -912,7 +912,7 @@ impl OfflineSorter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when an executor is given with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when an executor is given with
     /// a non-positive `max_partitions_in_ram`, when the buffer is below
     /// [`ABSOLUTE_MIN_SORT_BUFFER_SIZE`], when `max_tempfiles` is below 2, or
     /// when `value_length` is neither `-1` nor in `1..=i16::MAX`.
@@ -962,7 +962,7 @@ impl OfflineSorter {
         let exec: Arc<dyn Executor> = match exec {
             Some(exec) => {
                 if max_partitions_in_ram <= 0 {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "maxPartitionsInRAM must be > 0; got {max_partitions_in_ram}"
                     )));
                 }
@@ -976,18 +976,18 @@ impl OfflineSorter {
         let partitions_in_ram = Semaphore::new(max_partitions_in_ram);
 
         if (ram_buffer_size.bytes as i64) < ABSOLUTE_MIN_SORT_BUFFER_SIZE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "{MIN_BUFFER_SIZE_MSG}: {}",
                 ram_buffer_size.bytes
             )));
         }
         if max_tempfiles < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxTempFiles must be >= 2".to_string(),
             ));
         }
         if value_length != -1 && (value_length == 0 || value_length > i16::MAX as i32) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "valueLength must be 1 .. {}; got: {value_length}",
                 i16::MAX
             )));

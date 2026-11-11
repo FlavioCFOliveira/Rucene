@@ -179,7 +179,7 @@ impl ScorerUtil {
             .checked_sub(min_should_match)
             .and_then(|slack| slack.checked_add(1))
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "minShouldMatch must not exceed numScorers, got minShouldMatch={min_should_match}, numScorers={num_scorers}"
                 ))
             })?;

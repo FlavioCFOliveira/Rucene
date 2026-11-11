@@ -1459,7 +1459,7 @@ impl Query for TestRewriteQuery {
     ) -> Result<Arc<dyn rucene::search::weight::Weight>> {
         // `Query.createWeight` default: `throw new UnsupportedOperationException(
         // "Query " + this + " does not implement createWeight")`.
-        Err(rucene::error::LuceneError::UnsupportedOperation(format!(
+        Err(rucene::error::LuceneError::unsupported_operation(format!(
             "Query {} does not implement createWeight",
             query_to_string(self)
         )))

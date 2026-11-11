@@ -81,7 +81,7 @@ use std::time::Duration;
 
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::Codec;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::buffered_updates_stream::{FieldTermIterator, SegmentState};
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
@@ -307,7 +307,7 @@ impl DeletedTerms {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the term is longer than a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the term is longer than a
     /// pool block can hold, which is Java's
     /// `BytesRefHash.MaxBytesLengthExceededException`.
     pub fn put(&mut self, term: &Term, value: i32) -> Result<()> {
@@ -1017,7 +1017,7 @@ impl FrozenBufferedUpdates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the lock is poisoned.
+    /// Returns [`LuceneErrorKind::IllegalState`] when the lock is poisoned.
     pub fn lock_apply(&self) -> Result<MutexGuard<'_, ()>> {
         self.apply_lock.lock().map_err(|_| {
             LuceneError::illegal_state("frozen buffered updates apply lock poisoned".to_string())
@@ -1130,13 +1130,13 @@ impl FrozenBufferedUpdates {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the packet has not been
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the packet has not been
     /// pushed yet, and propagates whatever reading a segment's terms or writing
     /// its deletions raises.
     pub fn apply(&self, seg_states: &[SegmentState]) -> Result<i64> {
         if self.del_gen.load(Ordering::Acquire) == -1 {
             // we were not yet pushed
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "gen is not yet set; call BufferedUpdatesStream.push first".to_string(),
             ));
         }
@@ -1694,7 +1694,7 @@ impl<'a> TermDocsIterator<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when no term is positioned.
+    /// Returns [`LuceneErrorKind::IllegalState`] when no term is positioned.
     pub fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
         match self.postings_enum.as_mut() {
             Some(postings) => Ok(postings.as_mut()),
@@ -1863,7 +1863,7 @@ pub trait IndexingChain: Accountable + Send + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] by default, and propagates
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`] by default, and propagates
     /// whatever an implementation raises.
     fn process_batch(
         &mut self,
@@ -1872,7 +1872,7 @@ pub trait IndexingChain: Accountable + Send + Debug {
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()> {
         let _ = (base_doc_id, column_batch, field_infos);
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "this indexing chain does not accept column batches".to_string(),
         ))
     }
@@ -2114,7 +2114,7 @@ impl DeleteNode {
                             updates.add_binary_update(update, doc_id_upto)?;
                         }
                         other => {
-                            return Err(LuceneError::IllegalArgument(format!(
+                            return Err(LuceneError::illegal_argument(format!(
                                 "{other:?} DocValues updates not supported yet!"
                             )));
                         }
@@ -2283,7 +2283,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn add_delete_terms(&self, terms: Vec<Term>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new(DeleteItem::Terms(terms)))?;
         self.try_apply_global_slice()?;
@@ -2296,7 +2296,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn add_delete_queries(&self, queries: Vec<Arc<dyn Query>>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new(DeleteItem::Queries(queries)))?;
         self.try_apply_global_slice()?;
@@ -2309,8 +2309,8 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed, or
-    /// [`LuceneError::IllegalArgument`] if an update targets a doc-values kind
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed, or
+    /// [`LuceneErrorKind::IllegalArgument`] if an update targets a doc-values kind
     /// other than `NUMERIC` or `BINARY`.
     pub fn add_doc_values_updates(&self, updates: Vec<DocValuesUpdate>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new_doc_values_updates(updates))?;
@@ -2325,7 +2325,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn add_to_slice(
         &self,
         delete_node: Arc<DeleteNode>,
@@ -2345,7 +2345,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn add(&self, node: Arc<DeleteNode>) -> Result<i64> {
         let mut tail = self.write_tail();
         self.ensure_open()?;
@@ -2408,7 +2408,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn update_slice(&self, slice: &mut DeleteSlice) -> Result<i64> {
         let tail = self.write_tail();
         self.ensure_open()?;
@@ -2465,7 +2465,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] if the queue is closed.
     pub fn freeze_global_buffer(
         &self,
         caller_slice: Option<&mut DeleteSlice>,
@@ -2590,7 +2590,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if unapplied deletes remain.
+    /// Returns [`LuceneErrorKind::IllegalState`] if unapplied deletes remain.
     pub fn close(&self) -> Result<()> {
         let mut global = self.lock_global();
         if self.any_changes_locked(&mut global) {
@@ -2633,7 +2633,7 @@ impl DocumentsWriterDeleteQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the queue was already advanced.
+    /// Returns [`LuceneErrorKind::IllegalState`] if the queue was already advanced.
     pub fn advance_queue(&self, max_num_pending_ops: usize) -> Result<Arc<Self>> {
         let mut advanced = self
             .advanced
@@ -3921,7 +3921,7 @@ impl DocumentsWriterPerThread {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the reservation would take
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the reservation would take
     /// the index past its document limit.
     fn reserve_docs(&self, n: i32) -> Result<()> {
         debug_assert!(n >= 0);
@@ -3935,7 +3935,7 @@ impl DocumentsWriterPerThread {
             let current = self.pending_num_docs.load(Ordering::Acquire);
             let next = current + i64::from(n);
             if next > max_docs {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "number of documents in the index cannot exceed {max_docs}"
                 )));
             }
@@ -3959,7 +3959,7 @@ impl DocumentsWriterPerThread {
         {
             // Reserve failed: put the one doc back and throw exc.
             self.pending_num_docs.fetch_sub(1, Ordering::AcqRel);
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "number of documents in the index cannot exceed {}",
                 crate::index::index_writer::get_actual_max_docs()
             )));
@@ -4118,7 +4118,7 @@ impl DwptGuard {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the document limit would be
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the document limit would be
     /// exceeded or if a block is indexed without a parent field on a sorted
     /// index, and propagates any error raised by the indexing chain.
     pub fn update_documents<F>(
@@ -4144,7 +4144,7 @@ impl DwptGuard {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the document limit would
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the document limit would
     /// be exceeded, and propagates any error raised by the indexing chain.
     pub fn update_batch<F>(
         &mut self,
@@ -4258,7 +4258,7 @@ impl DwptGuard {
                     && self.dwpt.index_major_version_created
                         >= i32::from(Version::LUCENE_10_0_0.major)
                 {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "a parent field must be set in order to use document blocks with index sorting; see IndexWriterConfig#setParentField".to_string(),
                     ));
                 }
@@ -4418,7 +4418,7 @@ impl DwptGuard {
     ///
     /// # Errors
     ///
-    /// Propagates [`LuceneError::AlreadyClosed`] if the delete queue closed.
+    /// Propagates [`LuceneErrorKind::AlreadyClosed`] if the delete queue closed.
     pub fn prepare_flush(&mut self) -> Result<Option<FrozenBufferedUpdates>> {
         debug_assert!(self.dwpt.num_docs_in_ram() > 0);
         let num_docs_in_ram = self.dwpt.num_docs_in_ram();
@@ -4955,7 +4955,7 @@ impl DocumentsWriterPerThreadPool {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the pool is closed, and
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] once the pool is closed, and
     /// propagates factory failures.
     pub fn get_and_lock(&self) -> Result<DwptGuard> {
         self.ensure_open()?;
@@ -5179,7 +5179,7 @@ impl DocumentsWriterShared {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the queue was already advanced.
+    /// Returns [`LuceneErrorKind::IllegalState`] if the queue was already advanced.
     fn reset_delete_queue(&self, max_num_pending_ops: usize) -> Result<i64> {
         let mut current = self
             .delete_queue
@@ -5497,7 +5497,7 @@ impl DocumentsWriterFlushControl {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// Returns [`LuceneErrorKind::ThreadInterrupted`] when the thread is
     /// interrupted ([`InterruptHandle::interrupt`](crate::util::InterruptHandle::interrupt))
     /// before or while it waits.
     pub fn wait_for_flush(&self) -> Result<()> {
@@ -5670,7 +5670,7 @@ impl DocumentsWriterFlushControl {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AlreadyClosed`] once the flush control is closed.
+    /// Returns [`LuceneErrorKind::AlreadyClosed`] once the flush control is closed.
     pub fn obtain_and_lock(&self) -> Result<DwptGuard> {
         while !self.closed.load(Ordering::Acquire) {
             let guard = self.per_thread_pool.get_and_lock()?;
@@ -5696,7 +5696,7 @@ impl DocumentsWriterFlushControl {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if a full flush is already
+    /// Returns [`LuceneErrorKind::IllegalState`] if a full flush is already
     /// running, and propagates delete-queue errors.
     pub fn mark_for_full_flush(&self) -> Result<i64> {
         let (flushing_queue, seq_no) = {
@@ -5834,7 +5834,7 @@ impl DocumentsWriterFlushControl {
     /// is the only difference from Java, where `abort()` needs no DWPT lock at
     /// all. As Java's `catch (Exception ex)`, a DWPT's failure to abort is
     /// ignored — best effort — unless it is a Java `Error`
-    /// ([`LuceneError::AssertionError`]), which ends the walk once that DWPT is
+    /// ([`LuceneErrorKind::AssertionError`]), which ends the walk once that DWPT is
     /// accounted for and propagates after the stall state is updated.
     ///
     /// Java walks the two queues in two loops (`DocumentsWriterFlushControl.java:681-706`):
@@ -5847,7 +5847,7 @@ impl DocumentsWriterFlushControl {
     ///
     /// # Errors
     ///
-    /// Returns the [`LuceneError::AssertionError`] a DWPT's abort raised.
+    /// Returns the [`LuceneErrorKind::AssertionError`] a DWPT's abort raised.
     pub fn abort_pending_flushes(&self) -> Result<()> {
         let (flush_queue, blocked_flushes): (Vec<_>, Vec<_>) = {
             let mut inner = self.lock();
@@ -5865,7 +5865,12 @@ impl DocumentsWriterFlushControl {
             let aborted = DocumentsWriterPerThread::lock(dwpt).abort();
             self.do_after_flush(dwpt);
             match aborted {
-                Err(error @ LuceneError::AssertionError(_)) => Err(error),
+                Err(
+                    error @ LuceneError {
+                        kind: LuceneErrorKind::AssertionError(_),
+                        ..
+                    },
+                ) => Err(error),
                 _ => Ok(()),
             }
         };
@@ -6657,7 +6662,9 @@ impl DocumentsWriter {
             // `assert_set_flushing_delete_queue` for why a debug build returns
             // the failure. Java's `AssertionError` has no message here.
             if cfg!(debug_assertions) && flushing_delete_queue.any_changes() {
-                return Err(LuceneError::AssertionError(String::new()));
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    String::new(),
+                )));
             }
             Ok(anything_flushed)
         })();
@@ -6719,7 +6726,7 @@ impl DocumentsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::ThreadInterrupted`] when the thread is
+    /// Returns [`LuceneErrorKind::ThreadInterrupted`] when the thread is
     /// interrupted while it waits for the running flushes
     /// ([`DocumentsWriterFlushControl::wait_for_flush`]).
     pub fn abort(&self) -> Result<()> {
@@ -6784,7 +6791,7 @@ impl DocumentsWriter {
     /// # Errors
     ///
     /// Propagates errors from purging the ticket queue, and returns
-    /// [`LuceneError::ThreadInterrupted`] when the thread is interrupted while
+    /// [`LuceneErrorKind::ThreadInterrupted`] when the thread is interrupted while
     /// it waits for the running flushes
     /// ([`DocumentsWriterFlushControl::wait_for_flush`]).
     pub fn lock_and_abort_all(&self) -> Result<LockAllGuard<'_>> {
@@ -6941,7 +6948,7 @@ impl DocumentsWriter {
     ///
     /// In a build with `debug_assertions` — this port's counterpart of Java's
     /// `-ea` — a queue that is still open fails the assertion with
-    /// [`LuceneError::AssertionError`], the `Error` the writer records as its
+    /// [`LuceneErrorKind::AssertionError`], the `Error` the writer records as its
     /// tragic exception and closes on, as Java's `AssertionError` is under
     /// `-ea`. A full flush that failed, for example on a delete term longer
     /// than 32766 bytes, leaves the queue open and reaches this case. A
@@ -6951,15 +6958,15 @@ impl DocumentsWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::AssertionError`] when the assertion fails.
+    /// Returns [`LuceneErrorKind::AssertionError`] when the assertion fails.
     fn assert_set_flushing_delete_queue(
         &self,
         session: Option<Arc<DocumentsWriterDeleteQueue>>,
     ) -> Result<()> {
         if cfg!(debug_assertions) && !self.set_flushing_delete_queue(session) {
-            return Err(LuceneError::AssertionError(
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(
                 "Can not replace a full flush queue if the queue is not closed".to_string(),
-            ));
+            )));
         }
         Ok(())
     }
@@ -7120,11 +7127,15 @@ mod tests {
             _field_infos: &mut FieldInfosBuilder,
         ) -> Result<()> {
             if self.corrupt_on_doc == Some(doc_id) {
-                self.aborting_error = Some(LuceneError::CorruptIndex("scripted".to_string()));
-                return Err(LuceneError::CorruptIndex("scripted".to_string()));
+                self.aborting_error = Some(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                    "scripted".to_string(),
+                )));
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(
+                    "scripted".to_string(),
+                )));
             }
             if self.fail_on_doc == Some(doc_id) {
-                return Err(LuceneError::IllegalArgument("scripted".to_string()));
+                return Err(LuceneError::illegal_argument("scripted".to_string()));
             }
             self.num_docs += 1;
             Ok(())
@@ -7516,7 +7527,13 @@ mod tests {
         let error = queue
             .add_ticket(|| Err(LuceneError::illegal_state("boom".to_string())))
             .unwrap_err();
-        assert!(matches!(error, LuceneError::IllegalState { .. }));
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
         assert_eq!(queue.ticket_count(), 0);
     }
 
@@ -7947,7 +7964,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            LuceneError::IllegalArgument(format!(
+            LuceneError::illegal_argument(format!(
                 "number of documents in the index cannot exceed {limit}"
             ))
             .to_string()
@@ -8322,7 +8339,13 @@ mod tests {
         let fixture = new_writer(config(1_000_000, 16.0));
         fixture.writer.close();
         let error = fixture.writer.update_document(&doc("a"), None).unwrap_err();
-        assert!(matches!(error, LuceneError::AlreadyClosed { .. }));
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -8432,7 +8455,9 @@ mod tests {
             Arc::new(move |_config| {
                 let mut chain = ScriptedChain::new(10);
                 if counter.fetch_add(1, Ordering::AcqRel) == 0 {
-                    chain.abort_error = Some(LuceneError::AssertionError("scripted".to_string()));
+                    chain.abort_error = Some(LuceneError::from(LuceneErrorKind::AssertionError(
+                        "scripted".to_string(),
+                    )));
                 }
                 Box::new(chain)
             }),
@@ -8454,7 +8479,10 @@ mod tests {
         assert_eq!(flush_control.num_blocked_flushes(), 2);
 
         match flush_control.abort_pending_flushes() {
-            Err(LuceneError::AssertionError(message)) => assert_eq!(message, "scripted"),
+            Err(LuceneError {
+                kind: LuceneErrorKind::AssertionError(message),
+                ..
+            }) => assert_eq!(message, "scripted"),
             other => panic!("the AssertionError must propagate, got {other:?}"),
         }
         assert_eq!(flush_control.num_blocked_flushes(), 0);

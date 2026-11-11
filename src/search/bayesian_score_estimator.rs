@@ -100,7 +100,7 @@ impl BayesianScoreEstimator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
     /// `n_samples` or `tokens_per_query` is not positive, or when
     /// `n_samples * tokens_per_query` overflows, which is Java's
     /// `Math.multiplyExact`; propagates any I/O error raised while reading the
@@ -113,12 +113,12 @@ impl BayesianScoreEstimator {
         seed: i64,
     ) -> Result<Parameters> {
         if n_samples <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "nSamples must be positive, got {n_samples}"
             )));
         }
         if tokens_per_query <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "tokensPerQuery must be positive, got {tokens_per_query}"
             )));
         }
@@ -131,7 +131,7 @@ impl BayesianScoreEstimator {
 
         let mut rng = JavaRandom::new(seed);
         let sample_size = n_samples.checked_mul(tokens_per_query).ok_or_else(|| {
-            LuceneError::IllegalArgument("nSamples * tokensPerQuery overflows an int".to_string())
+            LuceneError::illegal_argument("nSamples * tokensPerQuery overflows an int".to_string())
         })?;
         let sampled_terms = sample_vocabulary_terms(reader, field, sample_size, &mut rng)?;
         if sampled_terms.is_empty() {

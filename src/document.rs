@@ -31,7 +31,7 @@ use crate::analysis::{Analyzer, CharReader, TokenStream};
 use crate::document::doc_values_queries::{
     SortedNumericDocValuesRangeQuery, SortedNumericDocValuesSetQuery, SortedSetDocValuesRangeQuery,
 };
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::Term;
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, IndexableField,
@@ -182,7 +182,7 @@ impl std::fmt::Display for StoredValueType {
 ///
 /// The Java accessors are still provided ([`Self::int_value`],
 /// [`Self::set_int_value`], ...) so that a port of Lucene code reads the same;
-/// they return [`LuceneError::IllegalArgument`] where Java throws
+/// they return [`LuceneErrorKind::IllegalArgument`] where Java throws
 /// `IllegalArgumentException`.
 ///
 /// # Java to Rust adaptation: `DATA_INPUT`
@@ -233,14 +233,14 @@ impl StoredValue {
     }
 
     fn mismatch<T>(&self, wanted: &str) -> Result<T> {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "Cannot get {wanted} on a {} value",
             self.value_type()
         )))
     }
 
     fn cannot_set(&self, wanted: &str) -> LuceneError {
-        LuceneError::IllegalArgument(format!(
+        LuceneError::illegal_argument(format!(
             "Cannot set {wanted} on a {} value",
             self.value_type()
         ))
@@ -252,7 +252,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not an
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not an
     /// [`Self::Integer`] value.
     pub fn int_value(&self) -> Result<i32> {
         match self {
@@ -267,7 +267,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a [`Self::Long`]
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a [`Self::Long`]
     /// value.
     pub fn long_value(&self) -> Result<i64> {
         match self {
@@ -282,7 +282,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::Float`] value.
     pub fn float_value(&self) -> Result<f32> {
         match self {
@@ -297,7 +297,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::Double`] value.
     pub fn double_value(&self) -> Result<f64> {
         match self {
@@ -312,7 +312,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::Binary`] value.
     pub fn binary_value(&self) -> Result<&BytesRef> {
         match self {
@@ -327,7 +327,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::DataInput`] value.
     pub fn data_input_value(&self) -> Result<&BytesRef> {
         match self {
@@ -342,7 +342,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::String`] value.
     pub fn string_value(&self) -> Result<&str> {
         match self {
@@ -358,7 +358,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::Integer`] value.
     pub fn set_byte_value(&mut self, value: i8) -> Result<()> {
         self.set_int_value(i32::from(value))
@@ -371,7 +371,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::Integer`] value.
     pub fn set_short_value(&mut self, value: i16) -> Result<()> {
         self.set_int_value(i32::from(value))
@@ -383,7 +383,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not an
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not an
     /// [`Self::Integer`] value.
     pub fn set_int_value(&mut self, value: i32) -> Result<()> {
         match self {
@@ -401,7 +401,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a [`Self::Long`]
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a [`Self::Long`]
     /// value.
     pub fn set_long_value(&mut self, value: i64) -> Result<()> {
         match self {
@@ -419,7 +419,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::Float`] value.
     pub fn set_float_value(&mut self, value: f32) -> Result<()> {
         match self {
@@ -437,7 +437,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::Double`] value.
     pub fn set_double_value(&mut self, value: f64) -> Result<()> {
         match self {
@@ -455,7 +455,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::Binary`] value.
     pub fn set_binary_value(&mut self, value: BytesRef) -> Result<()> {
         match self {
@@ -473,7 +473,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::DataInput`] value.
     pub fn set_data_input_value(&mut self, value: BytesRef) -> Result<()> {
         match self {
@@ -491,7 +491,7 @@ impl StoredValue {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if this is not a
     /// [`Self::String`] value.
     pub fn set_string_value(&mut self, value: String) -> Result<()> {
         match self {
@@ -890,57 +890,57 @@ impl FieldType {
     ) -> Result<()> {
         self.check_if_frozen()?;
         if dimension_count < 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "dimensionCount must be >= 0".to_string(),
             ));
         }
         if dimension_count > MAX_DIMENSIONS {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "dimensionCount exceeds MAX_DIMENSIONS".to_string(),
             ));
         }
         if index_dimension_count < 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "indexDimensionCount must be >= 0".to_string(),
             ));
         }
         if index_dimension_count > dimension_count {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "indexDimensionCount must be <= dimensionCount".to_string(),
             ));
         }
         if index_dimension_count > MAX_INDEX_DIMENSIONS {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "indexDimensionCount exceeds MAX_INDEX_DIMENSIONS".to_string(),
             ));
         }
         if dimension_num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "dimensionNumBytes must be >= 0".to_string(),
             ));
         }
         if dimension_num_bytes > MAX_NUM_BYTES {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "dimensionNumBytes exceeds MAX_NUM_BYTES".to_string(),
             ));
         }
         if dimension_count == 0 {
             if index_dimension_count != 0 {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "when dimensionCount is 0, indexDimensionCount must be 0".to_string(),
                 ));
             }
             if dimension_num_bytes != 0 {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "when dimensionCount is 0, dimensionNumBytes must be 0".to_string(),
                 ));
             }
         } else if index_dimension_count == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "when dimensionCount is > 0, indexDimensionCount must be > 0".to_string(),
             ));
         } else if dimension_num_bytes == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "when dimensionNumBytes is 0, dimensionCount must be 0".to_string(),
             ));
         }
@@ -962,7 +962,7 @@ impl FieldType {
     ) -> Result<()> {
         self.check_if_frozen()?;
         if num_dimensions <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector numDimensions must be > 0; got {num_dimensions}"
             )));
         }
@@ -1221,7 +1221,7 @@ impl Field {
             // Lucene allows empty strings; keep the check minimal.
         }
         if !field_type.stored() && field_type.index_options() == IndexOptions::NONE {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "it doesn't make sense to have a field that is neither indexed nor stored"
                     .to_string(),
             ));
@@ -1244,12 +1244,12 @@ impl Field {
         let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
         if field_type.stored() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "fields with a Reader value cannot be stored".to_string(),
             ));
         }
         if field_type.index_options() != IndexOptions::NONE && !field_type.tokenized() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "non-tokenized fields must use String values".to_string(),
             ));
         }
@@ -1271,12 +1271,12 @@ impl Field {
         let field_type: Arc<FieldType> = field_type.into();
         Self::validate_name_and_type(name, &field_type)?;
         if field_type.index_options() == IndexOptions::NONE || !field_type.tokenized() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "TokenStream fields must be indexed and tokenized".to_string(),
             ));
         }
         if field_type.stored() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "TokenStream fields cannot be stored".to_string(),
             ));
         }
@@ -1300,12 +1300,12 @@ impl Field {
             .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
             || field_type.store_term_vector_offsets()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "It doesn't make sense to index offsets on binary fields".to_string(),
             ));
         }
         if field_type.index_options() != IndexOptions::NONE && field_type.tokenized() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "cannot set a BytesRef value on a tokenized field".to_string(),
             ));
         }
@@ -1314,7 +1314,7 @@ impl Field {
             && field_type.doc_values_type() == DocValuesType::NONE
             && !field_type.stored()
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "it doesn't make sense to have a field that is neither indexed, nor doc-valued, nor stored".to_string(),
             ));
         }
@@ -1432,7 +1432,7 @@ impl Field {
             ));
         }
         let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "value must not be null".to_string(),
             ));
         };
@@ -1474,7 +1474,7 @@ impl Field {
             ));
         }
         let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "value must not be null".to_string(),
             ));
         };
@@ -1492,11 +1492,11 @@ impl Field {
     pub fn set_bytes_value_array(&self, value: Option<&[u8]>) -> Result<()> {
         let Some(value) = value else {
             // The JVM computes the helpful message; the port keeps none.
-            return Err(LuceneError::Unchecked {
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.NullPointerException",
                 message: None,
                 cause: None,
-            });
+            }));
         };
         self.set_bytes_value(BytesRef::new(value.to_vec()))
     }
@@ -1509,7 +1509,7 @@ impl Field {
     pub fn set_number_value(&self, value: NumericValue) -> Result<()> {
         let mut data = self.fields_data.borrow_mut();
         if !matches!(*data, FieldData::Number(_)) {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "cannot change value type to Number".to_string(),
             ));
         }
@@ -1533,7 +1533,7 @@ impl Field {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`], as Java throws
+    /// Returns [`LuceneErrorKind::IllegalArgument`], as Java throws
     /// `IllegalArgumentException`, for every field this crate can construct.
     pub fn set_byte_value(&self, _value: i8) -> Result<()> {
         Err(cannot_change_value_type(
@@ -1552,7 +1552,7 @@ impl Field {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`], as Java throws
+    /// Returns [`LuceneErrorKind::IllegalArgument`], as Java throws
     /// `IllegalArgumentException`, for every field this crate can construct.
     pub fn set_short_value(&self, _value: i16) -> Result<()> {
         Err(cannot_change_value_type(
@@ -1568,7 +1568,7 @@ impl Field {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when this field holds anything
     /// but an `int`, as Java throws `IllegalArgumentException`.
     pub fn set_int_value(&self, value: i32) -> Result<()> {
         let mut data = self.fields_data.borrow_mut();
@@ -1589,7 +1589,7 @@ impl Field {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when this field holds anything
     /// but a `long`, as Java throws `IllegalArgumentException`.
     pub fn set_long_value(&self, value: i64) -> Result<()> {
         let mut data = self.fields_data.borrow_mut();
@@ -1610,7 +1610,7 @@ impl Field {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when this field holds anything
     /// but a `float`, as Java throws `IllegalArgumentException`.
     pub fn set_float_value(&self, value: f32) -> Result<()> {
         let mut data = self.fields_data.borrow_mut();
@@ -1631,7 +1631,7 @@ impl Field {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when this field holds anything
     /// but a `double`, as Java throws `IllegalArgumentException`.
     pub fn set_double_value(&self, value: f64) -> Result<()> {
         let mut data = self.fields_data.borrow_mut();
@@ -1720,7 +1720,7 @@ impl IndexableField for Field {
                 }
                 return Ok(Box::new(crate::analysis::BinaryTokenStream::new(b)?));
             }
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Non-Tokenized Fields must have a String value".to_string(),
             ));
         }
@@ -1734,7 +1734,7 @@ impl IndexableField for Field {
             return string_token_stream(analyzer, &self.name, &s);
         }
         // `"... got " + this` (`Field.java:501-502`).
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "Field must have either TokenStream, String, Reader or Number value; got {self}"
         )))
     }
@@ -1794,7 +1794,7 @@ impl IndexableField for Field {
             FieldData::String(value) => Ok(Some(StoredValue::String(value.clone()))),
             FieldData::StoredInput { input, length } => {
                 let length = usize::try_from(*length).map_err(|_| {
-                    LuceneError::IllegalArgument(format!(
+                    LuceneError::illegal_argument(format!(
                         "stored field \"{}\" declares a negative length: {length}",
                         self.name
                     ))
@@ -1808,7 +1808,7 @@ impl IndexableField for Field {
                 Ok(Some(StoredValue::DataInput(BytesRef::new(bytes))))
             }
             // `Field.java:611-612`.
-            FieldData::Null => Err(LuceneError::IllegalArgument(
+            FieldData::Null => Err(LuceneError::illegal_argument(
                 "fieldsData is unset".to_string(),
             )),
             // `Field.java:628`.
@@ -2488,7 +2488,7 @@ impl StoredField {
     /// (`Field.java:244-246`). A plain `String` converts into `Some`.
     pub fn new_string(name: &str, value: impl Into<Option<String>>) -> Result<Self> {
         let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "value must not be null".to_string(),
             ));
         };
@@ -2503,7 +2503,7 @@ impl StoredField {
     /// (`Field.java:203-205`). A plain `BytesRef` converts into `Some`.
     pub fn new_bytes(name: &str, value: impl Into<Option<BytesRef>>) -> Result<Self> {
         let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "bytes must not be null".to_string(),
             ));
         };
@@ -2523,11 +2523,11 @@ impl StoredField {
     pub fn new_byte_array(name: &str, value: Option<&[u8]>) -> Result<Self> {
         let Some(value) = value else {
             // The JVM computes the helpful message; the port keeps none.
-            return Err(LuceneError::Unchecked {
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.NullPointerException",
                 message: None,
                 cause: None,
-            });
+            }));
         };
         Self::new_bytes(name, BytesRef::new(value.to_vec()))
     }
@@ -2553,7 +2553,7 @@ impl StoredField {
         length: i32,
     ) -> Result<Self> {
         let Some(input) = input else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "store field data input must not be null".to_string(),
             ));
         };
@@ -3081,7 +3081,7 @@ fn double_point_field_type(num_dims: usize) -> Result<FieldType> {
 /// Packs one or more `i32` point dimensions into a [`BytesRef`].
 pub fn pack_int_point(point: &[i32]) -> Result<BytesRef> {
     if point.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "point must not be 0 dimensions".to_string(),
         ));
     }
@@ -3095,7 +3095,7 @@ pub fn pack_int_point(point: &[i32]) -> Result<BytesRef> {
 /// Packs one or more `i64` point dimensions into a [`BytesRef`].
 pub fn pack_long_point(point: &[i64]) -> Result<BytesRef> {
     if point.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "point must not be 0 dimensions".to_string(),
         ));
     }
@@ -3109,7 +3109,7 @@ pub fn pack_long_point(point: &[i64]) -> Result<BytesRef> {
 /// Packs one or more `f32` point dimensions into a [`BytesRef`].
 pub fn pack_float_point(point: &[f32]) -> Result<BytesRef> {
     if point.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "point must not be 0 dimensions".to_string(),
         ));
     }
@@ -3123,7 +3123,7 @@ pub fn pack_float_point(point: &[f32]) -> Result<BytesRef> {
 /// Packs one or more `f64` point dimensions into a [`BytesRef`].
 pub fn pack_double_point(point: &[f64]) -> Result<BytesRef> {
     if point.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "point must not be 0 dimensions".to_string(),
         ));
     }
@@ -3137,7 +3137,7 @@ pub fn pack_double_point(point: &[f64]) -> Result<BytesRef> {
 /// Packs one or more binary dimensions into a [`BytesRef`].
 pub fn pack_binary_point(point: &[BytesRef]) -> Result<BytesRef> {
     if point.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "point must not be 0 dimensions".to_string(),
         ));
     }
@@ -3145,7 +3145,7 @@ pub fn pack_binary_point(point: &[BytesRef]) -> Result<BytesRef> {
     let mut packed = Vec::with_capacity(bytes_per_dim * point.len());
     for dim in point {
         if dim.length != bytes_per_dim {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "all dimensions must have same bytes length".to_string(),
             ));
         }
@@ -3183,7 +3183,7 @@ impl IntPoint {
     /// `IllegalArgumentException` message on a dimension-count mismatch.
     pub fn set_values(&self, point: &[i32]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "this field (name={}) uses {} dimensions; cannot change to (incoming) {} dimensions",
                 self.name,
                 self.field_type.point_dimension_count(),
@@ -3210,7 +3210,7 @@ impl IntPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `point` has a different
     /// number of dimensions than the field was created with.
     pub fn set_int_values(&self, point: &[i32]) -> Result<()> {
         self.set_values(point)
@@ -3223,7 +3223,7 @@ impl IntPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the field was created with
     /// more than one dimension, as Java throws `IllegalArgumentException`.
     pub fn set_int_value(&self, value: i32) -> Result<()> {
         self.set_int_values(&[value])
@@ -3237,7 +3237,7 @@ impl IntPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `point` has no dimensions,
     /// as Java throws `IllegalArgumentException`. Java also rejects a null
     /// array, which Rust's type system already does.
     pub fn pack(point: &[i32]) -> Result<BytesRef> {
@@ -3265,7 +3265,7 @@ impl IntPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the two points have
     /// different dimension counts, or when packing a point fails.
     pub fn new_range_query(
         field: &str,
@@ -3273,7 +3273,7 @@ impl IntPoint {
         upper_value: &[i32],
     ) -> Result<Arc<dyn Query>> {
         if lower_value.len() != upper_value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "lowerValue has length={} but upperValue has different length={}",
                 lower_value.len(),
                 upper_value.len()
@@ -3447,7 +3447,7 @@ impl LongPoint {
     /// `IllegalArgumentException` message on a dimension-count mismatch.
     pub fn set_values(&self, point: &[i64]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "this field (name={}) uses {} dimensions; cannot change to (incoming) {} dimensions",
                 self.name,
                 self.field_type.point_dimension_count(),
@@ -3493,7 +3493,7 @@ impl LongPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `point` has a different
     /// number of dimensions than the field was created with.
     pub fn set_long_values(&self, point: &[i64]) -> Result<()> {
         self.set_values(point)
@@ -3506,7 +3506,7 @@ impl LongPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the field was created with
     /// more than one dimension, as Java throws `IllegalArgumentException`.
     pub fn set_long_value(&self, value: i64) -> Result<()> {
         self.set_long_values(&[value])
@@ -3520,7 +3520,7 @@ impl LongPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `point` has no dimensions,
     /// as Java throws `IllegalArgumentException`. Java also rejects a null
     /// array, which Rust's type system already does.
     pub fn pack(point: &[i64]) -> Result<BytesRef> {
@@ -3548,7 +3548,7 @@ impl LongPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the two points have
     /// different dimension counts, or when packing a point fails.
     pub fn new_range_query(
         field: &str,
@@ -3556,7 +3556,7 @@ impl LongPoint {
         upper_value: &[i64],
     ) -> Result<Arc<dyn Query>> {
         if lower_value.len() != upper_value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "lowerValue has length={} but upperValue has different length={}",
                 lower_value.len(),
                 upper_value.len()
@@ -3832,7 +3832,7 @@ impl FloatPoint {
     /// `IllegalArgumentException` message on a dimension-count mismatch.
     pub fn set_values(&self, point: &[f32]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "this field (name={}) uses {} dimensions; cannot change to (incoming) {} dimensions",
                 self.name,
                 self.field_type.point_dimension_count(),
@@ -3859,7 +3859,7 @@ impl FloatPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `point` has a different
     /// number of dimensions than the field was created with.
     pub fn set_float_values(&self, point: &[f32]) -> Result<()> {
         self.set_values(point)
@@ -3872,7 +3872,7 @@ impl FloatPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the field was created with
     /// more than one dimension, as Java throws `IllegalArgumentException`.
     pub fn set_float_value(&self, value: f32) -> Result<()> {
         self.set_float_values(&[value])
@@ -3886,7 +3886,7 @@ impl FloatPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `point` has no dimensions,
     /// as Java throws `IllegalArgumentException`. Java also rejects a null
     /// array, which Rust's type system already does.
     pub fn pack(point: &[f32]) -> Result<BytesRef> {
@@ -3914,7 +3914,7 @@ impl FloatPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the two points have
     /// different dimension counts, or when packing a point fails.
     pub fn new_range_query(
         field: &str,
@@ -3922,7 +3922,7 @@ impl FloatPoint {
         upper_value: &[f32],
     ) -> Result<Arc<dyn Query>> {
         if lower_value.len() != upper_value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "lowerValue has length={} but upperValue has different length={}",
                 lower_value.len(),
                 upper_value.len()
@@ -4126,7 +4126,7 @@ impl DoublePoint {
     /// `IllegalArgumentException` message on a dimension-count mismatch.
     pub fn set_values(&self, point: &[f64]) -> Result<()> {
         if point.len() as i32 != self.field_type.point_dimension_count() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "this field (name={}) uses {} dimensions; cannot change to (incoming) {} dimensions",
                 self.name,
                 self.field_type.point_dimension_count(),
@@ -4153,7 +4153,7 @@ impl DoublePoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `point` has a different
     /// number of dimensions than the field was created with.
     pub fn set_double_values(&self, point: &[f64]) -> Result<()> {
         self.set_values(point)
@@ -4166,7 +4166,7 @@ impl DoublePoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the field was created with
     /// more than one dimension, as Java throws `IllegalArgumentException`.
     pub fn set_double_value(&self, value: f64) -> Result<()> {
         self.set_double_values(&[value])
@@ -4180,7 +4180,7 @@ impl DoublePoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `point` has no dimensions,
     /// as Java throws `IllegalArgumentException`. Java also rejects a null
     /// array, which Rust's type system already does.
     pub fn pack(point: &[f64]) -> Result<BytesRef> {
@@ -4208,7 +4208,7 @@ impl DoublePoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the two points have
     /// different dimension counts, or when packing a point fails.
     pub fn new_range_query(
         field: &str,
@@ -4216,7 +4216,7 @@ impl DoublePoint {
         upper_value: &[f64],
     ) -> Result<Arc<dyn Query>> {
         if lower_value.len() != upper_value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "lowerValue has length={} but upperValue has different length={}",
                 lower_value.len(),
                 upper_value.len()
@@ -4374,14 +4374,14 @@ pub struct BinaryPoint {
 impl BinaryPoint {
     fn field_type_for_point(point: &[BytesRef]) -> Result<FieldType> {
         if point.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "point must not be 0 dimensions".to_string(),
             ));
         }
         let bytes_per_dim = point[0].length;
         for dim in point {
             if dim.length != bytes_per_dim {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "all dimensions must have same bytes length".to_string(),
                 ));
             }
@@ -4413,7 +4413,7 @@ impl BinaryPoint {
     ) -> Result<Self> {
         let expected = field_type.point_dimension_count() * field_type.point_num_bytes();
         if packed_point.length as i32 != expected {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "packedPoint length does not match field type dimensions".to_string(),
             ));
         }
@@ -4442,7 +4442,7 @@ impl BinaryPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the two points have
     /// different dimension counts, or when packing a point fails.
     pub fn new_range_query(
         field: &str,
@@ -4450,7 +4450,7 @@ impl BinaryPoint {
         upper_value: &[BytesRef],
     ) -> Result<Arc<dyn Query>> {
         if lower_value.len() != upper_value.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "lowerValue has length={} but upperValue has different length={}",
                 lower_value.len(),
                 upper_value.len()
@@ -4474,7 +4474,7 @@ impl BinaryPoint {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when two values differ in
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when two values differ in
     /// length, and propagates whatever
     /// [`PointInSetQuery::new`](crate::search::PointInSetQuery) raises.
     pub fn new_set_query(field: &str, values: &[Vec<u8>]) -> Result<Arc<dyn Query>> {
@@ -4484,7 +4484,7 @@ impl BinaryPoint {
             if bytes_per_dim == -1 {
                 bytes_per_dim = value.len() as i64;
             } else if value.len() as i64 != bytes_per_dim {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "all byte[] must be the same length, but saw {bytes_per_dim} and {}",
                     value.len()
                 )));
@@ -5008,7 +5008,7 @@ impl SortedDocValuesField {
     /// with `IllegalArgumentException("value must not be null")`.
     pub fn set_bytes_value(&self, value: impl Into<Option<BytesRef>>) -> Result<()> {
         let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "value must not be null".to_string(),
             ));
         };
@@ -5155,7 +5155,7 @@ impl SortedSetDocValuesField {
     /// with `IllegalArgumentException("value must not be null")`.
     pub fn set_bytes_value(&self, value: impl Into<Option<BytesRef>>) -> Result<()> {
         let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "value must not be null".to_string(),
             ));
         };
@@ -5433,14 +5433,14 @@ impl BinaryDocValuesField {
     pub fn set_bytes_value(&self, value: impl Into<Option<BytesRef>>) -> Result<()> {
         if self.value.borrow().is_none() {
             // `fieldsData.getClass()` on a `null` value.
-            return Err(LuceneError::Unchecked {
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.lang.NullPointerException",
                 message: None,
                 cause: None,
-            });
+            }));
         }
         let Some(value) = value.into() else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "value must not be null".to_string(),
             ));
         };
@@ -5888,7 +5888,7 @@ impl LongField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `pivot_distance` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `pivot_distance` is not
     /// positive, and when `weight` is not a finite, non-negative float.
     pub fn new_distance_feature_query(
         field: &str,
@@ -6465,7 +6465,7 @@ impl DateTools {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the string is not a valid
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the string is not a valid
     /// date string, standing in for Java's `ParseException`.
     pub fn string_to_date(date_string: &str) -> Result<chrono::DateTime<chrono::Utc>> {
         let millis = Self::string_to_time(date_string)?;
@@ -6473,7 +6473,7 @@ impl DateTools {
             .timestamp_millis_opt(millis)
             .single()
             .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "Input is not a valid date string: {date_string}"
                 ))
             })
@@ -6500,7 +6500,7 @@ impl DateTools {
             date_string,
             Self::pattern_for_len(date_string.len()),
         )
-        .map_err(|e| LuceneError::IllegalArgument(format!("invalid date string: {e}")))?;
+        .map_err(|e| LuceneError::illegal_argument(format!("invalid date string: {e}")))?;
         Ok(chrono::Utc.from_utc_datetime(&dt).timestamp_millis())
     }
 
@@ -6538,12 +6538,12 @@ fn knn_vector_field_type(
     zero: bool,
 ) -> Result<FieldType> {
     if dimension == 0 {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "cannot index an empty vector".to_string(),
         ));
     }
     if similarity == VectorSimilarityFunction::COSINE && zero {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "zero vector not allowed with cosine similarity function".to_string(),
         ));
     }
@@ -6570,18 +6570,18 @@ fn check_knn_vector_against_type(
             VectorEncoding::FLOAT32 => "float[]",
             VectorEncoding::BYTE => "byte[]",
         };
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Attempt to create a vector for field {name} using {used} but the field encoding is {:?}",
             field_type.vector_encoding()
         )));
     }
     if length as i32 != field_type.vector_dimension() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "The number of vector dimensions does not match the field type".to_string(),
         ));
     }
     if field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE && zero {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "zero vector not allowed with cosine similarity function".to_string(),
         ));
     }
@@ -6608,7 +6608,7 @@ impl KnnFloatVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty vector, for a zero
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an empty vector, for a zero
     /// vector under [`VectorSimilarityFunction::COSINE`], and for a vector with
     /// a non-finite component.
     pub fn new(name: &str, vector: &[f32], similarity: VectorSimilarityFunction) -> Result<Self> {
@@ -6636,7 +6636,7 @@ impl KnnFloatVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty vector, and for a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an empty vector, and for a
     /// zero vector under [`VectorSimilarityFunction::COSINE`]. The null checks
     /// Java performs on the vector and on the similarity function have no Rust
     /// counterpart: neither can be null here.
@@ -6676,7 +6676,7 @@ impl KnnFloatVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the dimension is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the dimension is not
     /// positive or exceeds [`MAX_DIMENSIONS`].
     pub fn create_field_type(
         dimension: i32,
@@ -6696,7 +6696,7 @@ impl KnnFloatVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the type does not declare
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the type does not declare
     /// [`VectorEncoding::FLOAT32`], when the vector's length does not match the
     /// type's dimension count, when the vector is zero under
     /// [`VectorSimilarityFunction::COSINE`], and when a component is
@@ -6732,13 +6732,13 @@ impl KnnFloatVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the length does not match
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the length does not match
     /// the field's dimension count, when the value is zero under
     /// [`VectorSimilarityFunction::COSINE`], and when a component is
     /// non-finite.
     pub fn set_vector_value(&self, value: &[f32]) -> Result<()> {
         if value.len() as i32 != self.field_type.vector_dimension() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "value length {} must match field dimension {}",
                 value.len(),
                 self.field_type.vector_dimension()
@@ -6747,7 +6747,7 @@ impl KnnFloatVectorField {
         if self.field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE
             && crate::util::vector_util::is_zero_vector_f32(value)
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "zero vector not allowed with cosine similarity function".to_string(),
             ));
         }
@@ -6834,7 +6834,7 @@ impl KnnByteVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty vector and for a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an empty vector and for a
     /// zero vector under [`VectorSimilarityFunction::COSINE`].
     pub fn new(name: &str, vector: &[u8], similarity: VectorSimilarityFunction) -> Result<Self> {
         let field_type = Self::create_type(vector, similarity)?;
@@ -6860,7 +6860,7 @@ impl KnnByteVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an empty vector, and for a
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an empty vector, and for a
     /// zero vector under [`VectorSimilarityFunction::COSINE`]. The null checks
     /// Java performs on the vector and on the similarity function have no Rust
     /// counterpart: neither can be null here.
@@ -6900,7 +6900,7 @@ impl KnnByteVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the dimension is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the dimension is not
     /// positive or exceeds [`MAX_DIMENSIONS`].
     pub fn create_field_type(
         dimension: i32,
@@ -6916,7 +6916,7 @@ impl KnnByteVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the type does not declare
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the type does not declare
     /// [`VectorEncoding::BYTE`], when the vector's length does not match the
     /// type's dimension count, and when the vector is zero under
     /// [`VectorSimilarityFunction::COSINE`].
@@ -6950,12 +6950,12 @@ impl KnnByteVectorField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the length does not match
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the length does not match
     /// the field's dimension count and when the value is zero under
     /// [`VectorSimilarityFunction::COSINE`].
     pub fn set_vector_value(&self, value: &[u8]) -> Result<()> {
         if value.len() as i32 != self.field_type.vector_dimension() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "value length {} must match field dimension {}",
                 value.len(),
                 self.field_type.vector_dimension()
@@ -6964,7 +6964,7 @@ impl KnnByteVectorField {
         if self.field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE
             && crate::util::vector_util::is_zero_vector_bytes(value)
         {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "zero vector not allowed with cosine similarity function".to_string(),
             ));
         }
@@ -7588,7 +7588,7 @@ fn cannot_change_value_type(from: &str, to: &str) -> LuceneError {
         // `fieldsData.getClass().getSimpleName()` on a `null` value.
         return LuceneError::null_pointer();
     }
-    LuceneError::IllegalArgument(format!("cannot change value type from {from} to {to}"))
+    LuceneError::illegal_argument(format!("cannot change value type from {from} to {to}"))
 }
 
 /// `Field.setStringValue(String)` (`Field.java:304-313`) on a field's value
@@ -7608,7 +7608,7 @@ fn set_string_fields_data(
         ));
     }
     let Some(value) = value else {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "value must not be null".to_string(),
         ));
     };
@@ -7630,7 +7630,7 @@ fn set_bytes_fields_data(
         ));
     }
     let Some(value) = value else {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "value must not be null".to_string(),
         ));
     };
@@ -8647,7 +8647,16 @@ mod tests {
         // storing nothing.
         let error = IndexableField::stored_value(&field)
             .expect_err("the cursor is single-use, as it is in Lucene");
-        assert!(matches!(error, LuceneError::Io(_)), "{error:?}");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::Io(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -9083,7 +9092,10 @@ mod shared_mutable_field_tests {
         ft.set_stored(true).unwrap();
         let number = Field::new_with_number("n", NumericValue::Int(1), ft.clone()).unwrap();
         let message = |r: Result<()>| match r {
-            Err(LuceneError::IllegalArgument(m)) => m,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message: m, .. },
+                ..
+            }) => m,
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         };
         assert_eq!(

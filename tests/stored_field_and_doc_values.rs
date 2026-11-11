@@ -43,7 +43,7 @@ use rucene::index::IndexableField;
 use rucene::search::{SortField, SortFieldType, SortedNumericSortField, SortedSetSortField};
 use rucene::store::{ByteBuffersDirectory, Directory, FSDirectory};
 use rucene::util::BytesRef;
-use rucene::LuceneError;
+use rucene::{LuceneError, LuceneErrorKind};
 
 /// `StoredDocValuesFixture.KINDS`.
 const KINDS: [&str; 5] = [
@@ -216,8 +216,14 @@ fn lucene_reads_rucene_stored_fields_combined_with_every_doc_values_type() {
 /// `error` stands for.
 fn java_exception(error: &LuceneError) -> String {
     let message = match error {
-        LuceneError::IllegalArgument(message) => message.clone(),
-        LuceneError::IllegalState { message, .. } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => message.clone(),
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())

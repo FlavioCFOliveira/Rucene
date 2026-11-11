@@ -37,7 +37,7 @@ use randomizedtesting::jdk::random::{JdkRandom, Random};
 use randomizedtesting::jdk::thread::Thread;
 use rucene::analysis::standard::StandardAnalyzer;
 use rucene::document::{Document, IntPoint, LongPoint, Store, StringField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::codec_reader::CodecReader;
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::filter_directory_reader::{
@@ -166,25 +166,39 @@ fn class_and_message(e: &LuceneError) -> (String, String) {
         }
     };
     match e {
-        LuceneError::Io(io) => (
+        LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(null),
         ),
-        LuceneError::Unchecked { class, message, .. } => {
-            (class.to_string(), message.clone().unwrap_or_else(null))
-        }
-        LuceneError::AssertionError(message) => {
-            ("java.lang.AssertionError".to_string(), or_null(message))
-        }
-        LuceneError::AlreadyClosed { message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { class, message, .. },
+            ..
+        } => (class.to_string(), message.clone().unwrap_or_else(null)),
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(message),
+            ..
+        } => ("java.lang.AssertionError".to_string(), or_null(message)),
+        LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        } => (
             "org.apache.lucene.store.AlreadyClosedException".to_string(),
             message.clone(),
         ),
-        LuceneError::IllegalState { message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => (
             "java.lang.IllegalStateException".to_string(),
             message.clone(),
         ),
-        LuceneError::IllegalArgument(message) => (
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => (
             "java.lang.IllegalArgumentException".to_string(),
             or_null(message),
         ),

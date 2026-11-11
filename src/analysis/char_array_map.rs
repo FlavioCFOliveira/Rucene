@@ -198,7 +198,7 @@ impl<V> CharArrayMap<V> {
     /// `UnsupportedOperationException`: the open-addressed table has no tombstone,
     /// so an entry cannot be taken out without rebuilding it.
     pub fn remove(&mut self, _key: &[u16]) -> crate::error::Result<Option<V>> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "CharArrayMap does not support removal".to_string(),
         ))
     }
@@ -517,7 +517,7 @@ impl<V> KeySet<'_, V> {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation),
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation),
     /// Java's `UnsupportedOperationException`.
     pub fn add(&mut self, text: impl AsRef<str>) -> crate::error::Result<bool> {
         let _ = text;
@@ -531,7 +531,7 @@ impl<V> KeySet<'_, V> {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation),
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation),
     /// Java's `UnsupportedOperationException`.
     pub fn add_chars(
         &mut self,
@@ -561,7 +561,7 @@ impl<V> std::fmt::Display for KeySet<'_, V> {
 
 /// The `UnsupportedOperationException` the key-set view's `add` throws.
 fn unsupported_key_set_add() -> crate::error::LuceneError {
-    crate::error::LuceneError::UnsupportedOperation(
+    crate::error::LuceneError::unsupported_operation(
         "the key set of a CharArrayMap cannot add keys".to_string(),
     )
 }
@@ -649,7 +649,7 @@ impl<V> EntrySet<'_, V> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation)
     /// for the entries of an unmodifiable map, where Java throws
     /// `UnsupportedOperationException`.
     pub fn clear(&mut self) -> crate::error::Result<()> {
@@ -770,7 +770,7 @@ impl EntryIterator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation)
     /// when the map is unmodifiable, where Java throws
     /// `UnsupportedOperationException`.
     pub fn set_value<V>(
@@ -802,9 +802,9 @@ impl EntryIterator {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation).
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation).
     pub fn remove(&mut self) -> crate::error::Result<()> {
-        Err(crate::error::LuceneError::UnsupportedOperation(
+        Err(crate::error::LuceneError::unsupported_operation(
             "CharArrayMap entries cannot be removed".to_string(),
         ))
     }
@@ -843,7 +843,7 @@ impl MapEntry {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation)
     /// when the map is unmodifiable, where Java throws
     /// `UnsupportedOperationException`.
     pub fn set_value<V>(
@@ -875,7 +875,7 @@ impl MapEntry {
 
 /// The `UnsupportedOperationException` an unmodifiable map's entries throw.
 fn unmodifiable_entry() -> crate::error::LuceneError {
-    crate::error::LuceneError::UnsupportedOperation(
+    crate::error::LuceneError::unsupported_operation(
         "CharArrayMap is unmodifiable and its entries cannot be written to".to_string(),
     )
 }

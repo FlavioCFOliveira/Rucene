@@ -65,7 +65,7 @@ use rucene::codecs::doc_values::DocValuesProducer;
 use rucene::codecs::norms::NormsProducer;
 use rucene::codecs::Codec;
 use rucene::document::{Document, Field, FieldType, NumericDocValuesField, StoredValue, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::doc_values::{DocValuesIterator, NumericDocValues};
 use rucene::index::documents_writer::BufferedUpdates;
@@ -458,7 +458,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
     /// and the errors of committing the empty `SegmentInfos`.
     fn apply_created_version_major(&self, d: &dyn Directory) -> Result<()> {
         if SegmentInfos::get_last_commit_generation_dir(d)? != -1 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot set the created version on a Directory that already has segments"
                     .to_string(),
             ));
@@ -603,7 +603,7 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
         let field_infos_of_reader = one_doc_reader.get_field_infos();
         let proto = field_infos_of_reader
             .field_info("field")
-            .ok_or_else(|| LuceneError::illegal_state("java.lang.NullPointerException"))?;
+            .ok_or_else(|| LuceneError::null_pointer())?;
         let field = FieldInfo::new_full(
             proto.name.clone(),
             proto.number,
@@ -840,7 +840,10 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
                 });
                 match added {
                     Ok(()) => {}
-                    Err(LuceneError::AlreadyClosed { .. }) => {
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::AlreadyClosed { .. },
+                        ..
+                    }) => {
                         // OK: writer was closed by abort; we just reopen now:
                         dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration
                         Assert::assert_true(is_deleter_closed(&iw));
@@ -882,7 +885,10 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
                     })();
                     match flushed {
                         Ok(()) => {}
-                        Err(LuceneError::AlreadyClosed { .. }) => {
+                        Err(LuceneError {
+                            kind: LuceneErrorKind::AlreadyClosed { .. },
+                            ..
+                        }) => {
                             // OK: writer was closed by abort; we just reopen now:
                             dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration
                             Assert::assert_true(is_deleter_closed(&iw));
@@ -1155,9 +1161,14 @@ pub fn assert_array_equals_msg<T: PartialEq + fmt::Display>(
 /// Whether Java's `catch (UnsupportedOperationException e)` catches the error.
 pub fn is_unsupported_operation(e: &LuceneError) -> bool {
     match e {
-        LuceneError::UnsupportedOperation(_)
-        | LuceneError::UnsupportedOperationWithCause { .. } => true,
-        LuceneError::Unchecked { class, .. } => *class == "java.lang.UnsupportedOperationException",
+        LuceneError {
+            kind: LuceneErrorKind::UnsupportedOperation { .. },
+            ..
+        } => true,
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { class, .. },
+            ..
+        } => *class == "java.lang.UnsupportedOperationException",
         _ => false,
     }
 }
@@ -1176,9 +1187,16 @@ pub fn is_instance_of_java_class(e: &LuceneError, class: &str) -> bool {
 pub fn is_corrupt_index(e: &LuceneError) -> bool {
     matches!(
         e,
-        LuceneError::CorruptIndex(_)
-            | LuceneError::IndexFormatTooOld { .. }
-            | LuceneError::IndexFormatTooNew { .. }
+        LuceneError {
+            kind: LuceneErrorKind::CorruptIndex(_),
+            ..
+        } | LuceneError {
+            kind: LuceneErrorKind::IndexFormatTooOld { .. },
+            ..
+        } | LuceneError {
+            kind: LuceneErrorKind::IndexFormatTooNew { .. },
+            ..
+        }
     )
 }
 
@@ -1548,7 +1566,8 @@ type ReadByte = Arc<dyn Fn(i32) + Send + Sync>;
 
 /// `Math.toIntExact(v)`.
 fn to_int_exact(v: i64) -> Result<i32> {
-    i32::try_from(v).map_err(|_| LuceneError::Arithmetic("integer overflow".to_string()))
+    i32::try_from(v)
+        .map_err(|_| LuceneError::from(LuceneErrorKind::Arithmetic("integer overflow".to_string())))
 }
 
 /// Port of `BaseIndexFileFormatTestCase.ReadBytesIndexInputWrapper`
@@ -1582,10 +1601,9 @@ impl DataInput for ReadBytesIndexInputWrapper {
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
         let fp = to_int_exact(self.file_pointer())?;
         for i in 0..len as i32 {
-            (self.read_byte)(
-                fp.checked_add(i)
-                    .ok_or_else(|| LuceneError::Arithmetic("integer overflow".to_string()))?,
-            );
+            (self.read_byte)(fp.checked_add(i).ok_or_else(|| {
+                LuceneError::from(LuceneErrorKind::Arithmetic("integer overflow".to_string()))
+            })?);
         }
         self.r#in.read_bytes(b, offset, len)
     }
@@ -1593,7 +1611,7 @@ impl DataInput for ReadBytesIndexInputWrapper {
     /// `IndexInput.skipBytes`: `seek(getFilePointer() + numBytes)`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
@@ -1722,7 +1740,7 @@ impl Directory for ReadBytesDirectoryWrapper {
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn create_temp_output(
@@ -1731,7 +1749,7 @@ impl Directory for ReadBytesDirectoryWrapper {
         _suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn sync(&self, names: &[String]) -> Result<()> {

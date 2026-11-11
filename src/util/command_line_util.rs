@@ -34,7 +34,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{Directory, LockFactory, NIOFSDirectory, NativeFSLockFactory};
 
 /// The package Lucene qualifies an unqualified directory name with.
@@ -188,7 +188,7 @@ impl LoadFailure {
     /// `IllegalArgumentException` it rethrows.
     ///
     /// [`LuceneError`] has no reflective exception, so `ClassNotFoundException`
-    /// and `ClassCastException` are [`LuceneError::Other`] carrying Java's
+    /// and `ClassCastException` are [`LuceneErrorKind::Other`] carrying Java's
     /// message — `org.apache.lucene.store.Nonexistent` and `class
     /// org.apache.lucene.store.ByteBuffersDirectory` (observed with the 10.5.0
     /// oracle) — as the `NoSuchMethodException` of
@@ -202,8 +202,10 @@ impl LoadFailure {
     fn into_error(self) -> LuceneError {
         match self {
             Self::IllegalArgument(error) => error,
-            Self::ClassNotFound(name) => LuceneError::Other(name),
-            Self::ClassCast(name) => LuceneError::Other(class_to_string(&name)),
+            Self::ClassNotFound(name) => LuceneError::from(LuceneErrorKind::Other(name)),
+            Self::ClassCast(name) => {
+                LuceneError::from(LuceneErrorKind::Other(class_to_string(&name)))
+            }
         }
     }
 }
@@ -282,10 +284,10 @@ impl CommandLineUtil {
     ///   in an `InvocationTargetException`: both reach `catch (Exception e)`,
     ///   rethrown as `"Error creating " + clazzName + " instance"` (`:66-67`).
     ///
-    /// Each is [`LuceneError::IllegalArgumentWithCause`], carrying the
+    /// Each is [`LuceneErrorKind::IllegalArgument`], carrying the
     /// exception Java attaches as the cause (`CommandLineUtil.java:56-67`):
     /// the `ClassNotFoundException` and `ClassCastException`, as
-    /// [`LuceneError::Other`] with Java's message (the adjusted name, and
+    /// [`LuceneErrorKind::Other`] with Java's message (the adjusted name, and
     /// `"class "` followed by it); the `NoSuchMethodException` and the
     /// `InvocationTargetException` of
     /// [`new_fs_directory_of_kind`](Self::new_fs_directory_of_kind); and the
@@ -350,7 +352,7 @@ impl CommandLineUtil {
     ///
     /// For [`FSDirectoryKind::FSDirectory`], the `NoSuchMethodException` Java
     /// throws, whose message names the missing constructor; [`LuceneError`]
-    /// has no reflective exception, so it is [`LuceneError::Other`].
+    /// has no reflective exception, so it is [`LuceneErrorKind::Other`].
     fn get_constructor(kind: FSDirectoryKind) -> Result<()> {
         match kind {
             FSDirectoryKind::FSDirectory => Err(Self::no_fs_directory_constructor()),
@@ -361,11 +363,11 @@ impl CommandLineUtil {
     /// The `NoSuchMethodException` `getConstructor` throws for `FSDirectory`,
     /// whose message names the constructor it looked for.
     fn no_fs_directory_constructor() -> LuceneError {
-        LuceneError::Other(
+        LuceneError::from(LuceneErrorKind::Other(
             "org.apache.lucene.store.FSDirectory.<init>(java.nio.file.Path,\
              org.apache.lucene.store.LockFactory)"
                 .to_string(),
-        )
+        ))
     }
 
     /// Creates a directory of the given kind at `path`.
@@ -376,7 +378,7 @@ impl CommandLineUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Other`] in both of Java's failures:
+    /// Returns [`LuceneErrorKind::Other`] in both of Java's failures:
     ///
     /// - for [`FSDirectoryKind::FSDirectory`], which has no public constructor
     ///   (`FSDirectory.java:119`), the message of the `NoSuchMethodException`
@@ -389,7 +391,7 @@ impl CommandLineUtil {
     /// **Divergence from Lucene 10.5.0.** Java's `InvocationTargetException`
     /// has no message (`getMessage()` is `null`) and carries the constructor's
     /// exception as its cause (`getCause()`); [`LuceneError`] has no reflective
-    /// exception and [`LuceneError::Other`] holds one message and no cause, so
+    /// exception and [`LuceneErrorKind::Other`] holds one message and no cause, so
     /// the cause's text is that message.
     pub fn new_fs_directory_of_kind(
         kind: FSDirectoryKind,
@@ -411,7 +413,7 @@ impl CommandLineUtil {
         };
         // `newInstance` wraps what the constructor throws in an
         // `InvocationTargetException`.
-        instance.map_err(|cause| LuceneError::Other(cause.to_string()))
+        instance.map_err(|cause| LuceneError::from(LuceneErrorKind::Other(cause.to_string())))
     }
 
     /// Resolves a name to a [`Directory`] class.
@@ -429,10 +431,10 @@ impl CommandLineUtil {
     ///
     /// # Errors
     ///
-    /// The exceptions Java throws: [`LuceneError::IllegalArgument`] for an
+    /// The exceptions Java throws: [`LuceneErrorKind::IllegalArgument`] for an
     /// empty or blank name (`adjustDirectoryClassName`); for an unknown class
     /// the `ClassNotFoundException`, and for a store class that is not a
-    /// `Directory` the `ClassCastException`, both [`LuceneError::Other`]
+    /// `Directory` the `ClassCastException`, both [`LuceneErrorKind::Other`]
     /// with Java's message (the adjusted name; `class <name>` or
     /// `interface <name>`), since [`LuceneError`] has no reflective
     /// exception.
@@ -457,10 +459,10 @@ impl CommandLineUtil {
     ///
     /// # Errors
     ///
-    /// The exceptions Java throws: [`LuceneError::IllegalArgument`] for an
+    /// The exceptions Java throws: [`LuceneErrorKind::IllegalArgument`] for an
     /// empty or blank name (`adjustDirectoryClassName`); for an unknown class
     /// the `ClassNotFoundException`, and for a store class that is not an
-    /// `FSDirectory` the `ClassCastException`, both [`LuceneError::Other`]
+    /// `FSDirectory` the `ClassCastException`, both [`LuceneErrorKind::Other`]
     /// with Java's message, as for
     /// [`load_directory_class`](Self::load_directory_class). The
     /// "FSDirectory implementation not found" text is
@@ -505,13 +507,13 @@ impl CommandLineUtil {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the name is empty or blank
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the name is empty or blank
     /// as Java's `String.trim()` sees it: only characters up to U+0020 are
     /// trimmed, so a name of non-breaking or em spaces is not blank (oracle:
     /// `"\u{a0}"` gives `ClassNotFoundException: org.apache.lucene.store.\u{a0}`).
     pub fn adjust_directory_class_name(clazz_name: &str) -> Result<String> {
         if clazz_name.trim_matches(|c: char| c <= '\u{20}').is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "The FSDirectory implementation must not be null or empty".to_string(),
             ));
         }
@@ -547,13 +549,20 @@ mod tests {
             match CommandLineUtil::new_fs_directory(name, &tmp.path().join("c1")) {
                 // The cause is the `NoSuchMethodException` (`PassAOracle`,
                 // section 5).
-                Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                Err(LuceneError {
+                    kind:
+                        LuceneErrorKind::IllegalArgument {
+                            message,
+                            cause: Some(cause),
+                        },
+                    ..
+                }) => {
                     assert_eq!(
                         message,
                         format!("{name} constructor with Path as parameter not found")
                     );
                     assert!(
-                        matches!(&*cause, LuceneError::Other(m) if m ==
+                        matches!(&*cause, LuceneError { kind: LuceneErrorKind::Other(m), .. } if m ==
                             "org.apache.lucene.store.FSDirectory.<init>(java.nio.file.Path,\
                              org.apache.lucene.store.LockFactory)"),
                         "{cause:?}"
@@ -576,7 +585,10 @@ mod tests {
             &tmp.path().join("c3"),
             Box::new(NativeFSLockFactory),
         ) {
-            Err(LuceneError::Other(message)) => assert_eq!(
+            Err(LuceneError {
+                kind: LuceneErrorKind::Other(message),
+                ..
+            }) => assert_eq!(
                 message,
                 "org.apache.lucene.store.FSDirectory.<init>(java.nio.file.Path,\
                  org.apache.lucene.store.LockFactory)"
@@ -612,10 +624,17 @@ mod tests {
             match CommandLineUtil::new_fs_directory(name, &file) {
                 // The cause is the `InvocationTargetException`, which this
                 // port renders as `Other` carrying the constructor's failure.
-                Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                Err(LuceneError {
+                    kind:
+                        LuceneErrorKind::IllegalArgument {
+                            message,
+                            cause: Some(cause),
+                        },
+                    ..
+                }) => {
                     assert_eq!(message, format!("Error creating {name} instance"));
                     assert!(
-                        matches!(&*cause, LuceneError::Other(m) if *m == invocation),
+                        matches!(&*cause, LuceneError { kind: LuceneErrorKind::Other(m), .. } if *m == invocation),
                         "{cause:?}"
                     );
                 }
@@ -633,7 +652,7 @@ mod tests {
     /// (`rp/oracle/ResidualOracle.java`): "class NIOFSDirectory over a file
     /// => java.lang.reflect.InvocationTargetException | message=null |
     /// cause=java.nio.file.FileAlreadyExistsException: <path>", and the same
-    /// for `MMapDirectory`. Here it is [`LuceneError::Other`] with the
+    /// for `MMapDirectory`. Here it is [`LuceneErrorKind::Other`] with the
     /// constructor's error as its text, not that error itself.
     #[test]
     fn a_failing_constructor_of_a_kind_is_an_invocation_target_exception() {
@@ -670,7 +689,10 @@ mod tests {
                 &file,
                 Box::new(NativeFSLockFactory),
             ) {
-                Err(LuceneError::Other(message)) => assert_eq!(message, cause, "{kind:?}"),
+                Err(LuceneError {
+                    kind: LuceneErrorKind::Other(message),
+                    ..
+                }) => assert_eq!(message, cause, "{kind:?}"),
                 other => panic!(
                     "expected InvocationTargetException for {kind:?}, got {:?}",
                     other.err()
@@ -695,10 +717,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["", "   "] {
             match CommandLineUtil::new_fs_directory(name, &tmp.path().join("e")) {
-                Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+                Err(LuceneError {
+                    kind:
+                        LuceneErrorKind::IllegalArgument {
+                            message,
+                            cause: Some(cause),
+                        },
+                    ..
+                }) => {
                     assert_eq!(message, format!("Error creating {name} instance"));
                     assert!(
-                        matches!(&*cause, LuceneError::IllegalArgument(m) if m ==
+                        matches!(&*cause, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m ==
                             "The FSDirectory implementation must not be null or empty"),
                         "{cause:?}"
                     );
@@ -709,7 +738,10 @@ mod tests {
                 ),
             }
             match CommandLineUtil::load_fs_directory_class(name) {
-                Err(LuceneError::IllegalArgument(message)) => assert_eq!(
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    ..
+                }) => assert_eq!(
                     message,
                     "The FSDirectory implementation must not be null or empty"
                 ),
@@ -757,11 +789,17 @@ mod tests {
             );
         }
         let other = |result: Result<String>| match result {
-            Err(LuceneError::Other(message)) => message,
+            Err(LuceneError {
+                kind: LuceneErrorKind::Other(message),
+                ..
+            }) => message,
             other => panic!("{other:?}"),
         };
         let other_fs = |result: Result<FSDirectoryKind>| match result {
-            Err(LuceneError::Other(message)) => message,
+            Err(LuceneError {
+                kind: LuceneErrorKind::Other(message),
+                ..
+            }) => message,
             other => panic!("{other:?}"),
         };
         for (name, message) in [
@@ -802,7 +840,7 @@ mod tests {
         }
         assert!(matches!(
             CommandLineUtil::load_directory_class(" "),
-            Err(LuceneError::IllegalArgument(m))
+            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. })
                 if m == "The FSDirectory implementation must not be null or empty"
         ));
     }
@@ -815,13 +853,22 @@ mod tests {
         // `ClassNotFoundException(name)`, the name adjusted (`PassAOracle`,
         // section 5).
         let refusal = |name: &str| match CommandLineUtil::new_fs_directory(name, &target) {
-            Err(LuceneError::IllegalArgumentWithCause { message, cause }) => {
+            Err(LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            }) => {
                 let adjusted = CommandLineUtil::adjust_directory_class_name(name).unwrap();
                 match &*cause {
-                    LuceneError::Other(m)
-                        if *m == adjusted
-                            || *m == format!("class {adjusted}")
-                            || *m == format!("interface {adjusted}") => {}
+                    LuceneError {
+                        kind: LuceneErrorKind::Other(m),
+                        ..
+                    } if *m == adjusted
+                        || *m == format!("class {adjusted}")
+                        || *m == format!("interface {adjusted}") => {}
                     other => panic!("unexpected cause for {name}: {other:?}"),
                 }
                 message
@@ -832,7 +879,13 @@ mod tests {
             ),
         };
         let cause = |name: &str| match CommandLineUtil::new_fs_directory(name, &target) {
-            Err(LuceneError::IllegalArgumentWithCause { cause, .. }) => cause.to_string(),
+            Err(LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        cause: Some(cause), ..
+                    },
+                ..
+            }) => cause.to_string(),
             other => panic!("expected a cause for {name}, got {:?}", other.err()),
         };
         assert_eq!(

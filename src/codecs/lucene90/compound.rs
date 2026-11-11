@@ -12,7 +12,7 @@ use crate::codecs::codec_util;
 use crate::codecs::compound::CompoundFormat;
 use crate::codecs::compound::{CompoundDirectory, CompoundFileEntry};
 use crate::codecs::stub::SegmentInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{
     segment_file_name, strip_segment_name, COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION,
 };
@@ -238,7 +238,7 @@ impl Lucene90CompoundReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when the entries file or the data
+    /// Returns [`LuceneErrorKind::CorruptIndex`] when the entries file or the data
     /// file's header or footer structure is invalid, or when the data file's
     /// length is not the one the entries imply; propagates any I/O error.
     pub fn new(dir: &dyn Directory, segment_info: &SegmentInfo) -> Result<Self> {
@@ -278,11 +278,11 @@ impl Lucene90CompoundReader {
             // We also validate length, because e.g. if you strip 16 bytes off the .cfs we otherwise
             // would not detect it:
             if handle.length() != expected_length {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "length should be {expected_length} bytes, but is {} instead (resource={})",
                     handle.length(),
                     handle.resource_description()
-                )));
+                ))));
             }
             Ok(())
         })();
@@ -346,10 +346,10 @@ fn read_mapping(entries_stream: &mut dyn IndexInput) -> Result<CompoundEntries> 
         let id = entries_stream.read_string()?;
         if mapping.contains_key(&id) {
             // `new CorruptIndexException("Duplicate cfs entry id=" + id + " in CFS ", entriesStream)`
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "Duplicate cfs entry id={id} in CFS  (resource={})",
                 entries_stream.resource_description()
-            )));
+            ))));
         }
         let offset = entries_stream.read_long()?;
         let length = entries_stream.read_long()?;
@@ -406,7 +406,7 @@ impl Directory for Lucene90CompoundReader {
     }
 
     fn delete_file(&self, _name: &str) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "deleteFile is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -419,15 +419,15 @@ impl Directory for Lucene90CompoundReader {
             .get(id)
             .map(|e| e.length)
             .ok_or_else(|| {
-                LuceneError::Io(std::io::Error::new(
+                LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     name.to_string(),
-                ))
+                )))
             })
     }
 
     fn create_output(&self, _name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "createOutput is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -438,13 +438,13 @@ impl Directory for Lucene90CompoundReader {
         _suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "createTempOutput is not supported by CompoundDirectory".to_string(),
         ))
     }
 
     fn sync(&self, _names: &[String]) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "sync is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -454,7 +454,7 @@ impl Directory for Lucene90CompoundReader {
     }
 
     fn rename(&self, _source: &str, _dest: &str) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "rename is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -465,20 +465,20 @@ impl Directory for Lucene90CompoundReader {
         let id = strip_segment_name(name);
         let Some(entry) = self.entries.mapping.get(id) else {
             let dat_file_name = segment_file_name(&self.segment_name, "", COMPOUND_FILE_EXTENSION);
-            return Err(LuceneError::Io(std::io::Error::new(
+            return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!(
                     "No sub-file with id {id} found in compound file \"{dat_file_name}\" (fileName={name} files: {})",
                     self.entries.java_key_set()
                 ),
-            )));
+            ))));
         };
         self.handle
             .slice_with_context(name, entry.offset, entry.length, context)
     }
 
     fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "obtainLock is not supported by CompoundDirectory".to_string(),
         ))
     }
@@ -595,7 +595,10 @@ mod tests {
         cfs.extend_from_slice(&footer);
         overwrite(&dir, "_0.cfs", &cfs);
         match Lucene90CompoundReader::new(&dir, &info) {
-            Err(LuceneError::CorruptIndex(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(message),
+                ..
+            }) => {
                 assert!(message.starts_with("length should be "), "{message}")
             }
             other => panic!("expected CorruptIndex, got {other:?}"),
@@ -644,7 +647,10 @@ mod tests {
         codec_util::write_footer(out.as_mut()).unwrap();
         out.close().unwrap();
         match Lucene90CompoundReader::new(&dir, &info) {
-            Err(LuceneError::CorruptIndex(message)) => {
+            Err(LuceneError {
+                kind: LuceneErrorKind::CorruptIndex(message),
+                ..
+            }) => {
                 // `"Duplicate cfs entry id=" + id + " in CFS "`, then
                 // `CorruptIndexException`'s `" (resource=" + ... + ")"`.
                 assert!(
@@ -683,7 +689,11 @@ mod tests {
         let Err(err) = reader.open_input("_0.tim", &*crate::store::DEFAULT_IO_CONTEXT) else {
             panic!("a missing sub-file must not open")
         };
-        let LuceneError::Io(io) = err else {
+        let LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } = err
+        else {
             panic!("expected a FileNotFoundException, got {err:?}")
         };
         assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
@@ -692,7 +702,10 @@ mod tests {
             "No sub-file with id .tim found in compound file \"_0.cfs\" (fileName=_0.tim files: [.fnm, .fdx, .fdt])"
         );
         match reader.file_length("_0.tim") {
-            Err(LuceneError::Io(io)) => assert_eq!(io.to_string(), "_0.tim"),
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(io),
+                ..
+            }) => assert_eq!(io.to_string(), "_0.tim"),
             other => panic!("expected a FileNotFoundException, got {other:?}"),
         }
     }

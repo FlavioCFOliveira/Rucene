@@ -182,7 +182,7 @@ impl TermWeight {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when scores are needed but no
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when scores are needed but no
     /// [`TermStates`] were supplied, which is the `IllegalStateException` Java
     /// throws, and propagates any I/O error raised while reading the
     /// statistics.
@@ -534,7 +534,7 @@ impl TermScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when called more than once, which
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when called more than once, which
     /// `ScorerSupplier.get(long)` forbids, and propagates any I/O error.
     pub fn term_scorer(&mut self) -> Result<TermScorer> {
         let mut terms_enum = self.terms_enum.take().ok_or_else(|| {

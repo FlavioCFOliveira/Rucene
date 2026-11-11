@@ -39,7 +39,7 @@ impl DisjunctionMaxScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `tie_breaker_multiplier`
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `tie_breaker_multiplier`
     /// is outside `[0, 1]`, and propagates the errors of
     /// [`DisjunctionScorer::new`] and of the block-boundary propagator.
     pub fn new(
@@ -56,7 +56,7 @@ impl DisjunctionMaxScorer {
         // `DisjunctionMaxQuery::new`.
         #[allow(clippy::manual_range_contains)]
         if tie_breaker_multiplier < 0.0 || tie_breaker_multiplier > 1.0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "tieBreakerMultiplier must be in [0, 1]".to_string(),
             ));
         }

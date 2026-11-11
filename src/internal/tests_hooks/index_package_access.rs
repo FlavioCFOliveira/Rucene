@@ -34,7 +34,7 @@ pub trait IndexPackageAccess: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when `limit` is outside
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when `limit` is outside
     /// the range the writer accepts.
     fn set_index_writer_max_docs(&self, limit: i32) -> Result<()>;
 
@@ -44,7 +44,7 @@ pub trait IndexPackageAccess: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the two names are
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the two names are
     /// the same field, which `FieldInfos.FieldNumbers` refuses.
     fn new_field_infos_builder(
         &self,
@@ -58,7 +58,7 @@ pub trait IndexPackageAccess: Send + Sync + Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalState`] describing the first
+    /// Returns [`crate::LuceneErrorKind::IllegalState`] describing the first
     /// violated invariant. Java raises an `AssertionError` instead.
     fn check_impacts(&self, impacts: &dyn Impacts, max: i32) -> Result<()>;
 }
@@ -83,7 +83,7 @@ pub trait FieldInfosBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the field conflicts
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the field conflicts
     /// with a previous definition of the same name.
     fn add(&mut self, fi: &FieldInfo) -> Result<()>;
 
@@ -93,7 +93,7 @@ pub trait FieldInfosBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalState`] when the builder has
+    /// Returns [`crate::LuceneErrorKind::IllegalState`] when the builder has
     /// already been finished.
     fn finish(&mut self) -> Result<FieldInfos>;
 }

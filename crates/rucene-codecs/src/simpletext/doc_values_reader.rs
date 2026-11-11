@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use rucene::codecs::{DocValuesProducer, SegmentReadState};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_file_names::segment_file_name;
 use rucene::index::{
     BinaryDocValues, DocValuesIterator, DocValuesSkipper, DocValuesType, FieldInfo,
@@ -239,7 +239,9 @@ impl SimpleTextDocValuesReader {
                 data.seek(fp)?;
                 field.skip_intervals = Arc::new(read_skip_data(data.as_mut(), &mut scratch)?);
             } else {
-                return Err(LuceneError::AssertionError(String::new()));
+                return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                    String::new(),
+                )));
             }
             fields.insert(field_name, field);
         }
@@ -258,11 +260,11 @@ impl SimpleTextDocValuesReader {
     fn field(&self, field_info: &FieldInfo) -> Result<&OneField> {
         // SegmentCoreReaders already verifies this field is valid:
         self.fields.get(&field_info.name).ok_or_else(|| {
-            LuceneError::AssertionError(format!(
+            LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "field={} fields={}",
                 field_info.name,
                 self.fields.len()
-            ))
+            )))
         })
     }
 

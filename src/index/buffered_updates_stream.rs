@@ -377,7 +377,7 @@ impl BufferedUpdatesStream {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the stream's lock is
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the stream's lock is
     /// poisoned.
     pub fn finished(&self, packet: &Arc<FrozenBufferedUpdates>) -> Result<()> {
         debug_assert!(!packet.is_applied(), "packet={packet}");

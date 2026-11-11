@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::util::{bit_set_of, BitSet, BitSetIterator, Bits, FixedBitSet};
 
 /// Sentinel returned by [`DocIdSetIterator`] methods when no more documents
@@ -198,10 +198,10 @@ impl AllDocIdSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `max_doc` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `max_doc` is negative.
     pub fn new(max_doc: i32) -> Result<Self> {
         if max_doc < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxDoc must be >= 0, but got maxDoc={max_doc}"
             )));
         }
@@ -262,16 +262,16 @@ impl RangeDocIdSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `min_doc` is negative or
+    /// Returns `LuceneErrorKind::IllegalArgument` if `min_doc` is negative or
     /// `min_doc >= max_doc`.
     pub fn range(min_doc: i32, max_doc: i32) -> Result<Self> {
         if min_doc >= max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDoc must be < maxDoc but got minDoc={min_doc} maxDoc={max_doc}"
             )));
         }
         if min_doc < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDoc must be >= 0 but got minDoc={min_doc}"
             )));
         }
@@ -357,11 +357,11 @@ where
 /// `Objects.requireNonNull(value)`: a `NullPointerException` with a `null`
 /// message for `None`.
 fn require_non_null<T>(value: Option<T>) -> Result<T> {
-    value.ok_or(LuceneError::Unchecked {
+    value.ok_or(LuceneError::from(LuceneErrorKind::Unchecked {
         class: "java.lang.NullPointerException",
         message: None,
         cause: None,
-    })
+    }))
 }
 
 /// Higher-level abstraction for document acceptance filtering.
@@ -407,12 +407,12 @@ impl BitsAcceptDocs {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the provided bits have a
+    /// Returns `LuceneErrorKind::IllegalArgument` if the provided bits have a
     /// length different from `max_doc`.
     pub fn from_live_docs(bits: Option<Box<dyn Bits>>, max_doc: i32) -> Result<Self> {
         if let Some(bits) = bits.as_ref() {
             if bits.length() != max_doc as usize {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Bits length = {} != maxDoc = {max_doc}",
                     bits.length()
                 )));

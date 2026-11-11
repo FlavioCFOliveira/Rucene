@@ -33,7 +33,7 @@ use crate::codecs::lucene95::OrdToDocDISIReaderConfiguration;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::accept_ords_with;
 use crate::index::vector_values::{
     ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, FloatVectorValues, KnnVectorValues,
@@ -883,9 +883,9 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
     match ordinal {
         0 => Ok(VectorEncoding::BYTE),
         1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid VectorEncoding ordinal: {ordinal}"
-        ))),
+        )))),
     }
 }
 
@@ -895,9 +895,9 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
         1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
         2 => Ok(VectorSimilarityFunction::COSINE),
         3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::CorruptIndex(format!(
+        _ => Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid VectorSimilarityFunction ordinal: {ordinal}"
-        ))),
+        )))),
     }
 }
 
@@ -1058,9 +1058,9 @@ impl Lucene99FlatVectorsReader {
                 &state.segment_suffix,
             )?;
             if version_meta != version_vector_data {
-                return Err(LuceneError::CorruptIndex(format!(
+                return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
-                )));
+                ))));
             }
             retrieve_checksum(input.as_mut())?;
             Ok(())
@@ -1098,9 +1098,9 @@ impl Lucene99FlatVectorsReader {
         let info = self
             .field_infos
             .field_info(field)
-            .ok_or_else(|| LuceneError::IllegalArgument(format!("field=\"{field}\" not found")))?;
+            .ok_or_else(|| LuceneError::illegal_argument(format!("field=\"{field}\" not found")))?;
         self.fields.get(&info.number).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field=\"{field}\" has no vector values"))
+            LuceneError::illegal_argument(format!("field=\"{field}\" has no vector values"))
         })
     }
 
@@ -1111,7 +1111,7 @@ impl Lucene99FlatVectorsReader {
     ) -> Result<&FieldEntry> {
         let entry = self.get_field_entry_or_throw(field)?;
         if entry.vector_encoding != expected_encoding {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field=\"{field}\" is encoded as {entry_vector_encoding:?}, expected {expected_encoding:?}",
                 entry_vector_encoding = entry.vector_encoding,
             )));
@@ -1329,7 +1329,9 @@ fn read_fields(
         let info = field_infos
             .field_info_by_number(field_number)
             .ok_or_else(|| {
-                LuceneError::CorruptIndex(format!("invalid field number: {field_number}"))
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
+                    "invalid field number: {field_number}"
+                )))
             })?;
         let entry = FieldEntry::create(input, info)?;
         fields.insert(info.number, entry);
@@ -1349,16 +1351,16 @@ impl FieldEntry {
         let ord_to_doc = OrdToDocDISIReaderConfiguration::read_stored_meta(input, size)?;
 
         if similarity_function != field_info.vector_similarity_function {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "inconsistent vector similarity function for field=\"{}\"",
                 field_info.name
-            )));
+            ))));
         }
         if dimension != field_info.vector_dimension {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "inconsistent vector dimension for field=\"{}\"",
                 field_info.name
-            )));
+            ))));
         }
 
         let byte_size = vector_encoding.byte_size();
@@ -1366,16 +1368,16 @@ impl FieldEntry {
             .checked_mul(dimension as i64)
             .and_then(|v| v.checked_mul(byte_size as i64))
             .ok_or_else(|| {
-                LuceneError::CorruptIndex(format!(
+                LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                     "vector data length overflow for field=\"{}\"",
                     field_info.name
-                ))
+                )))
             })?;
         if expected_length != vector_data_length {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "vector data length {vector_data_length} does not match size={size} * dim={dimension} * byteSize={byte_size} = {expected_length} for field=\"{}\"",
                 field_info.name
-            )));
+            ))));
         }
 
         Ok(Self {
@@ -1613,7 +1615,7 @@ impl OffHeapFloatVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the mutex was poisoned.
+    /// Returns [`LuceneErrorKind::IllegalState`] when the mutex was poisoned.
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues#getSlice`.
@@ -1683,7 +1685,7 @@ impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::copy".to_string(),
         ))
     }
@@ -1708,14 +1710,14 @@ impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
 impl FloatVectorValues for EmptyOffHeapFloatVectorValues {
     /// Java's `vectorValue(int)` throws `UnsupportedOperationException`.
     fn vector_value(&self, _ord: i32) -> Result<Vec<f32>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::vector_value".to_string(),
         ))
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::copy".to_string(),
         ))
     }
@@ -1944,7 +1946,7 @@ impl OffHeapByteVectorValues {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the mutex was poisoned.
+    /// Returns [`LuceneErrorKind::IllegalState`] when the mutex was poisoned.
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues#getSlice`.
@@ -1966,7 +1968,7 @@ impl OffHeapByteVectorValues {
     /// # Errors
     ///
     /// Returns whatever seeking or reading the slice raises, and
-    /// [`LuceneError::IllegalState`] when the slice mutex was poisoned.
+    /// [`LuceneErrorKind::IllegalState`] when the slice mutex was poisoned.
     fn read_value(&self, target_ord: i32, value: &mut [u8]) -> Result<()> {
         let mut slice = self.get_slice()?;
         slice.seek((target_ord as i64) * self.byte_size as i64)?;
@@ -2031,7 +2033,7 @@ impl KnnVectorValues for EmptyOffHeapByteVectorValues {
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::copy".to_string(),
         ))
     }
@@ -2056,14 +2058,14 @@ impl KnnVectorValues for EmptyOffHeapByteVectorValues {
 impl ByteVectorValues for EmptyOffHeapByteVectorValues {
     /// Java's `vectorValue(int)` throws `UnsupportedOperationException`.
     fn vector_value(&self, _ord: i32) -> Result<Vec<u8>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::vector_value".to_string(),
         ))
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "EmptyOffHeapVectorValues::copy".to_string(),
         ))
     }
@@ -2481,7 +2483,10 @@ pub(crate) mod tests {
         let empty = MergedFloat32VectorValues::new(Vec::new(), &state).unwrap();
         assert!(matches!(
             Lucene99FlatVectorsWriter::write_vector_data(output.as_mut(), &empty),
-            Err(LuceneError::IllegalArgument(_))
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
         ));
         assert_eq!(output.file_pointer(), 0);
 

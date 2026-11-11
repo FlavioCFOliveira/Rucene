@@ -339,13 +339,13 @@ impl ConjunctionDISI {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when fewer than two clauses are
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two clauses are
     /// supplied, or when they are not all positioned on the same document —
     /// which is the `IllegalArgumentException` Java throws from
     /// `throwSubIteratorsNotOnSameDocument`.
     pub fn new(mut members: Vec<ConjunctionMember>) -> Result<Self> {
         if members.len() < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot make a ConjunctionDISI of less than 2 iterators".to_string(),
             ));
         }
@@ -714,7 +714,7 @@ pub fn create_conjunction(members: Vec<ConjunctionMember>) -> Result<ScorerItera
 /// `IllegalArgumentException` where Rust returns one for the caller to
 /// propagate.
 fn throw_sub_iterators_not_on_same_document() -> LuceneError {
-    LuceneError::IllegalArgument(
+    LuceneError::illegal_argument(
         "Sub-iterators of ConjunctionDISI are not on the same document!".to_string(),
     )
 }

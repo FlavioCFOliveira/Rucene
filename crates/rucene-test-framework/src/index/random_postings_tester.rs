@@ -43,7 +43,7 @@ use rucene::codecs::norms::NormsProducer;
 use rucene::codecs::postings::FieldsProducer;
 use rucene::codecs::state::{SegmentReadState, SegmentWriteState};
 use rucene::codecs::Codec;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::doc_values::{DocValuesIterator, NumericDocValues};
 use rucene::index::documents_writer::BufferedUpdates;
 use rucene::index::postings_enum::{
@@ -516,7 +516,9 @@ impl Fields for SeedFields {
             None => Ok(None),
             Some(terms) => {
                 let field_info = self.field_infos.field_info(field).ok_or_else(|| {
-                    LuceneError::illegal_state(format!("no FieldInfo for field {field}"))
+                    LuceneError::null_pointer_with_message(format!(
+                        "no FieldInfo for field {field}"
+                    ))
                 })?;
                 Ok(Some(Box::new(SeedTerms {
                     terms: Arc::clone(terms),
@@ -545,7 +547,7 @@ struct SeedTerms {
 }
 
 fn unsupported() -> LuceneError {
-    LuceneError::UnsupportedOperation(String::new())
+    LuceneError::unsupported_operation(String::new())
 }
 
 impl Terms for SeedTerms {
@@ -615,7 +617,7 @@ impl SeedTermsEnum {
         // Java dereferences `current` (`NullPointerException` when unset).
         self.current
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state("java.lang.NullPointerException"))
+            .ok_or_else(|| LuceneError::null_pointer())
     }
 }
 
@@ -655,7 +657,7 @@ impl TermsEnum for SeedTermsEnum {
         let after = self
             .iterator_after
             .clone()
-            .ok_or_else(|| LuceneError::illegal_state("java.lang.NullPointerException"))?;
+            .ok_or_else(|| LuceneError::null_pointer())?;
         let next = self
             .terms
             .range((after, Bound::Unbounded))
@@ -1205,7 +1207,7 @@ impl RandomPostingsTester {
             let old_field_info = self
                 .field_infos
                 .field_info_by_number(field_upto)
-                .ok_or_else(|| LuceneError::illegal_state("java.lang.NullPointerException"))?;
+                .ok_or_else(|| LuceneError::null_pointer())?;
 
             // Randomly picked the IndexOptions to index this
             // field with:
@@ -1313,10 +1315,10 @@ impl RandomPostingsTester {
         let current_field_infos = self
             .current_field_infos
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state("java.lang.NullPointerException"))?;
+            .ok_or_else(|| LuceneError::null_pointer())?;
         let field_info = current_field_infos
             .field_info(field)
-            .ok_or_else(|| LuceneError::illegal_state("java.lang.NullPointerException"))?;
+            .ok_or_else(|| LuceneError::null_pointer())?;
         let field_index_options = field_info.get_index_options();
 
         // NOTE: can be empty list if we are using liveDocs:
@@ -1324,7 +1326,7 @@ impl RandomPostingsTester {
             .fields
             .get(field)
             .and_then(|terms| terms.get(term))
-            .ok_or_else(|| LuceneError::illegal_state("java.lang.NullPointerException"))?
+            .ok_or_else(|| LuceneError::null_pointer())?
             .seed;
         let mut expected =
             Self::get_seed_postings(&term.utf8_to_string()?, seed, max_index_options, true);
@@ -2258,7 +2260,10 @@ impl RandomPostingsTester {
                 // Try seek by ord sometimes:
                 match terms_enum.seek_ord(field_and_term.ord) {
                     Ok(()) => {}
-                    Err(LuceneError::UnsupportedOperation(_)) => {
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::UnsupportedOperation { .. },
+                        ..
+                    }) => {
                         supports_ords = false;
                         Assert::assert_true(terms_enum.seek_exact(&field_and_term.term)?);
                     }
@@ -2274,7 +2279,10 @@ impl RandomPostingsTester {
             let term_ord = if supports_ords {
                 match terms_enum.ord() {
                     Ok(ord) => ord,
-                    Err(LuceneError::UnsupportedOperation(_)) => {
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::UnsupportedOperation { .. },
+                        ..
+                    }) => {
                         supports_ords = false;
                         -1
                     }
@@ -2383,7 +2391,7 @@ impl RandomPostingsTester {
                 }
                 let terms = fields_source
                     .terms(field)?
-                    .ok_or_else(|| LuceneError::illegal_state("java.lang.NullPointerException"))?;
+                    .ok_or_else(|| LuceneError::null_pointer())?;
                 let mut intersected = terms.intersect(&ca, start_term.as_ref())?;
 
                 let mut intersected_terms = std::collections::HashSet::new();

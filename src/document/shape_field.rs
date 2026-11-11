@@ -71,7 +71,7 @@ impl TriangleType {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] for an ordinal outside `[0, 2]`,
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) for an ordinal outside `[0, 2]`,
     /// where Java throws `ArrayIndexOutOfBoundsException`.
     pub fn from_ordinal(ordinal: i32) -> Result<Self> {
         match ordinal {
@@ -250,7 +250,7 @@ impl ShapeField {
     ) -> Result<()> {
         debug_assert!(bytes.len() == 7 * BYTES);
         if bytes.len() != 7 * BYTES {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bytes must be {} long, got {}",
                 7 * BYTES,
                 bytes.len()
@@ -350,7 +350,7 @@ impl ShapeField {
             x = b_x;
             bits = Y_MINX_MINY_X_MAXY_MAXX;
         } else {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Could not encode the provided triangle".to_string(),
             ));
         }
@@ -376,7 +376,7 @@ impl ShapeField {
     /// the bit field records.
     pub fn decode_triangle(bytes: &[u8]) -> Result<DecodedTriangle> {
         if bytes.len() < 7 * BYTES {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "bytes must be at least {} long, got {}",
                 7 * BYTES,
                 bytes.len()
@@ -716,7 +716,7 @@ impl LateInteractionField {
         let value = match value {
             Some(v) if !v.is_empty() => v,
             _ => {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "Value should not be null or empty".to_string(),
                 ))
             }
@@ -725,7 +725,7 @@ impl LateInteractionField {
         let dimension = match &value[0] {
             Some(first) if !first.is_empty() => first.len(),
             _ => {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "Composing token vectors should not be null or empty".to_string(),
                 ))
             }
@@ -742,7 +742,7 @@ impl LateInteractionField {
                 )
             })?;
             if vector.len() != dimension {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Composing token vectors should have the same dimension. Mismatching \
                      dimensions detected between token[0] and token[{i}], {dimension} != {}",
                     vector.len()
@@ -761,7 +761,7 @@ impl LateInteractionField {
     pub fn decode(payload: &BytesRef) -> Result<Vec<Vec<f32>>> {
         let bytes = payload.slice();
         if bytes.len() < 4 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Provided payload does not appear to have been encoded via \
                  LateInteractionField::encode"
                     .to_string(),
@@ -769,13 +769,13 @@ impl LateInteractionField {
         }
         let dimension = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         if dimension == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Provided payload declares a zero dimension".to_string(),
             ));
         }
         let num_vectors = (bytes.len() - 4) / (dimension * 4);
         if num_vectors * dimension * 4 + 4 != bytes.len() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Provided payload does not appear to have been encoded via \
                  LateInteractionField::encode. Payload length should be equal to 4 + numVectors * \
                  tokenVectorDimension, got {} != 4 + {num_vectors} * {dimension}",

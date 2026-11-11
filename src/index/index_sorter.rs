@@ -102,7 +102,7 @@ pub trait IndexSorter: Send + Sync {
     ///
     /// # Errors
     ///
-    /// The default returns [`LuceneError::UnsupportedOperation`] with Java's
+    /// The default returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) with Java's
     /// message, `"<class> does not implement getComparableProviders"`.
     /// **Divergence from Lucene 10.5.0.** Java names the class with
     /// `getClass().getName()`; Rust has no runtime class name, so the default
@@ -114,7 +114,7 @@ pub trait IndexSorter: Send + Sync {
         readers: &[Arc<dyn LeafReader>],
     ) -> Result<Vec<ComparableProvider>> {
         let _ = readers;
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "{} does not implement getComparableProviders",
             std::any::type_name::<Self>()
         )))
@@ -557,7 +557,7 @@ impl IndexSorter for BinarySorter {
         readers: &[Arc<dyn LeafReader>],
     ) -> Result<Vec<ComparableProvider>> {
         let _ = readers;
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "org.apache.lucene.index.IndexSorter$BinarySorter does not implement \
              getComparableProviders"
                 .to_string(),
@@ -712,7 +712,7 @@ impl SorterDocMap {
         let mut new_to_old = vec![-1i32; max_doc];
         for (old, &new) in old_to_new.iter().enumerate() {
             if new < 0 || new as usize >= max_doc || new_to_old[new as usize] != -1 {
-                return Err(crate::error::LuceneError::IllegalArgument(format!(
+                return Err(crate::error::LuceneError::illegal_argument(format!(
                     "oldToNew is not a permutation: oldToNew({old})={new}"
                 )));
             }
@@ -917,11 +917,11 @@ impl Sorter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `sort` refers to the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `sort` refers to the
     /// relevance score, which no index can be sorted by.
     pub fn new(sort: crate::search::Sort) -> Result<Self> {
         if sort.needs_scores() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot sort an index with a Sort that refers to the relevance score".to_string(),
             ));
         }
@@ -949,12 +949,12 @@ impl Sorter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when a segment created by Lucene
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when a segment created by Lucene
     /// 10 or later has blocks but the index declares no parent field,
-    /// [`LuceneError::IllegalArgument`] when a sort field cannot sort an
-    /// index, [`LuceneError::IllegalState`] when a segment with blocks has no
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a sort field cannot sort an
+    /// index, Java's `NullPointerException` when a segment with blocks has no
     /// values for its parent field — Java's `BitSet.of` dereferences the null
-    /// it is handed and throws `NullPointerException` — and propagates
+    /// it is handed — and propagates
     /// whatever reading the sort values raises.
     pub fn sort_reader(&self, reader: &dyn LeafReader) -> Result<Option<SorterDocMap>> {
         let fields = self.sort.fields();
@@ -968,7 +968,7 @@ impl Sorter {
                 // (`Sorter.java:193-194`): a sparse set when the values are
                 // fewer than `maxDoc >>> 7`, a fixed one otherwise.
                 let Some(mut values) = reader.get_numeric_doc_values(parent_field)? else {
-                    return Err(LuceneError::illegal_state(format!(
+                    return Err(LuceneError::null_pointer_with_message(format!(
                         "the segment has blocks but no doc values for its parent field \
                          \"{parent_field}\""
                     )));
@@ -992,7 +992,7 @@ impl Sorter {
         let mut comparators: Vec<DocComparator> = Vec::with_capacity(fields.len());
         for field in fields {
             let sorter = field.get_index_sorter().ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
+                LuceneError::illegal_argument(format!(
                     "Cannot use sortfield + {field} to sort indexes"
                 ))
             })?;
@@ -1214,7 +1214,7 @@ impl MultiSorter {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::CorruptIndex`] when a segment created by Lucene
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) when a segment created by Lucene
     /// 10 or later has blocks but the index declares no parent field, and
     /// propagates whatever reading the sort values raises.
     pub fn sort(
@@ -1401,7 +1401,7 @@ pub trait SortFieldProvider: NamedSPI + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `sort_field` is not of the
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `sort_field` is not of the
     /// provider's kind (Java's `assert sf instanceof ...`), and propagates
     /// whatever writing raises.
     fn write_sort_field(
@@ -1445,7 +1445,7 @@ static SORT_FIELD_PROVIDERS: std::sync::LazyLock<
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when no provider is registered
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when no provider is registered
 /// under `name`, with `NamedSPILoader.lookup`'s message.
 pub fn sort_field_provider_for_name(name: &str) -> Result<Arc<dyn SortFieldProvider>> {
     SORT_FIELD_PROVIDERS
@@ -1495,7 +1495,7 @@ pub fn reload_sort_field_providers(
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the sort field has no index
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sort field has no index
 /// sorter ("Cannot serialize sort field ...") or names an unregistered
 /// provider, and propagates whatever the provider raises.
 pub fn write_sort_field(
@@ -1503,7 +1503,7 @@ pub fn write_sort_field(
     output: &mut dyn crate::store::DataOutput,
 ) -> Result<()> {
     let Some(sorter) = sort_field.get_index_sorter() else {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Cannot serialize sort field {sort_field}"
         )));
     };
@@ -1514,6 +1514,7 @@ pub fn write_sort_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
 
     /// A comparator over a value per document, so ties are easy to set up.
     fn by_value(values: Vec<i64>) -> DocComparator {
@@ -1553,7 +1554,7 @@ mod tests {
     fn a_sorter_holds_its_sort_and_refuses_a_score_sort() {
         let error = Sorter::new(crate::search::Sort::new()).unwrap_err();
         assert!(
-            matches!(&error, LuceneError::IllegalArgument(message)
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message == "Cannot sort an index with a Sort that refers to the relevance score"),
             "{error:?}"
         );

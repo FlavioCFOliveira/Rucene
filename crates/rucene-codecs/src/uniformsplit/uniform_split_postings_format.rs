@@ -205,7 +205,7 @@ fn validate_block_encoder(
     block_decoder: Option<&dyn BlockDecoder>,
 ) -> Result<()> {
     if block_encoder.is_some() != block_decoder.is_some() {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "Invalid blockEncoder={} and blockDecoder={}, both must be null or both must be \
              non-null",
             block_encoder.map_or_else(|| "null".to_string(), |e| e.to_string()),
@@ -253,6 +253,7 @@ impl PostingsFormat for UniformSplitPostingsFormat {
 
 #[cfg(test)]
 mod tests {
+    use rucene::error::LuceneErrorKind;
     use rucene::store::{DataInput, DataOutput};
     use rucene::util::BytesRef;
 
@@ -297,7 +298,10 @@ mod tests {
 
     fn message(r: Result<UniformSplitPostingsFormat>) -> String {
         match r {
-            Err(LuceneError::IllegalArgument(m)) => m,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message: m, .. },
+                ..
+            }) => m,
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         }
     }

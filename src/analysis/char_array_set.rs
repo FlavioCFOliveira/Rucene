@@ -247,7 +247,7 @@ impl CharArraySet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation)
     /// when a key of this set is to be removed, as above.
     pub fn remove_all(&mut self, c: &CharArraySet) -> crate::error::Result<bool> {
         // `for (Object e : c) modified |= remove(e);` matches no key (see
@@ -272,7 +272,7 @@ impl CharArraySet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// Returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation)
     /// when a key of this set is to be removed.
     pub fn retain_all(&mut self, c: &CharArraySet) -> crate::error::Result<bool> {
         for key in self.iter() {
@@ -297,7 +297,7 @@ impl CharArraySet {
 /// throws from `remove()`, which is the map's `EntryIterator.remove()`
 /// (`CharArrayMap.java:427-430`).
 fn unsupported_remove() -> crate::error::LuceneError {
-    crate::error::LuceneError::UnsupportedOperation(
+    crate::error::LuceneError::unsupported_operation(
         "CharArraySet does not support removal".to_string(),
     )
 }

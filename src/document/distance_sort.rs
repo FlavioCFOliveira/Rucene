@@ -274,7 +274,7 @@ impl LatLonPointDistanceComparator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// an incompatible doc-values type, and propagates reader errors.
     pub fn get_leaf_comparator(
         &mut self,
@@ -627,7 +627,7 @@ impl XYPointDistanceComparator {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
     /// an incompatible doc-values type, and propagates reader errors.
     pub fn get_leaf_comparator(
         &mut self,
@@ -801,7 +801,7 @@ impl LatLonPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for an invalid latitude or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an invalid latitude or
     /// longitude.
     pub fn new(field: &str, latitude: f64, longitude: f64) -> Result<Self> {
         GeoUtils::check_latitude(latitude)?;
@@ -846,7 +846,7 @@ impl LatLonPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the sort field carries no
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sort field carries no
     /// field name, which its constructor rules out.
     pub fn get_comparator(&self, num_hits: usize) -> Result<LatLonPointDistanceComparator> {
         let field = self.get_field().ok_or_else(|| {
@@ -876,11 +876,11 @@ impl LatLonPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for anything but positive
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for anything but positive
     /// infinity, which is what Java rejects.
     pub fn set_missing_value(&mut self, missing_value: f64) -> Result<()> {
         if missing_value != f64::INFINITY {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Missing value can only be Double.POSITIVE_INFINITY (missing values last), but \
                  got {missing_value}"
             )));
@@ -971,7 +971,7 @@ impl XYPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when the sort field carries no
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the sort field carries no
     /// field name, which its constructor rules out.
     pub fn get_comparator(&self, num_hits: usize) -> Result<XYPointDistanceComparator> {
         let field = self.get_field().ok_or_else(|| {
@@ -998,11 +998,11 @@ impl XYPointSortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] for anything but positive
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for anything but positive
     /// infinity.
     pub fn set_missing_value(&mut self, missing_value: f64) -> Result<()> {
         if missing_value != f64::INFINITY {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Missing value can only be Double.POSITIVE_INFINITY (missing values last), but \
                  got {missing_value}"
             )));

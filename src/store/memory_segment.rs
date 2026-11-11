@@ -230,7 +230,7 @@ impl RefCountedSharedArena {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `max_permits` is not
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `max_permits` is not
     /// accepted by [`valid_max_permits`](Self::valid_max_permits).
     pub fn with_max_permits(
         segment_name: impl Into<String>,
@@ -238,7 +238,7 @@ impl RefCountedSharedArena {
         max_permits: i32,
     ) -> Result<Self> {
         if !Self::valid_max_permits(max_permits) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "invalid max permits: {max_permits}"
             )));
         }
@@ -321,13 +321,13 @@ impl RefCountedSharedArena {
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::UnsupportedOperation`], which is Java's
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), which is Java's
     /// `UnsupportedOperationException`.
     ///
     /// Equivalent to
     /// `org.apache.lucene.store.RefCountedSharedArena#allocate`.
     pub fn allocate(&self, _byte_size: i64, _byte_alignment: i64) -> Result<MemorySegment> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "RefCountedSharedArena::allocate".to_string(),
         ))
     }
@@ -389,7 +389,7 @@ impl MemorySegment {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the mapping cannot be created.
+    /// Returns [`LuceneErrorKind::Io`](crate::error::LuceneErrorKind::Io) if the mapping cannot be created.
     pub fn map(
         channel: &dyn super::java_nio_file::FileChannel,
         file_offset: u64,
@@ -530,7 +530,7 @@ impl MemorySegment {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the advice call fails.
+    /// Returns [`LuceneErrorKind::Io`](crate::error::LuceneErrorKind::Io) if the advice call fails.
     pub fn load(&self) -> Result<()> {
         self.advise_os(OsReadAdvice::WillNeed)
     }
@@ -539,7 +539,7 @@ impl MemorySegment {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Io`] if the advice call fails.
+    /// Returns [`LuceneErrorKind::Io`] if the advice call fails.
     pub(crate) fn advise_os(&self, advice: OsReadAdvice) -> Result<()> {
         // Empty segments are excluded, because they may have no address at all.
         let Some(mapping) = &self.mapping else {

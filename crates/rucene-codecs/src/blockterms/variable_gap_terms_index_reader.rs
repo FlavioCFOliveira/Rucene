@@ -188,11 +188,11 @@ impl FieldIndexEnum for IndexEnum {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }
 

@@ -36,7 +36,7 @@
 //! * `searchNode` returns `TopDocs` that a sorted caller casts to
 //!   `TopFieldDocs`; the port returns [`NodeHits`], which holds either.
 //! * `SearcherExpiredException` (a `RuntimeException`) travels as
-//!   [`LuceneError::Unchecked`] of class [`SEARCHER_EXPIRED_EXCEPTION`]
+//!   [`LuceneErrorKind::Unchecked`] of class [`SEARCHER_EXPIRED_EXCEPTION`]
 //!   ([`searcher_expired`], [`is_searcher_expired`]).
 //! * `ConcurrentHashMap` caches are `Mutex<HashMap>`; the `volatile
 //!   currentShardSearcher` is an `RwLock<Option<Arc<…>>>`.
@@ -55,7 +55,7 @@ use randomizedtesting::jdk::exception::{register_class, Throwable};
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::reflect::{modifier, Class};
 use randomizedtesting::jdk::thread::Thread;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_writer::{IndexWriter, MAX_TERM_LENGTH};
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
 use rucene::index::terms::{Term, TermStates};
@@ -96,16 +96,16 @@ pub fn class() -> Arc<Class> {
 /// `new SearcherExpiredException(message)`.
 pub fn searcher_expired(message: String) -> LuceneError {
     register_class(SEARCHER_EXPIRED_EXCEPTION, "java.lang.RuntimeException");
-    LuceneError::Unchecked {
+    LuceneError::from(LuceneErrorKind::Unchecked {
         class: SEARCHER_EXPIRED_EXCEPTION,
         message: Some(message),
         cause: None,
-    }
+    })
 }
 
 /// Whether `catch (SearcherExpiredException see)` catches `e`.
 pub fn is_searcher_expired(e: &LuceneError) -> bool {
-    matches!(e, LuceneError::Unchecked { class, .. } if *class == SEARCHER_EXPIRED_EXCEPTION)
+    matches!(e, LuceneError { kind: LuceneErrorKind::Unchecked { class, .. }, .. } if *class == SEARCHER_EXPIRED_EXCEPTION)
 }
 
 /// `System.nanoTime()`: nanoseconds from a fixed, arbitrary origin.
@@ -401,10 +401,10 @@ impl ShardSearchingTestBase {
             )?);
         }
         if self.nodes.set(nodes).is_err() {
-            return Err(LuceneError::IllegalState {
+            return Err(LuceneError::from(LuceneErrorKind::IllegalState {
                 message: "start was already called".to_string(),
                 cause: None,
-            });
+            }));
         }
         let nodes = self.nodes();
 

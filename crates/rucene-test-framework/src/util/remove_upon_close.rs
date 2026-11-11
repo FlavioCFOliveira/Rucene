@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::java_nio_file::io_exception;
 use rucene::util::IOUtils;
 
@@ -75,11 +75,13 @@ impl RemoveUponClose {
             if let Err(e) = IOUtils::rm([self.path.as_path()]) {
                 let absolute =
                     std::path::absolute(&self.path).unwrap_or_else(|_| self.path.clone());
-                return Err(LuceneError::Io(io_exception(format!(
-                    "Could not remove temporary location '{}', created at stack trace:\n{}{}",
-                    absolute.display(),
-                    self.creation_stack,
-                    format_args!("Caused by: {e}")
+                return Err(LuceneError::from(LuceneErrorKind::Io(io_exception(
+                    format!(
+                        "Could not remove temporary location '{}', created at stack trace:\n{}{}",
+                        absolute.display(),
+                        self.creation_stack,
+                        format_args!("Caused by: {e}")
+                    ),
                 ))));
             }
         }

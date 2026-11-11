@@ -167,7 +167,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's message — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's message — when
     /// `target_max_stale_sec` is smaller than `target_min_stale_sec`.
     pub fn new(
         writer: Arc<dyn MaxCompletedSequenceNumberSource>,
@@ -176,7 +176,7 @@ where
         target_min_stale_sec: f64,
     ) -> Result<Self> {
         if target_max_stale_sec < target_min_stale_sec {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "targetMaxScaleSec (= {target_max_stale_sec}) < targetMinStaleSec (={target_min_stale_sec})"
             )));
         }

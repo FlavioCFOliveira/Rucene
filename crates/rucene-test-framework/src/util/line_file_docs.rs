@@ -28,7 +28,7 @@ use rucene::document::{
     Document, Field, FieldType, IntField, IntPoint, KeywordField, NumericDocValuesField, Store,
     StringField, TextField,
 };
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::{IndexOptions, IndexableField};
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use rucene::util::CloseableThreadLocal;
@@ -311,9 +311,9 @@ impl LineFileDocs {
     pub fn next_doc(&self) -> Result<SharedDocument> {
         let line = {
             let mut guard = self.lock();
-            let reader = guard
-                .as_mut()
-                .ok_or_else(|| LuceneError::Other("LineFileDocs is closed".to_string()))?;
+            let reader = guard.as_mut().ok_or_else(|| {
+                LuceneError::from(LuceneErrorKind::Other("LineFileDocs is closed".to_string()))
+            })?;
             match reader.read_line()? {
                 Some(line) => line,
                 None => {
@@ -326,10 +326,10 @@ impl LineFileDocs {
                     let line = reader.read_line()?;
                     *guard = Some(reader);
                     line.ok_or_else(|| {
-                        LuceneError::Io(io::Error::new(
+                        LuceneError::from(LuceneErrorKind::Io(io::Error::new(
                             io::ErrorKind::UnexpectedEof,
                             "empty line file",
-                        ))
+                        )))
                     })?
                 }
             }
@@ -348,10 +348,12 @@ impl LineFileDocs {
             }
         };
 
-        let invalid = || LuceneError::Unchecked {
-            class: "java.lang.RuntimeException",
-            message: Some(format!("line: [{line}] is in an invalid format !")),
-            cause: None,
+        let invalid = || {
+            LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.RuntimeException",
+                message: Some(format!("line: [{line}] is in an invalid format !")),
+                cause: None,
+            })
         };
         let spot = line.find(SEP).ok_or_else(invalid)?;
         let spot2 = line[spot + 1..]

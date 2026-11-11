@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rucene::document::{Document, Store, StringField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{NoDeletionPolicy, SegmentInfos, WRITE_LOCK_NAME};
@@ -186,9 +186,9 @@ impl Directory for FailingRenameDirectory {
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
         if self.fail_rename.load(Ordering::Acquire) {
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "injected rename failure: {source} -> {dest}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!("injected rename failure: {source} -> {dest}")),
+            )));
         }
         self.inner.rename(source, dest)
     }

@@ -21,7 +21,7 @@ use crate::codecs::lucene104::{
 use crate::codecs::postings::{PushPostingsWriterBase, PushPostingsWriterState};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{index_file_names::segment_file_name, FieldInfo, NumericDocValues};
 use crate::store::{DataOutput, IndexOutput};
 use crate::util::{BitUtil, FixedBitSet, IOUtils};
@@ -224,7 +224,7 @@ impl Lucene104PostingsWriter {
     /// Creates a postings writer with an explicit format version.
     pub fn with_version(state: &SegmentWriteState<'_>, version: i32) -> Result<Self> {
         if version < 0 || version > VERSION_CURRENT {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Lucene104PostingsWriter version out of range: {version}"
             )));
         }
@@ -403,10 +403,10 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
 
         let doc_delta = doc_id - self.last_doc_id;
         if doc_id < 0 || doc_delta <= 0 {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "docs out of order ({doc_id} <= {last_doc_id})",
                 last_doc_id = self.last_doc_id
-            )));
+            ))));
         }
 
         let idx = self.doc_buffer_upto as usize;
@@ -455,9 +455,9 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         end_offset: i32,
     ) -> Result<()> {
         if !(0..=MAX_POSITION).contains(&position) {
-            return Err(LuceneError::CorruptIndex(format!(
+            return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
                 "position={position} out of range [0, {MAX_POSITION}]"
-            )));
+            ))));
         }
 
         let idx = self.pos_buffer_upto as usize;
@@ -1149,7 +1149,7 @@ mod tests {
             &mut self,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(crate::error::LuceneError::UnsupportedOperation(
+            Err(crate::error::LuceneError::unsupported_operation(
                 "impacts not supported".to_string(),
             ))
         }

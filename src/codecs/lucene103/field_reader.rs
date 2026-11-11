@@ -242,7 +242,7 @@ impl Terms for FieldReader {
     ) -> Result<Box<dyn TermsEnum>> {
         use crate::util::automaton::AutomatonType;
         if compiled.automaton_type != AutomatonType::Normal {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "please use CompiledAutomaton.get_terms_enum instead".to_string(),
             ));
         }
@@ -251,7 +251,7 @@ impl Terms for FieldReader {
         // one `NFARunAutomaton` for both, which the clone shares.
         let view = crate::index::automaton_terms_enum::CompiledAutomatonView::new(compiled.clone())
             .ok_or_else(|| {
-                LuceneError::IllegalArgument("compiled automaton has no runnable form".to_string())
+                LuceneError::illegal_argument("compiled automaton has no runnable form".to_string())
             })?;
         Ok(Box::new(
             crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(

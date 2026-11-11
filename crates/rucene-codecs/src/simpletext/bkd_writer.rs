@@ -163,7 +163,7 @@ impl SimpleTextBKDWriter {
         // Finally, we must be able to hold at least the leaf node in heap
         // during build:
         if max_points_sort_in_heap < config.max_points_in_leaf_node {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxMBSortInHeap={} only allows for maxPointsSortInHeap={max_points_sort_in_heap}, \
                  but this is less than config.maxPointsInLeafNode()={}; either increase \
                  maxMBSortInHeap or decrease config.maxPointsInLeafNode()",
@@ -202,13 +202,13 @@ impl SimpleTextBKDWriter {
     /// Returns Java's `IllegalArgumentException` for a negative argument.
     pub fn verify_params(max_mb_sort_in_heap: f64, total_point_count: i64) -> Result<()> {
         if max_mb_sort_in_heap < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxMBSortInHeap must be >= 0.0 (got: {})",
                 rucene::util::java_fmt::double_to_string(max_mb_sort_in_heap)
             )));
         }
         if total_point_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "totalPointCount must be >=0 (got: {total_point_count})"
             )));
         }
@@ -224,7 +224,7 @@ impl SimpleTextBKDWriter {
     pub fn add(&mut self, packed_value: &[u8], doc_id: i32) -> Result<()> {
         let config = &self.config;
         if packed_value.len() != config.packed_bytes_length() as usize {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "packedValue should be length={} (got: {})",
                 config.packed_bytes_length(),
                 packed_value.len()
@@ -1279,7 +1279,7 @@ struct OneDimensionBKDWriter {
 impl OneDimensionBKDWriter {
     fn new(w: &mut SimpleTextBKDWriter) -> Result<Self> {
         if w.config.num_index_dims != 1 {
-            return Err(LuceneError::UnsupportedOperation(format!(
+            return Err(LuceneError::unsupported_operation(format!(
                 "config.numIndexDims() must be 1 but got {}",
                 w.config.num_index_dims
             )));

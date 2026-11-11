@@ -64,7 +64,7 @@ impl MultiCollector<Box<dyn Collector>> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the input is empty or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the input is empty or
     /// every entry is absent, which is the `IllegalArgumentException` Java
     /// throws.
     pub fn wrap(
@@ -72,7 +72,7 @@ impl MultiCollector<Box<dyn Collector>> {
     ) -> Result<Box<dyn Collector>> {
         let mut present: Vec<Box<dyn Collector>> = collectors.into_iter().flatten().collect();
         match present.len() {
-            0 => Err(LuceneError::IllegalArgument(
+            0 => Err(LuceneError::illegal_argument(
                 "At least 1 collector must not be null".to_string(),
             )),
             // only 1 Collector - return it.

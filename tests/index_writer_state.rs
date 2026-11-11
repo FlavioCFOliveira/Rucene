@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
 use rucene::document::{Document, Store, StringField};
-use rucene::error::LuceneError;
+use rucene::error::{LuceneError, LuceneErrorKind};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
@@ -144,7 +144,10 @@ fn writer_state_queries_match_lucene() {
         w.close().unwrap();
         let closed = match w.has_deletions() {
             Ok(_) => "ok",
-            Err(LuceneError::AlreadyClosed { .. }) => "AlreadyClosedException",
+            Err(LuceneError {
+                kind: LuceneErrorKind::AlreadyClosed { .. },
+                ..
+            }) => "AlreadyClosedException",
             Err(_) => "other",
         };
         lines.push(format!("closed={closed}"));

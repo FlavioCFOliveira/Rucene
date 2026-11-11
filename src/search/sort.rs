@@ -12,7 +12,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::search::binary_sort_field::BinarySortField;
 use crate::search::comparators::numeric_comparator::NumericDocValuesSource;
 use crate::search::comparators::{
@@ -152,7 +152,7 @@ impl SortFieldType {
     ///
     /// For a name that is not a constant, the error `SortField.readType`
     /// throws (`SortField.java:258-264`):
-    /// [`LuceneError::IllegalArgumentWithCause`],
+    /// [`LuceneErrorKind::IllegalArgument`],
     /// `Can't deserialize SortField - unknown type <name>`, whose cause is
     /// `Type.valueOf`'s
     /// `No enum constant org.apache.lucene.search.SortField.Type.<name>`.
@@ -174,7 +174,7 @@ impl SortFieldType {
             // (observed with the 10.5.0 oracle).
             _ => Err(LuceneError::illegal_argument_with_cause(
                 format!("Can't deserialize SortField - unknown type {name}"),
-                std::sync::Arc::new(LuceneError::IllegalArgument(format!(
+                std::sync::Arc::new(LuceneError::illegal_argument(format!(
                     "No enum constant org.apache.lucene.search.SortField.Type.{name}"
                 ))),
             )),
@@ -590,7 +590,7 @@ impl SortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `field` is `None`.
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `field` is `None`.
     pub fn new_custom(
         field: Option<String>,
         comparator: Arc<dyn FieldComparatorSource>,
@@ -631,7 +631,7 @@ impl SortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the value does not match
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the value does not match
     /// the sort type, with the message text Java produces.
     pub fn set_missing_value(&mut self, missing_value: Option<MissingValue>) -> Result<()> {
         match &self.kind {
@@ -644,7 +644,7 @@ impl SortField {
                     missing_value,
                     Some(MissingValue::StringFirst) | Some(MissingValue::StringLast)
                 ) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "For SORTED_SET type, missing value must be either STRING_FIRST or STRING_LAST"
                             .to_string(),
                     ));
@@ -654,7 +654,7 @@ impl SortField {
             }
             // `FeatureSortField.setMissingValue(Object)` refuses every value.
             SortFieldKind::Feature { .. } => {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "Missing value not supported for FeatureSortField".to_string(),
                 ));
             }
@@ -666,7 +666,7 @@ impl SortField {
                     missing_value,
                     Some(MissingValue::StringFirst) | Some(MissingValue::StringLast)
                 ) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "For STRING type, missing value must be either STRING_FIRST or STRING_LAST"
                             .to_string(),
                     ));
@@ -674,7 +674,7 @@ impl SortField {
             }
             SortFieldType::Int => {
                 if !matches!(missing_value, None | Some(MissingValue::Int(_))) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Missing values for Type.INT can only be of type java.lang.Integer"
                             .to_string(),
                     ));
@@ -682,7 +682,7 @@ impl SortField {
             }
             SortFieldType::Long => {
                 if !matches!(missing_value, None | Some(MissingValue::Long(_))) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Missing values for Type.LONG can only be of type java.lang.Long"
                             .to_string(),
                     ));
@@ -690,7 +690,7 @@ impl SortField {
             }
             SortFieldType::Float => {
                 if !matches!(missing_value, None | Some(MissingValue::Float(_))) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Missing values for Type.FLOAT can only be of type java.lang.Float"
                             .to_string(),
                     ));
@@ -698,7 +698,7 @@ impl SortField {
             }
             SortFieldType::Double => {
                 if !matches!(missing_value, None | Some(MissingValue::Double(_))) {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Missing values for Type.DOUBLE can only be of type java.lang.Double"
                             .to_string(),
                     ));
@@ -706,7 +706,7 @@ impl SortField {
             }
             _ => {
                 if missing_value.is_some() {
-                    return Err(LuceneError::IllegalArgument(
+                    return Err(LuceneError::illegal_argument(
                         "Missing value only works for numeric or STRING types".to_string(),
                     ));
                 }
@@ -770,7 +770,7 @@ impl SortField {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] for
+    /// Returns [`LuceneErrorKind::IllegalState`] for
     /// [`SortFieldType::Rewriteable`], which must be rewritten first, and for a
     /// [`SortFieldType::Custom`] sort with no comparator source; propagates any
     /// error a [`FieldComparatorSource`] raises.
@@ -1051,11 +1051,11 @@ impl SortField {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` for types that cannot be persisted
+    /// Returns `LuceneErrorKind::IllegalArgument` for types that cannot be persisted
     /// (`Score`, `Doc`, `Custom`, `StringVal`, `Rewriteable`).
     pub fn serialize(&self, output: &mut dyn DataOutput) -> Result<()> {
         if !self.field_type.is_serializable() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Cannot serialize SortField of type {}",
                 self.field_type
             )));
@@ -1077,7 +1077,7 @@ impl SortField {
                     output.write_long(double_to_sortable_long(v))?
                 }
                 _ => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Cannot serialize missing value of {missing} for type {}",
                         self.field_type
                     )))
@@ -1096,7 +1096,7 @@ impl SortField {
     /// # Errors
     ///
     /// Propagates read errors, and returns
-    /// [`LuceneError::IllegalArgumentWithCause`]
+    /// [`LuceneErrorKind::IllegalArgument`]
     /// when the name is not a known type — the `IllegalArgumentException` Java
     /// throws, whose cause is the one `Type.valueOf` threw.
     pub fn read_type(input: &mut dyn DataInput) -> Result<SortFieldType> {
@@ -1164,7 +1164,7 @@ impl SortField {
                     MissingValue::Double(sortable_long_to_double(input.read_long()?))
                 }
                 _ => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Cannot deserialize sort of type {field_type}"
                     )))
                 }
@@ -1286,14 +1286,14 @@ fn validate_field(
     missing_value: Option<MissingValue>,
 ) -> Result<()> {
     if field.is_none() && field_type != SortFieldType::Score && field_type != SortFieldType::Doc {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "field can only be null when type is SCORE or DOC".to_string(),
         ));
     }
     if field_type == SortFieldType::String {
         if let Some(missing) = missing_value {
             if missing != MissingValue::StringFirst && missing != MissingValue::StringLast {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "For Type.STRING, missing value must be either STRING_FIRST or STRING_LAST"
                         .to_string(),
                 ));
@@ -1327,10 +1327,10 @@ impl Sort {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `fields` is empty.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `fields` is empty.
     pub fn new_fields(fields: Vec<SortField>) -> Result<Self> {
         if fields.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least 1 sort field".to_string(),
             ));
         }
@@ -1410,13 +1410,13 @@ impl fmt::Display for Sort {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when a sort field has no index
+/// Returns [`LuceneErrorKind::IllegalArgument`] when a sort field has no index
 /// sorter, and propagates the provider's error and any I/O error.
 pub fn write_sort(output: &mut dyn DataOutput, sort: &Sort) -> Result<()> {
     output.write_v_int(sort.fields.len() as i32)?;
     for field in &sort.fields {
         let Some(sorter) = field.get_index_sorter() else {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cannot serialize SortField {field}"
             )));
         };
@@ -1435,15 +1435,15 @@ pub fn write_sort(output: &mut dyn DataOutput, sort: &Sort) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::CorruptIndex`] for a negative field count,
-/// [`LuceneError::IllegalArgument`] for an unknown provider name, and
+/// Returns [`LuceneErrorKind::CorruptIndex`] for a negative field count,
+/// [`LuceneErrorKind::IllegalArgument`] for an unknown provider name, and
 /// propagates the per-field deserialization error.
 pub fn read_sort(input: &mut dyn DataInput) -> Result<Option<Sort>> {
     let count = input.read_v_int()?;
     if count < 0 {
-        return Err(LuceneError::CorruptIndex(format!(
+        return Err(LuceneError::from(LuceneErrorKind::CorruptIndex(format!(
             "invalid index sort field count: {count}"
-        )));
+        ))));
     }
     if count == 0 {
         return Ok(None);
@@ -1513,10 +1513,17 @@ mod tests {
         let bytes = out.into_inner();
         let error = SortField::read_type(&mut ByteArrayDataInput::new(&bytes)).unwrap_err();
         match &error {
-            LuceneError::IllegalArgumentWithCause { message, cause } => {
+            LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            } => {
                 assert_eq!(message, "Can't deserialize SortField - unknown type FOO");
                 assert!(
-                    matches!(&**cause, LuceneError::IllegalArgument(m)
+                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. }
                         if m == "No enum constant org.apache.lucene.search.SortField.Type.FOO"),
                     "{cause:?}"
                 );

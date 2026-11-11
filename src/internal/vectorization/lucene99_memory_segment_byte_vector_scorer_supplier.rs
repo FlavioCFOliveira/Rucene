@@ -69,7 +69,7 @@ impl Lucene99MemorySegmentByteVectorScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] when the input is
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] when the input is
     /// shorter than the vector data it is supposed to hold, and propagates any
     /// error raised while cloning the input.
     pub fn create(
@@ -128,7 +128,7 @@ impl Lucene99MemorySegmentByteVectorScorerSupplier {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`], with the message
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`], with the message
     /// Lucene's `IllegalArgumentException` carries, when the input is too
     /// short.
     ///
@@ -201,7 +201,7 @@ impl MemorySegmentByteScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::LuceneError::IllegalArgument`] with Lucene's message.
+    /// Returns [`crate::LuceneErrorKind::IllegalArgument`] with Lucene's message.
     fn check_ordinal(&self, ord: i32) -> Result<()> {
         check_ordinal(ord, self.max_ord)
     }

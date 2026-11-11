@@ -578,7 +578,7 @@ mod tests {
             }
 
             fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn num_docs(&self) -> i32 {
@@ -590,7 +590,7 @@ mod tests {
             }
 
             fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn do_close(&self) -> Result<()> {
@@ -602,23 +602,23 @@ mod tests {
             }
 
             fn doc_freq(&self, _term: &crate::index::Term) -> Result<i32> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn total_term_freq(&self, _term: &crate::index::Term) -> Result<i64> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn get_doc_count(&self, _field: &str) -> Result<i32> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
-                Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
             }
 
             fn build_context(
@@ -698,7 +698,7 @@ mod tests {
         }
 
         fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-            Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
         }
 
         fn num_docs(&self) -> i32 {
@@ -710,7 +710,7 @@ mod tests {
         }
 
         fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-            Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
         }
 
         fn do_close(&self) -> Result<()> {
@@ -722,23 +722,23 @@ mod tests {
         }
 
         fn doc_freq(&self, _term: &crate::index::Term) -> Result<i32> {
-            Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
         }
 
         fn total_term_freq(&self, _term: &crate::index::Term) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
         }
 
         fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
         }
 
         fn get_doc_count(&self, _field: &str) -> Result<i32> {
-            Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
         }
 
         fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("test stub".to_string()))
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
         }
 
         fn build_context(

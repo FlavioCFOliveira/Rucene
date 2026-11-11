@@ -1001,14 +1001,14 @@ impl TermsEnum for IntersectTermsEnum {
     }
 
     fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "IntersectTermsEnum only walks forward over the terms the automaton accepts"
                 .to_string(),
         ))
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "IntersectTermsEnum does not support seeking by ordinal".to_string(),
         ))
     }
@@ -1018,7 +1018,7 @@ impl TermsEnum for IntersectTermsEnum {
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::UnsupportedOperation(
+        Err(LuceneError::unsupported_operation(
             "IntersectTermsEnum does not track term ordinals".to_string(),
         ))
     }

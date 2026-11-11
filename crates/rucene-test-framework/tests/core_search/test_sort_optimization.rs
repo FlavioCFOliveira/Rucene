@@ -1958,7 +1958,7 @@ struct NoIndexDirectoryReaderWrapper;
 
 impl DirectoryReaderWrapper for NoIndexDirectoryReaderWrapper {
     fn wrap(&self, _inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn subclass_simple_name(&self) -> &'static str {

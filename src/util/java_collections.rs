@@ -2422,11 +2422,11 @@ impl<T: Eq + std::hash::Hash> ImmutableSet<T> {
 
     /// `ImmutableCollections.uoe()`: `new UnsupportedOperationException()`.
     fn uoe() -> crate::error::LuceneError {
-        crate::error::LuceneError::Unchecked {
+        crate::error::LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
             class: "java.lang.UnsupportedOperationException",
             message: None,
             cause: None,
-        }
+        })
     }
 }
 

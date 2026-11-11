@@ -249,7 +249,7 @@ impl IntBlockPool {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::Arithmetic`] (`integer overflow`) when the
+    /// Returns [`LuceneErrorKind::Arithmetic`](crate::error::LuceneErrorKind::Arithmetic) (`integer overflow`) when the
     /// global offset would overflow: Java's `intOffset =
     /// Math.addExact(intOffset, INT_BLOCK_SIZE)` (`IntBlockPool.java:157`)
     /// throws `ArithmeticException`. As there, the pool has already advanced

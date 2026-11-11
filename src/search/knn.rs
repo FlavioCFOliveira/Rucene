@@ -189,11 +189,11 @@ impl Hnsw {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// — with Java's message — when the threshold is outside `[0, 100]`.
     pub fn new(filtered_search_threshold: i32) -> crate::error::Result<Self> {
         if !(0..=100).contains(&filtered_search_threshold) {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "filteredSearchThreshold must be >= 0 and <= 100".to_string(),
             ));
         }
@@ -276,7 +276,7 @@ impl Seeded {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// — with Java's messages — when `number_of_entry_points` is negative, or
     /// when it is positive and no entry points are supplied.
     pub fn new(
@@ -285,12 +285,12 @@ impl Seeded {
         original_strategy: KnnSearchStrategy,
     ) -> crate::error::Result<Self> {
         if number_of_entry_points < 0 {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "numberOfEntryPoints must be >= 0".to_string(),
             ));
         }
         if number_of_entry_points > 0 && entry_points.is_none() {
-            return Err(crate::error::LuceneError::IllegalArgument(
+            return Err(crate::error::LuceneError::illegal_argument(
                 "entryPoints must not be null".to_string(),
             ));
         }

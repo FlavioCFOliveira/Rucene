@@ -1756,7 +1756,7 @@ impl DataInput for NoSliceIndexInput {
     /// `IndexInput.skipBytes(numBytes)`, which `FilterIndexInput` inherits.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(rucene::error::LuceneError::IllegalArgument(format!(
+            return Err(rucene::error::LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }

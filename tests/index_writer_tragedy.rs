@@ -54,7 +54,7 @@ use std::time::Duration;
 
 use rucene::codecs::Lucene104Codec;
 use rucene::document::{Document, Field, FieldType, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, MergedSegmentWarmer};
@@ -176,9 +176,18 @@ fn id_doc(id: i32) -> Document {
 fn outcome<T>(result: &Result<T>) -> &'static str {
     match result {
         Ok(_) => "ok",
-        Err(LuceneError::Io(_)) => "IOException",
-        Err(LuceneError::AlreadyClosed { .. }) => "AlreadyClosedException",
-        Err(LuceneError::IllegalState { .. }) => "IllegalStateException",
+        Err(LuceneError {
+            kind: LuceneErrorKind::Io(_),
+            ..
+        }) => "IOException",
+        Err(LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { .. },
+            ..
+        }) => "AlreadyClosedException",
+        Err(LuceneError {
+            kind: LuceneErrorKind::IllegalState { .. },
+            ..
+        }) => "IllegalStateException",
         Err(_) => "other",
     }
 }
@@ -189,7 +198,10 @@ fn outcome<T>(result: &Result<T>) -> &'static str {
 fn exception<T>(result: &Result<T>) -> String {
     match result {
         Ok(_) => "ok".to_string(),
-        Err(LuceneError::Io(error)) => format!("IOException: {error}"),
+        Err(LuceneError {
+            kind: LuceneErrorKind::Io(error),
+            ..
+        }) => format!("IOException: {error}"),
         // No other class is expected here; the variant is printed so a
         // mismatch shows what this port raised.
         Err(error) => format!("{error:?}"),
@@ -218,9 +230,9 @@ impl Directory for FailingDirectory {
             && !name.starts_with("segments")
             && !name.starts_with("pending")
         {
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "disk full creating {name}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!("disk full creating {name}")),
+            )));
         }
         self.inner.create_output(name, context)
     }
@@ -231,7 +243,9 @@ impl Directory for FailingDirectory {
         context: &dyn IOContext,
     ) -> Result<Box<dyn IndexOutput>> {
         if self.armed.load(Ordering::SeqCst) {
-            return Err(LuceneError::Io(std::io::Error::other("disk full (temp)")));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("disk full (temp)"),
+            )));
         }
         self.inner.create_temp_output(prefix, suffix, context)
     }
@@ -431,8 +445,8 @@ impl std::fmt::Display for FailingWarmer {
 
 impl MergedSegmentWarmer for FailingWarmer {
     fn warm(&self, _reader: &Arc<dyn LeafReader>) -> Result<()> {
-        Err(LuceneError::Io(std::io::Error::other(
-            "warmer failed on purpose",
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("warmer failed on purpose"),
         )))
     }
 }
@@ -691,9 +705,9 @@ impl Directory for RefusingDirectory {
     }
     fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
         if self.armed.load(Ordering::SeqCst) && name.ends_with(self.extension) {
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "disk full creating {name}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!("disk full creating {name}")),
+            )));
         }
         self.inner.create_output(name, context)
     }
@@ -811,14 +825,30 @@ fn a_merge_that_cannot_create_the_term_vectors_index_leaves_lucenes_files() {
 /// of the Java throwable this port raises `error` in place of.
 fn describe(error: &LuceneError) -> String {
     match error {
-        LuceneError::IllegalArgument(message) if message.starts_with("bytes can be at most") => {
-            format!("MaxBytesLengthExceededException: {message}")
-        }
-        LuceneError::IllegalArgument(message) => format!("IllegalArgumentException: {message}"),
-        LuceneError::IllegalState { message, .. } => format!("IllegalStateException: {message}"),
-        LuceneError::AlreadyClosed { message, .. } => format!("AlreadyClosedException: {message}"),
-        LuceneError::AssertionError(message) => format!("AssertionError: {message}"),
-        LuceneError::Io(error) => format!("IOException: {error}"),
+        LuceneError {
+            kind: LuceneErrorKind::MaxBytesLengthExceeded(message),
+            ..
+        } => format!("MaxBytesLengthExceededException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => format!("IllegalArgumentException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        } => format!("IllegalStateException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        } => format!("AlreadyClosedException: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(message),
+            ..
+        } => format!("AssertionError: {message}"),
+        LuceneError {
+            kind: LuceneErrorKind::Io(error),
+            ..
+        } => format!("IOException: {error}"),
         other => format!("{other:?}"),
     }
 }
@@ -961,10 +991,9 @@ struct UnreleasableLock {
 impl Lock for UnreleasableLock {
     fn close(&self) -> Result<()> {
         self.inner.close()?;
-        Err(LuceneError::Io(std::io::Error::other(format!(
-            "cannot release {}",
-            self.name
-        ))))
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other(format!("cannot release {}", self.name)),
+        )))
     }
     fn ensure_valid(&self) -> Result<()> {
         self.inner.ensure_valid()
@@ -1129,9 +1158,9 @@ impl Directory for GatedFailingDirectory {
                         .1
                         .wait_while(released, |released| !*released)
                         .unwrap();
-                    return Err(LuceneError::Io(std::io::Error::other(format!(
-                        "injected failure creating {name}"
-                    ))));
+                    return Err(LuceneError::from(LuceneErrorKind::Io(
+                        std::io::Error::other(format!("injected failure creating {name}")),
+                    )));
                 }
             }
         }
@@ -1368,7 +1397,7 @@ fn a_rollback_during_a_failing_segment_info_write_does_not_deadlock() {
     let outcome = watchdog(60, || rollback_during_a_failing_merge_write(".si", 0.0));
     outcome.assert_rolled_back();
     assert!(
-        matches!(&outcome.merged, Err(LuceneError::Io(error)) if error.to_string() == "injected failure creating _2.si"),
+        matches!(&outcome.merged, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. }) if error.to_string() == "injected failure creating _2.si"),
         "{:?}",
         outcome.merged
     );
@@ -1453,9 +1482,9 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
                         .unwrap()
                         .push(format!("{names} success={success}"));
                     if names == "_0,_1" {
-                        return Err(LuceneError::Io(std::io::Error::other(format!(
-                            "injected failure finishing {names}"
-                        ))));
+                        return Err(LuceneError::from(LuceneErrorKind::Io(
+                            std::io::Error::other(format!("injected failure finishing {names}")),
+                        )));
                     }
                     Ok(())
                 },
@@ -1496,7 +1525,7 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
 
     let rolled_back = writer.rollback();
     assert!(
-        matches!(&rolled_back, Err(LuceneError::Io(error)) if error.to_string() == "injected failure finishing _0,_1"),
+        matches!(&rolled_back, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. }) if error.to_string() == "injected failure finishing _0,_1"),
         "{rolled_back:?}"
     );
     let aborted: Vec<String> = log
@@ -1605,8 +1634,8 @@ fn hooked_policy(
         Arc::new(move |mut merge: OneMerge| {
             if fail_wrap {
                 merge.set_wrap_for_merge(Arc::new(|_reader| {
-                    Err(LuceneError::Io(std::io::Error::other(
-                        "wrapForMerge failure",
+                    Err(LuceneError::from(LuceneErrorKind::Io(
+                        std::io::Error::other("wrapForMerge failure"),
                     )))
                 }));
             }
@@ -1627,9 +1656,9 @@ fn hooked_policy(
                         .unwrap()
                         .push(format!("{joined} success={success}"));
                     if fails.is_some_and(|fails| fails == "*" || fails == names[0]) {
-                        return Err(LuceneError::Io(std::io::Error::other(format!(
-                            "injected failure finishing {joined}"
-                        ))));
+                        return Err(LuceneError::from(LuceneErrorKind::Io(
+                            std::io::Error::other(format!("injected failure finishing {joined}")),
+                        )));
                     }
                     Ok(())
                 },
@@ -1961,7 +1990,7 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
     let policy: Arc<dyn MergePolicy> = Arc::new(policy);
     let merged = writer.maybe_merge_with(&policy, MergeTrigger::Explicit, -1);
     assert!(
-        matches!(&merged, Err(LuceneError::Io(error))
+        matches!(&merged, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. })
             if error.kind() == std::io::ErrorKind::NotFound && error.to_string().contains("_0.fdt")),
         "{merged:?}"
     );
@@ -2064,8 +2093,8 @@ impl rucene::store::DataInput for CloseFailingInput {
 impl IndexInput for CloseFailingInput {
     fn close(&mut self) -> Result<()> {
         self.inner.close()?;
-        Err(LuceneError::Io(std::io::Error::other(
-            "injected failure closing an input",
+        Err(LuceneError::from(LuceneErrorKind::Io(
+            std::io::Error::other("injected failure closing an input"),
         )))
     }
     fn file_pointer(&self) -> i64 {
@@ -2152,9 +2181,9 @@ impl Directory for CloseFailingDirectory {
             }
             // Record what the merge thread deletes from here on.
             *self.recorded_thread.lock().unwrap() = Some(thread::current().id());
-            return Err(LuceneError::Io(std::io::Error::other(format!(
-                "injected failure creating {name}"
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other(format!("injected failure creating {name}")),
+            )));
         }
         self.inner.create_output(name, context)
     }
@@ -2322,7 +2351,7 @@ fn a_merge_aborted_while_building_its_compound_file_deletes_its_files_as_lucene_
 ///
 /// `handleMergeException` logs `t.toString()`, which for the `IOException`
 /// the fixture's directory throws is `java.io.IOException: <message>`; this
-/// port's `Display` of the [`LuceneError::Io`] it raises in its place is
+/// port's `Display` of the [`LuceneErrorKind::Io`] it raises in its place is
 /// `I/O error: <message>`, which is mapped to Java's.
 struct CfsFailureLog {
     dir: Arc<CloseFailingDirectory>,
@@ -2770,10 +2799,18 @@ fn freq_tokens_doc(freq: i32, terms: &[&'static str], field_type: FieldType) -> 
 /// a throwable.
 fn java_line(error: &LuceneError) -> String {
     let message = match error {
-        LuceneError::IllegalArgument(message)
-        | LuceneError::IllegalArgumentWithCause { message, .. }
-        | LuceneError::IllegalState { message, .. }
-        | LuceneError::AlreadyClosed { message, .. } => message.clone(),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        }
+        | LuceneError {
+            kind: LuceneErrorKind::IllegalState { message, .. },
+            ..
+        }
+        | LuceneError {
+            kind: LuceneErrorKind::AlreadyClosed { message, .. },
+            ..
+        } => message.clone(),
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())
@@ -3085,7 +3122,7 @@ fn a_stored_fields_failure_is_the_tragedy_itself_as_in_lucene() {
     assert!(!writer.is_open());
     let tragic = writer.get_tragic_exception().expect("the writer is tragic");
     assert!(
-        matches!(tragic.as_ref(), LuceneError::Io(error) if error.to_string() == "disk full creating _0.fdm"),
+        matches!(tragic.as_ref(), LuceneError { kind: LuceneErrorKind::Io(error), .. } if error.to_string() == "disk full creating _0.fdm"),
         "{tragic:?}"
     );
 }

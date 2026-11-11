@@ -946,7 +946,10 @@ fn test_dirs() -> String {
     }
     let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let not_found = |e: rucene::error::LuceneError| match e {
-        rucene::error::LuceneError::NotFound(m) => format!("java.io.FileNotFoundException:{m}"),
+        rucene::error::LuceneError {
+            kind: rucene::error::LuceneErrorKind::NotFound(m),
+            ..
+        } => format!("java.io.FileNotFoundException:{m}"),
         other => format!("unexpected:{other}"),
     };
     for name in ["nope.txt", "/nope.txt"] {

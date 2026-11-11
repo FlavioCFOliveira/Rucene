@@ -89,11 +89,11 @@ impl DocsWithFieldSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` is not strictly
     /// greater than the last document added, with Lucene's message.
     pub fn add(&mut self, doc_id: i32) -> Result<()> {
         if doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Out of order doc ids: last={}, next={}",
                 self.last_doc_id, doc_id
             )));
@@ -126,19 +126,19 @@ impl DocsWithFieldSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `from > to_exclusive` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `from > to_exclusive` or
     /// when `from` is not after the last document added.
     pub fn add_range(&mut self, from: i32, to_exclusive: i32) -> Result<()> {
         if from >= to_exclusive {
             if from > to_exclusive {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "from={from} must be <= toExclusive={to_exclusive}"
                 )));
             }
             return Ok(());
         }
         if from <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Out of order doc ids: last={}, next={}",
                 self.last_doc_id, from
             )));
@@ -359,7 +359,7 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the buffered element type
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the buffered element type
     /// does not match `encoding`, which is the state Java's unchecked cast
     /// would turn into a `ClassCastException`.
     ///
@@ -390,7 +390,7 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
                     let vector = (vector as &dyn std::any::Any)
                         .downcast_ref::<Vec<f32>>()
                         .ok_or_else(|| {
-                            LuceneError::IllegalArgument(
+                            LuceneError::illegal_argument(
                                 "buffered vectors are not float32 vectors".to_string(),
                             )
                         })?;
@@ -404,7 +404,7 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
                     let vector = (vector as &dyn std::any::Any)
                         .downcast_ref::<Vec<u8>>()
                         .ok_or_else(|| {
-                            LuceneError::IllegalArgument(
+                            LuceneError::illegal_argument(
                                 "buffered vectors are not byte vectors".to_string(),
                             )
                         })?;
@@ -560,8 +560,8 @@ impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] once [`FlatFieldVectorsWriter::finish`]
-    /// has run, and [`LuceneError::IllegalArgument`] when the same document
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) once [`FlatFieldVectorsWriter::finish`]
+    /// has run, and [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the same document
     /// offers a second value for this field, or when doc ids do not increase.
     pub fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
         if self.finished {
@@ -575,7 +575,7 @@ impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
         // would also reject the repeat, but with the generic out-of-order
         // message that says nothing about which field the caller duplicated.
         if doc_id == self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "VectorValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
                 self.field_info.name
             )));
@@ -707,7 +707,7 @@ pub trait FlatVectorsScorer: Send + Sync + fmt::Debug + fmt::Display {
     /// A scorer with no quantized branch would, in Java, hand the values to its
     /// unquantized path, which reads them as plain byte vectors; that path is
     /// never taken by Lucene itself, so the default here reports
-    /// [`LuceneError::UnsupportedOperation`] instead of adapting the values to
+    /// [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) instead of adapting the values to
     /// [`ByteVectorValues`].
     ///
     /// # Errors
@@ -720,7 +720,7 @@ pub trait FlatVectorsScorer: Send + Sync + fmt::Debug + fmt::Display {
         vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
     ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
         let _ = (similarity_function, vector_values);
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "{self} has no scorer supplier for Lucene 9.9 quantized vectors"
         )))
     }
@@ -745,7 +745,7 @@ pub trait FlatVectorsScorer: Send + Sync + fmt::Debug + fmt::Display {
     ///
     /// # Errors
     ///
-    /// The default always returns [`LuceneError::UnsupportedOperation`]. An
+    /// The default always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation). An
     /// implementation propagates whatever quantizing the target or building
     /// its scorer raises; whether it checks the query's dimension is its own
     /// contract — `Lucene99ScalarQuantizedVectorScorer` does, through
@@ -760,7 +760,7 @@ pub trait FlatVectorsScorer: Send + Sync + fmt::Debug + fmt::Display {
         target: &[f32],
     ) -> Result<Box<dyn RandomVectorScorer>> {
         let _ = (similarity_function, vector_values, target);
-        Err(LuceneError::UnsupportedOperation(format!(
+        Err(LuceneError::unsupported_operation(format!(
             "{self} cannot score a float query against Lucene 9.9 quantized vectors"
         )))
     }
@@ -831,7 +831,7 @@ impl<T: FlatVectorsScorer + ?Sized> FlatVectorsScorer for Arc<T> {
 ///
 /// # Errors
 ///
-/// Returns [`LuceneError::IllegalArgument`] when the two lengths differ, with
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the two lengths differ, with
 /// the message Java's `IllegalArgumentException` carries.
 ///
 /// **Divergence from Lucene 10.5.0.** Java declares this as a `static` method
@@ -844,7 +844,7 @@ impl<T: FlatVectorsScorer + ?Sized> FlatVectorsScorer for Arc<T> {
 /// `org.apache.lucene.codecs.hnsw.FlatVectorsScorer#checkDimensions`.
 pub fn check_dimensions(query_len: i32, field_len: i32) -> Result<()> {
     if query_len != field_len {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "vector query dimension: {query_len} differs from field dimension: {field_len}"
         )));
     }
@@ -896,7 +896,7 @@ impl FlatVectorsScorer for DefaultFlatVectorScorer {
         target: &[f32],
     ) -> Result<Box<dyn RandomVectorScorer>> {
         if target.len() as i32 != vector_values.dimension() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector query dimension: {} differs from field dimension: {}",
                 target.len(),
                 vector_values.dimension()
@@ -916,7 +916,7 @@ impl FlatVectorsScorer for DefaultFlatVectorScorer {
         target: &[u8],
     ) -> Result<Box<dyn RandomVectorScorer>> {
         if target.len() as i32 != vector_values.dimension() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector query dimension: {} differs from field dimension: {}",
                 target.len(),
                 vector_values.dimension()

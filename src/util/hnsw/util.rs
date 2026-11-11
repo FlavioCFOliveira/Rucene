@@ -116,7 +116,7 @@ impl HnswUtil {
         debug_assert!(graph.size() == graph.get_nodes_on_level(0)?.size());
         let num_levels = graph.num_levels()?;
         if level < 0 || level >= num_levels {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
+            return Err(crate::error::LuceneError::illegal_argument(format!(
                 "level {} too large for graph with {} levels",
                 level, num_levels
             )));

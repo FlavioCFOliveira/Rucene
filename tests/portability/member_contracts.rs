@@ -775,10 +775,23 @@ fn pattern_errors_carry_java_messages() {
         let pattern = unhex(&r[2]);
         let mut args = HashMap::from([("pattern".to_string(), pattern.clone())]);
         match AbstractAnalysisFactory::get_pattern(&mut args, "pattern", PROBE_FACTORY) {
-            Err(rucene::error::LuceneError::IllegalArgumentWithCause { message, cause }) => {
+            Err(rucene::error::LuceneError {
+                kind:
+                    rucene::error::LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            }) => {
                 assert_eq!(message, r[3], "{pattern:?}");
                 assert!(
-                    matches!(&*cause, rucene::error::LuceneError::IllegalArgument(_)),
+                    matches!(
+                        &*cause,
+                        rucene::error::LuceneError {
+                            kind: rucene::error::LuceneErrorKind::IllegalArgument { .. },
+                            ..
+                        }
+                    ),
                     "{pattern:?}: {cause:?}"
                 );
             }
@@ -789,7 +802,10 @@ fn pattern_errors_carry_java_messages() {
 
     let mut empty = HashMap::new();
     match AbstractAnalysisFactory::get_pattern(&mut empty, "pattern", PROBE_FACTORY) {
-        Err(rucene::error::LuceneError::IllegalArgument(message)) => {
+        Err(rucene::error::LuceneError {
+            kind: rucene::error::LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        }) => {
             assert_eq!(message, row("pat", "missing")[0])
         }
         other => panic!("a missing argument must be refused, got {other:?}"),
@@ -931,16 +947,20 @@ fn char_array_map_entry_set_writes_as_java() {
         }
         let entry = found.expect("b is mapped");
         match entry.set_value(&mut read_only, 20) {
-            Err(rucene::error::LuceneError::UnsupportedOperation(_)) => {
-                "UnsupportedOperationException".to_string()
-            }
+            Err(rucene::error::LuceneError {
+                kind: rucene::error::LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            }) => "UnsupportedOperationException".to_string(),
             other => format!("{other:?}"),
         }
     };
     assert_eq!(set_ro, get("set_ro"));
     assert_eq!(read_only.get("b").unwrap().to_string(), get("get_b"));
     let clear_ro = match read_only.create_entry_set().clear() {
-        Err(rucene::error::LuceneError::UnsupportedOperation(_)) => "UnsupportedOperationException",
+        Err(rucene::error::LuceneError {
+            kind: rucene::error::LuceneErrorKind::UnsupportedOperation { .. },
+            ..
+        }) => "UnsupportedOperationException",
         Err(_) => "other error",
         Ok(()) => "cleared",
     };

@@ -2,7 +2,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 
 /// Name of the index segment file.
 ///
@@ -235,7 +235,7 @@ pub fn get_extension(filename: &str) -> Option<&str> {
 /// # Errors
 ///
 /// Returns Java's `StringIndexOutOfBoundsException` when the name without its
-/// extension is empty (`substring(1)`), and `LuceneError::IllegalArgument`
+/// extension is empty (`substring(1)`), and `LuceneErrorKind::IllegalArgument`
 /// (Java's `NumberFormatException`) when the generation is not base 36.
 pub fn parse_generation(filename: &str) -> Result<i64> {
     debug_assert!(filename.starts_with('_'));
@@ -243,9 +243,9 @@ pub fn parse_generation(filename: &str) -> Result<i64> {
     // `stripExtension(filename).substring(1)`.
     let mut chars = stripped.chars();
     if chars.next().is_none() {
-        return Err(LuceneError::StringIndexOutOfBounds(
+        return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
             "Range [1, 0) out of bounds for length 0".to_string(),
-        ));
+        )));
     }
     let rest = chars.as_str();
     // `String.split("_")`: without a match, the whole string; otherwise the
@@ -328,8 +328,9 @@ fn radix36(value: u64) -> String {
 
 /// Parses a base-36 string into an `i64`.
 fn parse_radix36(s: &str) -> Result<i64> {
-    i64::from_str_radix(s, 36)
-        .map_err(|e| LuceneError::IllegalArgument(format!("invalid base-36 generation '{s}': {e}")))
+    i64::from_str_radix(s, 36).map_err(|e| {
+        LuceneError::illegal_argument(format!("invalid base-36 generation '{s}': {e}"))
+    })
 }
 
 // -----------------------------------------------------------------------------

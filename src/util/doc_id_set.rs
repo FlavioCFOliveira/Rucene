@@ -81,10 +81,10 @@ impl BitDocIdSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `cost` is negative.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `cost` is negative.
     pub fn new(set: Arc<dyn BitSet>, cost: i64) -> Result<Self> {
         if cost < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "cost must be >= 0, got {cost}"
             )));
         }
@@ -97,7 +97,7 @@ impl BitDocIdSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] only if the approximate
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) only if the approximate
     /// cardinality is somehow negative, which it cannot be.
     pub fn from_set(set: Arc<dyn BitSet>) -> Result<Self> {
         let cost = set.approximate_cardinality() as i64;
@@ -193,11 +193,11 @@ impl IntArrayDocIdSet {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sentinel is missing,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the sentinel is missing,
     /// which is Java's bare `IllegalArgumentException`.
     pub fn new(docs: Vec<i32>, length: usize) -> Result<Self> {
         if docs[length] != NO_MORE_DOCS {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "IntArrayDocIdSet requires docs[length] == NO_MORE_DOCS".to_string(),
             ));
         }

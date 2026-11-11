@@ -14,7 +14,7 @@ use randomizedtesting::jdk::exception::{Throwable, ASSERTION_ERROR};
 use randomizedtesting::jdk::reflect::{Class, ClassBuilder, Constructor, Method};
 use randomizedtesting::junit::Assert;
 use rucene::document::{Document, KeywordField, Store};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
@@ -58,7 +58,11 @@ fn run_suite(builder: ClassBuilder) {
 /// an assertion error carried as an error (`java_assert!`) unwinds as the
 /// `java.lang.AssertionError` Java throws.
 fn rethrow(e: LuceneError) -> ! {
-    if let LuceneError::AssertionError(message) = e {
+    if let LuceneError {
+        kind: LuceneErrorKind::AssertionError(message),
+        ..
+    } = e
+    {
         Throwable::new(ASSERTION_ERROR, message).throw()
     }
     let (class, message) =

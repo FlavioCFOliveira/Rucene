@@ -209,10 +209,10 @@ impl FrequencyTrackingRingBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `max_size` is below 2.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `max_size` is below 2.
     pub fn new(max_size: usize, sentinel: i32) -> Result<Self> {
         if max_size < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "maxSize must be at least 2".to_string(),
             ));
         }

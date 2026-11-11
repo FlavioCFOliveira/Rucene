@@ -892,7 +892,7 @@ impl LRUQueryCache {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's message — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's message — when
     /// `skip_cache_factor` is less than 1, `NaN` included.
     pub fn with_predicate(
         max_size: i32,
@@ -926,7 +926,7 @@ impl LRUQueryCache {
         // Spelled as Lucene spells it: `>= 1 == false` lets a NaN through the
         // guard, because every comparison against NaN is false.
         if !(skip_cache_factor >= 1.0) {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "skipCacheFactor must be no less than 1, get {skip_cache_factor}"
             )));
         }
@@ -1154,11 +1154,11 @@ impl LRUQueryCache {
     /// Equivalent to the package-private
     /// `LRUQueryCache.assertConsistent()`, which exists for testing and throws
     /// an `AssertionError`; this port reports the same conditions as
-    /// [`LuceneError::IllegalState`].
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState).
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when an eviction is still
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an eviction is still
     /// required, when a leaf cache holds a key the top-level cache does not,
     /// or when the recomputed RAM usage or cache size disagrees with the
     /// tracked one.

@@ -646,7 +646,7 @@ fn legacy_scorer_rejects_a_mismatched_target_through_check_dimensions() {
     assert!(
         matches!(
             &err,
-            rucene::error::LuceneError::IllegalArgument(message)
+            rucene::error::LuceneError { kind: rucene::error::LuceneErrorKind::IllegalArgument { message, .. }, .. }
                 if message == "vector query dimension: 4 differs from field dimension: 3"
         ),
         "{err:?}"

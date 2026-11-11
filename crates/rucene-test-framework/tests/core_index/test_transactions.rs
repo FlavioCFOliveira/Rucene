@@ -11,7 +11,7 @@ use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
 use rucene::document::{Document, FieldType, Store, StringField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::merge_scheduler::ConcurrentMergeScheduler;
@@ -49,8 +49,8 @@ impl Failure for RandomFailure {
                 println!("{} TEST: now fail on purpose", Thread::current().name());
                 println!("{}", std::backtrace::Backtrace::force_capture());
             }
-            return Err(LuceneError::Io(std::io::Error::other(
-                "now failing randomly but on purpose",
+            return Err(LuceneError::from(LuceneErrorKind::Io(
+                std::io::Error::other("now failing randomly but on purpose"),
             )));
         }
         Ok(())

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::document::{Document, NumericDocValuesField, Store, StringField, TextField};
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::LiveIndexWriterConfig;
@@ -585,10 +585,10 @@ struct OnceScorable<'a> {
 impl Scorable for OnceScorable<'_> {
     fn score(&mut self) -> Result<f32> {
         if *self.last_computed_doc == self.current_doc {
-            return Err(LuceneError::AssertionError(format!(
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "Score computed twice on {}",
                 self.current_doc
-            )));
+            ))));
         }
         *self.last_computed_doc = self.current_doc;
         self.scorer.score()

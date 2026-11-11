@@ -97,7 +97,7 @@ fn leaf_close(r: &Arc<dyn LeafReader>) -> Result<()> {
 ///
 /// # Compatibility checks
 ///
-/// Construction fails with [`LuceneError::IllegalArgument`] when:
+/// Construction fails with [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when:
 /// - `readers` is empty but `stored_fields_readers` is not;
 /// - any reader in the union of `readers` and `stored_fields_readers` has a
 ///   different `maxDoc` from the first;
@@ -265,7 +265,7 @@ impl ParallelLeafReader {
         suppress_close: bool,
     ) -> Result<Self> {
         if readers.is_empty() && !stored_fields_readers.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least one main reader if storedFieldsReaders are used."
                     .to_string(),
             ));
@@ -291,7 +291,7 @@ impl ParallelLeafReader {
         let mut complete_reader_set: Vec<Arc<dyn LeafReader>> = Vec::new();
         for r in readers.iter().chain(stored_fields_readers.iter()) {
             if r.max_doc() != max_doc {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "All readers must have same maxDoc: {max_doc}!={}",
                     r.max_doc()
                 )));
@@ -334,7 +334,7 @@ impl ParallelLeafReader {
                     None => index_sort = Some(leaf_sort.clone()),
                     Some(existing) => {
                         if existing != leaf_sort {
-                            return Err(LuceneError::IllegalArgument(format!(
+                            return Err(LuceneError::illegal_argument(format!(
                                 "cannot combine LeafReaders that have different index sorts: saw \
                                  both sort={existing:?} and {leaf_sort:?}"
                             )));
@@ -348,7 +348,7 @@ impl ParallelLeafReader {
             if created_version_major == -1 {
                 created_version_major = leaf_created;
             } else if created_version_major != leaf_created {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "cannot combine LeafReaders that have different creation versions: saw both \
                      version={created_version_major} and {leaf_created}"
                 )));
@@ -882,7 +882,7 @@ impl StoredFields for ParallelStoredFields {
 ///
 /// # Compatibility checks
 ///
-/// Construction fails with [`LuceneError::IllegalArgument`] when:
+/// Construction fails with [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when:
 /// - `readers` is empty but `stored_fields_readers` is not;
 /// - any sub-composite's `maxDoc` differs from the first;
 /// - the sub-composites disagree on the number of leaves;
@@ -978,7 +978,7 @@ impl ParallelCompositeReader {
         stored_fields_readers: Vec<Arc<dyn CompositeReader>>,
     ) -> Result<Self> {
         if readers.is_empty() && !stored_fields_readers.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least one main reader if storedFieldsReaders are used."
                     .to_string(),
             ));
@@ -1004,7 +1004,7 @@ impl ParallelCompositeReader {
         // a DirectoryReader, so the excess is an IllegalArgumentException.
         let actual_max_docs = i64::from(crate::index::index_writer::get_actual_max_docs());
         if max_doc > actual_max_docs {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "Too many documents: composite IndexReaders cannot exceed {actual_max_docs} \
                  but readers have total maxDoc={max_doc}"
             )));
@@ -1276,21 +1276,21 @@ fn validate(
 ) -> Result<()> {
     for reader in readers {
         if reader.max_doc() != max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "All readers must have same maxDoc: {max_doc}!={}",
                 reader.max_doc()
             )));
         }
         let subs = reader.clone().leaves()?;
         if subs.len() != leaf_max_doc.len() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "All readers must have same number of leaf readers".to_string(),
             ));
         }
         for (sub_idx, ctx) in subs.iter().enumerate() {
             let r_max = ctx.leaf_reader().max_doc();
             if r_max != leaf_max_doc[sub_idx] {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "All leaf readers must have same corresponding subReader maxDoc".to_string(),
                 ));
             }
@@ -1307,6 +1307,7 @@ fn validate(
 mod tests {
     use super::*;
     use crate::codecs::stub::StoredFieldVisitor;
+    use crate::error::LuceneErrorKind;
     use crate::index::field_infos::FieldInfo;
     use crate::index::index_reader::IndexReader;
     use crate::index::leaf_reader::LeafReader;
@@ -1538,7 +1539,13 @@ mod tests {
         let b = leaf(7, 7, &["b"]);
         let res = ParallelLeafReader::with_close_flag(true, vec![a, b]);
         assert!(
-            matches!(res, Err(LuceneError::IllegalArgument(_))),
+            matches!(
+                res,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                })
+            ),
             "expected IllegalArgument for mismatched maxDoc"
         );
     }
@@ -1712,7 +1719,13 @@ mod tests {
     fn parallel_leaf_rejects_stored_fields_without_main_readers() {
         let s = leaf(2, 2, &["s"]);
         let res = ParallelLeafReader::with_stored_fields(true, Vec::new(), vec![s]);
-        assert!(matches!(res, Err(LuceneError::IllegalArgument(_))));
+        assert!(matches!(
+            res,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -1758,7 +1771,7 @@ mod tests {
             &self.core
         }
         fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn num_docs(&self) -> i32 {
             self.leaves.iter().map(|l| LeafReader::num_docs(&**l)).sum()
@@ -1767,7 +1780,7 @@ mod tests {
             self.max_doc
         }
         fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn do_close(&self) -> Result<()> {
             Ok(())
@@ -1776,19 +1789,19 @@ mod tests {
             None
         }
         fn doc_freq(&self, _term: &Term) -> Result<i32> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn total_term_freq(&self, _term: &Term) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn get_doc_count(&self, _field: &str) -> Result<i32> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
-            Err(LuceneError::UnsupportedOperation("stub".into()))
+            Err(LuceneError::unsupported_operation("stub"))
         }
         fn build_context(
             self: Arc<Self>,
@@ -1855,7 +1868,13 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(5, 5, &["b"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(res, Err(LuceneError::IllegalArgument(_))));
+        assert!(matches!(
+            res,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1863,7 +1882,13 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(2, 2, &["b"]), (4, 4, &["d"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(res, Err(LuceneError::IllegalArgument(_))));
+        assert!(matches!(
+            res,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1871,7 +1896,13 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(1, 1, &["b"]), (3, 3, &["d"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(res, Err(LuceneError::IllegalArgument(_))));
+        assert!(matches!(
+            res,
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
     }
 
     #[test]

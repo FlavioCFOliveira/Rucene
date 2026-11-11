@@ -94,7 +94,7 @@ impl LateInteractionFloatValuesSource {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] — with Java's messages — when
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — with Java's messages — when
     /// the query multi-vector is empty, when a composing token vector is empty,
     /// or when the token vectors do not all have the same length, and a
     /// `java.lang.NullPointerException` when the similarity function is
@@ -132,7 +132,7 @@ fn validate_query_vector(query_vector: Option<Vec<Option<Vec<f32>>>>) -> Result<
     let query_vector = match query_vector {
         Some(query_vector) if !query_vector.is_empty() => query_vector,
         _ => {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "queryVector must not be null or empty".to_string(),
             ))
         }
@@ -140,7 +140,7 @@ fn validate_query_vector(query_vector: Option<Vec<Option<Vec<f32>>>>) -> Result<
     let dimension = match query_vector[0].as_ref() {
         Some(first) if !first.is_empty() => first.len(),
         _ => {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "composing token vectors in provided query vector should not be null or empty"
                     .to_string(),
             ))
@@ -150,7 +150,7 @@ fn validate_query_vector(query_vector: Option<Vec<Option<Vec<f32>>>>) -> Result<
     for vector in query_vector {
         match vector {
             Some(vector) if vector.len() == dimension => validated.push(vector),
-            _ => return Err(LuceneError::IllegalArgument(
+            _ => return Err(LuceneError::illegal_argument(
                 "all composing token vectors in provided query vector should have the same length"
                     .to_string(),
             )),
@@ -294,7 +294,7 @@ impl MultiVectorSimilarity for LateInteractionScoreFunction {
                     let mut max_sim = JAVA_FLOAT_MIN_VALUE;
                     for d in doc_vector {
                         if q.len() != d.len() {
-                            return Err(LuceneError::IllegalArgument(format!(
+                            return Err(LuceneError::illegal_argument(format!(
                                 "Provided multi-vectors are incompatible. Their composing token \
                                  vectors should have the same dimension, got {} != {}",
                                 q.len(),

@@ -32,11 +32,11 @@ impl ConjunctionUtils {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when fewer than two scorers are
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two scorers are
     /// supplied, or when they are not all on the same document.
     pub fn intersect_scorers(scorers: Vec<Box<dyn Scorer>>) -> Result<ScorerIterator> {
         if scorers.len() < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot make a ConjunctionDISI of less than 2 iterators".to_string(),
             ));
         }
@@ -61,7 +61,7 @@ impl ConjunctionUtils {
         iterators: Vec<Box<dyn DocIdSetIterator>>,
     ) -> Result<ScorerIterator> {
         if iterators.len() < 2 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Cannot make a ConjunctionDISI of less than 2 iterators".to_string(),
             ));
         }

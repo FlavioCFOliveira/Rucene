@@ -469,7 +469,7 @@ impl fmt::Display for OrdsIntersectTermsEnum {
 }
 
 fn unsupported() -> LuceneError {
-    LuceneError::UnsupportedOperation(String::new())
+    LuceneError::unsupported_operation(String::new())
 }
 
 impl TermsEnum for OrdsIntersectTermsEnum {

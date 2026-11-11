@@ -217,7 +217,7 @@ pub use readers_and_updates::{PendingDeletes, PendingSoftDeletes, ReaderPool, Re
 use crate::{
     analysis::{Analyzer, TokenStream},
     document::{InvertableType, NumericValue, StoredValue},
-    error::{LuceneError, Result},
+    error::{LuceneError, LuceneErrorKind, Result},
     store::{ByteArrayDataInput, DataInput},
     util::{vector_util, BytesRef},
 };
@@ -374,7 +374,7 @@ impl VectorSimilarityFunction {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the two
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when the two
     /// vectors have different dimensions, matching the
     /// `IllegalArgumentException` that `VectorUtil` throws.
     pub fn compare_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
@@ -407,7 +407,7 @@ impl VectorSimilarityFunction {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the two
+    /// Returns [`crate::error::LuceneErrorKind::IllegalArgument`] when the two
     /// vectors have different dimensions.
     pub fn compare_bytes(&self, a: &[u8], b: &[u8]) -> Result<f32> {
         match self {
@@ -726,11 +726,11 @@ impl<'a, T: IndexableFieldIterable> DocumentsIterator<'a> for SliceDocumentsIter
     fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>> {
         match self.0.next() {
             Some(doc) => Ok(Some(doc)),
-            None => Err(LuceneError::Unchecked {
+            None => Err(LuceneError::from(LuceneErrorKind::Unchecked {
                 class: "java.util.NoSuchElementException",
                 message: None,
                 cause: None,
-            }),
+            })),
         }
     }
 }

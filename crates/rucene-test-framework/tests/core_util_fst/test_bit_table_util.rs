@@ -140,7 +140,7 @@ impl DataInput for ByteArrayBytesReader<'_> {
 
     fn read_bytes(&mut self, _b: Option<&mut [u8]>, _offset: usize, _len: usize) -> Result<()> {
         let _b = rucene::store::require_array(_b)?;
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {

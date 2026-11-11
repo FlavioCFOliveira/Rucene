@@ -673,7 +673,7 @@ impl IndexInput for MyBufferedIndexInput {
         _offset: i64,
         _length: i64,
     ) -> Result<Box<dyn IndexInput>> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
@@ -1917,7 +1917,7 @@ impl DataInput for InterceptingChecksumIndexInput {
     /// `IndexInput.skipBytes(long)`.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "numBytes must be >= 0, got {num_bytes}"
             )));
         }
@@ -2331,12 +2331,12 @@ impl DataInput for NoReadInputStreamDataInput {
     }
 
     fn read_byte(&mut self) -> Result<u8> {
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn read_bytes(&mut self, _b: Option<&mut [u8]>, _offset: usize, _len: usize) -> Result<()> {
         let _b = rucene::store::require_array(_b)?;
-        Err(LuceneError::UnsupportedOperation(String::new()))
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
@@ -2409,15 +2409,15 @@ fn io_context_test_unmodifiable() -> Result<()> {
     for context in get_contexts() {
         let _ = random_hint();
         expect_throws(UOE, || -> Result<()> {
-            Err(LuceneError::UnsupportedOperation(String::new()))
+            Err(LuceneError::unsupported_operation(String::new()))
         });
         let _ = random_hint();
         expect_throws(UOE, || -> Result<()> {
-            Err(LuceneError::UnsupportedOperation(String::new()))
+            Err(LuceneError::unsupported_operation(String::new()))
         });
         let _ = random_hint();
         expect_throws(UOE, || -> Result<()> {
-            Err(LuceneError::UnsupportedOperation(String::new()))
+            Err(LuceneError::unsupported_operation(String::new()))
         });
 
         let prev_hints: Vec<Arc<dyn FileOpenHint>> = context.hints().to_vec();

@@ -28,7 +28,7 @@ use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
 use randomizedtesting::jdk::system;
 use randomizedtesting::junit::{JUnitCore, Request, Test};
 use rucene::document::IntPoint;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::directory_reader;
 use rucene::index::{IndexReader, LeafReaderContext, Term};
 use rucene::search::similarities::{BM25Similarity, Explanation, Similarity};
@@ -73,18 +73,28 @@ fn or_null(message: &str) -> String {
 
 fn class_and_message(e: &LuceneError) -> (String, String) {
     match e {
-        LuceneError::Io(io) => (
+        LuceneError {
+            kind: LuceneErrorKind::Io(io),
+            ..
+        } => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(|| "<null>".to_string()),
         ),
-        LuceneError::Unchecked { class, message, .. } => (
+        LuceneError {
+            kind: LuceneErrorKind::Unchecked { class, message, .. },
+            ..
+        } => (
             class.to_string(),
             message.clone().unwrap_or_else(|| "<null>".to_string()),
         ),
-        LuceneError::AssertionError(message) => {
-            ("java.lang.AssertionError".to_string(), or_null(message))
-        }
-        LuceneError::IllegalArgument(message) => (
+        LuceneError {
+            kind: LuceneErrorKind::AssertionError(message),
+            ..
+        } => ("java.lang.AssertionError".to_string(), or_null(message)),
+        LuceneError {
+            kind: LuceneErrorKind::IllegalArgument { message, .. },
+            ..
+        } => (
             "java.lang.IllegalArgumentException".to_string(),
             or_null(message),
         ),
