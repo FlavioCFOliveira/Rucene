@@ -27,7 +27,7 @@ use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, 
 
 use crate::codecs::MergeState;
 use crate::error::{LuceneError, Result};
-use crate::store::{ByteBuffersDataOutput, DataInput, DataOutput};
+use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
 use crate::util::compress::{
     FastCompressionHashTable, HighCompressionHashTable, Lz4, LZ4_MAX_DISTANCE,
 };
@@ -263,7 +263,14 @@ impl CompressionMode for NoCompressionMode {
 /// Equivalent to `org.apache.lucene.codecs.compressing.Compressor`.
 pub trait Compressor: Send + Sync + std::fmt::Debug {
     /// Compresses the content of `input` into `out`.
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()>;
+    ///
+    /// Equivalent to `Compressor.compress(ByteBuffersDataInput, DataOutput)`
+    /// (`Compressor.java:35-36`).
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()>;
 
     /// Closes this compressor, releasing any native resources.
     fn close(&mut self) -> Result<()> {
@@ -321,9 +328,15 @@ impl Lz4FastCompressor {
 }
 
 impl Compressor for Lz4FastCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let len = input.size();
-        let bytes = input.to_array_copy()?;
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `CompressionMode.java:160-163`.
+        let len = input.length();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         Lz4::compress(&bytes, 0, len, out, &mut self.ht)
     }
 }
@@ -346,9 +359,15 @@ impl Lz4HighCompressor {
 }
 
 impl Compressor for Lz4HighCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let len = input.size();
-        let bytes = input.to_array_copy()?;
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `CompressionMode.java:160-163`.
+        let len = input.length();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         Lz4::compress(&bytes, 0, len, out, &mut self.ht)
     }
 }
@@ -359,8 +378,14 @@ impl Compressor for Lz4HighCompressor {
 struct NoCompressionCompressor;
 
 impl Compressor for NoCompressionCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        input.copy_to(out)
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `out.copyBytes(buffersInput, buffersInput.length())`.
+        let len = input.length() as i64;
+        out.copy_bytes(input, len)
     }
 }
 
@@ -498,9 +523,17 @@ impl Lz4WithPresetDictCompressor {
 }
 
 impl Compressor for Lz4WithPresetDictCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy()?;
-        let len = bytes.len();
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `len = buffersInput.length() - buffersInput.position()`; the bytes
+        // are read up front instead of block by block, which consumes the
+        // same bytes in the same order.
+        let len = input.length() - input.position();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         let dict_length =
             std::cmp::min(LZ4_MAX_DISTANCE, len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR));
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
@@ -840,8 +873,15 @@ impl DeflateCompressor {
 }
 
 impl Compressor for DeflateCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy()?;
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `CompressionMode.java:268-271`.
+        let len = input.length();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         self.compressor.reset();
         write_deflate_block(&mut self.compressor, &bytes, &mut self.scratch, out)
     }
@@ -940,9 +980,17 @@ impl DeflateWithPresetDictCompressor {
 }
 
 impl Compressor for DeflateWithPresetDictCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        let bytes = input.to_array_copy()?;
-        let len = bytes.len();
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `len = buffersInput.length() - buffersInput.position()`; the bytes
+        // are read up front instead of block by block, which consumes the
+        // same bytes in the same order.
+        let len = input.length() - input.position();
+        let mut bytes = vec![0u8; len];
+        input.read_bytes(Some(&mut bytes), 0, len)?;
         let dict_length = len / (NUM_SUB_BLOCKS * DEFLATE_DICT_SIZE_FACTOR);
         let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
         out.write_v_int(i32::try_from(dict_length).map_err(|_| {
@@ -1175,7 +1223,9 @@ mod tests {
         let mut output = VecDataOutput::new();
         let mut bbo = ByteBuffersDataOutput::with_expected_size(data.len());
         bbo.write_bytes(data, 0, data.len()).unwrap();
-        compressor.compress(&bbo, &mut output).unwrap();
+        compressor
+            .compress(&mut bbo.to_data_input().unwrap(), &mut output)
+            .unwrap();
         compressor.close().unwrap();
 
         let compressed = output.into_inner();
@@ -1275,7 +1325,9 @@ mod tests {
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
-            compressor.compress(&buffered, &mut output).unwrap();
+            compressor
+                .compress(&mut buffered.to_data_input().unwrap(), &mut output)
+                .unwrap();
             output.into_inner()
         };
         assert_ne!(
@@ -1333,7 +1385,9 @@ mod tests {
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
-            compressor.compress(&buffered, &mut output).unwrap();
+            compressor
+                .compress(&mut buffered.to_data_input().unwrap(), &mut output)
+                .unwrap();
             let bytes = output.into_inner();
             assert!(
                 !bytes.windows(2).any(|window| window == [0x78, 0x9c]),
@@ -1351,7 +1405,9 @@ mod tests {
             let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
-            compressor.compress(&buffered, &mut output).unwrap();
+            compressor
+                .compress(&mut buffered.to_data_input().unwrap(), &mut output)
+                .unwrap();
             output.into_inner()
         };
         assert_ne!(
@@ -1375,10 +1431,13 @@ mod tests {
         impl Compressor for InvertingCompressor {
             fn compress(
                 &mut self,
-                input: &ByteBuffersDataOutput,
+                input: &mut ByteBuffersDataInput,
                 out: &mut dyn DataOutput,
             ) -> Result<()> {
-                let bytes: Vec<u8> = input.to_array_copy()?.iter().map(|b| !b).collect();
+                let len = input.length();
+                let mut bytes = vec![0u8; len];
+                input.read_bytes(Some(&mut bytes), 0, len)?;
+                let bytes: Vec<u8> = bytes.iter().map(|b| !b).collect();
                 out.write_bytes(&bytes, 0, bytes.len())
             }
         }

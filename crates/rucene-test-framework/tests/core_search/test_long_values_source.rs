@@ -1,8 +1,4 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/search/TestLongValuesSource.java`.
-//!
-//! `testRewriteSame`'s `assertSame(longField, longField.rewrite(searcher))`
-//! is checked by value: Rucene's `SortField::rewrite` returns a clone (a
-//! pre-existing divergence, declared at `src/search/sort.rs`).
 
 use std::sync::Arc;
 
@@ -227,7 +223,10 @@ fn test_simple_field_sortables(f: &mut LongValuesSourceTest) -> Result<()> {
 
 fn test_rewrite_same(f: &mut LongValuesSourceTest) -> Result<()> {
     let long_field = get_sort_field(lvs::constant(1) as Arc<dyn LongValuesSource>, false)?;
-    assert_equals(&long_field, &long_field.rewrite(f.searcher())?);
+    Assert::assert_true(std::ptr::eq(
+        &long_field,
+        &*long_field.rewrite(f.searcher())?,
+    ));
     Ok(())
 }
 

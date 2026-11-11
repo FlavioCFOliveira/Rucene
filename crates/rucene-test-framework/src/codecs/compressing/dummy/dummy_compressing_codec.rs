@@ -21,7 +21,7 @@ use std::sync::{Arc, LazyLock};
 
 use rucene::codecs::{CompressionMode, Compressor, Decompressor};
 use rucene::error::Result;
-use rucene::store::{ByteBuffersDataOutput, DataInput, DataOutput};
+use rucene::store::{ByteBuffersDataInput, DataInput, DataOutput};
 use rucene::util::{ArrayUtil, BytesRef};
 
 use crate::codecs::compressing::CompressingCodec;
@@ -84,8 +84,15 @@ impl Decompressor for DummyDecompressor {
 struct DummyCompressor;
 
 impl Compressor for DummyCompressor {
-    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
-        input.copy_to(out)
+    fn compress(
+        &mut self,
+        input: &mut ByteBuffersDataInput,
+        out: &mut dyn DataOutput,
+    ) -> Result<()> {
+        // `out.copyBytes(buffersInput, buffersInput.length())`
+        // (`DummyCompressingCodec.java:80-82`).
+        let len = input.length() as i64;
+        out.copy_bytes(input, len)
     }
 
     fn close(&mut self) -> Result<()> {

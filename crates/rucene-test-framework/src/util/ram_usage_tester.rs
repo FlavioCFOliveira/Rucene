@@ -44,7 +44,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use rucene::index::Term;
+use rucene::index::{PrefixCodedTerms, Term};
+use rucene::search::multi_term_query::MultiTermQuery;
+use rucene::search::term_in_set_query::TermInSetQuery;
 use rucene::search::{
     BooleanClause, BooleanQuery, DisjunctionMaxQuery, Occur, PhraseQuery, Query, TermQuery,
 };
@@ -460,6 +462,11 @@ pub enum NodeShape {
         /// `RamUsageEstimator.shallowSizeOf(ob)`.
         shallow_size: i64,
     },
+    /// See [`JavaObject::ByteBuffer`].
+    ByteBuffer {
+        /// `capacity()`.
+        capacity: i32,
+    },
     /// See [`JavaObject::JavaMap`].
     JavaMap {
         /// `RamUsageEstimator.shallowSizeOf(ob)`.
@@ -531,6 +538,9 @@ impl RamObject for JavaNode {
             },
             NodeShape::Enum { shallow_size } => JavaObject::Enum {
                 shallow_size: *shallow_size,
+            },
+            NodeShape::ByteBuffer { capacity } => JavaObject::ByteBuffer {
+                capacity: *capacity,
             },
             NodeShape::JavaMap {
                 shallow_size,
@@ -1022,6 +1032,78 @@ impl ModelBuilder {
                     ("bytesStartArray", NodeChild::Node(bytes_start_array)),
                     ("bytesUsed", NodeChild::Node(counter)),
                 ],
+            },
+        )
+    }
+
+    /// `org.apache.lucene.index.PrefixCodedTerms`: `List<ByteBuffer> content`
+    /// (the `ArrayList` of `ByteBuffersDataOutput.toBufferList()`), `long
+    /// size`, `long delGen` and `int lazyHash` (`PrefixCodedTerms.java:37-40`).
+    pub fn prefix_coded_terms(&mut self, terms: &PrefixCodedTerms) -> Rc<JavaNode> {
+        self.shared(
+            terms as *const PrefixCodedTerms as *const (),
+            "org.apache.lucene.index.PrefixCodedTerms",
+            |_| {
+                let buffers: Vec<NodeChild> = terms
+                    .content()
+                    .iter()
+                    .map(|block| {
+                        NodeChild::Node(JavaNode::new(
+                            "java.nio.HeapByteBufferR",
+                            NodeShape::ByteBuffer {
+                                capacity: i32::try_from(block.capacity()).unwrap_or(i32::MAX),
+                            },
+                        ))
+                    })
+                    .collect();
+                let content = JavaNode::new(
+                    "java.util.ArrayList",
+                    NodeShape::JavaIterable {
+                        shallow_size: ARRAY_LIST_SHALLOW_SIZE,
+                        elements: buffers,
+                    },
+                );
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, 8, 8, 4]),
+                    fields: vec![("content", NodeChild::Node(content))],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.search.TermInSetQuery`: `Query.CLASS_NAME_HASH`,
+    /// `MultiTermQuery.field` and `rewriteMethod`, and its own `field` (the
+    /// same `String`), `termData` and `termDataHashCode`
+    /// (`TermInSetQuery.java:71-73`). The default rewrite method is the
+    /// anonymous `CONSTANT_SCORE_BLENDED_REWRITE`, a `RewriteMethod` with no
+    /// field.
+    pub fn term_in_set_query(&mut self, query: &TermInSetQuery) -> Rc<JavaNode> {
+        self.shared(
+            query as *const TermInSetQuery as *const (),
+            "org.apache.lucene.search.TermInSetQuery",
+            |b| {
+                let field = b.string(query.get_field());
+                let rewrite_method = query.get_rewrite_method();
+                let rewrite_method = b.shared(
+                    Arc::as_ptr(&rewrite_method) as *const (),
+                    "org.apache.lucene.search.MultiTermQuery$RewriteMethod",
+                    |_| NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[]),
+                        fields: Vec::new(),
+                    },
+                );
+                let term_data = b.prefix_coded_terms(query.term_data());
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        4, REF, REF, REF, REF, 4,
+                    ]),
+                    fields: vec![
+                        ("field", NodeChild::Node(Rc::clone(&field))),
+                        ("rewriteMethod", NodeChild::Node(rewrite_method)),
+                        ("field", NodeChild::Node(field)),
+                        ("termData", NodeChild::Node(term_data)),
+                    ],
+                }
             },
         )
     }

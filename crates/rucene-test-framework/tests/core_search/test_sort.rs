@@ -775,8 +775,6 @@ fn test_multi_sort() -> Result<()> {
 
 /// Port of `TestSort.testRewrite`.
 ///
-/// `assertSame(sort, sort.rewrite(searcher))`: Rucene's `Sort::rewrite`
-/// returns an owned `Sort`, so the unchanged rewrite is compared by equality.
 fn test_rewrite() -> Result<()> {
     let mut dir = LuceneTestCase::new_directory();
     let result = (|| -> Result<()> {
@@ -791,7 +789,10 @@ fn test_rewrite() -> Result<()> {
                     false,
                 )?])?;
 
-                assert_equals(&sort, &sort.rewrite(&searcher)?);
+                randomizedtesting::junit::Assert::assert_true(std::ptr::eq(
+                    &sort,
+                    &*sort.rewrite(&searcher)?,
+                ));
 
                 let double_source = double_values_source::constant(1.0);
                 let sort = Sort::new_fields(vec![double_values_source::get_sort_field(
@@ -799,7 +800,10 @@ fn test_rewrite() -> Result<()> {
                     false,
                 )?])?;
 
-                assert_equals(&sort, &sort.rewrite(&searcher)?);
+                randomizedtesting::junit::Assert::assert_true(std::ptr::eq(
+                    &sort,
+                    &*sort.rewrite(&searcher)?,
+                ));
                 Ok(())
             })();
             let closed = reader.close();

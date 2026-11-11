@@ -534,7 +534,11 @@ pub struct BufferedUpdates {
     field_updates: HashMap<String, FieldUpdatesBuffer>,
     /// RAM charged to `field_updates`, kept apart exactly as Java keeps
     /// `fieldUpdatesBytesUsed` apart from `bytesUsed`.
-    field_updates_bytes_used: i64,
+    ///
+    /// Equivalent to `BufferedUpdates.fieldUpdatesBytesUsed`
+    /// (`BufferedUpdates.java:71`), the counter every `FieldUpdatesBuffer`
+    /// of this buffer charges directly.
+    field_updates_bytes_used: Arc<crate::util::concurrent::Counter>,
     /// Running RAM estimate for buffered delete queries.
     ///
     /// Equivalent to `BufferedUpdates.bytesUsed` (`BufferedUpdates.java:70`),
@@ -554,6 +558,10 @@ impl BufferedUpdates {
     pub fn new(segment_name: impl Into<String>) -> Self {
         Self {
             segment_name: segment_name.into(),
+            // `Counter.newCounter(true)` (`BufferedUpdates.java:71`).
+            field_updates_bytes_used: Arc::new(crate::util::concurrent::Counter::new_counter_with(
+                true,
+            )),
             ..Self::default()
         }
     }
@@ -639,16 +647,14 @@ impl BufferedUpdates {
         // `buffer.addUpdate(...)` or `addNoValue(...)` unconditionally
         // (`BufferedUpdates.java:134-156`): the update that creates a buffer is
         // recorded by the constructor *and* added again, as in Java.
-        let before = match self.field_updates.get(&update.field) {
-            Some(buffer) => buffer.ram_bytes_used(),
-            None => {
-                let buffer = FieldUpdatesBuffer::new(update.clone(), doc_id_upto)?;
-                self.field_updates_bytes_used += buffer.ram_bytes_used();
-                let before = buffer.ram_bytes_used();
-                self.field_updates.insert(update.field.clone(), buffer);
-                before
-            }
-        };
+        if !self.field_updates.contains_key(&update.field) {
+            let buffer = FieldUpdatesBuffer::new(
+                Arc::clone(&self.field_updates_bytes_used),
+                update.clone(),
+                doc_id_upto,
+            )?;
+            self.field_updates.insert(update.field.clone(), buffer);
+        }
         let buffer = self
             .field_updates
             .get_mut(&update.field)
@@ -666,7 +672,6 @@ impl BufferedUpdates {
                 buffer.add_no_value(&update.term, doc_id_upto)?;
             }
         }
-        self.field_updates_bytes_used += buffer.ram_bytes_used() - before;
         self.num_field_updates += 1;
         Ok(())
     }
@@ -755,7 +760,10 @@ impl BufferedUpdates {
         self.num_field_updates = 0;
         self.field_updates.clear();
         self.bytes_used = 0;
-        self.field_updates_bytes_used = 0;
+        // `fieldUpdatesBytesUsed.addAndGet(-fieldUpdatesBytesUsed.get())`
+        // (`BufferedUpdates.java:168`).
+        self.field_updates_bytes_used
+            .add_and_get(-self.field_updates_bytes_used.get());
     }
 
     /// Returns `true` when anything is buffered.
@@ -773,12 +781,16 @@ impl BufferedUpdates {
             delete_queries: std::mem::take(&mut self.delete_queries),
             num_field_updates: self.num_field_updates,
             field_updates: std::mem::take(&mut self.field_updates),
-            field_updates_bytes_used: self.field_updates_bytes_used,
+            // The taken buffers keep charging the counter they were built
+            // with; this buffer starts over with a fresh one.
+            field_updates_bytes_used: std::mem::replace(
+                &mut self.field_updates_bytes_used,
+                Arc::new(crate::util::concurrent::Counter::new_counter_with(true)),
+            ),
             bytes_used: self.bytes_used,
             gen: self.gen,
         };
         self.num_field_updates = 0;
-        self.field_updates_bytes_used = 0;
         self.bytes_used = 0;
         taken
     }
@@ -790,7 +802,7 @@ impl Accountable for BufferedUpdates {
     /// Lucene keeps apart: the query bytes, the field-update bytes, and the
     /// `DeletedTerms` bytes.
     fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used + self.field_updates_bytes_used + self.delete_terms.ram_bytes_used()
+        self.bytes_used + self.field_updates_bytes_used.get() + self.delete_terms.ram_bytes_used()
     }
 }
 
@@ -969,19 +981,15 @@ impl FrozenBufferedUpdates {
         // to `fieldUpdatesBytesUsed`, the counter Java shares with the buffer
         // (`FieldUpdatesBuffer.java:208-219`). A buffer is only ever finished
         // here, once, by the packet that takes the `BufferedUpdates` over.
-        let mut finish_charge = 0i64;
         for buffer in updates.field_updates.values_mut() {
-            let before = buffer.ram_bytes_used();
             buffer
                 .finish()
                 .expect("INVARIANT: a field-updates buffer is frozen by exactly one packet");
-            finish_charge += buffer.ram_bytes_used() - before;
         }
-        updates.field_updates_bytes_used += finish_charge;
         let bytes_used = i64::from(
             (delete_terms.ram_bytes_used()
                 + updates.queries_size() as i64 * FROZEN_BYTES_PER_DEL_QUERY
-                + updates.field_updates_bytes_used) as i32,
+                + updates.field_updates_bytes_used.get()) as i32,
         );
         Self {
             updates,
@@ -1450,8 +1458,8 @@ impl FrozenBufferedUpdates {
                             // value.getMaxNumeric(), maxDoc)`; both getters
                             // answer 0 for a buffer that holds only resets
                             // (`FieldUpdatesBuffer.java:108-122`).
-                            let min_value = value.min_numeric_value().unwrap_or(0);
-                            let max_value = value.max_numeric_value().unwrap_or(0);
+                            let min_value = value.get_min_numeric();
+                            let max_value = value.get_max_numeric();
                             DocValuesFieldUpdates::new_numeric_with_range(
                                 del_gen,
                                 update_field.clone(),
@@ -7338,7 +7346,7 @@ mod tests {
             );
             updates.add_numeric_update(&update, 3).unwrap();
         }
-        let field_updates_before_finish = updates.field_updates_bytes_used;
+        let field_updates_before_finish = updates.field_updates_bytes_used.get();
 
         let mut builder = crate::index::PrefixCodedTermsBuilder::new();
         builder.add(&term("id", "a")).unwrap();
@@ -7346,7 +7354,7 @@ mod tests {
         let frozen_terms_ram = builder.finish().ram_bytes_used();
 
         let frozen = FrozenBufferedUpdates::new(updates, None);
-        let finished = frozen.updates().field_updates_bytes_used;
+        let finished = frozen.updates().field_updates_bytes_used.get();
         assert!(
             finished > field_updates_before_finish,
             "finish() charged the sort state of the sorted terms"

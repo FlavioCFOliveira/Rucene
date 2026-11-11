@@ -7,10 +7,6 @@
 //! The abstract base is the [`CompressionModeTest`] fixture (its `mode`
 //! field) and the shared test bodies; each subclass is a class binding all
 //! of the inherited test methods with its own `setUp`.
-//!
-//! Java's `compress` hands the compressor a `ByteBuffersDataInput` slice of
-//! the input; the port's `Compressor.compress` reads a
-//! `ByteBuffersDataOutput`, so the slice `[off, off + len)` is written to one.
 
 use std::sync::Arc;
 
@@ -22,7 +18,7 @@ use rucene::codecs::compressing::{
     LZ4WithPresetDictCompressionMode, FAST, FAST_DECOMPRESSION, HIGH_COMPRESSION,
 };
 use rucene::error::Result;
-use rucene::store::{ByteArrayDataInput, ByteArrayDataOutput, ByteBuffersDataOutput, DataOutput};
+use rucene::store::{ByteArrayDataInput, ByteArrayDataOutput, ByteBuffersDataInput};
 use rucene::util::BytesRef;
 use rucene_test_framework::util::lucene_test_case::TEST_NIGHTLY;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
@@ -162,13 +158,12 @@ pub fn compress_with(
     len: usize,
 ) -> Result<Vec<u8>> {
     let mut compressed = vec![0u8; len * 3 + 16]; // should be enough
-    let mut input = ByteBuffersDataOutput::new();
-    input.write_bytes(decompressed, off, len)?;
+    let mut input = ByteBuffersDataInput::new(vec![decompressed.to_vec()])?.slice(off, len)?;
 
     let compressed_len = {
         let mut out = ByteArrayDataOutput::new(&mut compressed);
 
-        compressor.compress(&input, &mut out)?;
+        compressor.compress(&mut input, &mut out)?;
         out.position()
     };
     Ok(compressed[..compressed_len].to_vec())

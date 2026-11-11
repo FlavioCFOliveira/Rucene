@@ -11,9 +11,6 @@
 //! * The collectors keep the context `doSetNextReader` receives; Rucene's
 //!   context is borrowed, so they keep its ordinal and read the context back
 //!   from the searcher's leaves.
-//! * `testRewriteSame`'s `assertSame(doubleField, doubleField.rewrite(searcher))`
-//!   is checked by value: Rucene's `SortField::rewrite` returns a clone (a
-//!   pre-existing divergence, declared at `src/search/sort.rs`).
 
 use std::sync::{Arc, Mutex};
 
@@ -562,7 +559,10 @@ fn test_query_double_values_source() -> Result<()> {
 fn test_rewrite_same() -> Result<()> {
     let searcher = searcher();
     let double_field = get_sort_field(dvs::constant(1.0), false)?;
-    assert_equals(&double_field, &double_field.rewrite(&searcher)?);
+    Assert::assert_true(std::ptr::eq(
+        &double_field,
+        &*double_field.rewrite(&searcher)?,
+    ));
     Ok(())
 }
 

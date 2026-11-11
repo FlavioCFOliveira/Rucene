@@ -223,18 +223,28 @@ fn field_updates_buffer(m: &Measured) {
     use rucene::index::Term;
 
     let term = |value: &str| Term::new("id", BytesRef::new(value.as_bytes().to_vec()));
+    let counter = || Arc::new(rucene::util::concurrent::Counter::new_counter());
 
-    let mut same = FieldUpdatesBuffer::new(DocValuesUpdate::numeric(term("a"), "price", 7), 3)
-        .expect("a numeric buffer");
+    let mut same = FieldUpdatesBuffer::new(
+        counter(),
+        DocValuesUpdate::numeric(term("a"), "price", 7),
+        3,
+    )
+    .expect("a numeric buffer");
     same.add_numeric_update(&term("b"), 7, 5).expect("second");
     same.add_numeric_update(&term("c"), 7, 9).expect("third");
 
-    let mut mixed = FieldUpdatesBuffer::new(DocValuesUpdate::numeric(term("a"), "price", -4), 3)
-        .expect("a numeric buffer");
+    let mut mixed = FieldUpdatesBuffer::new(
+        counter(),
+        DocValuesUpdate::numeric(term("a"), "price", -4),
+        3,
+    )
+    .expect("a numeric buffer");
     mixed.add_numeric_update(&term("b"), 11, 5).expect("second");
     mixed.add_numeric_update(&term("c"), 0, 9).expect("third");
 
     let mut none = FieldUpdatesBuffer::new(
+        counter(),
         DocValuesUpdate::new(
             rucene::index::DocValuesType::NUMERIC,
             term("a"),
@@ -257,16 +267,13 @@ fn field_updates_buffer(m: &Measured) {
             m.get(&format!("FieldUpdatesBuffer.hasSingleValue/{name}")),
             "hasSingleValue disagrees for the `{name}` buffer"
         );
-        // Java answers `0` where this port answers `None`, the divergence
-        // declared on `min_numeric_value`; `unwrap_or(0)` is that mapping and
-        // nothing else, so a wrong value still fails.
         assert_eq!(
-            buffer.min_numeric_value().unwrap_or(0).to_string(),
+            buffer.get_min_numeric().to_string(),
             m.get(&format!("FieldUpdatesBuffer.getMinNumeric/{name}")),
             "getMinNumeric disagrees for the `{name}` buffer"
         );
         assert_eq!(
-            buffer.max_numeric_value().unwrap_or(0).to_string(),
+            buffer.get_max_numeric().to_string(),
             m.get(&format!("FieldUpdatesBuffer.getMaxNumeric/{name}")),
             "getMaxNumeric disagrees for the `{name}` buffer"
         );

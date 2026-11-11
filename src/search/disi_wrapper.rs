@@ -105,9 +105,11 @@ impl DisiWrapper {
         } else {
             (scorer.iterator().cost(), 0.0)
         };
-        // Kept for parity with Java, which routes the iterator through
-        // `ScorerUtil.likelyImpactsEnum` when `impacts` is set; see that
-        // method for why this port returns its argument unchanged.
+        // Java routes the iterator through `ScorerUtil.likelyImpactsEnum`
+        // when `impacts` is set (`DisiWrapper.java:61-63`). Here the iterator
+        // is borrowed from the scorer on every access, so it cannot be
+        // replaced by an owning `FilterDocIdSetIterator`; the wrapper only
+        // delegates, so the iteration is the same.
         let _ = impacts;
         Self {
             scorer,

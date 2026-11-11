@@ -38,12 +38,12 @@ use rucene::util::bytes_ref_array::BytesRefIterator;
 use rucene::util::{Accountable, BytesRef};
 use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
 use rucene_test_framework::search::query_utils::QueryUtils;
+use rucene_test_framework::util::ram_usage_tester::{ModelBuilder, RamUsageTester};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_search::support::assert_query_equals;
 use crate::core_support::{
-    assert_equals, assert_equals_delta, assert_not_null, assert_null, class, ram_used_unmodelled,
-    random, test,
+    assert_equals, assert_equals_delta, assert_not_null, assert_null, class, random, test,
 };
 
 /// `TestTermInSetQuery`.
@@ -542,7 +542,8 @@ fn test_ram_bytes_used() -> Result<()> {
         )));
     }
     let query = TermInSetQuery::new("f", terms)?;
-    let actual_ram_bytes_used = ram_used_unmodelled("TermInSetQuery");
+    let model = ModelBuilder::new().term_in_set_query(&query);
+    let actual_ram_bytes_used = RamUsageTester::ram_used(&*model);
     let expected_ram_bytes_used = query.ram_bytes_used();
     // error margin within 5%
     assert_equals_delta(

@@ -6,7 +6,6 @@
 
 use crate::error::Result;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::util::FixedBitSet;
 
 /// Tracks the current doc ID on behalf of a [`DocIdSetIterator`]
 /// implementation.
@@ -109,11 +108,8 @@ impl DocIdSetIterator for FilterDocIdSetIterator {
         self.inner.cost()
     }
 
-    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
-        self.inner.into_bit_set(up_to, bit_set, offset)
-    }
-
-    fn doc_id_run_end(&self) -> Result<i32> {
-        self.inner.doc_id_run_end()
-    }
+    // Java's `FilterDocIdSetIterator` overrides only `docID`, `nextDoc`,
+    // `advance` and `cost` (`FilterDocIdSetIterator.java:32-51`), so
+    // `intoBitSet` and `docIDRunEnd` run the `DocIdSetIterator` defaults over
+    // this wrapper rather than the delegate's overrides.
 }

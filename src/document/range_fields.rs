@@ -1464,7 +1464,9 @@ struct RangeFieldIteratorSupplier {
     query: RangeFieldQuery,
     values: Box<dyn PointValues>,
     max_doc: i32,
-    cost: i64,
+    /// `long cost = -1`, filled in by the first [`cost`](ScorerSupplier::cost)
+    /// call (`RangeFieldQuery.java:486`, `496-503`).
+    cost: std::cell::Cell<i64>,
     score: f32,
     score_mode: ScoreMode,
 }
@@ -1480,14 +1482,7 @@ impl std::fmt::Debug for RangeFieldIteratorSupplier {
 }
 
 impl RangeFieldIteratorSupplier {
-    /// Computes the cost once, which Java defers to the first `cost()` call.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java caches the estimate in a mutable
-    /// field that `cost()` fills in on demand; `cost()` takes `&self` here, so
-    /// the estimate is computed when the supplier is built. It is the same
-    /// estimate from the same visitor, and a supplier is only built when its
-    /// cost is about to be asked for. This matches what
-    /// [`PointRangeQuery`](crate::search::PointRangeQuery) already does.
+    /// Builds the supplier; the cost is computed on the first `cost()` call.
     fn new(
         query: RangeFieldQuery,
         values: Box<dyn PointValues>,
@@ -1495,20 +1490,11 @@ impl RangeFieldIteratorSupplier {
         score: f32,
         score_mode: ScoreMode,
     ) -> Result<Self> {
-        let cost = {
-            let mut builder = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
-            let mut visitor = RangeFieldVisitor {
-                query: &query,
-                result: &mut builder,
-            };
-            values.estimate_doc_count(&mut visitor)?
-        };
-        debug_assert!(cost >= 0);
         Ok(Self {
             query,
             values,
             max_doc,
-            cost,
+            cost: std::cell::Cell::new(-1),
             score,
             score_mode,
         })
@@ -1534,7 +1520,24 @@ impl ScorerSupplier for RangeFieldIteratorSupplier {
     }
 
     fn cost(&self) -> i64 {
-        self.cost
+        if self.cost.get() == -1 {
+            // Computing the cost may be expensive, so only do it if necessary.
+            let estimate = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())
+                .and_then(|mut builder| {
+                    let mut visitor = RangeFieldVisitor {
+                        query: &self.query,
+                        result: &mut builder,
+                    };
+                    self.values.estimate_doc_count(&mut visitor)
+                });
+            // `PointValues.estimateDocCount` wraps an `IOException` in an
+            // `UncheckedIOException` (`PointValues.java:385-393`), which
+            // `cost()` lets through; it has no error channel here.
+            let cost = estimate.unwrap_or_else(|e| panic!("java.io.UncheckedIOException: {e}"));
+            debug_assert!(cost >= 0);
+            self.cost.set(cost);
+        }
+        self.cost.get()
     }
 }
 

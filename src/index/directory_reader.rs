@@ -314,6 +314,9 @@ impl StandardDirectoryReader {
                 format!("[{sub_readers}]"),
             ));
         }
+        let cache_helper = Arc::new(DirectoryReaderCacheHelper::new(Some(
+            core.ensure_open_handle(),
+        )));
         Ok(Self {
             core,
             directory,
@@ -323,7 +326,7 @@ impl StandardDirectoryReader {
             leaf_sorter,
             apply_all_deletes,
             write_all_deletes,
-            cache_helper: Arc::new(DirectoryReaderCacheHelper::new()),
+            cache_helper,
             self_ref: OnceLock::new(),
         })
     }
@@ -1573,6 +1576,10 @@ impl IndexCommit for ReaderCommit {
 struct DirectoryReaderCacheHelper {
     key: CacheKey,
     listeners: Mutex<Vec<Arc<dyn ClosedListener>>>,
+    /// The owning reader's `ensureOpen()`, which `addClosedListener` calls
+    /// first (`StandardDirectoryReader.java:664-667`); `None` only for the
+    /// unit tests' detached helpers.
+    reader: Option<crate::index::index_reader::EnsureOpen>,
 }
 
 impl Debug for DirectoryReaderCacheHelper {
@@ -1588,10 +1595,11 @@ impl Debug for DirectoryReaderCacheHelper {
 }
 
 impl DirectoryReaderCacheHelper {
-    fn new() -> Self {
+    fn new(reader: Option<crate::index::index_reader::EnsureOpen>) -> Self {
         Self {
             key: CacheKey::new(),
             listeners: Mutex::new(Vec::new()),
+            reader,
         }
     }
 
@@ -1614,9 +1622,16 @@ impl CacheHelper for DirectoryReaderCacheHelper {
     }
 
     /// Equivalent to the anonymous helper's `addClosedListener`
-    /// (`StandardDirectoryReader.java:664-667`), which adds to the
-    /// `readerClosedListeners` set.
+    /// (`StandardDirectoryReader.java:664-667`): `ensureOpen()`, then the
+    /// listener is added to the `readerClosedListeners` set.
+    ///
+    /// # Panics
+    ///
+    /// The unchecked `AlreadyClosedException` once the reader is closed.
     fn add_closed_listener(&self, listener: Arc<dyn ClosedListener>) {
+        if let Some(reader) = &self.reader {
+            reader.ensure_open_unchecked();
+        }
         if let Ok(mut listeners) = self.listeners.lock() {
             add_closed_listener_to_set(&mut listeners, listener);
         }
@@ -2084,7 +2099,7 @@ mod tests {
     #[test]
     fn reader_cache_keys_are_distinct_objects() {
         let helpers: Vec<Arc<DirectoryReaderCacheHelper>> = (0..64)
-            .map(|_| Arc::new(DirectoryReaderCacheHelper::new()))
+            .map(|_| Arc::new(DirectoryReaderCacheHelper::new(None)))
             .collect();
         let keys: std::collections::HashSet<CacheKey> =
             helpers.iter().map(|h| h.get_key().clone()).collect();

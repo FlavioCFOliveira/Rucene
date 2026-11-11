@@ -487,8 +487,8 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the provided live docs have a
-    /// length different from `max_doc`.
+    /// Returns the `NullPointerException` of `Objects.requireNonNull` when
+    /// `supplier` is `None` (`AcceptDocs.java:172`).
     pub fn from_iterator_supplier(
         supplier: Option<S>,
         live_docs: Option<Box<dyn Bits>>,
@@ -496,14 +496,8 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
     ) -> Result<Self> {
         // `Objects.requireNonNull(iteratorSupplier)` (`AcceptDocs.java:172`).
         let supplier = require_non_null(supplier)?;
-        if let Some(bits) = live_docs.as_ref() {
-            if bits.length() != max_doc as usize {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "Bits length = {} != maxDoc = {max_doc}",
-                    bits.length()
-                )));
-            }
-        }
+        // Java checks no live-docs length here (`AcceptDocs.java:170-175`);
+        // only `BitsAcceptDocs` compares it with `maxDoc`.
         Ok(Self {
             supplier,
             live_docs: live_docs.map(Arc::from),
@@ -972,13 +966,15 @@ mod tests {
         assert!(from_live_docs(Some(bits), 8).is_err());
     }
 
+    /// Java's `DocIdSetIteratorAcceptDocs` does not compare the live-docs
+    /// length with `maxDoc` (`AcceptDocs.java:170-175`).
     #[test]
-    fn iterator_accept_docs_rejects_length_mismatch() {
+    fn iterator_accept_docs_accepts_length_mismatch() {
         let supplier = || -> Result<Box<dyn DocIdSetIterator>> {
             Ok(Box::new(VecDocIdSetIterator::new(vec![])))
         };
         let live: Box<dyn Bits> = Box::new(EvenBits { max_doc: 5 });
-        assert!(from_iterator_supplier(Some(supplier), Some(live), 8).is_err());
+        assert!(from_iterator_supplier(Some(supplier), Some(live), 8).is_ok());
     }
 }
 

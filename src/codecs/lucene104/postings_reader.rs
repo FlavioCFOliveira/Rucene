@@ -1605,6 +1605,12 @@ impl BlockPostingsEnum {
 }
 
 impl DocIdSetIterator for BlockPostingsEnum {
+    /// The class identity `ScorerUtil.likelyImpactsEnum` compares with
+    /// `Lucene104PostingsFormat.getImpactsEnumImpl()` (`ScorerUtil.java:70`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.doc
     }

@@ -1,11 +1,5 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestFieldUpdatesBuffer.java`.
 //!
-//! * `new FieldUpdatesBuffer(counter, update, docUpTo)` is
-//!   `FieldUpdatesBuffer::new(update, docUpTo)`: Rucene's buffer owns its
-//!   `Counter` (a pre-existing divergence of `src/index/field_updates_buffer.rs`);
-//!   the tests only create the counter.
-//! * `getMaxNumeric()`/`getMinNumeric()` are
-//!   `max_numeric_value()`/`min_numeric_value()` with Java's `0` for `None`.
 //! * `NumericDocValuesUpdate`/`BinaryDocValuesUpdate` are `DocValuesUpdate`
 //!   values; `prepareForApply(docIdUpTo)` is [`prepare_for_apply`].
 
@@ -105,12 +99,12 @@ fn binary_value(update: &DocValuesUpdate) -> Option<BytesRef> {
 
 /// `buffer.getMaxNumeric()`.
 fn max_numeric(buffer: &FieldUpdatesBuffer) -> i64 {
-    buffer.max_numeric_value().unwrap_or(0)
+    buffer.get_max_numeric()
 }
 
 /// `buffer.getMinNumeric()`.
 fn min_numeric(buffer: &FieldUpdatesBuffer) -> i64 {
-    buffer.min_numeric_value().unwrap_or(0)
+    buffer.get_min_numeric()
 }
 
 /// `new BytesRef("")`.
@@ -120,9 +114,9 @@ fn empty() -> BytesRef {
 
 /// Port of `TestFieldUpdatesBuffer.testBasics`.
 fn test_basics() -> Result<()> {
-    let _counter = Counter::new_counter();
+    let counter = Arc::new(Counter::new_counter());
     let update = numeric_update(Term::from_text("id", "1"), "age", Some(6));
-    let mut buffer = FieldUpdatesBuffer::new(update, 15)?;
+    let mut buffer = FieldUpdatesBuffer::new(Arc::clone(&counter), update, 15)?;
     buffer.add_numeric_update(&Term::from_text("id", "10"), 6, 15)?;
     Assert::assert_true(buffer.has_single_value());
     buffer.add_numeric_update(&Term::from_text("id", "8"), 12, 15)?;
@@ -158,7 +152,7 @@ fn test_basics() -> Result<()> {
 
 /// Port of `TestFieldUpdatesBuffer.testUpdateShareValues`.
 fn test_update_share_values() -> Result<()> {
-    let _counter = Counter::new_counter();
+    let counter = Arc::new(Counter::new_counter());
     let int_value = random().next_int();
     let value_for_three = random().next_boolean();
     let update = numeric_update(
@@ -166,7 +160,7 @@ fn test_update_share_values() -> Result<()> {
         "enabled",
         Some(int_value as i64),
     );
-    let mut buffer = FieldUpdatesBuffer::new(update, i32::MAX)?;
+    let mut buffer = FieldUpdatesBuffer::new(Arc::clone(&counter), update, i32::MAX)?;
     buffer.add_numeric_update(&Term::from_text("id", "1"), int_value as i64, i32::MAX)?;
     buffer.add_numeric_update(&Term::from_text("id", "2"), int_value as i64, i32::MAX)?;
     if value_for_three {
@@ -200,10 +194,10 @@ fn test_update_share_values() -> Result<()> {
 
 /// Port of `TestFieldUpdatesBuffer.testUpdateShareValuesBinary`.
 fn test_update_share_values_binary() -> Result<()> {
-    let _counter = Counter::new_counter();
+    let counter = Arc::new(Counter::new_counter());
     let value_for_three = random().next_boolean();
     let update = binary_update(Term::from_text("id", "0"), "enabled", Some(empty()));
-    let mut buffer = FieldUpdatesBuffer::new(update, i32::MAX)?;
+    let mut buffer = FieldUpdatesBuffer::new(Arc::clone(&counter), update, i32::MAX)?;
     buffer.add_binary_update(&Term::from_text("id", "1"), empty(), i32::MAX)?;
     buffer.add_binary_update(&Term::from_text("id", "2"), empty(), i32::MAX)?;
     if value_for_three {
@@ -283,11 +277,11 @@ fn get_random_numeric_update(doc_id_up_to: i32) -> DocValuesUpdate {
 fn test_binary_random() -> Result<()> {
     let mut updates: Vec<DocValuesUpdate> = Vec::new();
     let num_updates = 1 + random().next_int_bound(1000);
-    let _counter = Counter::new_counter();
+    let counter = Arc::new(Counter::new_counter());
     let random_update = get_random_binary_update(0);
     let doc_id_up_to = random_update.doc_id_up_to;
     updates.push(random_update.clone());
-    let mut buffer = FieldUpdatesBuffer::new(random_update, doc_id_up_to)?;
+    let mut buffer = FieldUpdatesBuffer::new(Arc::clone(&counter), random_update, doc_id_up_to)?;
     for i in 0..num_updates {
         let random_update = get_random_binary_update(i + 1);
         updates.push(random_update.clone());
@@ -333,11 +327,12 @@ fn test_binary_random() -> Result<()> {
 fn test_numeric_random() -> Result<()> {
     let mut updates: Vec<DocValuesUpdate> = Vec::new();
     let num_updates = 1 + random().next_int_bound(1000);
-    let _counter = Counter::new_counter();
+    let counter = Arc::new(Counter::new_counter());
     let mut random_update = get_random_numeric_update(0);
     let doc_id_up_to = random_update.doc_id_up_to;
     updates.push(random_update.clone());
-    let mut buffer = FieldUpdatesBuffer::new(random_update.clone(), doc_id_up_to)?;
+    let mut buffer =
+        FieldUpdatesBuffer::new(Arc::clone(&counter), random_update.clone(), doc_id_up_to)?;
     for i in 0..num_updates {
         random_update = get_random_numeric_update(i + 1);
         updates.push(random_update.clone());
@@ -366,7 +361,7 @@ fn test_numeric_random() -> Result<()> {
 fn test_no_numeric_value() -> Result<()> {
     let update = numeric_update(Term::from_text("id", "1"), "age", None);
     let doc_id_up_to = update.doc_id_up_to;
-    let buffer = FieldUpdatesBuffer::new(update, doc_id_up_to)?;
+    let buffer = FieldUpdatesBuffer::new(Arc::new(Counter::new_counter()), update, doc_id_up_to)?;
     assert_equals(&0, &min_numeric(&buffer));
     assert_equals(&0, &max_numeric(&buffer));
     Ok(())
@@ -376,7 +371,7 @@ fn test_no_numeric_value() -> Result<()> {
 fn test_sort_and_dedup_numeric_updates_by_terms() -> Result<()> {
     let mut updates: Vec<DocValuesUpdate> = Vec::new();
     let num_updates = 1 + random().next_int_bound(1000);
-    let _counter = Counter::new_counter();
+    let counter = Arc::new(Counter::new_counter());
     let term_field = *RandomPicks::random_from(&*random(), &TERM_FIELDS);
     let doc_value = 1 + random().next_int_bound(1000) as i64;
     let random_update = numeric_update(
@@ -387,7 +382,7 @@ fn test_sort_and_dedup_numeric_updates_by_terms() -> Result<()> {
     let random_update = prepare_for_apply(random_update, 0);
     updates.push(random_update.clone());
     let doc_id_up_to = random_update.doc_id_up_to;
-    let mut buffer = FieldUpdatesBuffer::new(random_update, doc_id_up_to)?;
+    let mut buffer = FieldUpdatesBuffer::new(Arc::clone(&counter), random_update, doc_id_up_to)?;
     for i in 0..num_updates {
         let random_update = numeric_update(
             Term::from_text(term_field, &random().next_int_bound(1000).to_string()),

@@ -89,8 +89,8 @@ pub enum FeatureFunction {
         /// Weight applied to the value.
         weight: f32,
     },
-    /// `w * value / (value + pivot)` — saturating, so a large value cannot
-    /// dominate.
+    /// `w * (1 - pivot / (value + pivot))` — saturating, so a large value
+    /// cannot dominate.
     Saturation {
         /// Weight applied to the result.
         weight: f32,
@@ -113,8 +113,8 @@ pub enum FeatureFunction {
         /// Constant added before taking the logarithm.
         scaling_factor: f32,
     },
-    /// `w * value^a / (value^a + pivot^a)` — saturating with an adjustable
-    /// steepness.
+    /// `w * (1 - pivot^a / (value^a + pivot^a))` — saturating with an
+    /// adjustable steepness.
     SigmoidFunction {
         /// Weight applied to the result.
         weight: f32,
@@ -127,23 +127,59 @@ pub enum FeatureFunction {
 
 impl FeatureFunction {
     /// Returns the score a stored frequency contributes.
+    ///
+    /// Each arm is the `doScore` of the matching Java `SimScorer`
+    /// (`FeatureField.java:266-268`, `355-357`, `446-451`, `527-532`), with
+    /// the variant's weight as Java's `weight` argument of `scorer(float)`.
     pub fn score(self, freq: f32) -> f32 {
-        let value = decode_feature_value(freq);
+        let f = decode_feature_value(freq);
         match self {
-            Self::Linear { weight } => weight * value,
-            Self::Saturation { weight, pivot } => weight * value / (value + pivot),
+            Self::Linear { weight } => weight * f,
+            Self::Saturation { weight, pivot } => weight * (1.0 - pivot / (f + pivot)),
             // Unreachable: `FeatureQuery::create_weight` rejects an unresolved
             // pivot before any scorer exists, as Java's `scorer` throws.
             Self::SaturationUnresolved { .. } => f32::NAN,
             Self::Logarithm {
                 weight,
                 scaling_factor,
-            } => weight * (scaling_factor + value).ln(),
+            } => (weight as f64 * ((scaling_factor + f) as f64).ln()) as f32,
             Self::SigmoidFunction { weight, pivot, exp } => {
-                let v = value.powf(exp);
-                let p = pivot.powf(exp);
-                weight * v / (v + p)
+                let pivot_pa = (pivot as f64).powf(exp as f64);
+                (weight as f64 * (1.0 - pivot_pa / ((f as f64).powf(exp as f64) + pivot_pa))) as f32
             }
+        }
+    }
+
+    /// Returns this function with its weight multiplied by `boost`.
+    ///
+    /// Java passes the query boost as the `weight` argument of
+    /// `FeatureFunction.scorer(float)` (`FeatureQuery.java:135`) and of
+    /// `explain` (`FeatureQuery.java:117`); the factories build every
+    /// variant with weight `1.0`, so the product is exactly `boost`.
+    pub fn with_boost(self, boost: f32) -> Self {
+        match self {
+            Self::Linear { weight } => Self::Linear {
+                weight: weight * boost,
+            },
+            Self::Saturation { weight, pivot } => Self::Saturation {
+                weight: weight * boost,
+                pivot,
+            },
+            Self::SaturationUnresolved { weight } => Self::SaturationUnresolved {
+                weight: weight * boost,
+            },
+            Self::Logarithm {
+                weight,
+                scaling_factor,
+            } => Self::Logarithm {
+                weight: weight * boost,
+                scaling_factor,
+            },
+            Self::SigmoidFunction { weight, pivot, exp } => Self::SigmoidFunction {
+                weight: weight * boost,
+                pivot,
+                exp,
+            },
         }
     }
 }
@@ -1123,7 +1159,7 @@ struct FeatureSimScorer {
 
 impl SimScorer for FeatureSimScorer {
     fn score(&self, freq: f32, _norm: i64) -> f32 {
-        self.boost * self.function.score(freq)
+        self.function.with_boost(self.boost).score(freq)
     }
 }
 
@@ -1197,7 +1233,7 @@ impl Weight for FeatureWeight {
         }
         let freq = postings.freq()? as f32;
         Ok(Explanation::matched(
-            self.query.function.score(freq) * self.boost,
+            self.query.function.with_boost(self.boost).score(freq),
             desc,
             Vec::new(),
         ))

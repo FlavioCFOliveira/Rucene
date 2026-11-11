@@ -7,6 +7,7 @@
 
 #![deny(unsafe_code)]
 
+use std::borrow::Cow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -905,11 +906,25 @@ impl SortField {
                 ));
                 Box::new(SharedFieldComparator::new(comparator))
             }
-            SortFieldKind::Binary { .. } => Box::new(SharedFieldComparator::new(TermValComparator::new(
-                num_hits,
-                field,
-                self.missing_value == Some(MissingValue::StringLast),
-            ))),
+            SortFieldKind::Binary { .. } => {
+                // `BinarySortField.getComparator` (`BinarySortField.java:185-194`):
+                // a `TermValComparator` whose `getBinaryDocValues` returns
+                // `getSortKeyDocValues(context.reader())`.
+                let mut comparator = TermValComparator::new(
+                    num_hits,
+                    field,
+                    self.missing_value == Some(MissingValue::StringLast),
+                );
+                let this = crate::search::binary_sort_field::BinarySortField::from_sort_field(
+                    self.clone(),
+                )?;
+                comparator.set_binary_doc_values_source(Arc::new(
+                    move |context: &crate::index::LeafReaderContext, _field: &str| {
+                        this.get_sort_key_doc_values(context.leaf_reader().as_ref())
+                    },
+                ));
+                Box::new(SharedFieldComparator::new(comparator))
+            }
             SortFieldKind::Plain => match self.field_type {
                 SortFieldType::Score => Box::new(SharedFieldComparator::new(RelevanceComparator::new(num_hits))),
                 SortFieldType::Doc => {
@@ -1091,25 +1106,17 @@ impl SortField {
     /// Rewrites this sort field, returning a new one when a change is made.
     ///
     /// Equivalent to `SortField.rewrite(IndexSearcher)`, whose base
-    /// implementation returns `this`. Subclasses override it to define their
-    /// rewriting behaviour when the field is of type
-    /// [`SortFieldType::Rewriteable`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java returns the very same object,
-    /// which lets `Sort.rewrite` detect a change with a reference comparison
-    /// (`Sort.java` line 91). Rust has no inheritance and cannot return `self`
-    /// by value without cloning, so this returns a clone and
-    /// [`Sort::rewrite`] detects a change by value equality instead. For a
-    /// field that rewrites to an equal value the two tests agree; they differ
-    /// only for a rewrite that produces an equal-but-distinct field, which
-    /// would then be reported as unchanged.
+    /// implementation returns `this` (`SortField.java:582-584`). Java's
+    /// `this` is [`Cow::Borrowed`] of `self` here, so a caller can tell an
+    /// unchanged rewrite by identity, as [`Sort::rewrite`] does; a field
+    /// that changes is a [`Cow::Owned`].
     ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while rewriting.
-    pub fn rewrite(&self, searcher: &IndexSearcher) -> Result<Self> {
+    pub fn rewrite<'a>(&'a self, searcher: &IndexSearcher) -> Result<Cow<'a, SortField>> {
         let _ = searcher;
-        Ok(self.clone())
+        Ok(Cow::Borrowed(self))
     }
 
     /// Reads a sort field previously written with [`Self::serialize`].
@@ -1330,30 +1337,29 @@ impl Sort {
     /// Rewrites the [`SortField`]s of this sort, returning a new [`Sort`] when
     /// any of them changes during its rewriting.
     ///
-    /// Equivalent to `Sort.rewrite(IndexSearcher)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java returns `this` unchanged and
-    /// detects a change by comparing object references. Rust returns a clone
-    /// and compares by value; see [`SortField::rewrite`] for why.
+    /// Equivalent to `Sort.rewrite(IndexSearcher)` (`Sort.java:86-97`): a
+    /// field changed when its rewrite is not the same object
+    /// ([`Cow::Owned`]), and an unchanged sort returns `this`
+    /// ([`Cow::Borrowed`] of `self`).
     ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while rewriting a field.
-    pub fn rewrite(&self, searcher: &IndexSearcher) -> Result<Self> {
+    pub fn rewrite<'a>(&'a self, searcher: &IndexSearcher) -> Result<Cow<'a, Sort>> {
         let mut changed = false;
         let mut rewritten_sort_fields = Vec::with_capacity(self.fields.len());
         for field in &self.fields {
             let rewritten = field.rewrite(searcher)?;
-            if *field != rewritten {
+            if !std::ptr::eq(field, &*rewritten) {
                 changed = true;
             }
-            rewritten_sort_fields.push(rewritten);
+            rewritten_sort_fields.push(rewritten.into_owned());
         }
 
         if changed {
-            Self::new_fields(rewritten_sort_fields)
+            Ok(Cow::Owned(Self::new_fields(rewritten_sort_fields)?))
         } else {
-            Ok(self.clone())
+            Ok(Cow::Borrowed(self))
         }
     }
 }

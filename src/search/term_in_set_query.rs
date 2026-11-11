@@ -26,10 +26,18 @@ use crate::util::attribute::AttributeSource;
 use crate::util::automaton::{Automata, ByteRunAutomaton};
 use crate::util::{Accountable, BytesRef, BytesRefIterator, RamUsageEstimator};
 
-/// The shallow size of a [`TermInSetQuery`], standing in for Java's
-/// `RamUsageEstimator.shallowSizeOfInstance(TermInSetQuery.class)`.
-const BASE_RAM_BYTES_USED: i64 =
-    3 * RamUsageEstimator::NUM_BYTES_OBJECT_REF + RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 4;
+/// The shallow size of a [`TermInSetQuery`]: Java's
+/// `RamUsageEstimator.shallowSizeOfInstance(TermInSetQuery.class)`
+/// (`TermInSetQuery.java:68-69`), which counts every instance field of the
+/// class and its superclasses — `Query.CLASS_NAME_HASH` (`int`),
+/// `MultiTermQuery.field` and `rewriteMethod`, and the class's own `field`,
+/// `termData` and `termDataHashCode` (`int`) — and aligns the sum.
+const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+    RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+        + 4
+        + 4 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+        + 4,
+);
 
 /// A specialisation for a disjunction over many terms which, by default,
 /// behaves like a [`ConstantScoreQuery`](crate::search::ConstantScoreQuery)

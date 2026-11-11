@@ -1601,7 +1601,7 @@ impl IndexSearcher {
             }
         }
         let capped_num_hits = num_hits.min(limit);
-        let rewritten_sort = sort.rewrite(self)?;
+        let rewritten_sort = sort.rewrite(self)?.into_owned();
 
         let manager = TopFieldCollectorManager::new(
             rewritten_sort,

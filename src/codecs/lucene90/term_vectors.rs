@@ -929,8 +929,11 @@ impl Lucene90CompressingTermVectorsWriter {
             self.flush_offsets(&field_nums)?;
             self.flush_payload_lengths()?;
 
+            // compress terms and payloads and write them to the output
+            // using ByteBuffersDataInput reduce memory copy
+            let mut content = self.term_suffixes.to_data_input()?;
             self.compressor
-                .compress(&self.term_suffixes, self.vectors_stream.as_mut())?;
+                .compress(&mut content, self.vectors_stream.as_mut())?;
         }
 
         self.pending_docs.clear();

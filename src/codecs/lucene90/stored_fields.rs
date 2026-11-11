@@ -1411,20 +1411,22 @@ impl Lucene90CompressingStoredFieldsWriter {
             self.fields_stream.as_mut(),
         )?;
 
+        // `ByteBuffersDataInput bytebuffers = bufferedDocs.toDataInput()`
+        // (`Lucene90CompressingStoredFieldsWriter.java:252-264`).
+        let mut bytebuffers = self.buffered_docs.to_data_input()?;
         if sliced {
-            let bytes = self.buffered_docs.to_array_copy()?;
-            let capacity = bytes.len();
+            // big chunk, slice it, using ByteBuffersDataInput ignore memory copy
+            let capacity = bytebuffers.length();
             let chunk_size = self.chunk_size;
             for compressed in (0..capacity).step_by(chunk_size) {
                 let l = cmp::min(chunk_size, capacity - compressed);
-                let mut chunk = ByteBuffersDataOutput::with_expected_size(l);
-                chunk.write_bytes(&bytes, compressed, l)?;
+                let mut bbdi = bytebuffers.slice(compressed, l)?;
                 self.compressor
-                    .compress(&chunk, self.fields_stream.as_mut())?;
+                    .compress(&mut bbdi, self.fields_stream.as_mut())?;
             }
         } else {
             self.compressor
-                .compress(&self.buffered_docs, self.fields_stream.as_mut())?;
+                .compress(&mut bytebuffers, self.fields_stream.as_mut())?;
         }
 
         self.doc_base += self.num_buffered_docs as i32;

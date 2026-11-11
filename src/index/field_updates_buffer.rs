@@ -52,11 +52,9 @@ const STRING_SHALLOW_SIZE: i64 = 24;
 /// almost nothing. A `FixedBitSet` records which updates carry a value; it
 /// only exists once one does not.
 ///
-/// The RAM the buffer occupies is charged to its own [`Counter`], which the
-/// term and value arrays share, exactly as Java charges the
-/// `BufferedUpdates.fieldUpdatesBytesUsed` counter it is given;
-/// [`ram_bytes_used`](Accountable::ram_bytes_used) reads it back, and
-/// `BufferedUpdates` adds the deltas to its own total.
+/// The RAM the buffer occupies is charged to the [`Counter`] it is given —
+/// `BufferedUpdates.fieldUpdatesBytesUsed` — which the term and value arrays
+/// share, exactly as in Java.
 ///
 /// **Divergence from Lucene 10.5.0.** Java charges the term field of an update
 /// only when the `String` is not the very object the first update used
@@ -93,7 +91,8 @@ pub struct FieldUpdatesBuffer {
 }
 
 impl FieldUpdatesBuffer {
-    /// Creates a buffer seeded with `initial_value`, the first update.
+    /// Creates a buffer seeded with `initial_value`, the first update, that
+    /// charges its RAM to `bytes_used`.
     ///
     /// Equivalent to the two public constructors
     /// `FieldUpdatesBuffer(Counter, NumericDocValuesUpdate, int)` and
@@ -106,7 +105,11 @@ impl FieldUpdatesBuffer {
     /// # Errors
     ///
     /// Propagates whatever appending the term or the value raises.
-    pub fn new(initial_value: DocValuesUpdate, doc_up_to: i32) -> Result<Self> {
+    pub fn new(
+        bytes_used: Arc<Counter>,
+        initial_value: DocValuesUpdate,
+        doc_up_to: i32,
+    ) -> Result<Self> {
         let is_numeric = match &initial_value.value {
             DocValuesUpdateValue::Numeric(_) => true,
             DocValuesUpdateValue::Binary(_) => false,
@@ -116,7 +119,6 @@ impl FieldUpdatesBuffer {
         };
         // `initialValue.hasValue()` (`FieldUpdatesBuffer.java:76, 91, 103`).
         let has_value = initial_value.has_value();
-        let bytes_used = Arc::new(Counter::new_counter());
         bytes_used.add_and_get(SELF_SHALLOW_SIZE);
         let mut term_values = BytesRefArray::new(Arc::clone(&bytes_used));
         term_values.append(initial_value.term.bytes())?;
@@ -174,29 +176,30 @@ impl FieldUpdatesBuffer {
         Ok(buffer)
     }
 
-    /// Returns the largest numeric value buffered, or `None` when no update
+    /// Returns the largest numeric value buffered, or `0` when no update
     /// carried one.
     ///
     /// Equivalent to `FieldUpdatesBuffer.getMaxNumeric()`
-    /// (`FieldUpdatesBuffer.java:109-115`), which answers `0` when no update
-    /// carried a value; `None` says that in the type, and the caller that needs
-    /// Java's literal answer writes `unwrap_or(0)`.
-    pub fn max_numeric_value(&self) -> Option<i64> {
+    /// (`FieldUpdatesBuffer.java:108-114`).
+    pub fn get_max_numeric(&self) -> i64 {
         debug_assert!(self.is_numeric);
-        (!(self.min_numeric == i64::MAX && self.max_numeric == i64::MIN))
-            .then_some(self.max_numeric)
+        if self.min_numeric == i64::MAX && self.max_numeric == i64::MIN {
+            return 0; // we don't have any value;
+        }
+        self.max_numeric
     }
 
-    /// Returns the smallest numeric value buffered, or `None` when no update
+    /// Returns the smallest numeric value buffered, or `0` when no update
     /// carried one.
     ///
     /// Equivalent to `FieldUpdatesBuffer.getMinNumeric()`
-    /// (`FieldUpdatesBuffer.java:117-123`); see
-    /// [`max_numeric_value`](Self::max_numeric_value) for `None`.
-    pub fn min_numeric_value(&self) -> Option<i64> {
+    /// (`FieldUpdatesBuffer.java:116-122`).
+    pub fn get_min_numeric(&self) -> i64 {
         debug_assert!(self.is_numeric);
-        (!(self.min_numeric == i64::MAX && self.max_numeric == i64::MIN))
-            .then_some(self.min_numeric)
+        if self.min_numeric == i64::MAX && self.max_numeric == i64::MIN {
+            return 0; // we don't have any value
+        }
+        self.min_numeric
     }
 
     fn check_not_finished(&self) -> Result<()> {
@@ -538,17 +541,6 @@ fn get_array_index(array_length: usize, index: usize) -> usize {
     std::cmp::min(array_length - 1, index)
 }
 
-impl Accountable for FieldUpdatesBuffer {
-    /// What the buffer has charged to its counter.
-    ///
-    /// Java has no `ramBytesUsed()` on the buffer: it charges the
-    /// `BufferedUpdates.fieldUpdatesBytesUsed` counter as it goes. The counter
-    /// here belongs to the buffer, so this reads the same total back.
-    fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used.get()
-    }
-}
-
 /// One update, as [`BufferedUpdateIterator::next`] hands it out.
 ///
 /// Equivalent to `FieldUpdatesBuffer.BufferedUpdate`
@@ -733,8 +725,12 @@ mod tests {
 
     #[test]
     fn a_single_valued_single_field_buffer_iterates_its_terms_sorted_and_collapsed() {
-        let mut buffer =
-            FieldUpdatesBuffer::new(numeric(term("id", "c"), Some(7), 10), 10).unwrap();
+        let mut buffer = FieldUpdatesBuffer::new(
+            Arc::new(Counter::new_counter()),
+            numeric(term("id", "c"), Some(7), 10),
+            10,
+        )
+        .unwrap();
         buffer.add_numeric_update(&term("id", "a"), 7, 10).unwrap();
         buffer.add_numeric_update(&term("id", "c"), 7, 10).unwrap();
         buffer.add_numeric_update(&term("id", "b"), 7, 10).unwrap();
@@ -750,7 +746,12 @@ mod tests {
 
     #[test]
     fn a_mixed_buffer_iterates_in_insertion_order_with_its_parallel_arrays() {
-        let mut buffer = FieldUpdatesBuffer::new(numeric(term("id", "c"), Some(1), 3), 3).unwrap();
+        let mut buffer = FieldUpdatesBuffer::new(
+            Arc::new(Counter::new_counter()),
+            numeric(term("id", "c"), Some(1), 3),
+            3,
+        )
+        .unwrap();
         buffer
             .add_numeric_update(&term("group", "a"), 2, 5)
             .unwrap();
@@ -781,8 +782,8 @@ mod tests {
                 ("id".to_string(), b"d".to_vec(), 3, true, 1),
             ]
         );
-        assert_eq!(buffer.min_numeric_value(), Some(1));
-        assert_eq!(buffer.max_numeric_value(), Some(2));
+        assert_eq!(buffer.get_min_numeric(), 1);
+        assert_eq!(buffer.get_max_numeric(), 2);
         assert_eq!(buffer.get_numeric_value(2), 0);
         assert_eq!(buffer.get_numeric_value(3), 1);
     }
@@ -793,7 +794,12 @@ mod tests {
     /// a later update with a value as a value.
     #[test]
     fn a_first_update_without_a_value_is_iterated_as_a_reset() {
-        let mut buffer = FieldUpdatesBuffer::new(numeric(term("id", "a"), None, 4), 4).unwrap();
+        let mut buffer = FieldUpdatesBuffer::new(
+            Arc::new(Counter::new_counter()),
+            numeric(term("id", "a"), None, 4),
+            4,
+        )
+        .unwrap();
         buffer.add_numeric_update(&term("id", "b"), 9, 4).unwrap();
         buffer.finish().unwrap();
         let seen: Vec<(Vec<u8>, bool)> = drain(&buffer)
@@ -817,7 +823,8 @@ mod tests {
             doc_id_up_to: 3,
             value: DocValuesUpdateValue::None,
         };
-        let mut buffer = FieldUpdatesBuffer::new(reset, 3).unwrap();
+        let mut buffer =
+            FieldUpdatesBuffer::new(Arc::new(Counter::new_counter()), reset, 3).unwrap();
         assert!(!buffer.is_numeric());
         assert!(buffer.numeric_values.is_none());
         assert!(buffer.byte_values.is_some());
@@ -844,13 +851,23 @@ mod tests {
             ]
         );
 
-        let numeric_reset = FieldUpdatesBuffer::new(numeric(term("id", "a"), None, 3), 3).unwrap();
+        let numeric_reset = FieldUpdatesBuffer::new(
+            Arc::new(Counter::new_counter()),
+            numeric(term("id", "a"), None, 3),
+            3,
+        )
+        .unwrap();
         assert!(numeric_reset.is_numeric());
     }
 
     #[test]
     fn the_iterator_and_finish_enforce_the_finished_state() {
-        let mut buffer = FieldUpdatesBuffer::new(numeric(term("id", "a"), None, 1), 1).unwrap();
+        let mut buffer = FieldUpdatesBuffer::new(
+            Arc::new(Counter::new_counter()),
+            numeric(term("id", "a"), None, 1),
+            1,
+        )
+        .unwrap();
         assert!(buffer.iterator().is_err(), "buffer is not finished yet");
         buffer.finish().unwrap();
         assert!(buffer.finish().is_err(), "buffer was finished already");
@@ -862,8 +879,14 @@ mod tests {
         // SELF_SHALLOW_SIZE + BytesRefArray(header 16*4 + one 32 KiB block) +
         // sizeOfString("id") + Long.BYTES, then nothing per repeated update but
         // the term bytes, which live in the already-charged block.
-        let mut buffer = FieldUpdatesBuffer::new(numeric(term("id", "a"), Some(5), 9), 9).unwrap();
-        let initial = buffer.ram_bytes_used();
+        let counter = Arc::new(Counter::new_counter());
+        let mut buffer = FieldUpdatesBuffer::new(
+            Arc::clone(&counter),
+            numeric(term("id", "a"), Some(5), 9),
+            9,
+        )
+        .unwrap();
+        let initial = counter.get();
         assert_eq!(
             initial,
             SELF_SHALLOW_SIZE
@@ -882,6 +905,6 @@ mod tests {
         assert_eq!(buffer.fields.len(), 1);
         assert_eq!(buffer.numeric_values.as_ref().unwrap().len(), 1);
         assert!(buffer.has_values.is_none());
-        assert!(buffer.ram_bytes_used() > initial);
+        assert!(counter.get() > initial);
     }
 }

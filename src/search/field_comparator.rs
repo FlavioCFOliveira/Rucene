@@ -710,7 +710,18 @@ pub struct TermValComparator {
     bottom: Option<BytesRef>,
     top_value: Option<BytesRef>,
     missing_sort_cmp: i32,
+    binary_doc_values_source: Option<BinaryDocValuesSource>,
 }
+
+/// An override of the protected
+/// `TermValComparator.getBinaryDocValues(LeafReaderContext, String)`
+/// (`FieldComparator.java:270-274`), as `BinarySortField.getComparator`
+/// declares in its anonymous subclass (`BinarySortField.java:185-194`).
+///
+/// It is shared and thread-safe because the comparator that holds it is
+/// handed to an executor's worker with its collector.
+pub type BinaryDocValuesSource =
+    Arc<dyn Fn(&LeafReaderContext, &str) -> Result<Box<dyn BinaryDocValues>> + Send + Sync>;
 
 impl Debug for TermValComparator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -732,7 +743,17 @@ impl TermValComparator {
             bottom: None,
             top_value: None,
             missing_sort_cmp: if sort_missing_last { 1 } else { -1 },
+            binary_doc_values_source: None,
         }
+    }
+
+    /// Installs a replacement for the default binary-doc-values lookup.
+    ///
+    /// Equivalent to overriding
+    /// `TermValComparator.getBinaryDocValues(LeafReaderContext, String)`; see
+    /// [`BinaryDocValuesSource`].
+    pub fn set_binary_doc_values_source(&mut self, source: BinaryDocValuesSource) {
+        self.binary_doc_values_source = Some(source);
     }
 
     /// Equivalent to the private `TermValComparator.getValueForDoc(int)`,
@@ -793,6 +814,10 @@ impl SlotComparator for TermValComparator {
     }
 
     fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Box<dyn BinaryDocValues>> {
+        // `docTerms = getBinaryDocValues(context, field)` (`FieldComparator.java:278`).
+        if let Some(source) = self.binary_doc_values_source.as_ref() {
+            return source(context, &self.field);
+        }
         let reader = context.leaf_reader();
         DocValues::get_binary(reader.as_ref(), &self.field)
     }

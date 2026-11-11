@@ -1540,41 +1540,101 @@ impl InetAddressPoint {
         Ok(())
     }
 
-    /// Returns the address one greater than `address`, or `None` when it is
-    /// already the largest.
+    /// The minimum value an address can hold: `::`, sixteen zero bytes.
     ///
-    /// Equivalent to `InetAddressPoint.nextUp(InetAddress)`, which a range
-    /// query uses to turn an exclusive bound into an inclusive one.
-    pub fn next_up(address: &[u8]) -> Option<Vec<u8>> {
-        let mut bytes = address.to_vec();
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] != 0xFF {
-                bytes[i] += 1;
-                for slot in bytes.iter_mut().skip(i + 1) {
-                    *slot = 0;
-                }
-                return Some(bytes);
-            }
+    /// Equivalent to `InetAddressPoint.MIN_VALUE` (`InetAddressPoint.java:71,77`).
+    pub const MIN_VALUE: [u8; 16] = [0; 16];
+
+    /// The maximum value an address can hold: sixteen `0xFF` bytes.
+    ///
+    /// Equivalent to `InetAddressPoint.MAX_VALUE` (`InetAddressPoint.java:74-80`).
+    pub const MAX_VALUE: [u8; 16] = [0xFF; 16];
+
+    /// Decodes the 16-byte encoded form back into an address.
+    ///
+    /// Equivalent to `InetAddressPoint.decode(byte[])`, which returns
+    /// `InetAddress.getByAddress(value)`: an IPv4-mapped value comes back as
+    /// its 4-byte IPv4 address, any other 16-byte value as itself, and a
+    /// 4-byte value as itself.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::IllegalArgument`] `"encoded bytes are of incorrect
+    /// length"` when `value` is neither 4 nor 16 bytes long
+    /// (`InetAddressPoint.java:185-192`).
+    pub fn decode(value: &[u8]) -> Result<Vec<u8>> {
+        match value.len() {
+            4 => Ok(value.to_vec()),
+            16 if value[..12] == Self::IPV4_PREFIX => Ok(value[12..].to_vec()),
+            16 => Ok(value.to_vec()),
+            _ => Err(LuceneError::IllegalArgument(
+                "encoded bytes are of incorrect length".to_string(),
+            )),
         }
-        None
     }
 
-    /// Returns the address one less than `address`, or `None` when it is
-    /// already the smallest.
+    /// Returns the address that compares immediately greater than `address`.
     ///
-    /// Equivalent to `InetAddressPoint.nextDown(InetAddress)`.
-    pub fn next_down(address: &[u8]) -> Option<Vec<u8>> {
-        let mut bytes = address.to_vec();
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] != 0x00 {
-                bytes[i] -= 1;
-                for slot in bytes.iter_mut().skip(i + 1) {
-                    *slot = 0xFF;
-                }
-                return Some(bytes);
-            }
+    /// Equivalent to `InetAddressPoint.nextUp(InetAddress)`
+    /// (`InetAddressPoint.java:89-99`): `NumericUtils.add` of one to the
+    /// 16-byte encoding, decoded back.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::Arithmetic`] `"Overflow: there is no greater InetAddress
+    /// than …"` when `address` is [`MAX_VALUE`](Self::MAX_VALUE); propagates
+    /// [`encode`](Self::encode)'s error for an address that is neither 4 nor
+    /// 16 bytes long.
+    pub fn next_up(address: &[u8]) -> Result<Vec<u8>> {
+        if address == Self::MAX_VALUE {
+            return Err(LuceneError::Arithmetic(format!(
+                "Overflow: there is no greater InetAddress than {}",
+                inet_address_host_address(address)
+            )));
         }
-        None
+        let mut delta = [0u8; Self::BYTES];
+        delta[Self::BYTES - 1] = 1;
+        let mut next_up_bytes = [0u8; Self::BYTES];
+        crate::util::NumericUtils::add(
+            Self::BYTES,
+            0,
+            &Self::encode(address)?,
+            &delta,
+            &mut next_up_bytes,
+        )?;
+        Self::decode(&next_up_bytes)
+    }
+
+    /// Returns the address that compares immediately less than `address`.
+    ///
+    /// Equivalent to `InetAddressPoint.nextDown(InetAddress)`
+    /// (`InetAddressPoint.java:107-117`): `NumericUtils.subtract` of one from
+    /// the 16-byte encoding, decoded back.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::Arithmetic`] `"Underflow: there is no smaller
+    /// InetAddress than …"` when `address` is [`MIN_VALUE`](Self::MIN_VALUE);
+    /// propagates [`encode`](Self::encode)'s error for an address that is
+    /// neither 4 nor 16 bytes long.
+    pub fn next_down(address: &[u8]) -> Result<Vec<u8>> {
+        if address == Self::MIN_VALUE {
+            return Err(LuceneError::Arithmetic(format!(
+                "Underflow: there is no smaller InetAddress than {}",
+                inet_address_host_address(address)
+            )));
+        }
+        let mut delta = [0u8; Self::BYTES];
+        delta[Self::BYTES - 1] = 1;
+        let mut next_down_bytes = [0u8; Self::BYTES];
+        crate::util::NumericUtils::subtract(
+            Self::BYTES,
+            0,
+            &Self::encode(address)?,
+            &delta,
+            &mut next_down_bytes,
+        )?;
+        Self::decode(&next_down_bytes)
     }
 
     /// Creates a prefix query matching a CIDR network range.

@@ -22,7 +22,8 @@ use rucene::search::Query;
 use rucene_test_framework::index::RandomIndexWriter;
 use rucene_test_framework::util::LuceneTestCase;
 
-use crate::core_support::{assert_equals, class, expect_throws_panic, random, test};
+use crate::core_support::{assert_equals, class, random, test};
+use rucene_test_framework::util::java_exceptions::expect_throws;
 
 /// `TestInetAddressPoint`.
 pub fn class_def() -> Arc<Class> {
@@ -302,32 +303,26 @@ fn test_prefix_query() -> Result<()> {
 
 /// Port of `testNextUp`.
 ///
-/// Java's `nextUp` returns an `InetAddress` and throws `ArithmeticException`
-/// on overflow; the port's returns `Option<Vec<u8>>`, so a value compares as
-/// `Some(bytes)` and the overflow check expects the throw Java makes.
 fn test_next_up() -> Result<()> {
     let g = get_by_name;
-    assert_equals(&Some(g("::1")), &InetAddressPoint::next_up(&g("::")));
+    assert_equals(&g("::1"), &InetAddressPoint::next_up(&g("::"))?);
 
-    assert_equals(&Some(g("::1:0")), &InetAddressPoint::next_up(&g("::ffff")));
+    assert_equals(&g("::1:0"), &InetAddressPoint::next_up(&g("::ffff"))?);
+
+    assert_equals(&g("1.2.4.0"), &InetAddressPoint::next_up(&g("1.2.3.255"))?);
 
     assert_equals(
-        &Some(g("1.2.4.0")),
-        &InetAddressPoint::next_up(&g("1.2.3.255")),
+        &g("0.0.0.0"),
+        &InetAddressPoint::next_up(&g("::fffe:ffff:ffff"))?,
     );
 
     assert_equals(
-        &Some(g("0.0.0.0")),
-        &InetAddressPoint::next_up(&g("::fffe:ffff:ffff")),
+        &g("::1:0:0:0"),
+        &InetAddressPoint::next_up(&g("255.255.255.255"))?,
     );
 
-    assert_equals(
-        &Some(g("::1:0:0:0")),
-        &InetAddressPoint::next_up(&g("255.255.255.255")),
-    );
-
-    let e = expect_throws_panic(ARITHMETIC, || {
-        InetAddressPoint::next_up(&g("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"));
+    let e = expect_throws(ARITHMETIC, || {
+        InetAddressPoint::next_up(&g("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"))
     });
     assert_equals(
         "Overflow: there is no greater InetAddress than ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
@@ -336,37 +331,32 @@ fn test_next_up() -> Result<()> {
     Ok(())
 }
 
-/// Port of `testNextDown`; see [`test_next_up`] for the `Option` result.
+/// Port of `testNextDown`.
 fn test_next_down() -> Result<()> {
     let g = get_by_name;
     assert_equals(
-        &Some(g("ffff:ffff:ffff:ffff:ffff:ffff:ffff:fffe")),
-        &InetAddressPoint::next_down(&g("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")),
+        &g("ffff:ffff:ffff:ffff:ffff:ffff:ffff:fffe"),
+        &InetAddressPoint::next_down(&g("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"))?,
+    );
+
+    assert_equals(&g("::ffff"), &InetAddressPoint::next_down(&g("::1:0"))?);
+
+    assert_equals(
+        &g("1.2.3.255"),
+        &InetAddressPoint::next_down(&g("1.2.4.0"))?,
     );
 
     assert_equals(
-        &Some(g("::ffff")),
-        &InetAddressPoint::next_down(&g("::1:0")),
+        &g("::fffe:ffff:ffff"),
+        &InetAddressPoint::next_down(&g("0.0.0.0"))?,
     );
 
     assert_equals(
-        &Some(g("1.2.3.255")),
-        &InetAddressPoint::next_down(&g("1.2.4.0")),
+        &g("255.255.255.255"),
+        &InetAddressPoint::next_down(&g("::1:0:0:0"))?,
     );
 
-    assert_equals(
-        &Some(g("::fffe:ffff:ffff")),
-        &InetAddressPoint::next_down(&g("0.0.0.0")),
-    );
-
-    assert_equals(
-        &Some(g("255.255.255.255")),
-        &InetAddressPoint::next_down(&g("::1:0:0:0")),
-    );
-
-    let e = expect_throws_panic(ARITHMETIC, || {
-        InetAddressPoint::next_down(&g("::"));
-    });
+    let e = expect_throws(ARITHMETIC, || InetAddressPoint::next_down(&g("::")));
     assert_equals(
         "Underflow: there is no smaller InetAddress than 0:0:0:0:0:0:0:0",
         e.message().unwrap_or_default(),
