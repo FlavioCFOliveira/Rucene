@@ -3583,35 +3583,32 @@ impl ReaderPool {
         Ok(any)
     }
 
-    /// Writes doc-values updates for all segments participating in a merge.
+    /// Writes doc-values updates for all segments participating in a merge,
+    /// and returns whether any file was written.
     ///
-    /// Equivalent to `ReaderPool.writeDocValuesUpdatesForMerge(List<SegmentCommitInfo>)`.
+    /// Equivalent to `ReaderPool.writeDocValuesUpdatesForMerge(List<SegmentCommitInfo>)`
+    /// (`ReaderPool.java:261-273`): each pooled segment writes its pending
+    /// updates, then starts recording the updates resolved while it merges
+    /// (`setIsMerging`), which `IndexWriter` carries over to the merged segment
+    /// and drops when the merge readers close.
     pub fn write_doc_values_updates_for_merge(
         &self,
         merging_segments: &[SegmentCommitInfo],
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut any = false;
         for info in merging_segments {
             if let Some(rld) = map.get(&info.info.name) {
-                rld.set_is_merging();
-            }
-        }
-        for info in merging_segments {
-            if let Some(rld) = map.get(&info.info.name) {
-                rld.write_field_updates(
+                any |= rld.write_field_updates(
                     &self.directory,
                     &self.field_numbers,
                     (self.completed_del_gen_supplier)(),
                     &*self.info_stream,
                 )?;
+                rld.set_is_merging();
             }
         }
-        for info in merging_segments {
-            if let Some(rld) = map.get(&info.info.name) {
-                rld.drop_merging_updates();
-            }
-        }
-        Ok(())
+        Ok(any)
     }
 
     /// Returns readers sorted by RAM usage (descending).

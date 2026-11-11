@@ -4134,8 +4134,9 @@ impl IndexWriter {
 
         // The pending doc-values updates must reach disk now, or the merged
         // segment will not see them.
-        self.reader_pool
-            .write_doc_values_updates_for_merge(&merge.segments)?;
+        if self
+            .reader_pool
+            .write_doc_values_updates_for_merge(&merge.segments)?
         {
             let mut state = self.state()?;
             self.checkpoint(&mut state)?;

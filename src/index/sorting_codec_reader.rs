@@ -275,6 +275,12 @@ impl SortingCodecReader {
 }
 
 impl LeafReader for SortingCodecReader {
+    /// The reader is a `SortingCodecReader`, which Java casts to
+    /// (`TestSortingCodecReader.testSortOnAddIndicesOrd`).
+    fn leaf_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
     /// is `true`.
     fn as_codec_reader(

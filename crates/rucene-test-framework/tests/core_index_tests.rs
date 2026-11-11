@@ -1220,3 +1220,142 @@ mod threaded_nrt_threads;
 fn test_index_writer_on_jre_crash() {
     run(test_index_writer_on_jre_crash::class_def);
 }
+
+#[path = "core_index/test_snapshot_deletion_policy.rs"]
+mod test_snapshot_deletion_policy;
+#[test]
+fn test_snapshot_deletion_policy() {
+    run(test_snapshot_deletion_policy::class_def);
+}
+#[path = "core_index/test_persistent_snapshot_deletion_policy.rs"]
+mod test_persistent_snapshot_deletion_policy;
+#[test]
+fn test_persistent_snapshot_deletion_policy() {
+    run(test_persistent_snapshot_deletion_policy::class_def);
+}
+#[path = "core_index/test_point_values.rs"]
+mod test_point_values;
+#[test]
+fn test_point_values() {
+    run(test_point_values::class_def);
+}
+#[path = "core_index/test_postings_offsets.rs"]
+mod test_postings_offsets;
+#[test]
+fn test_postings_offsets() {
+    run(test_postings_offsets::class_def);
+}
+#[path = "core_index/test_prefix_coded_terms.rs"]
+mod test_prefix_coded_terms;
+#[test]
+fn test_prefix_coded_terms() {
+    run(test_prefix_coded_terms::class_def);
+}
+#[path = "core_index/test_read_only_index.rs"]
+mod test_read_only_index;
+#[test]
+fn test_read_only_index() {
+    run(test_read_only_index::class_def);
+}
+#[path = "core_index/test_reader_closed.rs"]
+mod test_reader_closed;
+#[test]
+fn test_reader_closed() {
+    run(test_reader_closed::class_def);
+}
+#[path = "core_index/test_reader_pool.rs"]
+mod test_reader_pool;
+#[test]
+fn test_reader_pool() {
+    run(test_reader_pool::class_def);
+}
+#[path = "core_index/test_reader_util.rs"]
+mod test_reader_util;
+#[test]
+fn test_reader_util() {
+    run(test_reader_util::class_def);
+}
+#[path = "core_index/test_reader_wrapper_dv_type_check.rs"]
+mod test_reader_wrapper_dv_type_check;
+#[test]
+fn test_reader_wrapper_dv_type_check() {
+    run(test_reader_wrapper_dv_type_check::class_def);
+}
+#[path = "core_index/test_rollback.rs"]
+mod test_rollback;
+#[test]
+fn test_rollback() {
+    run(test_rollback::class_def);
+}
+#[path = "core_index/test_rolling_updates.rs"]
+mod test_rolling_updates;
+#[test]
+fn test_rolling_updates() {
+    run(test_rolling_updates::class_def);
+}
+#[path = "core_index/test_same_token_same_position.rs"]
+mod test_same_token_same_position;
+#[test]
+fn test_same_token_same_position() {
+    run(test_same_token_same_position::class_def);
+}
+#[path = "core_index/test_segment_infos.rs"]
+mod test_segment_infos;
+#[test]
+fn test_segment_infos() {
+    run(test_segment_infos::class_def);
+}
+#[path = "core_index/test_segment_merger.rs"]
+mod test_segment_merger;
+#[test]
+fn test_segment_merger() {
+    run(test_segment_merger::class_def);
+}
+#[path = "core_index/test_segment_reader.rs"]
+mod test_segment_reader;
+#[test]
+fn test_segment_reader() {
+    run(test_segment_reader::class_def);
+}
+#[path = "core_index/test_segment_term_docs.rs"]
+mod test_segment_term_docs;
+#[test]
+fn test_segment_term_docs() {
+    run(test_segment_term_docs::class_def);
+}
+#[path = "core_index/test_segment_term_enum.rs"]
+mod test_segment_term_enum;
+#[test]
+fn test_segment_term_enum() {
+    run(test_segment_term_enum::class_def);
+}
+#[path = "core_index/test_segment_to_thread_mapping.rs"]
+mod test_segment_to_thread_mapping;
+#[test]
+fn test_segment_to_thread_mapping() {
+    run(test_segment_to_thread_mapping::class_def);
+}
+#[path = "core_index/test_size_bounded_force_merge.rs"]
+mod test_size_bounded_force_merge;
+#[test]
+fn test_size_bounded_force_merge() {
+    run(test_size_bounded_force_merge::class_def);
+}
+#[path = "core_index/test_soft_deletes_directory_reader_wrapper.rs"]
+mod test_soft_deletes_directory_reader_wrapper;
+#[test]
+fn test_soft_deletes_directory_reader_wrapper() {
+    run(test_soft_deletes_directory_reader_wrapper::class_def);
+}
+#[path = "core_index/test_soft_deletes_retention_merge_policy.rs"]
+mod test_soft_deletes_retention_merge_policy;
+#[test]
+fn test_soft_deletes_retention_merge_policy() {
+    run(test_soft_deletes_retention_merge_policy::class_def);
+}
+#[path = "core_index/test_sorting_codec_reader.rs"]
+mod test_sorting_codec_reader;
+#[test]
+fn test_sorting_codec_reader() {
+    run(test_sorting_codec_reader::class_def);
+}

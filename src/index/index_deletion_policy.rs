@@ -1230,6 +1230,13 @@ impl PersistentSnapshotDeletionPolicy {
 }
 
 impl IndexDeletionPolicy for PersistentSnapshotDeletionPolicy {
+    /// The policy is a `PersistentSnapshotDeletionPolicy`, for Java's cast
+    /// `(PersistentSnapshotDeletionPolicy) config.getIndexDeletionPolicy()`
+    /// (`TestPersistentSnapshotDeletionPolicy`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.index.PersistentSnapshotDeletionPolicy"
     }

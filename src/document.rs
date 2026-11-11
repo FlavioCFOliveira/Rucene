@@ -3378,7 +3378,20 @@ impl IndexableField for IntPoint {
         None
     }
 
+    /// Like Java (`IntPoint.java:81-93` and its `Long`/`Float`/`Double`
+    /// siblings), a field with more than one dimension cannot be converted to a
+    /// single number: the call throws `IllegalStateException`, here a panic
+    /// carrying that Java throwable, since the trait method has no error
+    /// channel (`numericValue()` declares no checked exception).
     fn numeric_value(&self) -> Option<NumericValue> {
+        if self.field_type.point_dimension_count() != 1 {
+            panic!(
+                "java.lang.IllegalStateException: this field (name={}) uses {} dimensions; \
+                 cannot convert to a single numeric value",
+                self.name,
+                self.field_type.point_dimension_count()
+            );
+        }
         if self.field_type.point_dimension_count() == 1 {
             if let Some(bytes) = self.binary_value() {
                 debug_assert!(bytes.length == std::mem::size_of::<i32>());
@@ -3648,7 +3661,20 @@ impl IndexableField for LongPoint {
         None
     }
 
+    /// Like Java (`IntPoint.java:81-93` and its `Long`/`Float`/`Double`
+    /// siblings), a field with more than one dimension cannot be converted to a
+    /// single number: the call throws `IllegalStateException`, here a panic
+    /// carrying that Java throwable, since the trait method has no error
+    /// channel (`numericValue()` declares no checked exception).
     fn numeric_value(&self) -> Option<NumericValue> {
+        if self.field_type.point_dimension_count() != 1 {
+            panic!(
+                "java.lang.IllegalStateException: this field (name={}) uses {} dimensions; \
+                 cannot convert to a single numeric value",
+                self.name,
+                self.field_type.point_dimension_count()
+            );
+        }
         if self.field_type.point_dimension_count() == 1 {
             if let Some(bytes) = self.binary_value() {
                 debug_assert!(bytes.length == std::mem::size_of::<i64>());
@@ -4001,7 +4027,20 @@ impl IndexableField for FloatPoint {
         None
     }
 
+    /// Like Java (`IntPoint.java:81-93` and its `Long`/`Float`/`Double`
+    /// siblings), a field with more than one dimension cannot be converted to a
+    /// single number: the call throws `IllegalStateException`, here a panic
+    /// carrying that Java throwable, since the trait method has no error
+    /// channel (`numericValue()` declares no checked exception).
     fn numeric_value(&self) -> Option<NumericValue> {
+        if self.field_type.point_dimension_count() != 1 {
+            panic!(
+                "java.lang.IllegalStateException: this field (name={}) uses {} dimensions; \
+                 cannot convert to a single numeric value",
+                self.name,
+                self.field_type.point_dimension_count()
+            );
+        }
         if self.field_type.point_dimension_count() == 1 {
             if let Some(bytes) = self.binary_value() {
                 debug_assert!(bytes.length == std::mem::size_of::<f32>());
@@ -4282,7 +4321,20 @@ impl IndexableField for DoublePoint {
         None
     }
 
+    /// Like Java (`IntPoint.java:81-93` and its `Long`/`Float`/`Double`
+    /// siblings), a field with more than one dimension cannot be converted to a
+    /// single number: the call throws `IllegalStateException`, here a panic
+    /// carrying that Java throwable, since the trait method has no error
+    /// channel (`numericValue()` declares no checked exception).
     fn numeric_value(&self) -> Option<NumericValue> {
+        if self.field_type.point_dimension_count() != 1 {
+            panic!(
+                "java.lang.IllegalStateException: this field (name={}) uses {} dimensions; \
+                 cannot convert to a single numeric value",
+                self.name,
+                self.field_type.point_dimension_count()
+            );
+        }
         if self.field_type.point_dimension_count() == 1 {
             if let Some(bytes) = self.binary_value() {
                 debug_assert!(bytes.length == std::mem::size_of::<f64>());

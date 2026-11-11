@@ -3446,7 +3446,11 @@ impl Bits for SoftDeletesBits {
 /// the wrapped reader's, because the segment's data is unchanged. A wrapped
 /// `CodecReader` gets a [`SoftDeletesFilterCodecReader`] instead
 /// ([`SoftDeletesSubReaderWrapper::wrap_leaf_reader`]).
-struct SoftDeletesFilterLeafReader {
+///
+/// Java package-private; public so that `TestSoftDeletesDirectoryReaderWrapper`
+/// can test a leaf for this class (`instanceof`, through
+/// [`LeafReader::leaf_as_any`]).
+pub struct SoftDeletesFilterLeafReader {
     inner: FilterLeafReader,
     bits: Arc<crate::util::FixedBitSet>,
     num_docs: i32,
@@ -3491,6 +3495,12 @@ impl std::fmt::Debug for SoftDeletesFilterLeafReader {
 }
 
 impl LeafReader for SoftDeletesFilterLeafReader {
+    /// The reader is a `SoftDeletesFilterLeafReader`, which Java tests with
+    /// `instanceof` (`TestSoftDeletesDirectoryReaderWrapper.isWrapped`).
+    fn leaf_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
         LeafReader::core(&self.inner)
     }
@@ -3636,7 +3646,11 @@ impl LeafReader for SoftDeletesFilterLeafReader {
 /// producer accessors, which forward to the wrapped reader's. Its reader cache
 /// helper is a [`DelegatingCacheHelper`] over the wrapped reader's, built once
 /// in the constructor; its core cache helper is the wrapped reader's.
-struct SoftDeletesFilterCodecReader {
+///
+/// Java package-private; public so that `TestSoftDeletesDirectoryReaderWrapper`
+/// can test a leaf for this class (`instanceof`, through
+/// [`LeafReader::leaf_as_any`]).
+pub struct SoftDeletesFilterCodecReader {
     /// This reader's own state.
     core: IndexReaderCore,
     /// The wrapped reader: Java's `FilterCodecReader.in` and the subclass's
@@ -3682,6 +3696,12 @@ impl std::fmt::Display for SoftDeletesFilterCodecReader {
 }
 
 impl LeafReader for SoftDeletesFilterCodecReader {
+    /// The reader is a `SoftDeletesFilterCodecReader`, which Java tests with
+    /// `instanceof` (`TestSoftDeletesDirectoryReaderWrapper.isWrapped`).
+    fn leaf_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// This reader is a `CodecReader`: Java's `instanceof CodecReader` on it
     /// is `true`.
     fn as_codec_reader(self: Arc<Self>) -> Option<Arc<dyn CodecReader>> {
