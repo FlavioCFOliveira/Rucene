@@ -1394,10 +1394,10 @@ impl StandardDirectoryReader {
     ///
     /// Equivalent to the private
     /// `StandardDirectoryReader.doOpenFromCommit(IndexCommit, ExecutorService)`:
-    /// Java's anonymous `SegmentInfos.FindSegmentsFile`
-    /// plays the same "specific commit, or whatever is latest" role that
-    /// [`SegmentInfos::read_commit`]/[`SegmentInfos::read_latest_commit`]
-    /// already give this port directly.
+    /// [`SegmentInfos::find_segments_file_for_commit`]: `commit`'s segments
+    /// file, which must belong to this reader's directory, or else the latest
+    /// commit, retrying reading it and opening the reader over it on a newer
+    /// commit.
     ///
     /// # Errors
     ///
@@ -1408,26 +1408,26 @@ impl StandardDirectoryReader {
         commit: Option<&dyn IndexCommit>,
         executor: Option<&Arc<dyn crate::search::Executor>>,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-        let infos = match commit {
-            Some(commit) => SegmentInfos::read_commit(
-                Arc::clone(&self.directory),
-                &commit.get_segments_file_name(),
-            )?,
-            None => SegmentInfos::read_latest_commit(Arc::clone(&self.directory))?,
-        };
-        // `doOpenIfChanged(infos, executor)`: `StandardDirectoryReader.open(directory,
-        // infos, getSequentialSubReaders(), subReadersSorter, executor)`
+        // The `FindSegmentsFile.doBody` (`StandardDirectoryReader.java:501-504`):
+        // reading the commit and `doOpenIfChanged(infos, executor)` —
+        // `StandardDirectoryReader.open(directory, infos,
+        // getSequentialSubReaders(), subReadersSorter, executor)`
         // (`StandardDirectoryReader.java:508-512`), which reuses every old
-        // segment reader whose segment is unchanged.
-        Self::open_from_infos(
-            Arc::clone(&self.directory),
-            infos,
-            Some(&self.segment_readers),
-            None,
-            self.leaf_sorter.as_ref().map(Arc::clone),
-            executor,
-        )
-        .map(Some)
+        // segment reader whose segment is unchanged — both retried by
+        // `run(commit)` when a writer deletes the latest commit meanwhile.
+        let do_body = |segment_file_name: &str| {
+            let infos = SegmentInfos::read_commit(Arc::clone(&self.directory), segment_file_name)?;
+            Self::open_from_infos(
+                Arc::clone(&self.directory),
+                infos,
+                Some(&self.segment_readers),
+                None,
+                self.leaf_sorter.as_ref().map(Arc::clone),
+                executor,
+            )
+            .map(Some)
+        };
+        SegmentInfos::find_segments_file_for_commit(&self.directory, commit, do_body)
     }
 }
 
@@ -1681,26 +1681,37 @@ fn open_standard(
              {min_supported_major_version}"
         )));
     }
-    let infos = match commit {
-        Some(commit) => SegmentInfos::read_commit_with_min_version(
+    // The `FindSegmentsFile.doBody` (`StandardDirectoryReader.java:86-106`):
+    // reading the commit and opening its segment readers, both retried by
+    // `run(commit)` when a writer deletes the latest commit meanwhile.
+    let do_body = |segment_file_name: &str| {
+        let infos = SegmentInfos::read_commit_with_min_version(
             Arc::clone(&directory),
-            &commit.get_segments_file_name(),
+            segment_file_name,
             min_supported_major_version,
-        )?,
-        None => SegmentInfos::read_latest_commit_with_min_version(
+        )?;
+        StandardDirectoryReader::open_from_commit(
             Arc::clone(&directory),
-            min_supported_major_version,
-        )?,
+            infos,
+            leaf_sorter.as_ref().map(Arc::clone),
+            executor,
+        )
     };
-    StandardDirectoryReader::open_from_commit(directory, infos, leaf_sorter, executor)
+    SegmentInfos::find_segments_file_for_commit(&directory, commit, do_body)
 }
 
 /// Returns a `DirectoryReader` reading the index in the given `Directory`.
 ///
-/// Equivalent to `DirectoryReader.open(Directory)`.
+/// Equivalent to `DirectoryReader.open(Directory)`
+/// (`StandardDirectoryReader.open(directory, null, null)`).
 pub fn open(directory: Arc<dyn Directory>) -> Result<Arc<dyn DirectoryReader>> {
-    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
-    StandardDirectoryReader::open_from_commit(directory, infos, None, None)
+    open_standard(
+        directory,
+        crate::util::Version::MIN_SUPPORTED_MAJOR,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Returns a `DirectoryReader` reading the index in the given `Directory`,
@@ -2165,6 +2176,47 @@ mod tests {
             reader.doc_freq(&a),
             Err(LuceneError { kind: LuceneErrorKind::AlreadyClosed { ref message, .. }, .. }) if message == "this IndexReader is closed"
         ));
+    }
+
+    /// Reopening an NRT reader on a commit of another directory throws, in
+    /// `FindSegmentsFile.run(commit)` (`SegmentInfos.java:787-792`, reached
+    /// through `doOpenFromWriter` -> `doOpenFromCommit`),
+    /// `IOException("the specified commit does not match the specified
+    /// Directory")`.
+    #[test]
+    fn reopening_on_a_commit_of_another_directory_throws_as_lucene_does() {
+        use crate::document::{Document, Store, TextField};
+        use crate::index::index_writer::IndexWriter as RealIndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+
+        let _ = register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            TextField::new("body", "a".to_string(), Store::NO).unwrap(),
+        ));
+        let other: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let other_writer =
+            RealIndexWriter::new(Arc::clone(&other), IndexWriterConfig::new()).unwrap();
+        other_writer.add_document(&doc).unwrap();
+        other_writer.close().unwrap();
+        let commit = list_commits(Arc::clone(&other)).unwrap().pop().unwrap();
+
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = RealIndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        writer.add_document(&doc).unwrap();
+        let reader = open_with_writer(&*writer).unwrap();
+        match open_if_changed_with_commit(Arc::clone(&reader), commit.as_ref()) {
+            Err(LuceneError {
+                kind: LuceneErrorKind::Io(ref error),
+                ..
+            }) => assert_eq!(
+                crate::store::java_nio_file::java_to_string(error),
+                "java.io.IOException: the specified commit does not match the specified Directory"
+            ),
+            other => panic!("expected the IOException, got {:?}", other.map(|_| ())),
+        }
+        reader.close().unwrap();
+        writer.close().unwrap();
     }
 
     /// `BaseCompositeReader.getSumTotalTermFreq` sums the segments' values

@@ -1032,11 +1032,75 @@ impl SegmentInfos {
 
     /// Finds the latest commit, enforcing a minimum supported major version.
     ///
-    /// Equivalent to `SegmentInfos.readLatestCommit(Directory, int)`.
+    /// Equivalent to `SegmentInfos.readLatestCommit(Directory, int)`
+    /// (`SegmentInfos.java:554-562`): [`Self::find_segments_file`] whose body
+    /// is [`Self::read_commit_with_min_version`].
     pub fn read_latest_commit_with_min_version(
         directory: Arc<dyn Directory>,
         min_supported_major_version: i32,
     ) -> Result<Self> {
+        Self::find_segments_file(&directory, |segment_file_name| {
+            Self::read_commit_with_min_version(
+                Arc::clone(&directory),
+                segment_file_name,
+                min_supported_major_version,
+            )
+        })
+    }
+
+    /// Runs `do_body` on `commit`'s segments file name, or, when `commit` is
+    /// `None`, as [`Self::find_segments_file`].
+    ///
+    /// Equivalent to `SegmentInfos.FindSegmentsFile.run(IndexCommit)`
+    /// (`SegmentInfos.java:787-792`): a commit of another directory than
+    /// `directory` (compared by identity, as Java's `!=`) throws
+    /// `IOException("the specified commit does not match the specified
+    /// Directory")`.
+    ///
+    /// # Errors
+    ///
+    /// That `IOException`; otherwise as [`Self::find_segments_file`] or
+    /// `do_body`.
+    pub fn find_segments_file_for_commit<T>(
+        directory: &Arc<dyn Directory>,
+        commit: Option<&dyn crate::index::index_commit::IndexCommit>,
+        mut do_body: impl FnMut(&str) -> Result<T>,
+    ) -> Result<T> {
+        match commit {
+            Some(commit) => {
+                if !std::ptr::addr_eq(Arc::as_ptr(directory), Arc::as_ptr(&commit.get_directory()))
+                {
+                    return Err(LuceneError::from(LuceneErrorKind::Io(
+                        crate::store::java_nio_file::io_exception(
+                            "the specified commit does not match the specified Directory",
+                        ),
+                    )));
+                }
+                do_body(&commit.get_segments_file_name())
+            }
+            None => Self::find_segments_file(directory, do_body),
+        }
+    }
+
+    /// Runs `do_body` on the latest commit's segments file name, retrying on a
+    /// newer commit while an `IOException` shows that a writer deleted the
+    /// commit being loaded.
+    ///
+    /// Equivalent to `SegmentInfos.FindSegmentsFile.run()` with a `null`
+    /// commit (`SegmentInfos.java:787-858`), `do_body` being its
+    /// `doBody(String)`: an error that is not an `IOException` propagates at
+    /// once; an `IOException` is retried while the commit generation moves
+    /// forward, and the first one is thrown when it does not.
+    ///
+    /// # Errors
+    ///
+    /// `IndexNotFoundException` when the directory holds no `segments_N`
+    /// file; the first `IOException` of `do_body` when no newer commit
+    /// appears; any other error of `do_body` or of listing the directory.
+    pub fn find_segments_file<T>(
+        directory: &Arc<dyn Directory>,
+        mut do_body: impl FnMut(&str) -> Result<T>,
+    ) -> Result<T> {
         let mut last_gen = -1i64;
         let mut exc: Option<LuceneError> = None;
 
@@ -1073,18 +1137,16 @@ impl SegmentInfos {
                             "could not build segments file name for generation {gen}"
                         ))
                     })?;
-                match Self::read_commit_with_min_version(
-                    Arc::clone(&directory),
-                    &segment_file_name,
-                    min_supported_major_version,
-                ) {
-                    Ok(infos) => {
+                match do_body(&segment_file_name) {
+                    Ok(t) => {
                         if Self::get_info_stream().is_some() {
                             Self::message(&format!("success on {segment_file_name}"));
                         }
-                        return Ok(infos);
+                        return Ok(t);
                     }
-                    Err(err) => {
+                    // `catch (IOException err)` (`SegmentInfos.java:838`):
+                    // anything else propagates.
+                    Err(err) if err.is_io_exception() => {
                         if Self::get_info_stream().is_some() {
                             Self::message(&format!(
                                 "primary Exception on '{segment_file_name}': {err}'; will retry: gen = {gen}"
@@ -1094,6 +1156,7 @@ impl SegmentInfos {
                             exc = Some(err);
                         }
                     }
+                    Err(err) => return Err(err),
                 }
             } else {
                 return Err(exc.unwrap_or_else(|| {
@@ -1460,6 +1523,81 @@ mod tests {
     use crate::util::string_helper::StringHelper;
     use std::collections::HashSet;
     use std::sync::Arc;
+
+    /// Creates the empty file `name` in `dir`.
+    fn touch(dir: &Arc<dyn Directory>, name: &str) {
+        dir.create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap()
+            .close()
+            .unwrap();
+    }
+
+    /// `FindSegmentsFile.run()` (`SegmentInfos.java:787-858`) retries
+    /// `doBody` on the newer commit when it hits an `IOException` (here the
+    /// `NoSuchFileException` of a segment file a writer deleted) and a newer
+    /// commit has appeared meanwhile.
+    #[test]
+    fn find_segments_file_retries_an_io_exception_on_a_newer_commit() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(&dir, "segments_1");
+        let mut calls = Vec::new();
+        let result = SegmentInfos::find_segments_file(&dir, |name| {
+            calls.push(name.to_string());
+            if calls.len() == 1 {
+                touch(&dir, "segments_2");
+                return Err(LuceneError::from(LuceneErrorKind::Io(
+                    crate::store::java_nio_file::no_such_file_exception("_0.cfe"),
+                )));
+            }
+            Ok(name.to_string())
+        });
+        assert_eq!(result.unwrap(), "segments_2");
+        assert_eq!(calls, ["segments_1", "segments_2"]);
+    }
+
+    /// Without forward progress on the generation, `run()` throws the first
+    /// `IOException` (`SegmentInfos.java:854-856`).
+    #[test]
+    fn find_segments_file_throws_the_first_io_exception_without_progress() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(&dir, "segments_1");
+        let mut calls = 0;
+        let result: Result<()> = SegmentInfos::find_segments_file(&dir, |_| {
+            calls += 1;
+            Err(LuceneError::from(LuceneErrorKind::Io(
+                crate::store::java_nio_file::no_such_file_exception(format!("_{calls}.cfe")),
+            )))
+        });
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("_1.cfe"), "{err}");
+        assert_eq!(calls, 1);
+    }
+
+    /// `run()` catches only `IOException` (`SegmentInfos.java:838`): any
+    /// other error of `doBody` propagates at once, even when a newer commit
+    /// has appeared.
+    #[test]
+    fn find_segments_file_propagates_a_non_io_error_at_once() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(&dir, "segments_1");
+        let mut calls = 0;
+        let result: Result<()> = SegmentInfos::find_segments_file(&dir, |_| {
+            calls += 1;
+            touch(&dir, "segments_2");
+            Err(LuceneError::illegal_state("boom"))
+        });
+        assert!(
+            matches!(
+                result,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+        assert_eq!(calls, 1);
+    }
 
     /// A directory with no commit fails `readLatestCommit` with
     /// `IndexNotFoundException("no segments* file found in " + directory +

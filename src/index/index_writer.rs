@@ -8760,11 +8760,13 @@ impl IndexWriter {
                     for merge in &state.merge_exceptions {
                         if merge.max_num_segments() != UNBOUNDED_MAX_MERGE_SEGMENTS {
                             return Err(LuceneError::from(LuceneErrorKind::Io(
-                                std::io::Error::other(format!(
-                                    "background merge hit exception: {}: {}",
-                                    merge.seg_string(),
-                                    merge.get_error().unwrap_or_default()
-                                )),
+                                crate::store::java_nio_file::io_exception_with_cause(
+                                    format!(
+                                        "background merge hit exception: {}",
+                                        merge.seg_string()
+                                    ),
+                                    merge.get_exception(),
+                                ),
                             )));
                         }
                     }
@@ -8868,12 +8870,12 @@ impl IndexWriter {
                     {
                         running = true;
                     }
-                    if let Some(error) = merge.get_error() {
+                    if let Some(error) = merge.get_exception() {
                         return Err(LuceneError::from(LuceneErrorKind::Io(
-                            std::io::Error::other(format!(
-                                "background merge hit exception: {}: {error}",
-                                merge.seg_string()
-                            )),
+                            crate::store::java_nio_file::io_exception_with_cause(
+                                format!("background merge hit exception: {}", merge.seg_string()),
+                                Some(error),
+                            ),
                         )));
                     }
                 }

@@ -326,6 +326,54 @@ pub fn io_exception(message: impl Into<String>) -> io::Error {
     JavaIoException::new(IO_EXCEPTION, Some(message.into())).into_io_error()
 }
 
+/// `new IOException(message, cause)`: an `IOException` whose `getCause()` is
+/// `cause` — read back with [`java_cause_of`] — such as the one
+/// `IndexWriter.forceMerge` throws for a failed background merge
+/// (`IndexWriter.java:2259-2260`).
+pub fn io_exception_with_cause(
+    message: impl Into<String>,
+    cause: Option<crate::error::LuceneError>,
+) -> io::Error {
+    io::Error::other(IoExceptionWithCause {
+        message: message.into(),
+        cause: cause.map(Arc::new),
+    })
+}
+
+/// `getCause()` of the `IOException` `error` stands for, when it carries a
+/// [`LuceneError`](crate::error::LuceneError) cause: the source of the
+/// exception it wraps (see [`io_exception_with_cause`]).
+pub fn java_cause_of(error: &io::Error) -> Option<&crate::error::LuceneError> {
+    error
+        .get_ref()?
+        .source()?
+        .downcast_ref::<crate::error::LuceneError>()
+}
+
+/// The exception [`io_exception_with_cause`] builds: `java.io.IOException`
+/// with a message and a cause, which [`std::error::Error::source`] returns as
+/// Java's `getCause()` does.
+#[derive(Debug)]
+struct IoExceptionWithCause {
+    message: String,
+    cause: Option<Arc<crate::error::LuceneError>>,
+}
+
+impl fmt::Display for IoExceptionWithCause {
+    /// `getMessage()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for IoExceptionWithCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause
+            .as_deref()
+            .map(|c| c as &(dyn std::error::Error + 'static))
+    }
+}
+
 /// `new FileSystemException(file, other, reason)`.
 pub fn file_system_exception(
     file: Option<String>,

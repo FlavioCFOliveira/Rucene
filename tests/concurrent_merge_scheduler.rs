@@ -1197,12 +1197,27 @@ fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
         Err(LuceneError {
             kind: LuceneErrorKind::Io(error),
             ..
-        }) => assert!(
-            error
-                .to_string()
-                .starts_with("background merge hit exception: "),
-            "{error}"
-        ),
+        }) => {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("background merge hit exception: "),
+                "{error}"
+            );
+            // `new IOException(..., merge.getException())`
+            // (`IndexWriter.java:2259-2260`): the cause is the merge's
+            // `MergeAbortedException`.
+            assert!(
+                matches!(
+                    rucene::store::java_nio_file::java_cause_of(&error),
+                    Some(LuceneError {
+                        kind: LuceneErrorKind::MergeAborted(_),
+                        ..
+                    })
+                ),
+                "{error}"
+            );
+        }
         other => panic!("expected the background merge exception, got {other:?}"),
     }
     assert_eq!(finished.load(Ordering::SeqCst), 3);

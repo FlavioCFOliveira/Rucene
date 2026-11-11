@@ -2508,7 +2508,25 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                 let term_count = num_terms_at((skip + i as i32) as i64) as i32;
                 if (f & PAYLOADS) != 0 {
                     let total_freq = position_index[i][term_count as usize];
-                    let mut idx = vec![0; total_freq as usize + 1];
+                    // `new int[totalFreq + 1]` (`:673`): Java's `int` sum
+                    // wraps, and a negative size throws
+                    // `NegativeArraySizeException`, whose message is the size.
+                    let size = total_freq.wrapping_add(1);
+                    if size < 0 {
+                        return Err(LuceneError::unchecked(
+                            "java.lang.NegativeArraySizeException",
+                            size.to_string(),
+                        ));
+                    }
+                    let mut idx = vec![0i32; size as usize];
+                    // A store past the array throws
+                    // `ArrayIndexOutOfBoundsException` (`:675`, `:681`).
+                    let out_of_bounds = |index: usize, length: usize| {
+                        LuceneError::unchecked(
+                            "java.lang.ArrayIndexOutOfBoundsException",
+                            format!("Index {index} out of bounds for length {length}"),
+                        )
+                    };
                     // The index is an offset into the *document's* payload
                     // buffer, which every payload-bearing field of the document
                     // shares, so it starts where the previous field ended —
@@ -2517,14 +2535,16 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                     // at zero makes the first payload of the second and every
                     // later field of a document begin at the buffer's start and
                     // run far too long.
-                    idx[0] = payload_len;
+                    *idx.first_mut().ok_or_else(|| out_of_bounds(0, 0))? = payload_len;
                     let mut pos_idx = 0usize;
                     for j in 0..term_count as usize {
                         let freq = term_freqs[(term_idx + j as i32) as usize];
                         for _ in 0..freq {
                             let payload_length = reader.next()? as i32;
                             payload_len = payload_len.wrapping_add(payload_length);
-                            idx[pos_idx + 1] = payload_len;
+                            let length = idx.len();
+                            *idx.get_mut(pos_idx + 1)
+                                .ok_or_else(|| out_of_bounds(pos_idx + 1, length))? = payload_len;
                             pos_idx += 1;
                         }
                     }
@@ -2744,10 +2764,11 @@ impl Lucene90CompressingTermVectorsReader {
         }
         for i in 0..num_fields as usize {
             let term_count = num_terms_at((skip + i as i32) as i64) as usize;
-            position_index[i] = vec![0; term_count + 1];
+            position_index[i] = vec![0i32; term_count + 1];
             for j in 0..term_count {
                 let freq = term_freqs[(term_index + j as i32) as usize];
-                position_index[i][j + 1] = position_index[i][j] + freq;
+                // Java's `int` addition wraps; `freq` comes off disk.
+                position_index[i][j + 1] = position_index[i][j].wrapping_add(freq);
             }
             term_index = term_index.wrapping_add(term_count as i32);
         }
@@ -2890,6 +2911,15 @@ impl Lucene90CompressingTermVectorsReader {
             let term_count = num_terms_at((skip + i as i32) as i64) as i32;
             if (f & flag) != 0 {
                 let total_freq = position_index[i][term_count as usize];
+                // `new int[totalFreq]` (`:816`): the prefix sum wraps as Java's
+                // `int` does, and a negative total throws
+                // `NegativeArraySizeException`, whose message is the size.
+                if total_freq < 0 {
+                    return Err(LuceneError::unchecked(
+                        "java.lang.NegativeArraySizeException",
+                        total_freq.to_string(),
+                    ));
+                }
                 positions[i] = Some(Self::read_batches(reader, total_freq as usize)?);
             }
             term_index = term_index.wrapping_add(term_count);

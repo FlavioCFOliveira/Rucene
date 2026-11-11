@@ -233,7 +233,7 @@ fn cause_is_merge_aborted(e: &LuceneError) -> bool {
         LuceneError {
             kind: LuceneErrorKind::Io(io),
             ..
-        } => io.get_ref().map(|c| c as &(dyn Error + 'static)),
+        } => rucene::store::java_nio_file::java_cause_of(io).map(|c| c as &(dyn Error + 'static)),
         other => other.source(),
     };
     cause
