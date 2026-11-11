@@ -1351,8 +1351,6 @@ fn no_current(kind: &str) -> String {
     format!("MultiDocValues: no current {kind} doc values; call next_doc/advance first")
 }
 
-/// Validates the `doc_starts` length invariant shared by the two
-/// ordinal-mapping views.
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

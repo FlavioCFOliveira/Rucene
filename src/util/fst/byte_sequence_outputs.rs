@@ -77,11 +77,10 @@ impl Outputs for ByteSequenceOutputs {
     fn subtract(&self, output: &BytesRef, inc: &BytesRef) -> BytesRef {
         if inc.length == 0 {
             // No prefix removed.
-            output.clone()
-        } else if {
-            debug_assert!(StringHelper::starts_with(output, inc));
-            inc.length == output.length
-        } {
+            return output.clone();
+        }
+        debug_assert!(StringHelper::starts_with(output, inc));
+        if inc.length == output.length {
             // The entire output was removed.
             self.no_output()
         } else {

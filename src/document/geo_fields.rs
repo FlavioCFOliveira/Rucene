@@ -1887,7 +1887,7 @@ impl std::fmt::Display for InetAddressRange {
             f,
             &self.field_type,
             &self.name,
-            &crate::document::field_data_to_string(&*self.fields_data.borrow()),
+            &crate::document::field_data_to_string(&self.fields_data.borrow()),
         )
     }
 }

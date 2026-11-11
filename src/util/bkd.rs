@@ -4379,7 +4379,7 @@ impl BKDWriter {
                 sorted_dim,
                 &min_packed_value,
                 &max_packed_value,
-                &packed_values,
+                packed_values,
                 &doc_ids,
                 0
             ));
@@ -4635,7 +4635,7 @@ impl BKDWriter {
                 sorted_dim,
                 &min_packed_value,
                 &max_packed_value,
-                &packed_values,
+                packed_values,
                 &spare_doc_ids[..count],
                 0
             ));

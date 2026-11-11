@@ -335,10 +335,11 @@ impl<T: PartialEq> ConcurrentApproximatePriorityQueue<T> {
     /// Only used for assertions: as Java's (`ConcurrentApproximatePriorityQueue.java:137-142`),
     /// it fails when assertions are disabled.
     pub fn contains(&self, entry: &T) -> bool {
-        assert!(
-            cfg!(debug_assertions),
-            "contains should only be used for assertions"
-        );
+        // `boolean assertionsAreEnabled = false; assert assertionsAreEnabled =
+        // true; if (assertionsAreEnabled == false) throw new AssertionError(...)`.
+        if !cfg!(debug_assertions) {
+            panic!("contains should only be used for assertions");
+        }
         self.queues
             .iter()
             .any(|queue| queue.lock().map(|q| q.contains(entry)).unwrap_or(false))

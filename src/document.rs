@@ -3302,7 +3302,7 @@ impl IntPoint {
     pub fn new_set_query(field: &str, values: &[i32]) -> Result<Arc<dyn Query>> {
         // Do not unexpectedly change the caller's array.
         let mut sorted_values = values.to_vec();
-        sorted_values.sort_by(|a, b| a.cmp(b));
+        sorted_values.sort();
         let mut stream = PointValueStream::new(
             sorted_values
                 .iter()
@@ -3585,7 +3585,7 @@ impl LongPoint {
     pub fn new_set_query(field: &str, values: &[i64]) -> Result<Arc<dyn Query>> {
         // Do not unexpectedly change the caller's array.
         let mut sorted_values = values.to_vec();
-        sorted_values.sort_by(|a, b| a.cmp(b));
+        sorted_values.sort();
         let mut stream = PointValueStream::new(
             sorted_values
                 .iter()
@@ -7184,7 +7184,7 @@ impl std::fmt::Display for IntPoint {
             "IntPoint",
             &self.name,
             &self.field_type,
-            &*self.fields_data.borrow(),
+            &self.fields_data.borrow(),
             4,
             |bytes, offset| IntPoint::decode_dimension(bytes, offset).to_string(),
         )
@@ -7199,7 +7199,7 @@ impl std::fmt::Display for LongPoint {
             "LongPoint",
             &self.name,
             &self.field_type,
-            &*self.fields_data.borrow(),
+            &self.fields_data.borrow(),
             8,
             |bytes, offset| LongPoint::decode_dimension(bytes, offset).to_string(),
         )
@@ -7214,7 +7214,7 @@ impl std::fmt::Display for FloatPoint {
             "FloatPoint",
             &self.name,
             &self.field_type,
-            &*self.fields_data.borrow(),
+            &self.fields_data.borrow(),
             4,
             |bytes, offset| java_fmt::float_to_string(FloatPoint::decode_dimension(bytes, offset)),
         )
@@ -7229,7 +7229,7 @@ impl std::fmt::Display for DoublePoint {
             "DoublePoint",
             &self.name,
             &self.field_type,
-            &*self.fields_data.borrow(),
+            &self.fields_data.borrow(),
             8,
             |bytes, offset| {
                 java_fmt::double_to_string(DoublePoint::decode_dimension(bytes, offset))
@@ -7295,7 +7295,7 @@ impl std::fmt::Display for StringField {
             f,
             &self.field_type,
             &self.name,
-            &field_data_to_string(&*self.fields_data.borrow()),
+            &field_data_to_string(&self.fields_data.borrow()),
         )
     }
 }
@@ -7307,7 +7307,7 @@ impl std::fmt::Display for TextField {
             f,
             &self.field_type,
             &self.name,
-            &field_data_to_string(&*self.fields_data.borrow()),
+            &field_data_to_string(&self.fields_data.borrow()),
         )
     }
 }
@@ -7326,7 +7326,7 @@ impl std::fmt::Display for KeywordField {
             f,
             &self.field_type,
             &self.name,
-            &field_data_to_string(&*self.fields_data.borrow()),
+            &field_data_to_string(&self.fields_data.borrow()),
         )
     }
 }
@@ -7340,7 +7340,7 @@ impl std::fmt::Display for BinaryPoint {
             f,
             &self.field_type,
             &self.name,
-            &field_data_to_string(&*self.fields_data.borrow()),
+            &field_data_to_string(&self.fields_data.borrow()),
         )
     }
 }
@@ -7478,7 +7478,7 @@ impl std::fmt::Display for Field {
             "{}<{}:{}>",
             self.field_type,
             self.name,
-            field_data_to_string(&*self.fields_data.borrow())
+            field_data_to_string(&self.fields_data.borrow())
         )
     }
 }
@@ -7769,7 +7769,7 @@ pub trait FieldValueSetters {
 
 impl FieldValueSetters for Field {
     fn fields_data_class(&self) -> &'static str {
-        fields_data_simple_name(&*self.fields_data.borrow())
+        fields_data_simple_name(&self.fields_data.borrow())
     }
 
     fn set_string_value(&self, value: String) -> Result<()> {
@@ -8024,7 +8024,7 @@ impl FieldValueSetters for BinaryDocValuesField {
 
 impl FieldValueSetters for StringField {
     fn fields_data_class(&self) -> &'static str {
-        fields_data_simple_name(&*self.fields_data.borrow())
+        fields_data_simple_name(&self.fields_data.borrow())
     }
 
     /// `StringField.setStringValue(String)`: `super.setStringValue(value);
@@ -8047,7 +8047,7 @@ impl FieldValueSetters for StringField {
 
 impl FieldValueSetters for TextField {
     fn fields_data_class(&self) -> &'static str {
-        fields_data_simple_name(&*self.fields_data.borrow())
+        fields_data_simple_name(&self.fields_data.borrow())
     }
 
     /// `TextField.setStringValue(String)`: `super.setStringValue(value);

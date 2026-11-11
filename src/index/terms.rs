@@ -1154,6 +1154,10 @@ impl PrefixCodedTermsIterator {
 /// type lives here, in its Lucene package, and reaches into
 /// [`crate::search`](crate::search) for the searcher, which is the same
 /// dependency Java's `index` package has on `search`.
+/// The per-leaf states of a [`TermStates`]: `None` when nothing is known yet,
+/// `Some(None)` for Java's `EMPTY_TERMSTATE`, `Some(Some(state))` for a state.
+type LeafTermStates = Vec<Option<Option<Box<dyn TermState>>>>;
+
 /// Maintains a [`TermState`] view over the leaves of an index reader, for a
 /// single term.
 ///
@@ -1172,7 +1176,7 @@ pub struct TermStates {
     /// absent — and `Some(Some(state))` for a registered state. Behind a
     /// [`Mutex`](std::sync::Mutex) because [`get`](Self::get) fills it lazily
     /// through `&self`, as Java's `get` assigns `states[ctx.ord]`.
-    states: std::sync::Mutex<Vec<Option<Option<Box<dyn TermState>>>>>,
+    states: std::sync::Mutex<LeafTermStates>,
     /// `None` if the statistics are to be used.
     term: Option<Term>,
     doc_freq: i32,
@@ -1182,14 +1186,14 @@ pub struct TermStates {
 impl TermStates {
     /// The per-leaf states, locked; a poisoned lock is recovered, as a Java
     /// array has no lock to poison.
-    fn states_guard(&self) -> std::sync::MutexGuard<'_, Vec<Option<Option<Box<dyn TermState>>>>> {
+    fn states_guard(&self) -> std::sync::MutexGuard<'_, LeafTermStates> {
         self.states
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The per-leaf states, through `&mut self`.
-    fn states_mut(&mut self) -> &mut Vec<Option<Option<Box<dyn TermState>>>> {
+    fn states_mut(&mut self) -> &mut LeafTermStates {
         self.states
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

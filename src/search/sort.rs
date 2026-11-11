@@ -1047,15 +1047,14 @@ impl SortField {
                     self.reverse,
                     pruning,
                 ))),
-                SortFieldType::Custom => match {
-                    debug_assert!(self.comparator_source.is_some());
-                    self.comparator_source.as_ref()
-                } {
+                SortFieldType::Custom => match self.comparator_source.as_ref() {
                     Some(source) => source.new_comparator(field, num_hits, pruning, self.reverse)?,
                     None => {
+                        // `assert comparatorSource != null;` (`SortField.java:545`).
+                        debug_assert!(self.comparator_source.is_some());
                         return Err(LuceneError::illegal_state(
                             "A CUSTOM SortField requires a FieldComparatorSource".to_string(),
-                        ))
+                        ));
                     }
                 },
                 SortFieldType::String => Box::new(SharedFieldComparator::new(TermOrdValComparator::new(

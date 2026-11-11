@@ -854,6 +854,10 @@ pub trait LRUQueryCacheOverrides: Send + Sync + Debug {
     }
 }
 
+/// A leaf cache's core key and, for each cached query, the query and its
+/// cached value; see [`LRUQueryCache::leaf_caches`].
+pub type LeafCacheEntries = (CacheKey, Vec<(Arc<dyn Query>, CacheAndCount)>);
+
 /// A [`QueryCache`] that evicts queries with a least-recently-used policy, in
 /// order to stay under a maximum size and number of bytes used.
 ///
@@ -1133,7 +1137,7 @@ impl LRUQueryCache {
     /// Equivalent to reading the private field `LRUQueryCache.cache` and each
     /// `LeafCache.cache` (`LRUQueryCache.java:99,706`) under the read lock;
     /// public so that the test framework can model the Java object.
-    pub fn leaf_caches(&self) -> Vec<(CacheKey, Vec<(Arc<dyn Query>, CacheAndCount)>)> {
+    pub fn leaf_caches(&self) -> Vec<LeafCacheEntries> {
         let cache = self
             .state
             .cache
