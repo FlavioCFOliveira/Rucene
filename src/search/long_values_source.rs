@@ -445,9 +445,39 @@ impl LongValuesComparatorSource {
             missing_value,
         }
     }
+
+    /// `LongValuesSortField.rewrite(IndexSearcher)` of `field`, the sort field
+    /// holding this source (`LongValuesSource.java:318-327`): `field` itself
+    /// when the producer rewrites to the same instance, else a new sort field
+    /// over the rewritten producer with the same reverse flag and missing
+    /// value.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the producer's rewrite error and the [`SortField`]
+    /// construction error.
+    pub fn rewrite_sort_field<'a>(
+        &self,
+        field: &'a SortField,
+        searcher: &IndexSearcher,
+    ) -> Result<std::borrow::Cow<'a, SortField>> {
+        let rewritten_source = Arc::clone(&self.producer).rewrite(searcher)?;
+        if std::ptr::addr_eq(Arc::as_ptr(&self.producer), Arc::as_ptr(&rewritten_source)) {
+            return Ok(std::borrow::Cow::Borrowed(field));
+        }
+        Ok(std::borrow::Cow::Owned(get_sort_field_with_missing(
+            rewritten_source,
+            field.reverse(),
+            self.missing_value,
+        )?))
+    }
 }
 
 impl FieldComparatorSource for LongValuesComparatorSource {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn new_comparator(
         &self,
         _fieldname: &str,

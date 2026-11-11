@@ -72,13 +72,16 @@ use rucene_test_framework::search::dummy_total_hit_count_collector::{
 };
 use rucene_test_framework::util::java_exceptions::{java_throwable, rethrow_java};
 use rucene_test_framework::util::lucene_test_case::{AwaitsFix, MAYBE_CACHE_POLICY, TEST_NIGHTLY};
+use rucene_test_framework::util::ram_usage_tester::{
+    Accumulator, DefaultAccumulator, JavaObject, ModelBuilder, Queue, RamObject, RamUsageTester,
+};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_search::support::{field_mut_as, term, CountDownLatch};
 use crate::core_support::hamcrest::assert_has_size;
 use crate::core_support::{
-    assert_equals, assert_equals_delta, assert_not_equals, assert_null, class, ram_used_unmodelled,
-    random, test, try_catch, unchecked,
+    assert_equals, assert_equals_delta, assert_not_equals, assert_null, class, random, test,
+    try_catch, unchecked,
 };
 
 /// `TestLRUQueryCache`.
@@ -712,19 +715,81 @@ fn test_clear_filter() -> Result<()> {
 // RAM accounting
 // -----------------------------------------------------------------------------
 
+/// `o.getClass().getSimpleName()` of a top-level or nested Java class.
+fn simple_name(o: &dyn RamObject) -> &'static str {
+    o.java_class_name()
+        .rsplit(['.', '$'])
+        .next()
+        .unwrap_or_default()
+}
+
+/// `((DocIdSet) o).ramBytesUsed()`.
+fn doc_id_set_ram_bytes_used(o: &dyn RamObject) -> i64 {
+    o.accountable_ram_bytes_used()
+        .expect("INVARIANT: a modelled DocIdSet carries its ramBytesUsed()")
+}
+
+/// The accumulator of `testRamBytesUsedAgreesWithRamUsageTester`: an
+/// accumulator that only sums up memory usage of referenced filters and doc
+/// id sets.
+struct FiltersAndDocIdSetsAccumulator;
+
+impl Accumulator for FiltersAndDocIdSetsAccumulator {
+    fn accumulate_object<'a>(
+        &mut self,
+        o: &'a dyn RamObject,
+        shallow_size: i64,
+        field_values: &[(&'static str, Option<&'a dyn RamObject>)],
+        queue: &mut Queue<'a>,
+    ) -> i64 {
+        if o.instance_of("org.apache.lucene.search.DocIdSet") {
+            return doc_id_set_ram_bytes_used(o);
+        }
+        if o.instance_of("org.apache.lucene.search.Query") {
+            return RamUsageEstimator::QUERY_DEFAULT_RAM_BYTES_USED;
+        }
+        if o.instance_of("org.apache.lucene.index.IndexReader")
+            || simple_name(o) == "SegmentCoreReaders"
+        {
+            // do not take readers or core cache keys into account
+            return 0;
+        }
+        if let JavaObject::JavaMap { entries, .. } = o.java_object() {
+            queue.extend(entries.iter().map(|(k, _)| *k));
+            queue.extend(entries.iter().map(|(_, v)| *v));
+            let size_per_entry = if o.instance_of("java.util.LinkedHashMap") {
+                LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY
+            } else {
+                HASHTABLE_RAM_BYTES_PER_ENTRY
+            };
+            return size_per_entry * entries.len() as i64;
+        }
+        // follow links to other objects, but ignore their memory usage
+        DefaultAccumulator.accumulate_object(o, shallow_size, field_values, queue);
+        0
+    }
+
+    fn accumulate_array<'a>(
+        &mut self,
+        array: &'a dyn RamObject,
+        shallow_size: i64,
+        values: &[Option<&'a dyn RamObject>],
+        queue: &mut Queue<'a>,
+    ) -> i64 {
+        // follow links to other objects, but ignore their memory usage
+        DefaultAccumulator.accumulate_array(array, shallow_size, values, queue);
+        0
+    }
+}
+
 /// This test makes sure that by making the same assumptions as LRUQueryCache,
 /// RAMUsageTester computes the same memory usage.
 ///
 /// Port of `TestLRUQueryCache.testRamBytesUsedAgreesWithRamUsageTester`.
 ///
-/// Java's accumulator only sums up the memory usage of referenced filters and
-/// doc id sets (`DocIdSet.ramBytesUsed()`), counts each query as
-/// `QUERY_DEFAULT_RAM_BYTES_USED`, readers and `SegmentCoreReaders` as 0 and
-/// each map entry as `(LINKED_)HASHTABLE_RAM_BYTES_PER_ENTRY`, and follows
-/// every other link without counting it. The port's `RamUsageTester` measures
-/// only the types that model their Java object graph, and `LRUQueryCache`
-/// does not, so the measurement reports it (see
-/// [`ram_used_unmodelled`]).
+/// `o instanceof Map` is answered by the object's map shape: only a JDK map
+/// has one, and the walk hands a JDK map to `accumulateArray`, as Java's
+/// does.
 fn test_ram_bytes_used_agrees_with_ram_usage_tester() -> Result<()> {
     let max_size = 1 + random().next_int_bound(5);
     let max_ram = 1 + random().next_int_bound(10000) as i64;
@@ -771,7 +836,10 @@ fn test_ram_bytes_used_agrees_with_ram_usage_tester() -> Result<()> {
         }
         query_cache.assert_consistent()?;
         assert_equals(
-            &ram_used_unmodelled("LRUQueryCache"),
+            &RamUsageTester::ram_used_with(
+                Some(&*ModelBuilder::new().lru_query_cache(&query_cache)),
+                &mut FiltersAndDocIdSetsAccumulator,
+            ),
             &query_cache.ram_bytes_used(),
         );
     }
@@ -883,17 +951,37 @@ fn accountable_dummy_query() -> DummyQuery {
     }
 }
 
+/// The accumulator of `testRamBytesUsedConstantEntryOverhead`.
+struct ConstantEntryOverheadAccumulator;
+
+impl Accumulator for ConstantEntryOverheadAccumulator {
+    fn accumulate_object<'a>(
+        &mut self,
+        o: &'a dyn RamObject,
+        shallow_size: i64,
+        field_values: &[(&'static str, Option<&'a dyn RamObject>)],
+        queue: &mut Queue<'a>,
+    ) -> i64 {
+        if o.instance_of("org.apache.lucene.search.DocIdSet") {
+            return doc_id_set_ram_bytes_used(o);
+        }
+        if o.instance_of("org.apache.lucene.search.Query") {
+            return RamUsageEstimator::QUERY_DEFAULT_RAM_BYTES_USED;
+        }
+        if simple_name(o) == "SegmentCoreReaders" {
+            // do not follow references to core cache keys
+            return 0;
+        }
+        DefaultAccumulator.accumulate_object(o, shallow_size, field_values, queue)
+    }
+}
+
 /// Test what happens when the cache contains only filters and doc id sets that
 /// require very little memory. In that case most of the memory is taken by the
 /// cache itself, not cache entries, and we want to make sure that memory usage
 /// is not grossly underestimated.
 ///
 /// Port of `TestLRUQueryCache.testRamBytesUsedConstantEntryOverhead`.
-///
-/// Java's accumulator counts doc id sets with `ramBytesUsed()`, queries as
-/// `QUERY_DEFAULT_RAM_BYTES_USED`, does not follow references to core cache
-/// keys and measures every other object; `LRUQueryCache` has no
-/// `RamUsageTester` model in the port (see [`ram_used_unmodelled`]).
 fn test_ram_bytes_used_constant_entry_overhead() -> Result<()> {
     let query_cache = lru(1000000, 10000000, |_| true, f32::INFINITY)?;
 
@@ -916,7 +1004,10 @@ fn test_ram_bytes_used_constant_entry_overhead() -> Result<()> {
     }
     Assert::assert_true(query_cache.get_cache_count() > 0);
 
-    let actual_ram_bytes_used = ram_used_unmodelled("LRUQueryCache");
+    let actual_ram_bytes_used = RamUsageTester::ram_used_with(
+        Some(&*ModelBuilder::new().lru_query_cache(&query_cache)),
+        &mut ConstantEntryOverheadAccumulator,
+    );
     let expected_ram_bytes_used = query_cache.ram_bytes_used();
     // error < 30%
     assert_equals_delta(

@@ -96,6 +96,10 @@ impl Packed64 {
 }
 
 impl PackedIntsReader for Packed64 {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get(&self, index: i32) -> i64 {
         // The abstract index in a bit stream
         let major_bit_pos = i64::from(index) * i64::from(self.bits_per_value);
@@ -409,6 +413,14 @@ impl Packed64SingleBlock {
             .is_ok()
     }
 
+    /// Returns the backing blocks.
+    ///
+    /// Equivalent to reading the package-private `Packed64SingleBlock.blocks`
+    /// field; public so that the test framework can model the Java object.
+    pub fn blocks(&self) -> &[i64] {
+        &self.blocks
+    }
+
     /// Returns the number of blocks needed for `value_count` values.
     ///
     /// Equivalent to `Packed64SingleBlock.requiredCapacity(int, int)`.
@@ -448,6 +460,10 @@ impl Packed64SingleBlock {
 }
 
 impl PackedIntsReader for Packed64SingleBlock {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get(&self, index: i32) -> i64 {
         let o = (index / self.values_per_block) as usize;
         let b = index % self.values_per_block;

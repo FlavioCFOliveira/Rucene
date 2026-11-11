@@ -44,11 +44,20 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use rucene::index::{PrefixCodedTerms, Term};
+use randomizedtesting::jdk::exception::Throwable;
+use rucene::index::doc_values::{MonotonicDeltaLongValues, OrdinalMap, PackedDeltaLongValues};
+use rucene::index::{CacheKey, PrefixCodedTerms, Term};
 use rucene::search::multi_term_query::MultiTermQuery;
 use rucene::search::term_in_set_query::TermInSetQuery;
 use rucene::search::{
-    BooleanClause, BooleanQuery, DisjunctionMaxQuery, Occur, PhraseQuery, Query, TermQuery,
+    BooleanClause, BooleanQuery, CacheAndCount, DisjunctionMaxQuery, LRUQueryCache, Occur,
+    PhraseQuery, Query, TermQuery,
+};
+use rucene::util::extra::{IdentityLongValues, LongValues, ZeroesLongValues};
+use rucene::util::hnsw::{NeighborArray, OnHeapHnswGraph};
+use rucene::util::packed::{
+    DeltaPackedLongValues, MonotonicLongValues, NullReader, Packed64, Packed64SingleBlock,
+    PackedIntsMutable, PackedIntsReader, PackedLongValues, PackedLongValuesAccess,
 };
 use rucene::util::{ByteBlockPool, BytesRef, BytesRefHash, RamUsageEstimator};
 
@@ -114,6 +123,16 @@ pub enum JavaObject<'a> {
         /// Each reference field's name and value, `null` as `None`.
         fields: Vec<(&'static str, Option<&'a dyn RamObject>)>,
     },
+    /// A JDK object outside the shapes above with a reference field the
+    /// module system does not open to reflection (no `--add-opens`):
+    /// `createCacheEntry` fails on `f.setAccessible(true)` and throws
+    /// `RuntimeException("Can't access field '<field>' of class '<class>' for
+    /// RAM estimation.")`, as `ReentrantReadWriteLock.ReadLock` and
+    /// `WriteLock` do on their field `sync`.
+    Inaccessible {
+        /// The first reference field reflection refuses to open.
+        field: &'static str,
+    },
 }
 
 /// An object `RamUsageTester` can measure: what Java's reflection would read
@@ -125,6 +144,19 @@ pub trait RamObject {
 
     /// The Java shape and sizes the walk reads.
     fn java_object(&self) -> JavaObject<'_>;
+
+    /// `ob instanceof T`, for the Java type named `java_type`, as a custom
+    /// [`Accumulator`] asks it: by default, only the object's own class.
+    fn instance_of(&self, java_type: &str) -> bool {
+        self.java_class_name() == java_type
+    }
+
+    /// `((Accountable) ob).ramBytesUsed()`, for an object whose Java class is
+    /// an `Accountable` a custom [`Accumulator`] measures that way; `None`
+    /// otherwise.
+    fn accountable_ram_bytes_used(&self) -> Option<i64> {
+        None
+    }
 }
 
 /// The value list `accumulateObject` and `accumulateArray` receive, and the
@@ -283,6 +315,16 @@ fn handle_other<'a>(
             aligned_shallow_size,
             fields,
         } => accumulator.accumulate_object(ob, aligned_shallow_size, &fields, stack),
+        // `createCacheEntry`: `f.setAccessible(true)` throws, rethrown as a
+        // `RuntimeException` naming the field and the class.
+        JavaObject::Inaccessible { field } => Throwable::new(
+            "java.lang.RuntimeException",
+            format!(
+                "Can't access field '{field}' of class '{}' for RAM estimation.",
+                ob.java_class_name()
+            ),
+        )
+        .throw(),
         JavaObject::Array { .. } => unreachable!("INVARIANT: arrays go to handle_array"),
     }
 }
@@ -457,6 +499,8 @@ pub enum NodeShape {
         /// `SIMPLE_TYPES.get(obClazz).applyAsLong(ob)`.
         estimate: i64,
     },
+    /// See [`JavaObject::Ignorable`].
+    Ignorable,
     /// See [`JavaObject::Enum`].
     Enum {
         /// `RamUsageEstimator.shallowSizeOf(ob)`.
@@ -488,18 +532,45 @@ pub enum NodeShape {
         /// Each reference field's name and value.
         fields: Vec<(&'static str, NodeChild)>,
     },
+    /// See [`JavaObject::Inaccessible`].
+    Inaccessible {
+        /// The first reference field reflection refuses to open.
+        field: &'static str,
+    },
 }
 
 /// One Java object of a declared graph.
 pub struct JavaNode {
     class_name: &'static str,
     shape: NodeShape,
+    /// The Java supertypes `instanceof` answers for, besides the class.
+    supertypes: &'static [&'static str],
+    /// `ramBytesUsed()` of an `Accountable` object an accumulator measures.
+    ram_bytes_used: Option<i64>,
 }
 
 impl JavaNode {
     /// Creates a node of the Java class `class_name`.
     pub fn new(class_name: &'static str, shape: NodeShape) -> Rc<Self> {
-        Rc::new(Self { class_name, shape })
+        Self::typed(class_name, shape, &[], None)
+    }
+
+    /// Creates a node of the Java class `class_name` that is also an instance
+    /// of `supertypes` and, when `ram_bytes_used` is given, an `Accountable`
+    /// reporting it (see [`RamObject::instance_of`] and
+    /// [`RamObject::accountable_ram_bytes_used`]).
+    pub fn typed(
+        class_name: &'static str,
+        shape: NodeShape,
+        supertypes: &'static [&'static str],
+        ram_bytes_used: Option<i64>,
+    ) -> Rc<Self> {
+        Rc::new(Self {
+            class_name,
+            shape,
+            supertypes,
+            ram_bytes_used,
+        })
     }
 }
 
@@ -516,6 +587,14 @@ impl JavaNode {
 impl RamObject for JavaNode {
     fn java_class_name(&self) -> &'static str {
         self.class_name
+    }
+
+    fn instance_of(&self, java_type: &str) -> bool {
+        self.class_name == java_type || self.supertypes.contains(&java_type)
+    }
+
+    fn accountable_ram_bytes_used(&self) -> Option<i64> {
+        self.ram_bytes_used
     }
 
     fn java_object(&self) -> JavaObject<'_> {
@@ -536,6 +615,7 @@ impl RamObject for JavaNode {
                 shallow_size: *shallow_size,
                 estimate: *estimate,
             },
+            NodeShape::Ignorable => JavaObject::Ignorable,
             NodeShape::Enum { shallow_size } => JavaObject::Enum {
                 shallow_size: *shallow_size,
             },
@@ -569,6 +649,7 @@ impl RamObject for JavaNode {
                     .map(|(name, value)| (*name, self.child(value)))
                     .collect(),
             },
+            NodeShape::Inaccessible { field } => JavaObject::Inaccessible { field },
         }
     }
 }
@@ -604,6 +685,25 @@ impl ModelBuilder {
         }
         let shape = build(self);
         let node = JavaNode::new(class_name, shape);
+        self.seen.insert(key, Rc::clone(&node));
+        node
+    }
+
+    /// [`shared`](Self::shared) for a node that is also an instance of
+    /// `supertypes` (see [`JavaNode::typed`]).
+    pub fn shared_typed(
+        &mut self,
+        address: *const (),
+        class_name: &'static str,
+        supertypes: &'static [&'static str],
+        build: impl FnOnce(&mut Self) -> NodeShape,
+    ) -> Rc<JavaNode> {
+        let key = (address as usize, class_name);
+        if let Some(node) = self.seen.get(&key) {
+            return Rc::clone(node);
+        }
+        let shape = build(self);
+        let node = JavaNode::typed(class_name, shape, supertypes, None);
         self.seen.insert(key, Rc::clone(&node));
         node
     }
@@ -805,70 +905,83 @@ impl ModelBuilder {
         let address = query as *const dyn Query as *const ();
         let any = query.as_any();
         if let Some(q) = any.downcast_ref::<TermQuery>() {
-            return self.shared(address, "org.apache.lucene.search.TermQuery", |b| {
-                let term = b.term(q.get_term());
-                let states = match q.get_term_states() {
-                    // `TermStates`: the fields `topReaderContextIdentity`,
-                    // `states`, `docFreq` and `totalTermFreq`.
-                    Some(states) => NodeChild::Node(b.shared(
-                        Arc::as_ptr(states) as *const (),
-                        "org.apache.lucene.index.TermStates",
-                        |_| NodeShape::Object {
-                            aligned_shallow_size: aligned_shallow_instance_size(&[REF, REF, 4, 8]),
-                            fields: Vec::new(),
-                        },
-                    )),
-                    None => NodeChild::Null,
-                };
-                NodeShape::Object {
-                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, REF]),
-                    fields: vec![
-                        ("term", NodeChild::Node(term)),
-                        ("perReaderTermState", states),
-                    ],
-                }
-            });
+            return self.shared_typed(
+                address,
+                "org.apache.lucene.search.TermQuery",
+                QUERY_TYPES,
+                |b| {
+                    let term = b.term(q.get_term());
+                    let states = match q.get_term_states() {
+                        // `TermStates`: the fields `topReaderContextIdentity`,
+                        // `states`, `docFreq` and `totalTermFreq`.
+                        Some(states) => NodeChild::Node(b.shared(
+                            Arc::as_ptr(states) as *const (),
+                            "org.apache.lucene.index.TermStates",
+                            |_| NodeShape::Object {
+                                aligned_shallow_size: aligned_shallow_instance_size(&[
+                                    REF, REF, 4, 8,
+                                ]),
+                                fields: Vec::new(),
+                            },
+                        )),
+                        None => NodeChild::Null,
+                    };
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[REF, REF]),
+                        fields: vec![
+                            ("term", NodeChild::Node(term)),
+                            ("perReaderTermState", states),
+                        ],
+                    }
+                },
+            );
         }
         if let Some(q) = any.downcast_ref::<PhraseQuery>() {
-            return self.shared(address, "org.apache.lucene.search.PhraseQuery", |b| {
-                let field = match q.get_field() {
-                    Some(field) => NodeChild::Node(b.string(field)),
-                    None => NodeChild::Null,
-                };
-                let terms: Vec<NodeChild> = q
-                    .get_terms()
-                    .iter()
-                    .map(|t| NodeChild::Node(b.term(t)))
-                    .collect();
-                let terms = b.shared(
-                    q.get_terms().as_ptr() as *const (),
-                    "[Lorg.apache.lucene.index.Term;",
-                    |_| NodeShape::Array {
-                        shallow_size: array_shallow_size(terms.len(), REF),
-                        elements: Some(terms),
-                    },
-                );
-                let positions = b.primitive_array(
-                    q.get_positions().as_ptr() as *const (),
-                    "[I",
-                    q.get_positions().len(),
-                    4,
-                );
-                // `int slop`, `String field`, `Term[] terms`, `int[] positions`.
-                NodeShape::Object {
-                    aligned_shallow_size: aligned_shallow_instance_size(&[4, REF, REF, REF]),
-                    fields: vec![
-                        ("field", field),
-                        ("terms", NodeChild::Node(terms)),
-                        ("positions", NodeChild::Node(positions)),
-                    ],
-                }
-            });
+            return self.shared_typed(
+                address,
+                "org.apache.lucene.search.PhraseQuery",
+                QUERY_TYPES,
+                |b| {
+                    let field = match q.get_field() {
+                        Some(field) => NodeChild::Node(b.string(field)),
+                        None => NodeChild::Null,
+                    };
+                    let terms: Vec<NodeChild> = q
+                        .get_terms()
+                        .iter()
+                        .map(|t| NodeChild::Node(b.term(t)))
+                        .collect();
+                    let terms = b.shared(
+                        q.get_terms().as_ptr() as *const (),
+                        "[Lorg.apache.lucene.index.Term;",
+                        |_| NodeShape::Array {
+                            shallow_size: array_shallow_size(terms.len(), REF),
+                            elements: Some(terms),
+                        },
+                    );
+                    let positions = b.primitive_array(
+                        q.get_positions().as_ptr() as *const (),
+                        "[I",
+                        q.get_positions().len(),
+                        4,
+                    );
+                    // `int slop`, `String field`, `Term[] terms`, `int[] positions`.
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[4, REF, REF, REF]),
+                        fields: vec![
+                            ("field", field),
+                            ("terms", NodeChild::Node(terms)),
+                            ("positions", NodeChild::Node(positions)),
+                        ],
+                    }
+                },
+            );
         }
         if let Some(q) = any.downcast_ref::<DisjunctionMaxQuery>() {
-            return self.shared(
+            return self.shared_typed(
                 address,
                 "org.apache.lucene.search.DisjunctionMaxQuery",
+                QUERY_TYPES,
                 |b| {
                     let disjuncts: Vec<&Arc<dyn Query>> = q.get_disjuncts().iter().collect();
                     let multiset = b.query_multiset(&disjuncts);
@@ -881,62 +994,67 @@ impl ModelBuilder {
             );
         }
         if let Some(q) = any.downcast_ref::<BooleanQuery>() {
-            return self.shared(address, "org.apache.lucene.search.BooleanQuery", |b| {
-                let clauses: Vec<NodeChild> = q
-                    .clauses()
-                    .iter()
-                    .map(|c| NodeChild::Node(b.boolean_clause(c)))
-                    .collect();
-                // `Collections.unmodifiableList(Arrays.asList(clauses))`: the
-                // fields `c` and `list`; a JDK iterable.
-                let clauses = JavaNode::new(
-                    "java.util.Collections$UnmodifiableRandomAccessList",
-                    NodeShape::JavaIterable {
-                        shallow_size: aligned_shallow_instance_size(&[REF, REF]),
-                        elements: clauses,
-                    },
-                );
-                // `clauseSets = new EnumMap<>(Occur.class)` holding, in key
-                // order, a `Multiset` for SHOULD and MUST and a `HashSet` for
-                // FILTER and MUST_NOT, each with the clauses' queries.
-                let of = |occur: Occur| -> Vec<&Arc<dyn Query>> {
-                    q.clauses()
+            return self.shared_typed(
+                address,
+                "org.apache.lucene.search.BooleanQuery",
+                QUERY_TYPES,
+                |b| {
+                    let clauses: Vec<NodeChild> = q
+                        .clauses()
                         .iter()
-                        .filter(|c| c.occur() == occur)
-                        .map(|c| c.query())
-                        .collect()
-                };
-                let mut entries = Vec::new();
-                for occur in [Occur::MUST, Occur::FILTER, Occur::SHOULD, Occur::MUST_NOT] {
-                    let key = NodeChild::Node(b.occur(occur));
-                    let value = match occur {
-                        Occur::SHOULD | Occur::MUST => b.query_multiset(&of(occur)),
-                        Occur::FILTER | Occur::MUST_NOT => b.query_hash_set(&of(occur)),
+                        .map(|c| NodeChild::Node(b.boolean_clause(c)))
+                        .collect();
+                    // `Collections.unmodifiableList(Arrays.asList(clauses))`: the
+                    // fields `c` and `list`; a JDK iterable.
+                    let clauses = JavaNode::new(
+                        "java.util.Collections$UnmodifiableRandomAccessList",
+                        NodeShape::JavaIterable {
+                            shallow_size: aligned_shallow_instance_size(&[REF, REF]),
+                            elements: clauses,
+                        },
+                    );
+                    // `clauseSets = new EnumMap<>(Occur.class)` holding, in key
+                    // order, a `Multiset` for SHOULD and MUST and a `HashSet` for
+                    // FILTER and MUST_NOT, each with the clauses' queries.
+                    let of = |occur: Occur| -> Vec<&Arc<dyn Query>> {
+                        q.clauses()
+                            .iter()
+                            .filter(|c| c.occur() == occur)
+                            .map(|c| c.query())
+                            .collect()
                     };
-                    entries.push((key, NodeChild::Node(value)));
-                }
-                // `EnumMap`: the fields `keyType`, `keyUniverse`, `vals`,
-                // `size`, `entrySet` and `AbstractMap`'s `keySet` and
-                // `values`; a JDK map.
-                let clause_sets = JavaNode::new(
-                    "java.util.EnumMap",
-                    NodeShape::JavaMap {
-                        shallow_size: aligned_shallow_instance_size(&[
-                            REF, REF, REF, 4, REF, REF, REF,
-                        ]),
-                        entries,
-                    },
-                );
-                // `int minimumNumberShouldMatch`, `List clauses`, `Map
-                // clauseSets`, `int hashCode`.
-                NodeShape::Object {
-                    aligned_shallow_size: aligned_shallow_instance_size(&[4, REF, REF, 4]),
-                    fields: vec![
-                        ("clauses", NodeChild::Node(clauses)),
-                        ("clauseSets", NodeChild::Node(clause_sets)),
-                    ],
-                }
-            });
+                    let mut entries = Vec::new();
+                    for occur in [Occur::MUST, Occur::FILTER, Occur::SHOULD, Occur::MUST_NOT] {
+                        let key = NodeChild::Node(b.occur(occur));
+                        let value = match occur {
+                            Occur::SHOULD | Occur::MUST => b.query_multiset(&of(occur)),
+                            Occur::FILTER | Occur::MUST_NOT => b.query_hash_set(&of(occur)),
+                        };
+                        entries.push((key, NodeChild::Node(value)));
+                    }
+                    // `EnumMap`: the fields `keyType`, `keyUniverse`, `vals`,
+                    // `size`, `entrySet` and `AbstractMap`'s `keySet` and
+                    // `values`; a JDK map.
+                    let clause_sets = JavaNode::new(
+                        "java.util.EnumMap",
+                        NodeShape::JavaMap {
+                            shallow_size: aligned_shallow_instance_size(&[
+                                REF, REF, REF, 4, REF, REF, REF,
+                            ]),
+                            entries,
+                        },
+                    );
+                    // `int minimumNumberShouldMatch`, `List clauses`, `Map
+                    // clauseSets`, `int hashCode`.
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[4, REF, REF, 4]),
+                        fields: vec![
+                            ("clauses", NodeChild::Node(clauses)),
+                            ("clauseSets", NodeChild::Node(clause_sets)),
+                        ],
+                    }
+                },
+            );
         }
         self.shared(address, "org.apache.lucene.search.Query", |_| {
             NodeShape::Object {
@@ -1078,9 +1196,13 @@ impl ModelBuilder {
     /// anonymous `CONSTANT_SCORE_BLENDED_REWRITE`, a `RewriteMethod` with no
     /// field.
     pub fn term_in_set_query(&mut self, query: &TermInSetQuery) -> Rc<JavaNode> {
-        self.shared(
+        self.shared_typed(
             query as *const TermInSetQuery as *const (),
             "org.apache.lucene.search.TermInSetQuery",
+            &[
+                "org.apache.lucene.search.MultiTermQuery",
+                "org.apache.lucene.search.Query",
+            ],
             |b| {
                 let field = b.string(query.get_field());
                 let rewrite_method = query.get_rewrite_method();
@@ -1157,6 +1279,9 @@ impl ModelBuilder {
     }
 }
 
+/// The supertypes of a `Query` subclass `instanceof` answers for.
+const QUERY_TYPES: &[&str] = &["org.apache.lucene.search.Query"];
+
 /// The shallow size of a `java.util.HashMap`: see [`ModelBuilder::hash_map`].
 pub const HASH_MAP_SHALLOW_SIZE: i64 = aligned_shallow_instance_size_const(8);
 
@@ -1168,4 +1293,708 @@ pub const ARRAY_LIST_SHALLOW_SIZE: i64 = aligned_shallow_instance_size_const(3);
 /// of a class whose `fields` fields are all four bytes wide.
 const fn aligned_shallow_instance_size_const(fields: i64) -> i64 {
     RamUsageEstimator::align_object_size(RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 4 * fields)
+}
+
+// ---------------------------------------------------------------------------
+// OrdinalMap, OnHeapHnswGraph and LRUQueryCache
+// ---------------------------------------------------------------------------
+
+/// `RamUsageEstimator.shallowSizeOf` of a `java.util.concurrent.atomic.LongAdder`
+/// on JDK 25 (`Striped64`'s `cells`, `base` and `cellsBusy`): 32 bytes, as
+/// printed against `lucene-core-10.5.0.jar`.
+const LONG_ADDER_SHALLOW_SIZE: i64 = 32;
+
+/// `RamUsageEstimator.shallowSizeOf` of a `java.util.Collections$SynchronizedMap`
+/// (`m`, `mutex`, `keySet`, `entrySet`, `values`) on JDK 25: 32 bytes.
+const SYNCHRONIZED_MAP_SHALLOW_SIZE: i64 = 32;
+
+/// `RamUsageEstimator.shallowSizeOf` of a `java.util.Collections$SynchronizedSet`
+/// (`c`, `mutex`) on JDK 25: 24 bytes.
+const SYNCHRONIZED_SET_SHALLOW_SIZE: i64 = 24;
+
+/// `RamUsageEstimator.shallowSizeOf` of a `java.util.IdentityHashMap` on
+/// JDK 25: 40 bytes.
+const IDENTITY_HASH_MAP_SHALLOW_SIZE: i64 = 40;
+
+/// The supertypes of a `DocIdSet` subclass `instanceof` answers for.
+const DOC_ID_SET_TYPES: &[&str] = &["org.apache.lucene.search.DocIdSet"];
+
+/// The Java class of a `Packed64SingleBlock` of `bits_per_value` bits: the
+/// generated subclass `Packed64SingleBlock.create` picks.
+fn packed64_single_block_class(bits_per_value: i32) -> &'static str {
+    match bits_per_value {
+        1 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock1",
+        2 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock2",
+        3 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock3",
+        4 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock4",
+        5 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock5",
+        6 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock6",
+        7 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock7",
+        8 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock8",
+        9 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock9",
+        10 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock10",
+        12 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock12",
+        16 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock16",
+        21 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock21",
+        32 => "org.apache.lucene.util.packed.Packed64SingleBlock$Packed64SingleBlock32",
+        other => unmodelled(&format!("Packed64SingleBlock of {other} bits per value")),
+    }
+}
+
+/// A Rucene object the declared graphs do not model yet: the measurement
+/// cannot be made, so it fails with an `UnsupportedOperationException`.
+fn unmodelled(what: &str) -> ! {
+    Throwable::new(
+        "java.lang.UnsupportedOperationException",
+        format!("RamUsageTester.ramUsed: no RamObject model of {what}"),
+    )
+    .throw()
+}
+
+/// `n` as a [`NodeChild`].
+fn node(n: Rc<JavaNode>) -> NodeChild {
+    NodeChild::Node(n)
+}
+
+impl ModelBuilder {
+    /// A primitive array over `values`; an empty one is a fresh object (all
+    /// empty Rust slices may share one dangling address, Java arrays never
+    /// share an identity).
+    fn slice_array<T>(
+        &mut self,
+        values: &[T],
+        class_name: &'static str,
+        element_bytes: i64,
+    ) -> Rc<JavaNode> {
+        if values.is_empty() {
+            JavaNode::new(
+                class_name,
+                NodeShape::Array {
+                    shallow_size: array_shallow_size(0, element_bytes),
+                    elements: None,
+                },
+            )
+        } else {
+            self.primitive_array(
+                values.as_ptr() as *const (),
+                class_name,
+                values.len(),
+                element_bytes,
+            )
+        }
+    }
+
+    /// `LongValues.IDENTITY`, the anonymous `LongValues$1` with no field: one
+    /// shared node.
+    pub fn long_values_identity(&mut self) -> Rc<JavaNode> {
+        self.shared(
+            1 as *const (),
+            "org.apache.lucene.util.LongValues$1",
+            |_| NodeShape::Object {
+                aligned_shallow_size: aligned_shallow_instance_size(&[]),
+                fields: Vec::new(),
+            },
+        )
+    }
+
+    /// `LongValues.ZEROES`, the anonymous `LongValues$2` with no field: one
+    /// shared node.
+    pub fn long_values_zeroes(&mut self) -> Rc<JavaNode> {
+        self.shared(
+            2 as *const (),
+            "org.apache.lucene.util.LongValues$2",
+            |_| NodeShape::Object {
+                aligned_shallow_size: aligned_shallow_instance_size(&[]),
+                fields: Vec::new(),
+            },
+        )
+    }
+
+    /// `PackedInts.NullReader.forCount(value_count)`: the field `int
+    /// valueCount`; the shared `DEFAULT_PACKED_LONG_VALUES_PAGE_SIZE` instance
+    /// for `PackedLongValues.DEFAULT_PAGE_SIZE`, a fresh object otherwise
+    /// (`PackedInts.java:557-562`).
+    pub fn null_reader(&mut self, value_count: i32) -> Rc<JavaNode> {
+        let shape = || NodeShape::Object {
+            aligned_shallow_size: aligned_shallow_instance_size(&[4]),
+            fields: Vec::new(),
+        };
+        if value_count == PackedLongValues::DEFAULT_PAGE_SIZE {
+            self.shared(
+                3 as *const (),
+                "org.apache.lucene.util.packed.PackedInts$NullReader",
+                |_| shape(),
+            )
+        } else {
+            JavaNode::new(
+                "org.apache.lucene.util.packed.PackedInts$NullReader",
+                shape(),
+            )
+        }
+    }
+
+    /// A `PackedInts.Reader`, by its Java class: `NullReader`; `Packed64`
+    /// (`long[] blocks`, `long maskRight`, `int bpvMinusBlockSize` and
+    /// `MutableImpl`'s `int valueCount` and `int bitsPerValue`); a
+    /// `Packed64SingleBlock` subclass (`long[] blocks`, `valueCount`,
+    /// `bitsPerValue`).
+    pub fn packed_ints_reader(&mut self, reader: &dyn PackedIntsReader) -> Rc<JavaNode> {
+        let address = reader as *const dyn PackedIntsReader as *const ();
+        let any = reader.as_any();
+        if any.is_some_and(|a| a.is::<NullReader>()) {
+            return self.null_reader(reader.size());
+        }
+        if let Some(packed) = any.and_then(|a| a.downcast_ref::<Packed64>()) {
+            return self.shared(address, "org.apache.lucene.util.packed.Packed64", |b| {
+                let blocks = b.slice_array(packed.blocks(), "[J", 8);
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, 8, 4, 4, 4]),
+                    fields: vec![("blocks", node(blocks))],
+                }
+            });
+        }
+        if let Some(packed) = any.and_then(|a| a.downcast_ref::<Packed64SingleBlock>()) {
+            let class_name = packed64_single_block_class(packed.bits_per_value());
+            return self.shared(address, class_name, |b| {
+                let blocks = b.slice_array(packed.blocks(), "[J", 8);
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, 4, 4]),
+                    fields: vec![("blocks", node(blocks))],
+                }
+            });
+        }
+        unmodelled("this PackedInts.Reader")
+    }
+
+    /// The `PackedInts.Reader[] values` array of a `PackedLongValues`.
+    fn packed_pages(&mut self, values: &PackedLongValues) -> Rc<JavaNode> {
+        let pages = values.values();
+        let elements: Vec<NodeChild> = pages
+            .iter()
+            .map(|page| node(self.packed_ints_reader(page.as_ref())))
+            .collect();
+        let shape = NodeShape::Array {
+            shallow_size: array_shallow_size(elements.len(), REF),
+            elements: Some(elements),
+        };
+        let class_name = "[Lorg.apache.lucene.util.packed.PackedInts$Reader;";
+        if pages.is_empty() {
+            JavaNode::new(class_name, shape)
+        } else {
+            self.shared(pages.as_ptr() as *const (), class_name, |_| shape)
+        }
+    }
+
+    /// `org.apache.lucene.util.packed.PackedLongValues`: `Reader[] values`,
+    /// `int pageShift`, `int pageMask`, `long size`, `long ramBytesUsed`.
+    pub fn packed_long_values(&mut self, values: &PackedLongValues) -> Rc<JavaNode> {
+        self.shared(
+            values as *const PackedLongValues as *const (),
+            "org.apache.lucene.util.packed.PackedLongValues",
+            |b| {
+                let pages = b.packed_pages(values);
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, 4, 4, 8, 8]),
+                    fields: vec![("values", node(pages))],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.packed.DeltaPackedLongValues`: `long[] mins`
+    /// and the fields of `PackedLongValues`.
+    pub fn delta_packed_long_values(&mut self, values: &DeltaPackedLongValues) -> Rc<JavaNode> {
+        self.shared(
+            values as *const DeltaPackedLongValues as *const (),
+            "org.apache.lucene.util.packed.DeltaPackedLongValues",
+            |b| {
+                let mins = b.slice_array(values.mins(), "[J", 8);
+                let pages = b.packed_pages(PackedLongValuesAccess::base(values));
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF, REF, 4, 4, 8, 8]),
+                    fields: vec![("mins", node(mins)), ("values", node(pages))],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.packed.MonotonicLongValues`: `float[]
+    /// averages` and the fields of `DeltaPackedLongValues`.
+    pub fn monotonic_long_values(&mut self, values: &MonotonicLongValues) -> Rc<JavaNode> {
+        self.shared(
+            values as *const MonotonicLongValues as *const (),
+            "org.apache.lucene.util.packed.MonotonicLongValues",
+            |b| {
+                let averages = b.slice_array(values.averages(), "[F", 4);
+                let mins = b.slice_array(values.mins(), "[J", 8);
+                let pages = b.packed_pages(PackedLongValuesAccess::base(values));
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        REF, REF, REF, 4, 4, 8, 8,
+                    ]),
+                    fields: vec![
+                        ("averages", node(averages)),
+                        ("mins", node(mins)),
+                        ("values", node(pages)),
+                    ],
+                }
+            },
+        )
+    }
+
+    /// An `org.apache.lucene.util.LongValues`, by its Java class: the
+    /// `IDENTITY` and `ZEROES` singletons, the three `PackedLongValues`
+    /// classes, and `OrdinalMap`'s anonymous `OrdinalMap$1` (`val$newDeltas`,
+    /// a `PackedInts.Mutable`) and `OrdinalMap$2` (`val$deltas`, a
+    /// `PackedLongValues`) (`OrdinalMap.java:376-391`).
+    pub fn long_values(&mut self, values: &dyn LongValues) -> Rc<JavaNode> {
+        let address = values as *const dyn LongValues as *const ();
+        let Some(any) = values.as_any() else {
+            unmodelled("this LongValues")
+        };
+        if any.is::<IdentityLongValues>() {
+            return self.long_values_identity();
+        }
+        if any.is::<ZeroesLongValues>() {
+            return self.long_values_zeroes();
+        }
+        if let Some(v) = any.downcast_ref::<PackedLongValues>() {
+            return self.packed_long_values(v);
+        }
+        if let Some(v) = any.downcast_ref::<DeltaPackedLongValues>() {
+            return self.delta_packed_long_values(v);
+        }
+        if let Some(v) = any.downcast_ref::<MonotonicLongValues>() {
+            return self.monotonic_long_values(v);
+        }
+        if let Some(v) = any.downcast_ref::<PackedDeltaLongValues>() {
+            return self.shared(address, "org.apache.lucene.index.OrdinalMap$1", |b| {
+                let deltas = b.packed_ints_reader(v.deltas().as_packed_ints_reader());
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF]),
+                    fields: vec![("val$newDeltas", node(deltas))],
+                }
+            });
+        }
+        if let Some(v) = any.downcast_ref::<MonotonicDeltaLongValues>() {
+            return self.shared(address, "org.apache.lucene.index.OrdinalMap$2", |b| {
+                let deltas = b.monotonic_long_values(v.deltas());
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[REF]),
+                    fields: vec![("val$deltas", node(deltas))],
+                }
+            });
+        }
+        unmodelled("this LongValues")
+    }
+
+    /// `org.apache.lucene.index.IndexReader$CacheKey`, a class with no field:
+    /// one node per key.
+    pub fn cache_key(&mut self, key: &CacheKey) -> Rc<JavaNode> {
+        self.shared(
+            key.identity() as *const (),
+            "org.apache.lucene.index.IndexReader$CacheKey",
+            |_| NodeShape::Object {
+                aligned_shallow_size: aligned_shallow_instance_size(&[]),
+                fields: Vec::new(),
+            },
+        )
+    }
+
+    /// `org.apache.lucene.index.OrdinalMap` (`OrdinalMap.java:183-197`):
+    /// `CacheKey owner`, `long valueCount`, `LongValues globalOrdDeltas`,
+    /// `LongValues firstSegments`, `LongValues[] segmentToGlobalOrds`,
+    /// `SegmentMap segmentMap` (`int[] newToOld`, `int[] oldToNew`) and `long
+    /// ramBytesUsed`. The reference fields are listed in the iteration order
+    /// of Java's `HashMap<Field, Object>` of them.
+    pub fn ordinal_map(&mut self, map: &OrdinalMap) -> Rc<JavaNode> {
+        self.shared(
+            map as *const OrdinalMap as *const (),
+            "org.apache.lucene.index.OrdinalMap",
+            |b| {
+                let owner = match &map.owner {
+                    Some(key) => node(b.cache_key(key)),
+                    None => NodeChild::Null,
+                };
+                let first_segments = b.long_values(map.first_segments());
+                let new_to_old = b.slice_array(map.segment_map_new_to_old(), "[I", 4);
+                let old_to_new = b.slice_array(map.segment_map_old_to_new(), "[I", 4);
+                let segment_map = JavaNode::new(
+                    "org.apache.lucene.index.OrdinalMap$SegmentMap",
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[REF, REF]),
+                        fields: vec![
+                            ("newToOld", node(new_to_old)),
+                            ("oldToNew", node(old_to_new)),
+                        ],
+                    },
+                );
+                let global_ord_deltas = b.long_values(map.global_ord_deltas());
+                let ords = map.segment_to_global_ords();
+                let elements: Vec<NodeChild> = ords
+                    .iter()
+                    .map(|values| node(b.long_values(values.as_ref())))
+                    .collect();
+                let segment_to_global_ords = JavaNode::new(
+                    "[Lorg.apache.lucene.util.LongValues;",
+                    NodeShape::Array {
+                        shallow_size: array_shallow_size(elements.len(), REF),
+                        elements: Some(elements),
+                    },
+                );
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        REF, 8, REF, REF, REF, REF, 8,
+                    ]),
+                    fields: vec![
+                        ("owner", owner),
+                        ("firstSegments", node(first_segments)),
+                        ("segmentMap", node(segment_map)),
+                        ("globalOrdDeltas", node(global_ord_deltas)),
+                        ("segmentToGlobalOrds", node(segment_to_global_ords)),
+                    ],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.hnsw.NeighborArray` (`NeighborArray.java:39-46`):
+    /// `boolean scoresDescOrder`, `int size`, `int maxSize`,
+    /// `MaxSizedFloatArrayList scores`, `MaxSizedIntArrayList nodes`, `int
+    /// sortedNodeSize`, `long ramBytesUsed` and `LongConsumer
+    /// onHeapMemoryUsageListener`. Each list is `int maxSize` and
+    /// `FloatArrayList`'s (`IntArrayList`'s) `float[] buffer` (`int[]`) and
+    /// `int elementsCount`, its buffer of the length Java's has grown to.
+    ///
+    /// The listener `OnHeapHnswGraph.addNode` installs is a capturing lambda,
+    /// a fresh object per array whose one field `arg$1` is the graph; that
+    /// graph is the root of the walk, already seen when the lambda is reached,
+    /// so the field is declared `null`, which adds the same nothing.
+    pub fn neighbor_array(&mut self, array: &NeighborArray) -> Rc<JavaNode> {
+        self.shared(
+            array as *const NeighborArray as *const (),
+            "org.apache.lucene.util.hnsw.NeighborArray",
+            |_| {
+                let length = array.buffer_length();
+                let list = |list_class: &'static str, buffer_class: &'static str| {
+                    let buffer = JavaNode::new(
+                        buffer_class,
+                        NodeShape::Array {
+                            shallow_size: array_shallow_size(length, 4),
+                            elements: None,
+                        },
+                    );
+                    JavaNode::new(
+                        list_class,
+                        NodeShape::Object {
+                            aligned_shallow_size: aligned_shallow_instance_size(&[4, REF, 4]),
+                            fields: vec![("buffer", node(buffer))],
+                        },
+                    )
+                };
+                let scores = list(
+                    "org.apache.lucene.internal.hppc.MaxSizedFloatArrayList",
+                    "[F",
+                );
+                let nodes = list("org.apache.lucene.internal.hppc.MaxSizedIntArrayList", "[I");
+                let listener = if array.has_on_heap_memory_usage_listener() {
+                    node(JavaNode::new(
+                        "org.apache.lucene.util.hnsw.OnHeapHnswGraph$$Lambda",
+                        NodeShape::Object {
+                            aligned_shallow_size: aligned_shallow_instance_size(&[REF]),
+                            fields: vec![("arg$1", NodeChild::Null)],
+                        },
+                    ))
+                } else {
+                    NodeChild::Null
+                };
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        1, 4, 4, REF, REF, 4, 8, REF,
+                    ]),
+                    fields: vec![
+                        ("scores", node(scores)),
+                        ("nodes", node(nodes)),
+                        ("onHeapMemoryUsageListener", listener),
+                    ],
+                }
+            },
+        )
+    }
+
+    /// `org.apache.lucene.util.hnsw.OnHeapHnswGraph`
+    /// (`OnHeapHnswGraph.java:42-67`): `AtomicReference entryNode` (ignored by
+    /// the walk), `NeighborArray[][] graph`, `IntArrayList[] levelToNodes`,
+    /// `int lastFreezeSize`, `AtomicInteger size`, `AtomicInteger maxNodeId`,
+    /// `int nsize`, `int nsize0`, `boolean noGrowth`, `int upto`,
+    /// `NeighborArray cur` and `LongAdder graphRamBytesUsed` (one of the
+    /// `SIMPLE_TYPES`, estimated at 0).
+    ///
+    /// `levelToNodes` is `null`: Java fills it only when `getNodesOnLevel` is
+    /// called on a non-zero level, and the port does not cache it (see
+    /// `OnHeapHnswGraph::build_level_to_nodes`). `cur` is `null` or one of the
+    /// arrays of `graph` (`seek` sets it from `getNeighbors`), which the walk
+    /// counts through `graph`; the port's cursor holds a copy, so the field is
+    /// declared `null`, which adds the same nothing.
+    pub fn on_heap_hnsw_graph(&mut self, graph: &OnHeapHnswGraph) -> Rc<JavaNode> {
+        self.shared(
+            graph as *const OnHeapHnswGraph as *const (),
+            "org.apache.lucene.util.hnsw.OnHeapHnswGraph",
+            |b| {
+                let mut nodes = Vec::with_capacity(graph.graph_length());
+                for n in 0..graph.graph_length() {
+                    let child = match graph.graph_node(n) {
+                        None => NodeChild::Null,
+                        Some(levels) => {
+                            let elements: Vec<NodeChild> = levels
+                                .iter()
+                                .map(|slot| match slot.get() {
+                                    Some(array) => node(b.neighbor_array(array)),
+                                    None => NodeChild::Null,
+                                })
+                                .collect();
+                            node(JavaNode::new(
+                                "[Lorg.apache.lucene.util.hnsw.NeighborArray;",
+                                NodeShape::Array {
+                                    shallow_size: array_shallow_size(elements.len(), REF),
+                                    elements: Some(elements),
+                                },
+                            ))
+                        }
+                    };
+                    nodes.push(child);
+                }
+                let outer = JavaNode::new(
+                    "[[Lorg.apache.lucene.util.hnsw.NeighborArray;",
+                    NodeShape::Array {
+                        shallow_size: array_shallow_size(nodes.len(), REF),
+                        elements: Some(nodes),
+                    },
+                );
+                let atomic_integer = || {
+                    JavaNode::new(
+                        "java.util.concurrent.atomic.AtomicInteger",
+                        NodeShape::Object {
+                            aligned_shallow_size: aligned_shallow_instance_size(&[4]),
+                            fields: Vec::new(),
+                        },
+                    )
+                };
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        REF, REF, REF, 4, REF, REF, 4, 4, 1, 4, REF, REF,
+                    ]),
+                    fields: vec![
+                        (
+                            "entryNode",
+                            node(ignorable("java.util.concurrent.atomic.AtomicReference")),
+                        ),
+                        ("graph", node(outer)),
+                        ("levelToNodes", NodeChild::Null),
+                        ("graphRamBytesUsed", node(long_adder())),
+                        ("maxNodeId", node(atomic_integer())),
+                        ("size", node(atomic_integer())),
+                        ("cur", NodeChild::Null),
+                    ],
+                }
+            },
+        )
+    }
+
+    /// A cached doc id set: a `DocIdSet` the LRU accumulators measure by its
+    /// `ramBytesUsed()` without following it. `CacheAndCount.EMPTY`'s
+    /// `DocIdSet.EMPTY` is the anonymous `DocIdSet$1`, one shared node.
+    ///
+    /// **Divergence.** The fields of the concrete set (`RoaringDocIdSet`,
+    /// `BitDocIdSet`, ...) are not declared: no walk of an `LRUQueryCache`
+    /// reaches them, since every one throws at the cache's `writeLock` (see
+    /// [`lru_query_cache`](Self::lru_query_cache)), and both of Java's
+    /// accumulators stop at a `DocIdSet`.
+    fn cached_doc_id_set(&mut self, value: &CacheAndCount) -> Rc<JavaNode> {
+        let set = value.cache();
+        let ram_bytes_used = set.ram_bytes_used();
+        let (address, class_name) = if value.is_empty_marker() {
+            (4 as *const (), "org.apache.lucene.search.DocIdSet$1")
+        } else {
+            (
+                Arc::as_ptr(set) as *const (),
+                "org.apache.lucene.search.DocIdSet",
+            )
+        };
+        let key = (address as usize, class_name);
+        if let Some(n) = self.seen.get(&key) {
+            return Rc::clone(n);
+        }
+        let n = JavaNode::typed(
+            class_name,
+            NodeShape::Object {
+                aligned_shallow_size: aligned_shallow_instance_size(&[]),
+                fields: Vec::new(),
+            },
+            DOC_ID_SET_TYPES,
+            Some(ram_bytes_used),
+        );
+        self.seen.insert(key, Rc::clone(&n));
+        n
+    }
+
+    /// `LRUQueryCache.CacheAndCount`: `DocIdSet cache` and `int count`;
+    /// `CacheAndCount.EMPTY` is one shared node.
+    fn cache_and_count(&mut self, value: &CacheAndCount) -> Rc<JavaNode> {
+        let shape = |b: &mut Self| {
+            let set = b.cached_doc_id_set(value);
+            NodeShape::Object {
+                aligned_shallow_size: aligned_shallow_instance_size(&[REF, 4]),
+                fields: vec![("cache", node(set))],
+            }
+        };
+        let class_name = "org.apache.lucene.search.LRUQueryCache$CacheAndCount";
+        if value.is_empty_marker() {
+            self.shared(5 as *const (), class_name, shape)
+        } else {
+            let shape = shape(self);
+            JavaNode::new(class_name, shape)
+        }
+    }
+
+    /// `org.apache.lucene.search.LRUQueryCache` (`LRUQueryCache.java:87-107`):
+    /// `int maxSize`, `long maxRamBytesUsed`, `Predicate leavesToCache`, `Map
+    /// uniqueQueries` (a `Collections.synchronizedMap` from each query to
+    /// itself), `Set mostRecentlyUsedQueries` (its key set, a
+    /// `Collections$SynchronizedSet`), `Map cache` (an `IdentityHashMap` from
+    /// each core key to its `LeafCache`: `Object key`, `Map cache` from query
+    /// to `CacheAndCount`, `long ramBytesUsed` and `this$0`), `ReadLock
+    /// readLock`, `WriteLock writeLock`, `float skipCacheFactor`, `LongAdder
+    /// hitCount`, `LongAdder missCount`, `long ramBytesUsed`, `long
+    /// cacheCount` and `long cacheSize`.
+    ///
+    /// The reference fields are listed in the iteration order of Java's
+    /// `HashMap<Field, Object>` of them, so the walk pops `cache` first, then
+    /// `hitCount`, then `writeLock`, whose field `sync` the module system does
+    /// not open: every `RamUsageTester.ramUsed` of an `LRUQueryCache` throws
+    /// `RuntimeException("Can't access field 'sync' of class
+    /// 'java.util.concurrent.locks.ReentrantReadWriteLock$WriteLock' for RAM
+    /// estimation.")`, as printed against `lucene-test-framework-10.5.0.jar`
+    /// on JDK 25.
+    ///
+    /// `leavesToCache` is a Rust closure; it is declared as an object with no
+    /// field (16 bytes), as the tests' non-capturing lambdas and
+    /// `MinSegmentSizePredicate` (one `int`) both are. `LeafCache.this$0` is
+    /// the root of the walk, already seen when it is reached, so it is
+    /// declared `null`, which adds the same nothing.
+    pub fn lru_query_cache(&mut self, cache: &LRUQueryCache) -> Rc<JavaNode> {
+        self.shared(
+            cache as *const LRUQueryCache as *const (),
+            "org.apache.lucene.search.LRUQueryCache",
+            |b| {
+                let queries = cache.cached_queries();
+                let query_nodes: Vec<Rc<JavaNode>> =
+                    queries.iter().map(|q| b.query(q.as_ref())).collect();
+                let most_recently_used = JavaNode::new(
+                    "java.util.Collections$SynchronizedSet",
+                    NodeShape::JavaIterable {
+                        shallow_size: SYNCHRONIZED_SET_SHALLOW_SIZE,
+                        elements: query_nodes.iter().map(|q| node(Rc::clone(q))).collect(),
+                    },
+                );
+                let unique_queries = JavaNode::new(
+                    "java.util.Collections$SynchronizedMap",
+                    NodeShape::JavaMap {
+                        shallow_size: SYNCHRONIZED_MAP_SHALLOW_SIZE,
+                        entries: query_nodes
+                            .iter()
+                            .map(|q| (node(Rc::clone(q)), node(Rc::clone(q))))
+                            .collect(),
+                    },
+                );
+                let mut leaves = Vec::new();
+                for (key, entries) in cache.leaf_caches() {
+                    let key = b.cache_key(&key);
+                    let entries: Vec<(NodeChild, NodeChild)> = entries
+                        .iter()
+                        .map(|(query, value)| {
+                            (
+                                node(b.query(query.as_ref())),
+                                node(b.cache_and_count(value)),
+                            )
+                        })
+                        .collect();
+                    let leaf = JavaNode::new(
+                        "org.apache.lucene.search.LRUQueryCache$LeafCache",
+                        NodeShape::Object {
+                            aligned_shallow_size: aligned_shallow_instance_size(&[
+                                REF, REF, 8, REF,
+                            ]),
+                            fields: vec![
+                                ("this$0", NodeChild::Null),
+                                ("cache", node(b.hash_map(entries))),
+                                ("key", node(Rc::clone(&key))),
+                            ],
+                        },
+                    );
+                    leaves.push((node(key), node(leaf)));
+                }
+                let leaf_caches = JavaNode::new(
+                    "java.util.IdentityHashMap",
+                    NodeShape::JavaMap {
+                        shallow_size: IDENTITY_HASH_MAP_SHALLOW_SIZE,
+                        entries: leaves,
+                    },
+                );
+                let leaves_to_cache = JavaNode::new(
+                    "java.util.function.Predicate",
+                    NodeShape::Object {
+                        aligned_shallow_size: aligned_shallow_instance_size(&[]),
+                        fields: Vec::new(),
+                    },
+                );
+                let lock = |class_name: &'static str| {
+                    JavaNode::new(class_name, NodeShape::Inaccessible { field: "sync" })
+                };
+                NodeShape::Object {
+                    aligned_shallow_size: aligned_shallow_instance_size(&[
+                        4, 8, REF, REF, REF, REF, REF, REF, 4, REF, REF, 8, 8, 8,
+                    ]),
+                    fields: vec![
+                        ("missCount", node(long_adder())),
+                        ("mostRecentlyUsedQueries", node(most_recently_used)),
+                        (
+                            "readLock",
+                            node(lock(
+                                "java.util.concurrent.locks.ReentrantReadWriteLock$ReadLock",
+                            )),
+                        ),
+                        ("uniqueQueries", node(unique_queries)),
+                        ("leavesToCache", node(leaves_to_cache)),
+                        (
+                            "writeLock",
+                            node(lock(
+                                "java.util.concurrent.locks.ReentrantReadWriteLock$WriteLock",
+                            )),
+                        ),
+                        ("hitCount", node(long_adder())),
+                        ("cache", node(leaf_caches)),
+                    ],
+                }
+            },
+        )
+    }
+}
+
+/// A `java.util.concurrent.atomic.LongAdder`, one of the `SIMPLE_TYPES`,
+/// estimated at 0 past its shallow size.
+fn long_adder() -> Rc<JavaNode> {
+    JavaNode::new(
+        "java.util.concurrent.atomic.LongAdder",
+        NodeShape::Simple {
+            shallow_size: LONG_ADDER_SHALLOW_SIZE,
+            estimate: 0,
+        },
+    )
+}
+
+/// An object `handleOther` ignores (`CharsetEncoder`, `CharsetDecoder`,
+/// `ReentrantReadWriteLock`, `AtomicReference`).
+fn ignorable(class_name: &'static str) -> Rc<JavaNode> {
+    JavaNode::new(class_name, NodeShape::Ignorable)
 }

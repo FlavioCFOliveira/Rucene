@@ -165,6 +165,21 @@ impl CacheAndCount {
     pub fn count(&self) -> i32 {
         self.count
     }
+
+    /// Returns the cached doc id set.
+    ///
+    /// Equivalent to reading the private field `CacheAndCount.cache`; public
+    /// so that the test framework can model the Java object.
+    pub fn cache(&self) -> &Arc<dyn DocIdSet + Send + Sync> {
+        &self.cache
+    }
+
+    /// Returns whether this value is the `CacheAndCount.EMPTY` singleton
+    /// (Java's `== CacheAndCount.EMPTY`); public so that the test framework
+    /// can model the Java object.
+    pub fn is_empty_marker(&self) -> bool {
+        self.is_empty_marker
+    }
 }
 
 impl Accountable for CacheAndCount {
@@ -1107,6 +1122,31 @@ impl LRUQueryCache {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .queries()
+    }
+
+    /// Returns every leaf cache: its core key and, for each cached query, the
+    /// query and its cached value.
+    ///
+    /// Equivalent to reading the private field `LRUQueryCache.cache` and each
+    /// `LeafCache.cache` (`LRUQueryCache.java:99,706`) under the read lock;
+    /// public so that the test framework can model the Java object.
+    pub fn leaf_caches(&self) -> Vec<(CacheKey, Vec<(Arc<dyn Query>, CacheAndCount)>)> {
+        let cache = self
+            .state
+            .cache
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        cache
+            .iter()
+            .map(|(key, leaf)| {
+                let entries = leaf
+                    .cache
+                    .iter()
+                    .map(|(query, value)| (Arc::clone(&query.0), value.clone()))
+                    .collect();
+                (key.clone(), entries)
+            })
+            .collect()
     }
 
     /// Checks the cache's internal invariants.

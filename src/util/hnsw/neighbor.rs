@@ -244,6 +244,26 @@ impl NeighborArray {
         self.alert_on_heap_memory_usage_change(new_length, previous_length);
     }
 
+    /// Returns the length Java's `nodes.buffer` (and `scores.buffer`) has
+    /// grown to.
+    ///
+    /// Equivalent to reading `nodes.buffer.length` of the private field
+    /// `NeighborArray.nodes`; public so that the test framework can model the
+    /// Java object.
+    pub fn buffer_length(&self) -> usize {
+        self.buffer_length.load(Ordering::Relaxed)
+    }
+
+    /// Returns whether the array reports its growth to a listener (Java's
+    /// `onHeapMemoryUsageListener != null`).
+    ///
+    /// Equivalent to reading the private field
+    /// `NeighborArray.onHeapMemoryUsageListener`; public so that the test
+    /// framework can model the Java object.
+    pub fn has_on_heap_memory_usage_listener(&self) -> bool {
+        self.on_heap_memory_usage_listener.is_some()
+    }
+
     /// Returns the configured maximum size.
     pub fn max_size(&self) -> i32 {
         self.max_size as i32

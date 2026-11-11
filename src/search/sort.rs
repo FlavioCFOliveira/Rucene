@@ -1114,8 +1114,24 @@ impl SortField {
     /// # Errors
     ///
     /// Propagates any I/O error raised while rewriting.
+    ///
+    /// The sort fields `DoubleValuesSource.getSortField` and
+    /// `LongValuesSource.getSortField` build — Java's `DoubleValuesSortField`
+    /// and `LongValuesSortField`, recognised here by their comparator source —
+    /// rewrite their producer as those subclasses' overrides do
+    /// (`DoubleValuesSource.java:557-566`, `LongValuesSource.java:318-327`).
     pub fn rewrite<'a>(&'a self, searcher: &IndexSearcher) -> Result<Cow<'a, SortField>> {
-        let _ = searcher;
+        let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
+        if let Some(source) = source.and_then(|s| {
+            s.downcast_ref::<crate::search::double_values_source::DoubleValuesComparatorSource>()
+        }) {
+            return source.rewrite_sort_field(self, searcher);
+        }
+        if let Some(source) = source.and_then(|s| {
+            s.downcast_ref::<crate::search::long_values_source::LongValuesComparatorSource>()
+        }) {
+            return source.rewrite_sort_field(self, searcher);
+        }
         Ok(Cow::Borrowed(self))
     }
 

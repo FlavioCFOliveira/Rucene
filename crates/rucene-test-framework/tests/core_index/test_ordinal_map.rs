@@ -1,13 +1,6 @@
 //! Port of `lucene/core/src/test/org/apache/lucene/index/TestOrdinalMap.java`.
-//!
-//! **Divergence.** `testRamBytesUsed` measures the `OrdinalMap` with
-//! `RamUsageTester.ramUsed(map, ORDINAL_MAP_ACCUMULATOR)`, a reflective walk
-//! of its object graph that skips the `LongValues.ZEROES`/`IDENTITY`
-//! singletons, the shared `NullReader` and the `owner` field. The port's
-//! `RamUsageTester` measures only types with a `RamObject` model, and
-//! `OrdinalMap` (with its `PackedLongValues`) has none yet, so the
-//! measurement fails with `crate::core_support::ram_used_unmodelled`.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::Class;
@@ -24,14 +17,16 @@ use rucene::index::multi_doc_values::{
 };
 use rucene::index::IndexReader;
 use rucene::util::extra::ZeroesLongValues;
+use rucene::util::packed::PackedLongValues;
 use rucene::util::{Accountable, BytesRef};
 use rucene_test_framework::analysis::MockAnalyzer;
 use rucene_test_framework::index::RandomIndexWriter;
+use rucene_test_framework::util::ram_usage_tester::{
+    Accumulator, DefaultAccumulator, JavaNode, ModelBuilder, Queue, RamObject, RamUsageTester,
+};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
-use crate::core_support::{
-    assert_equals, assert_not_null, class, ram_used_unmodelled, random, test,
-};
+use crate::core_support::{assert_equals, assert_not_null, class, random, test};
 
 /// `TestOrdinalMap`.
 pub fn class_def() -> Arc<Class> {
@@ -57,10 +52,57 @@ fn config() -> Result<IndexWriterConfig> {
     Ok(cfg)
 }
 
-/// `RamUsageTester.ramUsed(map, ORDINAL_MAP_ACCUMULATOR)`: see the module
-/// divergence.
-fn ordinal_map_ram_used(_map: &OrdinalMap) -> i64 {
-    ram_used_unmodelled("org.apache.lucene.index.OrdinalMap")
+/// `ORDINAL_MAP_ACCUMULATOR`: skips the `LongValues.ZEROES` and
+/// `LongValues.IDENTITY` singletons and the shared
+/// `PackedInts.NullReader.forCount(PackedLongValues.DEFAULT_PAGE_SIZE)`, and
+/// does not follow `OrdinalMap.owner`.
+struct OrdinalMapAccumulator {
+    /// `LongValues.ZEROES`, `LongValues.IDENTITY` and the shared
+    /// `NullReader`, the nodes of the measured graph.
+    singletons: [Rc<JavaNode>; 3],
+}
+
+impl Accumulator for OrdinalMapAccumulator {
+    fn accumulate_object<'a>(
+        &mut self,
+        o: &'a dyn RamObject,
+        shallow_size: i64,
+        field_values: &[(&'static str, Option<&'a dyn RamObject>)],
+        queue: &mut Queue<'a>,
+    ) -> i64 {
+        let address = o as *const dyn RamObject as *const ();
+        if self
+            .singletons
+            .iter()
+            .any(|s| std::ptr::eq(Rc::as_ptr(s) as *const (), address))
+        {
+            return 0;
+        }
+        if o.instance_of("org.apache.lucene.index.OrdinalMap") {
+            // `fieldValues.remove(ORDINAL_MAP_OWNER_FIELD)`.
+            let field_values: Vec<(&'static str, Option<&'a dyn RamObject>)> = field_values
+                .iter()
+                .filter(|(name, _)| *name != "owner")
+                .copied()
+                .collect();
+            return DefaultAccumulator.accumulate_object(o, shallow_size, &field_values, queue);
+        }
+        DefaultAccumulator.accumulate_object(o, shallow_size, field_values, queue)
+    }
+}
+
+/// `RamUsageTester.ramUsed(map, ORDINAL_MAP_ACCUMULATOR)`.
+fn ordinal_map_ram_used(map: &OrdinalMap) -> i64 {
+    let mut builder = ModelBuilder::new();
+    let root = builder.ordinal_map(map);
+    let mut accumulator = OrdinalMapAccumulator {
+        singletons: [
+            builder.long_values_zeroes(),
+            builder.long_values_identity(),
+            builder.null_reader(PackedLongValues::DEFAULT_PAGE_SIZE),
+        ],
+    };
+    RamUsageTester::ram_used_with(Some(&*root), &mut accumulator)
 }
 
 /// Port of `TestOrdinalMap.testRamBytesUsed`.

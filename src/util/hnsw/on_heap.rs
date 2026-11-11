@@ -349,6 +349,28 @@ impl OnHeapHnswGraph {
         }
     }
 
+    /// Returns `graph.length`, the capacity of the outer array.
+    ///
+    /// Equivalent to reading the private field `OnHeapHnswGraph.graph`
+    /// (`OnHeapHnswGraph.java:47`); public so that the test framework can
+    /// model the Java object.
+    pub fn graph_length(&self) -> usize {
+        self.graph.len()
+    }
+
+    /// Returns `graph[node]`: `None` for Java's `null`, else the node's level
+    /// slots, an unset slot standing for a `null` `graph[node][level]`.
+    ///
+    /// Equivalent to reading the private field `OnHeapHnswGraph.graph`
+    /// (`OnHeapHnswGraph.java:47`); public so that the test framework can
+    /// model the Java object.
+    pub fn graph_node(&self, node: usize) -> Option<&[OnceLock<NeighborArray>]> {
+        self.graph
+            .get(node)
+            .and_then(|slot| slot.get())
+            .map(|levels| &**levels)
+    }
+
     /// Returns the number of levels currently in the graph.
     fn num_levels_internal(&self) -> i32 {
         self.entry_node.get().level + 1

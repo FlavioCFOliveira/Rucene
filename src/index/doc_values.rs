@@ -2069,6 +2069,34 @@ impl OrdinalMap {
     pub fn global_ord_deltas(&self) -> &(dyn LongValues + Send + Sync) {
         self.global_ord_deltas.as_ref()
     }
+
+    /// Returns, for every segment in the weight-sorted order, the map from
+    /// segment ordinal to global ordinal.
+    ///
+    /// Equivalent to reading the package-private `segmentToGlobalOrds` field
+    /// (`OrdinalMap.java:193`); public so that the test framework can model
+    /// the Java object.
+    pub fn segment_to_global_ords(&self) -> &[Box<dyn LongValues + Send + Sync>] {
+        &self.segment_to_global_ords
+    }
+
+    /// Returns `segmentMap.newToOld`, the segments by descending weight.
+    ///
+    /// Equivalent to reading the private field `SegmentMap.newToOld`
+    /// (`OrdinalMap.java:97`); public so that the test framework can model
+    /// the Java object.
+    pub fn segment_map_new_to_old(&self) -> &[i32] {
+        &self.segment_map.new_to_old
+    }
+
+    /// Returns `segmentMap.oldToNew`, the inverse of `newToOld`.
+    ///
+    /// Equivalent to reading the private field `SegmentMap.oldToNew`
+    /// (`OrdinalMap.java:97`); public so that the test framework can model
+    /// the Java object.
+    pub fn segment_map_old_to_new(&self) -> &[i32] {
+        &self.segment_map.old_to_new
+    }
 }
 
 /// Segment ordering by descending weight.
@@ -2192,22 +2220,48 @@ impl PriorityQueueComparator<TermsEnumIndex> for TermsEnumIndexComparator {
 }
 
 /// The anonymous `LongValues` of `OrdinalMap` over plain packed deltas:
-/// `ord + newDeltas.get((int) ord)` (`OrdinalMap.java:376-382`).
-struct PackedDeltaLongValues(Box<dyn crate::util::packed::PackedIntsMutable>);
+/// `ord + newDeltas.get((int) ord)` (`OrdinalMap.java:376-382`), the Java
+/// class `OrdinalMap$1`.
+pub struct PackedDeltaLongValues(Box<dyn crate::util::packed::PackedIntsMutable>);
+
+impl PackedDeltaLongValues {
+    /// Returns the deltas, the anonymous class's captured `newDeltas`; public
+    /// so that the test framework can model the Java object.
+    pub fn deltas(&self) -> &dyn crate::util::packed::PackedIntsMutable {
+        self.0.as_ref()
+    }
+}
 
 impl LongValues for PackedDeltaLongValues {
     fn get(&self, index: i64) -> i64 {
         index + self.0.get(index as i32)
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// The anonymous `LongValues` of `OrdinalMap` over monotonic deltas:
-/// `ord + deltas.get(ord)` (`OrdinalMap.java:385-391`).
-struct MonotonicDeltaLongValues(crate::util::packed::MonotonicLongValues);
+/// `ord + deltas.get(ord)` (`OrdinalMap.java:385-391`), the Java class
+/// `OrdinalMap$2`.
+pub struct MonotonicDeltaLongValues(crate::util::packed::MonotonicLongValues);
+
+impl MonotonicDeltaLongValues {
+    /// Returns the deltas, the anonymous class's captured `deltas`; public so
+    /// that the test framework can model the Java object.
+    pub fn deltas(&self) -> &crate::util::packed::MonotonicLongValues {
+        &self.0
+    }
+}
 
 impl LongValues for MonotonicDeltaLongValues {
     fn get(&self, index: i64) -> i64 {
         index + LongValues::get(&self.0, index)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 

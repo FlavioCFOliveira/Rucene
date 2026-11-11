@@ -23,8 +23,6 @@
 //! * `prettyPrint` appends `hnsw.toString()`: `OnHeapHnswGraph` overrides it
 //!   (its `Display`); an off-heap graph prints `Object.toString`, rendered
 //!   as its Java class name and the address.
-//! * `RamUsageTester.ramUsed(hnsw)` has no `RamObject` model of
-//!   `OnHeapHnswGraph` ([`ram_used_unmodelled`]).
 //! * `exec.submit(callable)` / `future.get(10, SECONDS)`: [`submit`] and
 //!   [`Future::get`] over the port's `ThreadPoolExecutor`.
 //! * The anonymous `AbstractKnnCollector` of `testFindAll` returns `null`
@@ -79,11 +77,12 @@ use rucene::util::{
 use rucene_test_framework::index::base_field_info_format_test_case::VECTOR_SIMILARITY_FUNCTION_VALUES;
 use rucene_test_framework::jdk::thread_pool_executor::ThreadPoolExecutor;
 use rucene_test_framework::util::java_exceptions::{expect_throws, rethrow_java};
+use rucene_test_framework::util::ram_usage_tester::{ModelBuilder, RamUsageTester};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
 use crate::core_support::{
     assert_array_equals_msg, assert_equals, assert_equals_delta, assert_equals_msg,
-    assert_not_equals, assert_not_null, ram_used_unmodelled, random, JavaHashSet,
+    assert_not_equals, assert_not_null, random, JavaHashSet,
 };
 
 /// The abstract members of `HnswGraphTestCase<T>` a concrete subclass
@@ -1364,7 +1363,7 @@ fn test_ram_usage_estimate<C: HnswCase>(this: &mut Fixture<C>) -> Result<()> {
     builder.build(C::as_knn(&vectors).size())?;
     let hnsw = builder.into_graph()?;
     let estimated = RamUsageEstimator::size_of_object(Some(SizedObject::Accountable(&hnsw)));
-    let actual = ram_used_unmodelled("OnHeapHnswGraph");
+    let actual = RamUsageTester::ram_used(&*ModelBuilder::new().on_heap_hnsw_graph(&hnsw));
 
     assert_equals_delta(actual as f64, estimated as f64, actual as f64 * 0.3);
     Ok(())

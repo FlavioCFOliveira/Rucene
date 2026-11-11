@@ -225,6 +225,21 @@ impl LongValues for PackedLongValues {
     fn get(&self, index: i64) -> i64 {
         PackedLongValuesAccess::get(self, index)
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl PackedLongValues {
+    /// Returns the packed pages.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `PackedLongValues.values`; public so that the test framework can model
+    /// the Java object.
+    pub fn values(&self) -> &[Box<dyn PackedIntsReader + Send + Sync>] {
+        &self.values
+    }
 }
 
 impl Accountable for PackedLongValues {
@@ -288,6 +303,21 @@ impl DeltaPackedLongValues {
 impl LongValues for DeltaPackedLongValues {
     fn get(&self, index: i64) -> i64 {
         PackedLongValuesAccess::get(self, index)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl DeltaPackedLongValues {
+    /// Returns the minimum of each page.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `DeltaPackedLongValues.mins`; public so that the test framework can
+    /// model the Java object.
+    pub fn mins(&self) -> &[i64] {
+        &self.mins
     }
 }
 
@@ -353,6 +383,30 @@ impl MonotonicLongValues {
 impl LongValues for MonotonicLongValues {
     fn get(&self, index: i64) -> i64 {
         PackedLongValuesAccess::get(self, index)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl MonotonicLongValues {
+    /// Returns the minimum of each page.
+    ///
+    /// Equivalent to reading the field `mins` that `MonotonicLongValues`
+    /// inherits from `DeltaPackedLongValues`; public so that the test
+    /// framework can model the Java object.
+    pub fn mins(&self) -> &[i64] {
+        &self.base.mins
+    }
+
+    /// Returns the average slope of each page.
+    ///
+    /// Equivalent to reading the package-private field
+    /// `MonotonicLongValues.averages`; public so that the test framework can
+    /// model the Java object.
+    pub fn averages(&self) -> &[f32] {
+        &self.averages
     }
 }
 

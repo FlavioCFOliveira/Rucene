@@ -35,6 +35,14 @@ pub trait PackedIntsReader: Accountable {
     ///
     /// Equivalent to `PackedInts.Reader.size()`.
     fn size(&self) -> i32;
+
+    /// Answers `instanceof` on the concrete reader class: the default `None`,
+    /// overridden by the readers whose class a caller tells apart (the test
+    /// framework's `RamUsageTester` models read the concrete Java class and
+    /// its arrays).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// The body of `PackedInts.Reader.get(int, long[], int, int)`.
@@ -193,6 +201,10 @@ impl PackedIntsReader for NullReader {
 
     fn size(&self) -> i32 {
         self.value_count
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
