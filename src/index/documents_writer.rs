@@ -5508,8 +5508,10 @@ impl DocumentsWriterFlushControl {
         inner.flush_bytes -= dwpt.last_committed_bytes_used();
         debug_assert!(self.assert_memory(&mut inner));
         self.update_stall_state_locked(&mut inner);
-        drop(inner);
+        // `notifyAll()` inside the `synchronized` method
+        // (`DocumentsWriterFlushControl.java:298`), with the monitor held.
         self.flush_done.notify_all();
+        drop(inner);
     }
 
     /// Returns a snapshot of every currently active DWPT.

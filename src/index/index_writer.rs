@@ -6299,6 +6299,11 @@ impl IndexWriter {
         }));
         // The panic Java's `throw t` (`IndexWriter.java:4890`) rethrows once
         // the merge is finished and the tragedy recorded.
+        // `success = true` is set only once `mergeInit`, `mergeMiddle` and
+        // `mergeSuccess` returned (`IndexWriter.java:4859-4861`); a failure
+        // `handleMergeException` swallows — an aborted merge's — leaves it
+        // `false`, so the merge's readers are closed below.
+        let success = matches!(outcome, Ok(Ok(())));
         let mut thrown: Option<Box<dyn std::any::Any + Send>> = None;
         let mut result = match outcome {
             Ok(Ok(())) => Ok(()),
@@ -6309,7 +6314,6 @@ impl IndexWriter {
                 self.handle_merge_exception(error, &mut merge)
             }
         };
-        let success = result.is_ok();
 
         // `synchronized (this)` (`IndexWriter.java:4866-4885`): closing the
         // readers, finishing the merge and asking the policy for the merges it

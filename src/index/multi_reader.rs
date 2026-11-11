@@ -372,6 +372,11 @@ pub struct MultiReader {
     /// `BaseCompositeReader.numDocs` (an `AtomicInteger` initialised to `-1`).
     num_docs: AtomicI32,
     close_sub_readers: bool,
+    /// `Some(reader)` for the anonymous `BaseCompositeReader` that
+    /// `SegmentOrder.reorder(reader)` returns (`SegmentOrder.java:92-108`): it
+    /// takes no reference on its leaves, its `doClose()` is a no-op, and its
+    /// `getReaderCacheHelper()` is `reader`'s.
+    view_of: Option<Arc<dyn IndexReader>>,
 }
 
 impl Debug for MultiReader {
@@ -486,7 +491,26 @@ impl MultiReader {
             max_doc,
             num_docs: AtomicI32::new(-1),
             close_sub_readers,
+            view_of: None,
         })
+    }
+
+    /// The composite reader `SegmentOrder.reorder(reader)` returns: a
+    /// `BaseCompositeReader` over `sub_readers` (already in their new order)
+    /// that takes no reference on them, does nothing when closed, and answers
+    /// `reader`'s cache helper (`SegmentOrder.java:92-108`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new_sorted`](Self::new_sorted).
+    pub(crate) fn new_reordered_view(
+        sub_readers: Vec<Arc<dyn IndexReader>>,
+        reader: Arc<dyn IndexReader>,
+    ) -> Result<Self> {
+        // `close_sub_readers = true` takes no reference on the leaves.
+        let mut view = Self::new_sorted(sub_readers, None, true)?;
+        view.view_of = Some(reader);
+        Ok(view)
     }
 
     /// Creates a `MultiReader` that closes its sub-readers when closed.
@@ -560,6 +584,10 @@ impl IndexReader for MultiReader {
     }
 
     fn do_close(&self) -> Result<()> {
+        if self.view_of.is_some() {
+            // `protected void doClose() { // no op }` (`SegmentOrder.java:100-102`).
+            return Ok(());
+        }
         // Mirror MultiReader.doClose(): close each sub if closeSubReaders,
         // otherwise decRef it; surface the first error encountered.
         let mut first_err: Option<LuceneError> = None;
@@ -582,6 +610,10 @@ impl IndexReader for MultiReader {
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        if let Some(reader) = &self.view_of {
+            // `return reader.getReaderCacheHelper()` (`SegmentOrder.java:105-107`).
+            return reader.get_reader_cache_helper();
+        }
         // MultiReader instances can be short-lived, which would make caching
         // trappy, so we do not cache on them — unless they wrap a single
         // reader, in which case we delegate. Matches MultiReader in Lucene.

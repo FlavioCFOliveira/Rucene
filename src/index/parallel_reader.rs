@@ -1013,8 +1013,8 @@ impl ParallelCompositeReader {
         // which the check above leaves nothing to refuse.
         let max_doc = crate::error::to_int_exact(max_doc)?;
 
-        // Identity-deduplicated union of the original composites (NOT the
-        // synthetic leaves): these are what we close/decRef on do_close.
+        // Identity-deduplicated union of the original composites, then (below)
+        // the synthetic leaves: what do_close closes or decRefs.
         let mut complete_reader_set: Vec<Arc<dyn IndexReader>> = Vec::new();
         for r in readers.iter().chain(stored_fields_readers.iter()) {
             let as_reader: Arc<dyn IndexReader> = Arc::clone(r) as Arc<dyn IndexReader>;
@@ -1038,6 +1038,10 @@ impl ParallelCompositeReader {
             .into_iter()
             .map(|plr| Arc::new(plr) as Arc<dyn IndexReader>)
             .collect();
+        // `completeReaderSet.addAll(getSequentialSubReaders())`
+        // (`ParallelCompositeReader.java:82-84`): the synthetic readers are
+        // closed or decRef'd too; their own `doClose()` does nothing.
+        complete_reader_set.extend(sub_readers.iter().cloned());
 
         Ok(Self {
             core,

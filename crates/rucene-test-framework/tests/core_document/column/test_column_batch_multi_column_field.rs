@@ -213,11 +213,8 @@ fn test_compose_order_independent() -> Result<()> {
     Ok(())
 }
 
-/// `indexComposedBinaryColumns(storedFirst, stored, indexed)`.
-///
-/// Java returns `dir` and leaves `w` unclosed and unreachable; the port
-/// leaks the writer the same way (`std::mem::forget`) so dropping it runs
-/// nothing Java does not.
+/// `indexComposedBinaryColumns(storedFirst, stored, indexed)`: the batch is
+/// added and `w.close()` commits it (`TestColumnBatchMultiColumnField.java:180`).
 fn index_composed_binary_columns(
     stored_first: bool,
     stored: &BytesRef,
@@ -237,7 +234,7 @@ fn index_composed_binary_columns(
     } else {
         simple_batch(1, vec![inverted_col, stored_col])
     })?;
-    std::mem::forget(w);
+    w.close()?;
     Ok(dir)
 }
 

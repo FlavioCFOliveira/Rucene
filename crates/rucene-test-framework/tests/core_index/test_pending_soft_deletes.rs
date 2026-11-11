@@ -178,15 +178,15 @@ fn test_hard_delete_soft_deleted() -> Result<()> {
     let mut pending_soft_deletes = new_pending_deletes(&segment_info);
     pending_soft_deletes.on_new_reader(segment_reader, &segment_info)?;
     assert_equals(&0, &pending_soft_deletes.num_pending_deletes());
-    assert_equals(&1, &pending_soft_deletes.get_del_count(&segment_info));
+    assert_equals(&1, &pending_soft_deletes.get_del_count());
     Assert::assert_true(get(pending_soft_deletes.get_live_docs(), 0));
     Assert::assert_false(get(pending_soft_deletes.get_live_docs(), 1));
     Assert::assert_true(get(pending_soft_deletes.get_live_docs(), 2));
     Assert::assert_true(pending_soft_deletes.get_hard_live_docs().is_none());
-    Assert::assert_true(pending_soft_deletes.delete(1, &segment_info)?);
+    Assert::assert_true(pending_soft_deletes.delete(1)?);
     assert_equals(&0, &pending_soft_deletes.num_pending_deletes());
     assert_equals(&-1, &pending_soft_deletes.pending_delete_count()); // transferred the delete
-    assert_equals(&1, &pending_soft_deletes.get_del_count(&segment_info));
+    assert_equals(&1, &pending_soft_deletes.get_del_count());
     drop(leaf);
     close_all(reader, writer, &mut dir)
 }
@@ -202,7 +202,7 @@ fn test_delete_soft() -> Result<()> {
     let mut pending_soft_deletes = new_pending_deletes(&segment_info);
     pending_soft_deletes.on_new_reader(segment_reader(&leaf), &segment_info)?;
     assert_equals(&0, &pending_soft_deletes.num_pending_deletes());
-    assert_equals(&1, &pending_soft_deletes.get_del_count(&segment_info));
+    assert_equals(&1, &pending_soft_deletes.get_del_count());
     Assert::assert_true(get(pending_soft_deletes.get_live_docs(), 0));
     Assert::assert_false(get(pending_soft_deletes.get_live_docs(), 1));
     Assert::assert_true(get(pending_soft_deletes.get_live_docs(), 2));
@@ -211,7 +211,7 @@ fn test_delete_soft() -> Result<()> {
     let live_docs = pending_soft_deletes.get_live_docs();
     pending_soft_deletes.on_new_reader(segment_reader(&leaf), &segment_info)?;
     assert_equals(&0, &pending_soft_deletes.num_pending_deletes());
-    assert_equals(&1, &pending_soft_deletes.get_del_count(&segment_info));
+    assert_equals(&1, &pending_soft_deletes.get_del_count());
     Assert::assert_true(identity(&live_docs) == identity(&pending_soft_deletes.get_live_docs()));
 
     // now apply a hard delete
@@ -224,7 +224,7 @@ fn test_delete_soft() -> Result<()> {
     let mut pending_soft_deletes = new_pending_deletes(&segment_info);
     pending_soft_deletes.on_new_reader(segment_reader(&leaf), &segment_info)?;
     assert_equals(&0, &pending_soft_deletes.num_pending_deletes());
-    assert_equals(&2, &pending_soft_deletes.get_del_count(&segment_info));
+    assert_equals(&2, &pending_soft_deletes.get_del_count());
     Assert::assert_false(get(pending_soft_deletes.get_live_docs(), 0));
     Assert::assert_false(get(pending_soft_deletes.get_live_docs(), 1));
     Assert::assert_true(get(pending_soft_deletes.get_live_docs(), 2));
@@ -267,11 +267,10 @@ fn apply(
     deletes: &mut PendingSoftDeletes,
     field_info: &FieldInfo,
     updates: &[DocValuesFieldUpdates],
-    info: &mut SegmentCommitInfo,
 ) -> Result<()> {
     for update in updates {
         let mut iterator = merged_iterator(vec![update.iterator()]);
-        deletes.on_doc_values_update(field_info, &mut iterator, info)?;
+        deletes.on_doc_values_update(field_info, &mut iterator)?;
     }
     Ok(())
 }
@@ -280,7 +279,7 @@ fn apply(
 fn test_apply_updates() -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let si = base::test_segment_info(&dir, 10)?;
-    let mut commit_info = base::test_commit_info(si)?;
+    let commit_info = base::test_commit_info(si)?;
     let writer = IndexWriter::new(Arc::clone(&dir), LuceneTestCase::new_index_writer_config())?;
     for _ in 0..commit_info.info.max_doc()? {
         writer.add_document(&Document::new())?;
@@ -299,9 +298,9 @@ fn test_apply_updates() -> Result<()> {
     let field_info = soft_deletes_field_info(0)?;
     let docs_deleted = [1, 3, 7, 8, NO_MORE_DOCS];
     let updates = [single_update(&docs_deleted, 10, true)?];
-    apply(&mut deletes, &field_info, &updates, &mut commit_info)?;
+    apply(&mut deletes, &field_info, &updates)?;
     assert_equals(&0, &deletes.num_pending_deletes());
-    assert_equals(&4, &deletes.get_del_count(&commit_info));
+    assert_equals(&4, &deletes.get_del_count());
     let expected = [
         true, false, true, false, true, true, true, false, false, true,
     ];
@@ -312,9 +311,9 @@ fn test_apply_updates() -> Result<()> {
     let docs_deleted = [1, 2, NO_MORE_DOCS];
     let updates = [single_update(&docs_deleted, 10, true)?];
     let field_info = soft_deletes_field_info(1)?;
-    apply(&mut deletes, &field_info, &updates, &mut commit_info)?;
+    apply(&mut deletes, &field_info, &updates)?;
     assert_equals(&0, &deletes.num_pending_deletes());
-    assert_equals(&5, &deletes.get_del_count(&commit_info));
+    assert_equals(&5, &deletes.get_del_count());
     let expected = [
         true, false, false, false, true, true, true, false, false, true,
     ];
@@ -331,15 +330,15 @@ fn test_update_applied_only_once() -> Result<()> {
     soft_update_three(&writer)?;
     writer.commit()?;
     let reader = directory_reader::open(dir.as_directory())?;
-    let (leaf, mut segment_info) = only_segment(&reader)?;
+    let (leaf, segment_info) = only_segment(&reader)?;
     let mut deletes = new_pending_deletes(&segment_info);
     deletes.on_new_reader(segment_reader(&leaf), &segment_info)?;
     let field_info = soft_deletes_field_info(segment_info.get_next_doc_values_gen())?;
     let docs_deleted = [1, NO_MORE_DOCS];
     let updates = [single_update(&docs_deleted, 3, true)?];
-    apply(&mut deletes, &field_info, &updates, &mut segment_info)?;
+    apply(&mut deletes, &field_info, &updates)?;
     assert_equals(&0, &deletes.num_pending_deletes());
-    assert_equals(&1, &deletes.get_del_count(&segment_info));
+    assert_equals(&1, &deletes.get_del_count());
     Assert::assert_true(get(deletes.get_live_docs(), 0));
     Assert::assert_false(get(deletes.get_live_docs(), 1));
     Assert::assert_true(get(deletes.get_live_docs(), 2));
@@ -351,7 +350,7 @@ fn test_update_applied_only_once() -> Result<()> {
     Assert::assert_false(get(deletes.get_live_docs(), 1));
     Assert::assert_true(get(deletes.get_live_docs(), 2));
     assert_equals(&0, &deletes.num_pending_deletes());
-    assert_equals(&1, &deletes.get_del_count(&segment_info));
+    assert_equals(&1, &deletes.get_del_count());
     drop(leaf);
     close_all(reader, writer, &mut dir)
 }
@@ -363,12 +362,12 @@ fn test_reset_on_update() -> Result<()> {
     soft_update_three(&writer)?;
     writer.commit()?;
     let reader = directory_reader::open(dir.as_directory())?;
-    let (leaf, mut segment_info) = only_segment(&reader)?;
+    let (leaf, segment_info) = only_segment(&reader)?;
     let mut deletes = new_pending_deletes(&segment_info);
     deletes.on_new_reader(segment_reader(&leaf), &segment_info)?;
     let field_info = soft_deletes_field_info(segment_info.get_next_doc_values_gen())?;
     let updates = [single_update(&[0, 1, NO_MORE_DOCS], 3, false)?];
-    apply(&mut deletes, &field_info, &updates, &mut segment_info)?;
+    apply(&mut deletes, &field_info, &updates)?;
     assert_equals(&0, &deletes.num_pending_deletes());
     Assert::assert_true(get(deletes.get_live_docs(), 0));
     Assert::assert_true(get(deletes.get_live_docs(), 1));
@@ -385,14 +384,14 @@ fn test_reset_on_update() -> Result<()> {
     segment_info.advance_doc_values_gen();
     let field_info = soft_deletes_field_info(segment_info.get_next_doc_values_gen())?;
     let updates = [single_update(&[1, NO_MORE_DOCS], 3, true)?];
-    apply(&mut deletes, &field_info, &updates, &mut segment_info)?;
+    apply(&mut deletes, &field_info, &updates)?;
     // no changes we keep this update
     Assert::assert_true(identity(&live_docs) != identity(&deletes.get_live_docs()));
     Assert::assert_true(get(deletes.get_live_docs(), 0));
     Assert::assert_false(get(deletes.get_live_docs(), 1));
     Assert::assert_true(get(deletes.get_live_docs(), 2));
     assert_equals(&0, &deletes.num_pending_deletes());
-    assert_equals(&1, &deletes.get_del_count(&segment_info));
+    assert_equals(&1, &deletes.get_del_count());
     drop(leaf);
     close_all(reader, writer, &mut dir)
 }

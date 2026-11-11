@@ -638,16 +638,16 @@ impl FieldsIndex for FieldsIndexReader {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`], this crate's carrier for an
-    /// `IndexOutOfBoundsException`, with the JDK's message `Index <docID> out
-    /// of bounds for length <maxDoc>`, for a document outside the segment; and
-    /// the errors of reading the index.
+    /// Returns the `java.lang.IndexOutOfBoundsException` of
+    /// `Objects.checkIndex(docID, maxDoc)` (`FieldsIndexReader.java:121`), with
+    /// the JDK's message `Index <docID> out of bounds for length <maxDoc>`, for
+    /// a document outside the segment; and the errors of reading the index.
     fn get_block_id(&self, doc_id: i32) -> Result<i64> {
         if doc_id < 0 || doc_id >= self.max_doc {
-            return Err(LuceneError::illegal_argument(format!(
-                "Index {doc_id} out of bounds for length {}",
-                self.max_doc
-            )));
+            return Err(LuceneError::unchecked(
+                "java.lang.IndexOutOfBoundsException",
+                format!("Index {doc_id} out of bounds for length {}", self.max_doc),
+            ));
         }
         let mut block_index =
             self.docs
@@ -5672,7 +5672,12 @@ mod tests {
         for doc in [11, -1] {
             match index.get_block_id(doc) {
                 Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { message, .. },
+                    kind:
+                        LuceneErrorKind::Unchecked {
+                            class: "java.lang.IndexOutOfBoundsException",
+                            message: Some(message),
+                            ..
+                        },
                     ..
                 }) => {
                     assert_eq!(message, format!("Index {doc} out of bounds for length 11"));

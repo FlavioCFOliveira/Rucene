@@ -3672,6 +3672,18 @@ impl DefaultIndexingChain {
                 batch_doc_id,
                 prev_batch_doc_id,
             )?;
+            // Java casts the value to the array the field type's encoding
+            // writes (`IndexingChain.java:1276,1289`): a column of the other
+            // element type fails there, before the dimension check.
+            if let Some(FieldVectorWriter::Byte(_)) =
+                self.per_fields[pf].knn_field_vectors_writer.as_ref()
+            {
+                return Err(LuceneError::unchecked(
+                    "java.lang.ClassCastException",
+                    "class [F cannot be cast to class [B ([F and [B are in module java.base of \
+                     loader 'bootstrap')",
+                ));
+            }
             let vec = cursor.value();
             ColumnValidation::check_vector_dimension(
                 &name,
@@ -3731,6 +3743,18 @@ impl DefaultIndexingChain {
                 batch_doc_id,
                 prev_batch_doc_id,
             )?;
+            // Java casts the value to the array the field type's encoding
+            // writes (`IndexingChain.java:1276,1289`): a column of the other
+            // element type fails there, before the dimension check.
+            if let Some(FieldVectorWriter::Float(_)) =
+                self.per_fields[pf].knn_field_vectors_writer.as_ref()
+            {
+                return Err(LuceneError::unchecked(
+                    "java.lang.ClassCastException",
+                    "class [B cannot be cast to class [F ([B and [F are in module java.base of \
+                     loader 'bootstrap')",
+                ));
+            }
             let vec = cursor.value();
             ColumnValidation::check_vector_dimension(
                 &name,

@@ -275,8 +275,8 @@ fn test_multi_term_docs() -> Result<()> {
         directory_reader::open(ram_dir2.as_directory())?,
         directory_reader::open(ram_dir3.as_directory())?,
     ];
-    let mr2: Arc<dyn IndexReader> = Arc::new(MultiReader::new(readers1.clone(), false)?);
-    let mr3: Arc<dyn IndexReader> = Arc::new(MultiReader::new(readers2.clone(), false)?);
+    let mr2: Arc<dyn IndexReader> = Arc::new(MultiReader::new_closing(readers1.clone())?);
+    let mr3: Arc<dyn IndexReader> = Arc::new(MultiReader::new_closing(readers2.clone())?);
 
     // test mixing up TermDocs and TermEnums from different readers.
     let mut te2 = MultiTerms::get_terms(&mr2, "body")?

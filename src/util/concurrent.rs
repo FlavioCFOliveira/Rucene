@@ -809,9 +809,15 @@ impl Drop for BlockerRegistration<'_> {
 /// does not hold it, and must not, since it may itself be holding the monitor
 /// — so a notification sent between the thread's last check of its status and
 /// its entry into the wait would be lost. The thread therefore waits in
-/// stretches of at most 10 ms and checks its status after each; the stretches
-/// are not returned to the caller, so the wait ends only as Java's does, and an
-/// interrupt is delivered at most 10 ms late in that race.
+/// stretches of at most 10 ms and checks its status after each, so an
+/// interrupt is delivered at most 10 ms late in that race. A notification that
+/// arrives as a stretch times out is not reported by the condition variable —
+/// the wake finds no waiter and the stretch reports its timeout — so an
+/// unbounded wait (`None`) returns after every stretch, as the spurious
+/// wake-up Java allows, and its caller re-checks its condition; a wait that
+/// went on with the next stretch would never see that notification again. A
+/// bounded wait keeps waiting until its deadline, which bounds the delay a
+/// lost notification can cause.
 ///
 /// # Errors
 ///
@@ -859,8 +865,12 @@ pub fn wait_interruptibly<'a, T>(
         if take_current_interrupt(&state) {
             break Err(InterruptedException);
         }
-        if !result.timed_out() {
-            // Notified, or woken spuriously: Java returns either way.
+        if !result.timed_out() || deadline.is_none() {
+            // Notified, or woken spuriously: Java returns either way. An
+            // unbounded wait also returns when a stretch timed out, as a
+            // spurious wake-up: a notification that raced the stretch's
+            // timeout is not reported, and only the caller's re-check of its
+            // condition can see what it announced.
             break Ok(());
         }
     };

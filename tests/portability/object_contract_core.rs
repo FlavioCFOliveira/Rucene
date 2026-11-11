@@ -1529,24 +1529,21 @@ fn pending_deletes(m: &Measured, index_dir: &std::path::Path) {
 
     let mut hard = PendingDeletes::new(&info);
     assert_eq!(
-        hard.to_string_with_info(&info),
+        hard.to_string(),
         m.get("PendingDeletes.toString/fresh"),
         "Lucene never closes the parenthesis it opens here"
     );
-    hard.get_mutable_bits(&info);
+    hard.get_mutable_bits();
+    assert_eq!(hard.to_string(), m.get("PendingDeletes.toString/writeable"));
+    hard.delete(1).expect("delete document 1");
     assert_eq!(
-        hard.to_string_with_info(&info),
-        m.get("PendingDeletes.toString/writeable")
-    );
-    hard.delete(1, &info).expect("delete document 1");
-    assert_eq!(
-        hard.to_string_with_info(&info),
+        hard.to_string(),
         m.get("PendingDeletes.toString/one-deleted")
     );
 
     let soft = PendingSoftDeletes::new("__soft_deletes", &info);
     assert_eq!(
-        soft.to_string_with_info(&info),
+        soft.to_string(),
         m.get("PendingSoftDeletes.toString/fresh"),
         "the embedded hardDeletes tracker is rendered whole, its parenthesis open too"
     );

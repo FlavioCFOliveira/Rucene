@@ -6,7 +6,7 @@ use randomizedtesting::jdk::random::{JdkRandom, Random};
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::jdk::thread::Thread;
 use randomizedtesting::junit::Assert;
-use rucene::document::{Document, Store};
+use rucene::document::{Document, Store, StringField};
 use rucene::error::Result;
 use rucene::index::directory_reader;
 use rucene::index::index_file_names::is_codec_file;
@@ -24,7 +24,7 @@ use rucene_test_framework::util::lucene_test_case::{TEST_NIGHTLY, VERBOSE};
 use rucene_test_framework::util::{LineFileDocs, LuceneTestCase, TestUtil};
 
 use crate::core_support::{assert_equals, assert_equals_msg, class, random, test};
-use crate::support::{assert_no_unreferenced_files, field_mut};
+use crate::support::{assert_no_unreferenced_files, field_mut_as};
 
 /// `TestRollingUpdates`.
 pub fn class_def() -> Arc<Class> {
@@ -90,7 +90,10 @@ fn test_rolling_updates() -> Result<()> {
         if *VERBOSE {
             println!("  docIter={doc_iter} id={id}");
         }
-        field_mut(&mut doc.borrow_mut(), "docid").set_string_value(my_id.clone())?;
+        // `((Field) doc.getField("docid"))`: `LineFileDocs` adds `docid` as a
+        // `StringField`, a `Field` subclass.
+        field_mut_as::<StringField>(&mut doc.borrow_mut(), "docid")
+            .set_string_value(my_id.clone())?;
 
         let id_term = Term::from_text("docid", &my_id);
 

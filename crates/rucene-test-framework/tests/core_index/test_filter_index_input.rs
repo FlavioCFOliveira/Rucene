@@ -82,24 +82,24 @@ fn test_raw_filter_index_input_read() -> Result<()> {
 
 /// The public methods `FilterIndexInput` declares, as `(name, parameter
 /// types)`: the members of Rucene's `impl DataInput for FilterIndexInput` and
-/// `impl IndexInput for FilterIndexInput`, under their Java names, plus
-/// `getDelegate()` and the static `unwrap(IndexInput)`.
+/// `impl IndexInput for FilterIndexInput` that `FilterIndexInput.java`
+/// declares, under their Java names, plus `getDelegate()` and the static
+/// `unwrap(IndexInput)` and `unwrapOnlyTest(IndexInput)`. The impl's
+/// `skip_bytes` is not one: it is the port's form of the inherited
+/// `IndexInput.skipBytes` (`IndexInput.java:86-92`), which a Rust
+/// `DataInput` default cannot reach.
 const FILTER_INDEX_INPUT_METHODS: &[(&str, &[&str])] = &[
     ("unwrap", &["org.apache.lucene.store.IndexInput"]),
+    ("unwrapOnlyTest", &["org.apache.lucene.store.IndexInput"]),
     ("getDelegate", &[]),
-    ("readByte", &[]),
-    ("readBytes", &["byte[]", "int", "int"]),
-    ("readBytes", &["byte[]", "int", "int", "boolean"]),
-    ("skipBytes", &["long"]),
     ("close", &[]),
     ("getFilePointer", &[]),
-    ("length", &[]),
     ("seek", &["long"]),
+    ("length", &[]),
     ("slice", &["java.lang.String", "long", "long"]),
+    ("readByte", &[]),
+    ("readBytes", &["byte[]", "int", "int"]),
     ("clone", &[]),
-    ("prefetch", &["long", "long"]),
-    ("isLoaded", &[]),
-    ("randomAccessSlice", &["long", "long"]),
 ];
 
 /// `IndexInput.class.getMethod(name, types)`: the public methods of

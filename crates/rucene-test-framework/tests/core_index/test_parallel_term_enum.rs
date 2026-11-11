@@ -60,6 +60,7 @@ fn text(name: &str, value: &str) -> Box<rucene::document::Field> {
 
 /// `public void setUp()`.
 fn set_up(inst: &mut Instance) -> Result<()> {
+    LuceneTestCase::super_set_up();
     let rd1 = inst.rd1.insert(LuceneTestCase::new_directory());
     let iw1 = IndexWriter::new(
         rd1.as_directory(),
@@ -107,7 +108,9 @@ fn tear_down(inst: &mut Instance) -> Result<()> {
     let ir2 = inst.ir2.take().unwrap_or_else(|| npe("ir2"));
     ir2.as_index_reader().close()?;
     inst.rd1.take().unwrap_or_else(|| npe("rd1")).close()?;
-    inst.rd2.take().unwrap_or_else(|| npe("rd2")).close()
+    inst.rd2.take().unwrap_or_else(|| npe("rd2")).close()?;
+    LuceneTestCase::super_tear_down();
+    Ok(())
 }
 
 /// `private void checkTerms(Terms terms, String... termsList)`.

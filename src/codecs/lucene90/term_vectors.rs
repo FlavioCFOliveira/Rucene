@@ -2325,9 +2325,11 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
             // Java stores `1 + next()` and lets a corrupt block produce a
             // frequency of zero or less, which then walks off the end of the
             // position arrays. A frequency below one cannot describe a term
-            // that is in the vector at all, so it is rejected here; the total
-            // is capped for the same reason every other count is.
-            let mut total_freqs = 0i64;
+            // that is in the vector at all, so it is rejected here. A
+            // frequency is a value, not a count of encoded values: a vector
+            // without positions stores only the frequency (a `FeatureField`'s
+            // runs to 65535), so it is not bounded by the bytes left, as Java
+            // does not bound it.
             let mut i = 0usize;
             while i < total_terms as usize {
                 let next = reader.next_batch(total_terms as usize - i)?;
@@ -2338,12 +2340,10 @@ impl TermVectors for Lucene90CompressingTermVectorsReader {
                             "term {i} of the chunk claims a frequency of {freq}"
                         ))));
                     }
-                    total_freqs = total_freqs.saturating_add(freq);
-                    term_freqs[i] = checked_count("a term frequency", freq, available)? as i32;
+                    term_freqs[i] = freq as i32;
                     i += 1;
                 }
             }
-            checked_count("the term occurrences of the chunk", total_freqs, available)?;
         }
 
         // Compute total positions/offsets/payloads and positionIndex.

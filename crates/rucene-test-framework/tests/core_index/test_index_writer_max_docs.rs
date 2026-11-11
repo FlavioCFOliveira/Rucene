@@ -383,7 +383,7 @@ fn test_multi_reader_exact_limit() -> Result<()> {
     let ir2 = directory_reader::open(dir2.as_directory())?;
     let sub_readers = sub_readers(copies, &ir, &ir2);
 
-    let mr = MultiReader::new(sub_readers, false)?;
+    let mr = MultiReader::new_closing(sub_readers)?;
     assert_equals(&MAX_DOCS, &mr.max_doc());
     assert_equals(&MAX_DOCS, &mr.num_docs());
     ir.close()?;
@@ -421,7 +421,7 @@ fn test_multi_reader_beyond_limit() -> Result<()> {
     let ir2 = directory_reader::open(dir2.as_directory())?;
     let sub_readers = sub_readers(copies, &ir, &ir2);
 
-    expect_throws(IAE, || MultiReader::new(sub_readers, false));
+    expect_throws(IAE, || MultiReader::new_closing(sub_readers));
 
     ir.close()?;
     ir2.close()?;

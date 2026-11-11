@@ -310,10 +310,14 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                 }
                 Some(metadata) => {
                     let fst = {
+                        // `try (IndexInput in = dir.openInput(...))`
+                        // (`FSTTester.java:287`): closed however the read ends.
                         let mut input = self
                             .dir
                             .open_input("fstOffHeap.bin", &*DEFAULT_IO_CONTEXT)?;
-                        FST::new(metadata, &mut *input)
+                        let read = FST::new(metadata, &mut *input);
+                        let closed = input.close();
+                        read.and_then(|fst| closed.map(|()| fst))
                     };
                     self.dir.delete_file("fstOffHeap.bin")?;
                     Some(fst?)
@@ -346,9 +350,13 @@ impl<'a, O: Outputs> FSTTester<'a, O> {
                             out.close()?;
                         }
                         let fst = {
+                            // `try (IndexInput in = dir.openInput(...))`
+                            // (`FSTTester.java:300`).
                             let mut input = self.dir.open_input("fst.bin", &*context)?;
-                            FST::read_metadata(&mut *input, self.outputs.clone())
-                                .and_then(|metadata| FST::new(metadata, &mut *input))
+                            let read = FST::read_metadata(&mut *input, self.outputs.clone())
+                                .and_then(|metadata| FST::new(metadata, &mut *input));
+                            let closed = input.close();
+                            read.and_then(|fst| closed.map(|()| fst))
                         };
                         self.dir.delete_file("fst.bin")?;
                         Some(fst?)

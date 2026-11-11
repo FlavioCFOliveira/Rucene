@@ -52,10 +52,10 @@ pub enum AnyPendingDeletes {
 
 impl AnyPendingDeletes {
     /// `delete(docID)`.
-    pub fn delete(&mut self, doc_id: i32, info: &SegmentCommitInfo) -> Result<bool> {
+    pub fn delete(&mut self, doc_id: i32) -> Result<bool> {
         match self {
-            Self::Hard(d) => d.delete(doc_id, info),
-            Self::Soft(d) => d.delete(doc_id, info),
+            Self::Hard(d) => d.delete(doc_id),
+            Self::Soft(d) => d.delete(doc_id),
         }
     }
 
@@ -76,26 +76,20 @@ impl AnyPendingDeletes {
     }
 
     /// `writeLiveDocs(dir)`.
-    pub fn write_live_docs(
-        &mut self,
-        dir: &dyn Directory,
-        info: &mut SegmentCommitInfo,
-    ) -> Result<bool> {
+    pub fn write_live_docs(&mut self, dir: &dyn Directory) -> Result<bool> {
         match self {
-            Self::Hard(d) => d.write_live_docs(dir, info),
-            Self::Soft(d) => d.write_live_docs(dir, info),
+            Self::Hard(d) => d.write_live_docs(dir),
+            Self::Soft(d) => d.write_live_docs(dir),
         }
     }
 
     /// `isFullyDeleted(() -> null)`: the supplier returns `null`, which only
     /// `PendingSoftDeletes` would dereference, and only when the segment has
     /// doc values for the soft-deletes field.
-    pub fn is_fully_deleted_null_supplier(&mut self, info: &SegmentCommitInfo) -> Result<bool> {
+    pub fn is_fully_deleted_null_supplier(&mut self) -> Result<bool> {
         match self {
-            Self::Hard(d) => Ok(d.is_fully_deleted(info)),
-            Self::Soft(d) => {
-                d.is_fully_deleted_with(info, &mut |_, _| Err(LuceneError::null_pointer()))
-            }
+            Self::Hard(d) => Ok(d.is_fully_deleted()),
+            Self::Soft(d) => d.is_fully_deleted_with(&mut |_| Err(LuceneError::null_pointer())),
         }
     }
 }
@@ -148,21 +142,21 @@ pub fn test_delete_doc(new_pending_deletes: &NewPendingDeletes) -> Result<()> {
     let mut deletes = new_pending_deletes(&commit_info);
     Assert::assert_true(deletes.get_live_docs().is_none());
     let doc_to_delete = TestUtil::next_int(&*random(), 0, 7);
-    Assert::assert_true(deletes.delete(doc_to_delete, &commit_info)?);
+    Assert::assert_true(deletes.delete(doc_to_delete)?);
     Assert::assert_true(deletes.get_live_docs().is_some());
     assert_equals(&1, &deletes.num_pending_deletes());
 
     let live_docs = deletes.get_live_docs();
     Assert::assert_false(live(&live_docs, doc_to_delete as usize));
-    Assert::assert_false(deletes.delete(doc_to_delete, &commit_info)?); // delete again
+    Assert::assert_false(deletes.delete(doc_to_delete)?); // delete again
 
     Assert::assert_true(live(&live_docs, 8));
-    Assert::assert_true(deletes.delete(8, &commit_info)?);
+    Assert::assert_true(deletes.delete(8)?);
     Assert::assert_true(live(&live_docs, 8)); // we have a snapshot
     assert_equals(&2, &deletes.num_pending_deletes());
 
     Assert::assert_true(live(&live_docs, 9));
-    Assert::assert_true(deletes.delete(9, &commit_info)?);
+    Assert::assert_true(deletes.delete(9)?);
     Assert::assert_true(live(&live_docs, 9));
 
     // now make sure new live docs see the deletions
@@ -187,15 +181,15 @@ fn read_live_docs(dir: &dyn Directory, commit_info: &SegmentCommitInfo) -> Resul
 pub fn test_write_live_docs(new_pending_deletes: &NewPendingDeletes) -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let si = test_segment_info(&dir, 6)?;
-    let mut commit_info = test_commit_info(si)?;
+    let commit_info = test_commit_info(si)?;
     let mut deletes = new_pending_deletes(&commit_info);
-    Assert::assert_false(deletes.write_live_docs(&*dir, &mut commit_info)?);
+    Assert::assert_false(deletes.write_live_docs(&*dir)?);
     assert_equals(&0, &dir.list_all()?.len());
     let second_doc_deletes = random().next_boolean();
-    deletes.delete(5, &commit_info)?;
+    deletes.delete(5)?;
     if second_doc_deletes {
         deletes.get_live_docs();
-        deletes.delete(2, &commit_info)?;
+        deletes.delete(2)?;
     }
     assert_equals(&-1, &commit_info.get_del_gen());
     assert_equals(&0, &commit_info.get_del_count());
@@ -204,7 +198,7 @@ pub fn test_write_live_docs(new_pending_deletes: &NewPendingDeletes) -> Result<(
         &(if second_doc_deletes { 2 } else { 1 }),
         &deletes.num_pending_deletes(),
     );
-    Assert::assert_true(deletes.write_live_docs(&*dir, &mut commit_info)?);
+    Assert::assert_true(deletes.write_live_docs(&*dir)?);
     assert_equals(&1, &dir.list_all()?.len());
     let live_docs = read_live_docs(&*dir, &commit_info)?;
     Assert::assert_false(live_docs.get(5));
@@ -225,8 +219,8 @@ pub fn test_write_live_docs(new_pending_deletes: &NewPendingDeletes) -> Result<(
     );
     assert_equals(&1, &commit_info.get_del_gen());
 
-    deletes.delete(0, &commit_info)?;
-    Assert::assert_true(deletes.write_live_docs(&*dir, &mut commit_info)?);
+    deletes.delete(0)?;
+    Assert::assert_true(deletes.write_live_docs(&*dir)?);
     assert_equals(&2, &dir.list_all()?.len());
     let live_docs = read_live_docs(&*dir, &commit_info)?;
     Assert::assert_false(live_docs.get(5));
@@ -254,7 +248,7 @@ pub fn test_write_live_docs(new_pending_deletes: &NewPendingDeletes) -> Result<(
 pub fn test_is_fully_deleted(new_pending_deletes: &NewPendingDeletes) -> Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
     let si = test_segment_info(&dir, 3)?;
-    let mut commit_info = test_commit_info(si)?;
+    let commit_info = test_commit_info(si)?;
     let field_infos = FieldInfos::empty();
     commit_info
         .info
@@ -270,14 +264,11 @@ pub fn test_is_fully_deleted(new_pending_deletes: &NewPendingDeletes) -> Result<
         )?;
     let mut deletes = new_pending_deletes(&commit_info);
     for i in 0..3 {
-        Assert::assert_true(deletes.delete(i, &commit_info)?);
+        Assert::assert_true(deletes.delete(i)?);
         if random().next_boolean() {
-            Assert::assert_true(deletes.write_live_docs(&*dir, &mut commit_info)?);
+            Assert::assert_true(deletes.write_live_docs(&*dir)?);
         }
-        assert_equals(
-            &(i == 2),
-            &deletes.is_fully_deleted_null_supplier(&commit_info)?,
-        );
+        assert_equals(&(i == 2), &deletes.is_fully_deleted_null_supplier()?);
     }
     Ok(())
 }

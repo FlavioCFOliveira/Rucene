@@ -1110,17 +1110,8 @@ impl IndexInput for FilterIndexInput {
         &self.resource_description
     }
 
-    fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
-        self.inner.prefetch(offset, length)
-    }
-
-    fn is_loaded(&self) -> Option<bool> {
-        self.inner.is_loaded()
-    }
-
-    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
-        self.inner.random_access_slice(offset, length)
-    }
+    // `prefetch`, `isLoaded` and `randomAccessSlice` are not overridden
+    // (`FilterIndexInput.java`): `IndexInput`'s defaults apply.
 
     /// A `FilterIndexInput` of class `FilterIndexInput` itself, over its `in`.
     fn as_filter_index_input(&self) -> Option<(std::any::TypeId, &dyn IndexInput)> {
@@ -6257,11 +6248,21 @@ impl FileSwitchDirectory {
         let dot = name.rfind('.');
         let ext = dot.map(|i| &name[i + 1..]).unwrap_or("");
         if ext == "tmp" {
-            // Temporary file names look like "prefix_suffix_<ext>.tmp"; recover
-            // the real extension from the portion before ".tmp".
-            let before_tmp = dot.unwrap();
-            if let Some(i) = name[..before_tmp].rfind('.') {
-                return name[i + 1..before_tmp].to_string();
+            // `EXT_PATTERN.matcher(name.substring(0, i + 1)).find()`, the
+            // pattern being `\.([a-zA-Z]+)` (`FileSwitchDirectory.java:51,151`):
+            // the first `.` followed by ASCII letters, and those letters.
+            let head = &name.as_bytes()[..=dot.expect("ext is \"tmp\"")];
+            for (i, &b) in head.iter().enumerate() {
+                if b != b'.' {
+                    continue;
+                }
+                let letters = head[i + 1..]
+                    .iter()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .count();
+                if letters > 0 {
+                    return name[i + 1..i + 1 + letters].to_string();
+                }
             }
         }
         ext.to_string()
@@ -14895,6 +14896,10 @@ mod tests {
         // extension from before ".tmp" when possible.
         assert_eq!(FileSwitchDirectory::get_extension("_0.fdx.tmp"), "fdx");
         assert_eq!(FileSwitchDirectory::get_extension("foo.tmp"), "tmp");
+        // Java's `find()` takes the first `.letters` run: a pending file of
+        // `foo.cfs` (`BaseDirectoryTestCase.testRenameTmpFile`) is a `cfs`.
+        assert_eq!(FileSwitchDirectory::get_extension("foo.cfs__0.tmp"), "cfs");
+        assert_eq!(FileSwitchDirectory::get_extension("a.b.c__1.tmp"), "b");
     }
 
     /// `FileSwitchDirectory` rejects "tmp" as a primary extension.

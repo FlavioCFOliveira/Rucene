@@ -783,8 +783,11 @@ impl SegmentCommitInfo {
             next_write_doc_values_gen: state.next_write_doc_values_gen,
             dv_updates_files,
             field_infos_files: state.field_infos_files.clone(),
-            size_in_bytes: state.size_in_bytes,
-            buffered_deletes_gen: state.buffered_deletes_gen,
+            // The new object's field initialisers: `sizeInBytes = -1` and
+            // `bufferedDeletesGen = -1` (`SegmentCommitInfo.java:79,83`);
+            // `clone()` copies neither.
+            size_in_bytes: -1,
+            buffered_deletes_gen: -1,
         };
         Self {
             info: self.info.clone(),
@@ -1325,15 +1328,10 @@ impl SegmentOrderImpl for IdentitySegmentOrder {
 
 /// Orders a reader's leaves by the extreme value of one numeric field.
 ///
-/// **Divergence from Lucene 10.5.0.** Java returns an anonymous
-/// `BaseCompositeReader<LeafReader>` whose `doClose` is a no-op and whose
-/// `getReaderCacheHelper` delegates to the wrapped reader. This port assembles
-/// a [`MultiReader`](crate::index::MultiReader) over the same leaves with
-/// `close_sub_readers = false`, which is the crate's array-backed composite
-/// reader: it takes a reference on each leaf and drops it again when the view
-/// closes, so the leaves outlive the view exactly as in Java. The one
-/// observable difference is the reader cache helper, which the `MultiReader`
-/// answers for itself instead of forwarding.
+/// Java returns an anonymous `BaseCompositeReader<LeafReader>` whose `doClose`
+/// is a no-op and whose `getReaderCacheHelper` delegates to the wrapped reader;
+/// [`MultiReader::new_reordered_view`](crate::index::MultiReader) is that
+/// reader: it takes no reference on the leaves and closes nothing.
 struct NumericSegmentOrder {
     comparator: NumericFieldReaderContextComparator,
 }
@@ -1358,7 +1356,9 @@ impl SegmentOrderImpl for NumericSegmentOrder {
 
         let sorted: Vec<Arc<dyn IndexReader>> =
             order.into_iter().map(|i| Arc::clone(&subs[i])).collect();
-        Ok(Arc::new(crate::index::MultiReader::new(sorted, false)?))
+        Ok(Arc::new(crate::index::MultiReader::new_reordered_view(
+            sorted, reader,
+        )?))
     }
 }
 

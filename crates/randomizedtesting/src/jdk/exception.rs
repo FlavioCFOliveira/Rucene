@@ -170,6 +170,8 @@ static CLASS_PARENTS: LazyLock<RwLock<HashMap<String, String>>> = LazyLock::new(
             "java.lang.StackOverflowError",
             "java.lang.VirtualMachineError",
         ),
+        ("java.lang.UnknownError", "java.lang.VirtualMachineError"),
+        ("java.lang.InternalError", "java.lang.VirtualMachineError"),
         (
             "java.lang.ExceptionInInitializerError",
             "java.lang.LinkageError",

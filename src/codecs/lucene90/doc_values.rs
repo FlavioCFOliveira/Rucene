@@ -1985,14 +1985,29 @@ impl Lucene90DocValuesProducer {
                 .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
                 .as_ref(),
         )?;
-        if let Err(error) = check_index_header(
-            &mut *data,
-            DATA_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
-        ) {
+        let checked = (|| -> Result<()> {
+            let version2 = check_index_header(
+                &mut *data,
+                DATA_CODEC,
+                VERSION_START,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            if version != version2 {
+                return Err(LuceneError::corrupt_index(
+                    format!("Format versions mismatch: meta={version}, data={version2}"),
+                    data.resource_description(),
+                ));
+            }
+            // NOTE: data file is too costly to verify checksum against all
+            // the bytes on open, but for now we at least verify proper
+            // structure of the checksum footer, which detects some forms of
+            // corruption such as file truncation (`Lucene90DocValuesProducer.java:142-146`).
+            let _ = retrieve_checksum(&mut *data)?;
+            Ok(())
+        })();
+        if let Err(error) = checked {
             // `IOUtils.closeWhileHandlingException(this.data)`
             // (`Lucene90DocValuesProducer.java:149-152`).
             IOUtils::close_while_handling_exception([Some(|| data.close())])?;
