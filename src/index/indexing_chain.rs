@@ -5778,10 +5778,15 @@ mod tests {
     }
 
     /// A field whose type promises a vector but whose value is absent is the
-    /// state Java reaches as a `ClassCastException`.
+    /// state Java reaches as a `ClassCastException`: `processField` casts the
+    /// field to `KnnByteVectorField` or `KnnFloatVectorField`
+    /// (`IndexingChain.java:1697-1705`).
     #[test]
     fn a_vector_field_without_a_vector_value_is_rejected() {
-        for encoding in [VectorEncoding::FLOAT32, VectorEncoding::BYTE] {
+        for (encoding, class) in [
+            (VectorEncoding::FLOAT32, "KnnFloatVectorField"),
+            (VectorEncoding::BYTE, "KnnByteVectorField"),
+        ] {
             let (mut chain, _tracking, _info) = bound_chain(1);
             let mut field_infos = builder();
             let mut document = Document::new();
@@ -5789,9 +5794,13 @@ mod tests {
             let error = chain
                 .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("a vector field with no value must be rejected");
+            let target = format!("cannot be cast to class org.apache.lucene.document.{class}");
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                    if message.contains("carries no")),
+                matches!(&error.kind, LuceneErrorKind::Unchecked {
+                    class: "java.lang.ClassCastException",
+                    message: Some(message),
+                    ..
+                } if message.contains(&target)),
                 "unexpected error for {encoding:?}: {error:?}"
             );
         }

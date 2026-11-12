@@ -1834,52 +1834,67 @@ fn random_point_tree_navigation(tree: &mut dyn PointTree) -> Result<()> {
 
 /// `switchIndex(w, dir, saveW)` (`private`). Takes `w` by value: the
 /// closed writer holds `dir`, released before `dir.close()`.
+///
+/// When the switch throws, Java's caller has not yet run `w = saveW; dir =
+/// saveDir; saveDir = null`, so its `finally` still closes this writer and
+/// this directory (`IOUtils.closeWhileHandlingException(r, w, saveW, saveDir
+/// == null ? null : dir)`, `BasePointsFormatTestCase.java:798-804, 1081-1083`);
+/// the caller here has already handed both over, so they are closed here,
+/// their failures ignored as `closeWhileHandlingException` ignores them.
 fn switch_index(
     w: RandomIndexWriter,
     dir: &mut TestDirectory,
     save_w: &RandomIndexWriter,
 ) -> Result<()> {
-    if random().next_boolean() {
-        // Add via readers:
-        let r = w.get_reader()?;
-        let outcome = (|| -> Result<()> {
-            if random().next_boolean() {
-                // Add via CodecReaders:
-                let mut subs: Vec<Arc<dyn CodecReader>> = Vec::new();
-                for context in Arc::clone(&r).leaves()? {
-                    subs.push(
-                        context
-                            .leaf_reader()
-                            .as_codec_reader()
-                            .expect("a segment reader is a CodecReader"),
-                    );
+    let outcome = (|| -> Result<()> {
+        if random().next_boolean() {
+            // Add via readers:
+            let r = w.get_reader()?;
+            let outcome = (|| -> Result<()> {
+                if random().next_boolean() {
+                    // Add via CodecReaders:
+                    let mut subs: Vec<Arc<dyn CodecReader>> = Vec::new();
+                    for context in Arc::clone(&r).leaves()? {
+                        subs.push(
+                            context
+                                .leaf_reader()
+                                .as_codec_reader()
+                                .expect("a segment reader is a CodecReader"),
+                        );
+                    }
+                    if *VERBOSE {
+                        println!("TEST: now use addIndexes(CodecReader[]) to switch writers");
+                    }
+                    save_w.add_indexes_codec_readers(&subs)?;
+                } else {
+                    if *VERBOSE {
+                        println!(
+                            "TEST: now use TestUtil.addIndexesSlowly(DirectoryReader[]) to switch writers"
+                        );
+                    }
+                    TestUtil::add_indexes_slowly(save_w.w(), &[Arc::clone(&r)])?;
                 }
-                if *VERBOSE {
-                    println!("TEST: now use addIndexes(CodecReader[]) to switch writers");
-                }
-                save_w.add_indexes_codec_readers(&subs)?;
-            } else {
-                if *VERBOSE {
-                    println!(
-                        "TEST: now use TestUtil.addIndexesSlowly(DirectoryReader[]) to switch writers"
-                    );
-                }
-                TestUtil::add_indexes_slowly(save_w.w(), &[Arc::clone(&r)])?;
+                Ok(())
+            })();
+            let closed = r.close();
+            outcome?;
+            closed?;
+        } else {
+            // Add via directory:
+            if *VERBOSE {
+                println!("TEST: now use addIndexes(Directory[]) to switch writers");
             }
-            Ok(())
-        })();
-        let closed = r.close();
-        outcome?;
-        closed?;
-    } else {
-        // Add via directory:
-        if *VERBOSE {
-            println!("TEST: now use addIndexes(Directory[]) to switch writers");
+            w.close()?;
+            save_w.add_indexes_dirs(&[dir.as_directory()])?;
         }
-        w.close()?;
-        save_w.add_indexes_dirs(&[dir.as_directory()])?;
+        w.close()
+    })();
+    if outcome.is_err() {
+        let _ = w.close();
+        drop(w);
+        let _ = dir.close();
+        return outcome;
     }
-    w.close()?;
     drop(w);
     dir.close()
 }

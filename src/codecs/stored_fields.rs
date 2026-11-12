@@ -173,11 +173,14 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
             ));
         }
         let length = length as usize;
-        let mut bytes: Vec<u8> = Vec::new();
-        bytes.try_reserve_exact(length).map_err(|_| {
+        // The probe keeps Java's `OutOfMemoryError`; the array itself is a
+        // zeroed allocation (`vec![0; n]`) whose pages stay untouched until
+        // written, as the JVM's zeroed heap arrays are, rather than a fill of
+        // every element.
+        Vec::<u8>::new().try_reserve_exact(length).map_err(|_| {
             crate::error::LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space")
         })?;
-        bytes.resize(length, 0);
+        let mut bytes = vec![0u8; length];
         value.data_input().read_bytes(Some(&mut bytes), 0, length)?;
         self.write_field_bytes(info, &bytes)
     }

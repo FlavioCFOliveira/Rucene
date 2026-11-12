@@ -3921,8 +3921,12 @@ mod segment_doc_values_ref_count_tests {
         seg_doc_values.dec_ref(&[7]).unwrap();
         assert_eq!((dvp.ref_count(), closes.load(Ordering::SeqCst)), (0, 2));
         assert!(!SegmentDocValues::producers(&seg_doc_values.gen_dv_producers).contains_key(&7));
-        // Readers still holding the producer find it closed.
-        assert!(dvp.get().check_integrity().is_err());
+        // Readers still holding the producer reach the closed producer itself,
+        // as in Java: the `RefCount` closes it in place and adds no closed
+        // state of its own (`SegmentDocValues.java:53-63`), so what a later
+        // call does is the producer's. This stub answers as before.
+        assert!(dvp.get().check_integrity().is_ok());
+        assert_eq!(closes.load(Ordering::SeqCst), 2);
     }
 }
 

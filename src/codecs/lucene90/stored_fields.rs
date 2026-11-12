@@ -4203,8 +4203,11 @@ mod tests {
             messages.iter().all(|message| *message == messages[0]),
             "every read must report the same corruption: {messages:?}"
         );
+        // `new CorruptIndexException("length=" + len + ", numStoredFields=" +
+        // storedFields, fieldsStream)`
+        // (`Lucene90CompressingStoredFieldsReader.java:501-503`).
         assert!(
-            messages[0].contains("num_stored_fields"),
+            messages[0].contains("length=0, numStoredFields=1"),
             "unexpected error: {}",
             messages[0]
         );
@@ -5647,17 +5650,18 @@ mod tests {
     }
 
     /// A `.fdm` whose fields index declares no chunks for a non-empty segment
-    /// opens, `prefetch` answers from the cache, and reading the document is a
-    /// corrupt-index error rather than a panic.
+    /// opens, `prefetch` answers from the cache, and reading the document
+    /// throws `ArrayIndexOutOfBoundsException`, as Lucene 10.5.0 does.
     ///
-    /// Lucene 10.5.0 behaves the same way up to the read: `getBlockID` answers
-    /// `-1` (`FieldsIndexReader.java:119-127`), which the `-1`-filled prefetch
-    /// cache already holds (`Lucene90CompressingStoredFieldsReader.java:118,
-    /// 629-643`), and `document(0)` throws `ArrayIndexOutOfBoundsException`
-    /// from `getBlockStartPointer(-1)` (measured with `StoredProbe` on the same
-    /// patched index: "open ok", "prefetch ok", "document threw").
+    /// `getBlockID` answers `-1` (`FieldsIndexReader.java:119-127`), which the
+    /// `-1`-filled prefetch cache already holds
+    /// (`Lucene90CompressingStoredFieldsReader.java:118, 629-643`), and
+    /// `document(0)` throws `ArrayIndexOutOfBoundsException` from
+    /// `getBlockStartPointer(-1)` (`FieldsIndexReader.java:130-132`; measured
+    /// with `StoredProbe` on the same patched index: "open ok", "prefetch ok",
+    /// "document threw").
     #[test]
-    fn a_fields_index_without_chunks_is_a_corrupt_index_not_a_panic() {
+    fn a_fields_index_without_chunks_throws_as_lucene_does() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source = write_merge_source(&dir, "_h", 0, 3);
         // Positive control: the intact index serves the same calls.
@@ -5672,28 +5676,25 @@ mod tests {
         let reader = concrete_merge_source(&dir, &source);
         let index = reader.index_reader();
         assert_eq!(index.get_block_id(0).unwrap(), -1);
-        assert!(matches!(
-            index.get_block_start_pointer(-1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            index.get_block_length(-1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            })
-        ));
+        let is_aioobe = |result: &Result<i64>| {
+            matches!(
+                result,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        ..
+                    },
+                    ..
+                })
+            )
+        };
+        let start = index.get_block_start_pointer(-1);
+        assert!(is_aioobe(&start), "{start:?}");
+        let length = index.get_block_length(-1);
+        assert!(is_aioobe(&length), "{length:?}");
         reader.prefetch(0).unwrap();
-        assert!(matches!(
-            reader.serialized_document(0),
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            })
-        ));
+        let document = reader.serialized_document(0).map(|_| 0i64);
+        assert!(is_aioobe(&document), "{document:?}");
     }
 
     /// rmp #295: `FieldsIndexReader` builds its two `DirectMonotonicReader`s,

@@ -1446,10 +1446,11 @@ impl BufferedIndexInput {
     ///
     /// Equivalent to the protected abstract
     /// `org.apache.lucene.store.BufferedIndexInput#seekInternal(long)`. Java
-    /// calls it only when `refill()` allocates its buffer lazily, because a
-    /// subclass owns its own read position; this port shares the delegate's
-    /// position with the absolute random-access reads, so `refill()` calls it
-    /// before every read, which is what the port already did.
+    /// calls it from `seek(long)` for a position outside the buffer, and from
+    /// `refill()` only when it allocates its buffer lazily, because a subclass
+    /// owns its own read position; this port shares the delegate's position
+    /// with the absolute random-access reads, so `refill()` calls it before
+    /// every read, which is what the port already did.
     ///
     /// # Errors
     ///
@@ -1768,8 +1769,12 @@ impl IndexInput for BufferedIndexInput {
     }
 
     /// Equivalent to `BufferedIndexInput.seek(long)`
-    /// (`BufferedIndexInput.java:326-337`): no check of its own, so a negative
-    /// position or one past the end fails on the next read.
+    /// (`BufferedIndexInput.java:326-334`): no check of its own, but a
+    /// position outside the buffer reaches `seekInternal(pos)`, whose check is
+    /// the subclass's — `NIOFSIndexInput` throws `EOFException` past the end
+    /// (`NIOFSDirectory.java:207-213`); here, the delegate's [`seek`].
+    ///
+    /// [`seek`]: IndexInput::seek
     fn seek(&mut self, pos: i64) -> Result<()> {
         let end = self.buffer_start + self.buffer_limit as i64;
         if pos >= self.buffer_start && pos < end {
@@ -1778,6 +1783,7 @@ impl IndexInput for BufferedIndexInput {
             self.buffer_start = pos;
             self.buffer_position = 0;
             self.buffer_limit = 0;
+            self.seek_internal(pos)?;
         }
         Ok(())
     }
@@ -3355,13 +3361,22 @@ impl DataInput for MockIndexInput {
         Ok(())
     }
 
+    /// An `IndexInput` that does not override `skipBytes` runs
+    /// `IndexInput.skipBytes` (`IndexInput.java:86-92`): a seek on this input,
+    /// which refuses a position past the end.
+    ///
+    /// Routing the skip through the [`ByteArrayDataInput`] view instead would
+    /// take its unchecked `pos += count` and leave `pos` past `data`, which the
+    /// next [`Self::view`] cannot window.
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         self.ensure_open()?;
-        let mut view = self.view();
-        view.skip_bytes(num_bytes)?;
-        let pos = view.position();
-        self.pos = pos;
-        Ok(())
+        if num_bytes < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "numBytes must be >= 0, got {num_bytes}"
+            )));
+        }
+        let skip_to = self.pos as i64 + num_bytes;
+        IndexInput::seek(self, skip_to)
     }
 }
 
@@ -11712,7 +11727,11 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&input_src);
         assert!(input.read_v_int().is_err());
         assert!(input.read_string().is_err());
-        assert!(input.skip_bytes(10).is_err());
+        // `ByteArrayDataInput.skipBytes` is `pos += count` with no check
+        // (`ByteArrayDataInput.java:79-82`): the skip succeeds and the next
+        // read past the buffer fails.
+        input.skip_bytes(10).unwrap();
+        assert!(input.read_byte().is_err());
     }
 
     #[test]
@@ -12477,6 +12496,9 @@ mod tests {
         input.seek(0).unwrap();
         assert_eq!(input.read_int().unwrap(), 0);
 
+        // `BufferedIndexInput.seek` hands a position outside the buffer to
+        // `seekInternal` (`BufferedIndexInput.java:326-334`): the source's
+        // seek, which refuses both.
         assert!(input.seek(-1).is_err());
         assert!(input.seek(input.length() + 1).is_err());
     }
@@ -14580,7 +14602,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
                 ..
             }
         ));
@@ -14600,7 +14622,7 @@ mod tests {
         assert!(matches!(
             err,
             LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
                 ..
             }
         ));
@@ -15692,11 +15714,12 @@ mod tests {
                 .expect_err("a negative length is not a string");
             assert!(
                 matches!(
-                    error,
-                    LuceneError {
-                        kind: LuceneErrorKind::CorruptIndex { .. },
+                    &error.kind,
+                    LuceneErrorKind::Unchecked {
+                        class: "java.lang.NegativeArraySizeException",
+                        message: Some(message),
                         ..
-                    }
+                    } if *message == length.to_string()
                 ),
                 "length={length}: {error:?}"
             );
@@ -16087,7 +16110,10 @@ mod tests {
         assert!(input.read_byte().is_err());
         let mut spill = [0u8; 1];
         assert!(input.read_bytes(Some(&mut spill), 0, 1).is_err());
-        assert!(input.skip_bytes(1).is_err());
+        // `skipBytes` checks nothing (`ByteArrayDataInput.java:79-82`); the
+        // read after it fails.
+        input.skip_bytes(1).unwrap();
+        assert!(input.read_byte().is_err());
     }
 
     /// The little-endian overrides must decode exactly what the byte-at-a-time

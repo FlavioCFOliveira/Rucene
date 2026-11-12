@@ -6796,20 +6796,24 @@ mod tests {
         // `startPos = splitDim * 4 + prefix` — all truncating toward zero, as
         // in Java. Every one of these puts `startPos` below zero, which is
         // where Java throws `ArrayIndexOutOfBoundsException`.
-        for (code, start_pos) in [(-1i32, -4i32), (-2, -1), (-3, -5), (-4, -2), (-11, -1)] {
+        for (code, start_pos) in [(-1i32, -4i32), (-2, -1), (-3, -5), (-4, -2), (-11, -4)] {
             let Err(error) = read_one(&config, num_leaves, code) else {
                 panic!(
                     "code={code} (startPos={start_pos}): Java throws for this \
                      code, so this port must refuse it"
                 );
             };
+            // `splitValuesStack[level][startPos]` on the 8-byte packed index
+            // value.
+            let expected = format!("Index {start_pos} out of bounds for length 8");
             assert!(
                 matches!(
-                    error,
-                    LuceneError {
-                        kind: LuceneErrorKind::CorruptIndex { .. },
+                    &error.kind,
+                    LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        message: Some(message),
                         ..
-                    }
+                    } if *message == expected
                 ),
                 "code={code} (startPos={start_pos}): {error:?}"
             );
@@ -7601,9 +7605,22 @@ mod tests {
             max_points_in_leaf_node,
         )
         .unwrap();
-        let mut writer =
-            BKDWriter::new_default(100, dir, "bkd", config.clone(), 16.0, points.len() as i64)
-                .unwrap();
+        // `maxDoc` sizes `docsSeen = new FixedBitSet(maxDoc)`
+        // (`BKDWriter.java:185, 267`): every doc id must be below it.
+        let max_doc = points
+            .iter()
+            .map(|(doc_id, _)| doc_id + 1)
+            .max()
+            .unwrap_or(0);
+        let mut writer = BKDWriter::new_default(
+            max_doc,
+            dir,
+            "bkd",
+            config.clone(),
+            16.0,
+            points.len() as i64,
+        )
+        .unwrap();
         for (doc_id, packed) in points {
             writer.add(packed, *doc_id).unwrap();
         }

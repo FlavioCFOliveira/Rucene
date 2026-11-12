@@ -8855,18 +8855,20 @@ mod tests {
             "the DATA_INPUT variant carries the bytes the cursor produced"
         );
         // The cursor is drained, exactly like Java's `StoredFieldDataInput`; a
-        // second read runs off the end and surfaces as an I/O error, which the
-        // indexing chain treats as an aborting failure rather than silently
-        // storing nothing.
+        // second read runs off the end of the `ByteArrayDataInput`, whose
+        // `System.arraycopy(bytes, pos, b, offset, len)`
+        // (`ByteArrayDataInput.java:141-144`) throws
+        // `ArrayIndexOutOfBoundsException`.
         let error = IndexableField::stored_value(&field)
             .expect_err("the cursor is single-use, as it is in Lucene");
         assert!(
             matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::Io(_),
+                &error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.ArrayIndexOutOfBoundsException",
+                    message: Some(message),
                     ..
-                }
+                } if message == "arraycopy: last source index 6 out of bounds for byte[3]"
             ),
             "{error:?}"
         );

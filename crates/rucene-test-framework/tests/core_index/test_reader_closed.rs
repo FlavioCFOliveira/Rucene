@@ -13,7 +13,7 @@ use rucene::search::Query;
 use rucene_test_framework::analysis::mock_tokenizer::KEYWORD;
 use rucene_test_framework::analysis::MockAnalyzer;
 use rucene_test_framework::index::{OwnCacheKeyMultiReader, RandomIndexWriter};
-use rucene_test_framework::util::java_exceptions::{is_instance, java_throwable, rethrow_java};
+use rucene_test_framework::util::java_exceptions::{java_throwable, rethrow_java};
 use rucene_test_framework::util::lucene_test_case::TestDirectory;
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 
@@ -104,14 +104,25 @@ fn test(inst: &mut TestReaderClosedInstance) -> Result<()> {
     let query = range_query()?;
     searcher.search(Arc::clone(&query), 5)?;
     reader.close()?;
-    match searcher.search(query, 5) {
-        Ok(_) => {}
+    // Java's `catch` also catches the unchecked exceptions the port throws as
+    // panics: a closed `SegmentReader.getFieldInfos()` runs `ensureOpen()`
+    // (`SegmentReader.java:234-237`), whose `AlreadyClosedException` is one.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        searcher.search(query, 5).map_err(|e| java_throwable(&e))
+    }));
+    let thrown = match outcome {
+        Ok(Ok(_)) => None,
+        Ok(Err(t)) => Some(t),
+        Err(payload) => Some(Throwable::from_panic(payload)),
+    };
+    match thrown {
+        None => {}
         // expected
-        Err(e) if is_instance(&e, "org.apache.lucene.store.AlreadyClosedException") => {}
+        Some(t) if t.is_instance("org.apache.lucene.store.AlreadyClosedException") => {}
         // expected if the searcher has been created with threads since LuceneTestCase
         // closes the thread-pool in a reader close listener
-        Err(e) if is_instance(&e, "java.util.concurrent.RejectedExecutionException") => {}
-        Err(e) => return Err(e),
+        Some(t) if t.is_instance("java.util.concurrent.RejectedExecutionException") => {}
+        Some(t) => t.throw(),
     }
     Ok(())
 }

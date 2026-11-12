@@ -1000,7 +1000,15 @@ pub trait StatsObject: std::fmt::Display + Send + Sync + 'static {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-impl<T: std::fmt::Display + Send + Sync + 'static> StatsObject for T {
+// The two classes Lucene's `getStats()` implementations return are
+// implemented one by one rather than through a blanket impl over every
+// `Display + Send + Sync` type: such a blanket also covers `Box<dyn TermState>`
+// (whose `TermState` is `Display`), and wherever `StatsObject` is in scope
+// `boxed_state.as_any()` then resolves to the box itself, so downcasting the
+// state to its class fails.
+
+/// `Terms.getStats()`'s default result, a `String` (`Terms.java:217-226`).
+impl StatsObject for String {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

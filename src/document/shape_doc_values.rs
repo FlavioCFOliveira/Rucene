@@ -1981,7 +1981,12 @@ mod tests {
         let data = BytesRef::new(vec![VERSION, 1]);
         match ShapeDocValues::from_binary_value(data, ShapeCoordinateSystem::Geographic) {
             Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                kind:
+                    LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        message: Some(message),
+                        cause: None,
+                    },
                 ..
             }) => {
                 assert_eq!(message, "Index 2 out of bounds for length 2");

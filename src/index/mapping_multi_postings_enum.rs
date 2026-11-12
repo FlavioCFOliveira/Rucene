@@ -978,7 +978,11 @@ mod tests {
         )];
         let err = mapping(state, subs).unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "Index 2 out of bounds for length 2"),
+            matches!(&err.kind, LuceneErrorKind::Unchecked {
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+                message: Some(m),
+                ..
+            } if m == "Index 2 out of bounds for length 2"),
             "`allSubs[2]` throws Java's ArrayIndexOutOfBoundsException: {err:?}"
         );
     }

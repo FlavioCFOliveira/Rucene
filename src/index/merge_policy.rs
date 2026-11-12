@@ -6312,7 +6312,7 @@ mod merge_policy_setting_tests {
         assert_eq!(p.get_deletes_pct_allowed(), 1.0);
         let err = p.set_deletes_pct_allowed(0.0).unwrap_err().to_string();
         assert!(
-            err.contains("indexPctDeletedTarget must be > 0 and <= 50 (got 0)"),
+            err.contains("indexPctDeletedTarget must be > 0 and <= 50 (got 0.0)"),
             "{err}"
         );
         assert!(p.set_deletes_pct_allowed(50.0).is_ok());
@@ -6330,7 +6330,7 @@ mod merge_policy_setting_tests {
             .to_string();
         assert!(
             err.contains(
-                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got 101)"
+                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got 101.0)"
             ),
             "{err}"
         );

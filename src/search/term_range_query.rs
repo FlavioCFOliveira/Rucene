@@ -24,12 +24,12 @@ use crate::util::{Accountable, BytesRef};
 /// Renders term bytes the way `Term.toString(BytesRef)` does.
 ///
 /// The term might not be text, but usually is, so a best effort is made: it is
-/// decoded as UTF-8 when that succeeds, and rendered as
-/// [`BytesRef::to_hex_string`] — which is `BytesRef.toString()` — otherwise.
+/// decoded by a strict UTF-8 decoder (`CodingErrorAction.REPORT`) when that
+/// succeeds, and rendered as `BytesRef.toString()` otherwise
+/// (`Term.java:108-124`). It is not `BytesRef.utf8ToString()`, whose
+/// `UnicodeUtil.UTF8toUTF16` asserts on bytes that are not UTF-8.
 pub fn term_bytes_to_string(bytes: &BytesRef) -> String {
-    bytes
-        .utf8_to_string()
-        .unwrap_or_else(|_| bytes.to_hex_string())
+    crate::index::terms::Term::to_string_bytes_ref(bytes)
 }
 
 /// A [`Query`] that matches documents within a range of terms.

@@ -116,12 +116,16 @@ pub(crate) fn java_new_array<T: Default + Clone>(length: i32) -> crate::error::R
             length.to_string(),
         ));
     }
-    let mut array: Vec<T> = Vec::new();
-    array.try_reserve_exact(length as usize).map_err(|_| {
-        crate::error::LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space")
-    })?;
-    array.resize(length as usize, T::default());
-    Ok(array)
+    // The probe keeps Java's `OutOfMemoryError`; the array itself is built
+    // with `vec![elem; n]`, which allocates zeroed memory for a zero primitive
+    // element — pages untouched until written, as the JVM's zeroed heap
+    // arrays are — rather than writing every element.
+    Vec::<T>::new()
+        .try_reserve_exact(length as usize)
+        .map_err(|_| {
+            crate::error::LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space")
+        })?;
+    Ok(vec![T::default(); length as usize])
 }
 
 pub use bit_table_util::BitTableUtil;

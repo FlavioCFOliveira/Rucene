@@ -4651,11 +4651,21 @@ impl FixedBitSet {
 
     /// Returns the previous value of the bit at `index` and sets it to true.
     ///
+    /// Equivalent to `FixedBitSet.getAndSet(int)` (`FixedBitSet.java:327-334`),
+    /// whose bound is an `assert`: a debug build — Java under `-ea` — stops on
+    /// an index outside `[0, numBits)`, a negative Java `int` arriving here as
+    /// a `usize` past any bit set.
+    ///
     /// # Panics
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_and_set(&mut self, index: usize) -> bool {
-        assert!(index < self.num_bits, "index {} out of bounds", index);
+        debug_assert!(
+            index < self.num_bits,
+            "index={}, numBits={}",
+            index as i32,
+            self.num_bits
+        );
         let word = index >> 6;
         let mask = 1u64 << (index & 0x3f);
         let previous = (self.word(word) & mask) != 0;

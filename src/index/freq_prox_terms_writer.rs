@@ -5068,8 +5068,8 @@ mod tests {
         assert!(input.eof());
     }
 
-    #[test]
-    fn a_pooled_slice_reader_reports_an_over_read_instead_of_panicking() {
+    /// A pooled slice holding one byte, and a fresh reader over it.
+    fn one_byte_slice() -> (ByteBlockPool, IntBlockPool, TermsHashPerField, i32) {
         let bytes_used = Arc::new(AtomicI64::new(0));
         let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
         let mut ints = IntBlockPool::new();
@@ -5085,43 +5085,32 @@ mod tests {
         field
             .write_byte(&mut pool, &mut ints, slot.term_id, 0, 7)
             .expect("byte");
+        (pool, ints, field, slot.term_id)
+    }
 
+    /// `ByteSliceReader.readByte` begins with `assert !eof()`
+    /// (`ByteSliceReader.java:70-75`): a debug build — Java under `-ea` —
+    /// stops on a read past the end of the stream.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "assertion failed: !self.eof()")]
+    fn a_pooled_slice_over_read_trips_lucenes_eof_assertion_in_debug_builds() {
+        let (pool, ints, field, term_id) = one_byte_slice();
         let mut reader = ByteSliceReader::new();
-        field.init_reader(&ints, &mut reader, slot.term_id, 0);
+        field.init_reader(&ints, &mut reader, term_id, 0);
         let mut input = PooledSliceReader::new(reader, &pool);
         assert_eq!(input.read_byte().expect("byte"), 7);
-        let error = input.read_byte().expect_err("the stream held one byte");
-        assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
-            ),
-            "{error:?}"
-        );
+        let _ = input.read_byte();
+    }
 
+    /// `ByteSliceReader.skipBytes` refuses a negative count with
+    /// `IllegalArgumentException` (`ByteSliceReader.java:139-145`) and
+    /// otherwise reads the bytes it skips.
+    #[test]
+    fn a_pooled_slice_reader_skips_as_lucene_does() {
+        let (pool, ints, field, term_id) = one_byte_slice();
         let mut reader = ByteSliceReader::new();
-        field.init_reader(&ints, &mut reader, slot.term_id, 0);
-        let mut input = PooledSliceReader::new(reader, &pool);
-        let mut buffer = [0u8; 4];
-        let error = input
-            .read_bytes(Some(&mut buffer), 0, 4)
-            .expect_err("the stream held one byte");
-        assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
-            ),
-            "{error:?}"
-        );
-
-        let mut reader = ByteSliceReader::new();
-        field.init_reader(&ints, &mut reader, slot.term_id, 0);
+        field.init_reader(&ints, &mut reader, term_id, 0);
         let mut input = PooledSliceReader::new(reader, &pool);
         let error = input.skip_bytes(-1).expect_err("negative skip");
         assert!(

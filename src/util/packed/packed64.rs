@@ -720,10 +720,11 @@ fn new_long_array(length: i32) -> Result<Vec<i64>> {
             length.to_string(),
         ));
     }
-    let mut blocks: Vec<i64> = Vec::new();
-    blocks
+    // The probe keeps Java's `OutOfMemoryError`; the array itself is a zeroed
+    // allocation (`vec![0; n]`) whose pages stay untouched until written, as
+    // the JVM's zeroed heap arrays are, rather than a fill of every element.
+    Vec::<i64>::new()
         .try_reserve_exact(length as usize)
         .map_err(|_| LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space"))?;
-    blocks.resize(length as usize, 0);
-    Ok(blocks)
+    Ok(vec![0; length as usize])
 }

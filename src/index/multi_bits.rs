@@ -731,12 +731,14 @@ mod tests {
         assert_eq!(negative_length.length() as i32, -1);
     }
 
-    /// Java keeps a negative start as given (`BitsSlice.java:35`).
+    /// Java keeps a negative start as given (`BitsSlice.java:35`), so
+    /// `get(1)` answers `parent.get(1 + -1)` (`BitsSlice.java:40-44`): the
+    /// parent's bit 0.
     #[test]
     fn bits_slice_keeps_a_negative_start() {
         let negative_start =
             BitsSlice::new(ListBits::boxed(&[true, false]), ReaderSlice::new(-1, 2, 0)).unwrap();
-        assert!(!negative_start.get(1));
+        assert!(negative_start.get(1));
     }
 
     #[test]

@@ -3253,8 +3253,10 @@ mod tests {
     /// `GraphBuilderKnnCollector(min(beamWidth / 2, M * 3))` = `(0)`, whose
     /// `NeighborQueue` throws `IllegalArgumentException` from
     /// `TernaryLongHeap(0)` (`HnswGraphBuilder.java:211-213`,
-    /// `TernaryLongHeap.java:55-63`). With no tiny-segments threshold the graph
-    /// is built, so writing the segment fails with that error.
+    /// `TernaryLongHeap.java:55-63`). With no tiny-segments threshold the
+    /// `FieldWriter` constructor builds the graph builder at once
+    /// (`Lucene99HnswVectorsWriter.java:745-748`), so `addField` fails with
+    /// that error.
     #[test]
     fn a_beam_width_of_one_fails_the_graph_build_as_lucene_does() -> Result<()> {
         let dir = Arc::new(ByteBuffersDirectory::new()) as Arc<dyn crate::store::Directory>;
@@ -3268,14 +3270,7 @@ mod tests {
 
         let format = Lucene99HnswVectorsFormat::with_merge_exec_and_threshold(16, 1, 1, None, 0);
         let mut writer = format.fields_writer(&write_state)?;
-        let mut float_writer = match writer.add_field(&field_info)? {
-            FieldVectorWriter::Float(w) => w,
-            _ => panic!("expected float field writer"),
-        };
-        float_writer.add_value(0, vec![1.0, 0.0])?;
-        float_writer.add_value(1, vec![0.0, 1.0])?;
-        float_writer.add_value(2, vec![1.0, 1.0])?;
-        match writer.flush(3, None) {
+        match writer.add_field(&field_info) {
             Err(LuceneError {
                 kind: LuceneErrorKind::IllegalArgument { message, .. },
                 ..
@@ -3286,7 +3281,8 @@ mod tests {
                     crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
                 )
             ),
-            other => panic!("expected IllegalArgumentException, got {other:?}"),
+            Err(other) => panic!("expected IllegalArgumentException, got {other:?}"),
+            Ok(_) => panic!("expected IllegalArgumentException, got a field writer"),
         }
         Ok(())
     }

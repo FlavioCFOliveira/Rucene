@@ -196,8 +196,9 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
                     position = position.wrapping_add(((code as u32) >> 1) as i32);
                     if code & 1 != 0 {
                         let length = input.read_v_int()?;
-                        // `payload.grow(payloadLength)` reaches `ArrayUtil.grow`,
-                        // whose `assert minSize >= 0` rejects a negative length.
+                        // `payload.growNoCopy(payloadLength)` reaches
+                        // `ArrayUtil.growNoCopy`, whose `assert minSize >= 0`
+                        // rejects a negative length.
                         debug_assert!(
                             length >= 0,
                             "size must be positive (got {length}): likely integer overflow?"
@@ -656,6 +657,14 @@ mod tests {
     }
 
     #[test]
+    // `payload.growNoCopy(payloadLength)` reaches `ArrayUtil.growNoCopy`,
+    // whose `assert minSize >= 0` (`ArrayUtil.java:457-458`) stops a debug
+    // build, like Java under `-ea`. Without assertions the declared
+    // divergence reports a corrupt index.
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "size must be positive (got -1): likely integer overflow?")
+    )]
     fn add_prox_rejects_a_negative_payload_length() {
         // A corrupt buffer must produce an error, never a huge allocation.
         let mut bytes = Vec::new();

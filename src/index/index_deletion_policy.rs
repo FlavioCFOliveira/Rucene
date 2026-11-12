@@ -1709,14 +1709,18 @@ mod tests {
         let policy = snapshot_policy();
         policy.on_init(&[]).unwrap();
 
+        // `lastCommit = commits.get(commits.size() - 1)`
+        // (`SnapshotDeletionPolicy.java:64-67`): `ArrayList.get(-1)` throws
+        // `IndexOutOfBoundsException`.
         let err = policy.on_commit(&[]).unwrap_err();
         assert!(
             matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
+                &err.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.IndexOutOfBoundsException",
+                    message: Some(message),
                     ..
-                }
+                } if message == "Index -1 out of bounds for length 0"
             ),
             "{err}"
         );

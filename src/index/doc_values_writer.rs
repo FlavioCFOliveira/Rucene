@@ -4320,7 +4320,7 @@ mod tests {
         struct ProbingConsumer {
             passes: Vec<Vec<(i32, i64)>>,
             wrong_field: Option<String>,
-            sorted: Option<String>,
+            sorted: Option<LuceneError>,
         }
         impl DocValuesConsumer for ProbingConsumer {
             fn add_numeric_field(
@@ -4347,13 +4347,7 @@ mod tests {
                         .err()
                         .map_or_else(String::new, |error| error.to_string()),
                 );
-                self.sorted = Some(
-                    values
-                        .get_sorted(field)
-                        .err()
-                        .map(|error| error.to_string())
-                        .unwrap_or_default(),
-                );
+                self.sorted = values.get_sorted(field).err();
                 Ok(())
             }
 
@@ -4409,9 +4403,15 @@ mod tests {
             consumer.wrong_field.unwrap().contains("wrong fieldInfo"),
             "a foreign field must hit the wrong-fieldInfo guard"
         );
+        // `EmptyDocValuesProducer.getSorted` is `throw new
+        // UnsupportedOperationException()` (`EmptyDocValuesProducer.java:35-37`).
         assert!(
-            consumer.sorted.unwrap().contains("sorted"),
-            "the numeric producer must refuse the sorted view"
+            matches!(
+                &consumer.sorted.as_ref().unwrap().kind,
+                LuceneErrorKind::UnsupportedOperation { message, cause: None } if message.is_empty()
+            ),
+            "the numeric producer must refuse the sorted view: {:?}",
+            consumer.sorted
         );
     }
 
@@ -4423,8 +4423,8 @@ mod tests {
 
         #[derive(Debug, Default)]
         struct ProbingConsumer {
-            advance: Option<String>,
-            advance_exact: Option<String>,
+            advance: Option<LuceneError>,
+            advance_exact: Option<LuceneError>,
             after: Vec<i32>,
             long_value: Option<i64>,
         }
@@ -4435,8 +4435,8 @@ mod tests {
                 values: &dyn DocValuesProducer,
             ) -> Result<()> {
                 let mut numeric = values.get_numeric(field)?.unwrap();
-                self.advance = Some(numeric.advance(0).unwrap_err().to_string());
-                self.advance_exact = Some(numeric.advance_exact(0).unwrap_err().to_string());
+                self.advance = numeric.advance(0).err();
+                self.advance_exact = numeric.advance_exact(0).err();
                 assert_eq!(numeric.next_doc()?, 2);
                 for _ in 0..4 {
                     self.after.push(numeric.next_doc()?);
@@ -4484,8 +4484,24 @@ mod tests {
 
         let mut consumer = ProbingConsumer::default();
         with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
-        assert!(consumer.advance.unwrap().contains("advance"));
-        assert!(consumer.advance_exact.unwrap().contains("advanceExact"));
+        // `BufferedNumericDocValues.advance` and `advanceExact` are `throw new
+        // UnsupportedOperationException()` (`NumericDocValuesWriter.java:200-208`).
+        assert!(
+            matches!(
+                &consumer.advance.as_ref().unwrap().kind,
+                LuceneErrorKind::UnsupportedOperation { message, cause: None } if message.is_empty()
+            ),
+            "{:?}",
+            consumer.advance
+        );
+        assert!(
+            matches!(
+                &consumer.advance_exact.as_ref().unwrap().kind,
+                LuceneErrorKind::UnsupportedOperation { message, cause: None } if message.is_empty()
+            ),
+            "{:?}",
+            consumer.advance_exact
+        );
         assert_eq!(consumer.after, vec![NO_MORE_DOCS; 4]);
         // Java's `BufferedNumericDocValues.longValue()` returns the last value
         // read, whatever the position.

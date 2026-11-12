@@ -5656,15 +5656,15 @@ mod tests {
 
     /// A `.tvm` whose fields index declares no chunks for a non-empty segment
     /// opens, `prefetch` answers from the cache, and reading the document's
-    /// vectors is a corrupt-index error rather than a panic.
+    /// vectors throws `ArrayIndexOutOfBoundsException`, as Lucene 10.5.0 does.
     ///
     /// Lucene 10.5.0 shares `FieldsIndexReader` between both formats:
     /// `getBlockID` answers `-1` (`FieldsIndexReader.java:119-127`), the
     /// `-1`-filled prefetch cache holds it
     /// (`Lucene90CompressingTermVectorsReader.java:125, 347-361`), and `get(0)`
-    /// throws from `getBlockStartPointer(-1)`.
+    /// throws from `getBlockStartPointer(-1)` (`FieldsIndexReader.java:130-132`).
     #[test]
-    fn a_term_vectors_index_without_chunks_is_a_corrupt_index_not_a_panic() {
+    fn a_term_vectors_index_without_chunks_throws_as_lucene_does() {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let source = write_tv_merge_source(&dir, "_h", 0, 3);
         // Positive control: the intact index serves the same calls.
@@ -5682,13 +5682,20 @@ mod tests {
         let mut reader = concrete_tv_merge_source(&dir, &source);
         assert_eq!(reader.index_reader.get_block_id(0).unwrap(), -1);
         reader.prefetch(0).unwrap();
-        assert!(matches!(
-            reader.get(0),
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            })
-        ));
+        let result = reader.get(0).map(|_| ());
+        assert!(
+            matches!(
+                result,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        ..
+                    },
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
     }
 
     /// `prefetch` asks the `.tvd` input for the whole block that holds the

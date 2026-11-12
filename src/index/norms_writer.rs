@@ -596,8 +596,8 @@ mod tests {
 
         #[derive(Debug, Default)]
         struct ProbingConsumer {
-            advance: Option<String>,
-            advance_exact: Option<String>,
+            advance: Option<LuceneError>,
+            advance_exact: Option<LuceneError>,
         }
         impl NormsConsumer for ProbingConsumer {
             fn add_norms_field(
@@ -606,8 +606,8 @@ mod tests {
                 values: &dyn NormsProducer,
             ) -> Result<()> {
                 let mut norms = values.get_norms(field)?.unwrap();
-                self.advance = Some(norms.advance(0).unwrap_err().to_string());
-                self.advance_exact = Some(norms.advance_exact(0).unwrap_err().to_string());
+                self.advance = norms.advance(0).err();
+                self.advance_exact = norms.advance_exact(0).err();
                 Ok(())
             }
             fn close(&mut self) -> Result<()> {
@@ -617,8 +617,24 @@ mod tests {
 
         let mut consumer = ProbingConsumer::default();
         writer.flush(&mut consumer, None).unwrap();
-        assert!(consumer.advance.unwrap().contains("advance"));
-        assert!(consumer.advance_exact.unwrap().contains("advance_exact"));
+        // `throw new UnsupportedOperationException()`, with no message
+        // (`NormValuesWriter.java:134-142`).
+        assert!(
+            matches!(
+                &consumer.advance.as_ref().unwrap().kind,
+                LuceneErrorKind::UnsupportedOperation { message, cause: None } if message.is_empty()
+            ),
+            "{:?}",
+            consumer.advance
+        );
+        assert!(
+            matches!(
+                &consumer.advance_exact.as_ref().unwrap().kind,
+                LuceneErrorKind::UnsupportedOperation { message, cause: None } if message.is_empty()
+            ),
+            "{:?}",
+            consumer.advance_exact
+        );
     }
 
     #[test]

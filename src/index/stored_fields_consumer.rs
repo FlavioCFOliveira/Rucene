@@ -1147,11 +1147,15 @@ mod tests {
         let error = consumer
             .write_field(&field("f", 0), StoredValue::Integer(1))
             .expect_err("no document frame is open");
+        // `writer.writeField(...)` with no writer yet: `writer` is only created
+        // by `initStoredFieldsWriter` from `startDocument`
+        // (`StoredFieldsConsumer.java:46-68`), so Java throws
+        // `NullPointerException`.
         assert!(
             matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
+                &error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
                     ..
                 }
             ),

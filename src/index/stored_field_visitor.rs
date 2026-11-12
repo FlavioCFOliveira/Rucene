@@ -80,10 +80,14 @@ pub trait StoredFieldVisitor {
             ));
         }
         let length = length as usize;
-        let mut data: Vec<u8> = Vec::new();
-        data.try_reserve_exact(length)
+        // The probe keeps Java's `OutOfMemoryError`; the array itself is a
+        // zeroed allocation (`vec![0; n]`) whose pages stay untouched until
+        // written, as the JVM's zeroed heap arrays are, rather than a fill of
+        // every element.
+        Vec::<u8>::new()
+            .try_reserve_exact(length)
             .map_err(|_| LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space"))?;
-        data.resize(length, 0u8);
+        let mut data = vec![0u8; length];
         value.data_input().read_bytes(Some(&mut data), 0, length)?;
         self.binary_field(field_info, &data)
     }

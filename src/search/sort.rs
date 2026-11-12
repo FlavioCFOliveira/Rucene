@@ -1186,7 +1186,17 @@ impl SortField {
         // `SortField.serialize(DataOutput)` (`SortField.java:265-306`): the
         // header is written first, and the type is only checked when a
         // missing value follows.
-        output.write_string(self.field.as_deref().unwrap_or(""))?;
+        //
+        // `out.writeString(field)` with a null field (`FIELD_SCORE`,
+        // `FIELD_DOC`) throws `NullPointerException` before writing a byte;
+        // its helpful message names the output's own `writeString` locals
+        // (measured on `lucene-core-10.5.0.jar` with a `ByteBuffersDataOutput`:
+        // `Cannot invoke "String.length()" because "v" is null`), so no
+        // message is reproduced here.
+        let Some(field) = self.field.as_deref() else {
+            return Err(LuceneError::null_pointer());
+        };
+        output.write_string(field)?;
         output.write_string(self.field_type.java_name())?;
         output.write_int(if self.reverse { 1 } else { 0 })?;
         let Some(missing) = self.missing_value else {
@@ -2088,13 +2098,26 @@ mod tests {
         );
     }
 
+    /// `FIELD_SCORE` and `FIELD_DOC` have a null field, so
+    /// `out.writeString(field)` throws `NullPointerException` before writing
+    /// anything (`SortField.java:267-268`; measured on `lucene-core-10.5.0.jar`
+    /// through `SortField.Provider.writeSortField`).
     #[test]
     fn sortfield_score_and_doc_do_not_serialize() {
-        assert!(SortField::FIELD_SCORE
-            .serialize(&mut VecDataOutput::new())
-            .is_err());
-        assert!(SortField::FIELD_DOC
-            .serialize(&mut VecDataOutput::new())
-            .is_err());
+        for field in [&SortField::FIELD_SCORE, &SortField::FIELD_DOC] {
+            let mut output = VecDataOutput::new();
+            let error = field.serialize(&mut output).unwrap_err();
+            assert!(
+                matches!(
+                    &error.kind,
+                    LuceneErrorKind::Unchecked {
+                        class: "java.lang.NullPointerException",
+                        ..
+                    }
+                ),
+                "{field}: {error:?}"
+            );
+            assert!(output.is_empty(), "{field}: nothing is written");
+        }
     }
 }

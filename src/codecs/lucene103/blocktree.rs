@@ -290,6 +290,13 @@ impl Stats {
     }
 }
 
+/// `FieldReader.getStats()` returns a `Stats` (`FieldReader.java:111-114`).
+impl crate::index::terms::StatsObject for Stats {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl fmt::Display for Stats {
     /// Renders the statistics as the multi-line report `CheckIndex` prints.
     ///

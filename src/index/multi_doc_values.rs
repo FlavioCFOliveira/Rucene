@@ -2394,10 +2394,31 @@ mod tests {
         assert_eq!(values.long_value().unwrap(), 5);
     }
 
+    /// Asserts `result` is Java's helpful `NullPointerException` for
+    /// `this.currentValues.<call>`.
+    fn assert_null_current_values<T: std::fmt::Debug>(result: Result<T>, call: &str) {
+        let expected = format!("Cannot invoke \"{call}\" because \"this.currentValues\" is null");
+        assert!(
+            matches!(
+                &result,
+                Err(LuceneError {
+                    kind: LuceneErrorKind::Unchecked {
+                        class: "java.lang.NullPointerException",
+                        message: Some(message),
+                        ..
+                    },
+                    ..
+                }) if *message == expected
+            ),
+            "{result:?}"
+        );
+    }
+
     /// After `advance_exact` has parked the cursor inside a leaf that has no
-    /// values for the field, `advance` cannot ask that leaf anything — it must
-    /// resume the forward scan from the next leaf. Java dereferences a null
-    /// `currentValues` on this path.
+    /// values for the field (`currentValues == null`, `nextLeaf` past it),
+    /// `advance` to a target in that same leaf skips the leaf switch and calls
+    /// `currentValues.advance`: Java throws `NullPointerException`
+    /// (`MultiDocValues.java:249-263`).
     #[test]
     fn numeric_values_advance_after_advance_exact_parked_on_a_leaf_without_the_field() {
         let reader = composite(vec![
@@ -2409,8 +2430,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!values.advance_exact(2).unwrap());
-        assert_eq!(values.advance(3).unwrap(), 4);
-        assert_eq!(values.long_value().unwrap(), 7);
+        assert_null_current_values(
+            values.advance(3),
+            "org.apache.lucene.index.NumericDocValues.advance(int)",
+        );
     }
 
     #[test]
@@ -2424,8 +2447,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!values.advance_exact(2).unwrap());
-        assert_eq!(values.advance(3).unwrap(), 4);
-        assert_eq!(text(&values.binary_value().unwrap()), "z");
+        assert_null_current_values(
+            values.advance(3),
+            "org.apache.lucene.index.BinaryDocValues.advance(int)",
+        );
     }
 
     #[test]
@@ -2455,13 +2480,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(values.doc_id(), -1);
-        assert!(matches!(
+        // `return currentValues.longValue()` with no leaf yet
+        // (`MultiDocValues.java:300-303`).
+        assert_null_current_values(
             values.long_value(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            })
-        ));
+            "org.apache.lucene.index.NumericDocValues.longValue()",
+        );
     }
 
     // =======================================================================
