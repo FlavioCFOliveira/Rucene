@@ -10,7 +10,7 @@
 use std::any::{Any, TypeId};
 use std::fmt::{self, Debug, Formatter, Write};
 use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::util::attribute::{Attribute, AttributeImpl, AttributeReflector};
 use crate::util::byte_block_pool::hash_bytes;
@@ -198,7 +198,12 @@ pub trait CharTermAttribute: Attribute {
 pub struct CharTermAttributeImpl {
     term_buffer: Vec<char>,
     term_length: usize,
-    builder: BytesRefBuilder,
+    /// Java's `private BytesRefBuilder builder`, which `getBytesRef()` refills
+    /// for every term (`CharTermAttributeImpl.java:39,92-95`) so that its
+    /// buffer is reused across terms. `getBytesRef()` takes `&self` here, so
+    /// the builder sits behind a lock (an attribute must be `Sync`); nothing
+    /// else holds it, so the lock is never contended within one token stream.
+    builder: Mutex<BytesRefBuilder>,
 }
 
 const MIN_BUFFER_SIZE: usize = 10;
@@ -210,7 +215,7 @@ impl CharTermAttributeImpl {
         Self {
             term_buffer: vec!['\0'; min_size],
             term_length: 0,
-            builder: BytesRefBuilder::new(),
+            builder: Mutex::new(BytesRefBuilder::new()),
         }
     }
 
@@ -400,10 +405,14 @@ impl CharTermAttribute for CharTermAttributeImpl {
 }
 
 impl TermToBytesRefAttribute for CharTermAttributeImpl {
+    /// Equivalent to `CharTermAttributeImpl.getBytesRef()`
+    /// (`CharTermAttributeImpl.java:92-95`): `builder.copyChars(termBuffer, 0,
+    /// termLength); return builder.get();`, on the attribute's one builder, so
+    /// its buffer only grows when a term needs more room. The `BytesRef` a
+    /// Rust caller receives is an owned copy of what Java's points to.
     fn get_bytes_ref(&self) -> BytesRef {
-        let text: String = self.term_buffer[..self.term_length].iter().collect();
-        let mut builder = BytesRefBuilder::new();
-        builder.copy_chars(&text);
+        let mut builder = self.builder.lock().unwrap_or_else(PoisonError::into_inner);
+        builder.copy_char_array(&self.term_buffer[..self.term_length]);
         builder.get()
     }
 }
@@ -413,10 +422,9 @@ impl Clone for CharTermAttributeImpl {
         let mut clone = Self::new();
         clone.copy_buffer(&self.term_buffer, 0, self.term_length);
         let bytes = self.get_bytes_ref();
-        clone.builder = BytesRefBuilder::new();
-        clone
-            .builder
-            .copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+        let mut builder = BytesRefBuilder::new();
+        builder.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+        clone.builder = Mutex::new(builder);
         clone
     }
 }
@@ -489,9 +497,9 @@ impl AttributeImpl for CharTermAttributeImpl {
         if let Some(t) = target.as_any_mut().downcast_mut::<CharTermAttributeImpl>() {
             t.copy_buffer(&self.term_buffer, 0, self.term_length);
             let bytes = self.get_bytes_ref();
-            t.builder = BytesRefBuilder::new();
-            t.builder
-                .copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+            let mut builder = BytesRefBuilder::new();
+            builder.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+            t.builder = Mutex::new(builder);
         }
     }
 

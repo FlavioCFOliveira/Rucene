@@ -72,13 +72,12 @@ fn new_doc_values_field_type() -> FieldType {
 /// The one frozen type every [`LatLonPoint`] shares.
 ///
 /// Equivalent to the static `LatLonPoint.TYPE` (`LatLonPoint.java:101-106`).
-/// Each field holds a clone, which keeps the frozen identity, so the fields
-/// share one type as Java's share one object (see [`FieldType`]'s
-/// `frozen_identity`). It is a static of its own: `XYPointField.TYPE` is
-/// another object, equal by value.
-fn lat_lon_point_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
-    TYPE.get_or_init(new_point_field_type)
+/// Each field holds the one shared `Arc`, as Java's fields share one object.
+/// It is a static of its own: `XYPointField.TYPE` is another object, equal by
+/// value.
+fn lat_lon_point_type() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| Arc::new(new_point_field_type()))
 }
 
 /// The one frozen type every [`XYPointField`] shares.
@@ -93,9 +92,9 @@ fn xy_point_field_type() -> &'static FieldType {
 ///
 /// Equivalent to the static `LatLonDocValuesField.TYPE`
 /// (`LatLonDocValuesField.java:70-75`).
-fn lat_lon_doc_values_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
-    TYPE.get_or_init(new_doc_values_field_type)
+fn lat_lon_doc_values_field_type() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| Arc::new(new_doc_values_field_type()))
 }
 
 /// The one frozen type every [`XYDocValuesField`] shares.
@@ -131,7 +130,9 @@ fn require_field(field: Option<&str>) -> Result<&str> {
 #[derive(Debug)]
 pub struct LatLonPoint {
     name: String,
-    field_type: FieldType,
+    /// `LatLonPoint.TYPE`, the one static object every Java instance
+    /// references (`LatLonPoint.java:101-106`).
+    field_type: Arc<FieldType>,
     fields_data: AtomicRefCell<FieldData>,
 }
 
@@ -143,7 +144,7 @@ impl LatLonPoint {
     pub fn new(name: impl Into<String>, latitude: f64, longitude: f64) -> Result<Self> {
         let field = Self {
             name: name.into(),
-            field_type: lat_lon_point_type().clone(),
+            field_type: Arc::clone(lat_lon_point_type()),
             fields_data: AtomicRefCell::new(FieldData::Bytes(BytesRef::new(
                 vec![0u8; 2 * COORDINATE_BYTES],
             ))),
@@ -609,7 +610,7 @@ impl IndexableField for LatLonPoint {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -654,7 +655,9 @@ impl IndexableField for LatLonPoint {
 #[derive(Debug)]
 pub struct LatLonDocValuesField {
     name: String,
-    field_type: FieldType,
+    /// `LatLonDocValuesField.TYPE`, the one static object every Java instance
+    /// references (`LatLonDocValuesField.java:70-75`).
+    field_type: Arc<FieldType>,
     value: AtomicRefCell<i64>,
 }
 
@@ -663,7 +666,7 @@ impl LatLonDocValuesField {
     pub fn new(name: impl Into<String>, latitude: f64, longitude: f64) -> Result<Self> {
         let field = Self {
             name: name.into(),
-            field_type: lat_lon_doc_values_field_type().clone(),
+            field_type: Arc::clone(lat_lon_doc_values_field_type()),
             value: AtomicRefCell::new(0),
         };
         field.set_location_value(latitude, longitude)?;
@@ -912,7 +915,7 @@ impl IndexableField for LatLonDocValuesField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(

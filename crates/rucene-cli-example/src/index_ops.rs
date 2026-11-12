@@ -55,17 +55,28 @@ pub fn create_index(path: &Path) -> Result<()> {
 /// record whose `id` is already indexed creates a second document with that
 /// key. Use [`update_documents`] to replace.
 ///
+/// The records are consumed one at a time, each indexed as soon as it is
+/// produced, so a stream (such as a [`RecordReader`](crate::schema::RecordReader))
+/// is never held in memory whole. The first `Err` the stream yields fails the
+/// command: the writer is rolled back and nothing of it is committed.
+///
 /// # Errors
 ///
-/// As [`with_writer`].
-pub fn add_documents(path: &Path, records: &[Record]) -> Result<usize> {
+/// The first error of `records`, or as [`with_writer`].
+pub fn add_documents(
+    path: &Path,
+    records: impl IntoIterator<Item = Result<Record>>,
+) -> Result<usize> {
     with_writer(path, |writer| {
+        let mut count = 0;
         for record in records {
+            let record = record?;
             writer
                 .add_document(&record.to_document()?)
                 .map_err(|error| CliError::from(error).context(&format!("id {:?}", record.id())))?;
+            count += 1;
         }
-        Ok(records.len())
+        Ok(count)
     })
 }
 
@@ -77,17 +88,25 @@ pub fn add_documents(path: &Path, records: &[Record]) -> Result<usize> {
 /// one. As in Lucene, a record whose `id` is not indexed yet is simply
 /// added.
 ///
+/// The records are consumed one at a time, as in [`add_documents`].
+///
 /// # Errors
 ///
-/// As [`with_writer`].
-pub fn update_documents(path: &Path, records: &[Record]) -> Result<usize> {
+/// The first error of `records`, or as [`with_writer`].
+pub fn update_documents(
+    path: &Path,
+    records: impl IntoIterator<Item = Result<Record>>,
+) -> Result<usize> {
     with_writer(path, |writer| {
+        let mut count = 0;
         for record in records {
+            let record = record?;
             writer
                 .update_document(id_term(record.id()), &record.to_document()?)
                 .map_err(|error| CliError::from(error).context(&format!("id {:?}", record.id())))?;
+            count += 1;
         }
-        Ok(records.len())
+        Ok(count)
     })
 }
 

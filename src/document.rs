@@ -2111,29 +2111,57 @@ pub enum Store {
     NO,
 }
 
+/// The stored value of a `StringField`, `TextField` or `KeywordField`.
+///
+/// Each of those Java classes keeps a `StoredValue storedValue` built from
+/// the very object it passes to `Field` as `fieldsData` when the field is
+/// stored, and `null` otherwise (`StringField.java:60-86`,
+/// `TextField.java:71-77`, `KeywordField.java:79-104`), and every setter
+/// updates both (`StringField.java:99-115`, `TextField.java:94-99`,
+/// `KeywordField.java:116-133`), so `storedValue` always holds the current
+/// `fieldsData`. Java shares that one object; this port reads the value off
+/// `fields_data` when it is asked for, instead of keeping a second copy of it
+/// from construction on. The stored flag is the field type's, which is
+/// `TYPE_STORED` exactly when `Store.YES` was given.
+fn mirrored_stored_value(
+    stored: bool,
+    fields_data: &AtomicRefCell<FieldData>,
+) -> Option<StoredValue> {
+    if !stored {
+        return None;
+    }
+    match &*fields_data.borrow() {
+        FieldData::String(value) => Some(StoredValue::String(value.clone())),
+        FieldData::Bytes(value) => Some(StoredValue::Binary(value.clone())),
+        _ => unreachable!(
+            "INVARIANT: a stored StringField, TextField or KeywordField holds a String or BytesRef"
+        ),
+    }
+}
+
 // -----------------------------------------------------------------------------
 // StringField
 // -----------------------------------------------------------------------------
 
-fn string_field_type_not_stored() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn string_field_type_not_stored() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_omit_norms(true).unwrap();
         ft.set_index_options(IndexOptions::DOCS).unwrap();
         ft.set_tokenized(false).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
-fn string_field_type_stored() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn string_field_type_stored() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let ft = FieldType::new_from(string_field_type_not_stored());
+        let ft = FieldType::new_from(&**string_field_type_not_stored());
         ft.set_stored(true).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
@@ -2143,10 +2171,11 @@ fn string_field_type_stored() -> &'static FieldType {
 #[derive(Debug)]
 pub struct StringField {
     name: String,
-    field_type: FieldType,
+    /// `TYPE_STORED` or `TYPE_NOT_STORED`, the one static object every Java
+    /// `StringField` references (`StringField.java:35-50`).
+    field_type: Arc<FieldType>,
     fields_data: AtomicRefCell<FieldData>,
     binary_value: AtomicRefCell<Option<BytesRef>>,
-    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl StringField {
@@ -2164,48 +2193,37 @@ impl StringField {
 
     /// Creates a new textual StringField.
     pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
-        let field_type = if stored == Store::YES {
-            string_field_type_stored().clone()
+        let field_type = Arc::clone(if stored == Store::YES {
+            string_field_type_stored()
         } else {
-            string_field_type_not_stored().clone()
-        };
+            string_field_type_not_stored()
+        });
         // `binaryValue = new BytesRef(value)` (`StringField.java:61`).
         let binary_value = Some(BytesRef::from_char_sequence(&value));
         // `StringField(String, Store.YES)` stores a STRING value, not the UTF-8
-        // bytes it indexes: Lucene's ctor keeps `fieldsData` as the String.
-        let stored_value = if stored == Store::YES {
-            Some(StoredValue::String(value.clone()))
-        } else {
-            None
-        };
+        // bytes it indexes: Lucene's ctor keeps `fieldsData` as the String,
+        // which its `storedValue` mirrors (see `stored_value`).
         let fields_data = FieldData::String(value);
         Ok(Self {
             name: name.to_string(),
             field_type,
             fields_data: AtomicRefCell::new(fields_data),
             binary_value: AtomicRefCell::new(binary_value),
-            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
     /// Creates a new binary StringField.
     pub fn new_with_bytes(name: &str, value: BytesRef, stored: Store) -> Result<Self> {
-        let field_type = if stored == Store::YES {
-            string_field_type_stored().clone()
+        let field_type = Arc::clone(if stored == Store::YES {
+            string_field_type_stored()
         } else {
-            string_field_type_not_stored().clone()
-        };
-        let stored_value = if stored == Store::YES {
-            Some(StoredValue::Binary(value.clone()))
-        } else {
-            None
-        };
+            string_field_type_not_stored()
+        });
         Ok(Self {
             name: name.to_string(),
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(value.clone())),
             binary_value: AtomicRefCell::new(Some(value)),
-            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2218,9 +2236,8 @@ impl StringField {
     pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
         let value = set_string_fields_data(&self.fields_data, value.into())?;
         *self.binary_value.borrow_mut() = Some(BytesRef::from_char_sequence(&value));
-        if let Some(stored_value) = self.stored_value.borrow_mut().as_mut() {
-            stored_value.set_string_value(value)?;
-        }
+        // `storedValue.setStringValue(value)`: the stored value mirrors
+        // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
     }
 }
@@ -2238,7 +2255,7 @@ impl IndexableField for StringField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -2275,8 +2292,14 @@ impl IndexableField for StringField {
         None
     }
 
+    /// The `storedValue` Java builds once and updates in every setter
+    /// always equals `fieldsData` when the field is stored, so it is read off
+    /// `fieldsData` here instead of being kept as a second copy of the value.
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.borrow().clone())
+        Ok(mirrored_stored_value(
+            self.field_type.stored(),
+            &self.fields_data,
+        ))
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2288,25 +2311,25 @@ impl IndexableField for StringField {
 // TextField
 // -----------------------------------------------------------------------------
 
-fn text_field_type_not_stored() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn text_field_type_not_stored() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
             .unwrap();
         ft.set_tokenized(true).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
-fn text_field_type_stored() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn text_field_type_stored() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let ft = FieldType::new_from(text_field_type_not_stored());
+        let ft = FieldType::new_from(&**text_field_type_not_stored());
         ft.set_stored(true).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
@@ -2316,9 +2339,10 @@ fn text_field_type_stored() -> &'static FieldType {
 #[derive(Debug)]
 pub struct TextField {
     name: String,
-    field_type: FieldType,
+    /// `TYPE_STORED` or `TYPE_NOT_STORED`, the one static object every Java
+    /// `TextField` references (`TextField.java:33-46`).
+    field_type: Arc<FieldType>,
     fields_data: AtomicRefCell<FieldData>,
-    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl TextField {
@@ -2336,31 +2360,27 @@ impl TextField {
     pub fn new_with_reader(name: &str, reader: Box<dyn CharReader>) -> Result<Self> {
         Ok(Self {
             name: name.to_string(),
-            field_type: text_field_type_not_stored().clone(),
+            field_type: Arc::clone(text_field_type_not_stored()),
             fields_data: AtomicRefCell::new(FieldData::Reader(Arc::new(AtomicRefCell::new(
                 reader,
             )))),
-            stored_value: AtomicRefCell::new(None),
         })
     }
 
     /// Creates a new TextField with a string value.
     pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
-        let field_type = if stored == Store::YES {
-            text_field_type_stored().clone()
+        let field_type = Arc::clone(if stored == Store::YES {
+            text_field_type_stored()
         } else {
-            text_field_type_not_stored().clone()
-        };
-        let stored_value = if stored == Store::YES {
-            Some(StoredValue::String(value.clone()))
-        } else {
-            None
-        };
+            text_field_type_not_stored()
+        });
+        // `storedValue = store == Store.YES ? new StoredValue(value) : null`
+        // (`TextField.java:74`) wraps the same `String`: read off `fieldsData`
+        // by `stored_value`, so the value is held once.
         Ok(Self {
             name: name.to_string(),
             field_type,
             fields_data: AtomicRefCell::new(FieldData::String(value)),
-            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2371,9 +2391,8 @@ impl TextField {
     ) -> Result<Self> {
         Ok(Self {
             name: name.to_string(),
-            field_type: text_field_type_not_stored().clone(),
+            field_type: Arc::clone(text_field_type_not_stored()),
             fields_data: AtomicRefCell::new(FieldData::TokenStream(token_stream)),
-            stored_value: AtomicRefCell::new(None),
         })
     }
 
@@ -2384,10 +2403,9 @@ impl TextField {
     /// checks the value type and rejects `None` (Java's `null`), then the
     /// stored value follows the new string.
     pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
-        let value = set_string_fields_data(&self.fields_data, value.into())?;
-        if let Some(stored_value) = self.stored_value.borrow_mut().as_mut() {
-            stored_value.set_string_value(value)?;
-        }
+        set_string_fields_data(&self.fields_data, value.into())?;
+        // `storedValue.setStringValue(value)`: the stored value mirrors
+        // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
     }
 }
@@ -2405,7 +2423,7 @@ impl IndexableField for TextField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -2448,8 +2466,14 @@ impl IndexableField for TextField {
         None
     }
 
+    /// The `storedValue` Java builds once and updates in every setter
+    /// always equals `fieldsData` when the field is stored, so it is read off
+    /// `fieldsData` here instead of being kept as a second copy of the value.
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.borrow().clone())
+        Ok(mirrored_stored_value(
+            self.field_type.stored(),
+            &self.fields_data,
+        ))
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2461,13 +2485,13 @@ impl IndexableField for TextField {
 // StoredField
 // -----------------------------------------------------------------------------
 
-fn stored_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn stored_field_type() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_stored(true).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
@@ -2495,7 +2519,11 @@ impl StoredField {
                 "value must not be null".to_string(),
             ));
         };
-        Ok(Self(Field::new(name, value, stored_field_type().clone())?))
+        Ok(Self(Field::new(
+            name,
+            value,
+            Arc::clone(stored_field_type()),
+        )?))
     }
 
     /// Creates a stored-only field with a binary value.
@@ -2513,7 +2541,7 @@ impl StoredField {
         Ok(Self(Field::new_with_bytes(
             name,
             value,
-            stored_field_type().clone(),
+            Arc::clone(stored_field_type()),
         )?))
     }
 
@@ -2540,7 +2568,7 @@ impl StoredField {
         Ok(Self(Field::new_with_number(
             name,
             value,
-            stored_field_type().clone(),
+            Arc::clone(stored_field_type()),
         )?))
     }
 
@@ -2564,7 +2592,7 @@ impl StoredField {
             name,
             input,
             length,
-            stored_field_type().clone(),
+            Arc::clone(stored_field_type()),
         )?))
     }
 
@@ -2745,7 +2773,7 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
         // Lucene rebuilds a `TextField.TYPE_STORED` and copies back the three
         // properties the segment's FieldInfo does carry, so that a document
         // round-tripped through the index keeps them.
-        let field_type = FieldType::new_from(text_field_type_stored());
+        let field_type = FieldType::new_from(&**text_field_type_stored());
         field_type.set_store_term_vectors(field_info.has_term_vectors())?;
         field_type.set_omit_norms(field_info.omits_norms())?;
         field_type.set_index_options(field_info.index_options)?;
@@ -2802,8 +2830,8 @@ impl StoredFieldVisitor for DocumentStoredFieldVisitor {
 // KeywordField
 // -----------------------------------------------------------------------------
 
-fn keyword_field_type() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn keyword_field_type() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let ft = FieldType::new();
         ft.set_index_options(IndexOptions::DOCS).unwrap();
@@ -2811,17 +2839,17 @@ fn keyword_field_type() -> &'static FieldType {
         ft.set_tokenized(false).unwrap();
         ft.set_doc_values_type(DocValuesType::SORTED_SET).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
-fn keyword_field_type_stored() -> &'static FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn keyword_field_type_stored() -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
-        let ft = FieldType::new_from(keyword_field_type());
+        let ft = FieldType::new_from(&**keyword_field_type());
         ft.set_stored(true).unwrap();
         ft.freeze();
-        ft
+        Arc::new(ft)
     })
 }
 
@@ -2832,31 +2860,26 @@ fn keyword_field_type_stored() -> &'static FieldType {
 #[derive(Debug)]
 pub struct KeywordField {
     name: String,
-    field_type: FieldType,
+    /// `FIELD_TYPE_STORED` or `FIELD_TYPE`, the one static object every Java
+    /// `KeywordField` references (`KeywordField.java:52-65`).
+    field_type: Arc<FieldType>,
     fields_data: AtomicRefCell<FieldData>,
     binary_value: AtomicRefCell<Option<BytesRef>>,
-    stored_value: AtomicRefCell<Option<StoredValue>>,
 }
 
 impl KeywordField {
     /// Creates a new KeywordField from a binary value.
     pub fn new_with_bytes(name: &str, value: BytesRef, stored: Store) -> Result<Self> {
-        let field_type = if stored == Store::YES {
-            keyword_field_type_stored().clone()
+        let field_type = Arc::clone(if stored == Store::YES {
+            keyword_field_type_stored()
         } else {
-            keyword_field_type().clone()
-        };
-        let stored_value = if stored == Store::YES {
-            Some(StoredValue::Binary(value.clone()))
-        } else {
-            None
-        };
+            keyword_field_type()
+        });
         Ok(Self {
             name: name.to_string(),
             field_type,
             fields_data: AtomicRefCell::new(FieldData::Bytes(value.clone())),
             binary_value: AtomicRefCell::new(Some(value)),
-            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2869,24 +2892,21 @@ impl KeywordField {
     /// [`Self::new_with_bytes`] instead would store a binary value and change
     /// the bytes written to the `.fdt` file.
     pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
-        let field_type = if stored == Store::YES {
-            keyword_field_type_stored().clone()
+        let field_type = Arc::clone(if stored == Store::YES {
+            keyword_field_type_stored()
         } else {
-            keyword_field_type().clone()
-        };
+            keyword_field_type()
+        });
         // `this.binaryValue = new BytesRef(value)` (`KeywordField.java:98`).
         let binary_value = BytesRef::from_char_sequence(&value);
-        let stored_value = if stored == Store::YES {
-            Some(StoredValue::String(value.clone()))
-        } else {
-            None
-        };
+        // `storedValue = new StoredValue(value)` (`KeywordField.java:100`)
+        // wraps the same `String`: read off `fieldsData` by `stored_value`, so
+        // the value is held once.
         Ok(Self {
             name: name.to_string(),
             field_type,
             fields_data: AtomicRefCell::new(FieldData::String(value)),
             binary_value: AtomicRefCell::new(Some(binary_value)),
-            stored_value: AtomicRefCell::new(stored_value),
         })
     }
 
@@ -2903,9 +2923,8 @@ impl KeywordField {
     pub fn set_string_value(&self, value: String) -> Result<()> {
         let value = set_string_fields_data(&self.fields_data, Some(value))?;
         *self.binary_value.borrow_mut() = Some(BytesRef::from_char_sequence(&value));
-        if let Some(stored_value) = self.stored_value.borrow_mut().as_mut() {
-            stored_value.set_string_value(value)?;
-        }
+        // `storedValue.setStringValue(value)`: the stored value mirrors
+        // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
     }
 
@@ -2921,10 +2940,10 @@ impl KeywordField {
     /// `IllegalArgumentException` when the field does not hold bytes.
     pub fn set_bytes_value(&self, value: BytesRef) -> Result<()> {
         let value = set_bytes_fields_data(&self.fields_data, Some(value))?;
-        *self.binary_value.borrow_mut() = Some(value.clone());
-        if let Some(stored_value) = self.stored_value.borrow_mut().as_mut() {
-            stored_value.set_binary_value(value)?;
-        }
+        // `binaryValue = value; storedValue.setBinaryValue(value)`: the stored
+        // value mirrors `fieldsData` (see `stored_value`), so it already
+        // follows.
+        *self.binary_value.borrow_mut() = Some(value);
         Ok(())
     }
 
@@ -3021,7 +3040,7 @@ impl IndexableField for KeywordField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -3061,8 +3080,14 @@ impl IndexableField for KeywordField {
         None
     }
 
+    /// The `storedValue` Java builds once and updates in every setter
+    /// always equals `fieldsData` when the field is stored, so it is read off
+    /// `fieldsData` here instead of being kept as a second copy of the value.
     fn stored_value(&self) -> Result<Option<StoredValue>> {
-        Ok(self.stored_value.borrow().clone())
+        Ok(mirrored_stored_value(
+            self.field_type.stored(),
+            &self.fields_data,
+        ))
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -5532,19 +5557,17 @@ impl IndexableField for BinaryDocValuesField {
 // Combined numeric fields
 // -----------------------------------------------------------------------------
 
-fn int_combined_field_type(stored: bool) -> FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
-    static TYPE_STORED: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn int_combined_field_type(stored: bool) -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+    static TYPE_STORED: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     if stored {
-        TYPE_STORED
-            .get_or_init(|| {
-                let base = int_combined_field_type(false);
-                let ft = FieldType::new_from(&base as &dyn IndexableFieldType);
-                ft.set_stored(true).unwrap();
-                ft.freeze();
-                ft
-            })
-            .clone()
+        TYPE_STORED.get_or_init(|| {
+            let base = int_combined_field_type(false);
+            let ft = FieldType::new_from(&**base as &dyn IndexableFieldType);
+            ft.set_stored(true).unwrap();
+            ft.freeze();
+            Arc::new(ft)
+        })
     } else {
         TYPE.get_or_init(|| {
             let ft = FieldType::new();
@@ -5552,25 +5575,22 @@ fn int_combined_field_type(stored: bool) -> FieldType {
             ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
                 .unwrap();
             ft.freeze();
-            ft
+            Arc::new(ft)
         })
-        .clone()
     }
 }
 
-fn long_combined_field_type(stored: bool) -> FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
-    static TYPE_STORED: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn long_combined_field_type(stored: bool) -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+    static TYPE_STORED: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     if stored {
-        TYPE_STORED
-            .get_or_init(|| {
-                let base = long_combined_field_type(false);
-                let ft = FieldType::new_from(&base as &dyn IndexableFieldType);
-                ft.set_stored(true).unwrap();
-                ft.freeze();
-                ft
-            })
-            .clone()
+        TYPE_STORED.get_or_init(|| {
+            let base = long_combined_field_type(false);
+            let ft = FieldType::new_from(&**base as &dyn IndexableFieldType);
+            ft.set_stored(true).unwrap();
+            ft.freeze();
+            Arc::new(ft)
+        })
     } else {
         TYPE.get_or_init(|| {
             let ft = FieldType::new();
@@ -5578,25 +5598,22 @@ fn long_combined_field_type(stored: bool) -> FieldType {
             ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
                 .unwrap();
             ft.freeze();
-            ft
+            Arc::new(ft)
         })
-        .clone()
     }
 }
 
-fn float_combined_field_type(stored: bool) -> FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
-    static TYPE_STORED: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn float_combined_field_type(stored: bool) -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+    static TYPE_STORED: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     if stored {
-        TYPE_STORED
-            .get_or_init(|| {
-                let base = float_combined_field_type(false);
-                let ft = FieldType::new_from(&base as &dyn IndexableFieldType);
-                ft.set_stored(true).unwrap();
-                ft.freeze();
-                ft
-            })
-            .clone()
+        TYPE_STORED.get_or_init(|| {
+            let base = float_combined_field_type(false);
+            let ft = FieldType::new_from(&**base as &dyn IndexableFieldType);
+            ft.set_stored(true).unwrap();
+            ft.freeze();
+            Arc::new(ft)
+        })
     } else {
         TYPE.get_or_init(|| {
             let ft = FieldType::new();
@@ -5604,25 +5621,22 @@ fn float_combined_field_type(stored: bool) -> FieldType {
             ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
                 .unwrap();
             ft.freeze();
-            ft
+            Arc::new(ft)
         })
-        .clone()
     }
 }
 
-fn double_combined_field_type(stored: bool) -> FieldType {
-    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
-    static TYPE_STORED: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+fn double_combined_field_type(stored: bool) -> &'static Arc<FieldType> {
+    static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+    static TYPE_STORED: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
     if stored {
-        TYPE_STORED
-            .get_or_init(|| {
-                let base = double_combined_field_type(false);
-                let ft = FieldType::new_from(&base as &dyn IndexableFieldType);
-                ft.set_stored(true).unwrap();
-                ft.freeze();
-                ft
-            })
-            .clone()
+        TYPE_STORED.get_or_init(|| {
+            let base = double_combined_field_type(false);
+            let ft = FieldType::new_from(&**base as &dyn IndexableFieldType);
+            ft.set_stored(true).unwrap();
+            ft.freeze();
+            Arc::new(ft)
+        })
     } else {
         TYPE.get_or_init(|| {
             let ft = FieldType::new();
@@ -5630,9 +5644,8 @@ fn double_combined_field_type(stored: bool) -> FieldType {
             ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
                 .unwrap();
             ft.freeze();
-            ft
+            Arc::new(ft)
         })
-        .clone()
     }
 }
 
@@ -5643,7 +5656,9 @@ fn double_combined_field_type(stored: bool) -> FieldType {
 #[derive(Debug)]
 pub struct IntField {
     name: String,
-    field_type: FieldType,
+    /// `FIELD_TYPE` or `FIELD_TYPE_STORED`, the one static object every Java
+    /// `IntField` references (`IntField.java:49-50`).
+    field_type: Arc<FieldType>,
     value: AtomicRefCell<i32>,
     stored_value: AtomicRefCell<Option<StoredValue>>,
 }
@@ -5658,7 +5673,7 @@ impl IntField {
         };
         Self {
             name: name.to_string(),
-            field_type: int_combined_field_type(stored == Store::YES),
+            field_type: Arc::clone(int_combined_field_type(stored == Store::YES)),
             value: AtomicRefCell::new(value),
             stored_value: AtomicRefCell::new(stored_value),
         }
@@ -5797,7 +5812,7 @@ impl IndexableField for IntField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -5847,7 +5862,9 @@ impl IndexableField for IntField {
 #[derive(Debug)]
 pub struct LongField {
     name: String,
-    field_type: FieldType,
+    /// `FIELD_TYPE` or `FIELD_TYPE_STORED`, the one static object every Java
+    /// `LongField` references (`LongField.java:52-53`).
+    field_type: Arc<FieldType>,
     value: AtomicRefCell<i64>,
     stored_value: AtomicRefCell<Option<StoredValue>>,
 }
@@ -5862,7 +5879,7 @@ impl LongField {
         };
         Self {
             name: name.to_string(),
-            field_type: long_combined_field_type(stored == Store::YES),
+            field_type: Arc::clone(long_combined_field_type(stored == Store::YES)),
             value: AtomicRefCell::new(value),
             stored_value: AtomicRefCell::new(stored_value),
         }
@@ -6038,7 +6055,7 @@ impl IndexableField for LongField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -6088,7 +6105,9 @@ impl IndexableField for LongField {
 #[derive(Debug)]
 pub struct FloatField {
     name: String,
-    field_type: FieldType,
+    /// `FIELD_TYPE` or `FIELD_TYPE_STORED`, the one static object every Java
+    /// `FloatField` references (`FloatField.java:47-48`).
+    field_type: Arc<FieldType>,
     value: AtomicRefCell<f32>,
     stored_value: AtomicRefCell<Option<StoredValue>>,
 }
@@ -6103,7 +6122,7 @@ impl FloatField {
         };
         Self {
             name: name.to_string(),
-            field_type: float_combined_field_type(stored == Store::YES),
+            field_type: Arc::clone(float_combined_field_type(stored == Store::YES)),
             value: AtomicRefCell::new(value),
             stored_value: AtomicRefCell::new(stored_value),
         }
@@ -6251,7 +6270,7 @@ impl IndexableField for FloatField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -6302,7 +6321,9 @@ impl IndexableField for FloatField {
 #[derive(Debug)]
 pub struct DoubleField {
     name: String,
-    field_type: FieldType,
+    /// `FIELD_TYPE` or `FIELD_TYPE_STORED`, the one static object every Java
+    /// `DoubleField` references (`DoubleField.java:47-48`).
+    field_type: Arc<FieldType>,
     value: AtomicRefCell<f64>,
     stored_value: AtomicRefCell<Option<StoredValue>>,
 }
@@ -6317,7 +6338,7 @@ impl DoubleField {
         };
         Self {
             name: name.to_string(),
-            field_type: double_combined_field_type(stored == Store::YES),
+            field_type: Arc::clone(double_combined_field_type(stored == Store::YES)),
             value: AtomicRefCell::new(value),
             stored_value: AtomicRefCell::new(stored_value),
         }
@@ -6463,7 +6484,7 @@ impl IndexableField for DoubleField {
     }
 
     fn field_type(&self) -> &dyn IndexableFieldType {
-        &self.field_type
+        &*self.field_type
     }
 
     fn token_stream(
@@ -8200,10 +8221,9 @@ impl FieldValueSetters for StringField {
     /// binaryValue = value; storedValue.setBinaryValue(value)`.
     fn set_bytes_value(&self, value: BytesRef) -> Result<()> {
         let value = set_bytes_fields_data(&self.fields_data, Some(value))?;
-        *self.binary_value.borrow_mut() = Some(value.clone());
-        if let Some(stored) = self.stored_value.borrow_mut().as_mut() {
-            stored.set_binary_value(value)?;
-        }
+        // `storedValue.setBinaryValue(value)`: the stored value mirrors
+        // `fieldsData` (see `mirrored_stored_value`), so it already follows.
+        *self.binary_value.borrow_mut() = Some(value);
         Ok(())
     }
 }

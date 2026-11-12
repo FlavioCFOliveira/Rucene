@@ -14,7 +14,6 @@ use crate::index::ImpactsEnum;
 use crate::index::{IndexOptions, PostingsEnum};
 use crate::store::{ByteArrayDataInput, DataInput, IndexInput};
 use crate::util::{AttributeSource, BytesRef, IOBooleanSupplier};
-use std::sync::Arc;
 
 /// `if (buf == null || buf.length < n) buf = new byte[ArrayUtil.oversize(n, 1)];`,
 /// the allocation every blocktree frame performs for each of its block
@@ -1790,10 +1789,17 @@ impl SegmentTermsEnum {
     /// The decode is lazy in Lucene and lazy here: a scan that never asks for a
     /// term's statistics never pays for them.
     fn decode_meta_data(&mut self) -> Result<()> {
-        let field_info = self.field.field_info().clone();
-        let reader = Arc::clone(&self.field.shared().postings_reader);
-        self.current_frame_mut()
-            .decode_meta_data(&field_info, reader.as_ref())
+        // `currentFrame.decodeMetaData()` reads `fr.fieldInfo` and
+        // `fr.parent.postingsReader` in place (`SegmentTermsEnumFrame.java:506`):
+        // the field reader is borrowed beside the frame (disjoint fields), not
+        // copied.
+        let field = &self.field;
+        let frame = if self.started {
+            &mut self.stack[self.current]
+        } else {
+            &mut self.static_frame
+        };
+        frame.decode_meta_data(field.field_info(), field.shared().postings_reader.as_ref())
     }
 
     /// Java's `currentFrame`: the frame of the stack the cursor stands in, or
@@ -1803,15 +1809,6 @@ impl SegmentTermsEnum {
             &self.stack[self.current]
         } else {
             &self.static_frame
-        }
-    }
-
-    /// The mutable form of [`current_frame`](Self::current_frame).
-    fn current_frame_mut(&mut self) -> &mut SegmentTermsEnumFrame {
-        if self.started {
-            &mut self.stack[self.current]
-        } else {
-            &mut self.static_frame
         }
     }
 }
@@ -2098,10 +2095,14 @@ impl TermsEnum for SegmentTermsEnum {
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
         debug_assert!(!self.eof);
         self.decode_meta_data()?;
-        let field_info = self.field.field_info().clone();
+        // `fr.parent.postingsReader.impacts(fr.fieldInfo, currentFrame.state,
+        // flags)` (`SegmentTermsEnum.java:1012`): the field info is borrowed, as Java
+        // passes its reference.
         let state = self.current_frame().state;
-        let reader = Arc::clone(&self.field.shared().postings_reader);
-        reader.impacts(&field_info, &state, flags)
+        self.field
+            .shared()
+            .postings_reader
+            .impacts(self.field.field_info(), &state, flags)
     }
 
     fn postings(
@@ -2111,10 +2112,16 @@ impl TermsEnum for SegmentTermsEnum {
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
         debug_assert!(!self.eof);
         self.decode_meta_data()?;
-        let field_info = self.field.field_info().clone();
+        // `fr.parent.postingsReader.postings(fr.fieldInfo, currentFrame.state,
+        // reuse, flags)` (`SegmentTermsEnum.java:999`): the field info is borrowed, as
+        // Java passes its reference.
         let state = self.current_frame().state;
-        let reader = Arc::clone(&self.field.shared().postings_reader);
-        Ok(Some(reader.postings(&field_info, &state, reuse, flags)?))
+        Ok(Some(self.field.shared().postings_reader.postings(
+            self.field.field_info(),
+            &state,
+            reuse,
+            flags,
+        )?))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {

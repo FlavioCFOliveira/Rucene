@@ -1373,7 +1373,12 @@ impl DefaultIndexingChain {
                 }
             }
         }
-        let info = self.per_fields[per_field].field_info().clone();
+        // `storedFieldsConsumer.writeField(pf.fieldInfo, storedValue)`
+        // (`IndexingChain.java:1435`): the consumer reads the per-field
+        // `FieldInfo` in place, so it is borrowed, not copied. The borrows of
+        // `per_fields` and `stored_fields_consumer` are disjoint, and both end
+        // before the error path needs `&mut self`.
+        let info = self.per_fields[per_field].field_info();
         let Some(consumer) = self.stored_fields_consumer.as_mut() else {
             return Err(LuceneError::illegal_state(format!(
                 "the indexing chain is not bound to a segment, so the stored field \"{}\" \
@@ -1381,10 +1386,12 @@ impl DefaultIndexingChain {
                 field.name()
             )));
         };
-        consumer.write_field(&info, value).inspect_err(|error| {
+        let written = consumer.write_field(info, value);
+        if let Err(error) = &written {
             // Java hands the throwable itself to `onAbortingException`.
             self.on_aborting_exception(error.duplicate());
-        })
+        }
+        written
     }
 
     /// Returns the shared scratch buffers of this chain.

@@ -65,10 +65,10 @@ impl fmt::Display for Entry {
 /// `org.apache.lucene.search.FieldValueHitQueue<T extends Entry>`, which
 /// extends `PriorityQueue<T>`, together with its two `private static final`
 /// specialisations `OneComparatorFieldValueHitQueue` and
-/// `MultiComparatorsFieldValueHitQueue`. The two differ only in `lessThan`, so
-/// they become the [`one_comparator`](Self::one_comparator) flag here; Java
-/// keeps them apart to avoid an array access in the hot path, not to change
-/// behaviour.
+/// `MultiComparatorsFieldValueHitQueue`. The two differ only in `lessThan`,
+/// and the one-comparator form is the multi-comparator loop over one
+/// comparator, so both are the one `less_than` here; Java keeps them apart to
+/// avoid an array access in the hot path, not to change behaviour.
 ///
 /// # Adaptation: the heap is implemented here
 ///
@@ -87,7 +87,6 @@ pub struct FieldValueHitQueue {
     comparators: Vec<Box<dyn FieldComparator>>,
     /// Equivalent to the `protected final int[] reverseMul`.
     reverse_mul: Vec<i32>,
-    one_comparator: bool,
     /// The heap, one-based: index `0` is unused, as in
     /// [`PriorityQueue`](crate::util::PriorityQueue).
     heap: Vec<Option<Entry>>,
@@ -150,7 +149,6 @@ impl FieldValueHitQueue {
 
         let heap_size = if size == 0 { 2 } else { size + 1 };
         Ok(Self {
-            one_comparator: num_comparators == 1,
             fields,
             comparators,
             reverse_mul,
@@ -219,32 +217,6 @@ impl FieldValueHitQueue {
             .map(|comparator| comparator.value(entry.slot))
             .collect();
         FieldDoc::with_fields(entry.score_doc.doc, entry.score_doc.score, fields)
-    }
-
-    /// Returns whether `hit_a` is less relevant than `hit_b`.
-    ///
-    /// Equivalent to the `lessThan(Entry, Entry)` of
-    /// `OneComparatorFieldValueHitQueue` and
-    /// `MultiComparatorsFieldValueHitQueue`.
-    fn less_than(&self, hit_a: &Entry, hit_b: &Entry) -> bool {
-        debug_assert!(!std::ptr::eq(hit_a, hit_b));
-        debug_assert!(hit_a.slot != hit_b.slot);
-        if self.one_comparator {
-            let c = self.reverse_mul[0] * self.comparators[0].compare(hit_a.slot, hit_b.slot);
-            if c != 0 {
-                return c > 0;
-            }
-        } else {
-            for (i, comparator) in self.comparators.iter().enumerate() {
-                let c = self.reverse_mul[i] * comparator.compare(hit_a.slot, hit_b.slot);
-                if c != 0 {
-                    // Short circuit.
-                    return c > 0;
-                }
-            }
-        }
-        // Avoid a random sort order that could lead to duplicates (bug #31241).
-        hit_a.score_doc.doc > hit_b.score_doc.doc
     }
 
     /// Adds an entry and returns the new top of the queue.
@@ -329,71 +301,139 @@ impl FieldValueHitQueue {
 
     /// Equivalent to the private `PriorityQueue.upHeap(int)`.
     fn up_heap(&mut self, orig_pos: usize) -> bool {
-        let mut i = orig_pos;
-        let node = self.heap[i]
-            .take()
-            .expect("INVARIANT: the caller just wrote an entry at this index");
-        let mut j = i >> 1;
-        while j > 0
-            && self.less_than(
-                &node,
-                self.heap[j]
-                    .as_ref()
-                    .expect("INVARIANT: every index below size holds an entry"),
-            )
-        {
-            self.heap[i] = self.heap[j].take();
-            i = j;
-            j >>= 1;
-        }
-        self.heap[i] = Some(node);
-        i != orig_pos
+        let heap = &mut self.heap;
+        let mut moved = false;
+        with_slot_compares(&self.comparators, &self.reverse_mul, None, &mut |order| {
+            moved = up_heap(heap, orig_pos, |a, b| less_than(order, a, b));
+        });
+        moved
     }
 
     /// Equivalent to the private `PriorityQueue.downHeap(int)`.
-    fn down_heap(&mut self, mut i: usize) {
-        let Some(node) = self.heap[i].take() else {
-            return;
-        };
-        let mut j = i << 1;
-        let mut k = j + 1;
-        if k <= self.size
-            && self.less_than(
-                self.heap[k]
-                    .as_ref()
-                    .expect("INVARIANT: every index below size holds an entry"),
-                self.heap[j]
-                    .as_ref()
-                    .expect("INVARIANT: every index below size holds an entry"),
-            )
-        {
+    fn down_heap(&mut self, i: usize) {
+        let heap = &mut self.heap;
+        let size = self.size;
+        with_slot_compares(&self.comparators, &self.reverse_mul, None, &mut |order| {
+            down_heap(heap, size, i, |a, b| less_than(order, a, b));
+        });
+    }
+}
+
+/// One link of the sort order a heap operation compares with: a comparator's
+/// `compare` and its reverse multiplier, then the next sort field's.
+///
+/// The [`FieldComparator::with_slot_compare`] scopes of every comparator are
+/// nested so that each `compare` runs without re-acquiring its comparator's
+/// state; the links live on the stack of those nested calls.
+struct SortLink<'a> {
+    compare: &'a dyn Fn(i32, i32) -> i32,
+    reverse_mul: i32,
+    next: Option<&'a SortLink<'a>>,
+}
+
+/// Runs `body` with the sort order of `comparators`, `comparators[0]` first,
+/// prepended to `next`.
+///
+/// The comparators are entered from the last to the first, so that the link
+/// of `comparators[0]` is the head of the chain `body` receives.
+fn with_slot_compares(
+    comparators: &[Box<dyn FieldComparator>],
+    reverse_mul: &[i32],
+    next: Option<&SortLink<'_>>,
+    body: &mut dyn FnMut(Option<&SortLink<'_>>),
+) {
+    match comparators.split_last() {
+        None => body(next),
+        Some((last, rest)) => {
+            let reverse_mul_last = reverse_mul[rest.len()];
+            last.with_slot_compare(&mut |compare| {
+                let link = SortLink {
+                    compare,
+                    reverse_mul: reverse_mul_last,
+                    next,
+                };
+                with_slot_compares(rest, reverse_mul, Some(&link), body);
+            });
+        }
+    }
+}
+
+/// Returns whether `hit_a` is less relevant than `hit_b`.
+///
+/// Equivalent to the `lessThan(Entry, Entry)` of
+/// `OneComparatorFieldValueHitQueue` and `MultiComparatorsFieldValueHitQueue`
+/// (`FieldValueHitQueue.java:75-87,102-118`): the comparators in sort order,
+/// short-circuiting on the first that tells the hits apart, then the doc ID.
+fn less_than(order: Option<&SortLink<'_>>, hit_a: &Entry, hit_b: &Entry) -> bool {
+    debug_assert!(!std::ptr::eq(hit_a, hit_b));
+    debug_assert!(hit_a.slot != hit_b.slot);
+    let mut link = order;
+    while let Some(current) = link {
+        let c = current.reverse_mul * (current.compare)(hit_a.slot, hit_b.slot);
+        if c != 0 {
+            // Short circuit.
+            return c > 0;
+        }
+        link = current.next;
+    }
+    // Avoid a random sort order that could lead to duplicates (bug #31241).
+    hit_a.score_doc.doc > hit_b.score_doc.doc
+}
+
+/// `PriorityQueue.upHeap(int)` over `heap`, ordered by `less_than`.
+fn up_heap(
+    heap: &mut [Option<Entry>],
+    orig_pos: usize,
+    less_than: impl Fn(&Entry, &Entry) -> bool,
+) -> bool {
+    let mut i = orig_pos;
+    let node = heap[i]
+        .take()
+        .expect("INVARIANT: the caller just wrote an entry at this index");
+    let mut j = i >> 1;
+    while j > 0
+        && less_than(
+            &node,
+            heap[j]
+                .as_ref()
+                .expect("INVARIANT: every index below size holds an entry"),
+        )
+    {
+        heap[i] = heap[j].take();
+        i = j;
+        j >>= 1;
+    }
+    heap[i] = Some(node);
+    i != orig_pos
+}
+
+/// `PriorityQueue.downHeap(int)` over the first `size` entries of `heap`,
+/// ordered by `less_than`.
+fn down_heap(
+    heap: &mut [Option<Entry>],
+    size: usize,
+    mut i: usize,
+    less_than: impl Fn(&Entry, &Entry) -> bool,
+) {
+    let Some(node) = heap[i].take() else {
+        return;
+    };
+    let entry = |heap: &[Option<Entry>], index: usize| -> Entry {
+        heap[index].expect("INVARIANT: every index below size holds an entry")
+    };
+    let mut j = i << 1;
+    let mut k = j + 1;
+    if k <= size && less_than(&entry(heap, k), &entry(heap, j)) {
+        j = k;
+    }
+    while j <= size && less_than(&entry(heap, j), &node) {
+        heap[i] = heap[j].take();
+        i = j;
+        j = i << 1;
+        k = j + 1;
+        if k <= size && less_than(&entry(heap, k), &entry(heap, j)) {
             j = k;
         }
-        while j <= self.size
-            && self.less_than(
-                self.heap[j]
-                    .as_ref()
-                    .expect("INVARIANT: every index below size holds an entry"),
-                &node,
-            )
-        {
-            self.heap[i] = self.heap[j].take();
-            i = j;
-            j = i << 1;
-            k = j + 1;
-            if k <= self.size
-                && self.less_than(
-                    self.heap[k]
-                        .as_ref()
-                        .expect("INVARIANT: every index below size holds an entry"),
-                    self.heap[j]
-                        .as_ref()
-                        .expect("INVARIANT: every index below size holds an entry"),
-                )
-            {
-                j = k;
-            }
-        }
-        self.heap[i] = Some(node);
     }
+    heap[i] = Some(node);
 }

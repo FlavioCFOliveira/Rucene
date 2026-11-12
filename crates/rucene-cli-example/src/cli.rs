@@ -7,7 +7,7 @@ use rucene::search::Occur;
 
 use crate::error::{CliError, Result};
 use crate::index_ops::{add_documents, create_index, delete_documents, update_documents};
-use crate::schema::{parse_csv, Record, FIELDS};
+use crate::schema::{parse_csv, Record, RecordReader, FIELDS};
 use crate::search::{search, write_tsv, Clause, Criterion, SearchRequest, SortKey, SortSpec};
 
 /// The columns printed by `search` when `--fields` is not given.
@@ -78,11 +78,17 @@ pub fn run(args: &[String], out: &mut dyn Write) -> Result<()> {
         }
         "add" | "update" => {
             let (dir, rest) = split_dir(command, rest)?;
-            let records = parse_records(command, rest)?;
+            // A CSV file is streamed into the writer row by row; its header is
+            // checked before the index is opened.
+            let records: Box<dyn Iterator<Item = Result<Record>>> =
+                match parse_records(command, rest)? {
+                    RecordSource::File(path) => Box::new(open_csv_file(path)?),
+                    RecordSource::One(record) => Box::new(std::iter::once(Ok(record))),
+                };
             let count = if command == "add" {
-                add_documents(&dir, &records)?
+                add_documents(&dir, records)?
             } else {
-                update_documents(&dir, &records)?
+                update_documents(&dir, records)?
             };
             let verb = if command == "add" { "added" } else { "updated" };
             writeln!(out, "{verb} {count} document(s) in {}", dir.display())?;
@@ -133,9 +139,17 @@ fn split_pair<'a>(flag: &str, value: &'a str) -> Result<(&'a str, &'a str)> {
         .ok_or_else(|| CliError::Usage(format!("{flag} expects FIELD=VALUE, got {value:?}")))
 }
 
+/// Where the records of `add` / `update` come from.
+enum RecordSource<'a> {
+    /// The CSV file given with `--file`.
+    File(&'a Path),
+    /// The one record the `--set` pairs form.
+    One(Record),
+}
+
 /// Parses the record source of `add` / `update`: one `--file`, or `--set`
 /// pairs forming one record.
-fn parse_records(command: &str, args: &[String]) -> Result<Vec<Record>> {
+fn parse_records<'a>(command: &str, args: &'a [String]) -> Result<RecordSource<'a>> {
     let mut file: Option<&str> = None;
     let mut pairs: Vec<(&str, &str)> = Vec::new();
     let mut index = 0;
@@ -163,8 +177,8 @@ fn parse_records(command: &str, args: &[String]) -> Result<Vec<Record>> {
         (None, true) => Err(CliError::Usage(format!(
             "{command}: give --file F.csv or at least one --set field=value"
         ))),
-        (Some(path), true) => read_csv_file(Path::new(path)),
-        (None, false) => Ok(vec![Record::from_pairs(pairs)?]),
+        (Some(path), true) => Ok(RecordSource::File(Path::new(path))),
+        (None, false) => Ok(RecordSource::One(Record::from_pairs(pairs)?)),
     }
 }
 
@@ -178,6 +192,27 @@ pub fn read_csv_file(path: &Path) -> Result<Vec<Record>> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| CliError::Input(format!("cannot read {}: {error}", path.display())))?;
     parse_csv(&text).map_err(|error| error.context(&path.display().to_string()))
+}
+
+/// Opens a USGS CSV file for streaming: checks its header and returns the
+/// records of its data lines, each read and parsed when it is reached.
+///
+/// Errors carry the file name, as those of [`read_csv_file`] do.
+///
+/// # Errors
+///
+/// Returns [`CliError::Input`] naming the file when it cannot be read or its
+/// header is invalid; the records yield the same for a later line.
+pub fn open_csv_file(path: &Path) -> Result<impl Iterator<Item = Result<Record>> + '_> {
+    let name = path.display().to_string();
+    let in_file = move |error: CliError| match error {
+        CliError::Io(error) => CliError::Input(format!("cannot read {name}: {error}")),
+        other => other.context(&name),
+    };
+    let file = std::fs::File::open(path).map_err(|error| in_file(error.into()))?;
+    let reader =
+        RecordReader::new(std::io::BufReader::with_capacity(1 << 16, file)).map_err(&in_file)?;
+    Ok(reader.map(move |record| record.map_err(&in_file)))
 }
 
 fn parse_delete(args: &[String]) -> Result<Vec<String>> {

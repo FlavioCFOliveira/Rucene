@@ -14,7 +14,7 @@ use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -366,6 +366,53 @@ pub fn find_attribute_impl_ctor<I: AttributeImpl + Default>() -> AttributeCtor {
     Box::new(|| Box::new(I::default()))
 }
 
+/// The hasher of the maps keyed by [`TypeId`] in this module.
+///
+/// **This has no counterpart in Lucene 10.5.0**, whose `AttributeSource` keys
+/// its maps by `Class` and hashes them with the identity hash. A `TypeId` is
+/// itself a hash of its type, so the DoS-resistant SipHash of `HashMap`'s
+/// default `RandomState` only adds cost to the lookups a token stream makes
+/// for every token; this hasher folds the words it is given with the
+/// multiply-rotate step of rustc's `FxHasher`. It changes no behaviour: the
+/// maps it serves are only looked up by key, never walked in hash order
+/// (insertion order lives in `interface_order` and `impls`).
+#[derive(Clone, Copy, Debug, Default)]
+struct TypeIdHasher(u64);
+
+impl TypeIdHasher {
+    /// One `FxHasher` step.
+    fn add(&mut self, word: u64) {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(SEED);
+    }
+}
+
+impl Hasher for TypeIdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u64(&mut self, word: u64) {
+        self.add(word);
+    }
+
+    fn write_u128(&mut self, word: u128) {
+        self.add(word as u64);
+        self.add((word >> 64) as u64);
+    }
+}
+
+/// A map keyed by [`TypeId`], hashed with [`TypeIdHasher`].
+type TypeIdMap<V> = HashMap<TypeId, V, BuildHasherDefault<TypeIdHasher>>;
+
 /// Default attribute factory backed by a [`TypeId`] registry.
 ///
 /// Users register constructors for each attribute interface their application
@@ -373,14 +420,14 @@ pub fn find_attribute_impl_ctor<I: AttributeImpl + Default>() -> AttributeCtor {
 /// discovered the `*Impl` class from the interface name.
 #[derive(Default)]
 pub struct DefaultAttributeFactory {
-    registry: HashMap<TypeId, AttributeCtor>,
+    registry: TypeIdMap<AttributeCtor>,
 }
 
 impl DefaultAttributeFactory {
     /// Creates an empty factory.
     pub fn new() -> Self {
         Self {
-            registry: HashMap::new(),
+            registry: TypeIdMap::default(),
         }
     }
 
@@ -717,7 +764,7 @@ pub type AttributeCell = Arc<AtomicRefCell<Box<dyn AttributeImpl>>>;
 #[derive(Debug, Default)]
 struct SharedAttributes {
     /// Attribute interface (or implementation) `TypeId` -> implementation.
-    attributes: HashMap<TypeId, AttributeCell>,
+    attributes: TypeIdMap<AttributeCell>,
     /// The keys of `attributes`, in insertion order.
     interface_order: Vec<TypeId>,
     /// Concrete implementation `TypeId` -> implementation, in insertion order.
@@ -761,7 +808,7 @@ impl SharedAttributes {
 #[derive(Clone, Debug)]
 pub struct AttributeSource {
     /// This source's view of `shared.attributes`, for the borrowed getters.
-    attributes: HashMap<TypeId, AttributeCell>,
+    attributes: TypeIdMap<AttributeCell>,
     /// The maps shared with every source of the chain.
     shared: Arc<AtomicRefCell<SharedAttributes>>,
     /// Factory used to create missing attributes.
@@ -782,7 +829,7 @@ impl AttributeSource {
     /// Creates an empty source using the supplied factory.
     pub fn new_with_factory(factory: Arc<dyn AttributeFactory>) -> Self {
         Self {
-            attributes: HashMap::new(),
+            attributes: TypeIdMap::default(),
             shared: Arc::new(AtomicRefCell::new(SharedAttributes::default())),
             factory,
         }

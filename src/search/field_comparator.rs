@@ -318,7 +318,26 @@ pub trait FieldComparator: Debug + Send {
     /// early termination is already handled by the collector and extra work in
     /// the comparator would be redundant.
     fn disable_skipping(&mut self) {}
+
+    /// Runs `body` with this comparator's [`compare`](Self::compare), which
+    /// it may call any number of times before returning.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** It lets the hit queue
+    /// sift with one acquisition of a comparator's slot state per heap
+    /// operation instead of one per `compare` call: Java's
+    /// `FieldValueHitQueue.lessThan` reads the slots in place
+    /// (`FieldValueHitQueue.java:75-87,102-118`), while a
+    /// [`SharedFieldComparator`] has to lock them. The comparisons made, their
+    /// order and their results are exactly those of calling `compare`; the
+    /// default implementation is that call.
+    fn with_slot_compare(&self, body: &mut dyn FnMut(&SlotCompare<'_>)) {
+        body(&|slot1, slot2| self.compare(slot1, slot2));
+    }
 }
+
+/// A comparator's `compare(slot1, slot2)`, as
+/// [`FieldComparator::with_slot_compare`] lends it.
+pub type SlotCompare<'a> = dyn Fn(i32, i32) -> i32 + 'a;
 
 /// The two halves of a Lucene comparator: the outer class's slot state and
 /// logic, and the state of the leaf comparator it creates for each segment.
@@ -491,6 +510,16 @@ impl<C: SlotComparator> Debug for SharedFieldComparator<C> {
 impl<C: SlotComparator> FieldComparator for SharedFieldComparator<C> {
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         lock_slots(&self.shared).compare(slot1, slot2)
+    }
+
+    /// Locks the slot state once and compares through the guard: the
+    /// comparisons are [`SlotComparator::compare`] itself, as in
+    /// [`compare`](Self::compare), without a lock and unlock around each.
+    /// `body` must not reach this comparator's state any other way while it
+    /// runs (the hit queue only compares), or it would wait on this lock.
+    fn with_slot_compare(&self, body: &mut dyn FnMut(&SlotCompare<'_>)) {
+        let slots = lock_slots(&self.shared);
+        body(&|slot1, slot2| slots.compare(slot1, slot2));
     }
 
     fn set_top_value(&mut self, value: SortValue) {

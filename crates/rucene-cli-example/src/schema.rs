@@ -323,33 +323,93 @@ pub fn parse_csv(text: &str) -> Result<Vec<Record>> {
     let header = rows
         .next()
         .ok_or_else(|| CliError::Input("CSV input is empty (no header line)".to_owned()))?;
-    for name in &header.fields {
+    check_header(&header.fields)?;
+    rows.map(|row| row_to_record(&header.fields, &row))
+        .collect()
+}
+
+/// Checks a CSV header: every column known, and an `id` column.
+fn check_header(header: &[String]) -> Result<()> {
+    for name in header {
         require_field(name).map_err(|error| error.context("CSV header"))?;
     }
-    if !header.fields.iter().any(|name| name == ID_FIELD) {
+    if !header.iter().any(|name| name == ID_FIELD) {
         return Err(CliError::Input(format!(
             "CSV header has no {ID_FIELD:?} column"
         )));
     }
-    rows.map(|row| {
-        if row.fields.len() != header.fields.len() {
-            return Err(CliError::Input(format!(
-                "CSV line {}: {} fields, the header has {}",
-                row.line,
-                row.fields.len(),
-                header.fields.len()
-            )));
+    Ok(())
+}
+
+/// Builds the record of data row `row` under `header`.
+fn row_to_record(header: &[String], row: &crate::csv::CsvRecord) -> Result<Record> {
+    if row.fields.len() != header.len() {
+        return Err(CliError::Input(format!(
+            "CSV line {}: {} fields, the header has {}",
+            row.line,
+            row.fields.len(),
+            header.len()
+        )));
+    }
+    Record::from_pairs(
+        header
+            .iter()
+            .map(String::as_str)
+            .zip(row.fields.iter().map(String::as_str)),
+    )
+    .map_err(|error| error.context(&format!("CSV line {}", row.line)))
+}
+
+/// Streams the records of USGS CSV input, one data line at a time.
+///
+/// The header is read and checked when the reader is created; each data
+/// line is parsed and turned into a [`Record`] when it is reached, so the
+/// input is never held in memory whole. Each line yields what
+/// [`parse_csv`] yields for it, with the same errors; a stream stops at its
+/// first error.
+#[derive(Debug)]
+pub struct RecordReader<R> {
+    rows: crate::csv::Reader<R>,
+    header: Vec<String>,
+    failed: bool,
+}
+
+impl<R: std::io::BufRead> RecordReader<R> {
+    /// Reads and checks the header line of `input`.
+    ///
+    /// # Errors
+    ///
+    /// As [`parse_csv`] for the header, and [`CliError::Io`] when the input
+    /// cannot be read.
+    pub fn new(input: R) -> Result<Self> {
+        let mut rows = crate::csv::Reader::new(input);
+        let header = rows
+            .next_record()?
+            .ok_or_else(|| CliError::Input("CSV input is empty (no header line)".to_owned()))?;
+        check_header(&header.fields)?;
+        Ok(Self {
+            rows,
+            header: header.fields,
+            failed: false,
+        })
+    }
+}
+
+impl<R: std::io::BufRead> Iterator for RecordReader<R> {
+    type Item = Result<Record>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
         }
-        Record::from_pairs(
-            header
-                .fields
-                .iter()
-                .map(String::as_str)
-                .zip(row.fields.iter().map(String::as_str)),
-        )
-        .map_err(|error| error.context(&format!("CSV line {}", row.line)))
-    })
-    .collect()
+        let next = match self.rows.next_record() {
+            Ok(Some(row)) => Some(row_to_record(&self.header, &row)),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        };
+        self.failed = matches!(next, Some(Err(_)));
+        next
+    }
 }
 
 /// Reads the stored value of column `spec` from a stored document, in the

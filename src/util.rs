@@ -657,8 +657,15 @@ impl BytesRefBuilder {
     }
 
     /// Grows the buffer without copying existing bytes.
+    ///
+    /// Equivalent to `BytesRefBuilder.growNoCopy(int)`
+    /// (`BytesRefBuilder.java:66-68`): `ArrayUtil.growNoCopy` returns the same
+    /// array when it is long enough (`ArrayUtil.java:457-462`), so the buffer
+    /// is replaced only when it is shorter than `capacity`.
     pub fn grow_no_copy(&mut self, capacity: usize) {
-        self.inner.bytes = ArrayUtil::grow_no_copy(&self.inner.bytes, capacity);
+        if self.inner.bytes.len() < capacity {
+            self.inner.bytes = ArrayUtil::grow_no_copy(&self.inner.bytes, capacity);
+        }
     }
 
     /// Appends a single byte.
@@ -710,6 +717,26 @@ impl BytesRefBuilder {
         self.grow_no_copy(UnicodeUtil::max_utf8_length(text.encode_utf16().count()));
         let encoded = text.as_bytes();
         self.copy_bytes(encoded, 0, encoded.len());
+    }
+
+    /// Copies the UTF-8 encoding of `text` into the buffer.
+    ///
+    /// Equivalent to `BytesRefBuilder.copyChars(char[], int, int)`
+    /// (`BytesRefBuilder.java:146-149`) for a term buffer of Unicode scalar
+    /// values, the port's `char[]`: `growNoCopy(UnicodeUtil.maxUTF8Length(len))`
+    /// for the text's UTF-16 length, then the encoded bytes. The result is
+    /// the one [`copy_chars`](Self::copy_chars) gives for the same text,
+    /// without first collecting it into a `String`.
+    pub fn copy_char_array(&mut self, text: &[char]) {
+        let utf16_length: usize = text.iter().map(|c| c.len_utf16()).sum();
+        self.grow_no_copy(UnicodeUtil::max_utf8_length(utf16_length));
+        debug_assert!(self.inner.offset == 0);
+        let mut length = 0;
+        for c in text {
+            length += c.encode_utf8(&mut self.inner.bytes[length..]).len();
+        }
+        self.inner.offset = 0;
+        self.inner.length = length;
     }
 
     /// Returns a `BytesRef` pointing to the builder's internal content.
