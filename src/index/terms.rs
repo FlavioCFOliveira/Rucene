@@ -864,11 +864,16 @@ pub trait Terms: Send + Sync {
         }
         let mut scratch = vec![0u8];
         loop {
-            let mut low = 0u8;
-            let mut high = 0u8.wrapping_sub(1);
+            // `int low = 0; int high = 256;`: the digit is searched over the
+            // half-open range `[0, 256)`, so `mid` reaches `0xFF`. An upper
+            // bound of 255 never probes `0xFF`, and a maximum term with a
+            // `0xFF` digit then never yields `END`, appending digits forever.
+            let mut low: u16 = 0;
+            let mut high: u16 = 256;
             while low != high {
-                let mid = ((low as u16 + high as u16) / 2) as u8;
-                *scratch.last_mut().unwrap() = mid;
+                let mid = (low + high) >> 1;
+                // `scratch.setByteAt(scratch.length() - 1, (byte) mid)`.
+                *scratch.last_mut().unwrap() = mid as u8;
                 match it.seek_ceil(&BytesRef::new(scratch.clone()))? {
                     SeekStatus::END => {
                         if mid == 0 {
@@ -2263,5 +2268,145 @@ mod pass_d_term_ram_tests {
             Term::new("field", BytesRef::new(vec![1, 2, 3])).ram_bytes_used(),
             128
         );
+    }
+}
+
+#[cfg(test)]
+mod max_tests {
+    use super::*;
+
+    /// A sorted in-memory term list whose enum cannot seek by ordinal, so
+    /// [`Terms::max`] takes the binary-search fallback of `Terms.getMax()`
+    /// (`Terms.java:172-212`), as Java does for an `UnsupportedOperationException`.
+    struct SortedTerms(Vec<Vec<u8>>);
+
+    struct SortedTermsEnum {
+        terms: Vec<Vec<u8>>,
+        pos: usize,
+        atts: AttributeSource,
+    }
+
+    impl fmt::Display for SortedTermsEnum {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("SortedTermsEnum")
+        }
+    }
+
+    impl TermsEnum for SortedTermsEnum {
+        fn attributes(&mut self) -> &mut AttributeSource {
+            &mut self.atts
+        }
+        fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+            match self.terms.iter().position(|t| t.as_slice() >= text.slice()) {
+                Some(i) => {
+                    self.pos = i;
+                    Ok(if self.terms[i].as_slice() == text.slice() {
+                        SeekStatus::FOUND
+                    } else {
+                        SeekStatus::NOT_FOUND
+                    })
+                }
+                None => {
+                    self.pos = self.terms.len();
+                    Ok(SeekStatus::END)
+                }
+            }
+        }
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Err(LuceneError::unsupported_operation(String::new()))
+        }
+        fn term(&self) -> Result<Option<BytesRef>> {
+            Ok(self.terms.get(self.pos).map(|t| BytesRef::new(t.clone())))
+        }
+        fn ord(&self) -> Result<i64> {
+            Err(LuceneError::unsupported_operation(String::new()))
+        }
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(1)
+        }
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(1)
+        }
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Err(LuceneError::unsupported_operation(String::new()))
+        }
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+            Err(LuceneError::unsupported_operation(String::new()))
+        }
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            self.pos = if self.pos == usize::MAX {
+                0
+            } else {
+                (self.pos + 1).min(self.terms.len())
+            };
+            self.term()
+        }
+    }
+
+    impl Terms for SortedTerms {
+        fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+            Ok(Box::new(SortedTermsEnum {
+                terms: self.0.clone(),
+                pos: usize::MAX,
+                atts: AttributeSource::new(),
+            }))
+        }
+        fn size(&self) -> Result<i64> {
+            Ok(self.0.len() as i64)
+        }
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(self.0.len() as i64)
+        }
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.0.len() as i64)
+        }
+        fn doc_count(&self) -> Result<i32> {
+            Ok(1)
+        }
+        fn has_freqs(&self) -> bool {
+            false
+        }
+        fn has_offsets(&self) -> bool {
+            false
+        }
+        fn has_positions(&self) -> bool {
+            false
+        }
+        fn has_payloads(&self) -> bool {
+            false
+        }
+    }
+
+    fn max_of(terms: &[&[u8]]) -> Option<Vec<u8>> {
+        let terms = SortedTerms(terms.iter().map(|t| t.to_vec()).collect());
+        terms.max().unwrap().map(|t| t.slice().to_vec())
+    }
+
+    /// Regression: `Terms.getMax()` searches each digit over `[0, 256)`. With
+    /// an upper bound of 255 the digit `0xFF` was never probed, so a maximum
+    /// term containing it never reached `END` and the search appended digits
+    /// forever (the `TestPrefixQuery.testRandomBinaryPrefix` hang in
+    /// `CheckIndex`).
+    #[test]
+    fn the_fallback_finds_a_maximum_term_with_0xff_digits() {
+        assert_eq!(max_of(&[b"a", &[0xFF]]), Some(vec![0xFF]));
+        assert_eq!(
+            max_of(&[&[0x00], &[0x7F, 0xFF], &[0xFF, 0x00, 0xFF]]),
+            Some(vec![0xFF, 0x00, 0xFF])
+        );
+        assert_eq!(max_of(&[&[0xFF, 0xFF, 0xFF]]), Some(vec![0xFF, 0xFF, 0xFF]));
+    }
+
+    #[test]
+    fn the_fallback_finds_an_ordinary_maximum_term() {
+        assert_eq!(
+            max_of(&[b"apple", b"banana", b"cherry"]),
+            Some(b"cherry".to_vec())
+        );
+        assert_eq!(max_of(&[&[0x00]]), Some(vec![0x00]));
     }
 }

@@ -1640,8 +1640,14 @@ impl Lucene90DocValuesConsumer<'_> {
 /// A negative length raises the JVM's `NegativeArraySizeException`, and a
 /// length the heap cannot hold its `OutOfMemoryError` (`Java heap space`);
 /// Rust would abort the process on the failed allocation instead, so the
-/// allocation is attempted with `try_reserve_exact` and its failure raised as
-/// that `OutOfMemoryError`.
+/// allocation is first probed with `try_reserve_exact` and its failure raised
+/// as that `OutOfMemoryError`.
+///
+/// The array itself is a zeroed allocation (`vec![0; length]`), whose pages
+/// the kernel supplies untouched until they are written, as the JVM's zeroed
+/// heap arrays are. Filling a reservation with `resize` instead writes every
+/// byte, and a corrupt `maxLength` of up to 2 GiB sizes a buffer per binary
+/// view of which the reads touch only the values they read.
 fn new_byte_array(length: i32) -> Result<Vec<u8>> {
     if length < 0 {
         return Err(LuceneError::unchecked(
@@ -1649,12 +1655,10 @@ fn new_byte_array(length: i32) -> Result<Vec<u8>> {
             length.to_string(),
         ));
     }
-    let mut buffer: Vec<u8> = Vec::new();
-    buffer
+    Vec::<u8>::new()
         .try_reserve_exact(length as usize)
         .map_err(|_| LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space"))?;
-    buffer.resize(length as usize, 0);
-    Ok(buffer)
+    Ok(vec![0; length as usize])
 }
 
 /// The JVM's `ArrayIndexOutOfBoundsException` for `array[index]` on an array

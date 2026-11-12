@@ -1657,12 +1657,18 @@ fn java_reserve<T>(vec: &mut Vec<T>, length: usize) -> Result<()> {
 }
 
 /// A zeroed `new int[length]`.
+///
+/// The array is a zeroed allocation (`vec![0; length]`), whose pages the
+/// kernel supplies untouched until they are written, as the JVM's zeroed heap
+/// arrays are; reserving and then filling with `resize` instead writes every
+/// element, and a corrupt chunk sets lengths of hundreds of millions of which
+/// the decode writes only the few it reaches before it fails. The reservation
+/// is probed first, so a length the heap cannot hold raises Java's
+/// `OutOfMemoryError` instead of aborting the process.
 fn new_int_array(length: i64) -> Result<Vec<i32>> {
     let length = java_array_length(length)?;
-    let mut array = Vec::new();
-    java_reserve(&mut array, length)?;
-    array.resize(length, 0);
-    Ok(array)
+    java_reserve(&mut Vec::<i32>::new(), length)?;
+    Ok(vec![0; length])
 }
 
 /// Java's `array[index]` read on an `int[]`: the JVM's
@@ -1691,11 +1697,15 @@ fn int_array_get(array: &[i32], index: i32) -> Result<i32> {
 /// writer emits at `Lucene90CompressingTermVectorsWriter.java:497`) and hand
 /// it in, because `DirectReader::new` takes the bytes by value rather than a
 /// `RandomAccessInput`.
+///
+/// The buffer is Java's zeroed `new byte[length]`, handed whole to
+/// `readBytes`, as a zeroed allocation (see [`new_int_array`]): a corrupt
+/// chunk sets lengths of gigabytes, of which the read writes only the bytes
+/// the file still holds before it fails.
 fn read_block(input: &mut dyn IndexInput, length: i64) -> Result<Vec<u8>> {
     let length = java_array_length(length)?;
-    let mut bytes = Vec::new();
-    java_reserve(&mut bytes, length)?;
-    bytes.resize(length, 0);
+    java_reserve(&mut Vec::<u8>::new(), length)?;
+    let mut bytes = vec![0u8; length];
     input.read_bytes(Some(&mut bytes), 0, length)?;
     Ok(bytes)
 }
