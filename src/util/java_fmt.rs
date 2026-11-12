@@ -826,35 +826,825 @@ mod tests {
     }
 }
 
-/// A `java.text.DecimalFormat` under `Locale.ROOT` symbols: the subset of its
-/// pattern syntax and rounding (`RoundingMode.HALF_EVEN`) that Lucene's callers
-/// pass, implemented from the JDK specification.
+/// A `java.text.DecimalFormat` built with
+/// `DecimalFormatSymbols.getInstance(Locale.ROOT)`, implemented from the
+/// `java.text.DecimalFormat` specification (its class javadoc: pattern
+/// syntax, special pattern characters, scientific notation, rounding and
+/// special values) for formatting `double` values.
 ///
-/// Equivalent to `java.text.DecimalFormat`.
+/// Equivalent to `java.text.DecimalFormat` restricted to what
+/// `NumberFormat.format(double)` observes: the pattern's prefixes and
+/// suffixes (quoting, `%`, `\u{2030}`, `\u{a4}`, `-`), the integer, fraction
+/// and exponent digit counts, grouping, the decimal separator shown always,
+/// and `RoundingMode.HALF_EVEN` rounding. The `Locale.ROOT` symbols are
+/// `0`, `,`, `.`, `%`, `\u{2030}`, `-`, `E`, `\u{221e}` (infinity) and `NaN`,
+/// with currency symbol `\u{a4}` and international currency symbol `XXX`.
+///
+/// Digits follow `DigitList.set(boolean, double, int, boolean)`: the shortest
+/// decimal that rounds to the value, rounded half-even only when the pattern
+/// cannot show all of it; that rounding decides ties from the exact binary
+/// value, which is what rounding the exact value itself gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecimalFormat {
-    /// The pattern, as `DecimalFormat.toPattern()` returns it.
+    /// The pattern this format was built from.
     pattern: String,
+    positive_prefix: String,
+    positive_suffix: String,
+    negative_prefix: String,
+    negative_suffix: String,
+    /// 1, or 100 for `%`, or 1000 for `\u{2030}`.
+    multiplier: i32,
+    grouping_used: bool,
+    grouping_size: i32,
+    min_int: i32,
+    max_int: i32,
+    min_frac: i32,
+    max_frac: i32,
+    decimal_separator_always_shown: bool,
+    use_exponential: bool,
+    min_exponent_digits: i32,
 }
 
+/// `NumberFormat`'s `DOUBLE_INTEGER_DIGITS`: the most integer digits a
+/// `double` is formatted with.
+const DOUBLE_INTEGER_DIGITS: i32 = 309;
+/// `NumberFormat`'s `DOUBLE_FRACTION_DIGITS`.
+const DOUBLE_FRACTION_DIGITS: i32 = 340;
+/// `DecimalFormat.MAXIMUM_INTEGER_DIGITS` / `MAXIMUM_FRACTION_DIGITS`.
+const MAXIMUM_DIGITS: i32 = i32::MAX;
+
 impl DecimalFormat {
-    /// Creates a format from `pattern` with `DecimalFormatSymbols.getInstance(Locale.ROOT)`.
+    /// Creates a format from `pattern` with
+    /// `DecimalFormatSymbols.getInstance(Locale.ROOT)`.
     ///
-    /// Equivalent to `new DecimalFormat(String, DecimalFormatSymbols)`.
+    /// Equivalent to `new DecimalFormat(String, DecimalFormatSymbols)`, which
+    /// applies the (non-localized) pattern.
     ///
     /// # Errors
     ///
     /// `IllegalArgument` for a malformed pattern, as `applyPattern` throws.
     pub fn new(pattern: &str) -> crate::error::Result<Self> {
-        let _ = pattern;
-        todo!("PORT G-108")
+        let malformed = |what: &str| {
+            crate::error::LuceneError::illegal_argument(format!("{what} \"{pattern}\""))
+        };
+        let mut df = Self {
+            pattern: pattern.to_string(),
+            positive_prefix: String::new(),
+            positive_suffix: String::new(),
+            negative_prefix: String::new(),
+            negative_suffix: String::new(),
+            multiplier: 1,
+            grouping_used: false,
+            grouping_size: 0,
+            min_int: 0,
+            max_int: MAXIMUM_DIGITS,
+            min_frac: 0,
+            max_frac: MAXIMUM_DIGITS,
+            decimal_separator_always_shown: false,
+            use_exponential: false,
+            min_exponent_digits: 0,
+        };
+        if pattern.is_empty() {
+            // No subpattern is read: the grouping keeps the defaults of the
+            // fields, `NumberFormat.groupingUsed = true` and
+            // `DecimalFormat.groupingSize = 3`.
+            df.grouping_used = true;
+            df.grouping_size = 3;
+            df.negative_prefix = "-".to_string();
+            return Ok(df);
+        }
+        let chars: Vec<char> = pattern.chars().collect();
+        // The affixes as the pattern spells them (quotes resolved), compared
+        // to decide whether the negative subpattern differs from the positive.
+        let mut pos_affix_patterns = (String::new(), String::new());
+        let mut start = 0usize;
+        for j in [1, 0] {
+            if j == 0 && start >= chars.len() {
+                break;
+            }
+            let mut in_quote = false;
+            let mut prefix = String::new();
+            let mut suffix = String::new();
+            let mut prefix_pattern = String::new();
+            let mut suffix_pattern = String::new();
+            let mut decimal_pos: i32 = -1;
+            let mut multiplier = 1;
+            let mut digit_left_count: i32 = 0;
+            let mut zero_digit_count: i32 = 0;
+            let mut digit_right_count: i32 = 0;
+            // A Java `byte`, which wraps.
+            let mut grouping_count: i8 = -1;
+            let mut use_exponential = false;
+            let mut min_exponent_digits = 0;
+            // 0: prefix, 1: number, 2: suffix.
+            let mut phase = 0;
+            let mut pos = start;
+            let mut next_start = chars.len();
+            while pos < chars.len() {
+                let ch = chars[pos];
+                match phase {
+                    0 | 2 => {
+                        if in_quote {
+                            if ch == '\'' {
+                                if pos + 1 < chars.len() && chars[pos + 1] == '\'' {
+                                    pos += 1;
+                                    push_affix(phase, &mut prefix, &mut suffix, "'");
+                                    push_affix(
+                                        phase,
+                                        &mut prefix_pattern,
+                                        &mut suffix_pattern,
+                                        "''",
+                                    );
+                                } else {
+                                    in_quote = false;
+                                }
+                            } else {
+                                let s = ch.to_string();
+                                push_affix(phase, &mut prefix, &mut suffix, &s);
+                                push_affix(phase, &mut prefix_pattern, &mut suffix_pattern, &s);
+                            }
+                            pos += 1;
+                            continue;
+                        }
+                        // A digit character starts (or, after a suffix
+                        // literal, resumes) the number part.
+                        if matches!(ch, '#' | '0' | ',' | '.') {
+                            phase = 1;
+                            continue;
+                        }
+                        match ch {
+                            '\u{a4}' => {
+                                let doubled = pos + 1 < chars.len() && chars[pos + 1] == '\u{a4}';
+                                if doubled {
+                                    pos += 1;
+                                }
+                                let symbol = if doubled { "XXX" } else { "\u{a4}" };
+                                push_affix(phase, &mut prefix, &mut suffix, symbol);
+                                let spelled = if doubled { "'\u{a4}\u{a4}" } else { "'\u{a4}" };
+                                push_affix(
+                                    phase,
+                                    &mut prefix_pattern,
+                                    &mut suffix_pattern,
+                                    spelled,
+                                );
+                            }
+                            '\'' => {
+                                if pos + 1 < chars.len() && chars[pos + 1] == '\'' {
+                                    pos += 1;
+                                    push_affix(phase, &mut prefix, &mut suffix, "'");
+                                    push_affix(
+                                        phase,
+                                        &mut prefix_pattern,
+                                        &mut suffix_pattern,
+                                        "''",
+                                    );
+                                } else {
+                                    in_quote = true;
+                                }
+                            }
+                            ';' => {
+                                if phase == 0 || j == 0 {
+                                    return Err(malformed(&format!(
+                                        "Unquoted special character '{ch}' in pattern"
+                                    )));
+                                }
+                                next_start = pos + 1;
+                                pos = chars.len();
+                                continue;
+                            }
+                            '%' | '\u{2030}' => {
+                                if multiplier != 1 {
+                                    return Err(malformed(
+                                        "Too many percent/per mille characters in pattern",
+                                    ));
+                                }
+                                multiplier = if ch == '%' { 100 } else { 1000 };
+                                let s = ch.to_string();
+                                push_affix(phase, &mut prefix, &mut suffix, &s);
+                                push_affix(
+                                    phase,
+                                    &mut prefix_pattern,
+                                    &mut suffix_pattern,
+                                    &format!("'{s}"),
+                                );
+                            }
+                            '-' => {
+                                push_affix(phase, &mut prefix, &mut suffix, "-");
+                                push_affix(phase, &mut prefix_pattern, &mut suffix_pattern, "'-");
+                            }
+                            _ => {
+                                let s = ch.to_string();
+                                push_affix(phase, &mut prefix, &mut suffix, &s);
+                                push_affix(phase, &mut prefix_pattern, &mut suffix_pattern, &s);
+                            }
+                        }
+                        pos += 1;
+                    }
+                    _ if j == 0 => {
+                        // The number part of the negative subpattern: only
+                        // its extent matters, the digit counts come from the
+                        // positive one.
+                        if matches!(ch, '#' | '0' | ',' | '.' | 'E') {
+                            pos += 1;
+                        } else {
+                            phase = 2;
+                        }
+                    }
+                    _ => match ch {
+                        '#' => {
+                            if zero_digit_count > 0 {
+                                digit_right_count += 1;
+                            } else {
+                                digit_left_count += 1;
+                            }
+                            if grouping_count >= 0 && decimal_pos < 0 {
+                                grouping_count = grouping_count.wrapping_add(1);
+                            }
+                            pos += 1;
+                        }
+                        '0' => {
+                            if digit_right_count > 0 {
+                                return Err(malformed("Unexpected '0' in pattern"));
+                            }
+                            zero_digit_count += 1;
+                            if grouping_count >= 0 && decimal_pos < 0 {
+                                grouping_count = grouping_count.wrapping_add(1);
+                            }
+                            pos += 1;
+                        }
+                        ',' => {
+                            grouping_count = 0;
+                            pos += 1;
+                        }
+                        '.' => {
+                            if decimal_pos >= 0 {
+                                return Err(malformed("Multiple decimal separators in pattern"));
+                            }
+                            decimal_pos = digit_left_count + zero_digit_count + digit_right_count;
+                            pos += 1;
+                        }
+                        'E' => {
+                            if use_exponential {
+                                return Err(malformed("Multiple exponential symbols in pattern"));
+                            }
+                            use_exponential = true;
+                            min_exponent_digits = 0;
+                            pos += 1;
+                            while pos < chars.len() && chars[pos] == '0' {
+                                min_exponent_digits += 1;
+                                pos += 1;
+                            }
+                            if digit_left_count + zero_digit_count < 1 || min_exponent_digits < 1 {
+                                return Err(malformed("Malformed exponential pattern"));
+                            }
+                            phase = 2;
+                        }
+                        _ => {
+                            phase = 2;
+                        }
+                    },
+                }
+            }
+
+            // Handle patterns with no '0' pattern character: "##.###" is
+            // "#0.###", ".###" is ".0##".
+            if zero_digit_count == 0 && digit_left_count > 0 && decimal_pos >= 0 {
+                let mut n = decimal_pos;
+                if n == 0 {
+                    n += 1;
+                }
+                digit_right_count = digit_left_count - n;
+                digit_left_count = n - 1;
+                zero_digit_count = 1;
+            }
+
+            if (decimal_pos < 0 && digit_right_count > 0)
+                || (decimal_pos >= 0
+                    && (decimal_pos < digit_left_count
+                        || decimal_pos > digit_left_count + zero_digit_count))
+                || grouping_count == 0
+                || in_quote
+            {
+                return Err(malformed("Malformed pattern"));
+            }
+
+            if j == 1 {
+                df.positive_prefix = prefix;
+                df.positive_suffix = suffix;
+                pos_affix_patterns = (prefix_pattern, suffix_pattern);
+                // The default negative affixes, replaced below by an explicit
+                // negative subpattern.
+                df.negative_prefix = format!("-{}", df.positive_prefix);
+                df.negative_suffix = df.positive_suffix.clone();
+                let digit_total_count = digit_left_count + zero_digit_count + digit_right_count;
+                // The effective decimal position is the position the decimal
+                // is at or would be at if there is no decimal.
+                let effective_decimal_pos = if decimal_pos >= 0 {
+                    decimal_pos
+                } else {
+                    digit_total_count
+                };
+                df.set_minimum_integer_digits(effective_decimal_pos - digit_left_count);
+                df.set_maximum_integer_digits(if use_exponential {
+                    digit_left_count + df.min_int
+                } else {
+                    MAXIMUM_DIGITS
+                });
+                df.set_maximum_fraction_digits(if decimal_pos >= 0 {
+                    digit_total_count - decimal_pos
+                } else {
+                    0
+                });
+                df.set_minimum_fraction_digits(if decimal_pos >= 0 {
+                    digit_left_count + zero_digit_count - decimal_pos
+                } else {
+                    0
+                });
+                df.grouping_used = grouping_count > 0;
+                df.grouping_size = if grouping_count > 0 {
+                    i32::from(grouping_count)
+                } else {
+                    0
+                };
+                df.multiplier = multiplier;
+                df.decimal_separator_always_shown =
+                    decimal_pos == 0 || decimal_pos == digit_total_count;
+                df.use_exponential = use_exponential;
+                df.min_exponent_digits = min_exponent_digits;
+            } else {
+                // An explicit negative subpattern whose affixes equal the
+                // positive ones behaves as if there were none.
+                if (prefix_pattern.as_str(), suffix_pattern.as_str())
+                    != (pos_affix_patterns.0.as_str(), pos_affix_patterns.1.as_str())
+                {
+                    df.negative_prefix = prefix;
+                    df.negative_suffix = suffix;
+                }
+            }
+            start = next_start;
+        }
+        Ok(df)
+    }
+
+    /// `NumberFormat.setMinimumIntegerDigits(int)`.
+    fn set_minimum_integer_digits(&mut self, value: i32) {
+        self.min_int = value.max(0);
+        if self.min_int > self.max_int {
+            self.max_int = self.min_int;
+        }
+    }
+
+    /// `NumberFormat.setMaximumIntegerDigits(int)`.
+    fn set_maximum_integer_digits(&mut self, value: i32) {
+        self.max_int = value.max(0);
+        if self.min_int > self.max_int {
+            self.min_int = self.max_int;
+        }
+    }
+
+    /// `NumberFormat.setMinimumFractionDigits(int)`.
+    fn set_minimum_fraction_digits(&mut self, value: i32) {
+        self.min_frac = value.max(0);
+        if self.max_frac < self.min_frac {
+            self.max_frac = self.min_frac;
+        }
+    }
+
+    /// `NumberFormat.setMaximumFractionDigits(int)`.
+    fn set_maximum_fraction_digits(&mut self, value: i32) {
+        self.max_frac = value.max(0);
+        if self.min_frac > self.max_frac {
+            self.min_frac = self.max_frac;
+        }
+    }
+
+    /// The pattern this format was built from.
+    pub fn pattern(&self) -> &str {
+        &self.pattern
     }
 
     /// Formats `value`.
     ///
     /// Equivalent to `NumberFormat.format(double)`.
     pub fn format(&self, value: f64) -> String {
-        let _ = value;
-        todo!("PORT G-108")
+        if value.is_nan() {
+            return "NaN".to_string();
+        }
+        let is_negative = value < 0.0 || (value == 0.0 && value.is_sign_negative());
+        let mut number = value;
+        if self.multiplier != 1 {
+            number *= f64::from(self.multiplier);
+        }
+        let (prefix, suffix) = if is_negative {
+            (&self.negative_prefix, &self.negative_suffix)
+        } else {
+            (&self.positive_prefix, &self.positive_suffix)
+        };
+        let mut result = String::new();
+        result.push_str(prefix);
+        if number.is_infinite() {
+            result.push('\u{221e}');
+            result.push_str(suffix);
+            return result;
+        }
+        let number = number.abs();
+        let max_int = self.max_int.min(DOUBLE_INTEGER_DIGITS);
+        let min_int = self.min_int.min(DOUBLE_INTEGER_DIGITS);
+        let max_frac = self.max_frac.min(DOUBLE_FRACTION_DIGITS);
+        let min_frac = self.min_frac.min(DOUBLE_FRACTION_DIGITS);
+        if self.use_exponential {
+            let digits = DigitList::new(number, max_int.saturating_add(max_frac), false);
+            self.subformat_exponential(&mut result, &digits, max_int, min_int, min_frac);
+        } else {
+            let digits = DigitList::new(number, max_frac, true);
+            self.subformat_fixed(&mut result, &digits, max_int, min_int, max_frac, min_frac);
+        }
+        result.push_str(suffix);
+        result
     }
+
+    fn subformat_fixed(
+        &self,
+        result: &mut String,
+        digits: &DigitList,
+        max_int: i32,
+        min_int: i32,
+        max_frac: i32,
+        min_frac: i32,
+    ) {
+        let decimal_at = digits.decimal_at;
+        let count_digits = digits.digits.len() as i32;
+        // Output the integer portion: at least `min_int` digits, all of the
+        // digits before the decimal point, at most `max_int` (the highest
+        // ones are dropped).
+        let mut count = min_int;
+        let mut digit_index: i32 = 0;
+        if decimal_at > 0 && count < decimal_at {
+            count = decimal_at;
+        }
+        if count > max_int {
+            count = max_int;
+            digit_index = decimal_at - count;
+        }
+        let size_before_integer_part = result.len();
+        let mut i = count - 1;
+        while i >= 0 {
+            if i < decimal_at && digit_index < count_digits {
+                result.push(digits.digits[digit_index as usize] as char);
+                digit_index += 1;
+            } else {
+                result.push('0');
+            }
+            if self.grouping_used && i > 0 && self.grouping_size != 0 && i % self.grouping_size == 0
+            {
+                result.push(',');
+            }
+            i -= 1;
+        }
+        let fraction_present = min_frac > 0 || digit_index < count_digits;
+        // No fraction and no integer digit printed: print a zero.
+        if !fraction_present && result.len() == size_before_integer_part {
+            result.push('0');
+        }
+        if self.decimal_separator_always_shown || fraction_present {
+            result.push('.');
+        }
+        for i in 0..max_frac {
+            if i >= min_frac && digit_index >= count_digits {
+                break;
+            }
+            // Zeros between the decimal point and the first digit.
+            if -1 - i > decimal_at - 1 {
+                result.push('0');
+                continue;
+            }
+            if digit_index < count_digits {
+                result.push(digits.digits[digit_index as usize] as char);
+                digit_index += 1;
+            } else {
+                result.push('0');
+            }
+        }
+    }
+
+    fn subformat_exponential(
+        &self,
+        result: &mut String,
+        digits: &DigitList,
+        max_int: i32,
+        min_int: i32,
+        min_frac: i32,
+    ) {
+        let is_zero = digits.digits.is_empty();
+        let mut exponent = digits.decimal_at;
+        let repeat = max_int;
+        let mut minimum_integer_digits = min_int;
+        if repeat > 1 && repeat > min_int {
+            // A repeating range: the exponent is a multiple of `repeat`
+            // (6,5,4 => 3; 3,2,1 => 0; 0,-1,-2 => -3; ...), the decimal
+            // exponent here being that of the form 0.MMMMM x 10^n.
+            exponent = if exponent >= 1 {
+                ((exponent - 1) / repeat) * repeat
+            } else {
+                ((exponent - repeat) / repeat) * repeat
+            };
+            minimum_integer_digits = 1;
+        } else {
+            // No repeating range: the minimum integer digits are reached by
+            // adjusting the exponent.
+            exponent -= minimum_integer_digits;
+        }
+        let mut minimum_digits = min_int + min_frac;
+        if minimum_digits < 0 {
+            minimum_digits = i32::MAX;
+        }
+        let integer_digits = if is_zero {
+            minimum_integer_digits
+        } else {
+            digits.decimal_at - exponent
+        };
+        if minimum_digits < integer_digits {
+            minimum_digits = integer_digits;
+        }
+        let mut total_digits = digits.digits.len() as i32;
+        if minimum_digits > total_digits {
+            total_digits = minimum_digits;
+        }
+        for i in 0..total_digits {
+            if i == integer_digits {
+                result.push('.');
+            }
+            result.push(if (i as usize) < digits.digits.len() {
+                digits.digits[i as usize] as char
+            } else {
+                '0'
+            });
+        }
+        if self.decimal_separator_always_shown && total_digits == integer_digits {
+            result.push('.');
+        }
+        // The exponent, with the minus sign but not the affixes.
+        result.push('E');
+        if is_zero {
+            exponent = 0;
+        }
+        let negative_exponent = exponent < 0;
+        if negative_exponent {
+            exponent = -exponent;
+            result.push('-');
+        }
+        let exponent_digits = exponent.to_string();
+        for _ in exponent_digits.len() as i32..self.min_exponent_digits {
+            result.push('0');
+        }
+        result.push_str(&exponent_digits);
+    }
+}
+
+/// Appends `s` to the prefix in phase 0 and to the suffix otherwise.
+fn push_affix(phase: i32, prefix: &mut String, suffix: &mut String, s: &str) {
+    if phase == 0 {
+        prefix.push_str(s);
+    } else {
+        suffix.push_str(s);
+    }
+}
+
+/// The decimal digits of a non-negative finite `double`, as
+/// `java.text.DigitList` holds them: `0.d1d2...dn x 10^decimal_at`, with no
+/// trailing zero; no digits at all is zero.
+struct DigitList {
+    digits: Vec<u8>,
+    decimal_at: i32,
+}
+
+impl DigitList {
+    /// `DigitList.set(boolean, double, int, boolean)`
+    /// (`DigitList.java:295-392`, read as specification): the decimal
+    /// digits `FloatingDecimal`'s binary-to-ASCII converter produces for
+    /// `value`, with its `digitsRoundedUp()` and `decimalDigitsExact()`
+    /// flags, rounded half-even to `maximum_digits` fraction digits
+    /// (`fixed_point`) or significant digits.
+    fn new(value: f64, maximum_digits: i32, fixed_point: bool) -> Self {
+        if value == 0.0 {
+            return Self {
+                digits: Vec::new(),
+                decimal_at: 0,
+            };
+        }
+        let converted = Converted::of(value);
+        let mut list = Self {
+            digits: converted.digits.clone(),
+            decimal_at: converted.decimal_at,
+        };
+        if fixed_point {
+            // Underflow of the printed representation: rounding something
+            // like 0.0009 to 2 fraction digits.
+            if -list.decimal_at > maximum_digits {
+                list.digits.clear();
+                return list;
+            } else if -list.decimal_at == maximum_digits {
+                // Rounding 0.0009 to 3 fraction digits creates a new digit.
+                if list.should_round_up(0, &converted) {
+                    list.digits = vec![b'1'];
+                    list.decimal_at += 1;
+                } else {
+                    list.digits.clear();
+                }
+                return list;
+            }
+        }
+        let limit = if fixed_point {
+            maximum_digits + list.decimal_at
+        } else {
+            maximum_digits
+        };
+        list.round(limit, &converted);
+        list
+    }
+
+    /// `DigitList.round(int, boolean, boolean)`: keeps at most
+    /// `maximum_digits` digits, rounding up when
+    /// [`should_round_up`](Self::should_round_up) says so.
+    fn round(&mut self, maximum_digits: i32, converted: &Converted) {
+        if maximum_digits >= 0 && (maximum_digits as usize) < self.digits.len() {
+            let mut maximum_digits = maximum_digits;
+            if self.should_round_up(maximum_digits as usize, converted) {
+                // Increment from the least significant digit; all nines
+                // become a single one with the decimal point moved.
+                loop {
+                    maximum_digits -= 1;
+                    if maximum_digits < 0 {
+                        self.digits[0] = b'1';
+                        self.decimal_at += 1;
+                        maximum_digits = 0;
+                        break;
+                    }
+                    self.digits[maximum_digits as usize] += 1;
+                    if self.digits[maximum_digits as usize] <= b'9' {
+                        break;
+                    }
+                }
+                maximum_digits += 1;
+            }
+            self.digits.truncate(maximum_digits as usize);
+            while self.digits.len() > 1 && self.digits.last() == Some(&b'0') {
+                self.digits.pop();
+            }
+        }
+    }
+
+    /// `DigitList.shouldRoundUp(int, boolean, boolean)` for
+    /// `RoundingMode.HALF_EVEN`: a tie on the converter's last digit is
+    /// decided by whether that digit was rounded up (then down), was not exact
+    /// (then up), or is exact (then to the even neighbour).
+    fn should_round_up(&self, maximum_digits: usize, converted: &Converted) -> bool {
+        let count = self.digits.len();
+        if maximum_digits >= count {
+            return false;
+        }
+        let digit = self.digits[maximum_digits];
+        if digit > b'5' {
+            return true;
+        }
+        if digit == b'5' {
+            if maximum_digits == count - 1 {
+                if converted.rounded_up() {
+                    return false;
+                }
+                if !converted.exact() {
+                    return true;
+                }
+                return maximum_digits > 0
+                    && !(self.digits[maximum_digits - 1] - b'0').is_multiple_of(2);
+            }
+            return self.digits[maximum_digits + 1..].iter().any(|&d| d != b'0');
+        }
+        false
+    }
+}
+
+/// The output of `FloatingDecimal.getBinaryToASCIIConverter(double)` for a
+/// positive finite value, read as specification
+/// (`jdk.internal.math.FloatingDecimal.BinaryToASCIIBuffer.dtoa`): its digits
+/// and decimal position, and the two flags `DigitList` rounds with.
+///
+/// An integral value below 2^63 takes the converter's integer path
+/// (`developLongDigits`): the integer's digits, its low digits beyond the 53
+/// significant bits rounded half up away, and both flags false. Every other
+/// value takes the general path, whose digits are the shortest decimal that
+/// rounds to the value; `decimalDigitsExact()` is then whether those digits
+/// are the value's exact expansion and `digitsRoundedUp()` whether they
+/// exceed it.
+///
+/// **Divergence from the JDK.** The general path of the JDK's converter is
+/// not always shortest: it renders `1.0E23` as `9.999999999999999E22` and
+/// `Double.MIN_VALUE` as `4.9E-324`. Reproducing it would mean porting
+/// `FloatingDecimal.dtoa`, which is GPL-licensed and may not be copied into
+/// this crate; such values format here from their shortest decimal.
+struct Converted {
+    value: f64,
+    digits: Vec<u8>,
+    decimal_at: i32,
+    integer_path: bool,
+}
+
+impl Converted {
+    fn of(value: f64) -> Self {
+        if value.fract() == 0.0 && (1.0..9_223_372_036_854_775_808.0).contains(&value) {
+            let mut lvalue = value as u64;
+            let bin_exp = 63 - lvalue.leading_zeros() as i32;
+            let mut insignificant = 0u32;
+            // `insignificantDigitsForPow2(binExp - nSignificantBits - 1)`.
+            if bin_exp > 53 {
+                let p2 = bin_exp - 54;
+                if p2 > 1 {
+                    let mut v = 1u64 << p2;
+                    while v >= 10 {
+                        v /= 10;
+                        insignificant += 1;
+                    }
+                }
+            }
+            if insignificant != 0 {
+                let pow10 = 10u64.pow(insignificant);
+                let residue = lvalue % pow10;
+                lvalue /= pow10;
+                if residue >= (pow10 >> 1) {
+                    lvalue += 1;
+                }
+            }
+            let text = lvalue.to_string();
+            let mut digits = text.into_bytes();
+            let decimal_at = digits.len() as i32 + insignificant as i32;
+            while digits.len() > 1 && digits.last() == Some(&b'0') {
+                digits.pop();
+            }
+            return Self {
+                value,
+                digits,
+                decimal_at,
+                integer_path: true,
+            };
+        }
+        let decimal = giulietti_decimal(
+            format!("{value:e}"),
+            format!("{value:.1e}"),
+            |digits| format!("{value:.*e}", digits.min(800)),
+            |s| {
+                s.parse::<f64>()
+                    .is_ok_and(|v| v.to_bits() == value.to_bits())
+            },
+        );
+        let (digits, decimal_at) = split_scientific(&decimal);
+        Self {
+            value,
+            digits,
+            decimal_at,
+            integer_path: false,
+        }
+    }
+
+    /// The exact decimal expansion of the value: a `double` has at most 767
+    /// significant digits.
+    fn exact_expansion(&self) -> (Vec<u8>, i32) {
+        split_scientific(&format!("{:.800e}", self.value))
+    }
+
+    /// `decimalDigitsExact()`.
+    fn exact(&self) -> bool {
+        !self.integer_path && self.exact_expansion() == (self.digits.clone(), self.decimal_at)
+    }
+
+    /// `digitsRoundedUp()`.
+    fn rounded_up(&self) -> bool {
+        if self.integer_path {
+            return false;
+        }
+        let (exact_digits, exact_decimal_at) = self.exact_expansion();
+        if self.decimal_at != exact_decimal_at {
+            return self.decimal_at > exact_decimal_at;
+        }
+        let len = self.digits.len().max(exact_digits.len());
+        let at = |d: &[u8], i: usize| d.get(i).copied().unwrap_or(b'0');
+        for i in 0..len {
+            let (a, b) = (at(&self.digits, i), at(&exact_digits, i));
+            if a != b {
+                return a > b;
+            }
+        }
+        false
+    }
+}
+
+/// The digits (trailing zeros removed) and decimal position
+/// (`0.ddd x 10^decimal_at`) of a positive `d.ddde[-]n` rendering.
+fn split_scientific(sci: &str) -> (Vec<u8>, i32) {
+    let (mantissa, exponent) = sci.split_once('e').expect("scientific notation");
+    let exponent: i32 = exponent.parse().expect("exponent");
+    let mut digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    while digits.len() > 1 && digits.last() == Some(&b'0') {
+        digits.pop();
+    }
+    (digits, exponent + 1)
 }

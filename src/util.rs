@@ -167,7 +167,7 @@ pub use vector_util::{
     add, check_finite, cosine_bytes, cosine_f32, dot_product_bytes, dot_product_f32,
     dot_product_score, is_unit_vector, is_zero_vector_bytes, is_zero_vector_f32, l2normalize,
     normalize_distance_to_unit_interval, normalize_to_unit_interval, scale_max_inner_product_score,
-    square_distance_bytes, square_distance_f32, USE_FMA,
+    square_distance_bytes, square_distance_f32, use_fma,
 };
 
 use std::{
@@ -1434,7 +1434,9 @@ impl GroupVIntUtil {
         offset: usize,
     ) -> crate::error::Result<i32> {
         let _ = (input, remaining, reader, pos, dst, offset);
-        todo!("PORT G-111")
+        Err(LuceneError::unsupported_operation(
+            "No longer implemented.".to_string(),
+        ))
     }
 }
 
@@ -2680,15 +2682,20 @@ impl IOUtils {
     ///
     /// Equivalent to `IOUtils.deleteFilesIgnoringExceptions(Directory,
     /// Collection<String>)` and `(Directory, String...)`
-    /// (`IOUtils.java:223-237`).
-    pub fn delete_files_ignoring_exceptions_in<I, S>(dir: &dyn crate::store::Directory, files: I)
+    /// (`IOUtils.java:223-237`): `dir.deleteFile(name)` for each name, in
+    /// order, inside `catch (Throwable ignored)`, so an unchecked exception
+    /// (a panic here) is ignored too.
+    pub fn delete_files_ignoring_exceptions_in<D, I, S>(dir: &D, files: I)
     where
+        D: crate::store::Directory + ?Sized,
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let _ = dir;
-        let _ = files.into_iter();
-        todo!("PORT G-106")
+        for name in files {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = dir.delete_file(name.as_ref());
+            }));
+        }
     }
 }
 
@@ -3455,25 +3462,12 @@ impl RamUsageEstimator {
     /// `RoundingMode.HALF_EVEN` on the exact value (1280 bytes, exactly 1.25 KB,
     /// renders `1.2 KB`).
     pub fn human_readable_units(bytes: i64) -> String {
-        /// `DecimalFormat("0.#").format((double) value)`. Rust's fixed-precision
-        /// float formatting rounds the exact binary value half to even, as
-        /// `DecimalFormat` does since JDK 8.
-        fn format_0_hash(value: f32) -> String {
-            let formatted = format!("{:.1}", f64::from(value));
-            match formatted.strip_suffix(".0") {
-                Some(integral) => integral.to_string(),
-                None => formatted,
-            }
-        }
-        if bytes / Self::ONE_GB > 0 {
-            format!("{} GB", format_0_hash(bytes as f32 / Self::ONE_GB as f32))
-        } else if bytes / Self::ONE_MB > 0 {
-            format!("{} MB", format_0_hash(bytes as f32 / Self::ONE_MB as f32))
-        } else if bytes / Self::ONE_KB > 0 {
-            format!("{} KB", format_0_hash(bytes as f32 / Self::ONE_KB as f32))
-        } else {
-            format!("{bytes} bytes")
-        }
+        static ZERO_POINT_HASH: std::sync::LazyLock<crate::util::java_fmt::DecimalFormat> =
+            std::sync::LazyLock::new(|| {
+                crate::util::java_fmt::DecimalFormat::new("0.#")
+                    .expect("INVARIANT: \"0.#\" is a well-formed DecimalFormat pattern")
+            });
+        Self::human_readable_units_with(bytes, &ZERO_POINT_HASH)
     }
 
     /// Renders `bytes` in human-readable units — GB, MB, KB, or bytes — with
@@ -3485,8 +3479,26 @@ impl RamUsageEstimator {
         bytes: i64,
         df: &crate::util::java_fmt::DecimalFormat,
     ) -> String {
-        let _ = (bytes, df);
-        todo!("PORT G-108")
+        // `df.format((float) bytes / ONE_GB)`: the `float` quotient is
+        // widened to `double` by `NumberFormat.format(double)`.
+        if bytes / Self::ONE_GB > 0 {
+            format!(
+                "{} GB",
+                df.format(f64::from(bytes as f32 / Self::ONE_GB as f32))
+            )
+        } else if bytes / Self::ONE_MB > 0 {
+            format!(
+                "{} MB",
+                df.format(f64::from(bytes as f32 / Self::ONE_MB as f32))
+            )
+        } else if bytes / Self::ONE_KB > 0 {
+            format!(
+                "{} KB",
+                df.format(f64::from(bytes as f32 / Self::ONE_KB as f32))
+            )
+        } else {
+            format!("{bytes} bytes")
+        }
     }
 }
 

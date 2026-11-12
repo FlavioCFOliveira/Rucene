@@ -260,11 +260,19 @@ impl LruQueryMap {
     /// Removes and returns the least-recently-used query.
     ///
     /// Equivalent to `mostRecentlyUsedQueries.iterator().next()` followed by
-    /// `iterator.remove()`.
+    /// `iterator.remove()`. Java's `HashIterator.remove()` finds the entry by
+    /// the hash stored in its node and by identity, so it removes the entry
+    /// even when the query's `hashCode()` has changed since it was put; when a
+    /// lookup by the query's current hash and `equals` misses, the entry is
+    /// therefore removed by identity, which is that same entry.
     fn remove_eldest(&mut self) -> Option<Arc<dyn Query>> {
         let (seq, key) = self.order.iter().next().map(|(s, k)| (*s, k.clone()))?;
         self.order.remove(&seq);
-        self.entries.remove(&key).map(|(query, _)| query)
+        if self.entries.remove(&key).is_none() {
+            self.entries
+                .retain(|stored, _| !Arc::ptr_eq(stored.query(), key.query()));
+        }
+        Some(key.into_query())
     }
 
     fn len(&self) -> usize {
@@ -599,7 +607,7 @@ impl CacheState {
         query: Arc<dyn Query>,
         cached: CacheAndCount,
         cache_helper: &dyn CacheHelper,
-    ) {
+    ) -> Result<()> {
         debug_assert!(!is_boost_query(query.as_ref()));
         debug_assert!(!is_constant_score_query(query.as_ref()));
         // Under the write lock, so that the query map and the leaf caches stay
@@ -645,11 +653,17 @@ impl CacheState {
             leaf_cache.ram_bytes_used += ram;
             self.on_doc_id_set_cache(&key, ram);
         }
-        self.evict_if_necessary(&mut cache);
+        self.evict_if_necessary(&mut cache)
     }
 
-    /// Equivalent to the private `LRUQueryCache.evictIfNecessary()`.
-    fn evict_if_necessary(&self, cache: &mut HashMap<CacheKey, LeafCache>) {
+    /// Equivalent to the private `LRUQueryCache.evictIfNecessary()`
+    /// (`LRUQueryCache.java:346-371`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the `java.util.ConcurrentModificationException` Java throws
+    /// when removing the eldest query did not shrink the query map.
+    fn evict_if_necessary(&self, cache: &mut HashMap<CacheKey, LeafCache>) -> Result<()> {
         loop {
             let query = {
                 let mut queries = self
@@ -657,12 +671,27 @@ impl CacheState {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
                 if !self.requires_eviction(&queries) {
-                    return;
+                    return Ok(());
                 }
-                queries.remove_eldest()
-            };
-            let Some(query) = query else {
-                return;
+                let size = queries.len();
+                let Some(query) = queries.remove_eldest() else {
+                    return Ok(());
+                };
+                if size == queries.len() {
+                    // size did not decrease, because the hash of the query
+                    // changed since it has been put into the cache
+                    return Err(LuceneError::unchecked(
+                        "java.util.ConcurrentModificationException",
+                        format!(
+                            "Removal from the cache failed! This is probably due to a query \
+                             which has been modified after having been put into  the cache or \
+                             a badly implemented clone(). Query class: [class {}], query: [{}]",
+                            query.java_class_name(),
+                            crate::search::query::query_to_string(query.as_ref())
+                        ),
+                    ));
+                }
+                query
             };
             self.on_eviction(cache, &query);
         }
@@ -1490,7 +1519,7 @@ impl ConstantScoreWeightImpl for CachingWrapperWeightImpl {
                     Arc::clone(&self.query),
                     CacheAndCount::empty(),
                     cache_helper.as_ref(),
-                );
+                )?;
                 return Ok(None);
             };
             let cost = supplier.cost();
@@ -1654,7 +1683,7 @@ fn base_try_populate_cache(
     max_doc: i32,
 ) -> Result<Option<CacheAndCount>> {
     let cached = cache_impl(scorer_supplier.bulk_scorer()?, max_doc)?;
-    state.put_if_absent(weight.get_query(), cached.clone(), cache_helper);
+    state.put_if_absent(weight.get_query(), cached.clone(), cache_helper)?;
     Ok(Some(cached))
 }
 

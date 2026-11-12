@@ -900,10 +900,21 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
     pub fn with_sentinels(
         max_size: usize,
         comparator: C,
-        sentinel_object_supplier: impl FnMut() -> Option<T>,
+        mut sentinel_object_supplier: impl FnMut() -> Option<T>,
     ) -> Result<Self, LuceneError> {
-        let _ = (max_size, comparator, sentinel_object_supplier);
-        todo!("PORT G-107")
+        let mut queue = Self::new(max_size, comparator)?;
+        // If sentinel objects are supported, populate the queue with them
+        // (`PriorityQueue.java:103-111`): every slot of the heap array from 1
+        // on, including the spare slot of a zero-size queue, while `size`
+        // becomes `maxSize`. A later `None` (Java's `null`) is stored as is.
+        if let Some(sentinel) = sentinel_object_supplier() {
+            queue.heap[1] = Some(sentinel);
+            for i in 2..queue.heap.len() {
+                queue.heap[i] = sentinel_object_supplier();
+            }
+            queue.size = max_size;
+        }
+        Ok(queue)
     }
 }
 

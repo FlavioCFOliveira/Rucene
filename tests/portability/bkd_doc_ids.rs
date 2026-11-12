@@ -292,9 +292,20 @@ fn read_corpus(dir: &Path) -> Vec<Vec<i32>> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Puts the Rust side under the switch the JVM oracle gets: the environment
+/// variable `lucene.useScalarFMA`, this port's form of the
+/// `-Dlucene.useScalarFMA` system property (`Constants.getSysProp`), set to
+/// `false` before any vector computation reads `Constants.HAS_FAST_SCALAR_FMA`
+/// (`rucene::util::vector_util::use_fma`), which is evaluated once.
+fn pin_scalar_fma_off() {
+    static PIN: std::sync::Once = std::sync::Once::new();
+    PIN.call_once(|| std::env::set_var("lucene.useScalarFMA", "false"));
+}
+
 /// Java writes the index, Rucene reads it and reproduces every doc id.
 #[test]
 fn java_writes_rucene_reads() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("bkd-doc-ids-java-writes");
     let stdout = run_fixture(&dir, "write").expect("fixture write mode");
@@ -332,6 +343,7 @@ fn java_writes_rucene_reads() {
 /// Rucene writes the index, Java reads it and reproduces every doc id.
 #[test]
 fn rucene_writes_java_reads() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("bkd-doc-ids-rucene-writes");
     write_corpus(&dir);

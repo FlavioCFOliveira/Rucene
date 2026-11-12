@@ -238,12 +238,23 @@ fn assert_deterministic_vector_path(stdout: &str) {
     assert_eq!(header(stdout, "version"), "10.5.0");
 }
 
+/// Puts the Rust side under the switch the JVM oracle gets: the environment
+/// variable `lucene.useScalarFMA`, this port's form of the
+/// `-Dlucene.useScalarFMA` system property (`Constants.getSysProp`), set to
+/// `false` before any vector computation reads `Constants.HAS_FAST_SCALAR_FMA`
+/// (`rucene::util::vector_util::use_fma`), which is evaluated once.
+fn pin_scalar_fma_off() {
+    static PIN: std::sync::Once = std::sync::Once::new();
+    PIN.call_once(|| std::env::set_var("lucene.useScalarFMA", "false"));
+}
+
 // ---------------------------------------------------------------------------
 // Vector similarity
 // ---------------------------------------------------------------------------
 
 #[test]
 fn float_vector_similarity_is_bit_identical_to_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-similarity-float");
     let stdout =
@@ -319,6 +330,7 @@ fn float_vector_similarity_is_bit_identical_to_java() {
 
 #[test]
 fn byte_vector_similarity_is_bit_identical_to_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-similarity-byte");
     let stdout =
@@ -764,6 +776,7 @@ fn assert_one_dimensional_case_matches_java(case: &str, scratch: &str) {
 
 #[test]
 fn one_dimensional_single_leaf_intersect_trace_matches_java() {
+    pin_scalar_fma_off();
     require_maven();
     assert_one_dimensional_case_matches_java("ONE_LEAF_1D", "point-tree-1d");
 }
@@ -775,12 +788,14 @@ fn one_dimensional_single_leaf_intersect_trace_matches_java() {
 /// point estimate unchanged and the formula is never evaluated.
 #[test]
 fn multi_valued_single_leaf_estimates_match_java() {
+    pin_scalar_fma_off();
     require_maven();
     assert_one_dimensional_case_matches_java("MULTI_VALUED_1D", "point-tree-multivalued");
 }
 
 #[test]
 fn two_dimensional_single_leaf_results_match_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("point-tree-2d");
     let stdout =
@@ -830,6 +845,7 @@ fn two_dimensional_single_leaf_results_match_java() {
 
 #[test]
 fn multi_leaf_aggregates_match_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("point-tree-multi");
     let stdout =
@@ -957,12 +973,14 @@ fn assert_multi_leaf_bkd_cursor_case_matches_java(case: &str, scratch: &str) {
 
 #[test]
 fn multi_leaf_one_dimensional_bkd_cursor_trace_matches_java() {
+    pin_scalar_fma_off();
     require_maven();
     assert_multi_leaf_bkd_cursor_case_matches_java("MULTI_LEAF_1D", "point-tree-cursor-1d");
 }
 
 #[test]
 fn multi_leaf_two_dimensional_bkd_cursor_trace_matches_java() {
+    pin_scalar_fma_off();
     require_maven();
     assert_multi_leaf_bkd_cursor_case_matches_java("MULTI_LEAF_2D", "point-tree-cursor-2d");
 }
@@ -1030,6 +1048,7 @@ fn sequence_lines(stdout: &str, prefix: &str, name: &str) -> Vec<HashMap<String,
 
 #[test]
 fn doc_index_iterators_match_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-iterators");
     let stdout = run_fixture("VectorValuesIteratorFixture", &dir, "ITERATORS")
@@ -1182,6 +1201,7 @@ fn advance_lines<'a>(stdout: &'a str, name: &str) -> Vec<HashMap<&'a str, &'a st
 
 #[test]
 fn indexed_vector_values_metadata_matches_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-indexed");
     let stdout = run_fixture("VectorValuesIteratorFixture", &dir, "INDEXED")
@@ -1333,6 +1353,7 @@ fn parse_double_list(value: &str) -> Vec<f64> {
 /// by the two tests above.
 #[test]
 fn vector_util_kernels_are_bit_identical_to_java() {
+    pin_scalar_fma_off();
     require_maven();
     let dir = scratch_dir("vector-util-kernels");
     let stdout =

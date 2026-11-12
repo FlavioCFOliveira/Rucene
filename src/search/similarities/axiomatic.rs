@@ -84,8 +84,7 @@ impl AxiomaticParams {
     ///
     /// As [`new`](Self::new).
     pub fn with_s_query_len_k(s: f32, query_len: i32, k: f32) -> Result<Self> {
-        let _ = (s, query_len, k);
-        todo!("PORT G-105")
+        Self::new(true, s, query_len, k)
     }
 
     /// Equivalent to `Axiomatic(float s)` (`Axiomatic.java:87-89`), which is
@@ -95,8 +94,7 @@ impl AxiomaticParams {
     ///
     /// As [`new`](Self::new).
     pub fn with_s(s: f32) -> Result<Self> {
-        let _ = s;
-        todo!("PORT G-105")
+        Self::with_s_query_len_k(s, DEFAULT_QUERY_LEN, DEFAULT_K)
     }
 
     /// Equivalent to `Axiomatic(float s, int queryLen)` (`Axiomatic.java:97-99`),
@@ -106,8 +104,32 @@ impl AxiomaticParams {
     ///
     /// As [`new`](Self::new).
     pub fn with_s_query_len(s: f32, query_len: i32) -> Result<Self> {
-        let _ = (s, query_len);
-        todo!("PORT G-105")
+        Self::with_s_query_len_k(s, query_len, DEFAULT_K)
+    }
+}
+
+impl AxiomaticParams {
+    /// The `protected final float s` field (`Axiomatic.java:38`):
+    /// hyper-parameter of the growth function.
+    pub fn s(&self) -> f32 {
+        self.s
+    }
+
+    /// The `protected final float k` field (`Axiomatic.java:41`):
+    /// hyper-parameter of the primitive weighting function.
+    pub fn k(&self) -> f32 {
+        self.k
+    }
+
+    /// The `protected final int queryLen` field (`Axiomatic.java:44`).
+    pub fn query_len(&self) -> i32 {
+        self.query_len
+    }
+
+    /// The `discountOverlaps` flag the constructor passes to
+    /// `SimilarityBase(boolean)` (`Axiomatic.java:66`).
+    pub fn discount_overlaps(&self) -> bool {
+        self.discount_overlaps
     }
 }
 

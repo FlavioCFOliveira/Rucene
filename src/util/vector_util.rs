@@ -5,7 +5,7 @@
 //! Panama vector API nor fast scalar FMA are available
 //! (`org.apache.lucene.internal.vectorization.DefaultVectorUtilSupport`).
 //!
-//! # Why the scalar, non-FMA path is the parity target
+//! # Which scalar path runs
 //!
 //! Lucene picks one of three implementations at run time:
 //!
@@ -17,10 +17,14 @@
 //!
 //! Floating-point addition is not associative and `Math.fma` rounds once where
 //! `a * b + c` rounds twice, so the three paths do **not** agree bit for bit.
-//! The only deterministic, machine-independent target is the last one, which
-//! Lucene selects with `-Dlucene.useScalarFMA=false` and without
-//! `--add-modules jdk.incubator.vector`. That is what [`USE_FMA`] pins, and it
-//! is the configuration the portability fixtures run under.
+//! This port chooses between the two scalar forms exactly as Lucene does, on
+//! [`Constants::has_fast_scalar_fma`](crate::util::Constants::has_fast_scalar_fma),
+//! read once like Java's `static final` (see [`use_fma`]). The
+//! `lucene.useScalarFMA` system property that decides it in Java is read, as
+//! every system property in this port, from the process environment variable
+//! of the same name (`Constants.getSysProp`); setting
+//! `lucene.useScalarFMA=false` pins the non-fused form, exactly as the
+//! portability fixtures pin the JVM with `-Dlucene.useScalarFMA=false`.
 //!
 //! Consequently the loop shapes below are *not* free to change: the number of
 //! accumulators and the order in which partial sums are added are part of the
@@ -38,26 +42,34 @@ use crate::internal::vectorization::vector_util_support::VectorUtilSupport;
 /// widened to `f64` at every comparison site, which this port reproduces.
 const EPSILON: f32 = 1e-4;
 
+/// `Constants.HAS_FAST_SCALAR_FMA`, evaluated once, on first use, as Java's
+/// `static final` field is evaluated once when `Constants` initialises
+/// (`Constants.java:112`).
+static HAS_FAST_SCALAR_FMA: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(crate::util::Constants::has_fast_scalar_fma);
+
 /// Whether the fused multiply-add form is used for float accumulation.
 ///
-/// Equivalent to `Constants.HAS_FAST_SCALAR_FMA` in
-/// `DefaultVectorUtilSupport.fma`. Rucene pins it to `false` so that scores are
-/// reproducible on every machine and bit-identical to a JVM started with
-/// `-Dlucene.useScalarFMA=false`. Changing it changes the low-order bits of
-/// every float similarity score.
-pub const USE_FMA: bool = false;
+/// Equivalent to reading `Constants.HAS_FAST_SCALAR_FMA` in
+/// `DefaultVectorUtilSupport.fma` (`DefaultVectorUtilSupport.java:29-36`) and
+/// `PanamaVectorUtilSupport.fma` (`PanamaVectorUtilSupport.java:100-106`).
+/// The value is computed by
+/// [`Constants::has_fast_scalar_fma`](crate::util::Constants::has_fast_scalar_fma)
+/// the first time it is needed and never changes afterwards; the environment
+/// variable `lucene.useScalarFMA` (the port's form of the system property)
+/// must therefore be set before the first vector computation of the process.
+#[inline]
+pub fn use_fma() -> bool {
+    *HAS_FAST_SCALAR_FMA
+}
 
-// The portability fixtures capture the Java reference scores with
-// `-Dlucene.useScalarFMA=false`. Flipping the constant silently changes the low
-// bits of every float similarity score, so the choice is pinned at compile time.
-const _: () = assert!(!USE_FMA);
-
-/// `a * b + c`, or `fma(a, b, c)` when [`USE_FMA`] is enabled.
+/// `a * b + c`, or `Math.fma(a, b, c)` when [`use_fma`] is true.
 ///
-/// Equivalent to `DefaultVectorUtilSupport.fma(float, float, float)`.
+/// Equivalent to `DefaultVectorUtilSupport.fma(float, float, float)`
+/// (`DefaultVectorUtilSupport.java:29-36`).
 #[inline]
 fn fma(a: f32, b: f32, c: f32) -> f32 {
-    if USE_FMA {
+    if use_fma() {
         a.mul_add(b, c)
     } else {
         a * b + c
@@ -513,10 +525,10 @@ pub fn add(u: &mut [f32], v: &[f32]) -> Result<()> {
 /// to.
 ///
 /// Lucene's `VectorUtil` validates its arguments and then forwards to the
-/// `VectorUtilSupport` the runtime selected (`IMPL`). This module pins the
-/// scalar, non-FMA path as its parity target — see the module documentation —
-/// so it forwards to that implementation directly rather than to whichever one
-/// the host CPU would pick.
+/// `VectorUtilSupport` the runtime selected (`IMPL`). This module forwards to
+/// the scalar implementation, the one Lucene selects without
+/// `jdk.incubator.vector`; its fused or non-fused form follows [`use_fma`] —
+/// see the module documentation.
 fn support() -> &'static DefaultVectorUtilSupport {
     static SUPPORT: DefaultVectorUtilSupport = DefaultVectorUtilSupport::new();
     &SUPPORT

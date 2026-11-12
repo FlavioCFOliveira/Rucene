@@ -891,13 +891,26 @@ impl LatLonPointSortField {
     }
 }
 
+/// `java.lang.Double.doubleToLongBits`: the bits of `value`, every NaN
+/// collapsed to the canonical `0x7ff8000000000000`.
+fn double_to_long_bits(value: f64) -> i64 {
+    if value.is_nan() {
+        0x7ff8_0000_0000_0000
+    } else {
+        value.to_bits() as i64
+    }
+}
+
 /// Equivalent to `org.apache.lucene.document.LatLonPointSortField.equals(Object)`
 /// (`LatLonPointSortField.java:73-82`), which compares the coordinates through
 /// `Double.doubleToLongBits`.
 impl PartialEq for LatLonPointSortField {
     fn eq(&self, other: &Self) -> bool {
-        let _ = other;
-        todo!("PORT G-008")
+        // `super.equals(obj)`, then `getClass() != obj.getClass()` (both are
+        // `LatLonPointSortField` by type here), then the coordinate bits.
+        self.sort_field == other.sort_field
+            && double_to_long_bits(self.latitude) == double_to_long_bits(other.latitude)
+            && double_to_long_bits(self.longitude) == double_to_long_bits(other.longitude)
     }
 }
 
@@ -908,7 +921,66 @@ impl LatLonPointSortField {
     /// (`LatLonPointSortField.java:61-71`): `super.hashCode()` combined with the
     /// `Double.doubleToLongBits` of latitude and longitude.
     pub fn hash_code(&self) -> i32 {
-        todo!("PORT G-008")
+        use crate::util::java_collections::{
+            java_identity_hash_code_stand_in, java_string_hash_code,
+        };
+        // `Long.hashCode`-style fold of `Double.doubleToLongBits`.
+        let long_bits_hash = |value: f64| -> i32 {
+            let temp = double_to_long_bits(value);
+            (temp ^ ((temp as u64) >> 32) as i64) as i32
+        };
+        // `SortField.hashCode()` (`SortField.java:501-503`):
+        // `Objects.hash(field, type, reverse, comparatorSource, missingValue)`,
+        // which folds `31 * h + hash(e)` from 1. `type` is the enum constant
+        // `CUSTOM`, whose identity hash is unreproducible in Java itself and is
+        // replaced by the declared stable stand-in. `comparatorSource` is always
+        // `null` for this class (`LatLonPointSortField.java:30`).
+        let mut super_hash: i32 = 1;
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(self.sort_field.field().map_or(0, java_string_hash_code));
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(java_identity_hash_code_stand_in(
+                "org.apache.lucene.search.SortField$Type.CUSTOM",
+            ));
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(if self.sort_field.reverse() {
+                1231
+            } else {
+                1237
+            });
+        super_hash = super_hash.wrapping_mul(31);
+        let missing_hash = match self.sort_field.missing_value() {
+            None => 0,
+            Some(MissingValue::Double(v)) => long_bits_hash(v),
+            Some(MissingValue::Float(v)) => {
+                if v.is_nan() {
+                    0x7fc0_0000
+                } else {
+                    v.to_bits() as i32
+                }
+            }
+            Some(MissingValue::Int(v)) => v,
+            Some(MissingValue::Long(v)) => (v ^ ((v as u64) >> 32) as i64) as i32,
+            Some(MissingValue::StringFirst) => {
+                java_identity_hash_code_stand_in("org.apache.lucene.search.SortField.STRING_FIRST")
+            }
+            Some(MissingValue::StringLast) => {
+                java_identity_hash_code_stand_in("org.apache.lucene.search.SortField.STRING_LAST")
+            }
+        };
+        super_hash = super_hash.wrapping_mul(31).wrapping_add(missing_hash);
+        // `LatLonPointSortField.java:62-70`.
+        let mut result = super_hash;
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(long_bits_hash(self.latitude));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(long_bits_hash(self.longitude));
+        result
     }
 }
 

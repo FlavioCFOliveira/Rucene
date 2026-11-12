@@ -601,12 +601,23 @@ fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "panic".to_string())
 }
 
+/// Puts the Rust side under the switch the JVM oracle gets: the environment
+/// variable `lucene.useScalarFMA`, this port's form of the
+/// `-Dlucene.useScalarFMA` system property (`Constants.getSysProp`), set to
+/// `false` before any vector computation reads `Constants.HAS_FAST_SCALAR_FMA`
+/// (`rucene::util::vector_util::use_fma`), which is evaluated once.
+fn pin_scalar_fma_off() {
+    static PIN: std::sync::Once = std::sync::Once::new();
+    PIN.call_once(|| std::env::set_var("lucene.useScalarFMA", "false"));
+}
+
 // ---------------------------------------------------------------------------
 // The test
 // ---------------------------------------------------------------------------
 
 #[test]
 fn knn_query_variants_match_lucene() {
+    pin_scalar_fma_off();
     let tmp = tempfile::Builder::new()
         .prefix("rucene-knn-variants")
         .tempdir()

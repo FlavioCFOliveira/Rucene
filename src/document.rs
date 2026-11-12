@@ -2580,8 +2580,7 @@ impl StoredField {
     ///
     /// Propagates whatever the `Field` constructor raises.
     pub fn new_type_only(name: &str, field_type: FieldType) -> Result<Self> {
-        let _ = (name, field_type);
-        todo!("PORT G-102")
+        Ok(Self(Field::new_with_type(name, field_type)?))
     }
 
     /// Creates a stored field with a binary value and an explicit field type.
@@ -2597,8 +2596,7 @@ impl StoredField {
         bytes: BytesRef,
         field_type: FieldType,
     ) -> Result<Self> {
-        let _ = (name, bytes, field_type);
-        todo!("PORT G-102")
+        Ok(Self(Field::new_with_bytes(name, bytes, field_type)?))
     }
 }
 
@@ -3172,6 +3170,18 @@ pub fn pack_binary_point(point: &[BytesRef]) -> Result<BytesRef> {
     if point.is_empty() {
         return Err(LuceneError::illegal_argument(
             "point must not be 0 dimensions".to_string(),
+        ));
+    }
+    if point.len() == 1 {
+        // `return new BytesRef(point[0])` (`BinaryPoint.java:93-95`): a single
+        // dimension is not checked here, even for a zero length.
+        return Ok(BytesRef::new(point[0].slice().to_vec()));
+    }
+    // `point must not have 0-length values` (`BinaryPoint.java:101-104`),
+    // checked on the first dimension only.
+    if point[0].length == 0 {
+        return Err(LuceneError::illegal_argument(
+            "point must not have 0-length values".to_string(),
         ));
     }
     let bytes_per_dim = point[0].length;
@@ -4413,6 +4423,12 @@ impl BinaryPoint {
         }
         let bytes_per_dim = point[0].length;
         for dim in point {
+            // `point must not have 0-length values` (`BinaryPoint.java:63-65`).
+            if dim.length == 0 {
+                return Err(LuceneError::illegal_argument(
+                    "point must not have 0-length values".to_string(),
+                ));
+            }
             if dim.length != bytes_per_dim {
                 return Err(LuceneError::illegal_argument(
                     "all dimensions must have same bytes length".to_string(),
@@ -4430,8 +4446,10 @@ impl BinaryPoint {
 
     /// Creates a new BinaryPoint.
     pub fn new(name: &str, point: &[BytesRef]) -> Result<Self> {
-        let field_type = Self::field_type_for_point(point)?;
+        // `super(name, pack(point), getType(point))` (`BinaryPoint.java:129-131`):
+        // Java evaluates `pack` before `getType`.
         let packed = pack_binary_point(point)?;
+        let field_type = Self::field_type_for_point(point)?;
         Ok(Self {
             name: name.to_string(),
             field_type,
@@ -5767,8 +5785,13 @@ impl IntField {
         reverse: bool,
         selector: crate::search::SortedNumericSelectorType,
     ) -> Result<crate::search::SortedNumericSortField> {
-        let _ = (field, reverse, selector);
-        todo!("PORT G-001")
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Int,
+            reverse,
+            selector,
+            None,
+        )
     }
 
     /// Creates a sort over this field's int values, with an explicit missing
@@ -5786,8 +5809,13 @@ impl IntField {
         selector: crate::search::SortedNumericSelectorType,
         missing_value: i32,
     ) -> Result<crate::search::SortedNumericSortField> {
-        let _ = (field, reverse, selector, missing_value);
-        todo!("PORT G-001")
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Int,
+            reverse,
+            selector,
+            Some(crate::search::sort::MissingValue::Int(missing_value)),
+        )
     }
 }
 
@@ -6210,8 +6238,13 @@ impl FloatField {
         reverse: bool,
         selector: crate::search::SortedNumericSelectorType,
     ) -> Result<crate::search::SortedNumericSortField> {
-        let _ = (field, reverse, selector);
-        todo!("PORT G-002")
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Float,
+            reverse,
+            selector,
+            None,
+        )
     }
 
     /// Creates a sort over this field's float values, with an explicit missing
@@ -6229,8 +6262,13 @@ impl FloatField {
         selector: crate::search::SortedNumericSelectorType,
         missing_value: f32,
     ) -> Result<crate::search::SortedNumericSortField> {
-        let _ = (field, reverse, selector, missing_value);
-        todo!("PORT G-002")
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Float,
+            reverse,
+            selector,
+            Some(crate::search::sort::MissingValue::Float(missing_value)),
+        )
     }
 }
 
@@ -6412,8 +6450,13 @@ impl DoubleField {
         reverse: bool,
         selector: crate::search::SortedNumericSelectorType,
     ) -> Result<crate::search::SortedNumericSortField> {
-        let _ = (field, reverse, selector);
-        todo!("PORT G-003")
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Double,
+            reverse,
+            selector,
+            None,
+        )
     }
 
     /// Creates a sort over this field's double values, with an explicit missing
@@ -6431,8 +6474,13 @@ impl DoubleField {
         selector: crate::search::SortedNumericSelectorType,
         missing_value: f64,
     ) -> Result<crate::search::SortedNumericSortField> {
-        let _ = (field, reverse, selector, missing_value);
-        todo!("PORT G-003")
+        crate::search::SortedNumericSortField::with_missing_value(
+            field,
+            crate::search::sort::SortFieldType::Double,
+            reverse,
+            selector,
+            Some(crate::search::sort::MissingValue::Double(missing_value)),
+        )
     }
 }
 

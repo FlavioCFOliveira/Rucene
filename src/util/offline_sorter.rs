@@ -1051,9 +1051,10 @@ impl OfflineSorter {
             // `IOUtils.deleteFilesIgnoringExceptions(trackingDir,
             // trackingDir.getCreatedFiles())`.
             let files: Vec<String> = self.shared.created_files().iter().cloned().collect();
-            for name in files {
-                let _ = self.shared.dir.delete_file(&name);
-            }
+            crate::util::IOUtils::delete_files_ignoring_exceptions_in(
+                self.shared.dir.as_ref(),
+                files,
+            );
         }
         outcome
     }

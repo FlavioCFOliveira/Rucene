@@ -5441,7 +5441,7 @@ pub trait Directory: Send + Sync {
         })();
         if !success {
             // IOUtils.deleteFilesIgnoringExceptions(this, dest)
-            let _ = self.delete_file(dest);
+            crate::util::IOUtils::delete_files_ignoring_exceptions_in(self, [dest]);
         }
         result
     }
@@ -6851,9 +6851,7 @@ impl Directory for NRTCachingDirectory {
                 crate::util::IOUtils::close_while_handling_exception([
                     out.map(|mut out| move || out.close())
                 ])?;
-                for name in to_delete.iter() {
-                    let _ = first.delete_file(name);
-                }
+                crate::util::IOUtils::delete_files_ignoring_exceptions_in(first, to_delete.iter());
                 Err(error)
             }
         }
@@ -7726,13 +7724,21 @@ pub type BlockReuse = Arc<dyn Fn(Vec<u8>) -> Result<()> + Send + Sync>;
 /// the same instance, which [`ByteBuffersDataOutput::with_allocator`]
 /// recognises by identity.
 ///
-/// **Divergence from Lucene 10.5.0 (pre-existing).** Java's consumer throws
-/// `RuntimeException("reset() is not allowed on this buffer.")`; an output
-/// built with this strategy drops its blocks on `reset()` instead, as the
-/// port's default outputs do.
+/// Invoking the strategy raises
+/// `RuntimeException("reset() is not allowed on this buffer.")`, as Java's
+/// consumer throws. [`ByteBuffersDataOutput::reset`] never invokes it: Java's
+/// `reset()` skips the consumer when it is `NO_REUSE` and drops the blocks
+/// (`ByteBuffersDataOutput.java:469-476`), as does `rewriteToBlockSize`
+/// (`ByteBuffersDataOutput.java:524`).
 pub fn no_reuse() -> BlockReuse {
-    static NO_REUSE: std::sync::LazyLock<BlockReuse> =
-        std::sync::LazyLock::new(|| Arc::new(|_block: Vec<u8>| Ok(())));
+    static NO_REUSE: std::sync::LazyLock<BlockReuse> = std::sync::LazyLock::new(|| {
+        Arc::new(|_block: Vec<u8>| {
+            Err(LuceneError::unchecked(
+                "java.lang.RuntimeException",
+                "reset() is not allowed on this buffer.",
+            ))
+        })
+    });
     Arc::clone(&NO_REUSE)
 }
 
@@ -8140,9 +8146,10 @@ impl ByteBuffersDataOutput {
     ///
     /// # Errors
     ///
-    /// Whatever the block reuse strategy raises: `NO_REUSE` raises
-    /// `RuntimeException("reset() is not allowed on this buffer.")`
-    /// (`ByteBuffersDataOutput.java:45-48`).
+    /// Whatever a custom block reuse strategy raises. [`no_reuse`] is never
+    /// invoked here: Java's `if (blockReuse != NO_REUSE)` drops the blocks
+    /// instead (`ByteBuffersDataOutput.java:470-473`), so this output, like
+    /// Java's default one, resets without error.
     pub fn reset(&mut self) -> Result<()> {
         let current = std::mem::take(&mut self.current);
         if let Some(reuse) = &self.block_reuse {

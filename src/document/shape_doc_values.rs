@@ -824,14 +824,30 @@ fn write_header(output: &mut crate::store::ByteBuffersDataOutput, node: &TreeNod
 /// exactly as `ShapeDocValues.computeBinaryValue(List<DecodedTriangle>)` does.
 ///
 /// Equivalent to the private
-/// `org.apache.lucene.document.ShapeDocValues#computeBinaryValue`.
+/// `org.apache.lucene.document.ShapeDocValues#computeBinaryValue`
+/// (`ShapeDocValues.java:143-153`), including its `catch (IOException e) {
+/// throw new RuntimeException("Internal error building LatLonShapeDocValues.
+/// Got ", e); }`; an unchecked exception passes through unchanged.
 fn compute_binary_value(
     tessellation: &[DecodedTriangle],
     encoder: ShapeCoordinateSystem,
 ) -> Result<BytesRef> {
-    // dfs order serialization
-    let (nodes, dfs) = build_tree(tessellation, encoder)?;
-    write_tree(&nodes, &dfs, encoder)
+    let build = || -> Result<BytesRef> {
+        // dfs order serialization
+        let (nodes, dfs) = build_tree(tessellation, encoder)?;
+        write_tree(&nodes, &dfs, encoder)
+    };
+    build().map_err(|e| {
+        if e.is_io_exception() {
+            LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+                class: "java.lang.RuntimeException",
+                message: Some("Internal error building LatLonShapeDocValues. Got ".to_string()),
+                cause: Some(Arc::new(e)),
+            })
+        } else {
+            e
+        }
+    })
 }
 
 // -----------------------------------------------------------------------------

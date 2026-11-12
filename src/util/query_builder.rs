@@ -26,10 +26,11 @@
 //! * **A missing `TermToBytesRefAttribute` and an empty stream both return
 //!   `None`.** Java returns a `null` `Query` in both cases; `Option` says the
 //!   same thing.
-//! * **Java's unchecked exceptions become `Result`.** `createFieldQuery` wraps
-//!   an `IOException` from the analysis chain in a `RuntimeException`; here it
-//!   propagates as [`LuceneError`]. The argument checks that Java raises as
-//!   `IllegalArgumentException` return [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument).
+//!
+//! `createFieldQuery` wraps an `IOException` from the analysis chain in
+//! `RuntimeException("Error analyzing query text", e)`, as Java does; that and
+//! the argument checks Java raises as `IllegalArgumentException` are returned
+//! as [`LuceneError`] values of the same Java class.
 
 use std::sync::Arc;
 
@@ -47,6 +48,37 @@ use crate::search::{
 use crate::util::graph::GraphTokenStreamFiniteStrings;
 use crate::util::AttributeSource;
 use crate::util::BytesRef;
+
+/// `catch (IOException e) { throw new RuntimeException("Error analyzing query
+/// text", e); }` (`QueryBuilder.java:257-258`, `366-367`): an `IOException`
+/// becomes a `java.lang.RuntimeException` with that message and the
+/// exception as its cause; any other (unchecked) exception passes through.
+fn wrap_analysis_io_exception(e: LuceneError) -> LuceneError {
+    if e.is_io_exception() {
+        LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+            class: "java.lang.RuntimeException",
+            message: Some("Error analyzing query text".to_string()),
+            cause: Some(Arc::new(e)),
+        })
+    } else {
+        e
+    }
+}
+
+/// The outcome of a try-with-resources body followed by the resource's
+/// `close()`: the body's failure wins and carries a close failure as
+/// suppressed; otherwise the close failure, if any, is the outcome.
+fn close_after<T>(result: Result<T>, closed: Result<()>) -> Result<T> {
+    match (result, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(close_error)) => Err(close_error),
+        (Err(e), Ok(())) => Err(e),
+        (Err(mut e), Err(close_error)) => {
+            e.add_suppressed(close_error);
+            Err(e)
+        }
+    }
+}
 
 /// Wraps a term and a boost.
 ///
@@ -335,7 +367,10 @@ pub trait QueryBuilderOps {
             .get_analyzer()
             // `analyzer.tokenStream(field, queryText)` on a `null` analyzer.
             .ok_or_else(crate::error::LuceneError::null_pointer)?
-            .token_stream_from_str(field, query_text)?;
+            .token_stream_from_str(field, query_text)
+            // `catch (IOException e) { throw new RuntimeException("Error
+            // analyzing query text", e); }` (`QueryBuilder.java:255-259`).
+            .map_err(wrap_analysis_io_exception)?;
         self.create_field_query(
             Box::new(SharedTokenStream::new(source)),
             operator,
@@ -343,6 +378,7 @@ pub trait QueryBuilderOps {
             quoted,
             phrase_slop,
         )
+        .map_err(wrap_analysis_io_exception)
     }
 
     /// Creates a query from a token stream.
@@ -364,82 +400,85 @@ pub trait QueryBuilderOps {
 
         // Build an appropriate query based on the analysis chain.
         let mut stream = CachingTokenFilter::new(source);
+        // `try (CachingTokenFilter stream = ...) { ... } catch (IOException e)
+        // { throw new RuntimeException("Error analyzing query text", e); }`
+        // (`QueryBuilder.java:297-368`): the stream is closed on every path out
+        // of the body, a close failure is suppressed into a body failure, and an
+        // `IOException` from either becomes a `RuntimeException`.
+        let result = (|| -> Result<Option<Arc<dyn Query>>> {
+            // `QueryBuilder.java:300-306`: the stream's term attribute, if any,
+            // and the position attributes, which `addAttribute` creates.
+            let has_term = has_term_attribute(stream.attribute_source());
+            {
+                let atts = stream.attribute_source_mut();
+                atts.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
+                atts.add_attribute_interface::<dyn PositionLengthAttribute>()?;
+            }
+            if !has_term {
+                return Ok(None);
+            }
 
-        // `QueryBuilder.java:300-306`: the stream's term attribute, if any,
-        // and the position attributes, which `addAttribute` creates.
-        let has_term = has_term_attribute(stream.attribute_source());
-        {
-            let atts = stream.attribute_source_mut();
-            atts.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
-            atts.add_attribute_interface::<dyn PositionLengthAttribute>()?;
-        }
-        if !has_term {
-            return Ok(None);
-        }
+            // phase 1: read through the stream and assess the situation: counting
+            // the number of tokens/positions and marking if we have any synonyms.
 
-        // phase 1: read through the stream and assess the situation: counting
-        // the number of tokens/positions and marking if we have any synonyms.
+            let mut num_tokens = 0usize;
+            let mut position_count = 0i32;
+            let mut has_synonyms = false;
+            let mut is_graph = false;
 
-        let mut num_tokens = 0usize;
-        let mut position_count = 0i32;
-        let mut has_synonyms = false;
-        let mut is_graph = false;
+            stream.reset()?;
+            while stream.increment_token()? {
+                num_tokens += 1;
+                let position_increment = position_increment_of(stream.attribute_source());
+                if position_increment != 0 {
+                    position_count += position_increment;
+                } else {
+                    has_synonyms = true;
+                }
 
-        stream.reset()?;
-        while stream.increment_token()? {
-            num_tokens += 1;
-            let position_increment = position_increment_of(stream.attribute_source());
-            if position_increment != 0 {
-                position_count += position_increment;
+                let position_length = position_length_of(stream.attribute_source());
+                if self.query_builder().get_enable_graph_queries() && position_length > 1 {
+                    is_graph = true;
+                }
+            }
+
+            // phase 2: based on token count, presence of synonyms, and options
+            // formulate a single term, boolean, or phrase.
+
+            if num_tokens == 0 {
+                Ok(None)
+            } else if num_tokens == 1 {
+                // single term
+                self.analyze_term(field, &mut stream)
+            } else if is_graph {
+                // graph
+                if quoted {
+                    self.analyze_graph_phrase(&mut stream, field, phrase_slop)
+                } else {
+                    self.analyze_graph_boolean(field, &mut stream, operator)
+                }
+            } else if quoted && position_count > 1 {
+                // phrase
+                if has_synonyms {
+                    // complex phrase with synonyms
+                    self.analyze_multi_phrase(field, &mut stream, phrase_slop)
+                } else {
+                    // simple phrase
+                    self.analyze_phrase(field, &mut stream, phrase_slop)
+                }
             } else {
-                has_synonyms = true;
+                // boolean
+                if position_count == 1 {
+                    // only one position, with synonyms
+                    self.analyze_boolean(field, &mut stream)
+                } else {
+                    // complex case: multiple positions
+                    self.analyze_multi_boolean(field, &mut stream, operator)
+                }
             }
-
-            let position_length = position_length_of(stream.attribute_source());
-            if self.query_builder().get_enable_graph_queries() && position_length > 1 {
-                is_graph = true;
-            }
-        }
-
-        // phase 2: based on token count, presence of synonyms, and options
-        // formulate a single term, boolean, or phrase.
-
-        // Java wraps the filter in a try-with-resources, so the stream is
-        // closed on every path out of the method; the result is computed first
-        // and returned after the close.
-        let result = if num_tokens == 0 {
-            Ok(None)
-        } else if num_tokens == 1 {
-            // single term
-            self.analyze_term(field, &mut stream)
-        } else if is_graph {
-            // graph
-            if quoted {
-                self.analyze_graph_phrase(&mut stream, field, phrase_slop)
-            } else {
-                self.analyze_graph_boolean(field, &mut stream, operator)
-            }
-        } else if quoted && position_count > 1 {
-            // phrase
-            if has_synonyms {
-                // complex phrase with synonyms
-                self.analyze_multi_phrase(field, &mut stream, phrase_slop)
-            } else {
-                // simple phrase
-                self.analyze_phrase(field, &mut stream, phrase_slop)
-            }
-        } else {
-            // boolean
-            if position_count == 1 {
-                // only one position, with synonyms
-                self.analyze_boolean(field, &mut stream)
-            } else {
-                // complex case: multiple positions
-                self.analyze_multi_boolean(field, &mut stream, operator)
-            }
-        };
-        stream.close()?;
-        result
+        })();
+        let closed = stream.close();
+        close_after(result, closed).map_err(wrap_analysis_io_exception)
     }
 
     /// Creates a simple term query from the cached token-stream contents.

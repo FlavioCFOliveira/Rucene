@@ -9,7 +9,7 @@ use crate::util::{BytesRef, IntsRef, IntsRefBuilder, UnicodeUtil};
 use super::automata::Automata;
 use super::automaton::{Automaton, AutomatonBuilder, Transition, TransitionAccessor};
 use super::automaton::{MAX_CODE_POINT, MIN_CODE_POINT};
-use super::int_set::{FrozenIntSet, StateSet};
+use super::int_set::{FrozenIntSet, IntSetKey, StateSet};
 use super::state_pair::StatePair;
 use super::too_complex_to_determinize_exception::TooComplexToDeterminizeException;
 
@@ -704,10 +704,12 @@ impl Operations {
                 if states_set.size() > 0 {
                     debug_assert!(last_point != -1);
 
-                    let values = states_set.get_array().to_vec();
-                    let hash = states_set.long_hash_code();
-                    let probe = FrozenIntSet::new(values, hash, -1);
-                    let existing = newstate.get(&probe).copied();
+                    // `newstate.get(statesSet)` (`Operations.java:760`): the
+                    // live set is the key, through `IntSet.equals`.
+                    let existing = {
+                        let key = states_set.as_key();
+                        newstate.get(&key as &dyn IntSetKey).copied()
+                    };
                     let q = match existing {
                         Some(q) => q,
                         None => {

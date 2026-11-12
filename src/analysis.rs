@@ -1650,11 +1650,29 @@ pub trait DelegatingAnalyzerWrapperLogic: Debug + Send + Sync {
 ///
 /// Equivalent to the private `DelegatingAnalyzerWrapper.DelegatingReuseStrategy`
 /// (`DelegatingAnalyzerWrapper.java:76-111`).
+///
+/// Java's `analyzer == wrapper` test compares the analyzer passed in with the
+/// wrapper the strategy was built for. A Rust strategy is owned by exactly one
+/// [`AnalyzerState`] — the wrapper's — so the same identity is "the state whose
+/// reuse strategy is this strategy"; the wrapper's subclass logic, which
+/// Java reaches through `wrapper.getWrappedAnalyzer`, is shared with it.
 #[derive(Debug)]
-#[allow(dead_code)] // Built by the G-006 code pass.
 pub(crate) struct DelegatingReuseStrategy {
+    /// `wrapper.getWrappedAnalyzer`, the subclass logic of the wrapper.
+    logic: Arc<dyn DelegatingAnalyzerWrapperLogic>,
     /// `fallbackStrategy`, used when the analyzer is not the wrapper.
     fallback_strategy: Box<dyn ReuseStrategy>,
+}
+
+impl DelegatingReuseStrategy {
+    /// Java's `analyzer == wrapper`: whether `state` is the state that owns
+    /// this strategy, which is the wrapper's.
+    fn is_wrapper(&self, state: &AnalyzerState) -> bool {
+        std::ptr::addr_eq(
+            state.reuse_strategy() as *const dyn ReuseStrategy,
+            self as *const Self,
+        )
+    }
 }
 
 impl ReuseStrategy for DelegatingReuseStrategy {
@@ -1665,8 +1683,16 @@ impl ReuseStrategy for DelegatingReuseStrategy {
         state: &AnalyzerState,
         field_name: &str,
     ) -> Option<Arc<AtomicRefCell<TokenStreamComponents>>> {
-        let _ = (state, field_name);
-        todo!("PORT G-006")
+        if self.is_wrapper(state) {
+            let wrapped_analyzer = self.logic.get_wrapped_analyzer(field_name);
+            let wrapped_state = wrapped_analyzer.analyzer_state();
+            wrapped_state
+                .reuse_strategy()
+                .get_reusable_components(wrapped_state, field_name)
+        } else {
+            self.fallback_strategy
+                .get_reusable_components(state, field_name)
+        }
     }
 
     /// Equivalent to `DelegatingReuseStrategy.setReusableComponents(Analyzer, String,
@@ -1677,38 +1703,84 @@ impl ReuseStrategy for DelegatingReuseStrategy {
         field_name: &str,
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
-        let _ = (state, field_name, components);
-        todo!("PORT G-006")
+        if self.is_wrapper(state) {
+            let wrapped_analyzer = self.logic.get_wrapped_analyzer(field_name);
+            let wrapped_state = wrapped_analyzer.analyzer_state();
+            wrapped_state.reuse_strategy().set_reusable_components(
+                wrapped_state,
+                field_name,
+                components,
+            );
+        } else {
+            self.fallback_strategy
+                .set_reusable_components(state, field_name, components);
+        }
+    }
+}
+
+/// The [`AnalyzerWrapperLogic`] a [`DelegatingAnalyzerWrapper`] gives its
+/// [`AnalyzerWrapper`]: the subclass's `getWrappedAnalyzer` and gap overrides,
+/// with the four `wrap*` hooks left at their `AnalyzerWrapper` defaults, which
+/// is what Java's `final` overrides of them pin
+/// (`DelegatingAnalyzerWrapper.java:52-74`).
+#[derive(Debug)]
+struct DelegatingWrapperLogic(Arc<dyn DelegatingAnalyzerWrapperLogic>);
+
+impl AnalyzerWrapperLogic for DelegatingWrapperLogic {
+    fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer {
+        self.0.get_wrapped_analyzer(field_name)
+    }
+
+    fn get_position_increment_gap(&self, field_name: &str) -> i32 {
+        self.0.get_position_increment_gap(field_name)
+    }
+
+    fn get_offset_gap(&self, field_name: &str) -> i32 {
+        self.0.get_offset_gap(field_name)
     }
 }
 
 /// An analyzer wrapper that delegates all work to another analyzer without
-/// wrapping components or readers.
+/// wrapping components or readers, and reuses the wrapped analyzer's
+/// components through the wrapped analyzer's own reuse strategy.
 ///
-/// Equivalent to `org.apache.lucene.analysis.DelegatingAnalyzerWrapper`.
+/// Equivalent to `org.apache.lucene.analysis.DelegatingAnalyzerWrapper`, an
+/// `AnalyzerWrapper` subclass: this type is built on an [`AnalyzerWrapper`]
+/// whose reuse strategy is a [`DelegatingReuseStrategy`].
 #[derive(Debug)]
 pub struct DelegatingAnalyzerWrapper {
-    state: AnalyzerState,
-    logic: Box<dyn DelegatingAnalyzerWrapperLogic>,
+    /// The `AnalyzerWrapper` superclass state and behaviour.
+    inner: AnalyzerWrapper,
 }
 
 impl DelegatingAnalyzerWrapper {
-    /// Creates a delegating wrapper that uses `fallback_strategy` when the same
-    /// strategy is reused elsewhere.
+    /// Creates a delegating wrapper; `fallback_strategy` is used when the
+    /// reuse strategy is asked about an analyzer other than this wrapper.
+    ///
+    /// Equivalent to `DelegatingAnalyzerWrapper(ReuseStrategy)`
+    /// (`DelegatingAnalyzerWrapper.java:45-49`):
+    /// `super(new DelegatingReuseStrategy(fallbackStrategy))`.
     pub fn new(
         fallback_strategy: Box<dyn ReuseStrategy>,
         logic: Box<dyn DelegatingAnalyzerWrapperLogic>,
     ) -> Self {
+        let logic: Arc<dyn DelegatingAnalyzerWrapperLogic> = Arc::from(logic);
+        let strategy = DelegatingReuseStrategy {
+            logic: Arc::clone(&logic),
+            fallback_strategy,
+        };
         Self {
-            state: AnalyzerState::new(fallback_strategy),
-            logic,
+            inner: AnalyzerWrapper::new(
+                Box::new(DelegatingWrapperLogic(logic)),
+                Box::new(strategy),
+            ),
         }
     }
 }
 
 impl Analyzer for DelegatingAnalyzerWrapper {
     fn analyzer_state(&self) -> &AnalyzerState {
-        &self.state
+        self.inner.analyzer_state()
     }
 
     fn java_class_name(&self) -> &'static str {
@@ -1716,9 +1788,7 @@ impl Analyzer for DelegatingAnalyzerWrapper {
     }
 
     fn create_components(&self, field_name: &str) -> Result<TokenStreamComponents> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .create_components(field_name)
+        self.inner.create_components(field_name)
     }
 
     fn normalize_token_stream(
@@ -1726,15 +1796,11 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         field_name: &str,
         input: Box<dyn TokenStream>,
     ) -> Box<dyn TokenStream> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .normalize_token_stream(field_name, input)
+        self.inner.normalize_token_stream(field_name, input)
     }
 
     fn init_reader(&self, field_name: &str, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .init_reader(field_name, reader)
+        self.inner.init_reader(field_name, reader)
     }
 
     fn init_reader_for_normalization(
@@ -1742,49 +1808,19 @@ impl Analyzer for DelegatingAnalyzerWrapper {
         field_name: &str,
         reader: Box<dyn CharReader>,
     ) -> Box<dyn CharReader> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .init_reader_for_normalization(field_name, reader)
+        self.inner.init_reader_for_normalization(field_name, reader)
     }
 
     fn attribute_factory(&self, field_name: &str) -> Arc<dyn AttributeFactory> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .attribute_factory(field_name)
+        self.inner.attribute_factory(field_name)
     }
 
     fn get_position_increment_gap(&self, field_name: &str) -> i32 {
-        self.logic.get_position_increment_gap(field_name)
+        self.inner.get_position_increment_gap(field_name)
     }
 
     fn get_offset_gap(&self, field_name: &str) -> i32 {
-        self.logic.get_offset_gap(field_name)
-    }
-
-    fn token_stream(
-        &self,
-        field_name: &str,
-        reader: Box<dyn CharReader>,
-    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .token_stream(field_name, reader)
-    }
-
-    fn token_stream_from_str(
-        &self,
-        field_name: &str,
-        text: &str,
-    ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .token_stream_from_str(field_name, text)
-    }
-
-    fn normalize(&self, field_name: &str, text: &str) -> Result<BytesRef> {
-        self.logic
-            .get_wrapped_analyzer(field_name)
-            .normalize(field_name, text)
+        self.inner.get_offset_gap(field_name)
     }
 }
 

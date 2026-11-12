@@ -4,21 +4,17 @@
 //! | --- | --- |
 //! | [`SloppyMath`] | `SloppyMath` |
 //!
-//! **Divergence from Lucene 10.5.0.** The lookup tables are seeded at first use
-//! from `sin`, `cos`, `asin` and `sqrt`. Java seeds them from `StrictMath`,
-//! whose results are pinned to the fdlibm algorithms and therefore identical on
-//! every JVM; Rust's `f64` methods call the platform libm, which is
-//! correctly-rounded-or-nearly on mainstream targets but is not guaranteed to
-//! agree with fdlibm in the last unit in the last place. Every other operation
-//! here — the table indexing, the polynomial evaluation, the fdlibm-derived
-//! `asin` tail, the bit-masking in [`SloppyMath::haversin_sort_key`] — is
-//! reproduced exactly, so any difference is bounded by the seeding error and
-//! is far below the ~1e-7 error the class already documents. Closing it would
-//! require vendoring fdlibm, which is a dependency decision for the user.
+//! The lookup tables are seeded at first use from
+//! [`StrictMath`](crate::util::strict_math::StrictMath) `sin`, `cos`, `asin`
+//! and `sqrt`, as Java's static initialiser seeds them from
+//! `java.lang.StrictMath` (`SloppyMath.java:239`, `285-286`, `306-308`), whose
+//! fdlibm algorithms give the same bits on every platform.
 
 #![deny(unsafe_code)]
 
 use std::sync::LazyLock;
+
+use crate::util::strict_math::StrictMath;
 
 /// Fast, approximate trigonometry and geodesic distance.
 ///
@@ -93,8 +89,8 @@ static TABLES: LazyLock<Tables> = LazyLock::new(|| {
     let sin_cos_pi_mul_1_5_index = 3 * sin_cos_pi_index / 2;
     for i in 0..SIN_COS_TABS_SIZE {
         let angle = i as f64 * sin_cos_delta_hi + i as f64 * sin_cos_delta_lo;
-        let mut sin_angle = angle.sin();
-        let mut cos_angle = angle.cos();
+        let mut sin_angle = StrictMath::sin(angle);
+        let mut cos_angle = StrictMath::cos(angle);
         // Java writes four separate branches; the four indices are distinct,
         // so pairing them changes nothing.
         if i == sin_cos_pi_index || i == sin_cos_pi_mul_2_index {
@@ -106,7 +102,7 @@ static TABLES: LazyLock<Tables> = LazyLock::new(|| {
         cos_tab[i] = cos_angle;
     }
 
-    let asin_max_value_for_tabs = to_radians(73.0).sin();
+    let asin_max_value_for_tabs = StrictMath::sin(to_radians(73.0));
     let asin_delta = asin_max_value_for_tabs / (ASIN_TABS_SIZE - 1) as f64;
     let asin_indexer = 1.0 / asin_delta;
 
@@ -117,9 +113,9 @@ static TABLES: LazyLock<Tables> = LazyLock::new(|| {
     let mut asin_der4_div_f4_tab = vec![0.0f64; ASIN_TABS_SIZE];
     for i in 0..ASIN_TABS_SIZE {
         let x = i as f64 * asin_delta;
-        asin_tab[i] = x.asin();
+        asin_tab[i] = StrictMath::asin(x);
         let one_minus_x_sq_inv = 1.0 / (1.0 - x * x);
-        let one_minus_x_sq_inv_0_5 = one_minus_x_sq_inv.sqrt();
+        let one_minus_x_sq_inv_0_5 = StrictMath::sqrt(one_minus_x_sq_inv);
         let one_minus_x_sq_inv_1_5 = one_minus_x_sq_inv_0_5 * one_minus_x_sq_inv;
         let one_minus_x_sq_inv_2_5 = one_minus_x_sq_inv_1_5 * one_minus_x_sq_inv;
         let one_minus_x_sq_inv_3_5 = one_minus_x_sq_inv_2_5 * one_minus_x_sq_inv;

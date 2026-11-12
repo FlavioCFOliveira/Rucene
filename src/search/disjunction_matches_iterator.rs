@@ -356,20 +356,29 @@ impl MatchesIterator for DisjunctionMatchesIterator {
 /// back to offsets when positions are unavailable.
 ///
 /// Equivalent to the anonymous `PriorityQueue.lessThan` of
-/// `DisjunctionMatchesIterator`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's `lessThan` cannot throw a checked
-/// exception, so it catches the `IOException` raised while reading an offset
-/// and rethrows it as an unchecked `IllegalArgumentException`. This port
-/// returns [`Result`] instead, and the error travels to the caller of
-/// [`MatchesIterator::next`] unchanged. The ordering is identical.
+/// `DisjunctionMatchesIterator` (`DisjunctionMatchesIterator.java:195-209`),
+/// including its offset reads in Java's short-circuit order and its
+/// `catch (IOException e) { throw new IllegalArgumentException("Failed to
+/// retrieve term offset", e); }`. The comparator returns [`Result`] because a
+/// Rust function cannot throw; the error it returns is that
+/// `IllegalArgumentException`, or an unchecked exception unchanged.
 fn less_than(a: &dyn MatchesIterator, b: &dyn MatchesIterator) -> Result<bool> {
     if a.start_position() == -1 && b.start_position() == -1 {
-        let (a_start, a_end) = (a.start_offset()?, a.end_offset()?);
-        let (b_start, b_end) = (b.start_offset()?, b.end_offset()?);
-        return Ok(a_start < b_start
-            || (a_start == b_start && a_end < b_end)
-            || (a_start == b_start && a_end == b_end));
+        let by_offsets = || -> Result<bool> {
+            Ok(a.start_offset()? < b.start_offset()?
+                || (a.start_offset()? == b.start_offset()? && a.end_offset()? < b.end_offset()?)
+                || (a.start_offset()? == b.start_offset()? && a.end_offset()? == b.end_offset()?))
+        };
+        return by_offsets().map_err(|e| {
+            if e.is_io_exception() {
+                LuceneError::illegal_argument_with_cause(
+                    "Failed to retrieve term offset",
+                    Arc::new(e),
+                )
+            } else {
+                e
+            }
+        });
     }
     Ok(a.start_position() < b.start_position()
         || (a.start_position() == b.start_position() && a.end_position() < b.end_position())
