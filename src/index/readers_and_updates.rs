@@ -2360,12 +2360,23 @@ impl ReadersAndUpdates {
                         binary_updates: fd.binary_updates.clone(),
                     };
 
-                    if fd.dv_type == DocValuesType::BINARY {
-                        consumer.add_binary_field(&field_info_mut, &merged_producer)?;
+                    // try-with-resources (`ReadersAndUpdates.java:335-455`): the
+                    // consumer is closed on every exit; a failed write keeps its
+                    // own error, with the close's failure suppressed into it.
+                    let added = if fd.dv_type == DocValuesType::BINARY {
+                        consumer.add_binary_field(&field_info_mut, &merged_producer)
                     } else {
-                        consumer.add_numeric_field(&field_info_mut, &merged_producer)?;
+                        consumer.add_numeric_field(&field_info_mut, &merged_producer)
+                    };
+                    let closed = consumer.close();
+                    match (added, closed) {
+                        (Err(mut error), Err(suppressed)) => {
+                            error.add_suppressed(suppressed);
+                            return Err(error);
+                        }
+                        (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+                        (Ok(()), Ok(())) => {}
                     }
-                    consumer.close()?;
                 }
 
                 state.info.advance_doc_values_gen();
