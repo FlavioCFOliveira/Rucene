@@ -109,13 +109,13 @@ impl Bits for BitsSlice {
         self.parent.try_get(self.parent_index(index))
     }
 
-    /// `return length;`.
+    /// `return length;` (`BitsSlice.java:46-49`).
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `int` length can be negative
-    /// when assertions are off; [`Bits::length`] is a `usize`, so a negative
-    /// length answers `0`.
+    /// The `int` is returned as is: a negative length, possible when
+    /// assertions are off, is not clamped; its `usize` image converts back to
+    /// the same `i32` with `as i32`.
     fn length(&self) -> usize {
-        usize::try_from(self.length).unwrap_or(0)
+        self.length as usize
     }
 }
 
@@ -721,13 +721,14 @@ mod tests {
 
     /// `BitsSlice(Bits, ReaderSlice)` asserts `length >= 0`
     /// (`BitsSlice.java:37`): a debug build fails it; without assertions the
-    /// slice is built and every lookup fails `Objects.checkIndex`.
+    /// slice is built, `length()` answers the `int` as given, and every
+    /// lookup fails `Objects.checkIndex`.
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "length=-1"))]
     fn bits_slice_asserts_a_negative_length() {
         let negative_length =
             BitsSlice::new(ListBits::boxed(&[true]), ReaderSlice::new(0, -1, 0)).unwrap();
-        assert_eq!(negative_length.length(), 0);
+        assert_eq!(negative_length.length() as i32, -1);
     }
 
     /// Java keeps a negative start as given (`BitsSlice.java:35`).

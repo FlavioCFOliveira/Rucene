@@ -935,13 +935,15 @@ impl ByteVectorValues for ListByteVectorValues {
 
 /// Rejects an ordinal outside `[0, size)`.
 ///
-/// Equivalent to the `IndexOutOfBoundsException` that Java's
-/// `vectorValue(int)` is documented to throw.
+/// Equivalent to the `IndexOutOfBoundsException` of Java's
+/// `vectors.get(targetOrd)` on the backing `ArrayList`
+/// (`FloatVectorValues.java`/`ByteVectorValues.java`, `fromFloats`/`fromBytes`).
 fn check_ord(ord: i32, size: usize) -> Result<()> {
     if ord < 0 || ord as usize >= size {
-        return Err(LuceneError::illegal_argument(format!(
-            "ordinal {ord} out of range [0, {size})"
-        )));
+        return Err(LuceneError::unchecked(
+            "java.lang.IndexOutOfBoundsException",
+            format!("Index {ord} out of bounds for length {size}"),
+        ));
     }
     Ok(())
 }

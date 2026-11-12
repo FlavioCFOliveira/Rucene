@@ -286,6 +286,14 @@ impl SortedNumericSortField {
     /// propagates any I/O error.
     fn read_selector_type(input: &mut dyn DataInput) -> Result<SortedNumericSelectorType> {
         let selector_ordinal = input.read_int()?;
+        // `type >= values().length` throws; a negative ordinal reaches
+        // `values()[type]`, an `ArrayIndexOutOfBoundsException`.
+        if selector_ordinal < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {selector_ordinal} out of bounds for length 2"),
+            ));
+        }
         SortedNumericSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
             LuceneError::illegal_argument(format!(
                 "Can't deserialize SortedNumericSortField - unknown selector type {selector_ordinal}"

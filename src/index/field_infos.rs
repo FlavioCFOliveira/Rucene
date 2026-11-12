@@ -352,9 +352,10 @@ impl FieldInfo {
             && doc_values_type != DocValuesType::NONE
             && self.doc_values_type != doc_values_type
         {
+            // `FieldInfo.java:548-558`.
             return Err(LuceneError::illegal_argument(format!(
-                "cannot change DocValues type from {} to {} for field '{}'",
-                self.doc_values_type as i32, doc_values_type as i32, self.name
+                "cannot change DocValues type from {:?} to {:?} for field \"{}\"",
+                self.doc_values_type, doc_values_type, self.name
             )));
         }
         self.doc_values_type = doc_values_type;
@@ -388,16 +389,12 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the field is not indexed.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) from the consistency check if the
+    /// field is not indexed; as in Java, the flag stays set
+    /// (`FieldInfo.java:611-614`).
     pub fn set_store_term_vectors(&mut self) -> Result<()> {
-        if self.index_options == IndexOptions::NONE {
-            return Err(LuceneError::illegal_state(format!(
-                "non-indexed field '{}' cannot store term vectors",
-                self.name
-            )));
-        }
         self.store_term_vector = true;
-        Ok(())
+        self.check_consistency()
     }
 
     /// Returns `true` if norms are explicitly omitted for this field.
@@ -958,9 +955,9 @@ impl FieldInfos {
         let mut has_point_values = false;
         let mut has_vector_values = false;
 
+        // `FieldInfos.java:91-137`: Java does not re-run `checkConsistency()`
+        // here; each `FieldInfo` was checked when it was built or changed.
         for info in &infos {
-            info.check_consistency()?;
-
             if info.number < 0 {
                 return Err(LuceneError::illegal_argument(format!(
                     "illegal field number: {} for field {}",
@@ -1828,7 +1825,9 @@ impl FieldInfosBuilder {
             return Ok(current);
         }
 
-        if self.finished {
+        // `assert assertNotFinished();` (`FieldInfos.java:787,819-824`): the
+        // check only runs with assertions enabled.
+        if cfg!(debug_assertions) && self.finished {
             return Err(LuceneError::illegal_state(
                 "FieldInfos.Builder was already finished; cannot add new fields".to_string(),
             ));

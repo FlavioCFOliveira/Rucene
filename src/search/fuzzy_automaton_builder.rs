@@ -109,13 +109,13 @@ impl FuzzyAutomatonBuilder {
         let automaton = self
             .lev_builder
             .to_automaton_with_prefix(n, &self.prefix)
-            .map_err(|e| self.too_complex(&e))?
+            .map_err(|e| self.too_complex(e))?
             .ok_or_else(|| {
                 LuceneError::illegal_argument(format!(
                     "max edits must be 0..{MAXIMUM_SUPPORTED_DISTANCE}, inclusive; got: {n}"
                 ))
             })?;
-        CompiledAutomaton::new(automaton, true, false, false).map_err(|e| self.too_complex(&e))
+        CompiledAutomaton::new(automaton, true, false, false).map_err(|e| self.too_complex(e))
     }
 
     /// Equivalent to wrapping a `TooComplexToDeterminizeException` in a
@@ -123,11 +123,19 @@ impl FuzzyAutomatonBuilder {
     /// issue creating a fuzzy query for the term. It typically occurs with
     /// terms longer than 220 UTF-8 characters, but is also possible with
     /// shorter terms consisting of UTF-32 code points.
-    fn too_complex(&self, cause: &LuceneError) -> LuceneError {
-        LuceneError::from(LuceneErrorKind::ResourceLimit(format!(
-            "Term too complex: {} ({cause})",
-            self.term
-        )))
+    ///
+    /// Only a `TooComplexToDeterminizeException` is caught
+    /// (`FuzzyAutomatonBuilder.java:62-76`); any other error propagates as is.
+    fn too_complex(&self, cause: LuceneError) -> LuceneError {
+        if !matches!(cause.kind, LuceneErrorKind::TooComplexToDeterminize(_)) {
+            return cause;
+        }
+        // `super("Term too complex: " + term, cause)` (`FuzzyTermsEnum.java:355-357`).
+        LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "org.apache.lucene.search.FuzzyTermsEnum$FuzzyTermsException",
+            message: Some(format!("Term too complex: {}", self.term)),
+            cause: Some(std::sync::Arc::new(cause)),
+        })
     }
 
     /// Returns the number of code points of the term.

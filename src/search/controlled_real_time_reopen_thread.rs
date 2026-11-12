@@ -180,7 +180,9 @@ where
     ) -> Result<Self> {
         if target_max_stale_sec < target_min_stale_sec {
             return Err(LuceneError::illegal_argument(format!(
-                "targetMaxScaleSec (= {target_max_stale_sec}) < targetMinStaleSec (={target_min_stale_sec})"
+                "targetMaxScaleSec (= {}) < targetMinStaleSec (={})",
+                crate::util::java_fmt::double_to_string(target_max_stale_sec),
+                crate::util::java_fmt::double_to_string(target_min_stale_sec)
             )));
         }
         let shared = Arc::new(Shared {

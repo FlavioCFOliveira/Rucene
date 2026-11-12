@@ -96,15 +96,12 @@ impl MultiDocValues {
     /// This is a slow way to read norms; prefer
     /// [`LeafReader::get_norm_values`] per leaf.
     ///
-    /// **Divergence from Lucene 10.5.0.** The `advance` of Java's merged view
-    /// opens the leaf holding the target and, when that leaf has no norms,
-    /// falls back to `nextDoc()` *before* setting `nextLeaf = readerIndex + 1`
-    /// (`MultiDocValues.java:117-128`). `nextDoc()` then resumes from the stale
-    /// `nextLeaf`, an earlier leaf, and can return a document before the
-    /// target, which breaks the `DocIdSetIterator.advance` contract. The
-    /// sibling `getNumericValues` sets `nextLeaf` first; this port shares one
-    /// cursor between the two and does the bookkeeping in that order for both,
-    /// so `advance` past a leaf without norms lands at or after the target.
+    /// As in Java, the `advance` of this merged view opens the leaf holding the
+    /// target and, when that leaf has no norms, falls back to `nextDoc()`
+    /// *before* setting `nextLeaf = readerIndex + 1`
+    /// (`MultiDocValues.java:117-128`), so `nextDoc()` resumes from the
+    /// previous `nextLeaf`. The sibling `getNumericValues` sets `nextLeaf`
+    /// first (`MultiDocValues.java:248-257`).
     ///
     /// # Errors
     ///
@@ -136,6 +133,7 @@ impl MultiDocValues {
             leaves,
             field,
             fetch_norms,
+            true,
         ))))
     }
 
@@ -167,6 +165,7 @@ impl MultiDocValues {
             leaves,
             field,
             fetch_numeric,
+            false,
         ))))
     }
 
@@ -512,6 +511,9 @@ struct MultiNumericDocValues {
     leaves: Vec<Arc<LeafReaderContext>>,
     field: String,
     fetch: NumericFetcher,
+    /// `true` for the `getNormValues` view, whose `advance` tests the opened
+    /// leaf before recording `nextLeaf` (`MultiDocValues.java:124-128`).
+    norms: bool,
     /// Index of the first leaf not yet opened.
     next_leaf: usize,
     /// Doc values of the leaf currently being iterated, if it has any.
@@ -523,11 +525,17 @@ struct MultiNumericDocValues {
 }
 
 impl MultiNumericDocValues {
-    fn new(leaves: Vec<Arc<LeafReaderContext>>, field: &str, fetch: NumericFetcher) -> Self {
+    fn new(
+        leaves: Vec<Arc<LeafReaderContext>>,
+        field: &str,
+        fetch: NumericFetcher,
+        norms: bool,
+    ) -> Self {
         Self {
             leaves,
             field: field.to_string(),
             fetch,
+            norms,
             next_leaf: 0,
             current_values: None,
             current_doc_base: 0,
@@ -546,7 +554,7 @@ impl MultiNumericDocValues {
     fn values_mut(&mut self) -> Result<&mut Box<dyn NumericDocValues>> {
         self.current_values
             .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state(no_current("numeric")))
+            .ok_or_else(|| null_current_values("NumericDocValues", "advance(int)"))
     }
 }
 
@@ -585,21 +593,29 @@ impl DocIdSetIterator for MultiNumericDocValues {
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.leaves.len() {
+            if reader_index == self.leaves.len() {
                 self.current_values = None;
                 self.doc_id = NO_MORE_DOCS;
                 return Ok(self.doc_id);
             }
             self.open_leaf(reader_index)?;
-            self.next_leaf = reader_index + 1;
+            if self.norms {
+                // `getNormValues`: `nextDoc()` before `nextLeaf` is recorded
+                // (`MultiDocValues.java:124-128`).
+                if self.current_values.is_none() {
+                    return self.next_doc();
+                }
+                self.next_leaf = reader_index + 1;
+            } else {
+                // `getNumericValues` (`MultiDocValues.java:253-257`).
+                self.next_leaf = reader_index + 1;
+                if self.current_values.is_none() {
+                    return self.next_doc();
+                }
+            }
         }
-        if self.current_values.is_none() {
-            // The leaf owning `target` has no values for this field, so every
-            // remaining document with a value lives in a later leaf — which is
-            // exactly what the sequential scan walks. It can only return a doc
-            // ID greater than `target`, so the iterator never moves backwards.
-            return self.next_doc();
-        }
+        // `currentValues.advance(...)`: a null `currentValues` (the current
+        // leaf has none, or was exhausted) is dereferenced, as in Java.
         let local_target = target - self.current_doc_base;
         let new_doc_id = self.values_mut()?.advance(local_target)?;
         if new_doc_id == NO_MORE_DOCS {
@@ -626,7 +642,7 @@ impl DocValuesIterator for MultiNumericDocValues {
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.leaves.len() {
+            if reader_index == self.leaves.len() {
                 return Err(out_of_range(target));
             }
             self.open_leaf(reader_index)?;
@@ -644,7 +660,7 @@ impl NumericDocValues for MultiNumericDocValues {
     fn long_value(&self) -> Result<i64> {
         self.current_values
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state(no_current("numeric")))?
+            .ok_or_else(|| null_current_values("NumericDocValues", "longValue()"))?
             .long_value()
     }
 }
@@ -690,7 +706,7 @@ impl MultiBinaryDocValues {
     fn values_mut(&mut self) -> Result<&mut Box<dyn BinaryDocValues>> {
         self.current_values
             .as_mut()
-            .ok_or_else(|| LuceneError::illegal_state(no_current("binary")))
+            .ok_or_else(|| null_current_values("BinaryDocValues", "advance(int)"))
     }
 }
 
@@ -729,18 +745,19 @@ impl DocIdSetIterator for MultiBinaryDocValues {
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.leaves.len() {
+            if reader_index == self.leaves.len() {
                 self.current_values = None;
                 self.doc_id = NO_MORE_DOCS;
                 return Ok(self.doc_id);
             }
             self.open_leaf(reader_index)?;
             self.next_leaf = reader_index + 1;
+            if self.current_values.is_none() {
+                return self.next_doc();
+            }
         }
-        if self.current_values.is_none() {
-            // See the note on `MultiNumericDocValues::advance`.
-            return self.next_doc();
-        }
+        // `currentValues.advance(...)` (`MultiDocValues.java:391`): a null
+        // `currentValues` is dereferenced, as in Java.
         let local_target = target - self.current_doc_base;
         let new_doc_id = self.values_mut()?.advance(local_target)?;
         if new_doc_id == NO_MORE_DOCS {
@@ -766,7 +783,7 @@ impl DocValuesIterator for MultiBinaryDocValues {
         let reader_index = reader_util::sub_index_from_leaves(target, &self.leaves);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.leaves.len() {
+            if reader_index == self.leaves.len() {
                 return Err(out_of_range(target));
             }
             self.open_leaf(reader_index)?;
@@ -784,7 +801,7 @@ impl BinaryDocValues for MultiBinaryDocValues {
     fn binary_value(&self) -> Result<BytesRef> {
         self.current_values
             .as_ref()
-            .ok_or_else(|| LuceneError::illegal_state(no_current("binary")))?
+            .ok_or_else(|| null_current_values("BinaryDocValues", "binaryValue()"))?
             .binary_value()
     }
 }
@@ -830,9 +847,11 @@ impl MultiSortedNumericDocValues {
         }
     }
 
-    fn current_index(&self) -> Result<usize> {
+    /// The current leaf; `method` names the call Java makes on a null
+    /// `currentValues` for the `NullPointerException`.
+    fn current_index(&self, method: &str) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted-numeric")))
+            .ok_or_else(|| null_current_values("SortedNumericDocValues", method))
     }
 }
 
@@ -852,7 +871,7 @@ impl DocIdSetIterator for MultiSortedNumericDocValues {
                 self.next_leaf += 1;
             }
 
-            let index = self.current_index()?;
+            let index = self.current_index("nextDoc()")?;
             let new_doc_id = self.values[index].next_doc()?;
             if new_doc_id == NO_MORE_DOCS {
                 self.current = None;
@@ -870,7 +889,7 @@ impl DocIdSetIterator for MultiSortedNumericDocValues {
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.values.len() {
+            if reader_index == self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
                 return Ok(self.doc_id);
@@ -878,7 +897,7 @@ impl DocIdSetIterator for MultiSortedNumericDocValues {
             self.current = Some(reader_index);
             self.next_leaf = reader_index + 1;
         }
-        let index = self.current_index()?;
+        let index = self.current_index("advance(int)")?;
         let doc_start = self.doc_starts[index];
         let new_doc_id = self.values[index].advance(target - doc_start)?;
         if new_doc_id == NO_MORE_DOCS {
@@ -903,7 +922,7 @@ impl DocValuesIterator for MultiSortedNumericDocValues {
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.values.len() {
+            if reader_index == self.values.len() {
                 return Err(out_of_range(target));
             }
             self.current = Some(reader_index);
@@ -922,12 +941,12 @@ impl DocValuesIterator for MultiSortedNumericDocValues {
 
 impl SortedNumericDocValues for MultiSortedNumericDocValues {
     fn next_value(&mut self) -> Result<i64> {
-        let index = self.current_index()?;
+        let index = self.current_index("nextValue()")?;
         self.values[index].next_value()
     }
 
     fn doc_value_count(&self) -> Result<i32> {
-        let index = self.current_index()?;
+        let index = self.current_index("docValueCount()")?;
         self.values[index].doc_value_count()
     }
 }
@@ -1017,9 +1036,11 @@ impl MultiSortedDocValues {
         &self.mapping
     }
 
-    fn current_index(&self) -> Result<usize> {
+    /// The current leaf; `method` names the call Java makes on a null
+    /// `currentValues` for the `NullPointerException`.
+    fn current_index(&self, method: &str) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted")))
+            .ok_or_else(|| null_current_values("SortedDocValues", method))
     }
 }
 
@@ -1044,7 +1065,7 @@ impl DocIdSetIterator for MultiSortedDocValues {
                 self.next_leaf += 1;
             }
 
-            let index = self.current_index()?;
+            let index = self.current_index("nextDoc()")?;
             let new_doc_id = self.values[index].next_doc()?;
             if new_doc_id == NO_MORE_DOCS {
                 self.current = None;
@@ -1062,7 +1083,7 @@ impl DocIdSetIterator for MultiSortedDocValues {
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.values.len() {
+            if reader_index == self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
                 return Ok(self.doc_id);
@@ -1070,7 +1091,7 @@ impl DocIdSetIterator for MultiSortedDocValues {
             self.current = Some(reader_index);
             self.next_leaf = reader_index + 1;
         }
-        let index = self.current_index()?;
+        let index = self.current_index("advance(int)")?;
         let doc_start = self.doc_starts[index];
         let new_doc_id = self.values[index].advance(target - doc_start)?;
         if new_doc_id == NO_MORE_DOCS {
@@ -1095,7 +1116,7 @@ impl DocValuesIterator for MultiSortedDocValues {
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.values.len() {
+            if reader_index == self.values.len() {
                 return Err(out_of_range(target));
             }
             self.current = Some(reader_index);
@@ -1114,7 +1135,16 @@ impl DocValuesIterator for MultiSortedDocValues {
 
 impl SortedDocValues for MultiSortedDocValues {
     fn ord_value(&self) -> Result<i32> {
-        let index = self.current_index()?;
+        // `mapping.getGlobalOrds(nextLeaf - 1).get(currentValues.ordValue())`
+        // (`MultiDocValues.java:796-798`): before the first leaf is entered,
+        // `getGlobalOrds(-1)` indexes `segmentMap.oldToNew` first.
+        if self.next_leaf == 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index -1 out of bounds for length {}", self.values.len()),
+            ));
+        }
+        let index = self.current_index("ordValue()")?;
         let segment_ord = self.values[index].ord_value()?;
         Ok(self.mapping.get_global_ords(index).get(segment_ord as i64) as i32)
     }
@@ -1203,9 +1233,11 @@ impl MultiSortedSetDocValues {
         &self.mapping
     }
 
-    fn current_index(&self) -> Result<usize> {
+    /// The current leaf; `method` names the call Java makes on a null
+    /// `currentValues` for the `NullPointerException`.
+    fn current_index(&self, method: &str) -> Result<usize> {
         self.current
-            .ok_or_else(|| LuceneError::illegal_state(no_current("sorted-set")))
+            .ok_or_else(|| null_current_values("SortedSetDocValues", method))
     }
 }
 
@@ -1230,7 +1262,7 @@ impl DocIdSetIterator for MultiSortedSetDocValues {
                 self.next_leaf += 1;
             }
 
-            let index = self.current_index()?;
+            let index = self.current_index("nextDoc()")?;
             let new_doc_id = self.values[index].next_doc()?;
             if new_doc_id == NO_MORE_DOCS {
                 self.current = None;
@@ -1248,7 +1280,7 @@ impl DocIdSetIterator for MultiSortedSetDocValues {
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.values.len() {
+            if reader_index == self.values.len() {
                 self.current = None;
                 self.doc_id = NO_MORE_DOCS;
                 return Ok(self.doc_id);
@@ -1256,7 +1288,7 @@ impl DocIdSetIterator for MultiSortedSetDocValues {
             self.current = Some(reader_index);
             self.next_leaf = reader_index + 1;
         }
-        let index = self.current_index()?;
+        let index = self.current_index("advance(int)")?;
         let doc_start = self.doc_starts[index];
         let new_doc_id = self.values[index].advance(target - doc_start)?;
         if new_doc_id == NO_MORE_DOCS {
@@ -1281,7 +1313,7 @@ impl DocValuesIterator for MultiSortedSetDocValues {
         let reader_index = reader_util::sub_index(target, &self.doc_starts);
         if reader_index >= self.next_leaf as i32 {
             let reader_index = reader_index as usize;
-            if reader_index >= self.values.len() {
+            if reader_index == self.values.len() {
                 return Err(out_of_range(target));
             }
             self.current = Some(reader_index);
@@ -1300,13 +1332,13 @@ impl DocValuesIterator for MultiSortedSetDocValues {
 
 impl SortedSetDocValues for MultiSortedSetDocValues {
     fn next_ord(&mut self) -> Result<i64> {
-        let index = self.current_index()?;
+        let index = self.current_index("nextOrd()")?;
         let segment_ord = self.values[index].next_ord()?;
         Ok(self.mapping.get_global_ords(index).get(segment_ord))
     }
 
     fn doc_value_count(&self) -> Result<i32> {
-        let index = self.current_index()?;
+        let index = self.current_index("docValueCount()")?;
         self.values[index].doc_value_count()
     }
 
@@ -1342,13 +1374,13 @@ fn out_of_range(target: i32) -> LuceneError {
     LuceneError::illegal_argument(format!("Out of range: {target}"))
 }
 
-/// Message used when a per-document accessor is called while unpositioned.
-///
-/// Java dereferences a null `currentValues` here and throws
-/// `NullPointerException`; reporting the misuse explicitly is strictly more
-/// informative and keeps the port panic-free.
-fn no_current(kind: &str) -> String {
-    format!("MultiDocValues: no current {kind} doc values; call next_doc/advance first")
+/// The `NullPointerException` of dereferencing a null `currentValues`, with
+/// the JDK's helpful message: `class` is the simple name of the field's type
+/// in `org.apache.lucene.index` and `method` the invoked signature.
+fn null_current_values(class: &str, method: &str) -> LuceneError {
+    LuceneError::null_pointer_with_message(format!(
+        "Cannot invoke \"org.apache.lucene.index.{class}.{method}\" because \"this.currentValues\" is null"
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2472,11 +2504,11 @@ mod tests {
             .is_none());
     }
 
-    /// Regression test for the divergence declared on
-    /// [`MultiDocValues::get_norm_values`]: `advance` over a leaf without norms
-    /// never moves backwards.
+    /// `advance` into a leaf without norms falls back to `nextDoc()` before
+    /// recording `nextLeaf`, as Java's `getNormValues` view does
+    /// (`MultiDocValues.java:124-128`): the scan resumes at leaf 0.
     #[test]
-    fn norm_values_advance_over_a_leaf_without_norms_never_moves_backwards() {
+    fn norm_values_advance_over_a_leaf_without_norms_resumes_at_next_leaf() {
         let reader = composite(vec![
             StubLeafBuilder::new(3)
                 .norms("body", &[(0, 1), (1, 2), (2, 3)])
@@ -2491,10 +2523,10 @@ mod tests {
             .unwrap();
         let doc = values.advance(4).unwrap();
         assert_eq!(
-            doc, 6,
-            "advance must land at or after the target, never rewind into leaf 0"
+            doc, 0,
+            "Java's nextDoc() resumes from the unchanged nextLeaf"
         );
-        assert_eq!(values.long_value().unwrap(), 9);
+        assert_eq!(values.long_value().unwrap(), 1);
     }
 
     #[test]

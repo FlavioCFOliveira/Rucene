@@ -69,6 +69,7 @@ impl DoubleComparator {
                 pruning,
                 8, // `Double.BYTES`
                 Self::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.DoubleComparator",
             ),
             values: vec![0.0; num_hits],
             top_value: 0.0,

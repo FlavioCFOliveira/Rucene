@@ -181,10 +181,9 @@ impl DocValuesWriter {
     /// chain's `docValuesBytePool`, which the sorted variants intern into.
     ///
     /// Java reaches `field.numericValue().longValue()` for SORTED_NUMERIC
-    /// without a null check and dies of a `NullPointerException`; this port
-    /// reports the same situation the way the NUMERIC branch does, with the
-    /// shared "null value not allowed" message, and converts every numeric
-    /// flavour with Java's `Number.longValue()` semantics.
+    /// without a null check and dies of a `NullPointerException`, which this
+    /// port raises with the JDK's helpful message; every numeric flavour is
+    /// converted with Java's `Number.longValue()` semantics.
     ///
     /// # Errors
     ///
@@ -209,6 +208,11 @@ impl DocValuesWriter {
             }
             Self::Binary(writer) => {
                 let Some(value) = field.binary_value() else {
+                    // `BinaryDocValuesWriter.addValue` checks the repeated
+                    // document before the null value (`BinaryDocValuesWriter.java:70-80`).
+                    if doc_id <= writer.last_doc_id {
+                        return Err(appears_more_than_once(&writer.field_info));
+                    }
                     return Err(LuceneError::illegal_argument(format!(
                         "field=\"{}\": null value not allowed",
                         field.name()
@@ -218,6 +222,11 @@ impl DocValuesWriter {
             }
             Self::Sorted(writer) => {
                 let Some(value) = field.binary_value() else {
+                    // `SortedDocValuesWriter.addValue` checks the repeated
+                    // document before the null value (`SortedDocValuesWriter.java:73-83`).
+                    if doc_id <= writer.last_doc_id {
+                        return Err(appears_more_than_once(&writer.field_info));
+                    }
                     return Err(LuceneError::illegal_argument(format!(
                         "field \"{}\": null value not allowed",
                         field.name()
@@ -226,11 +235,13 @@ impl DocValuesWriter {
                 writer.add_value(doc_id, value.slice(), pool)
             }
             Self::SortedNumeric(writer) => {
+                // `field.numericValue().longValue()` (`IndexingChain.java:1679-1681`):
+                // a null value is dereferenced, with no check of its own.
                 let Some(value) = field.numeric_value() else {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "field=\"{}\": null value not allowed",
-                        field.name()
-                    )));
+                    return Err(LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"java.lang.Number.longValue()\" because the return value \
+                         of \"org.apache.lucene.index.IndexableField.numericValue()\" is null",
+                    ));
                 };
                 writer.add_value(doc_id, java_long_value(&value))
             }
@@ -1564,7 +1575,8 @@ impl Dictionary {
     /// `hash.get(sortedValues[Math.toIntExact(ord)], scratch)`
     /// (`SortedSetDocValuesWriter.java:411-416`): an ordinal outside the `int`
     /// range is Java's `ArithmeticException("integer overflow")`, and an
-    /// out-of-range `int` one is refused (Java indexes the array and throws).
+    /// out-of-range `int` one is the `ArrayIndexOutOfBoundsException` of
+    /// indexing the array.
     fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
         debug_assert!(
             ord >= 0 && ord < self.sorted_values.len() as i64,
@@ -1581,10 +1593,14 @@ impl Dictionary {
             .and_then(|ord| self.sorted_values.get(ord))
             .map(|&term_id| BytesRef::new(self.hash.get(&self.pool, term_id).to_vec()))
             .ok_or_else(|| {
-                LuceneError::illegal_argument(format!(
-                    "ord={ord} is out of bounds 0 .. {}",
-                    self.len() as i64 - 1
-                ))
+                // `sortedValues[ord]` on an `int[]`.
+                LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!(
+                        "Index {ord} out of bounds for length {}",
+                        self.sorted_values.len()
+                    ),
+                )
             })
     }
 }
@@ -4850,9 +4866,8 @@ mod tests {
     #[test]
     fn sorted_numeric_dispatch_converts_like_the_numeric_branch() {
         let mut pool = test_pool();
-        // Java reaches `numericValue().longValue()` for SORTED_NUMERIC without
-        // a null check; this port reports the NUMERIC-style message instead
-        // (see the module documentation) and applies the same widening.
+        // SORTED_NUMERIC applies the same `Number.longValue()` widening as
+        // the NUMERIC branch.
         let mut writer =
             DocValuesWriter::new(field("sn", 0, DocValuesType::SORTED_NUMERIC), counter());
         writer

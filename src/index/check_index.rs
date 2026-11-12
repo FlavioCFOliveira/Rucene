@@ -4942,9 +4942,12 @@ impl IndexUpgrader {
         if !self.delete_prior_commits {
             let commits = crate::index::directory_reader::list_commits(Arc::clone(&self.dir))?;
             if commits.len() > 1 {
+                // `+ commits` (`IndexUpgrader.java:174-176`): the list as
+                // `AbstractCollection.toString` renders it.
+                let commits: Vec<String> = commits.iter().map(ToString::to_string).collect();
                 return Err(LuceneError::illegal_argument(format!(
-                    "This tool was invoked to not delete prior commit points, but the following commits were found: {} commits",
-                    commits.len()
+                    "This tool was invoked to not delete prior commit points, but the following commits were found: [{}]",
+                    commits.join(", ")
                 )));
             }
         }

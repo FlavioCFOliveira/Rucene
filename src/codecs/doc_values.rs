@@ -661,10 +661,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_sorted_numeric_doc_values_has_zero_values() {
+    fn empty_sorted_numeric_doc_values_counts_one_value() {
         let mut values = EmptySortedNumericDocValues::new();
         assert!(!values.advance_exact(0).unwrap());
-        assert_eq!(values.doc_value_count().unwrap(), 0);
+        // `singleton(emptyNumeric()).docValueCount()` is `1`.
+        assert_eq!(values.doc_value_count().unwrap(), 1);
     }
 
     #[test]

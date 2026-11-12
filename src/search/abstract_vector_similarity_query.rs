@@ -101,17 +101,20 @@ impl AbstractVectorSimilarityQuery {
     ) -> Result<Self> {
         if result_similarity.is_nan() {
             return Err(LuceneError::illegal_argument(format!(
-                "resultSimilarity must have a valid value; got {result_similarity}"
+                "resultSimilarity must have a valid value; got {}",
+                crate::util::java_fmt::float_to_string(result_similarity)
             )));
         }
         if decay.is_nan() {
             return Err(LuceneError::illegal_argument(format!(
-                "decay must have a valid value; got {decay}"
+                "decay must have a valid value; got {}",
+                crate::util::java_fmt::float_to_string(decay)
             )));
         }
         if !(DECAY_MAX_APPROXIMATION..=DECAY_MAX_QUALITY).contains(&decay) {
             return Err(LuceneError::illegal_argument(format!(
-                "decay must lie in range [DECAY_MAX_APPROXIMATION = 0, DECAY_MAX_QUALITY = 1]; got {decay}"
+                "decay must lie in range [DECAY_MAX_APPROXIMATION = 0, DECAY_MAX_QUALITY = 1]; got {}",
+                crate::util::java_fmt::float_to_string(decay)
             )));
         }
         Ok(Self {

@@ -96,10 +96,17 @@ impl DoubleValuesSource for FullPrecisionFloatVectorSimilarityValuesSource {
             return Ok(Box::new(EmptyDoubleValues));
         };
         let infos = reader.get_field_infos();
+        // `fi.getVectorDimension()` on a null `fi` is dereferenced
+        // (`FullPrecisionFloatVectorSimilarityValuesSource.java:79-80`).
         let dimension = infos
             .field_info(&self.field_name)
             .map(|fi| fi.vector_dimension)
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                LuceneError::null_pointer_with_message(
+                    "Cannot invoke \"org.apache.lucene.index.FieldInfo.getVectorDimension()\" \
+                     because \"fi\" is null",
+                )
+            })?;
         if dimension as usize != self.query_vector.len() {
             return Err(LuceneError::illegal_argument(format!(
                 "Query vector dimension does not match field dimension: {} != {}",

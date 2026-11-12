@@ -374,7 +374,7 @@ pub trait TermsEnum: std::fmt::Display {
     fn seek_term_state(&mut self, text: &BytesRef, _state: &dyn TermState) -> Result<()> {
         if !self.seek_exact(text)? {
             return Err(LuceneError::illegal_argument(format!(
-                "term={text:?} does not exist"
+                "term={text} does not exist"
             )));
         }
         Ok(())

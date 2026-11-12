@@ -88,7 +88,8 @@ impl LogOddsFusionQuery {
     ) -> Result<Self> {
         if alpha.is_nan() || !(0.0..=1.0).contains(&alpha) {
             return Err(LuceneError::illegal_argument(format!(
-                "alpha must be in [0, 1], got {alpha}"
+                "alpha must be in [0, 1], got {}",
+                crate::util::java_fmt::float_to_string(alpha)
             )));
         }
         let signal_weights = match weights {
@@ -105,14 +106,16 @@ impl LogOddsFusionQuery {
                 for w in &weights {
                     if !w.is_finite() || *w < 0.0 {
                         return Err(LuceneError::illegal_argument(format!(
-                            "weights must be non-negative and finite, got {w}"
+                            "weights must be non-negative and finite, got {}",
+                            crate::util::java_fmt::float_to_string(*w)
                         )));
                     }
                     sum += w;
                 }
                 if (sum - 1.0f32).abs() > 1e-3 {
                     return Err(LuceneError::illegal_argument(format!(
-                        "weights must sum to 1.0, got {sum}"
+                        "weights must sum to 1.0, got {}",
+                        crate::util::java_fmt::float_to_string(sum)
                     )));
                 }
                 Some(weights)

@@ -1004,8 +1004,10 @@ impl SortedDocValues for EmptySortedDocValues {
     }
 }
 
-/// A no-op sorted-numeric doc-values iterator that returns zero values for
-/// every document.
+/// A no-op sorted-numeric doc-values iterator that matches no document.
+///
+/// Equivalent to `DocValues.emptySortedNumeric()`, which is
+/// `singleton(emptyNumeric())`: its `docValueCount()` answers `1`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EmptySortedNumericDocValues {
     inner: EmptyDocValuesIterator,
@@ -1051,7 +1053,10 @@ impl SortedNumericDocValues for EmptySortedNumericDocValues {
     }
 
     fn doc_value_count(&self) -> Result<i32> {
-        Ok(0)
+        // `emptySortedNumeric()` is `singleton(emptyNumeric())`
+        // (`DocValues.java:159-161`), whose `docValueCount()` is always `1`
+        // (`SingletonSortedNumericDocValues.java:86-89`).
+        Ok(1)
     }
 }
 
@@ -2440,15 +2445,12 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     }
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
-        let value_count = self.values.get_value_count()? as i64;
-        debug_assert!(ord >= 0 && ord < value_count);
-        if ord < 0 || ord >= value_count {
-            return Err(LuceneError::illegal_argument(format!(
-                "ord {ord} out of range [0, {value_count})"
-            )));
-        }
-        self.current_ord = ord;
-        let term = self.values.lookup_ord(ord as i32)?;
+        // `assert ord >= 0 && ord < values.getValueCount(); currentOrd = (int) ord;`
+        // (`SortedDocValuesTermsEnum.java:67-71`): no check without assertions.
+        debug_assert!(ord >= 0 && ord < i64::from(self.values.get_value_count()?));
+        let ord = ord as i32;
+        self.current_ord = i64::from(ord);
+        let term = self.values.lookup_ord(ord)?;
         self.scratch.copy_ref(&term);
         Ok(())
     }
@@ -2583,15 +2585,12 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
     }
 
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
-        let value_count = self.values.get_value_count()?;
-        debug_assert!(ord >= 0 && ord < value_count);
-        if ord < 0 || ord >= value_count {
-            return Err(LuceneError::illegal_argument(format!(
-                "ord {ord} out of range [0, {value_count})"
-            )));
-        }
-        self.current_ord = ord;
-        let term = self.values.lookup_ord(ord)?;
+        // `assert ord >= 0 && ord < values.getValueCount(); currentOrd = (int) ord;`
+        // (`SortedSetDocValuesTermsEnum.java:67-71`): no check without
+        // assertions, and the ordinal is narrowed to `int`.
+        debug_assert!(ord >= 0 && ord < self.values.get_value_count()?);
+        self.current_ord = i64::from(ord as i32);
+        let term = self.values.lookup_ord(self.current_ord)?;
         self.scratch.copy_ref(&term);
         Ok(())
     }
@@ -3247,9 +3246,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_sorted_numeric_doc_values_has_zero_values() {
+    fn empty_sorted_numeric_doc_values_counts_one_value() {
+        // `singleton(emptyNumeric()).docValueCount()` is `1`.
         let values = EmptySortedNumericDocValues::new();
-        assert_eq!(values.doc_value_count().unwrap(), 0);
+        assert_eq!(values.doc_value_count().unwrap(), 1);
     }
 
     #[test]

@@ -285,7 +285,7 @@ impl PointValuesWriter {
         }
         if value.length != self.packed_bytes_length {
             return Err(LuceneError::illegal_argument(format!(
-                "field=\"{}\": this field's value has length={} but should be {}",
+                "field={}: this field's value has length={} but should be {}",
                 self.field_info.name, value.length, self.packed_bytes_length
             )));
         }

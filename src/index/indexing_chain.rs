@@ -2113,7 +2113,7 @@ impl DefaultIndexingChain {
                     .add_packed_value(doc_id, &value)?,
                 None => {
                     return Err(LuceneError::illegal_argument(format!(
-                        "field=\"{}\": point value must not be null",
+                        "field={}: point value must not be null",
                         field.name()
                     )))
                 }
@@ -2596,7 +2596,9 @@ impl DefaultIndexingChain {
                 let state = &mut per_field.invert_state;
 
                 let position_increment = token.position_increment;
-                state.position += position_increment;
+                // Java `int` arithmetic wraps; the overflow is what the
+                // "position overflowed" branch reports (`IndexingChain.java:1924-1946`).
+                state.position = state.position.wrapping_add(position_increment);
                 if state.position < state.last_position {
                     return Err(LuceneError::illegal_argument(if position_increment == 0 {
                         format!(
@@ -2629,8 +2631,8 @@ impl DefaultIndexingChain {
                     state.num_overlap += 1;
                 }
 
-                let start_offset = state.offset + token.start_offset;
-                let end_offset = state.offset + token.end_offset;
+                let start_offset = state.offset.wrapping_add(token.start_offset);
+                let end_offset = state.offset.wrapping_add(token.end_offset);
                 if start_offset < state.last_start_offset || end_offset < start_offset {
                     return Err(LuceneError::illegal_argument(format!(
                         "startOffset must be non-negative, and endOffset must be >= startOffset, and offsets must not go backwards startOffset={start_offset},endOffset={end_offset},lastStartOffset={} for field '{}'",
@@ -3089,7 +3091,8 @@ impl DefaultIndexingChain {
             let value = similarity.compute_norm(&per_field.invert_state)?;
             if value == 0 {
                 return Err(LuceneError::illegal_state(format!(
-                    "Similarity {similarity:?} return 0 for non-empty field"
+                    "Similarity {} return 0 for non-empty field",
+                    similarity.to_java_string()
                 )));
             }
             value
@@ -4302,7 +4305,7 @@ impl DefaultIndexingChain {
                         )
                         .add_packed_value(doc_id, &value),
                     None => Err(LuceneError::illegal_argument(format!(
-                        "field=\"{}\": point value must not be null",
+                        "field={}: point value must not be null",
                         field.name()
                     ))),
                 };
@@ -7951,11 +7954,19 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn num_docs(&self) -> i32 {
-        self.max_doc
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn max_doc(&self) -> i32 {
-        self.max_doc
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn stored_fields(&self) -> Result<Box<dyn crate::index::StoredFields>> {
@@ -8022,28 +8033,32 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         &self,
         _field: &str,
     ) -> Result<Option<Box<dyn crate::index::doc_values::NumericDocValues>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_doc_values_skipper(
         &self,
         _field: &str,
     ) -> Result<Option<Box<dyn crate::index::doc_values::DocValuesSkipper>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_float_vector_values(
         &self,
         _field: &str,
     ) -> Result<Option<Box<dyn crate::index::vector_values::FloatVectorValues>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_byte_vector_values(
         &self,
         _field: &str,
     ) -> Result<Option<Box<dyn crate::index::vector_values::ByteVectorValues>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_field_infos(&self) -> crate::index::FieldInfos {
@@ -8051,37 +8066,50 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
     }
 
     fn get_live_docs(&self) -> Option<Box<dyn crate::util::Bits>> {
-        None
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn crate::index::PointValues>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn check_integrity(&self) -> Result<()> {
-        Ok(())
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_meta_data(&self) -> crate::index::leaf_reader::LeafMetaData {
-        crate::index::leaf_reader::LeafMetaData::new(
-            crate::util::extra::Version::LATEST.major as i32,
-            Some(crate::util::extra::Version::LATEST),
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
             None,
-            false,
         )
-        .expect("INVARIANT: the latest version is always a valid leaf metadata version")
     }
 
     fn do_close(&self) -> Result<()> {
-        Ok(())
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn crate::index::index_reader::CacheHelper>> {
-        None
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn get_core_cache_helper(&self) -> Option<Box<dyn crate::index::index_reader::CacheHelper>> {
-        None
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn search_nearest_vectors(
@@ -8091,7 +8119,8 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         _knn_collector: &mut dyn crate::search::KnnCollector,
         _accept_docs: &mut dyn crate::search::AcceptDocs,
     ) -> Result<()> {
-        Ok(())
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn search_nearest_vectors_byte(
@@ -8101,6 +8130,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         _knn_collector: &mut dyn crate::search::KnnCollector,
         _accept_docs: &mut dyn crate::search::AcceptDocs,
     ) -> Result<()> {
-        Ok(())
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 }

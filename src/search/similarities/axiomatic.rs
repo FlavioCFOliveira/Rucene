@@ -517,6 +517,11 @@ fn ln_one_explain(value: f64) -> Explanation {
 macro_rules! axiomatic_boilerplate {
     ($ty:ident, $name:literal) => {
         impl Similarity for $ty {
+            /// Java `toString()`, which this similarity overrides.
+            fn to_java_string(&self) -> String {
+                self.to_string()
+            }
+
             fn java_class_name(&self) -> &'static str {
                 concat!("org.apache.lucene.search.similarities.", stringify!($ty))
             }

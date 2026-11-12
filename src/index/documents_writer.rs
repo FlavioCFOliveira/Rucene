@@ -1090,7 +1090,7 @@ impl FrozenBufferedUpdates {
     /// `assert this.delGen == -1`.
     pub fn set_del_gen(&self, del_gen: i64) {
         let previous = self.del_gen.swap(del_gen, Ordering::AcqRel);
-        assert_eq!(
+        debug_assert_eq!(
             previous, -1,
             "delGen was already previously set to {previous}"
         );
@@ -6041,7 +6041,7 @@ impl DocumentsWriterFlushControl {
                     inner.flushing_writers.len(),
                     inner.blocked_flushes.len(),
                     inner.peak_delta,
-                    inner.max_configured_ram_buffer
+                    crate::util::java_fmt::double_to_string(inner.max_configured_ram_buffer)
                 );
             }
         } else {

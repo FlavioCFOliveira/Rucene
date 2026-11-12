@@ -487,14 +487,11 @@ impl DocValuesFieldUpdates {
     ///
     /// As [`add_internal`](Self::add_internal).
     ///
-    /// # Panics
-    ///
-    /// Panics if `doc >= max_doc` (Java's `assert doc < maxDoc`).
     pub fn reset(&mut self, doc: i32) -> Result<()> {
         // `SingleValueNumericDocValuesFieldUpdates.reset(int)` marks the
-        // document in both bitsets instead of recording an entry.
+        // document in both bitsets instead of recording an entry; it asserts
+        // nothing about `doc` (`NumericDocValuesFieldUpdates.java:170-177`).
         if let Some(single) = self.single_value.as_mut() {
-            assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
             single.reset(doc, self.max_doc);
             return Ok(());
         }

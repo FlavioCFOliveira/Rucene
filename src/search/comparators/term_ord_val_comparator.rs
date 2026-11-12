@@ -717,15 +717,18 @@ fn init_postings(
     let mut postings: VecDeque<Rc<RefCell<PostingsEnumAndOrd>>> = VecDeque::with_capacity(size);
     if size > 0 {
         let min_term = terms_index.lookup_ord(min_ord)?;
+        // `context.reader().terms(field).iterator()`
+        // (`TermOrdValComparator.java:617`): a null `Terms` is dereferenced.
         let Some(terms) = reader.terms(field)? else {
-            return Err(LuceneError::illegal_state(format!(
-                "Term {min_term:?} exists in doc values but not in the terms index"
-            )));
+            return Err(LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.index.Terms.iterator()\" because the return \
+                 value of \"org.apache.lucene.index.LeafReader.terms(String)\" is null",
+            ));
         };
         let mut terms_enum = terms.iterator()?;
         if !terms_enum.seek_exact(&min_term)? {
             return Err(LuceneError::illegal_state(format!(
-                "Term {min_term:?} exists in doc values but not in the terms index"
+                "Term {min_term} exists in doc values but not in the terms index"
             )));
         }
         postings.push_back(Rc::new(RefCell::new(PostingsEnumAndOrd {

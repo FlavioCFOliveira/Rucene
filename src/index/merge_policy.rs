@@ -1562,9 +1562,12 @@ impl CfsSettings {
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
     /// when `no_cfs_ratio` is outside `[0.0, 1.0]`.
     pub fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
-        if !(0.0..=1.0).contains(&no_cfs_ratio) {
+        // `MergePolicy.java:815`: `NaN` passes, as in Java.
+        #[allow(clippy::manual_range_contains)]
+        if no_cfs_ratio < 0.0 || no_cfs_ratio > 1.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "noCFSRatio must be 0.0 to 1.0 inclusive; got {no_cfs_ratio}"
+                "noCFSRatio must be 0.0 to 1.0 inclusive; got {}",
+                crate::util::java_fmt::double_to_string(no_cfs_ratio)
             )));
         }
         self.no_cfs_ratio
@@ -1598,7 +1601,8 @@ impl CfsSettings {
     pub fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
         if v < 0.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "maxCFSSegmentSizeMB must be >=0 (got {v})"
+                "maxCFSSegmentSizeMB must be >=0 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         let v = v * 1024. * 1024.;
@@ -2712,7 +2716,8 @@ impl TieredMergePolicy {
     pub fn set_floor_segment_mb(&self, v: f64) -> Result<&Self> {
         if v <= 0.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "floorSegmentMB must be > 0.0 (got {v})"
+                "floorSegmentMB must be > 0.0 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         let bytes = v * 1024.0 * 1024.0;
@@ -2747,7 +2752,8 @@ impl TieredMergePolicy {
     pub fn set_segments_per_tier(&self, v: f64) -> Result<&Self> {
         if v < 2.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "segmentsPerTier must be >= 2.0 (got {v})"
+                "segmentsPerTier must be >= 2.0 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         self.segs_per_tier.set(v);
@@ -2759,7 +2765,8 @@ impl TieredMergePolicy {
     pub fn set_deletes_pct_allowed(&self, v: f64) -> Result<&Self> {
         if v <= 0.0 || v > 50.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "indexPctDeletedTarget must be > 0 and <= 50 (got {v})"
+                "indexPctDeletedTarget must be > 0 and <= 50 (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         self.deletes_pct_allowed.set(v);
@@ -2784,9 +2791,12 @@ impl TieredMergePolicy {
     /// Returns [`LuceneError`](crate::error::LuceneError)`::IllegalArgument`
     /// when `v` is outside `[0.0, 100.0]`.
     pub fn set_force_merge_deletes_pct_allowed(&self, v: f64) -> Result<&Self> {
-        if !(0.0..=100.0).contains(&v) {
+        // `TieredMergePolicy.java:235`: `NaN` passes, as in Java.
+        #[allow(clippy::manual_range_contains)]
+        if v < 0.0 || v > 100.0 {
             return Err(crate::error::LuceneError::illegal_argument(format!(
-                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got {v})"
+                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got {})",
+                crate::util::java_fmt::double_to_string(v)
             )));
         }
         self.force_merge_deletes_pct_allowed.set(v);

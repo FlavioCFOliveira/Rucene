@@ -1414,7 +1414,8 @@ impl IndexWriter {
                     .to_string(),
             ));
         }
-        if reader_infos.last_generation() <= 0 {
+        if reader_infos.last_generation() == 0 {
+            // `IndexWriter.java:1047`: only generation `0` is rejected.
             // TODO (Java): maybe we could allow this? It's tricky...
             return Err(LuceneError::illegal_argument(
                 "index must already have an initial commit to open from reader".to_string(),

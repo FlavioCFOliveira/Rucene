@@ -940,7 +940,9 @@ impl FreqBoostTermScorer {
         // false for NaN, which the explicit `isNaN` check catches first, and
         // `contains` would fold the three into one.
         #[allow(clippy::manual_range_contains)]
-        let out_of_range = boost < 0.0 || boost > 1.0;
+        // `Float.compare(boost, 0f) < 0` (`SynonymQuery.java:682`) orders
+        // -0.0 below 0.0, as `total_cmp` does.
+        let out_of_range = boost.total_cmp(&0.0).is_lt() || boost > 1.0;
         if boost.is_nan() || out_of_range {
             return Err(LuceneError::illegal_argument(
                 "boost must be a positive float between 0 (exclusive) and 1 (inclusive)"

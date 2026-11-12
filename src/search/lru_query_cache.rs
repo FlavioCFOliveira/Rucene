@@ -950,7 +950,8 @@ impl LRUQueryCache {
         // guard, because every comparison against NaN is false.
         if !(skip_cache_factor >= 1.0) {
             return Err(LuceneError::illegal_argument(format!(
-                "skipCacheFactor must be no less than 1, get {skip_cache_factor}"
+                "skipCacheFactor must be no less than 1, get {}",
+                crate::util::java_fmt::float_to_string(skip_cache_factor)
             )));
         }
         Ok(Self {
@@ -1176,12 +1177,11 @@ impl LRUQueryCache {
     ///
     /// Equivalent to the package-private
     /// `LRUQueryCache.assertConsistent()`, which exists for testing and throws
-    /// an `AssertionError`; this port reports the same conditions as
-    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState).
+    /// an `AssertionError`.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an eviction is still
+    /// Returns [`LuceneErrorKind::AssertionError`](crate::error::LuceneErrorKind::AssertionError) when an eviction is still
     /// required, when a leaf cache holds a key the top-level cache does not,
     /// or when the recomputed RAM usage or cache size disagrees with the
     /// tracked one.
@@ -1197,7 +1197,7 @@ impl LRUQueryCache {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if self.state.requires_eviction(&queries) {
-            return Err(LuceneError::illegal_state(format!(
+            return Err(assertion_error(format!(
                 "requires evictions: size={}, maxSize={}, ramBytesUsed={}, maxRamBytesUsed={}",
                 queries.len(),
                 self.state.max_size,
@@ -1206,12 +1206,18 @@ impl LRUQueryCache {
             )));
         }
         for leaf_cache in cache.values() {
-            for key in leaf_cache.cache.keys() {
-                if !queries.entries.contains_key(key) {
-                    return Err(LuceneError::illegal_state(
-                        "One leaf cache contains more keys than the top-level cache".to_string(),
-                    ));
-                }
+            let keys: Vec<String> = leaf_cache
+                .cache
+                .keys()
+                .filter(|key| !queries.entries.contains_key(key))
+                .map(|key| key.0.to_query_string(""))
+                .collect();
+            if !keys.is_empty() {
+                // `"... top-level cache: " + keys` (`LRUQueryCache.java:450-457`).
+                return Err(assertion_error(format!(
+                    "One leaf cache contains more keys than the top-level cache: [{}]",
+                    keys.join(", ")
+                )));
             }
         }
         let mut recomputed_ram_bytes_used =
@@ -1227,7 +1233,7 @@ impl LRUQueryCache {
             }
         }
         if recomputed_ram_bytes_used != self.ram_bytes_used() {
-            return Err(LuceneError::illegal_state(format!(
+            return Err(assertion_error(format!(
                 "ramBytesUsed mismatch : {} != {recomputed_ram_bytes_used}",
                 self.ram_bytes_used()
             )));
@@ -1238,7 +1244,7 @@ impl LRUQueryCache {
             .map(|leaf_cache| leaf_cache.cache.len() as i64)
             .sum();
         if recomputed_cache_size != self.get_cache_size() {
-            return Err(LuceneError::illegal_state(format!(
+            return Err(assertion_error(format!(
                 "cacheSize mismatch : {} != {recomputed_cache_size}",
                 self.get_cache_size()
             )));
@@ -2048,4 +2054,10 @@ mod null_iterator_tests {
         .unwrap();
         assert!(dense.iterator_or_null().unwrap().is_some());
     }
+}
+
+/// Java's `throw new AssertionError(message)`, which `assertConsistent()`
+/// throws whether or not assertions are enabled (`LRUQueryCache.java:436-484`).
+fn assertion_error(message: String) -> LuceneError {
+    LuceneError::from(crate::error::LuceneErrorKind::AssertionError(message))
 }

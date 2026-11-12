@@ -884,7 +884,6 @@ impl DocValuesProducer for SegmentDocValuesProducer {
 #[derive(Debug)]
 pub struct DocValuesLeafReader {
     core: IndexReaderCore,
-    max_doc: i32,
     field_infos: FieldInfos,
     doc_values_producer: Arc<dyn DocValuesProducer>,
 }
@@ -903,14 +902,9 @@ impl Display for DocValuesLeafReader {
 
 impl DocValuesLeafReader {
     /// Creates a doc-values-only reader.
-    pub fn new(
-        max_doc: i32,
-        field_infos: FieldInfos,
-        doc_values_producer: Arc<dyn DocValuesProducer>,
-    ) -> Self {
+    pub fn new(field_infos: FieldInfos, doc_values_producer: Arc<dyn DocValuesProducer>) -> Self {
         Self {
             core: IndexReaderCore::new(),
-            max_doc,
             field_infos,
             doc_values_producer,
         }
@@ -928,11 +922,19 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn num_docs(&self) -> i32 {
-        self.max_doc
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn max_doc(&self) -> i32 {
-        self.max_doc
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
@@ -946,11 +948,19 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
-        None
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
-        None
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
@@ -1013,27 +1023,26 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn get_norm_values(&self, _field: &str) -> Result<Option<Box<dyn IndexNumericDocValues>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_doc_values_skipper(
         &self,
-        field: &str,
+        _field: &str,
     ) -> Result<Option<Box<dyn IndexDocValuesSkipper>>> {
-        if let Some(fi) = self.field_infos.field_info(field) {
-            if fi.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
-                return self.doc_values_producer.get_skipper(fi);
-            }
-        }
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_float_vector_values(&self, _field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_byte_vector_values(&self, _field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn search_nearest_vectors(
@@ -1043,7 +1052,8 @@ impl LeafReader for DocValuesLeafReader {
         _collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Ok(())
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn search_nearest_vectors_byte(
@@ -1053,7 +1063,8 @@ impl LeafReader for DocValuesLeafReader {
         _collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Ok(())
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_field_infos(&self) -> FieldInfos {
@@ -1061,15 +1072,21 @@ impl LeafReader for DocValuesLeafReader {
     }
 
     fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
-        None
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
     }
 
     fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn IndexPointValues>>> {
-        Ok(None)
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn check_integrity(&self) -> Result<()> {
-        self.doc_values_producer.check_integrity()
+        // `throw new UnsupportedOperationException()` (`DocValuesLeafReader.java`).
+        Err(LuceneError::unsupported_operation(String::new()))
     }
 
     fn get_meta_data(&self) -> LeafMetaData {
@@ -2531,14 +2548,18 @@ mod tests {
 
     #[test]
     fn doc_values_leaf_reader_delegates_to_producer() {
-        let max_doc = 4;
         let field_infos = FieldInfos::empty();
         let producer: Arc<dyn DocValuesProducer> =
             Arc::new(crate::codecs::doc_values::EmptyDocValuesProducer);
-        let reader = DocValuesLeafReader::new(max_doc, field_infos, producer);
-        assert_eq!(LeafReader::max_doc(&reader), max_doc);
-        assert_eq!(LeafReader::num_docs(&reader), max_doc);
+        let reader = DocValuesLeafReader::new(field_infos, producer);
         assert!(reader.get_numeric_doc_values("missing").unwrap().is_none());
+        // `maxDoc()` and `numDocs()` are final and throw
+        // `UnsupportedOperationException` (`DocValuesLeafReader.java`).
+        let max_doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            LeafReader::max_doc(&reader)
+        }));
+        assert!(max_doc.is_err());
+        assert!(reader.get_norm_values("missing").is_err());
     }
 
     // -------------------------------------------------------------------------

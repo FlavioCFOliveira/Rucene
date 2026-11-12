@@ -155,6 +155,16 @@ pub trait Similarity: Send + Sync + Debug {
     /// every implementor states its own.
     fn java_class_name(&self) -> &'static str;
 
+    /// Returns Java's `toString()` of this similarity.
+    ///
+    /// The default is the `Object.toString()` a Java similarity inherits when
+    /// it declares none: [`java_class_name`](Self::java_class_name), `@`, and
+    /// the identity in hexadecimal. Similarities whose Java class overrides
+    /// `toString()` override this with the same text.
+    fn to_java_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string(self.java_class_name(), self)
+    }
+
     /// Returns `true` when overlap tokens — tokens whose position increment is
     /// zero, such as synonyms — are discounted from the document's length.
     ///
@@ -607,6 +617,11 @@ impl BM25Similarity {
 }
 
 impl Similarity for BM25Similarity {
+    /// Java `toString()`, which this similarity overrides.
+    fn to_java_string(&self) -> String {
+        self.to_string()
+    }
+
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.similarities.BM25Similarity"
     }

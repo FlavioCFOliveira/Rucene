@@ -480,7 +480,9 @@ impl StoredFieldsConsumer {
                 Some(existing) if existing == value => {}
                 Some(existing) => {
                     return Err(LuceneError::illegal_state(format!(
-                        "found existing value for {key} for segment: {} old={existing}, new={value}",
+                        // `Lucene90StoredFieldsFormat.java:144-152`: no space
+                        // before `old=`.
+                        "found existing value for {key} for segment: {}old={existing}, new={value}",
                         segment_info.name
                     )));
                 }

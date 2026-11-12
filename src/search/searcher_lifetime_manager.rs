@@ -93,7 +93,8 @@ impl PruneByAge {
     pub fn new(max_age_sec: f64) -> Result<Self> {
         if max_age_sec < 0.0 {
             return Err(LuceneError::illegal_argument(format!(
-                "maxAgeSec must be > 0 (got {max_age_sec})"
+                "maxAgeSec must be > 0 (got {})",
+                crate::util::java_fmt::double_to_string(max_age_sec)
             )));
         }
         Ok(Self { max_age_sec })

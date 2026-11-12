@@ -89,17 +89,20 @@ impl BayesianScoreQuery {
     pub fn new(query: Arc<dyn Query>, alpha: f32, beta: f32, base_rate: f32) -> Result<Self> {
         if !alpha.is_finite() || alpha <= 0.0 {
             return Err(LuceneError::illegal_argument(format!(
-                "alpha must be a positive finite value, got {alpha}"
+                "alpha must be a positive finite value, got {}",
+                crate::util::java_fmt::float_to_string(alpha)
             )));
         }
         if !beta.is_finite() {
             return Err(LuceneError::illegal_argument(format!(
-                "beta must be a finite value, got {beta}"
+                "beta must be a finite value, got {}",
+                crate::util::java_fmt::float_to_string(beta)
             )));
         }
         if base_rate < 0.0 || base_rate >= 1.0 {
             return Err(LuceneError::illegal_argument(format!(
-                "baseRate must be in [0, 1), got {base_rate}"
+                "baseRate must be in [0, 1), got {}",
+                crate::util::java_fmt::float_to_string(base_rate)
             )));
         }
         let logit_base_rate = if base_rate > 0.0 {

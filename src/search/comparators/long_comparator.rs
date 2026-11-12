@@ -69,6 +69,7 @@ impl LongComparator {
                 pruning,
                 8, // `Long.BYTES`
                 Self::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.LongComparator",
             ),
             values: vec![0; num_hits],
             top_value: 0,

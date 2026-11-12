@@ -797,7 +797,7 @@ impl IndexSearcher {
     pub fn super_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "IndexSearcher({:?}; taskExecutor={:?})",
+            "IndexSearcher({}; taskExecutor={:?})",
             self.reader, self.task_executor
         )
     }
@@ -840,18 +840,19 @@ impl IndexSearcher {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneErrorKind::IllegalArgument`] when the context is not
-    /// top-level, which Java asserts, and propagates the slice construction
+    /// Returns [`LuceneErrorKind::AssertionError`] under `debug_assertions`
+    /// when the context is not top-level, which Java only asserts
+    /// (`IndexSearcher.java:225-226`), and propagates the slice construction
     /// error for an empty leaf.
     pub fn from_context(
         context: Arc<dyn IndexReaderContext>,
         executor: Option<Arc<dyn Executor>>,
     ) -> Result<Self> {
-        if !context.is_top_level() {
-            return Err(LuceneError::illegal_argument(format!(
-                "IndexSearcher's ReaderContext must be topLevel for reader {:?}",
+        if cfg!(debug_assertions) && !context.is_top_level() {
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
+                "IndexSearcher's ReaderContext must be topLevel for reader {}",
                 context.reader()
-            )));
+            ))));
         }
         let reader = context.reader();
         let has_executor = executor.is_some();

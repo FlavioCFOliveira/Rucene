@@ -193,6 +193,9 @@ pub struct NumericComparator {
     /// [`IntComparator::sortable_bytes_to_long`](crate::search::comparators::IntComparator::sortable_bytes_to_long)
     /// — and the call lands on exactly that code.
     sortable_bytes_to_long: fn(&[u8]) -> i64,
+    /// The binary name of the concrete comparator class, for the
+    /// `Object.toString()` of `NumericComparator.this` in messages.
+    java_class_name: &'static str,
     top_value_set: bool,
     single_sort: bool,
     /// `protected boolean hitsThresholdReached`, visible to the package's
@@ -232,6 +235,7 @@ impl NumericComparator {
         pruning: Pruning,
         bytes_count: i32,
         sortable_bytes_to_long: fn(&[u8]) -> i64,
+        java_class_name: &'static str,
     ) -> Self {
         Self {
             missing_value_as_long: 0,
@@ -239,6 +243,7 @@ impl NumericComparator {
             reverse,
             bytes_count,
             sortable_bytes_to_long,
+            java_class_name,
             top_value_set: false,
             single_sort: false,
             hits_threshold_reached: false,
@@ -411,10 +416,14 @@ impl NumericComparator {
                 }
                 Some(info) if info.get_point_num_bytes() != self.bytes_count => {
                     return Err(LuceneError::illegal_argument(format!(
-                        "Field {} is indexed with {} bytes per dimension, but {:?} expected {}",
+                        "Field {} is indexed with {} bytes per dimension, but {} expected {}",
                         self.field,
                         info.get_point_num_bytes(),
-                        self,
+                        // `NumericComparator.this`: `Object.toString()`.
+                        crate::index::index_reader::java_object_to_string(
+                            self.java_class_name,
+                            self
+                        ),
                         self.bytes_count
                     )));
                 }
@@ -1112,6 +1121,7 @@ mod scorer_cost_tests {
                 Pruning::GREATER_THAN_OR_EQUAL_TO,
                 8,
                 LongComparator::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.LongComparator",
             )
         };
 

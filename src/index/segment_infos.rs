@@ -1307,16 +1307,19 @@ impl SegmentInfos {
             let si = &si_per_commit.info;
             if self.index_created_version_major >= 7 && si.min_version().is_none() {
                 return Err(LuceneError::illegal_state(format!(
-                    "Segments must record minVersion if they have been created on or after Lucene 7: {si:?}"
+                    "Segments must record minVersion if they have been created on or after Lucene 7: {}",
+                    si.to_string_with_del_count(0)
                 )));
             }
 
             out.write_string(&si.name)?;
             let segment_id = si.id();
             if segment_id.len() != ID_LENGTH {
+                // `SegmentInfos.java:649-653`: no space before `id=`.
                 return Err(LuceneError::illegal_state(format!(
-                    "cannot write segment: invalid id segment={} id={:?}",
-                    si.name, segment_id
+                    "cannot write segment: invalid id segment={}id={}",
+                    si.name,
+                    StringHelper::id_to_string(Some(&segment_id))
                 )));
             }
             out.write_bytes(&segment_id, 0, segment_id.len())?;
