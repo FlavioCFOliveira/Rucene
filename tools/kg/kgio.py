@@ -319,10 +319,12 @@ def _label_count(roadmap, label):
     return _count_cache[key]
 
 
-def chainable(body: str, roadmap: str = None, nrows: int = 0) -> bool:
+def chainable(body: str, roadmap: str = None, nrows: int = 0, sample: dict = None) -> bool:
     """Whether `body` should run as an index-seeking chain (see above): no
     RETURN, no CREATE, and every `(x:Label {prop: row.k ...})` lookup has an
-    indexed property on a label at least CHAIN_LABEL_RATIO times the rows."""
+    indexed property on a label at least CHAIN_LABEL_RATIO times the rows,
+    and (given a `sample` row) the plan of one bound clause seeks an index and
+    scans no label (`_plan_seeks_only`)."""
     if "RETURN" in body or _CREATE_CLAUSE.search(body) or "row" not in body:
         return False
     lookups = _LOOKUP.findall(body)
@@ -334,7 +336,34 @@ def chainable(body: str, roadmap: str = None, nrows: int = 0) -> bool:
             return False
         if _label_count(roadmap, label) < CHAIN_LABEL_RATIO * max(nrows, 1):
             return False
-    return True
+    return sample is None or _plan_seeks_only(roadmap, body, sample)
+
+
+# The plan decides, not the text: a keyed lookup can still be planned from an
+# unkeyed node of the same pattern. `(:Class)-[e:DECLARES]->(m:Method {qn: v})`
+# started each chained clause with a scan of every Class and its DECLARES edges
+# (57 chains averaged 3.06 s; the UNWIND form had cost one scan per statement --
+# measured 2026-11-12). So one clause bound to a sample row is EXPLAINed per body
+# shape, and a chain is used only if the plan seeks an index and scans nothing.
+_plan_cache = {}
+_SCANS = ("NodeByLabelScan", "AllNodesScan")
+
+
+def _plan_operators(node, out):
+    out.append(node.get("operator", ""))
+    for child in node.get("children", []):
+        _plan_operators(child, out)
+    return out
+
+
+def _plan_seeks_only(roadmap, body, sample):
+    key = (roadmap, body)
+    if key not in _plan_cache:
+        doc = json.loads(client(roadmap, "EXPLAIN " + _bind(body, sample), label="explain"))
+        ops = _plan_operators(doc.get("plan") or {}, [])
+        _plan_cache[key] = (any("IndexSeek" in o for o in ops)
+                            and not any(o in _SCANS for o in ops))
+    return _plan_cache[key]
 
 
 def _bind(body: str, row: dict) -> str:
@@ -392,7 +421,7 @@ def unwind(roadmap, mode, rows, body, label, batch=None):
         print(f"  {label}: 0 rows sent", file=sys.stderr)
         return {}
     cap = batch if batch is not None and batch <= PER_ROW_SCAN_BATCH else None
-    if len(rows) <= CHAIN_MAX_ROWS and chainable(body, roadmap, len(rows)):
+    if len(rows) <= CHAIN_MAX_ROWS and chainable(body, roadmap, len(rows), rows[0]):
         total = chain(roadmap, mode, rows, body, label, cap)
     else:
         total = unwind_maps(roadmap, mode, [serialize(r) for r in rows], body, label, cap)
