@@ -35,8 +35,9 @@ const PRIME: i64 = 31;
 /// * Lucene's `NodeHash` holds a reference back to the `FSTCompiler` that owns
 ///   it. Here the compiler is passed to [`NodeHash::add`] instead.
 /// * The two address tables are `PagedGrowableWriter`s in Lucene, that is,
-///   bit-packed paged arrays. `org.apache.lucene.util.packed.PagedGrowableWriter`
-///   is not ported yet, so this port stores them in `Vec<i64>`. This costs more
+///   bit-packed paged arrays. This port stores them in `Vec<i64>`, although
+///   [`PagedGrowableWriter`](crate::util::packed::PagedGrowableWriter) is now
+///   ported (`util/packed/paged_mutable.rs`). This costs more
 ///   memory per hash slot but cannot change a single FST byte: the tables only
 ///   decide hash-slot placement, and the RAM accounting below is computed from
 ///   [`PackedInts::bits_required`] rather than from the tables' real footprint,

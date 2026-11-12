@@ -9,6 +9,8 @@ Final classes: **W** link ported now; **W=** the Java link already exists in Rus
 Auto: D? 95, P? 65, W? 78  
 Final: D 32, P 128, T 18, W 20, W-blocked 7, W= 33
 
+Re-verified at `225f596` (#435): the 7 W-blocked rows are now wired and reclassified **W** in place. Current: D 32, P 128, T 18, W 27, W-blocked 0, W= 33 (the cross table below is the original pass's).
+
 | auto \ final | D | P | T | W | W-blocked | W= |
 |---|---|---|---|---|---|---|
 | D? | 32 | 41 | 17 | 2 | 0 | 3 |
@@ -113,7 +115,7 @@ Final: D 32, P 128, T 18, W 20, W-blocked 7, W= 33
 | `codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsFormat::quantizer` | D? | **D** | removed | no member in Lucene104ScalarQuantizedVectorsFormat.java |
 | `codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsReader::field_entry` | D? | **D** | removed | Lucene104ScalarQuantizedVectorsReader.java `fields` map is private, no per-field getter |
 | `codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsReader::from_parts` | D? | **D** | removed | not a Lucene ctor (doc said so); no caller |
-| `codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsReader::get_centroid` | W? | **W-blocked** | blocked: needs a downcast hook (new divergence); reported | Lucene104ScalarQuantizedVectorsWriter.java:388-396 getCentroid calls reader.getCentroid(fieldName); Rust uses the declared divergence at scalar_quantized_vectors.rs (writer get_centroid, values.get_centroid()) |
+| `codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsReader::get_centroid` | W? | **W** | wired: `Lucene104ScalarQuantizedVectorsWriter::get_centroid` narrows the reader through `as_any` (per-field `KnnFieldsReader`, then this reader) and calls it, as Java's `instanceof` chain | Lucene104ScalarQuantizedVectorsWriter.java:388-396 getCentroid calls reader.getCentroid(fieldName); Rust uses the declared divergence at scalar_quantized_vectors.rs (writer get_centroid, values.get_centroid()) |
 | `codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsReader::scorer` | D? | **W=** | none (accessor kept) | Lucene104ScalarQuantizedVectorsReader.java private field vectorScorer read by its own methods; Rust reads the field |
 | `codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsWriter::encoding` | W? | **W=** | none (accessor kept) | Lucene104ScalarQuantizedVectorsWriter.java field encoding; Rust methods read `self.encoding` |
 | `codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsWriter::with_encoding` | D? | **D** | removed | not a Lucene ctor (doc said so); no caller after the wiring |
@@ -161,9 +163,9 @@ Final: D 32, P 128, T 18, W 20, W-blocked 7, W= 33
 | `codecs::term_state::CompetitiveImpactAccumulator::copy` | P? | **P** | none | codecs/CompetitiveImpactAccumulator.java copy(CompetitiveImpactAccumulator) public |
 | `codecs::term_state::TermStats` | P? | **P** | none | codecs/TermStats.java public class |
 | `codecs::term_state::TermStats::new` | D? | **P** | none (name-mapping miss) | codecs/TermStats.java public ctor TermStats(int docFreq, long totalTermFreq) |
-| `store::BaseDirectory` | W? | **W-blocked** | blocked: FSDirectory/ByteBuffersDirectory do not compose BaseDirectory (refactor; reported) | store/BaseDirectory.java; extended by FSDirectory and ByteBuffersDirectory |
+| `store::BaseDirectory` | W? | **W** | wired: `ByteBuffersDirectory` and `FSDirectory` each hold a `base: BaseDirectory` (store.rs) | store/BaseDirectory.java; extended by FSDirectory and ByteBuffersDirectory |
 | `store::BaseDirectory::lock_factory` | W? | **W=** | none (accessor kept) | BaseDirectory.java protected field lockFactory read by obtainLock/toString; Rust BaseDirectory reads the field |
-| `store::BaseDirectory::new` | W? | **W-blocked** | blocked: same as BaseDirectory (reported) | BaseDirectory.java ctor; callers ByteBuffersDirectory/FSDirectory ctors |
+| `store::BaseDirectory::new` | W? | **W** | wired: called by the `ByteBuffersDirectory` and `FSDirectory` constructors | BaseDirectory.java ctor; callers ByteBuffersDirectory/FSDirectory ctors |
 | `store::BufferedChecksum::reset` | P? | **P** | none | store/BufferedChecksum.java reset() (Checksum API) |
 | `store::BufferedIndexInput::buffer_size` | W? | **P** | none (follow-up: `NIOFSIndexInput` slices now pass it, as `getBufferSize()`) | BufferedIndexInput.java public getBufferSize(); caller NIOFSDirectory.java:155-160 slice |
 | `store::BufferedIndexInput::wrap` | W? | **W** | wired: BufferedIndexInput::slice now returns `Self::wrap(..)` | store/BufferedIndexInput.java:355-357 slice() = wrap(...); :376-379 |
@@ -181,7 +183,7 @@ Final: D 32, P 128, T 18, W 20, W-blocked 7, W= 33
 | `store::FilterIndexInput::get_delegate` | P? | **P** | none | FilterIndexInput.java public getDelegate() |
 | `store::FilterIndexInput::new` | P? | **P** | none | FilterIndexInput.java public ctor |
 | `store::FilterIndexInput::unwrap` | P? | **P** | none | FilterIndexInput.java public static unwrap(IndexInput) |
-| `store::FilterIndexInput::unwrap_only_test` | W? | **W-blocked** | blocked: Rust MemorySegment scorers take a pre-narrowed MemorySegmentAccessInput (declared divergence); wiring needs their create() signature + a narrowing hook (reported) | FilterIndexInput.java unwrapOnlyTest; callers internal/vectorization Lucene99MemorySegment*Scorer(Supplier).create |
+| `store::FilterIndexInput::unwrap_only_test` | W? | **W** | wired: the four `Lucene99MemorySegment*VectorScorer`/`*ScorerSupplier` `create` functions unwrap their input with it | FilterIndexInput.java unwrapOnlyTest; callers internal/vectorization Lucene99MemorySegment*Scorer(Supplier).create |
 | `store::FilterIndexOutput::unwrap` | P? | **P** | none | store/FilterIndexOutput.java public static unwrap(IndexOutput) |
 | `store::InputStreamDataInput::close` | P? | **P** | none | store/InputStreamDataInput.java close() |
 | `store::InputStreamDataInput::into_inner` | D? | **D** | removed | no Lucene counterpart |
@@ -198,7 +200,7 @@ Final: D 32, P 128, T 18, W 20, W-blocked 7, W= 33
 | `store::NIOFSDirectory::open` | W? | **P** | none (renamed ctor NIOFSDirectory(Path)) | store/NIOFSDirectory.java public ctor; FSDirectory.open (FSDirectory.java:151-162) subclass selection is a pending divergence (store.rs FSDirectory::open docs) |
 | `store::NIOFSIndexInput::get_delegate` | D? | **D** | removed | NIOFSDirectory.NIOFSIndexInput extends BufferedIndexInput; no getter |
 | `store::NRTCachingDirectory` | P? | **P** | none | store/NRTCachingDirectory.java public class |
-| `store::NRTCachingDirectory::is_cached_file` | W? | **W-blocked** | blocked: Rust NRTCachingDirectory has no cacheSize counter nor output-to-input callback (reported) | NRTCachingDirectory.java:69-83 cacheDirectory callback calls isCachedFile (:79, :307-309) |
+| `store::NRTCachingDirectory::is_cached_file` | W? | **W** | wired: the cache directory's output-to-input callback calls it before keeping a file (store.rs `NRTCachingDirectory`) | NRTCachingDirectory.java:69-83 cacheDirectory callback calls isCachedFile (:79, :307-309) |
 | `store::NRTCachingDirectory::list_cached_files` | P? | **P** | none | NRTCachingDirectory.java public listCachedFiles() |
 | `store::NRTCachingDirectory::new` | P? | **P** | none | NRTCachingDirectory.java public ctor |
 | `store::NativeFSLockFactory::instance` | W? | **W=** | none | FSLockFactory.java:32 returns NativeFSLockFactory.INSTANCE; Rust get_default (store.rs FSLockFactory::get_default) boxes the zero-sized NativeFSLockFactory value, which is the singleton state |
@@ -223,9 +225,9 @@ Final: D 32, P 128, T 18, W 20, W-blocked 7, W= 33
 | `store::exceptions::LockReleaseFailedException::with_cause` | D? | **P** | none (renamed ctor) | LockReleaseFailedException.java ctor(String, Throwable) |
 | `store::lock_stress_test::LockStressTest` | P? | **P** | none | store/LockStressTest.java public class (tool) |
 | `store::lock_stress_test::LockStressTest::main` | P? | **P** | none | LockStressTest.java public static main |
-| `store::lock_validating_directory_wrapper::LockValidatingDirectoryWrapper` | W? | **W-blocked** | blocked: IndexWriter keeps no directoryOrig/directory split (index refactor; reported) | index/IndexWriter.java:958-963 `directory = new LockValidatingDirectoryWrapper(d, writeLock)` |
+| `store::lock_validating_directory_wrapper::LockValidatingDirectoryWrapper` | W? | **W** | wired: `IndexWriter::new` wraps its directory in it (index_writer.rs), as `directory = new LockValidatingDirectoryWrapper(d, writeLock)` | index/IndexWriter.java:958-963 `directory = new LockValidatingDirectoryWrapper(d, writeLock)` |
 | `store::lock_validating_directory_wrapper::LockValidatingDirectoryWrapper::get_delegate` | P? | **P** | none | store/FilterDirectory.java public getDelegate() |
-| `store::lock_validating_directory_wrapper::LockValidatingDirectoryWrapper::new` | W? | **W-blocked** | blocked: same as LockValidatingDirectoryWrapper (reported) | index/IndexWriter.java:963 |
+| `store::lock_validating_directory_wrapper::LockValidatingDirectoryWrapper::new` | W? | **W** | wired: called by `IndexWriter::new` | index/IndexWriter.java:963 |
 | `store::lock_validating_directory_wrapper::LockValidatingDirectoryWrapper::write_lock` | W? | **W=** | none (accessor kept) | LockValidatingDirectoryWrapper.java field writeLock read by its own methods; Rust reads the field |
 | `store::lock_verify_server::LockVerifyServer` | W? | **P** | none | store/LockVerifyServer.java public class (tool); LockStressTest reaches it over TCP only |
 | `store::lock_verify_server::LockVerifyServer::main` | P? | **P** | none | LockVerifyServer.java public static main |

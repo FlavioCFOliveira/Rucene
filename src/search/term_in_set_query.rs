@@ -57,14 +57,6 @@ const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
 /// see [`MultiTermQuery`] for the other options.
 ///
 /// **NOTE**: this query produces scores that are equal to its boost.
-///
-/// **Scope note.** Java also offers the static factory
-/// `TermInSetQuery.newIndexOrDocValuesQuery(RewriteMethod, String, Collection<BytesRef>)`,
-/// which packs the terms once and pairs an indexed query with a doc-values one
-/// inside an `IndexOrDocValuesQuery`. That query type belongs to
-/// `org.apache.lucene.search` but is not part of this port yet, so the factory
-/// is absent; building the two `TermInSetQuery` instances by hand produces the
-/// same pair, only packing the terms twice.
 #[derive(Debug, Clone)]
 pub struct TermInSetQuery {
     field: String,

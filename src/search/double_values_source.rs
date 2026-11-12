@@ -457,9 +457,8 @@ impl DoubleValues for FieldDoubleValues {
 }
 
 impl SegmentCacheable for FieldValuesSource {
-    /// Equivalent to `DocValues.isCacheable(ctx, field)`, whose body — "not
-    /// cacheable once the field's doc values have been updated" — is inlined
-    /// because `crate::index::DocValues` does not expose that static.
+    /// Equivalent to `DocValues.isCacheable(ctx, field)`: not cacheable once
+    /// the field's doc values have been updated.
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
         crate::index::doc_values::DocValues::is_cacheable(ctx, &[&self.field])
     }

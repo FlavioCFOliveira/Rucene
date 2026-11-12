@@ -1325,9 +1325,10 @@ impl PendingBlock {
 
 /// Writer for the terms of a single field.
 ///
-/// In this checkpoint the writer only collects per-field statistics in memory.
-/// Recursive block building, suffix compression and trie serialization are
-/// intentionally not implemented yet.
+/// Buffers the field's pending terms and blocks, builds the block tree
+/// recursively (`push_term`, `write_blocks`, `write_block`), compresses term
+/// suffixes (LZ4 or lowercase-ASCII), and serializes the field's trie index in
+/// `finish`.
 ///
 /// Lucene Core equivalent: `Lucene103BlockTreeTermsWriter.TermsWriter`.
 struct TermsWriter<'a> {
@@ -2258,15 +2259,14 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
 }
 
 // -----------------------------------------------------------------------------
-// Terms dictionary reader skeleton
+// Terms dictionary reader
 // -----------------------------------------------------------------------------
 
 /// Block-based terms index and dictionary reader.
 ///
-/// This is a minimal skeleton that satisfies the [`FieldsProducer`] contract.
-/// It opens no files and reports an empty term space. The full recursive block
-/// tree loading, suffix decompression and FST-style trie index will be added in
-/// later tasks.
+/// Opens a segment's `.tim`, `.tip` and `.tmd` files, loads one
+/// [`FieldReader`] per field with its trie index, and serves the terms through
+/// the [`FieldsProducer`] contract.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`.
 pub struct Lucene103BlockTreeTermsReader {

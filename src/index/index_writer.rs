@@ -4623,12 +4623,9 @@ impl IndexWriter {
     /// (`IndexWriter.java:5255`), so the scheduler can throttle it, and the
     /// merged segment is warmed with the configured
     /// [`MergedSegmentWarmer`](crate::index::index_writer_config::MergedSegmentWarmer)
-    /// before it is committed (`IndexWriter.java:5562-5574`).
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java passes an intra-merge
-    /// `Executor` to `SegmentMerger` so a codec can parallelise one merge;
-    /// `SegmentMerger` carries none here, so the merge runs on the calling
-    /// thread.
+    /// before it is committed (`IndexWriter.java:5562-5574`). The intra-merge
+    /// executor comes from `mergeScheduler.getIntraMergeExecutor(merge)`
+    /// (`IndexWriter.java:5327`) and is passed to `SegmentMerger`, as in Java.
     ///
     /// # Errors
     ///

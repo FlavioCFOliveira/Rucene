@@ -120,7 +120,7 @@ pub const MAX_DOCS: i32 = i32::MAX - 128;
 /// Equivalent to `IndexWriter.MAX_STORED_STRING_LENGTH`, which Lucene defines
 /// as `ArrayUtil.MAX_ARRAY_LENGTH / UnicodeUtil.MAX_UTF8_BYTES_PER_CHAR`: the
 /// longest string whose UTF-8 encoding still fits in one Java array. It lives
-/// here, next to [`MAX_DOCS`], until `IndexWriter` itself is ported.
+/// here, next to [`MAX_DOCS`].
 pub const MAX_STORED_STRING_LENGTH: usize = crate::util::ArrayUtil::MAX_ARRAY_LENGTH / 3;
 
 /// Diagnostics value recorded on segments produced by a flush.
@@ -1730,9 +1730,11 @@ pub const INTS_SCRATCH_SIZE: usize = 1024;
 ///
 /// Equivalent to `org.apache.lucene.index.SharedIndexingScratch`.
 ///
-/// Java takes a `org.apache.lucene.util.Counter`; that class is not ported yet,
-/// so this port takes the shared `AtomicI64` the DWPT already uses to account
-/// indexing RAM, which has the same `addAndGet` contract.
+/// Java takes a `org.apache.lucene.util.Counter`. The port of that class,
+/// [`Counter`](crate::util::concurrent::Counter), exists, but the indexing
+/// chain and its per-field writers account indexing RAM in one shared
+/// `Arc<AtomicI64>`, so this port takes that counter; `fetch_add` has the same
+/// `addAndGet` contract.
 #[derive(Debug)]
 pub struct SharedIndexingScratch {
     bytes_used: Arc<AtomicI64>,

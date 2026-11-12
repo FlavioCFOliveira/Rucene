@@ -4,11 +4,8 @@
 //! This module provides the top-level reader used to open a point-in-time view
 //! of an index stored in a `Directory`. It loads the current `SegmentInfos`,
 //! creates one `SegmentReader` per segment, supports reopen via `open_if_changed`,
-//! and exposes the commit points present in the directory.
-//!
-//! The `SegmentReader` placeholder used here is the minimal stub defined in
-//! `segment_reader.rs`; task 93 will replace it with the full Lucene-compatible
-//! implementation.
+//! and exposes the commit points present in the directory. The per-segment
+//! readers are the [`SegmentReader`]s of `segment_reader.rs`.
 
 #![deny(unsafe_code)]
 

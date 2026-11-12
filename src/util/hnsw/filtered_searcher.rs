@@ -35,9 +35,6 @@ const EXPANDED_EXPLORATION_LAMBDA: f32 = 0.10;
 ///   this port holds a [`HnswGraphSearcher`] to supply `find_best_entry_point` and
 ///   keeps its own filtered-search state. Both methods reset that state before use,
 ///   so the results are the same.
-/// * Java calls `results.getSearchStrategy().nextVectorsBlock()` at the end of every
-///   candidate expansion. The crate's `KnnSearchStrategy` is still a placeholder with
-///   no such method, so that call has no counterpart yet.
 pub struct FilteredHnswGraphSearcher {
     entry_point_searcher: HnswGraphSearcher,
     candidates: NeighborQueue,

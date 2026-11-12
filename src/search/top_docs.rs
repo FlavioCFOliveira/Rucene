@@ -2,14 +2,11 @@
 //!
 //! # Relationship with [`crate::search::knn::TopDocs`]
 //!
-//! The kNN module carries a placeholder `TopDocs` — an empty struct — so that
-//! [`KnnCollector`](crate::search::knn::KnnCollector) could be ported before
-//! the search package existed. This module is the real
-//! `org.apache.lucene.search.TopDocs`, and it is the one
+//! [`crate::search::knn::TopDocs`] is a re-export of this type, so
+//! [`KnnCollector`](crate::search::knn::KnnCollector),
 //! [`TopDocsCollector`](crate::search::TopDocsCollector) and
-//! [`IndexSearcher`](crate::search::IndexSearcher) return. The placeholder
-//! should eventually be replaced by this type; doing so touches the kNN
-//! readers and the HNSW collectors and is left for the task that owns them.
+//! [`IndexSearcher`](crate::search::IndexSearcher) all return the same
+//! `org.apache.lucene.search.TopDocs`.
 //!
 //! # Overloads
 //!

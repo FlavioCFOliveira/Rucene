@@ -4,15 +4,12 @@
 //!
 //! In Lucene, `Explanation`, `CollectionStatistics` and `TermStatistics` are
 //! top-level classes of `org.apache.lucene.search`, not of
-//! `org.apache.lucene.search.similarities`. They are ported here because the
-//! similarity package is the first consumer to reach the crate and it cannot be
-//! expressed without them; `org.apache.lucene.search` itself has not been
-//! ported yet.
+//! `org.apache.lucene.search.similarities`. They were ported here because the
+//! similarity package was the first consumer to reach the crate.
 //!
 //! This is a placement divergence only — the type, its API and its rendering
 //! are faithful. [`crate::search`] re-exports them at
-//! `crate::search::Explanation`, which is where they will stay once
-//! `org.apache.lucene.search` arrives and this module can simply be moved.
+//! `crate::search::Explanation`.
 
 #![deny(unsafe_code)]
 

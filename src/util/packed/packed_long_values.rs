@@ -1211,8 +1211,8 @@ impl MonotonicLongValuesBuilder {
 
 /// The heap cost of a `float[]`.
 ///
-/// Mirrors `RamUsageEstimator.sizeOf(float[])`, which this crate's estimator
-/// does not yet expose.
+/// Mirrors `RamUsageEstimator.sizeOf(float[])`, also ported as
+/// [`RamUsageEstimator::size_of_float`].
 fn size_of_float(array: &[f32]) -> i64 {
     RamUsageEstimator::align_object_size(
         RamUsageEstimator::NUM_BYTES_ARRAY_HEADER + 4 * array.len() as i64,

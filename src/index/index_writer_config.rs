@@ -2,9 +2,11 @@
 //!
 //! This module contains `IndexWriterConfig`, the live configuration view
 //! `LiveIndexWriterConfig`, and the `IndexWriterEventListener` callback
-//! interface.  The concrete merge, flush, deletion, scheduling and scoring
-//! implementations are intentionally left as minimal placeholders; they will
-//! be filled in by later porting tasks.
+//! interface. The concrete merge, flush, deletion, scheduling and scoring
+//! implementations live in their own modules (`merge_policy`,
+//! `merge_scheduler`, `documents_writer`, `index_deletion_policy` and
+//! `search`); this module holds them as configuration and supplies Lucene's
+//! defaults.
 //!
 //! Equivalent to:
 //! - `org.apache.lucene.index.IndexWriterConfig`

@@ -1,8 +1,10 @@
 //! Lucene 10.4 postings format.
 //!
-//! This module provides the format wrapper, constants, and skeleton reader/writer
-//! for the Lucene 10.4 postings format. It delegates the terms dictionary side
-//! to the `Lucene103BlockTreeTermsWriter` / `Lucene103BlockTreeTermsReader` from
+//! This module provides the format wrapper and constants of the Lucene 10.4
+//! postings format. The postings themselves are written and read by
+//! `Lucene104PostingsWriter` and `Lucene104PostingsReader` (`postings_writer`,
+//! `postings_reader`); the terms dictionary side is delegated to the
+//! `Lucene103BlockTreeTermsWriter` / `Lucene103BlockTreeTermsReader` from
 //! `crate::codecs::lucene103::blocktree`.
 //!
 //! Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat`.

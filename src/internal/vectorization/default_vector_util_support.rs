@@ -14,10 +14,10 @@ use crate::util::BitUtil;
 /// The float and byte similarity kernels are not re-derived here: they already
 /// exist in [`crate::util::vector_util`], which reproduces this very class
 /// operation by operation (the accumulator count and the summation order are
-/// observable in the result), so this type delegates to them. The kernels that
-/// `VectorUtil` does not expose — the int4/uint8 variants, the bit dot
-/// products, the scalar quantizer and the buffer filters — are implemented
-/// below.
+/// observable in the result), so this type delegates to them. The other
+/// kernels — the int4/uint8 variants, the bit dot products, the scalar
+/// quantizer and the buffer filters — are implemented below, and
+/// [`crate::util::vector_util`] delegates to them.
 ///
 /// # Divergence from Lucene 10.5.0
 ///

@@ -11,6 +11,8 @@ Final (after pass 2): D 34, P 256, T 59, W 22, W-blocked 19, W= 81
 After pass 3: D 32, P 256, T 59, W 27, W-blocked 16, W= 81 (the cross table below is pass 2's).  
 (First pass: D 32, P 256, T 59, W 18, W-blocked 22, W= 84.)
 
+Re-verified at `225f596` (#435): the 16 W-blocked rows are now wired and reclassified **W** in place. Current: D 32, P 256, T 59, W 43, W-blocked 0, W= 81.
+
 | auto \ final | D | P | T | W | W-blocked | W= |
 |---|---|---|---|---|---|---|
 | D? | 28 | 79 | 55 | 2 | 4 | 3 |
@@ -151,8 +153,8 @@ After pass 3: D 32, P 256, T 59, W 27, W-blocked 16, W= 81 (the cross table belo
 | `index::freq_prox_terms_writer::FreqProxTermsWriterPerField::field_info` | W? | **W=** | none (accessor kept) | FreqProxTermsWriterPerField.java field fieldInfo read by finish(); Rust reads the field |
 | `index::freq_prox_terms_writer::FreqProxTermsWriterPerField::reset` | W? | **P** | body made Java's inherited TermsHashPerField.reset() (no longer clears sawPayloads); uncalled in Lucene and in Rust | TermsHashPerField.java:86-92 reset(), inherited and not overridden by FreqProxTermsWriterPerField; its core callers are TermVectorsConsumerPerField's own (TermVectorsConsumerPerField.java:125,142) |
 | `index::freq_prox_terms_writer::PooledSliceReader::eof` | W? | **W=** | none (kept) | ByteSliceReader.java:64-71 eof(); its callers (readByte, FreqProxDocsEnum/FreqProxPostingsEnum.nextDoc) reach the wrapped ByteSliceReader::eof in Rust (PooledSliceReader is the declared pool-bound adapter) |
-| `index::freq_prox_terms_writer::SortingDocsEnum::get_wrapped` | W? | **W-blocked** | blocked: SortingTermsEnum.postings reuse needs a PostingsEnum downcast (declared divergence on SortingTermsEnum::postings) | FreqProxTermsWriter.java:258 getWrapped(); caller FreqProxTermsWriter.java:208-212 |
-| `index::freq_prox_terms_writer::SortingPostingsEnum::get_wrapped` | W? | **W-blocked** | blocked: as SortingDocsEnum::get_wrapped | FreqProxTermsWriter.java:527 getWrapped(); caller FreqProxTermsWriter.java:183-187 |
+| `index::freq_prox_terms_writer::SortingDocsEnum::get_wrapped` | W? | **W** | wired: `SortingTermsEnum::postings` narrows `reuse` through `as_any_mut` and reuses the wrapped enum | FreqProxTermsWriter.java:258 getWrapped(); caller FreqProxTermsWriter.java:208-212 |
+| `index::freq_prox_terms_writer::SortingPostingsEnum::get_wrapped` | W? | **W** | wired: as `SortingDocsEnum::get_wrapped` | FreqProxTermsWriter.java:527 getWrapped(); caller FreqProxTermsWriter.java:183-187 |
 | `index::freq_prox_terms_writer::TermsHash::pool_mut` | D? | **T** | none (used by a freq_prox_terms_writer test) | TermsHash.java final ByteBlockPool bytePool, no getter |
 | `index::freq_prox_terms_writer::TermsHashPerField::get_sorted_term_ids` | D? | **W=** | none (kept) | TermsHashPerField.java:118 getSortedTermIDs(); Rust callers use sorted_term_ids(pool), the declared non-destructive sortTerms+getSortedTermIDs (freq_prox_terms_writer.rs doc) |
 | `index::freq_prox_terms_writer::TermsHashPerField::index_options` | W? | **W=** | none (accessor kept) | TermsHashPerField.java field indexOptions read by FreqProxFields/FreqProxTermsWriter; Rust reads the field |
@@ -181,8 +183,8 @@ After pass 3: D 32, P 256, T 59, W 27, W-blocked 16, W= 81 (the cross table belo
 | `index::index_file_names::matches_extension` | D? | **P** | none (name-mapping miss) | IndexFileNames.java:112 public static matchesExtension |
 | `index::index_file_names::standard_extensions` | D? | **D** | removed | no Lucene member (IndexFileNames.java declares no extension set) |
 | `index::index_reader::IndexReaderCore::is_closed_by_child` | D? | **T** | none (used by multi_reader tests) | IndexReader.java:69 private closedByChild, no getter; ensureOpen reads it (IndexReader.java:276), as Rust ensure_open reads the field |
-| `index::index_sorter::Sorter::new` | W? | **W-blocked** | blocked: Rust Sorter holds a string id and sorts through static methods; wiring new Sorter(indexSort) into maybe_sort_segment needs Sorter to hold the Sort (with its needsScores check) and instance sort methods; SortingCodecReader.wrap(CodecReader, Sort) is not ported | Sorter.java:38-44 Sorter(Sort); callers IndexingChain.java:292, SortingCodecReader.java:391 |
-| `index::index_sorter::Sorter::sort_multi` | D? | **W-blocked** | blocked: its Java caller Sorter.sort(LeafReader) (Sorter.java:185-218) is not ported | Sorter.java:220 sort(int, DocComparator[]) |
+| `index::index_sorter::Sorter::new` | W? | **W** | wired: `IndexingChain::sort_buffered_segment` (reached from `maybe_sort_segment`) and `SortingCodecReader::wrap_sort` build a `Sorter` over the index sort; `Sorter` now holds the `Sort` | Sorter.java:38-44 Sorter(Sort); callers IndexingChain.java:292, SortingCodecReader.java:391 |
+| `index::index_sorter::Sorter::sort_multi` | D? | **W** | wired: called by `Sorter::sort_reader`, the port of `Sorter.sort(LeafReader)` | Sorter.java:220 sort(int, DocComparator[]) |
 | `index::index_sorter::SorterDocMap::is_consistent` | W? | **W** | wired: `debug_assert!(doc_map.is_consistent())` in `SortingCodecReader::wrap` after the size check. Test `wrapping_with_an_inconsistent_doc_map_trips_the_is_consistent_assertion` (test-only `SorterDocMap::inconsistent_for_tests`) | Sorter.java:70 isConsistent(DocMap); caller SortingCodecReader.wrap asserts it (SortingCodecReader.java:434) |
 | `index::index_sorter::SorterDocMap::is_packed` | D? | **T** | none (used by index_sorter tests) | no Lucene member (PackableDocMap fields are private, Sorter.java:268-283) |
 | `index::index_sorter::available_sort_field_providers` | P? | **P** | none | SortFieldProvider.java:50 public static availableSortFieldProviders |
@@ -313,9 +315,9 @@ After pass 3: D 32, P 256, T 59, W 27, W-blocked 16, W= 81 (the cross table belo
 | `index::indexing_chain::FieldInvertState::set_position` | D? | **T** | none (used by freq_prox_terms_writer/term_vectors_consumer tests only; declared field setter) | no Lucene member (Java writes the package-private field position) |
 | `index::indexing_chain::encode_sortable_point_bytes` | W? | **D** | removed (pub duplicate of the private DefaultIndexingChain::encode_sortable_point_bytes that processLongColumn uses) | IndexingChain.java private encodeSortablePointBytes, called by processLongColumn (IndexingChain.java:1018-1053) |
 | `index::mapped_multi_fields::MappedMultiFields::inner` | D? | **P** | none (stands for the protected field) | FilterLeafReader.java FilterFields protected final Fields in, read by subclasses (MappedMultiFields extends FilterFields) |
-| `index::mapping_multi_postings_enum::MappingMultiPostingsEnum::field` | W? | **W-blocked** | blocked: MappedMultiTermsEnum.postings reuse needs a PostingsEnum downcast (declared divergence in mapped_multi_fields.rs postings) | MappingMultiPostingsEnum.java:32 final String field, read by MappedMultiFields.java:120 |
-| `index::mapping_multi_postings_enum::MappingMultiPostingsEnum::reset` | W? | **W-blocked** | blocked: as MappingMultiPostingsEnum::field; Rust builds a fresh enum per term | MappingMultiPostingsEnum.java:65 reset(MultiPostingsEnum); caller MappedMultiFields.java:132 |
-| `index::merge::DocIDMerger::reset` | W? | **W-blocked** | blocked: its Java caller MappingMultiPostingsEnum.reset is only reached through postings reuse, which needs a PostingsEnum downcast (declared divergence) | DocIDMerger.java:89,107 reset(); caller MappingMultiPostingsEnum.java:75 |
+| `index::mapping_multi_postings_enum::MappingMultiPostingsEnum::field` | W? | **W** | wired: `MappedMultiTermsEnum::postings` narrows `reuse` through `as_any_mut` and compares its field | MappingMultiPostingsEnum.java:32 final String field, read by MappedMultiFields.java:120 |
+| `index::mapping_multi_postings_enum::MappingMultiPostingsEnum::reset` | W? | **W** | wired: `MappedMultiTermsEnum::postings` resets the reused or new enum over the term's `MultiPostingsEnum` | MappingMultiPostingsEnum.java:65 reset(MultiPostingsEnum); caller MappedMultiFields.java:132 |
+| `index::merge::DocIDMerger::reset` | W? | **W** | wired: `MappingMultiPostingsEnum::reset` calls it | DocIDMerger.java:89,107 reset(); caller MappingMultiPostingsEnum.java:75 |
 | `index::merge::DocIDMerger::sub_mut` | D? | **D** | removed | no Lucene member (DocIDMerger.java exposes next() only); Rust callers use current_sub_mut |
 | `index::merge::MergeState::build_doc_maps` | W? | **T** | none (used by segment_merger tests only; the merge path uses build_doc_maps_for) | MergeState.java:212 private buildDocMaps(List, Sort), whose port is build_doc_maps_for |
 | `index::merge::MergeState::from_fields_producers` | D? | **T** | none (codec test fixture) | no Lucene member |
@@ -394,10 +396,10 @@ After pass 3: D 32, P 256, T 59, W 27, W-blocked 16, W= 81 (the cross table belo
 | `index::multi_doc_values::MultiSortedSetDocValues::values` | W? | **P** | none (stands for the public final field) | MultiDocValues.MultiSortedSetDocValues public final SortedSetDocValues[] values |
 | `index::multi_fields::MultiFields::get_fields` | D? | **T** | none (bridge used by multi_fields tests only) | no Lucene 10.5.0 member (MultiFields.java has no static getFields) |
 | `index::multi_fields::MultiFields::get_sub_slices` | D? | **T** | none (used by multi_fields tests only) | MultiFields.java private final ReaderSlice[] subSlices, no getter |
-| `index::multi_fields::MultiPostingsEnum::can_reuse` | W? | **W-blocked** | blocked: MultiTermsEnum.postings reuse needs a PostingsEnum downcast (declared in multi_fields.rs postings/multi_postings) | MultiPostingsEnum.java:54 canReuse; caller MultiTermsEnum.postings |
+| `index::multi_fields::MultiPostingsEnum::can_reuse` | W? | **W** | wired: `MultiTermsEnum::postings` narrows `reuse` and checks it | MultiPostingsEnum.java:54 canReuse; caller MultiTermsEnum.postings |
 | `index::multi_fields::MultiPostingsEnum::get_num_subs` | W? | **P** | none | MultiPostingsEnum.java:76 public getNumSubs(); its core caller MappingMultiPostingsEnum.reset reaches the owning into_subs() (declared) |
 | `index::multi_fields::MultiPostingsEnum::get_subs` | W? | **P** | none | MultiPostingsEnum.java:81 public getSubs(); its core callers reach into_subs() (declared ownership transfer) |
-| `index::multi_fields::MultiPostingsEnum::reset` | W? | **W-blocked** | blocked: as MultiPostingsEnum::can_reuse | MultiPostingsEnum.java:59 reset; caller MultiTermsEnum.postings |
+| `index::multi_fields::MultiPostingsEnum::reset` | W? | **W** | wired: `MultiTermsEnum::postings` resets the enum over the live subs | MultiPostingsEnum.java:59 reset; caller MultiTermsEnum.postings |
 | `index::multi_fields::MultiTerms::get_sub_slices` | P? | **P** | none | MultiTerms.java:133 public getSubSlices() |
 | `index::multi_fields::MultiTerms::get_sub_terms` | P? | **P** | none | MultiTerms.java:128 public getSubTerms() |
 | `index::multi_fields::MultiTerms::get_term_postings_enum_all` | D? | **P** | none (renamed overload) | MultiTerms.java:99-102 public static getTermPostingsEnum(IndexReader, String, BytesRef) |
@@ -477,16 +479,16 @@ After pass 3: D 32, P 256, T 59, W 27, W-blocked 16, W= 81 (the cross table belo
 | `index::terms::PrefixCodedTerms::content` | W? | **W=** | none (accessor kept) | PrefixCodedTerms.java private content read by equals/hashCode/iterator/ramBytesUsed; Rust reads the field |
 | `index::terms::Term::set` | D? | **P** | none (faithful member; uncalled in Lucene) | Term.java:178 package-private final set(String, BytesRef), no caller in core |
 | `index::terms::TermStates::clear` | W? | **W=** | none (kept) | TermStates.java:126 public clear(); TopTermsRewrite.rewrite clears and reuses the dropped entry (TopTermsRewrite.java:143); Rust drops the entry instead (declared inline in top_terms_rewrite.rs) |
-| `index::terms_enum_index::TermsEnumIndex::reset` | W? | **W-blocked** | blocked: Rust MultiTermsEnum is built on its own TermsEnumEntry, not on TermsEnumIndex (TermsEnumWithSlice); re-basing it is a larger change | TermsEnumIndex.java:123 reset; caller MultiTermsEnum.reset |
-| `index::terms_enum_index::TermsEnumIndex::seek_ceil` | W? | **W-blocked** | blocked: as TermsEnumIndex::reset | TermsEnumIndex.java:98 seekCeil; caller MultiTermsEnum.seekCeil |
-| `index::terms_enum_index::TermsEnumIndex::seek_exact` | W? | **W-blocked** | blocked: as TermsEnumIndex::reset | TermsEnumIndex.java:108 seekExact(BytesRef); caller MultiTermsEnum.seekExact |
+| `index::terms_enum_index::TermsEnumIndex::reset` | W? | **W** | wired: `MultiTermsEnum` is built on `TermsEnumIndex` (multi_fields.rs) and `MultiTermsEnum::reset` resets each entry | TermsEnumIndex.java:123 reset; caller MultiTermsEnum.reset |
+| `index::terms_enum_index::TermsEnumIndex::seek_ceil` | W? | **W** | wired: `MultiTermsEnum::seek_ceil` calls it | TermsEnumIndex.java:98 seekCeil; caller MultiTermsEnum.seekCeil |
+| `index::terms_enum_index::TermsEnumIndex::seek_exact` | W? | **W** | wired: `MultiTermsEnum::seek_exact` calls it | TermsEnumIndex.java:108 seekExact(BytesRef); caller MultiTermsEnum.seekExact |
 | `index::terms_enum_index::TermsEnumIndex::seek_ord` | D? | **P** | none (renamed overload; faithful member, uncalled in Lucene) | TermsEnumIndex.java:118 seekExact(long), no caller in core |
-| `index::terms_enum_index::TermsEnumIndex::term` | W? | **W-blocked** | blocked: as TermsEnumIndex::reset | TermsEnumIndex.java:79 term(); callers MultiTermsEnum.pullTop/seekCeil/seekExact |
+| `index::terms_enum_index::TermsEnumIndex::term` | W? | **W** | wired: `MultiTermsEnum` reads each entry's term through it | TermsEnumIndex.java:79 term(); callers MultiTermsEnum.pullTop/seekCeil/seekExact |
 | `index::terms_enum_index::TermsEnumIndex::term_prefix8` | D? | **T** | none (used by terms_enum_index tests) | TermsEnumIndex.java:48 private long currentTermPrefix8, no getter |
-| `index::terms_enum_index::TermsEnumIndex::terms_enum_mut` | D? | **W-blocked** | blocked: as TermsEnumIndex::reset (stands for the package-private field termsEnum that MultiTermsEnum reads, MultiTermsEnum.java:299-341) | TermsEnumIndex.java final TermsEnum termsEnum |
+| `index::terms_enum_index::TermsEnumIndex::terms_enum_mut` | D? | **W** | wired: `MultiTermsEnum` reaches each entry's terms enum through it (the package-private field `termsEnum`) | TermsEnumIndex.java final TermsEnum termsEnum |
 | `index::terms_enum_index::TermsEnumIndexState::term` | W? | **W=** | none (accessor kept) | TermsEnumIndex.TermState final BytesRefBuilder term read by termEquals/copyFrom; Rust reads the field |
-| `index::vector_values::FromDisiDocIndexIterator` | W? | **W-blocked** | blocked: its Java callers, BufferingKnnVectorsWriter.BufferedFloatVectorValues/BufferedByteVectorValues (BufferingKnnVectorsWriter.java:281,327), are not ported | KnnVectorValues.java fromDISI(DocIdSetIterator) anonymous DocIndexIterator |
-| `index::vector_values::FromDisiDocIndexIterator::new` | D? | **W-blocked** | blocked: as FromDisiDocIndexIterator | KnnVectorValues.java public static fromDISI |
+| `index::vector_values::FromDisiDocIndexIterator` | W? | **W** | wired: the buffered vector values of codecs/knn_vectors.rs (`BufferedFloatVectorValues`/`BufferedByteVectorValues`) iterate through one | KnnVectorValues.java fromDISI(DocIdSetIterator) anonymous DocIndexIterator |
+| `index::vector_values::FromDisiDocIndexIterator::new` | D? | **W** | wired: called by `from_disi` in codecs/knn_vectors.rs | KnnVectorValues.java public static fromDISI |
 | `index::vector_values::SparseDocIndexIterator` | W? | **P** | none (faithful member; uncalled in Lucene) | KnnVectorValues.java:196 protected createSparseIterator(), no caller in core |
 | `index::vector_values::SparseDocIndexIterator::over` | D? | **P** | none (the Rust form of createSparseIterator, declared) | KnnVectorValues.java:196 |
 | `index::vector_values::accept_ords` | W? | **W=** | none (kept) | KnnVectorValues.java:75 getAcceptOrds; the trait default and the overrides (accept_ords_with) carry it in Rust (declared divergence on KnnVectorValues::get_accept_ords) |
