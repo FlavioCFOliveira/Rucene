@@ -170,7 +170,7 @@ $ rucene-cli delete quakes --id us6000m0xl --id pr71435948
 deleted documents for 2 id(s) in quakes
 ```
 
-### `search <dir> [criteria ...] [--sort ...] [--limit N] [--fields ...] [--origin LAT,LON]`
+### `search <dir> [criteria ...] [--sort ...] [--limit N] [--fields ...] [--origin LAT,LON] [--exact-total]`
 
 Builds a `BooleanQuery` from the criteria and a `Sort` from the sort keys. It
 then runs `IndexSearcher.search(query, limit, sort, doDocScores=true)`, which
@@ -240,6 +240,18 @@ The output has three parts:
 2. a header row;
 3. one TSV row per hit: the selected columns, then one `sort:KEY:DIR` column
    for each sort key (dates as ISO 8601, distances in metres), then the score.
+
+**Total hits.** As in Lucene 10.5.0, `IndexSearcher.search(query, n, sort,
+doDocScores)` counts hits exactly only up to `TOTAL_HITS_THRESHOLD`, which is
+1 000 (`IndexSearcher.java:106`). Once a search has counted more than 1 000
+hits, the collector reports the total as a lower bound
+(`TopFieldCollector.java:79-85`), and the first line reads
+`# total hits: N (lower bound)`. N may be smaller than the real count.
+
+`--exact-total` also runs `IndexSearcher.count(query)` and prints its exact
+count as `# total hits: N`, with no suffix. Only the first line changes: the
+hits, their order and their scores are those of the same search without the
+flag. Up to 1 000 hits, the output is identical with and without the flag.
 
 ### Worked examples
 
@@ -324,6 +336,114 @@ $ rucene-cli search quakes --should --term net=ak --should --text vanuatu --limi
 $ rucene-cli search quakes --id us6000m0xl --fields all
 ```
 
+## End-to-end exercise
+
+Two scripts in [`scripts/`](scripts/) drive the binary over a large, real
+dataset and check every answer against an independent model.
+
+### Dataset
+
+[`scripts/fetch_dataset.sh`](scripts/fetch_dataset.sh) downloads every event
+of the USGS Earthquake Catalog, of any magnitude, between
+2019-01-01T00:00:00Z and 2025-01-01T00:00:00Z, into
+`data/usgs-2019-2024.csv`. USGS data is a work of the United States Government
+and is in the public domain. The script:
+
+- sends one request per calendar month to
+  `https://earthquake.usgs.gov/fdsnws/event/1/query?format=csv&starttime=...&endtime=...&orderby=time-asc`;
+- asks the `count` endpoint first, and splits a month that holds 20 000 events
+  or more (the API's per-request cap) into half-months, then days, so no
+  window is truncated. On the 2026-11-12 download, July 2019 (Ridgecrest),
+  May 2020 and June 2020 were split;
+- retries each request up to 5 times;
+- keeps the downloaded windows in `data/parts/`, so an interrupted run
+  resumes;
+- merges them into one file with one header, keeps one row per `id` (the row
+  with the latest `updated`), and orders the rows by `time`, then `id`;
+- fails unless the result holds at least 300 000 unique ids;
+- does nothing if `data/usgs-2019-2024.csv` exists, unless `--force` is given.
+
+The 2026-11-12 download holds 1 012 633 unique ids (about 190 MB; no
+duplicates). [`data/.gitignore`](data/.gitignore) keeps the file and its parts
+out of git; the 257-row fixture stays tracked.
+
+### Exercise
+
+[`scripts/exercise.py`](scripts/exercise.py) uses only the Python standard
+library. It loads the CSV into a model of the expected index, then runs the
+binary through every write path, in this order:
+
+1. `create` (an empty index);
+2. `add --set` of one document;
+3. `add --file` of half the dataset (506 315 documents);
+4. `add --file` of a one-row CSV;
+5. `add --file` of the rest, in 4 batches of 126 579 documents;
+6. `update --set` of one document (new `place` text and `mag`);
+7. `update --file` of 5 000 documents (`mag` + 1, `status=revised`);
+8. `delete` of one id;
+9. `delete` of 200 ids in one call, including updated documents;
+10. a final query battery: every criterion kind alone (text, phrase, term,
+    terms, numeric range, date range, box, box across the date line,
+    distance), combined `MUST`/`SHOULD`/`NOT` queries, sorts by one key and by
+    two or three keys (keyword, date, double and integer fields, with missing
+    values, ascending and descending), and distance sorts.
+
+A probe battery runs before and after every write. Each search is checked as
+follows:
+
+- every search passes `--exact-total`, and `# total hits` must equal the model
+  count exactly, with no `(lower bound)` suffix;
+- the full id set is compared when the model count is at most 2 000;
+- sorted searches request 500 hits (2 000 when the whole result fits), and the
+  sort keys at every position must equal the model's (ties may come in any
+  order);
+- relevance-ordered searches must have non-increasing scores;
+- distances must be within 1 m of the model's haversine distance
+  (`GeoUtils.EARTH_MEAN_RADIUS_METERS`);
+- after each write, every stored column of sampled ids is compared, and
+  deleted ids must be absent.
+
+The model's expectations are exact by construction, and the script asserts
+the preconditions that make them so:
+
+- every place chunk that contains a query word must tokenise identically under
+  Python's `\w+` and `StandardAnalyzer`;
+- no point lies within 1 m (about 1e-5 degrees) of a box edge or a distance
+  radius.
+
+The run is deterministic for a given `--seed`. It prints the time and peak RSS
+of the CLI processes for each step, measured with GNU time
+(`/usr/bin/time`) when it is installed. It stops with exit status 1 and a
+precise message at the first failed check. Otherwise it ends with
+`ALL CHECKS PASSED: N assertions`.
+
+### Commands
+
+From the repository root:
+
+```sh
+cargo build --release -p rucene-cli-example
+crates/rucene-cli-example/scripts/fetch_dataset.sh
+python3 -I crates/rucene-cli-example/scripts/exercise.py \
+  --bin target/release/rucene-cli \
+  --data crates/rucene-cli-example/data/usgs-2019-2024.csv \
+  --workdir /path/on/disk/cli-exercise [--seed N]
+```
+
+The script owns `--workdir`. The directory must be new, empty, or one that the
+script created before (it holds a `.rucene-exercise` marker), and its contents
+are replaced. Put it on disk: the index of the full dataset and the batch CSVs
+take several hundred megabytes.
+
+### Expected runtime
+
+Measured on the development machine:
+
+- the download takes about 2.5 minutes;
+- an exercise run takes about 2.5 minutes, of which about 33 s is indexing
+  and about 4 s is the 353 searches. The rest is the Python model.
+- the Python process peaks at about 1.5 GB RSS.
+
 ## Layout
 
 | Path | Content |
@@ -335,6 +455,9 @@ $ rucene-cli search quakes --id us6000m0xl --fields all
 | `src/search.rs` | Query and sort construction, sorted search, TSV output |
 | `src/cli.rs` | Argument parsing and dispatch |
 | `src/main.rs` | The `rucene-cli` entry point |
+| `scripts/fetch_dataset.sh` | Downloads the USGS 2019–2024 dataset (see [End-to-end exercise](#end-to-end-exercise)) |
+| `scripts/exercise.py` | The end-to-end exercise against a Python model |
 | `tests/` | Integration tests. Their expected results are computed from the fixture rows in plain Rust. |
 
-The crate uses only the standard library and `rucene`.
+The crate uses only the standard library and `rucene`. The scripts need
+`bash`, `curl`, GNU `date` and Python 3.

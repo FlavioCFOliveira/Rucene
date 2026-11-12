@@ -27,6 +27,7 @@ USAGE:
   rucene-cli delete <dir> --id ID [--id ID ...]
   rucene-cli search <dir> [criteria ...] [--sort KEY[:asc|desc],...]
                           [--limit N] [--fields f,...|all] [--origin LAT,LON]
+                          [--exact-total]
   rucene-cli help
 
 CRITERIA (combined with AND; prefix one with --should or --not to make it
@@ -43,6 +44,9 @@ optional or prohibited):
 
 SORT KEYS: any field, _score, _doc, _distance (from --origin or the first
 --distance). Default: _score (relevance).
+
+TOTAL HITS: above 1 000 hits the total may be a lower bound, printed as
+\"N (lower bound)\"; --exact-total counts it exactly (IndexSearcher.count).
 ";
 
 /// Runs the command line `args` (without the program name), writing normal
@@ -212,6 +216,7 @@ pub fn parse_search(args: &[String]) -> Result<SearchRequest> {
             .map(|name| (*name).to_owned())
             .collect(),
         origin: None,
+        exact_total: false,
     };
     let mut pending: Option<Occur> = None;
     let mut index = 0;
@@ -277,6 +282,16 @@ pub fn parse_search(args: &[String]) -> Result<SearchRequest> {
                     longitude: numbers[1],
                     kilometers: numbers[2],
                 }
+            }
+            "--exact-total" => {
+                if pending.is_some() {
+                    return Err(CliError::Usage(format!(
+                        "a criterion must follow --must/--should/--not, got {flag}"
+                    )));
+                }
+                request.exact_total = true;
+                index += 1;
+                continue;
             }
             "--origin" | "--sort" | "--limit" | "--fields" => {
                 if pending.is_some() {

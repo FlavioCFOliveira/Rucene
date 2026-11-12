@@ -139,6 +139,10 @@ pub struct SearchRequest {
     /// The origin of a distance sort, when given explicitly; otherwise the
     /// centre of the first `Distance` criterion.
     pub origin: Option<(f64, f64)>,
+    /// When `true`, the total is also counted with `IndexSearcher.count(Query)`,
+    /// which is always exact. When `false`, the total is the collector's, which
+    /// Lucene counts exactly only up to 1 000 hits.
+    pub exact_total: bool,
 }
 
 /// One hit of a search.
@@ -508,6 +512,11 @@ fn format_sort_value(spec: &SortSpec, value: &SortValue) -> String {
 /// `IndexSearcher.search(query, limit, sort, true)` (the top-field collector
 /// path, with scores), then loads each hit's stored fields.
 ///
+/// As in Lucene, that call counts hits exactly only up to
+/// `IndexSearcher.TOTAL_HITS_THRESHOLD` (1 000); above it the total may be a
+/// lower bound. When [`SearchRequest::exact_total`] is set, the total is
+/// replaced by `IndexSearcher.count(query)`, which is exact.
+///
 /// # Errors
 ///
 /// Returns [`CliError::Input`] when no index exists at `path` or the request
@@ -530,7 +539,15 @@ pub fn search(path: &Path, request: &SearchRequest) -> Result<SearchResult> {
     let directory = open_existing(path)?;
     let reader = directory_reader::open(directory)?;
     let searcher = IndexSearcher::new(reader as Arc<dyn IndexReader>)?;
-    let top = searcher.search_with_sort_and_scores(query, limit, &sort, true)?;
+    let top = searcher.search_with_sort_and_scores(Arc::clone(&query), limit, &sort, true)?;
+    let (total_hits, exact) = if request.exact_total {
+        (i64::from(searcher.count(query)?), true)
+    } else {
+        (
+            top.total_hits.value(),
+            top.total_hits.relation() == TotalHitsRelation::EQUAL_TO,
+        )
+    };
     let stored = searcher.stored_fields()?;
 
     let mut hits = Vec::with_capacity(top.score_docs.len());
@@ -556,8 +573,8 @@ pub fn search(path: &Path, request: &SearchRequest) -> Result<SearchResult> {
         });
     }
     Ok(SearchResult {
-        total_hits: top.total_hits.value(),
-        exact: top.total_hits.relation() == TotalHitsRelation::EQUAL_TO,
+        total_hits,
+        exact,
         sort_labels: request.sort.iter().map(sort_label).collect(),
         hits,
     })
